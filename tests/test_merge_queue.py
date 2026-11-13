@@ -8106,27 +8106,36 @@ class RemovedWhileTesting(Fixture):
         nothing, is told it conflicts with the removed entry rather than origin/main, and lands once that entry's gate
         has stopped."""
         # a is removed once the stacker has looked at c and said it conflicts with a, while a's gate still runs: a
-        # condition observed, not a time guessed, so that a loaded Mac's slow look cannot fall after the removal
-        # (vocaro-engineering#381). The stacker looks only once a's final lane runs admitted (Worker.admitted_mac),
-        # which on a Mac loaded far past its cores came more than 15 s after c arrived; the wait ends at the look, and
-        # its bound, a third of a's gate, only ends a failing run, with a removed either way. a's gate is twice the
-        # class's, which a stopped gate never costs.
-        slow = 2 * float(self.SLOW)
-        self.commit("slow", "a", str(int(slow))); self.commit("same", "a", "a", start="a"); self.commit("same", "c", "c")
+        # condition observed, not a time guessed (vocaro-engineering#381). The stacker looks only once a's final lane
+        # runs admitted (Worker.admitted_mac), and then makes its checkout and integrates c there, so the look comes
+        # as late as the Mac's load makes it: on the second Mac on 2026-11-12, 94 s after c arrived. a's gate
+        # therefore holds (hold, in LANE) until the removal stops it, rather than sleeping a fixed time the look could
+        # outlast, and the wait for the look has a bound stretched by the load, which only ends a failing run, with a
+        # removed either way (vocaro/queuekeeper#31). What the removal is checked for is fixed: a's gate stops within
+        # STOP of it. A run in which it does not is released after STOP, so that it ends, and fails.
+        STOP = float(self.SLOW)
+        self.commit("hold", "a"); self.commit("same", "a", "a", start="a"); self.commit("same", "c", "c")
         [a] = self.add("a")
-        conflicted, looked, real_say = threading.Event(), [], mq.Worker.say
+        conflicted, stopped, looked, stops, real_say = threading.Event(), threading.Event(), [], [], mq.Worker.say
         def say(worker, words):
             real_say(worker, words)
             if words.startswith("stacked: ") and f" conflicts with {a}, ahead of it" in words: conflicted.set()
+            if words.startswith("gate: stopped") and words.endswith(f", as {a} left the queue"): stopped.set()
         def replace():
             self.arrive("c")
-            seen = conflicted.wait(slow / 3)
+            seen = conflicted.wait(stretched(2 * STOP))
             looked.append((seen, self.state(a)["state"]))
+            removed = time.monotonic()
             self.remove(a)
+            if stopped.wait(STOP): stops.append(time.monotonic() - removed)
+            else: Path(f"{self.counter}.release.1").touch()  # a's gate, the first, ends, and the test fails
         log, took = self.worked(self.during(replace), patch.object(mq.Worker, "say", say))
         c = self.added("c")
         self.assertEqual(looked, [(True, mq.TESTING)], log)
-        self.assertLess(took, slow / 2, log)
+        self.assertEqual(len(stops), 1, log)
+        self.assertLess(stops[0], STOP, log)
+        # The whole run, through its admissions and c's gate, only by a bound a loaded Mac stretches.
+        self.assertLess(took, stretched(STOP), log)
         self.assertEqual((self.state(a)["state"], c["state"]), ("removed", "landed"), log)
         self.assertIn(f"stacked: {c['id']}: {c['tip'][:12]} conflicts with {a}, ahead of it, not with "
                       "origin/main, in same: once it lands, rebase onto origin/main and add it again", log)
