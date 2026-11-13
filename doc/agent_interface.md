@@ -14,7 +14,7 @@ Exit codes separate the cases an agent must treat differently:
 | 2 | Usage or configuration error |
 | 3 | Unmeasured |
 | 4 | Failed before any test started |
-| 75 | Busy or held; nothing ran |
+| 75 | Busy or held; nothing ran. From `qk queue status --idle`, the queue is not idle |
 | 78 | A host is misconfigured |
 | 127 | A lane's command could not start |
 
@@ -26,6 +26,13 @@ Exit codes separate the cases an agent must treat differently:
 - **JSON** is available from `queue status`, `queue doctor`, `queue placement`, `queue events`,
   `admissions now` and `doctor`.
 - **Nothing prompts.** Commands are meant to run in the background and be followed to their result.
+- **`qk queue status --idle` answers by exit status** whether the queue is idle, for a script that
+  must not end a running gate, such as one that removes the queue's login agent
+  ([#21](https://github.com/vocaro/queuekeeper/issues/21)). It prints the lines `qk queue status`
+  prints and exits 0 only when no worker runs and no entry is queued, testing or passed, and 75
+  otherwise. A live worker between rounds with nothing waiting is not idle, and neither is a held
+  queue with entries waiting. A worker that died leaves no worker: its lock is released with it.
+  With `--json`, the `idle` field says the same.
 
 ## Landing
 

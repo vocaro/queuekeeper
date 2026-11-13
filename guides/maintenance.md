@@ -1018,10 +1018,19 @@ At login and on its interval the agent runs the same worker entry point. Empty a
 return before recovering dispatches or running gates. The queue lock excludes duplicate workers.
 If launchd rejects a start request, `worker.log` records the error and queuekeeper starts the session
 worker. To remove the setup, wait for the queue to be idle, run
-`/bin/launchctl bootout "gui/$(id -u)/$label"`, and remove that queue's plist. Read what
-`qk queue status` prints before the bootout, not its exit status, which is 0 for a queue in the
-middle of a gate too ([#21](https://github.com/vocaro/queuekeeper/issues/21)): the bootout ends a
-running worker and its gate, as it did to another session's on 2026-11-12.
+`/bin/launchctl bootout "gui/$(id -u)/$label"`, and remove that queue's plist. Chain the bootout on
+`qk queue status --idle`, which exits 0 only when no worker runs and no entry is queued, testing or
+passed, and 75 otherwise; plain `qk queue status` exits 0 for a queue in the middle of a gate too
+([#21](https://github.com/vocaro/queuekeeper/issues/21)). The bootout ends a running worker and its
+gate, as it did to another session's on 2026-11-12, when a bootout chained on plain
+`qk queue status` followed its `worker: running`. A worker between rounds with nothing waiting is
+still a running worker, so `--idle` does not call it idle.
+
+```sh
+python3 scripts/qk queue status --idle &&
+  /bin/launchctl bootout "gui/$(id -u)/$label" &&
+  rm "$HOME/Library/LaunchAgents/$label.plist"
+```
 
 ## The README's screenshots
 

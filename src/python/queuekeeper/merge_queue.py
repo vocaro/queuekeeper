@@ -1700,8 +1700,8 @@ def round_lines(state, at=None):
 
 def snapshot(root, recent=5):
     """The queue's state as `qk queue status --json` prints it, which the visibility features read too
-    (doc/visibility.md): the worker, any hold, the round's account, the entries waiting, the last recent settled and
-    the IDs of those landed ungated."""
+    (doc/visibility.md): the worker, any hold, the round's account, the entries waiting, the last recent settled, the
+    IDs of those landed ungated, and whether the queue is idle (status's --idle)."""
     return reading(root, recent)[0]
 
 
@@ -1723,15 +1723,22 @@ def reading(root, recent=5):
             gate["progress"] = [record for record in gate["progress"] if lane_progress.valid(record, gate.get("began"))]
         if isinstance(gate.get("began"), (int, float)): gate["runningSeconds"] = round(time.time() - gate["began"])
         if stuck(gate): gate["stuck"] = stuck(gate)
+    # Idle is no live worker and nothing queued, testing or passed (vocaro/queuekeeper#21). A worker between rounds
+    # with nothing waiting is not idle: what ends it ends whatever it starts next. A held queue with entries waiting is
+    # not idle either. The worker's lock is a flock, so a dead worker's lock file holds nothing and counts as none.
     return {"worker": working, "held": why, "round": current, "waiting": waiting, "recent": done,
-            "ungated": [entry["id"] for entry in ungated]}, ungated
+            "ungated": [entry["id"] for entry in ungated], "idle": not working and not waiting}, ungated
 
 
-def status(root, as_json=False, recent=5):
+def status(root, as_json=False, recent=5, idle=False):
+    """Print the queue's state, in words or as JSON. Its exit status is 0, or with idle, 0 only when the queue is
+    idle (reading) and BUSY otherwise, so that a script can ask whether ending the worker would end a gate
+    (vocaro/queuekeeper#21)."""
     state, ungated = reading(root, recent)
+    result = 0 if not idle or state["idle"] else resources.BUSY
     if as_json:
         print(json.dumps(state, indent=2))
-        return 0
+        return result
     working, why, current, waiting, done = (state[key] for key in ("worker", "held", "round", "waiting", "recent"))
     print(f"worker: {'running' if working else 'none'}" + (f"; held {why}" if why else ""))
     if waiting and not working and not why: print("waiting with no worker: `qk queue resume` starts one")
@@ -1744,7 +1751,7 @@ def status(root, as_json=False, recent=5):
         if entry["state"] == QUEUED and entry.get("front") and entry.get("noGate"):
             line = ahead_of_round(current or {})
             if line: print(f"         {line}")
-    return 0
+    return result
 
 
 def ahead_of_round(state, at=None):
@@ -4986,6 +4993,9 @@ def add_arguments(parser):
     state = operations.add_parser("status", help="say what is waiting, what is running, what came back and, when the "
                                   "queue is held, why and for whom")
     state.add_argument("--json", action="store_true")
+    state.add_argument("--idle", action="store_true",
+                       help=f"exit 0 only when no worker runs and no entry is queued, testing or passed, and "
+                       f"{resources.BUSY} otherwise; the lines printed are the same")
     doctoring = operations.add_parser("doctor", help="read the queue for the signs that it is stuck rather than testing, "
                                       "such as gates that ran nothing, and say what each means and what heals it; it "
                                       "changes nothing: 0 healthy, 1 with findings")
@@ -5024,7 +5034,7 @@ def main(root, args):
             print(f"queuekeeper: {error}", file=sys.stderr)
             return 1
         return 0
-    if args.operation == "status": return status(root, args.json)
+    if args.operation == "status": return status(root, args.json, idle=args.idle)
     if args.operation == "doctor": return doctor(root, args.json)
     if args.operation == "placement": return placement(root, args.lane, args.json)
     if args.operation == "wait":

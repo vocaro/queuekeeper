@@ -8451,6 +8451,75 @@ class UngatedAheadOfARound(Fixture):
                          "waits for the running gate of a, which has run 1m00s")
 
 
+class IdleStatus(Fixture):
+    """`qk queue status --idle` exits 0 only when no worker runs and no entry is queued, testing or passed, and BUSY
+    otherwise, with the lines status prints anyway, so that a script can ask whether ending the worker would end a
+    gate (vocaro/queuekeeper#21)."""
+
+    def said(self, *words):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = cli.main(["--project", str(self.repo), "queue", "status", *words])
+        return code, out.getvalue()
+
+    def asked(self):
+        """--idle's exit status, after checking that its lines are status's own and that --json says the same."""
+        code, said = self.said("--idle")
+        plain, shown = self.said()
+        self.assertEqual((plain, said), (0, shown))
+        answer, printed = self.said("--idle", "--json")
+        self.assertEqual(answer, code)
+        self.assertEqual(json.loads(printed)["idle"], code == 0)
+        return code
+
+    @contextlib.contextmanager
+    def live_worker(self):
+        """A live process that holds the worker's lock, as a worker between rounds does, until the block ends and it
+        is killed, which leaves the lock file behind."""
+        lock = mq.Queue(self.repo).directory / "worker.lock"
+        script = ("import fcntl, sys, time; lock = open(sys.argv[1], 'w'); fcntl.flock(lock, fcntl.LOCK_EX); "
+                  "print('locked', flush=True); time.sleep(600)")
+        holder = subprocess.Popen([sys.executable, "-c", script, str(lock)], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "locked")
+            yield
+        finally:
+            holder.kill()
+            holder.wait()
+            holder.stdout.close()
+        self.assertTrue(lock.exists())
+
+    def test_an_empty_queue_with_no_worker_is_idle(self):
+        self.assertEqual(self.asked(), 0)
+        self.assertEqual(self.said("--idle")[1].splitlines()[0], "worker: none")
+
+    def test_an_entry_queued_testing_or_passed_is_not_idle(self):
+        self.commit("a.txt", "one")
+        identifier, = self.add("one")
+        queue = mq.Queue(self.repo)
+        self.assertEqual(self.asked(), mq.resources.BUSY)
+        queue.mark([self.state(identifier)], mq.TESTING)
+        self.assertEqual(self.state(identifier)["state"], mq.TESTING)
+        self.assertEqual(self.asked(), mq.resources.BUSY)
+        queue.save({**self.state(identifier), "state": mq.PASSED, "passed": {"head": "a" * 40, "base": "b" * 40}})
+        self.assertEqual(self.asked(), mq.resources.BUSY)
+        queue.save({**self.state(identifier), "state": mq.LANDED, "settled": time.time()})
+        self.assertEqual(self.asked(), 0)
+
+    def test_a_live_worker_with_nothing_waiting_is_not_idle_and_a_dead_ones_lock_is_none(self):
+        with self.live_worker():
+            self.assertEqual(self.asked(), mq.resources.BUSY)
+            self.assertEqual(self.said("--idle")[1].splitlines()[0], "worker: running")
+        self.assertEqual(self.asked(), 0)
+
+    def test_a_held_queue_is_idle_only_with_nothing_waiting(self):
+        with patch("builtins.print"): mq.Queue(self.repo).hold("for a session: a test holds it")
+        self.assertEqual(self.asked(), 0)
+        self.commit("a.txt", "one")
+        self.add("one")
+        self.assertEqual(self.asked(), mq.resources.BUSY)
+        self.assertIn("held for a session: a test holds it", self.said("--idle")[1])
+
+
 class RoundAccount(Fixture):
     """The worker's account of its round in queuekeeper-queue (ROUND_FILE), which `qk queue status` shows so that nobody has
     to read worker.log to learn why entries wait: a bisect's halves, each gate's lane, Mac and time, and what it waits

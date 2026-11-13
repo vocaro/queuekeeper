@@ -12,6 +12,7 @@ and its branch can move or be deleted. One worker per repository does the rest.
 qk land --wait          # queue HEAD and follow it to its result
 qk land BRANCH          # queue a branch and return at once
 qk queue status         # what is waiting, what is testing, what came back and why
+qk queue status --idle  # the same, exiting 0 only when no worker runs and nothing waits, else 75
 qk queue remove ID      # take an entry out
 ```
 
