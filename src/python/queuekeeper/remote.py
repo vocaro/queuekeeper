@@ -30,7 +30,7 @@ checks, within seconds, that the second Mac can be reached. When it cannot, beca
 this Mac is away from the second Mac's network, nothing answers on its ssh port or ssh cannot
 connect, the work runs on this Mac at once (the owner's decision, 2026-10-27). A second Mac that
 answers but is misconfigured, such as one that refuses the login or has another Xcode, stops the
-work for the owner's decision (agents/core.md, Shared resources); only `--here` then runs it
+work for the owner's decision (the toolkit's agents/core.md, Shared resources); only `--here` then runs it
 here. A run that was sent and lost its connection is unmeasured and runs nowhere else.
 `qk doctor` compares the two Macs and times how ssh connects to the second Mac, and reports a
 second Mac it cannot reach as unchecked, and gives both the same simulator runtimes, as
@@ -228,7 +228,7 @@ RUNTIME_STAGING = f"{ROOT}/runtimes"
 LOCAL_RUNTIME_STAGING = "Library/Application Support/queuekeeper/runtimes"
 # Free bytes a runtime's copy or download must leave on the volume that receives it: room for simctl
 # to copy the image once more where it cannot clone it, as its help says it may, and for the 8-14 GB
-# building worktrees of the sessions that share the volume (agents/core.md, Concurrent work).
+# building worktrees of the sessions that share the volume (the toolkit's agents/core.md, Concurrent work).
 RUNTIME_MARGIN = 40 << 30
 # The bytes a download is taken to need when no image says: more than the largest runtime image on
 # either Mac, iOS 26.5's 8.5 GB (October 2026).
@@ -264,7 +264,7 @@ class Loaded(Busy):
 
 class Misconfigured(Unavailable):
     """The second Mac's configuration kept the work from running there: the owner's to fix, and
-    no reason to run it on this Mac without the owner's decision (agents/core.md, Shared resources).
+    no reason to run it on this Mac without the owner's decision (the toolkit's agents/core.md, Shared resources).
     problem says what is wrong, and fix what fixing it takes."""
 
     def __init__(self, problem, fix):
@@ -848,7 +848,7 @@ def origin(root):
         if not upstream or offload_host.local_url(upstream): upstream = UPSTREAM
         raise RuntimeError(f"{root}'s origin is {url}, a path on this Mac, from which the second Mac cannot fetch the "
                            f"policy; set it with `git -C {shlex.quote(str(root))} remote set-url origin {upstream}` "
-                           "and send the work again (guides/adoption.md, Locating the toolkit from a worktree)")
+                           "and send the work again (the toolkit's guides/adoption.md, Locating the toolkit from a worktree)")
     return "https://github.com/" + url[len("git@github.com:"):] if url.startswith("git@github.com:") else url
 
 
@@ -1367,7 +1367,7 @@ def uncounted(root, lane):
     return (f"{lane} runs the working tree's uncommitted changes ({shown}), so its result is no commit's pass "
             "for eng release or a checkpoint: commit them, or keep a file no lane reads, such as release notes, "
             "out of the checkout until the lane has run, then run it again for a pass that counts "
-            "(guides/releasing.md, Preparing a release)")
+            "(the toolkit's guides/releasing.md, Preparing a release)")
 
 
 def write(stream, data):
@@ -2381,7 +2381,7 @@ def offering_here(here, send):
         raise Unreachable(away.problem, f"{away.fix}; or ask the owner for a window on this Mac's foreground, "
                                         "saying what would run there and for how long, since foreground work never "
                                         "moves to this Mac without one, and within it reserve mac-foreground and run "
-                                        f"`{here}` (guides/second-mac-foreground.md, This Mac's foreground)") from None
+                                        f"`{here}` (the toolkit's guides/second-mac-foreground.md, This Mac's foreground)") from None
 
 
 def foreground_report(host):
@@ -2765,8 +2765,8 @@ def bring_runtimes(host, developer, check):
     if found[HERE]["xcode"] != found[host].get("xcode"):
         there = version(found[host]["xcode"]) if found[host].get("xcode") else "missing"
         print(f"runtimes: the Xcode at {developer} is {version(found[HERE]['xcode'])} on this Mac and {there} on "
-              f"{host}; install this Mac's Xcode at that path there first (guides/shared-host.md, Setting up a build "
-              "host)", flush=True)
+              f"{host}; install this Mac's Xcode at that path there first (guides/shared-host.md, Setting up the second "
+              "Mac)", flush=True)
         return 1
     xcode = f"{version(found[HERE]['xcode'])} at {developer}"
     stores = {side: runtime_images(host, side, developer, clear=not check) for side in (HERE, host)}
@@ -3179,7 +3179,7 @@ class Offer:
 
     def stopped(self, stop):
         print(f"queuekeeper: {self.name} not run: {stop.problem}\nqueuekeeper: to fix it, {stop.fix}\nqueuekeeper: a misconfigured shared host "
-              f"stops the work that depends on it (agents/core.md, Shared resources). Running {self.name} on this Mac "
+              f"stops the work that depends on it (the toolkit's agents/core.md, Shared resources). Running {self.name} on this Mac "
               f"instead takes the owner's decision, then {self.instead}.", file=sys.stderr, flush=True)
         self.busy, self.status = None, MISCONFIGURED
         return MISCONFIGURED

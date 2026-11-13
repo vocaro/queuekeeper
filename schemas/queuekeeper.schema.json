@@ -217,7 +217,7 @@
             "type": "boolean"
           },
           "apps": {
-            "description": "A foreground lane's app under test, each name as a crash-report alert names the process that quit, such as EPUBLib. A failed run during which queuekeeper cleared a crash-report alert for another process, one that stood longer than one look, is unmeasured; one for these, or for a process queuekeeper cannot name, stays failed (guides/second-mac-foreground.md, Crash-report alerts)",
+            "description": "A foreground lane's app under test, each name as a crash-report alert names the process that quit, such as EPUBLib. A failed run during which queuekeeper cleared a crash-report alert for another process, one that stood longer than one look, is unmeasured; one for these, or for a process queuekeeper cannot name, stays failed (guides/foreground.md, Crash-report alerts)",
             "type": "array",
             "minItems": 1,
             "items": {
@@ -252,7 +252,7 @@
             }
           },
           "budgetMinutes": {
-            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, qk land and qk doctor warn and name its slowest parts (guides/releasing.md, Keeping the split). Only the gate lane takes it",
+            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, qk land and qk doctor warn and name its slowest parts (the toolkit's guides/releasing.md, Keeping the split). Only the gate lane takes it",
             "type": "integer",
             "minimum": 1
           },
@@ -266,7 +266,7 @@
             "type": "boolean"
           },
           "devices": {
-            "description": "The device-record entries, such as iPhone, that a lane's script uses when its command is not qk device-pass, whose --device options say so: the lane waits for admission only until the last start that can finish within the window the session holds them for (guides/releasing.md, The device pass). It needs an admitted lane",
+            "description": "The device-record entries, such as iPhone, that a lane's script uses when its command is not qk device-pass, whose --device options say so: the lane waits for admission only until the last start that can finish within the window the session holds them for (guides/devices.md, The device pass). It needs an admitted lane",
             "type": "array",
             "items": {
               "type": "string",
@@ -279,7 +279,7 @@
             "type": "boolean"
           },
           "compileFirst": {
-            "description": "An argv that compiles the lane's test target, such as xcodebuild build-for-testing on the derived data its command uses. It runs before the command in the lane's one admission and timeout, and a failure ends the run as build-failed with no test run. It needs an admitted lane, and a group runs its lanes' commands without it (guides/app-testing.md, Compile before the tests)",
+            "description": "An argv that compiles the lane's test target, such as xcodebuild build-for-testing on the derived data its command uses. It runs before the command in the lane's one admission and timeout, and a failure ends the run as build-failed with no test run. It needs an admitted lane, and a group runs its lanes' commands without it (guides/lanes.md, Compile before the tests)",
             "type": "array",
             "minItems": 1,
             "items": {
@@ -291,7 +291,7 @@
       }
     },
     "testLanes": {
-      "description": "What qk doctor's check that every test has a lane cannot work out for itself (guides/app-testing.md, Every test has a lane)",
+      "description": "What qk doctor's check that every test has a lane cannot work out for itself (guides/lanes.md, Every test has a lane)",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -643,7 +643,7 @@
       }
     },
     "release": {
-      "description": "The release gate (guides/releasing.md, Two gates and Checkpoints)",
+      "description": "The release gate (the toolkit's guides/releasing.md, Two gates and Checkpoints)",
       "type": "object",
       "additionalProperties": false,
       "properties": {

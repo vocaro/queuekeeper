@@ -1,4 +1,4 @@
-"""Waits for script tests that a busy host slows but does not fail (#284; guides/app-testing.md, Waits bound stalls).
+"""Waits for script tests that a busy host slows but does not fail (#284; the toolkit's guides/app-testing.md, Waits bound stalls).
 
 A test that waits on a child process waits for the state it checks, and fails only once that state's progress
 has stood still for a bound stretched by the host's load. A fixed wall-clock bound on the whole run fails on a
@@ -20,7 +20,7 @@ EXEMPT = "wall-clock:"
 # A literal `monotonic() + N` deadline in a script that does not parse; not `+ 2 * LIMIT`, whose bound is a name.
 DEADLINE = re.compile(r"monotonic\(\)\s*\+\s*(?:\d+(?:\.\d*)?|\.\d+)(?![\w.]|\s*[*/])")
 SHOWN = 5
-STALL = 15  # seconds without progress, before stretching; guides/app-testing.md, Waits bound stalls: "15 s has served"
+STALL = 15  # seconds without progress, before stretching; the toolkit's guides/app-testing.md, Waits bound stalls: "15 s has served"
 
 
 def stretched(seconds):
@@ -194,4 +194,4 @@ def doctor_warnings(root):
             f"{shown}{more}. Wait on the state the test checks with queuekeeper.waiting.wait_until and a "
             "progress probe, or stretch the bound with waiting.stretched; a bound that is the behavior under test, "
             f"or a cleanup's grace period, says so with `# {EXEMPT} REASON` "
-            "(guides/app-testing.md, Waits bound stalls)"]
+            "(the toolkit's guides/app-testing.md, Waits bound stalls)"]

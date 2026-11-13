@@ -703,7 +703,7 @@ def perform(argv, report):
         "run a locked screen left without a verdict (guides/maintenance.md, A run with no verdict)")
     run.add_argument("--repeat", type=int, metavar="N", help="run a lane of qk simulator-tests N times, on one build, "
         "each run on a member taken from the pool afresh, and report each run's outcome, test counts and one-minute "
-        "load (guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
+        "load (the toolkit's guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
         "whole lane")
     reset = run.add_mutually_exclusive_group()
     reset.add_argument("--erase", action="store_true", help="with --repeat: erase the member before each run")
@@ -950,7 +950,7 @@ def perform(argv, report):
             if config.get("lanes") and "gate" not in config["lanes"] and not config.get("queue", {}).get("lanes") \
                     and config.get("integration", "direct-main") == "direct-main":
                 warnings.append("no lane is named gate, which qk land runs: name the lane holding "
-                                "what a commit must pass before it lands gate (guides/adoption.md, Lane names)")
+                                "what a commit must pass before it lands gate (the toolkit's guides/adoption.md, Lane names)")
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
             warnings += split_warnings(root, config)
@@ -1180,7 +1180,7 @@ def perform(argv, report):
                             if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)
             except processes.TimedOut as error:
                 # The lane's timeout is its backstop, so a run a busy host slowed past it is
-                # unmeasured (guides/measurement.md). Its log is incomplete and counts nothing.
+                # unmeasured (the toolkit's guides/measurement.md). Its log is incomplete and counts nothing.
                 print(f"queuekeeper: unmeasured: {error}", file=sys.stderr)
                 report.explain(error, complete=False)
                 return lane_results.UNMEASURED

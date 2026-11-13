@@ -1,4 +1,4 @@
-"""British spellings in a project's text, identifiers included (agents/core.md, Writing).
+"""British spellings in a project's text, identifiers included (the toolkit's agents/core.md, Writing).
 
 The words arrive one at a time and are invisible in review, and later sessions copy the spelling
 they read, so they are caught mechanically. The checker began as mpm's tree-wide gate.
@@ -383,7 +383,7 @@ def check(root, config, paths=(), out=print):
             found += 1
     if found:
         out(f"queuekeeper spelling: FAIL — {found} British spelling(s) in {len(files)} text file(s) and "
-            f"{len(names)} file name(s). Spell them the American way (agents/core.md, Writing).")
+            f"{len(names)} file name(s). Spell them the American way (the toolkit's agents/core.md, Writing).")
         return 1
     out(f"queuekeeper spelling: PASS — {len(files)} text file(s) and {len(names)} file name(s), identifiers "
         f"split at their word boundaries, {len(BRITISH_SAMPLES)}/{len(AMERICAN_SAMPLES)} British/"

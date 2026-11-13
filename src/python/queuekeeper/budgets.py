@@ -1,4 +1,4 @@
-"""The warnings about the landing gate's time budget (guides/releasing.md, Keeping the split,
+"""The warnings about the landing gate's time budget (the toolkit's guides/releasing.md, Keeping the split,
 vocaro-engineering#135), which a landing prints after its result and `doctor` gives:
 
 - the gate's median wall time over its recent passing runs in the merge queue made on an unloaded host exceeds the
@@ -34,7 +34,7 @@ NAMED_PARTS = 5
 # lane group prints for each of its lanes under "Lane times (...)": "  NAME     12s  PASS".
 SHARD = re.compile(r"^== (.+?): .*\((?:[^()]*, )?(\d+(?:\.\d+)?)s\)$")
 LANE_TIME = re.compile(r"^  (\S+)\s+(\d+(?:\.\d+)?)s\s+(?:PASS|FAIL|UNMEASURED)$")
-SPLIT = "guides/releasing.md, Keeping the split"
+SPLIT = "the toolkit's guides/releasing.md, Keeping the split"
 PASS = "guides/devices.md, The device pass"
 
 

@@ -12,7 +12,7 @@ past the pruning rule's limits are pruned (guides/simulator-pool.md, Reserved si
 With --app-accessibility each member's app processes get UIKit's and SwiftUI's own accessibility, for tests
 hosted in an app that read system views (guides/simulator-pool.md, App accessibility). With --voiceover each
 member's VoiceOver sound cues are switched off and its volume held at 0 before its tests, for a probe that
-switches VoiceOver on, and its volume is watched while they run (guides/voiceover-simulator.md, Muted speech
+switches VoiceOver on, and its volume is watched while they run (the toolkit's guides/voiceover-simulator.md, Muted speech
 capture). With --xcodegen SPEC
 the Xcode project is generated from SPEC before the build. Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
@@ -54,7 +54,7 @@ template with --template, which leaves a run unmeasured when the pool could only
 --, so that `qk run LANE --repeat N` reaches this through the arguments a lane appends, on either Mac; --only TEST
 then replaces the lane's own selection. Each run keeps its own outcome, test counts and one-minute load at its start
 and end, printed one line each, added up on the "Repeat series:" line and kept in series.json. Any failed run fails
-the series, and a run that did not happen is unmeasured, never passed (guides/simulator-testing.md, Repeating a test
+the series, and a run that did not happen is unmeasured, never passed (the toolkit's guides/simulator-testing.md, Repeating a test
 to show a fix works).
 """
 import argparse
@@ -144,13 +144,13 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
                        "for tests that need no fresh installation: it keeps what earlier runs installed and skips "
                        "the first boot's migration (guides/simulator-pool.md, Reserved simulator pool)")
     fresh.add_argument("--erase", action="store_true", help="erase each member in place of the reset from its "
-                       "kind's warmed template, for tests that want pristine data (guides/simulator-testing.md, "
+                       "kind's warmed template, for tests that want pristine data (guides/simulator-pool.md, "
                        "Warmed templates)")
     fresh.add_argument("--template", action="store_true", help="with --repeat: every run must get a copy of its "
                        "kind's warmed template; a run the pool could only erase is left unmeasured")
     parser.add_argument("--repeat", type=int, metavar="N", help="build once and run the tests N times, each run on a "
                         "member taken from the pool afresh, one outcome, set of test counts and one-minute load "
-                        "each; it may also follow -- (guides/simulator-testing.md, Repeating a test to show a fix "
+                        "each; it may also follow -- (the toolkit's guides/simulator-testing.md, Repeating a test to show a fix "
                         "works). A lane's --shards is set aside: each run is one test process on each member")
     parser.add_argument("--only", action="append", default=[], metavar="TEST", help="with --repeat: run only this "
                         "test, in place of the run's own -only-testing and -skip-testing arguments; repeat for each")
@@ -162,7 +162,7 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
                         "speech probe's: switch each member's VoiceOver sound cues off and hold its volume at 0 before "
                         "its tests, read it each second while they run, switch off a VoiceOver they left on, and print "
                         "their VOICEOVER_ lines; a member that could not be silenced, or was heard, fails "
-                        "(guides/voiceover-simulator.md, Muted speech capture)")
+                        "(the toolkit's guides/voiceover-simulator.md, Muted speech capture)")
     parser.add_argument("--build-only", action="store_true", help="build the tests for the first device and "
                         "test nothing, so that a later run with the same options finds the build up to date; the "
                         "member is taken without erasing or booting it, only to name the build's destination")
@@ -232,7 +232,7 @@ def series_options(args, parser_factory):
 
 def forwarded(prefixes, environment):
     """The TEST_RUNNER_ variables that give the test process each variable starting with a prefix. A test
-    process in a simulator sees only what xcodebuild is given that way (guides/simulator-testing.md, Test
+    process in a simulator sees only what xcodebuild is given that way (the toolkit's guides/simulator-testing.md, Test
     environment), and a TEST_RUNNER_ variable already set is the caller's and stays."""
     if not prefixes: return {}
     return {f"TEST_RUNNER_{name}": value for name, value in environment.items()
@@ -441,7 +441,7 @@ class Run:
     def silence(self, kind, device, log):
         """With --voiceover, VoiceOver's sound cues off and the volume held at 0 before any test runs: a
         simulator's VoiceOver speaks through the Mac's own output, and its cues play past the mute. False,
-        with the device failed, when either could not be done (guides/voiceover-simulator.md, Muted speech
+        with the device failed, when either could not be done (the toolkit's guides/voiceover-simulator.md, Muted speech
         capture)."""
         try:
             off, why = speech.silence_cues(device.udid), "it did not read back off"

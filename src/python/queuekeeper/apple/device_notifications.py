@@ -8,7 +8,7 @@ puts back what was there before, as foreground runs do with the Mac's crash-repo
 Nothing documented sets a device's Focus from the Mac. Xcode 27's `devicectl` (651.32) sets appearance, audio,
 biometrics, StandBy and VoiceOver, and reads no Focus; its `notification` commands post Darwin notifications, not
 user ones. The notification-settings configuration profile payload needs a supervised device, which the owner's
-are not. So the owner keeps two shortcuts on each device, made once by hand (guides/device-testing.md,
+are not. So the owner keeps two shortcuts on each device, made once by hand (guides/devices.md,
 Notifications during a run), and queuekeeper runs them by opening Shortcuts with a `shortcuts://run-shortcut` URL through
 `devicectl device process launch --payload-url`: SILENCE turns Do Not Disturb on when no Focus is on and leaves a
 marker, and RESTORE turns it off only when that marker is there, so it puts back what was there before and does
@@ -40,7 +40,7 @@ APP = "com.apple.shortcuts"
 SILENCE = "Vocaro Silence Notifications"
 RESTORE = "Vocaro Restore Notifications"
 # Seconds devicectl has to open Shortcuts, and the wait for devicectl itself beyond that. A Wi-Fi launch
-# can take a minute on a busy host (guides/device-testing.md, devicectl states and timeouts).
+# can take a minute on a busy host (the toolkit's guides/device-testing.md, devicectl states and timeouts).
 TIMEOUT = 120
 GUIDE = "guides/devices.md, Notifications during a run"
 
@@ -88,7 +88,7 @@ def ask(key):
             f"{SILENCE!r} and {RESTORE!r} shortcuts on the {key} once lets queuekeeper do it ({GUIDE})")
 
 
-# The relay of a device's log, from libimobiledevice, which guides/device-testing.md already uses to read the
+# The relay of a device's log, from libimobiledevice, which the toolkit's guides/device-testing.md already uses to read the
 # test daemons; "off" in WATCH starts none, as tests set it for every process they start (host_isolation).
 RELAY = "idevicesyslog"
 WATCH = "QUEUEKEEPER_DEVICE_LOG_WATCH"

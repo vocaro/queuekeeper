@@ -1,6 +1,6 @@
 """A release's physical-device pass as a lane: `qk device-pass --device KEY ... -- COMMAND` (vocaro-engineering#148).
 
-The release gate's device pass (guides/releasing.md, Two gates) is a lane of its own, named in
+The release gate's device pass (the toolkit's guides/releasing.md, Two gates) is a lane of its own, named in
 queuekeeper.json's `release.lanes`, whose command is this one, or a project script that builds first and
 then calls run() from Python. `qk run LANE` admits it and writes its receipt, so `eng release` finds a pass
 of it at the commit as it finds any other lane's (release.lane_passed). The lane is heavy and says
@@ -21,7 +21,7 @@ For each device named, in the order named, the pass:
 
 The pass exits 0 when every device's command exited 0; 1 when any failed; and otherwise UNMEASURED (3), so
 that a device not run, or a run a notification reached twice or that its bound stopped, leaves the lane
-unmeasured, never passed (guides/evidence.md, Honest outcome states). It writes each device's outcome to
+unmeasured, never passed (the toolkit's guides/evidence.md, Honest outcome states). It writes each device's outcome to
 device-pass.json in the results directory, by key, with no device identity. A device it took and could not
 release stays held, said with the command that releases it, and the pass exits 2.
 """

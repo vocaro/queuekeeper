@@ -469,7 +469,7 @@ def mac_name():
     return output(["scutil", "--get", "LocalHostName"]) or os.uname().nodename
 
 
-SCREEN_GUIDE = "guides/background-mac-testing.md, Checking a Mac's screen"
+SCREEN_GUIDE = "the toolkit's guides/background-mac-testing.md, Checking a Mac's screen"
 SCREEN_KEYS = ("CGSSessionScreenIsLocked", "IOConsoleLocked")
 # A recorded `ioreg -n Root -d1 -a` to read in place of the IORegistry, for tests, which never lock a real screen.
 SCREEN_RECORDING = "QUEUEKEEPER_SCREEN_IOREG"
@@ -3259,7 +3259,7 @@ def gather_changes(checkout, path):
         files = run("diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", variables=variables,
                     text=True).split("\0")
     files = [name for name in files if name]
-    # The patch first, under .build/queuekeeper, which every project ignores (guides/adoption.md), so the clean
+    # The patch first, under .build/queuekeeper, which every project ignores (the toolkit's guides/adoption.md), so the clean
     # below leaves it.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(patch)
@@ -3436,7 +3436,7 @@ def place(repository, checkout, commit, ref, origin=None):
         raise Refusal(f"the toolkit's origin is {origin}, a path on the sending Mac, from which no checkout here "
                       "can fetch the policy",
                       "set the sending checkout's origin to https://github.com/vocaro/queuekeeper.git and "
-                      "send the work again (guides/adoption.md, Locating the toolkit from a worktree)")
+                      "send the work again (the toolkit's guides/adoption.md, Locating the toolkit from a worktree)")
     if origin:
         # Different checkout slots can place the toolkit at once. Hold the shared lock only for its config.
         with (repository / "eng-origin.lock").open("a") as lock:
