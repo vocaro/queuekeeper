@@ -687,7 +687,8 @@ python3 scripts/qk land --no-gate --why "an unrelated flaky test fails the gate"
 - `--no-gate` needs a written reason, `--why TEXT`, and is refused without one. It lands the entry
   alone, in its turn: the worker rebases it onto `origin/main`, runs only the project's `spelling`
   lane, or the toolkit's where it has none and has not turned it off, and the pre-push hook, unless `main`'s `queue.hookCoveredBy` says the gate
-  covers the hook, and pushes. The reason is recorded everywhere the skip is: the entry's `ungated`,
+  covers the hook, and pushes. The toolkit's spelling check runs in the worker's checkout without
+  admission, as a docs-only batch's does (below). The reason is recorded everywhere the skip is: the entry's `ungated`,
   with the lanes; the worker's log; the landed tip's `Landed-without-gate:` trailer, its author,
   message and patch otherwise its own; and `qk queue status`. Example: an important fix is held up by
   an unrelated flaky test failing the gate. It is no gate of the pushed commit, so `eng release`
@@ -695,9 +696,18 @@ python3 scripts/qk land --no-gate --why "an unrelated flaky test fails the gate"
   main` until a landing whose gate ran on a base that holds it has passed, and a docs-only landing
   does not count. A session that uses it tells the owner it did and why, as for a hand push.
 
-With both, the entry lands at once, once a gate already running finishes, which is the hand push of
+With both, the entry lands next, ahead of any other `--front` entry, which is the hand push of
 2026-11-04: a one-line change that made a late voice listing a skip on simulators, so that
 EPUBLib's gates gave a verdict again ([EPUBLib#946](https://github.com/vocaro/EPUBLib/issues/946)).
+It does not wait for a round whose gate has not started: while the lane a gate runs waits for
+admission, an unlocked screen or a Mac, by its wait record (*A deep queue*, below), the worker stops
+it within `REMOVAL_POLL` (5 s), as for a removal, lands the entry, and gates that round's entries
+again on top of it, a bisect where it was. This holds for each gate the worker runs: a batch, a
+bisect's halves, a `--front` entry's and a stacked one. A gate that has started finishes first, and
+`qk queue status` says so under the entry: `waits for the running gate of ID, which has run Nm`. On
+2026-11-12 such an entry waited more than 10 minutes behind a StudyWright round whose gate waited for
+admission behind another project's whole-host gate
+([#26](https://github.com/vocaro/queuekeeper/issues/26)).
 
 **Pushing by hand is the exception.** A session pushes to `main` by hand only when `qk land` cannot
 be used, when it must be bypassed, each for a reason it can state, such as a broken queue or a fix

@@ -90,6 +90,9 @@ operations are degraded.
 - `qk land --no-gate --why "..."` lands with only the lint lane and the pre-push hook. The
   reason is required and is recorded in a `Landed-without-gate:` trailer. Status lists the commit as
   ungated until a later gate covers it.
+- With both, the entry lands next. It goes ahead of a round whose gate still waits for admission,
+  which then gates again on top of it, and waits only for a gate that has started, which status
+  says.
 
 ## A queue that looks stuck
 

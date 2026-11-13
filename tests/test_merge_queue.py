@@ -4420,7 +4420,9 @@ class AheadOfTheQueue(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual((self.gates(), self.light()), (0, 0))
         self.assertEqual(self.state(identifier)["ungated"]["lanes"], ["spelling"])
-        self.assertTrue(any("runs the toolkit's: python3 scripts/qk spelling" in words for words in said), said)
+        # The toolkit's check runs unadmitted, as a docs-only batch's does, so that it never waits behind a gate
+        # (vocaro/queuekeeper#26).
+        self.assertIn("spelling exited 0 in the queue's checkout, unadmitted, as an ungated landing's check", said)
 
     def test_a_project_without_a_spelling_lane_that_turned_the_toolkits_off_runs_no_lane(self):
         config = json.loads(json.dumps(self.configured))
@@ -4488,6 +4490,18 @@ class AheadOfTheQueue(Fixture):
         self.assertEqual([self.state(i)["state"] for i in (a, fix)], ["queued", "landed"])
         self.assertEqual((self.gates(), self.light()), (0, 1))
         self.assertIn(mq.UNGATED, self.tip_message())
+
+    def test_front_and_no_gate_together_go_ahead_of_an_older_front_entry(self):
+        """The ungated entry needs no gate, so it does not wait for one an older --front entry runs
+        (vocaro/queuekeeper#26)."""
+        self.commit("first", "first"); self.commit("fix", "fix")
+        first = self.add_with("first", front=True)
+        fix = self.add_with("fix", front=True, no_gate=True, why=self.WHY)
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (first, fix)], ["queued", "landed"])
+        self.assertEqual(self.gates(), 0)
+        self.rounds()
+        self.assertEqual(self.state(first)["state"], "landed")
 
     def test_a_light_lane_that_fails_sends_it_back(self):
         self.light_status.write_text("1")
@@ -8073,6 +8087,130 @@ class RemovedWhileTesting(Fixture):
                       "and holds the queue until then", older)
         with patch.object(mq.Queue, "working", return_value=False):
             self.assertIn("no worker runs, so no gate of it is left to stop", mq.stopping(queue, entry))
+
+
+class UngatedAheadOfARound(Fixture):
+    """An entry qk land --front --no-gate put first lands ahead of a round whose gate waits to start, which then gates
+    again on top of it, and waits only for a gate that runs, which `qk queue status` says (vocaro/queuekeeper#26)."""
+    WHY = "a docs fix every session needs now"
+    LIMIT = 60  # seconds a test waits for what it watches for, far past what it takes
+
+    def setUp(self):
+        super().setUp()
+        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None),
+                            ("STACK_POLL", 0.1), ("REMOVAL_POLL", 0.1)):
+            patcher = patch.object(mq, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        starting = patch.object(mq.Queue, "start")
+        starting.start()
+        self.addCleanup(starting.stop)
+        # Only the gate lane runs, so that the ungated landing runs no lane and the gate's run is the one timed.
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        self.publish({**config, "queue": {**config["queue"], "spelling": False}}, "Turn the toolkit's spelling off")
+
+    def until(self, happened, what):
+        ends = time.monotonic() + self.LIMIT
+        while not happened():
+            if time.monotonic() > ends: raise AssertionError(f"no {what} within {self.LIMIT}s")
+            time.sleep(0.02)
+
+    def arrive(self, branch):
+        """Add branch as a session's qk land --front --no-gate does while the worker runs."""
+        with patch.object(mq, "check"), patch("builtins.print"):
+            return mq.add(self.repo, branch, front=True, no_gate=True, why=self.WHY)
+
+    def waits_for_admission(self):
+        """The gate lane's record as qk run writes it while the lane waits for admission (lane_wait.waiting)."""
+        path = mq.lane_wait.path_of(mq.Queue(self.repo).checkout, "gate")
+        now = time.time()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"schemaVersion": mq.lane_wait.SCHEMA, "kind": mq.lane_wait.ADMISSION,
+                                    "reason": "another project's whole-host gate holds this Mac",
+                                    "mac": mq.lane_wait.HERE, "offer": None, "stranded": False, "pid": os.getpid(),
+                                    "admitted": False, "since": now, "written": now}))
+
+    def worked(self, action):
+        """Run the worker while action runs on its own thread, as a session's commands do; what the worker said."""
+        failed = []
+        def act():
+            try: action()
+            except BaseException as error: failed.append(error)
+        thread = threading.Thread(target=act)
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            thread.start()
+            try: self.assertEqual(self.work(), 0)
+            finally: thread.join(self.LIMIT)
+        if failed: raise failed[0]
+        return said.getvalue()
+
+    def subjects(self):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return run(self.repo, "git", "log", "-3", "--format=%s", "origin/main").splitlines()
+
+    def test_it_lands_ahead_of_a_round_waiting_for_admission(self):
+        self.commit("hold", "a"); self.commit("fix", "fix")
+        [a] = self.add("a")
+        (self.base / "gates.release.2").write_text("")  # a's gate again, on top of the fix, runs through
+        arrived = []
+        def arrive():
+            self.until(self.counter.exists, "gate of a")
+            self.waits_for_admission()
+            arrived.append(self.arrive("fix"))
+            # The fix lands while a's first gate still holds; released then either way, so that a worker that waits
+            # for it fails this test rather than hang it.
+            try: self.until(lambda: self.state(arrived[0])["state"] == mq.LANDED, "landing of the fix")
+            finally: (self.base / "gates.release.1").write_text("")
+        log = self.worked(arrive)
+        [fix] = arrived
+        self.assertEqual((self.state(fix)["state"], self.state(a)["state"]), ("landed", "landed"), log)
+        # The fix landed first, and a gated again on top of it.
+        self.assertEqual(self.subjects()[:2], ["Add hold", "Add fix"], log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertIn(mq.UNGATED, run(self.repo, "git", "log", "-1", "--format=%B", "origin/main~1"))
+        self.assertIn(f"gate: stopped before it started, as {fix} lands first without the gate, as qk land --front "
+                      "--no-gate asked, while gate waited for admission on this Mac", log)
+        self.assertIn("which stopped the gate before it started: the batch gates again on top of it", log)
+        self.assertNotIn("no verdict", log)
+        self.assertNotIn("unmeasured", log)
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_it_waits_for_a_gate_that_runs_and_status_says_so(self):
+        self.commit("hold", "a"); self.commit("fix", "fix")
+        [a] = self.add("a")
+        seen = []
+        def arrive():
+            self.until(self.counter.exists, "gate of a")
+            fix = self.arrive("fix")
+            time.sleep(1)  # ten looks for an entry ahead of the gate, which a running gate gives none
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out): mq.status(self.repo)
+            seen.append((fix, self.state(fix)["state"], out.getvalue()))
+            (self.base / "gates.release.1").write_text("")
+        log = self.worked(arrive)
+        [(fix, state, status)] = seen
+        self.assertEqual(state, "queued", log)
+        self.assertRegex(status, f"{fix} .*\n(.*\n)*? +waits for the running gate of {a}, which has run \\d+s")
+        self.assertEqual((self.state(fix)["state"], self.state(a)["state"]), ("landed", "landed"), log)
+        self.assertEqual(self.subjects()[:2], ["Add fix", "Add hold"], log)
+        self.assertEqual(self.gates(), 1, log)
+        self.assertNotIn("stopped before it started", log)
+
+    def test_what_status_says_it_waits_for(self):
+        """Between rounds nothing; a gate that runs, but no stacked one, and its time; else the round it goes ahead
+        of."""
+        self.assertIsNone(mq.ahead_of_round({}))
+        running = {"lane": "gate", "began": 1000, "entries": ["a"], "waiting": None}
+        waiting = {**running, "waiting": "admission on this Mac: busy"}
+        self.assertEqual(mq.ahead_of_round({"entries": ["a"], "gates": {"batch": running}}, at=1185),
+                         "waits for the running gate of a, which has run 3m05s")
+        self.assertEqual(mq.ahead_of_round({"entries": ["a"], "gates": {"batch": waiting, "stacked": running}},
+                                           at=1185),
+                         "lands ahead of the round of a, whose gate waits to start: the worker stops it within about "
+                         "0.1s")
+        self.assertEqual(mq.ahead_of_round({"entries": ["a"], "gates": {"older half": waiting,
+                                                                         "newer half": running}}, at=1060),
+                         "waits for the running gate of a, which has run 1m00s")
 
 
 class RoundAccount(Fixture):

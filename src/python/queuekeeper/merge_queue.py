@@ -198,7 +198,9 @@ QUICK_CHECKS = {SPELLING: IMPLICIT_SPELLING, DOCS: IMPLICIT_DOCS}
 # What a gate's lanes return when `qk queue remove` took an entry it tests out of the queue, which stopped them by the
 # cancel a thrown-away stacked gate's lanes end with, here or on the second Mac, freeing their admission there: no
 # verdict on anything, and what is left of the batch gates again (Worker.gate, vocaro-engineering#247). The gate looks
-# for such a removal this often, and records it on the entries it tests, for `qk queue remove` to say (stopping).
+# for such a removal this often, and records it on the entries it tests, for `qk queue remove` to say (stopping). A gate
+# whose lane still waits to start is stopped the same way for an entry qk land --front --no-gate put first, which then
+# lands ahead of it (Worker.first_ungated, vocaro/queuekeeper#26).
 WITHDRAWN = "withdrawn"
 REMOVAL_POLL = 5
 # A failed qk unittest gate's failed tests are each rerun alone on the batch's commit this many times before a
@@ -1722,8 +1724,28 @@ def status(root, as_json=False, recent=5):
     for entry in ungated:
         print(f"ungated on main: {entry['id']} landed {entry['landedAs'][:12]} without the gate, which the next gate "
               "on main covers")
-    for entry in waiting + done: print(describe(entry))
+    for entry in waiting + done:
+        print(describe(entry))
+        if entry["state"] == QUEUED and entry.get("front") and entry.get("noGate"):
+            line = ahead_of_round(current or {})
+            if line: print(f"         {line}")
     return 0
+
+
+def ahead_of_round(state, at=None):
+    """What an entry qk land --front --no-gate put first waits for, by the round's account (round_lines), or None
+    between rounds: the gates that run, which finish first, or else the round whose gates wait to start, which the
+    worker stops within REMOVAL_POLL seconds (Worker.first_ungated, vocaro/queuekeeper#26). A stacked gate holds up no
+    landing."""
+    gates = [gate for role, gate in (state.get("gates") or {}).items() if role != "stacked"]
+    running = [gate for gate in gates if not gate.get("waiting")]
+    if running:
+        return "; ".join(f"waits for the running gate of {', '.join(gate.get('entries', [])) or 'no entry'}, which "
+                         f"has run {ago(gate.get('began', 0), at)}" for gate in running)
+    if gates:
+        return (f"lands ahead of the round of {', '.join(state.get('entries', [])) or 'no entry'}, whose gate waits to "
+                f"start: the worker stops it within about {REMOVAL_POLL:g}s")
+    return None
 
 
 def refused_modules(line):
@@ -2178,21 +2200,24 @@ def carried():
 class Removal:
     """The cancel a gate's lanes run with (processes.run): set once cancel is, or once one of the entries ids that the
     gate tests has left the queue, as `qk queue remove` or a branch added again takes it out, which it looks for at
-    most every REMOVAL_POLL seconds. gone names those entries (vocaro-engineering#247)."""
-    def __init__(self, queue, ids, cancel=None):
-        self.queue, self.ids, self.cancel = queue, tuple(ids), cancel
-        self.gone, self.looked = [], None
+    most every REMOVAL_POLL seconds. gone names those entries (vocaro-engineering#247). At the same looks, first, when
+    given, names an entry that goes ahead of the gate, as Worker.first_ungated does while the gate's lane waits to
+    start (vocaro/queuekeeper#26); ahead then names it."""
+    def __init__(self, queue, ids, cancel=None, first=None):
+        self.queue, self.ids, self.cancel, self.first = queue, tuple(ids), cancel, first
+        self.gone, self.looked, self.ahead = [], None, None
 
     def look(self):
-        """Whether an entry of ids has left the queue, by its record now."""
+        """Whether an entry of ids has left the queue, by its record now, or an entry goes ahead of the gate."""
         self.looked = time.monotonic()
         self.gone = [identifier for identifier in self.ids
                      if (self.queue.read(identifier) or {}).get("state") not in WAITING]
-        return bool(self.gone)
+        if not self.gone and self.first is not None: self.ahead = self.first()
+        return bool(self.gone or self.ahead)
 
     def is_set(self):
         if self.cancel is not None and self.cancel.is_set(): return True
-        if self.gone: return True
+        if self.gone or self.ahead: return True
         if not self.ids or (self.looked is not None and time.monotonic() - self.looked < REMOVAL_POLL): return False
         return self.look()
 
@@ -2733,19 +2758,24 @@ class Worker:
         halves run at once (Beside), and none otherwise, so that qk run chooses. A set cancel ends the lane as its
         limit would (processes.Canceled), for a stacked gate thrown away (Stack). So does an entry it tests that leaves
         the queue, as `qk queue remove` takes it out, and the gate then returns WITHDRAWN, with self.withdrawn naming
-        those entries (Removal, vocaro-engineering#247). lane_now is (the lane running, when it began, where), by which
-        a gate stacked on this one goes to another Mac (Worker.admitted_mac). quick, for a docs-only batch's lanes, runs
-        the toolkit's two docs checks unadmitted first (Worker.quick)."""
+        those entries (Removal, vocaro-engineering#247). A lane that still waits to start is stopped in the same way for
+        an entry qk land --front --no-gate put first (first_ungated), and the gate returns WITHDRAWN with self.ahead
+        naming it (vocaro/queuekeeper#26). lane_now is (the lane running, when it began, where), by which a gate
+        stacked on this one goes to another Mac (Worker.admitted_mac). quick, for a docs-only or ungated batch's lanes,
+        runs the toolkit's two docs checks unadmitted first (Worker.quick), and as a string says which of the two it
+        is."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
-        self.failed_lane, self.failed_load, self.withdrawn = None, None, []
+        self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
         self.failed_dispatch = None
-        removal = Removal(self.queue, self.gating, cancel)
+        removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
         for lane in lanes:
-            if removal.look():
+            if removal.look() and removal.gone:
                 self.withdrawn = removal.gone
                 self.say(f"{lane} not started, as {', '.join(removal.gone)} left the queue")
                 return WITHDRAWN, log
+            # Only this lane's own wait, once it runs, lets an entry go ahead of the gate (first_ungated).
+            removal.ahead = None
             log = self.queue.logs / f"{round_name}-{lane}.log"
             # A lane run here logs to its own file, and one on the second Mac to its dispatch's run.log. What an
             # earlier round left in the lane's own file is not this one's.
@@ -2757,7 +2787,7 @@ class Worker:
             self.queue.emit("gate.began", lane=lane, round=round_name, role=self.role, head=self.head(),
                             entries=list(self.gating))
             if quick:
-                status_ = self.quick(lane, log)
+                status_ = self.quick(lane, log, *([quick] if isinstance(quick, str) else []))
                 if status_ is not None:
                     self.gate_ended(lane, round_name, status_, log)
                     if not status_: continue
@@ -2795,6 +2825,11 @@ class Worker:
                 if isinstance(error, processes.Canceled) and removal.gone:
                     self.withdrawn = removal.gone
                     self.say(f"{lane}: stopped{self.ran_where}, as {', '.join(removal.gone)} left the queue")
+                    self.gate_ended(lane, round_name, WITHDRAWN, log, time.monotonic() - started)
+                    return WITHDRAWN, log
+                if isinstance(error, processes.Canceled) and removal.ahead:
+                    self.ahead = removal.ahead
+                    self.say(f"{lane}: stopped before it started, as {self.stopped_for()}")
                     self.gate_ended(lane, round_name, WITHDRAWN, log, time.monotonic() - started)
                     return WITHDRAWN, log
                 self.timed_out = f"{lane} reached its limit: {error}"
@@ -2851,9 +2886,9 @@ class Worker:
                     if self.measured: self.measured.update(results=said, log=str(log))
         return 0, log
 
-    def quick(self, lane, log):
-        """The status of lane, one of a docs-only batch's lanes, run in this checkout without admission, when it is the
-        toolkit's spelling check or `qk docs check` (QUICK_CHECKS), the project's own lane of that name or none, so
+    def quick(self, lane, log, what="a docs-only batch's check"):
+        """The status of lane, one of a docs-only or ungated batch's lanes (what says which), run in this checkout
+        without admission, when it is the toolkit's spelling check or `qk docs check` (QUICK_CHECKS), the project's own lane of that name or none, so
         that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394); None for any other
         lane, or one that did not end within DOCS_CHECK_LIMIT, which qk run then runs admitted as before."""
         command = QUICK_CHECKS.get(lane)
@@ -2870,7 +2905,7 @@ class Worker:
         except OSError as error:
             self.say(f"{lane}: could not run unadmitted ({error}): running it admitted")
             return None
-        self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as a docs-only batch's check")
+        self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as {what}")
         return status_
 
     def read_group(self, lane, folder, log, *, include_swift=False):
@@ -3458,13 +3493,15 @@ class Worker:
 
     def choose(self, waiting):
         """This round's batch of waiting, oldest first. A batch that passed comes first, to push. Then the oldest
-        entry qk land --front put first, alone; then the oldest entries, as many as a bisect allows, up to the first
-        one qk land --no-gate lands alone, or that entry alone when it is the oldest. alone says whether the batch is
-        one entry an option put on its own, whose outcome leaves a bisect where it was."""
+        entry qk land --front put first, alone, one that lands without the gate too before any other
+        (vocaro/queuekeeper#26); then the oldest entries, as many as a bisect allows, up to the first one qk land
+        --no-gate lands alone, or that entry alone when it is the oldest. alone says whether the batch is one entry an
+        option put on its own, whose outcome leaves a bisect where it was."""
         batch = waiting[:self.limit] if self.limit else waiting
         self.alone = False
         if any(entry["state"] == PASSED for entry in batch): return batch
-        first = next((entry for entry in waiting if entry.get("front")), None)
+        first = next((entry for entry in waiting if entry.get("front") and entry.get("noGate")), None) \
+            or next((entry for entry in waiting if entry.get("front")), None)
         if first is None and batch and batch[0].get("noGate"): first = batch[0]
         if first is not None:
             self.alone = True
@@ -3517,7 +3554,7 @@ class Worker:
                                        lambda: self.gate(lanes_of(config), round_name), stacks=False)
         elif self.alone or docs or ungated:
             result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name,
-                                    quick=bool(docs))
+                                    quick="an ungated landing's check" if ungated else bool(docs))
         else:
             lanes = lanes_of(config)
             self.lane_now = None
@@ -3671,7 +3708,10 @@ class Worker:
         # Only a refusal that blames no entry is remembered, for the next gate; any other outcome ends the row.
         before, self.refusals = self.refusals, {}
         if result == WITHDRAWN:
-            self.say(f"{', '.join(runner.withdrawn)} left the queue, which stopped the gate: gating what is left")
+            if runner.ahead:
+                self.say(f"{runner.stopped_for()}, which stopped the gate before it started: the batch gates again on "
+                         "top of it")
+            else: self.say(f"{', '.join(runner.withdrawn)} left the queue, which stopped the gate: gating what is left")
             queue.mark(applied, QUEUED)
             return QUEUED
         if result in NO_VERDICT:
@@ -3975,6 +4015,31 @@ class Worker:
         elif beside.outcome == PASSED and outcome == LANDED:
             self.limit, self.suspects = None, 0
 
+    def first_ungated(self):
+        """The entry qk land --front --no-gate put first that goes ahead of this gate now, or None: one while the
+        gate's lane waits to start, by its wait record (lane_wait), for admission, a screen or a Mac, so that a landing
+        that needs only the spelling lane and a push does not wait behind a gate that has not begun
+        (vocaro/queuekeeper#26). A lane that runs, or whose record says nothing yet, runs on, and the entry lands after
+        it. An ungated round goes on as it is."""
+        if not self.lane_now: return None
+        waiting = self.queue.waiting()
+        gating = set(self.gating)
+        if any(entry.get("noGate") for entry in waiting if entry["id"] in gating): return None
+        first = next((entry for entry in waiting if entry.get("front") and entry.get("noGate")
+                      and entry["state"] == QUEUED and entry["id"] not in gating), None)
+        if first is None: return None
+        lane, began = self.lane_now[0], self.lane_now[1]
+        record = lane_wait.current(lane_wait.path_of(self.checkout, lane), began)
+        if not record or not record.get("kind"): return None
+        self.ahead_wait = (lane, lane_wait.words(record))
+        return first["id"]
+
+    def stopped_for(self):
+        """Why first_ungated stopped this gate, in words."""
+        lane, waited = getattr(self, "ahead_wait", None) or ("its lane", None)
+        return (f"{self.ahead} lands first without the gate, as qk land --front --no-gate asked, while {lane} waited "
+                f"for {waited or 'its start'}")
+
     def ungated(self, applied, config):
         """What an ungated landing of applied records, the reason --why gave and the lanes it runs, when it is one
         entry qk land --no-gate put on its own; else None."""
@@ -4258,7 +4323,8 @@ class Beside(Worker):
         over, else queue it to gate again (PASSED). No verdict, the second Mac declining among them, queues it."""
         result, log = self.result
         if result == WITHDRAWN:
-            self.say(f"{', '.join(self.withdrawn)} left the queue, which stopped its gate: queued again")
+            self.say(f"{self.stopped_for() if self.ahead else ', '.join(self.withdrawn) + ' left the queue'}, which "
+                     "stopped its gate: queued again")
             self.queue.mark(self.newer, QUEUED)
             self.outcome = QUEUED
             return
@@ -4378,7 +4444,9 @@ class Stack:
         """Why a stacked gate that has ended cannot be kept, or None: it gave no verdict, its lanes raised, or an
         entry of it left the queue, which stopped them (Worker.gate)."""
         result = self.peek()
-        if result is not None and result[0] == WITHDRAWN: return f"{', '.join(self.runner.withdrawn)} left the queue"
+        if result is not None and result[0] == WITHDRAWN:
+            if self.runner.ahead: return self.runner.stopped_for()
+            return f"{', '.join(self.runner.withdrawn)} left the queue"
         if result is None or result[0] in NO_VERDICT:
             return f"it gave no verdict (exit {result[0] if result else resources.BUSY})"
         return None
@@ -4713,7 +4781,8 @@ def options(parser):
     parser.add_argument("--no-gate", action="store_true", help="for an emergency, such as an important fix held up by "
                         "an unrelated flaky test: land it alone on the spelling lane, the project's or the toolkit's, and "
                         "the pre-push hook, without the gate, and record it as ungated, which the next gate on main "
-                        "covers. Needs --why; tell the owner you used it and why. With --front it lands at once")
+                        "covers. Needs --why; tell the owner you used it and why. With --front it lands next: ahead "
+                        "of a round whose gate waits to start, or once a gate already running finishes")
     parser.add_argument("--why", metavar="TEXT", help="the reason for --front or --no-gate, which --no-gate requires: "
                         "the entry, the log, the landed commit's trailer and `qk queue status` record it")
 
