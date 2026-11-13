@@ -215,6 +215,17 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   nothing run. A canceled waiter checks its stop signal before each reservation attempt, at
   most one 10-second poll later, and ends without starting its command or changing the holder.
   Its dispatch releases the checkout. `qk remote foreground` names the holder.
+- A holder whose expected release falls after the waiter's deadline is judged at once
+  (vocaro/queuekeeper#95). On 2026-11-12 a waiter spent its whole 5,400 s on a holder expected
+  80 minutes past its deadline. Now its first line names the release, the deadline and the command
+  to run again after the release, such as `qk run mac-menu-voiceover`. It keeps looking for
+  `foreground.GRACE`, 180 s, since a holder can release early, and takes the foreground if it
+  does. Then it ends with nothing run, exit 75 as when the wait runs out, naming the release and
+  the command again. The grace covers a holder already ending: its command has up to 120 s between
+  SIGTERM and SIGKILL, and its VoiceOver restoration settles after that. A release that comes later
+  is no likelier in the next few minutes than in any others of the holder's window. A holder with
+  no expected release, or one within the deadline, keeps the whole wait. A new holder, or a new
+  expected release, is judged anew. Nothing waits past the deadline for a late holder.
 - A run takes the foreground first and heavy-work admission after it, so a run waiting for the
   screen holds no slot. Holding the foreground excludes other foreground work only: builds and
   background tests keep running beside a session. A session that misbehaves only on a busy

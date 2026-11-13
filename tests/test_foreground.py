@@ -1,6 +1,6 @@
 import contextlib
 import contextvars
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 import json
 import os
@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import cli, config, offload_host, processes, remote
+from queuekeeper import cli, config, offload_host, processes, remote, resources
 from queuekeeper.apple import devices
 from queuekeeper.mac_desktop import reservations
 from queuekeeper.mac_desktop import foreground
@@ -386,6 +386,152 @@ class SlotTests(unittest.TestCase):
             with self.assertRaisesRegex(devices.Refused, "orphan.*attended recovery"):
                 with self.slot(): self.fail("ran over an orphan")
         self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], "other run")
+
+
+class Clock:
+    """A fake clock for foreground.slot's wait: its monotonic seconds and its wall time move only when the wait
+    sleeps, and each sleep then calls the test's hook with the seconds waited so far. No test sleeps for real."""
+
+    def __init__(self, hook=lambda seconds: None):
+        self.seconds, self.hook, self.started = 0.0, hook, datetime.now().astimezone()
+        clock = self
+
+        class Now(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return (clock.started + timedelta(seconds=clock.seconds)).astimezone(tz)
+        self.datetime = Now
+
+    def monotonic(self):
+        return self.seconds
+
+    def sleep(self, seconds):
+        self.seconds += seconds
+        self.hook(self.seconds)
+
+    def at(self, seconds):
+        """A wall time that many seconds after the wait began, as an entry records its expected release."""
+        return (self.started + timedelta(seconds=seconds)).astimezone(timezone.utc).isoformat()
+
+
+class DeadlineTests(unittest.TestCase):
+    """A waiter whose deadline falls before the holder's expected release says so at once, looks for foreground.GRACE
+    more in case the holder releases early, then ends with nothing run (vocaro/queuekeeper#95)."""
+    TIMEOUT = 5400
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.record = devices.Record(Path(temp.name) / "device-handoff.json")
+        self.said = []
+        for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path)}),
+                        patch.object(foreground, "front", return_value="Finder (ASN:0x0-0x1:)")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        os.environ.pop(devices.OWNER, None)
+        self.record.defer(SECOND)
+
+    def hold(self, owner, release_by, revision=0):
+        return self.record.reserve(devices.FOREGROUND, owner=owner, revision=revision, purpose=f"{owner}'s tests",
+                                   release_by=release_by)
+
+    def wait(self, clock):
+        """Wait for the foreground on clock, as `qk run voiceover-mac` does: the TimeoutError that ends the wait, or
+        the owner's name once the foreground is taken; and how many fake seconds it waited."""
+        guarded = []
+        guard = contextlib.contextmanager(lambda owner, **options: (yield guarded.append(owner)))
+        with patch.object(foreground, "time", clock), patch.object(foreground, "datetime", clock.datetime), \
+                patch.object(foreground, "GUARDS", [guard]):
+            try:
+                with foreground.slot("Project voiceover-mac", timeout=self.TIMEOUT, record=self.record,
+                                     ready=lambda: [], said=self.said.append, again="qk run voiceover-mac") as owner:
+                    self.assertEqual(guarded, [owner])
+                    return owner, clock.seconds
+            except TimeoutError as error:
+                # A wait that ended took nothing, so it entered no guard.
+                self.assertEqual(guarded, [])
+                return error, clock.seconds
+
+    def test_a_holder_released_after_the_deadline_is_named_at_once_and_the_wait_ends_after_the_grace(self):
+        clock = Clock()
+        # 2026-11-12: the holder's expected release was about 80 minutes after the waiter's deadline.
+        due = clock.at(self.TIMEOUT + 80 * 60)
+        held = self.hold("eng 21346", due)
+        error, waited = self.wait(clock)
+        self.assertIsInstance(error, TimeoutError)
+        # The wait ended once the grace ran out, not at its 5,400 s deadline, and took nothing.
+        self.assertEqual(waited, foreground.GRACE)
+        self.assertEqual(self.record.entry(devices.FOREGROUND), held)
+        # Its first line says so, with the release and the command to run after it.
+        self.assertEqual(len(self.said), 1)
+        self.assertIn(f"held by eng 21346 for eng 21346's tests, expected release {due}, after this wait's deadline, "
+                      f"{clock.at(self.TIMEOUT)}: looking again for {foreground.GRACE}s", self.said[0])
+        self.assertIn(f"run `qk run voiceover-mac` after {due}", self.said[0])
+        self.assertIn(f"its expected release, {due}, falls after this wait's deadline", str(error))
+        self.assertIn(f"Run `qk run voiceover-mac` after {due}", str(error))
+
+    def test_a_late_holder_that_releases_within_the_grace_gives_the_foreground_to_the_waiter(self):
+        held = self.hold("eng 21346", Clock().at(self.TIMEOUT + 3600))
+        def release(seconds):
+            if seconds == 60:
+                self.record.release(devices.FOREGROUND, owner="eng 21346", revision=held["revision"], outcome="done",
+                                    restoration="checked", frontmost="restored")
+        owner, waited = self.wait(Clock(release))
+        self.assertIsInstance(owner, str)
+        self.assertEqual(waited, 60)
+
+    def test_a_holder_released_within_the_deadline_or_with_no_release_keeps_the_whole_wait(self):
+        def no_release(entry):
+            self.record.update(devices.FOREGROUND, owner="eng 21346", revision=entry["revision"], expectedReleaseBy=None)
+        for name, change in [("within the deadline", lambda entry: None), ("no expected release", no_release)]:
+            with self.subTest(name):
+                self.record.path.unlink()
+                self.record.defer(SECOND)
+                self.said.clear()
+                clock = Clock()
+                change(self.hold("eng 21346", clock.at(self.TIMEOUT - 60)))
+                error, waited = self.wait(clock)
+                self.assertIsInstance(error, TimeoutError)
+                self.assertEqual(waited, self.TIMEOUT)
+                self.assertEqual(str(error), f"the second Mac's foreground stayed held by eng 21346 for {self.TIMEOUT}s")
+                self.assertEqual(len(self.said), 1)
+                self.assertNotIn("deadline", self.said[0])
+
+    def test_a_new_holder_is_judged_anew(self):
+        clock = Clock()
+        self.hold("eng 1", clock.at(self.TIMEOUT + 3600))
+        swaps = {60: ("eng 2", clock.at(self.TIMEOUT - 600)), 1200: ("eng 3", clock.at(self.TIMEOUT + 7200))}
+        def swap(seconds):
+            if seconds not in swaps: return
+            entry = self.record.entry(devices.FOREGROUND)
+            entry = self.record.release(devices.FOREGROUND, owner=entry["ownerChatID"], revision=entry["revision"],
+                                        outcome="done", restoration="checked", frontmost="restored")
+            self.hold(*swaps[seconds], revision=entry["revision"])
+        clock.hook = swap
+        error, waited = self.wait(clock)
+        # eng 1's late release started a grace that eng 2's in-time one ended; eng 3's late one started another,
+        # from when it was first seen.
+        self.assertIsInstance(error, TimeoutError)
+        self.assertEqual(waited, 1200 + foreground.GRACE)
+        self.assertIn("held by eng 3", str(error))
+        self.assertEqual([[name in line for name in ("eng 1", "eng 2", "eng 3", "deadline")] for line in self.said],
+                         [[True, False, False, True], [False, True, False, False], [False, False, True, True]])
+
+    def test_a_wait_that_gives_up_is_busy_with_nothing_run_and_names_the_command_to_run_again(self):
+        held = self.hold("eng 21346", Clock().at(self.TIMEOUT + 3600))
+        clock = Clock()
+        with patch.object(foreground, "time", clock), patch.object(foreground, "datetime", clock.datetime), \
+                patch.object(foreground, "problems", return_value=[]), contextlib.ExitStack() as stack, \
+                contextlib.redirect_stderr(StringIO()) as error:
+            status = cli.extensions.FOREGROUND.foreground_held(stack, "voiceover-mac", "Project voiceover-mac",
+                                                               self.TIMEOUT, again="qk run voiceover-mac")
+        # The status a waiter that ran out of time ends with: 75, nothing ran, no verdict for the queue.
+        self.assertEqual(status, resources.BUSY)
+        self.assertEqual(status, 75)
+        self.assertIn("queuekeeper: voiceover-mac not run on", error.getvalue())
+        self.assertIn(f"Run `qk run voiceover-mac` after {held['expectedReleaseBy']}", error.getvalue())
+        self.assertEqual(clock.seconds, foreground.GRACE)
+        self.assertEqual(self.record.entry(devices.FOREGROUND), held)
 
 
 class ReadinessTests(unittest.TestCase):

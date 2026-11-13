@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -578,7 +579,9 @@ def admit(root, args, config=None, *, device_window=None):
         closed = extensions.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
         # The second Mac's foreground first, so that a command waiting for it holds no slot.
-        waited = extensions.FOREGROUND.foreground_held(stack, "the command", " ".join(command), allowed(args.timeout)) if second else None
+        waited = extensions.FOREGROUND.foreground_held(stack, "the command", " ".join(command), allowed(args.timeout),
+                                                       again=shlex.join(["qk", "admit", "--foreground", "--", *command])) \
+            if second else None
         if waited is not None: return extensions.DEVICES.not_admitted("the command", waiting, waited)
         closed = extensions.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
@@ -1189,7 +1192,8 @@ def perform(argv, report):
                             # The second Mac's foreground first, so that a run waiting for it holds no slot.
                             waited = extensions.FOREGROUND.foreground_held(stack, args.lane, lane_label(root, config, args.lane),
                                                      allowed(remote.OVERFLOW_TIMEOUT),
-                                                     expected=lane.get("timeout")) if second else None
+                                                     expected=lane.get("timeout"),
+                                                     again=f"qk run {args.lane}") if second else None
                             if waited is not None: return extensions.DEVICES.not_admitted(args.lane, waiting, waited)
                             closed = extensions.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed

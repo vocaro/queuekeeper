@@ -21,12 +21,14 @@ class Foreground(extensions.Foreground):
     def require_foreground(self):
         reservations.require_foreground(os.environ.get(reservations.OWNER))
 
-    def foreground_held(self, stack, name, label, timeout, expected=None):
+    def foreground_held(self, stack, name, label, timeout, expected=None, again=None):
         """None once the second Mac's foreground is held for the work label names, entered in stack; or BUSY, after
         saying so, when the wait for it ran out, as admission's does (vocaro-engineering#297). Nothing ran, and the
         TimeoutError raised, an OSError, would be queuekeeper's own error, exit 2, which the merge queue counts as a
-        failure. Only entering is caught: a release that fails once the work has run does not make the work not run."""
-        options = {"expected": foreground.EXPECTED if expected is None else expected}
+        failure. Only entering is caught: a release that fails once the work has run does not make the work not run.
+        A wait that gives up on a holder whose expected release falls after its deadline names again, the command
+        to run after that release (vocaro/queuekeeper#95)."""
+        options = {"expected": foreground.EXPECTED if expected is None else expected, "again": again}
         try:
             stack.enter_context(foreground.slot(label, timeout=timeout, **options))
         except TimeoutError as error:

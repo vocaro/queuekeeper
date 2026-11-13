@@ -49,8 +49,9 @@ class Foreground:
     def require_foreground(self):
         """Refuse foreground work on this Mac unless the session holds its foreground."""
 
-    def foreground_held(self, stack, name, label, timeout, expected=None):
-        """None once the second Mac's foreground is held for the work, entered in stack, or BUSY after saying so."""
+    def foreground_held(self, stack, name, label, timeout, expected=None, again=None):
+        """None once the second Mac's foreground is held for the work, entered in stack, or BUSY after saying so.
+        again is the command that runs the work again, which a wait that gives up names."""
         return None
 
     def guarded_alerts(self, stack, purpose, receipt, apps=()):

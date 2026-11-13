@@ -29,6 +29,12 @@ POLL = 10
 # nothing: the run releases the entry when its work ends, however long that takes.
 EXPECTED = 3 * 3600
 GUIDE = "guides/foreground.md"
+# Seconds a waiter keeps looking once the holder's expected release falls after its own deadline, in case the holder
+# releases early, before it ends with nothing run (vocaro/queuekeeper#95). A holder already ending its run
+# releases within about this long: its command has up to processes.FOREGROUND_KILL_AFTER, 120 s, between SIGTERM and
+# SIGKILL, and its VoiceOver restoration settles after that. An early release past it is no likelier in the next few
+# minutes than in any others of the holder's window, so a longer grace would only spend the waiter's time.
+GRACE = 180
 # Each (owner, record=, said=, **options) -> a context held for the run while it holds the foreground: what an
 # extension that builds on this one saves before the run and puts back after it, as the Apple extension does
 # VoiceOver's state. options are slot's own, passed on. A guard that could not put back what it changed raises
@@ -66,12 +72,15 @@ def refusal(found):
 
 
 @contextlib.contextmanager
-def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=None, said=None, **options):
+def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=None, said=None, again=None, **options):
     """Hold the second Mac's mac-foreground for the run inside the block, without asking the owner.
 
     It refuses on any other Mac, and, before taking anything, on a second Mac that problems() finds not
     ready, which is a configuration problem for the owner. While another run holds the entry it waits,
-    up to timeout seconds, then raises TimeoutError; a stop raises processes.Interrupted before taking
+    up to timeout seconds, then raises TimeoutError. A holder whose expected release falls after that deadline
+    is judged at once: the wait says so, looks for GRACE seconds more in case it releases early, and then raises
+    TimeoutError naming the release and again, the command to run after it (vocaro/queuekeeper#95). A new holder is
+    judged anew. A stop raises processes.Interrupted before taking
     the foreground. An orphaned or uncertain entry needs attended recovery, except a case that a guard's own
     extension lets the run recover itself, while it runs. Only after acquisition, each of GUARDS
     is entered for the run, with options, and left before the release.
@@ -87,7 +96,12 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     found = (ready or problems)()
     if found: raise refusal(found)
     owner = f"queuekeeper {os.getpid()} on {offload_host.mac_name()}"
-    deadline, announced = time.monotonic() + timeout, None
+    began = time.monotonic()
+    deadline, announced = began + timeout, None
+    # The wait's deadline as a time, to judge a holder's expected release by, and when the wait gives up on a holder
+    # whose release falls after it: None while it waits for the deadline, as for a holder with no expected release.
+    ends, judged, gives_up = datetime.now(timezone.utc) + timedelta(seconds=timeout), None, None
+    again = again or "the same command"
     while True:
         entry = record.entry(reservations.FOREGROUND)
         if processes.requested() is not None:
@@ -106,15 +120,27 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
                                   f"for {entry.get('purpose')}; it needs attended recovery first, on the second Mac: "
                                   f"`python3 -m queuekeeper.apple.devices recover {reservations.FOREGROUND} --by SESSION "
                                   f"--revision {entry.get('revision')} --verified WHAT` ({GUIDE})")
-        holder = entry.get("ownerChatID")
-        lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release "
-                          f"{entry.get('expectedReleaseBy')}")
-        if holder != announced:
+        holder, due = entry.get("ownerChatID"), entry.get("expectedReleaseBy")
+        lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release {due}")
+        now = time.monotonic()
+        if (holder, due) != judged:
+            # Judged against each holder, and again when its expected release moves.
+            release = reservations.moment(due)
+            gives_up = min(now + GRACE, deadline) if release is not None and release > ends else None
+            judged = (holder, due)
+        if judged != announced:
+            after = (f", after this wait's deadline, {ends.isoformat()}: looking again for {gives_up - now:.0f}s in case "
+                     f"it releases early, then ending with nothing run; run `{again}` after {due}"
+                     if gives_up is not None else "")
             said(f"queuekeeper: waiting for the second Mac's foreground, held by {holder} for {entry.get('purpose')}, "
-                 f"expected release {entry.get('expectedReleaseBy')}")
-            announced = holder
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f"the second Mac's foreground stayed held by {holder} for {timeout:g}s")
+                 f"expected release {due}{after}")
+            announced = judged
+        late = (f"; its expected release, {due}, falls after this wait's deadline, {ends.isoformat()}. Run `{again}` "
+                f"after {due}" if gives_up is not None else "")
+        if now >= deadline:
+            raise TimeoutError(f"the second Mac's foreground stayed held by {holder} for {timeout:g}s{late}")
+        if gives_up is not None and now >= gives_up:
+            raise TimeoutError(f"the second Mac's foreground stayed held by {holder} for {now - began:.0f}s{late}")
         time.sleep(poll)
     entry = record.update(reservations.FOREGROUND, owner=owner, revision=entry["revision"], activeRun=True,
                           hostProcessIdentifier=os.getpid())
