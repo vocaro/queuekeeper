@@ -18,7 +18,7 @@ SIMULATOR_VIEWS = {"DeviceHub": "Device Hub", "Simulator": "Simulator.app"}
 # VoiceOver's Sounds switch (Settings > Accessibility > VoiceOver > Audio > Sounds & Haptics), which
 # its process reads at start from its own preferences domain. Its sound cues play through the
 # simulator's system-sound server, which ignores the volume the mute sets, so a muted simulator still
-# plays them through the Mac (apple-engineering's guides/voiceover-simulator.md, Muted speech capture).
+# plays them through the Mac (VoiceCheck's guides/voiceover-simulator.md, Muted speech capture).
 CUE_DOMAIN, CUE_KEY = "com.apple.VoiceOverTouch", "VoiceOverUseSoundEffects"
 # Where a simulator keeps that domain, under its data folder.
 CUE_PREFERENCES = Path("Library/Preferences") / f"{CUE_DOMAIN}.plist"
@@ -109,7 +109,7 @@ def hold_mute(udid, *, state_reader=None, readings=MUTE_HELD, limit=MUTE_LIMIT, 
     """Mute the booted simulator udid and read its volume each second until it has read 0 `readings` times
     in a row, muting it again on any other reading; a reading with no answer neither counts nor breaks the
     run. Returns (seconds it took, the other volumes read); RuntimeError when it did not hold within limit
-    seconds, or the first mute failed (apple-engineering's guides/voiceover-simulator.md, Muted speech capture)."""
+    seconds, or the first mute failed (VoiceCheck's guides/voiceover-simulator.md, Muted speech capture)."""
     state = state_reader or globals()["state"]
     unmuted, held, began = [], 0, clock()
     state(udid, "audio", "--volume", "0")

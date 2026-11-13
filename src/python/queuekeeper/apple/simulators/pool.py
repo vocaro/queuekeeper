@@ -1186,7 +1186,7 @@ def boot(pool, lease, timeout, *, app_accessibility=False):
 
     The member boots with VoiceOver's sound cues already off, written into its data while it is shut
     down: an erase clears the setting, the mute leaves the cues audible through the Mac
-    (apple-engineering's guides/voiceover-simulator.md, Muted speech capture), and a spawned write in the booted member
+    (VoiceCheck's guides/voiceover-simulator.md, Muted speech capture), and a spawned write in the booted member
     timed out on every take of a loaded host (vocaro-engineering#310). A setting that cannot be written
     is logged, not a failed boot: a lane without VoiceOver plays no cues. With app_accessibility its app
     processes get UIKit's and SwiftUI's own accessibility (set_app_accessibility); a setting that does not read as asked fails the boot with status 1, since the
