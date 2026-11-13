@@ -3095,6 +3095,8 @@ class Offer:
             if self.hosts is not None: return self.attempt_pool()
             # A second Mac that cannot be reached costs seconds here, and nothing is sent to it.
             reachable(self.host)
+            # Reached again, it is no longer said to be unreachable, with its failed probes, while the offer goes on.
+            if self.away is not None and self.busy is not None: lane_wait.waiting(lane_wait.OVERFLOW, self.busy)
             if self.choosing:
                 reason = self.choose()
                 if reason is not None: raise Loaded(reason)

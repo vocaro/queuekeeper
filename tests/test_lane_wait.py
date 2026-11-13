@@ -261,6 +261,30 @@ class Waits(Named):
             self.assertEqual((offered.busy, offered.away, offered.failed, offered.failed_at), (None, None, 0, None))
             self.assertIn("as one offer that could not reach it does not make it unreachable", error.getvalue())
             self.assertEqual("after 2 offers in a row could not reach it" in error.getvalue(), len(outcomes) == 3)
+        # Reached again after two failures: while the offer goes on, the status no longer says it cannot be reached.
+        lane_wait.running()
+        offered, sending = self.offer(), []
+        offered.send = lambda host, sent: (sending.append(self.said()), 0)[1]
+        with patch.object(remote, "reachable", side_effect=[slow, slow, None]), \
+                patch("sys.stderr", new_callable=StringIO):
+            self.assertEqual(remote.overflow(offered, lambda seconds: None, timeout=3600), 0)
+        self.assertEqual(sending, ["whichever Mac admits it first, the second Mac asked again: the second Mac is busy: "
+                                   "fake did not take it"])
+        self.assertIsNone(lane_wait.current(self.path)["probes"])
+        # Reached and busy, the lane still queued here: the status says the second Mac is busy, and no probe count.
+        lane_wait.running()
+        offered, said = self.offer(), []
+        def admit(seconds):
+            said.append(self.said())
+            return None
+        busy = remote.Busy("every checkout is in use")
+        with patch.object(remote, "reachable", side_effect=[slow, slow, busy, None]), \
+                patch("sys.stderr", new_callable=StringIO):
+            self.assertEqual(remote.overflow(offered, admit, timeout=3600), 0)
+        self.assertIn("2 probes failed", said[2])
+        self.assertEqual(said[3], "whichever Mac admits it first, the second Mac asked again: the second Mac is busy: "
+                                  "every checkout is in use")
+        self.assertIsNone(lane_wait.current(self.path)["probes"])
         # The record's age is the last failed probe's, read when the record is read.
         lane_wait.waiting(lane_wait.UNREACHABLE, slow.problem, probes={"failed": 2, "last": 1000.0})
         lane_wait.waiting(lane_wait.ADMISSION, "all 3 are busy")
