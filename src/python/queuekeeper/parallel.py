@@ -37,6 +37,9 @@ PROCESS_LIMIT = 1800
 # The variable that gives a lane's command the absolute path of its results/ directory, which `qk run` empties
 # before each run and brings back from the second Mac (guides/parallel-tests.md, A lane's results).
 RESULTS_VARIABLE = "QUEUEKEEPER_RESULTS_DIR"
+# Set in each test process qk unittest starts, so that a suite's shared setup can tell that run from a bare `python3 -m
+# unittest`, which takes no slot (tests/host_isolation.py, vocaro/queuekeeper#36).
+SHARD_VARIABLE = "QUEUEKEEPER_UNITTEST_PROCESS"
 # What qk unittest repeats after its summary, so that output cut by `tail` still says why each test failed
 # (vocaro-engineering#264): at most this many failures, each name and reason at most this many characters. Together
 # they stay well under the TAIL lines a failed lane shows, and that lane's summary stays among them.
@@ -261,8 +264,9 @@ CHAINED = ("During handling of the above exception, another exception occurred:"
 # -k, a pattern is used as it is, so an escaped test id selects that test alone. It first puts SIGINT
 # and SIGQUIT back to Python's defaults, which a background job's shell ignores, so that a test run
 # behaves the same however queuekeeper was started; qk admit and qk run still pass on their caller's
-# (the owner's decision, 2026-11-11, vocaro-engineering#385).
-SHARD = "import json, signal, sys, unittest; signal.signal(signal.SIGINT, signal.default_int_handler); " \
+# (the owner's decision, 2026-11-11, vocaro-engineering#385). It sets SHARD_VARIABLE before any test module loads.
+SHARD = f"import json, os, signal, sys, unittest; os.environ[{SHARD_VARIABLE!r}] = '1'; " \
+    "signal.signal(signal.SIGINT, signal.default_int_handler); " \
     "signal.signal(signal.SIGQUIT, signal.SIG_DFL); sys.path.insert(0, sys.argv.pop(1)); " \
     "unittest.defaultTestLoader.testNamePatterns = json.loads(sys.argv.pop(1)); " \
     "sys.argv[0] = 'python -m unittest'; unittest.main(module=None)"

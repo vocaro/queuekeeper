@@ -45,7 +45,9 @@ python3 scripts/qk unittest --unadmitted -s tests test_core.ConfigurationTests
 ```
 
 A command that is not Queuekeeper's, such as a bare `python3 -m unittest` or `swift test`, still takes
-no slot unless it is run with `qk admit`.
+no slot unless it is run with `qk admit`. The toolkit's own tests, run that way outside any admission,
+say so once on standard error from `tests/host_isolation.py`, and run on
+([Verifying](../doc/agent_interface.md#verifying), vocaro/queuekeeper#36).
 
 Add `--model` for a generative-model run: on-device generation on this Mac or in a simulator,
 which uses the host Mac's model, and other local generative models such as MLX on the GPU. Core

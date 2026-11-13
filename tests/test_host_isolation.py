@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import offload_host, resources, shims
+from queuekeeper import offload_host, parallel, resources, shims
 from queuekeeper.parallel import unisolated
 import host_isolation
 from host_isolation import stretched
@@ -144,6 +144,38 @@ class HostIsolationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             seen[mode] = result.stdout.strip()
         self.assertEqual(seen, {"isolated": "None none None", "control": f"{token} build-host gate.json"})
+
+    def test_a_run_outside_any_admission_and_outside_qk_unittest_is_told_so_once_and_runs_on(self):
+        # On 2026-11-13 a bare `python3 -m unittest` took no slot while the host's were all held (#36). The warning
+        # never fails the run, and is said once: neither a second import nor a process a test starts says it again.
+        source = str(Path(resources.__file__).resolve().parents[1])
+        marks = (resources.TOKEN, parallel.SHARD_VARIABLE, host_isolation.TOLD)
+        bare = {name: value for name, value in os.environ.items() if name not in marks}
+        code = ("import os, subprocess, sys; sys.path.insert(0, sys.argv[1]); import host_isolation; import host_isolation; "
+                "subprocess.run([sys.executable, '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import host_isolation', "
+                "sys.argv[1]], check=True, cwd=os.getcwd()); print('ran on')")
+        for name, value in (("bare", None), *((mark, '{"schemaVersion": 1, "locks": []}') for mark in marks)):
+            with self.subTest(name=name):
+                environment = bare if value is None else {**bare, name: value}
+                result = subprocess.run([sys.executable, "-c", code, source], env=environment, cwd=TESTS,
+                                        capture_output=True, text=True, timeout=stretched(60))
+                self.assertEqual((result.returncode, result.stdout.strip()), (0, "ran on"), result.stderr)
+                self.assertEqual(result.stderr.count(host_isolation.UNADMITTED), 1 if value is None else 0, result.stderr)
+        # End to end: a module qk unittest's own test process runs is not told, and the same module under a bare
+        # `python3 -m unittest` is.
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "test_probe.py").write_text(
+                "import unittest\nimport host_isolation\n\nclass T(unittest.TestCase):\n    def test_t(self): pass\n")
+            environment = {**bare, "PYTHONPATH": str(TESTS)}
+            for how, command in (("qk unittest", [sys.executable, "-c", parallel.SHARD, directory, "null", "test_probe"]),
+                                 ("bare", [sys.executable, "-m", "unittest", "test_probe"])):
+                with self.subTest(how=how):
+                    result = subprocess.run(command, env=environment, cwd=directory, capture_output=True, text=True,
+                                            timeout=stretched(60))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("Ran 1 test", result.stderr)
+                    self.assertEqual(result.stderr.count(host_isolation.UNADMITTED), 0 if how == "qk unittest" else 1,
+                                     result.stderr)
 
     def test_a_suite_run_inside_a_lane_drops_what_that_lane_set_for_its_own_command(self):
         # On 2026-11-09 fixtures wrote into the real gate's results/, and its summary named a fixture's test as failed (#289).

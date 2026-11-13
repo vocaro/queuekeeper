@@ -141,7 +141,11 @@ instructions your agents read, such as `AGENTS.md` or `CLAUDE.md`:
 ```markdown
 Never push to main. Commit on your own branch, then run `qk land --wait` as a
 background command and follow it to its result. Exit 0 means landed, 1 means it came back
-with a reason, and 75 means the queue is held or still waiting.
+with a reason, and 75 means the queue is held or still waiting. If the wait is interrupted, the
+entry still lands: follow it with `qk queue wait ID`, or run the same `qk land --wait` again,
+which follows the entry already queued. Run tests and builds with `qk run LANE` or
+`qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs.
 ```
 
-[The agent interface](agent_interface.md) lists the exit codes and output agents can rely on.
+[The agent interface](agent_interface.md) lists the exit codes and output agents can rely on, how
+to verify a change, and what to do after an interrupted wait.

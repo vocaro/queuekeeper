@@ -34,6 +34,31 @@ Exit codes separate the cases an agent must treat differently:
   queue with entries waiting. A worker that died leaves no worker: its lock is released with it.
   With `--json`, the `idle` field says the same.
 
+## Verifying
+
+A verification run goes through admission, so that it takes a slot and `qk admissions now` shows
+it, in one of three ways:
+
+- `python3 scripts/qk unittest -s tests NAME...`, which admits itself as `qk admit` would; NAME is
+  a module, class or test, such as `test_merge_queue.Landing`;
+- a lane, `python3 scripts/qk run LANE -- FILTER`;
+- any other command, `python3 scripts/qk admit -- COMMAND`.
+
+It never goes straight through `python3 -m unittest`. That takes no slot, so the other sessions'
+admitted work waits behind load nobody can see, and it misses what `qk unittest` does: its
+summary, the log it keeps of a failed run, its processes side by side, and the suite's own setup.
+On 2026-11-13 a coordinator's `qk admit -- python3 -m unittest tests.test_merge_queue` failed at
+once on the second Mac with `ModuleNotFoundError: No module named 'host_isolation'`: a module named
+from the top of the checkout cannot import the setup beside it in `tests/`, which
+`qk unittest -s tests` puts on the path.
+
+Nothing is small enough to run directly. One test or one class goes through `qk unittest` as the
+whole suite does, and its cost is the wait for a slot, which every lane takes however short. Only
+a test of a runner itself runs with `--unadmitted`, written after the runner's name
+([Heavy-work admission](../guides/shared-host.md#heavy-work-admission)). Run outside any admission
+and outside `qk unittest`, this repository's tests say so once on standard error and run on
+(vocaro/queuekeeper#36).
+
 ## Landing
 
 `qk land --wait` follows a commit to its result, so an agent starts it in the background and is
@@ -56,6 +81,25 @@ woken by its end:
 - **`qk queue status` is the whole picture**: failed entries and the current round as well as the
   running gate. The queue's heartbeat cannot see a lane on another Mac advance, so for a gate
   there, read the lane's own log on that Mac before calling a landing stuck.
+- **An interrupted wait withdraws nothing.** `qk land --wait` only follows the entry; the queue's
+  worker lands it. When the waiting command ends early, because the Mac restarted, the session's
+  turn was interrupted or its terminal closed, the entry carries on and lands if its gate passes.
+  Pick up its result without that command: `qk queue status` lists the entry, waiting or recently
+  settled, with the commit it landed as; `git fetch` brings that commit to `origin/main`; and
+  `python3 scripts/qk queue wait ID` follows the entry to its result with the same lines and exit
+  statuses as `qk land --wait`, or, for an entry already settled, says at once how it ended, with
+  0 for landed and 1 for came back. Queue the commits again only after confirming that the entry
+  came back or was never queued (vocaro/queuekeeper#120).
+- **`qk land BRANCH --wait` again, while the branch's entry waits, adds nothing.** When an entry
+  still queued, testing or passed holds the same tip, it prints `ID already holds TIP (STATE)` and
+  follows that entry as `qk queue wait ID` would, as a session that ran it again after a crash on
+  2026-11-13 was told `… already holds … (testing)`. `--front` and `--no-gate` given again change
+  only an entry still queued. A branch whose tip has changed since is another matter: its new
+  commits replace the earlier entry, and stop that entry's gate if it is testing. A tip
+  `origin/main` already holds is not queued (`origin/main already holds TIP: nothing to queue`,
+  exit 0). Main holds a landed branch's commits under other hashes, so a branch that has landed is
+  queued again, and the next round records that entry as landed, since `origin/main` already
+  holds its changes.
 - **Each project's launcher lands its own repository**, and refuses a current directory in
   another. A commit for another repository lands in that repository's queue, with
   `qk land --repo NAME BRANCH --wait`.
