@@ -1121,42 +1121,63 @@ def load_of(host):
     return (resources.one_minute_load(), *(found[:2] if found else (None, None)))
 
 
-def load_words(lane, host, readings):
+def load_words(lane, host, readings, waited=()):
     """What readings, load_of's or None where one failed, say of the load on the Mac lane ran on, for a rejection
-    (vocaro-engineering#273), and plainly that it could not be read when none says."""
+    (vocaro-engineering#273), and plainly that it could not be read when none says. readings are those taken while the
+    lane ran and waited those while it waited to start, which are said apart: the first count the lane's own work, a
+    whole-host gate's nearly all of them, and only the second are of other work alone (vocaro/queuekeeper#12)."""
     where = f"the second Mac ({host})" if host else "this Mac"
-    def over(found):
-        return (f"{found} reading{'' if found == 1 else 's'}" if found == len(readings)
-                else f"{found} of {len(readings)} readings")
-    loads = [reading[0] for reading in readings if reading and reading[0] is not None]
-    shares = [reading[1:] for reading in readings if reading and reading[1] is not None and reading[2] is not None]
-    load = f"was highest {max(loads):g}, last {loads[-1]:g} over {over(len(loads))}" if loads else "could not be read"
-    busy = (f"was at most {max(share for share, _ in shares):g}% busy, against its busy limit of {shares[-1][1]:g}%"
-            if shares else "busy share could not be read")
-    return f"During {lane} on {where}, the one-minute load {load}, and the CPU {busy}"
+    def over(found, of):
+        return (f"{found} reading{'' if found == 1 else 's'}" if found == len(of)
+                else f"{found} of {len(of)} readings")
+    def loads_of(of): return [reading[0] for reading in of if reading and reading[0] is not None]
+    def shares_of(of):
+        return [reading[1:] for reading in of if reading and reading[1] is not None and reading[2] is not None]
+    loads, shares = loads_of(readings), shares_of(readings)
+    load = (f"was highest {max(loads):g}, last {loads[-1]:g} over {over(len(loads), readings)}" if loads
+            else "could not be read")
+    busy = f"was at most {max(share for share, _ in shares):g}% busy" if shares else "busy share could not be read"
+    said = f"While {lane} ran on {where}, the one-minute load {load}, and the CPU {busy}"
+    if loads or shares: said += ". Both count the lane's own work, so neither says what else that Mac was doing"
+    before, held = loads_of(waited), shares_of(waited)
+    if before or held:
+        parts = ([f"the load was highest {max(before):g} over {over(len(before), waited)}"] if before else []) + (
+            [f"the CPU was at most {max(share for share, _ in held):g}% busy, against that Mac's busy limit "
+             f"of {held[-1][1]:g}%"] if held else [])
+        said += f". While it waited to start, before any of its own work, {', and '.join(parts)}"
+    return said
 
 
 class LoadSampler(BusySampler):
     """The load of the Mac any lane runs on, read every BUSY_SAMPLE seconds while it runs, and once at the end of one
     that failed, so that a rejection can say it (vocaro-engineering#273). Each reading names the Mac it read, this Mac
-    until the lane's dispatch names the second Mac, and finish keeps only the readings of the Mac the lane ran on. A
-    measurement only: it decides nothing, and nothing a reading raises reaches the gate."""
-    def look(self, host):
+    until the lane's dispatch names the second Mac, and whether the lane's wait record (lane_wait) said it was waiting
+    to start then; finish keeps only the readings of the Mac the lane ran on, those of its wait apart from those of
+    its run (vocaro/queuekeeper#12). A measurement only: it decides nothing, and nothing a reading raises reaches the
+    gate."""
+    def waiting(self):
+        """Whether the lane waits to start now, for admission, a screen or a Mac. Unknown is not waiting."""
+        try: record = lane_wait.current(lane_wait.path_of(self.checkout, self.lane), self.began)
+        except Exception: return False  # noqa: BLE001
+        return bool(record and record.get("kind"))
+
+    def look(self, host, waiting=False):
         try: reading = load_of(host)
         except Exception: reading = None  # noqa: BLE001
-        self.readings.append((host, reading))
+        self.readings.append((host, reading, waiting))
 
     def read(self):
         try: host = remote.dispatched(self.checkout, self.lane, self.began)
         except Exception: return  # noqa: BLE001
-        self.look(host)
+        self.look(host, self.waiting())
 
     def finish(self, host):
         """load_words for the lane, which ran on host, the second Mac, or with host None on this Mac."""
         self.stopped.set()
         self.thread.join(timeout=GH_TIMEOUT)
         self.look(host)
-        return load_words(self.lane, host, [reading for read_on, reading in self.readings if read_on == host])
+        return load_words(self.lane, host, *([reading for read_on, reading, waiting in self.readings
+                                              if read_on == host and waiting is wanted] for wanted in (False, True)))
 
 
 HERE_MAC = lane_wait.HERE

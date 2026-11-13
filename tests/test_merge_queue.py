@@ -6984,7 +6984,7 @@ class RejectionFacts(Fixture):
         finish.assert_not_called()
         entry = self.state(identifier)
         self.assertNotEqual(entry["state"], "failed")
-        self.assertNotIn("During gate", entry.get("why", ""))
+        self.assertNotIn("While gate ran", entry.get("why", ""))
 
 
 class SummaryFacts(Fixture):
@@ -7083,16 +7083,43 @@ class LoadReadings(unittest.TestCase):
             self.assertEqual(mq.load_of(None), (None, None, None))
 
     def test_load_words_keep_a_failed_reading_apart_from_a_low_one(self):
+        own = ". Both count the lane's own work, so neither says what else that Mac was doing"
         cases = [([(70.0, 90.0, 75.0), (40.0, 99.0, 75.0)], "the one-minute load was highest 70, last 40 over 2 readings, "
-                  "and the CPU was at most 99% busy, against its busy limit of 75%"),
+                  "and the CPU was at most 99% busy" + own),
                  ([(5.0, 10.0, 75.0), None, (None, None, 75.0)], "the one-minute load was highest 5, last 5 over 1 of 3 "
-                  "readings, and the CPU was at most 10% busy, against its busy limit of 75%"),
+                  "readings, and the CPU was at most 10% busy" + own),
                  ([], "the one-minute load could not be read, and the CPU busy share could not be read"),
                  ([None], "the one-minute load could not be read, and the CPU busy share could not be read")]
         for readings, expected in cases:
             with self.subTest(readings=readings):
-                self.assertEqual(mq.load_words("gate", None, readings), f"During gate on this Mac, {expected}")
+                self.assertEqual(mq.load_words("gate", None, readings), f"While gate ran on this Mac, {expected}")
         self.assertIn("on the second Mac (fake-mac)", mq.load_words("gate", "fake-mac", []))
+
+    def test_load_words_say_the_wait_to_start_apart_from_the_run(self):
+        """A gate's own work is most of the load while it runs: only its wait's readings are of other work alone
+        (vocaro/queuekeeper#12)."""
+        ran, waited = [(782.0, 99.0, 70.0)], [(178.0, 85.0, 70.0), None, (86.0, 60.0, 70.0)]
+        self.assertEqual(mq.load_words("gate", None, ran, waited),
+                         "While gate ran on this Mac, the one-minute load was highest 782, last 782 over 1 reading, and "
+                         "the CPU was at most 99% busy. Both count the lane's own work, so neither says what else that "
+                         "Mac was doing. While it waited to start, before any of its own work, the load was highest 178 "
+                         "over 2 of 3 readings, and the CPU was at most 85% busy, against that Mac's busy limit of 70%")
+        # The negative control: a wait with nothing read adds no sentence, and no limit is set against the run.
+        for nothing in ([], [None]):
+            self.assertNotIn("waited", mq.load_words("gate", None, ran, nothing))
+        self.assertNotIn("busy limit", mq.load_words("gate", None, ran))
+
+    def test_the_sampler_keeps_a_reading_of_the_lanes_wait_apart_from_its_run(self):
+        waits = iter([{"kind": "admission"}, {"kind": None}, None])
+        loads = iter([(178.0, 85.0, 70.0), (782.0, 99.0, 70.0), (300.0, 95.0, 70.0), (20.0, 30.0, 70.0)])
+        with patch.object(mq, "load_of", side_effect=lambda host: next(loads)), \
+                patch.object(mq.remote, "dispatched", return_value=None), \
+                patch.object(mq.lane_wait, "current", side_effect=lambda path, since: next(waits)):
+            sampler = mq.LoadSampler("/nowhere", "gate", 0).start()
+            for _ in range(3): sampler.read()
+            said = sampler.finish(None)
+        self.assertIn("the one-minute load was highest 782, last 20 over 3 readings", said)
+        self.assertIn("While it waited to start, before any of its own work, the load was highest 178 over 1 reading", said)
 
     def test_the_sampler_keeps_only_the_readings_of_the_mac_the_lane_ran_on(self):
         # Before the dispatch names the second Mac, a reading is this Mac's: not the lane's.
@@ -7111,7 +7138,7 @@ class LoadReadings(unittest.TestCase):
                 patch.object(mq.remote, "dispatched", side_effect=OSError("no")):
             sampler = mq.LoadSampler("/nowhere", "gate", 0).start()
             sampler.read()
-            self.assertEqual(sampler.finish(None), "During gate on this Mac, the one-minute load could not be read, and "
+            self.assertEqual(sampler.finish(None), "While gate ran on this Mac, the one-minute load could not be read, and "
                                                    "the CPU busy share could not be read")
 
 
@@ -7496,9 +7523,10 @@ class FlakyReruns(Fixture):
     def test_a_rejection_on_a_loaded_host_in_a_file_the_entry_does_not_touch_says_so(self):
         self.load_of.return_value = self.LOADED
         why = self.rejected(("docs/a.md", "The word\n"))
-        self.assertIn("the queue's lanes fail on this commit on top of origin/main: fix it and add it again. During gate "
-                      "on this Mac, the one-minute load was highest 70, last 70 over 1 reading, and the CPU was at most "
-                      "99% busy, against its busy limit of 75%.", why)
+        self.assertIn("the queue's lanes fail on this commit on top of origin/main: fix it and add it again. While gate "
+                      "ran on this Mac, the one-minute load was highest 70, last 70 over 1 reading, and the CPU was at most "
+                      "99% busy. Both count the lane's own work", why)
+        self.assertNotIn("busy limit", why)
         self.assertIn(f"This entry changes no file of the failed tests {self.TEST}: neither their modules nor what those "
                       "import", why)
 
@@ -7520,7 +7548,7 @@ class FlakyReruns(Fixture):
                 self.runs.unlink(missing_ok=True)
                 self.load_of.configure_mock(**setting)
                 why = self.rejected(("docs/a.md", f"The word {name}\n"))
-                self.assertIn("During gate on this Mac, the one-minute load could not be read, and the CPU busy share "
+                self.assertIn("While gate ran on this Mac, the one-minute load could not be read, and the CPU busy share "
                               "could not be read.", why)
                 self.assertNotIn("highest", why)
 
@@ -7528,8 +7556,8 @@ class FlakyReruns(Fixture):
         readable = lambda host: (12.0, 40.0, 75.0) if host == "fake-mac" else self.LOADED
         self.load_of.side_effect = readable
         with self.second_mac(): why = self.rejected(("docs/a.md", "The word\n"))
-        self.assertIn("During gate on the second Mac (fake-mac), the one-minute load was highest 12, last 12 over 1 "
-                      "reading, and the CPU was at most 40% busy, against its busy limit of 75%.", why)
+        self.assertIn("While gate ran on the second Mac (fake-mac), the one-minute load was highest 12, last 12 over 1 "
+                      "reading, and the CPU was at most 40% busy. Both count the lane's own work", why)
         self.assertNotIn("highest 70", why)
 
     def test_a_rejection_from_a_second_mac_that_cannot_be_read_does_not_say_this_macs_load(self):
@@ -7538,7 +7566,7 @@ class FlakyReruns(Fixture):
             return self.LOADED
         self.load_of.side_effect = reading
         with self.second_mac(): why = self.rejected(("docs/a.md", "The word\n"))
-        self.assertIn("During gate on the second Mac (fake-mac), the one-minute load could not be read", why)
+        self.assertIn("While gate ran on the second Mac (fake-mac), the one-minute load could not be read", why)
         self.assertNotIn("highest", why)
         self.assertNotIn("this Mac", why)
 
@@ -7564,7 +7592,7 @@ class FlakyReruns(Fixture):
         with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "failed"])
-        self.assertIn("Fix it and add it again. During gate on this Mac, the one-minute load was highest 70", entries[1]["why"])
+        self.assertIn("Fix it and add it again. While gate ran on this Mac, the one-minute load was highest 70", entries[1]["why"])
         self.assertIn(f"This entry changes src/python/fixturelib/helper.py, a file of the failed tests {self.TEST}",
                       entries[1]["why"])
         self.assertNotIn("why", entries[0])
@@ -7829,7 +7857,7 @@ class BothHalves(Fixture):
         ids = self.add("a", "bad", "c", "d")
         self.worked()
         why = self.state(ids[1])["why"]
-        self.assertIn("fix it and add it again. During gate on this Mac, the one-minute load was highest 3", why)
+        self.assertIn("fix it and add it again. While gate ran on this Mac, the one-minute load was highest 3", why)
         self.assertIn("Which tests failed could not be determined (gate's summary names no failed test; its tests: no "
                       "test counts in its log), so whether this entry changes their files is unknown", why)
 

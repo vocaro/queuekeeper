@@ -452,7 +452,11 @@ test whose output named a file only one commit changed.
 
 **A send-back says the load and whether the entry changes the failed tests' files.** The reason an
 entry is sent back with ends with the load during the failed lane and with the failed tests
-([#273](https://github.com/vocaro/vocaro-engineering/issues/273)). The tests come from the lane's
+([#273](https://github.com/vocaro/vocaro-engineering/issues/273)). The load is said in two parts:
+the readings taken while the lane ran, which count the lane's own work, and those taken while it
+waited to start, which are of other work alone and are set against that Mac's busy limit
+([vocaro/queuekeeper#12](https://github.com/vocaro/queuekeeper/issues/12)). A gate holds the whole
+Mac and loads it heavily by itself, so a high load while it ran is no sign of other work. The tests come from the lane's
 `qk unittest` summary when it has one, and each test's module and what it imports are compared with
 the entry's commits, as for a flake above. Otherwise they come from the summary `qk run LANE:` ends
 with (`eng run LANE:` in older logs), as a Swift gate's does: each failed test is named with the file
