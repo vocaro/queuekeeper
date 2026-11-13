@@ -1166,7 +1166,13 @@ every lane is, and with `--if-free` when the work was offered to start now, so t
 no free slot declines the work rather than hold the checkout while the provision lane waits. The work runs with `PYTHONDONTWRITEBYTECODE=1`, so
 its Python leaves no `__pycache__` in the checkout, which a project's `.gitignore` need not name;
 only a process that sets its own environment can still write one. A checkout that a run left with
-changes stays as it is for inspection and is passed over. Once it is read, remove it with
+changes stays as it is for inspection and is passed over. While no checkout is free and some are
+passed over, the wait or decline says so and names the files changed in them (`2 of 4 checkouts of
+NAME are in use and 2 are passed over, changed by a run (sample.epub)`), rather than that every
+checkout is in use: cleaning them, not waiting, is what frees them. It once said only that every
+checkout was in use, while two of build-host's four EPUBLib checkouts sat changed by a run and it
+turned down 300 offers in a night (2026-11-12;
+[vocaro/queuekeeper#44](https://github.com/vocaro/queuekeeper/issues/44)). Once it is read, remove it with
 `git --git-dir ~/Development/build-host/repositories/NAME.git worktree remove --force PATH`.
 
 #### A named checkout slot

@@ -3308,6 +3308,29 @@ def holding(base, slot):
         return ""
 
 
+def changed_files(left):
+    """The files git status's porcelain lines name, each once by its last component, a rename by its new name,
+    for a line that says why a checkout is passed over."""
+    names = []
+    for line in left.splitlines():
+        name = Path(line[3:].split(" -> ")[-1].strip('"')).name
+        if name and name not in names: names.append(name)
+    return names
+
+
+def unusable(count, directory, busy, passed):
+    """Why no checkout of directory can be claimed while some are passed over, passed holding the files each of
+    those a run left changed: how many are in use, how many are passed over and which files they hold, so that
+    the owner sees that cleaning them is what is needed (vocaro/queuekeeper#44)."""
+    names = []
+    for files in passed:
+        names.extend(name for name in files if name not in names)
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+    verb = lambda number: "is" if number == 1 else "are"
+    return (f"{busy} of {count} checkouts of {directory} {verb(busy)} in use and {len(passed)} {verb(len(passed))} "
+            f"passed over, changed by a run ({shown})")
+
+
 def claim(base, count, directory, wait=True, commit=None, slot=None, timeout=CLAIM_TIMEOUT):
     """Lock a free checkout slot without changes, waiting while every one is in use, if wait, for timeout seconds.
 
@@ -3328,7 +3351,7 @@ def claim(base, count, directory, wait=True, commit=None, slot=None, timeout=CLA
     order, distances = nearest(base, count, directory, commit)
     if slot is not None: order = [slot]
     while not _stop.is_set():
-        changed = 0
+        changed, passed = 0, []
         for index in order:
             descriptor = os.open(base / f"{index}.lock", os.O_RDWR | os.O_CREAT, 0o644)
             try:
@@ -3351,6 +3374,7 @@ def claim(base, count, directory, wait=True, commit=None, slot=None, timeout=CLA
                               f"inspect and remove them, with `git --git-dir {repository} worktree remove --force "
                               f"{checkout}`")
             changed += 1
+            passed.append(changed_files(left))
             if index not in reported_changes:
                 say(f"passing over {checkout}, which a run left with changes:\n{left}")
                 reported_changes.add(index)
@@ -3359,12 +3383,15 @@ def claim(base, count, directory, wait=True, commit=None, slot=None, timeout=CLA
             raise Refusal(f"every checkout under {base} has changes a run left",
                           f"inspect and remove them, each with `git --git-dir {repository} worktree remove --force PATH`")
         slot_name = f"checkout slot {slot} of {directory}"
-        busy = f"every checkout of {directory} is in use" if slot is None else f"{slot_name} is in use{holding(base, slot)}"
+        # A slot a run left changed is no busy one, so the line says so and names its files (vocaro/queuekeeper#44).
+        busy = f"{slot_name} is in use{holding(base, slot)}" if slot is not None else \
+            unusable(count, directory, count - changed, passed) if passed else f"every checkout of {directory} is in use"
         if not wait:
             raise Refusal(busy, busy=True)
         waited = int(time.monotonic() - started)
         if time.monotonic() - started >= timeout:
-            raise Refusal(f"no checkout of {directory} came free in {timeout}s" if slot is None else
+            raise Refusal(f"no checkout of {directory} came free in {timeout}s{': ' + busy if passed else ''}"
+                          if slot is None else
                           f"{slot_name} did not come free in {timeout:g}s{holding(base, slot)}", busy=True)
         if reported is None or waited - reported >= REPORT_SECONDS:
             say(f"waiting ({waited}s): {busy}")

@@ -1690,6 +1690,41 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(offload_host.nearness(None, base / "0" / "example"),
                          "its last tree could not be compared with the commit's")
 
+    def test_a_decline_says_which_checkouts_are_passed_over_and_what_a_run_changed_in_them(self):
+        # As on build-host (vocaro/queuekeeper#44): two checkouts a run left with a changed sample.epub, two busy.
+        base = Path(self.temp.name) / "slots"
+        repository = base / "repository"
+        (repository / "Resources").mkdir(parents=True)
+        git(repository, "init", "-q")
+        (repository / "Resources/sample.epub").write_text("epub\n")
+        commit = commit_all(repository)
+        for index in range(4):
+            git(repository, "worktree", "add", "-q", "--detach", str(base / str(index) / "example"), commit)
+        locks = [os.open(base / f"{index}.lock", os.O_RDWR | os.O_CREAT, 0o644) for index in (2, 3)]
+        try:
+            for lock in locks: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(offload_host, "say"):
+                # The positive control: while they are clean, the two free checkouts are claimed, each by a run
+                # that leaves it changed.
+                for index in (0, 1):
+                    claimed, lock = offload_host.claim(base, 4, "example", wait=False)
+                    os.close(lock)
+                    self.assertEqual(claimed, index)
+                    (base / str(index) / "example/Resources/sample.epub").write_text("rewritten by a run\n")
+                with self.assertRaises(offload_host.Refusal) as caught:
+                    offload_host.claim(base, 4, "example", wait=False)
+        finally:
+            for lock in locks: os.close(lock)
+        self.assertTrue(caught.exception.busy)
+        self.assertEqual(str(caught.exception), "2 of 4 checkouts of example are in use and 2 are passed over, "
+                                                "changed by a run (sample.epub)")
+        self.assertEqual(offload_host.unusable(4, "example", 3, [["a.txt", "b.txt"], ["b.txt", "c", "d"]]),
+                         "3 of 4 checkouts of example are in use and 2 are passed over, changed by a run "
+                         "(a.txt, b.txt, c and 1 more)")
+        self.assertEqual(offload_host.changed_files(' M Resources/sample.epub\n?? scripts/__pycache__/\n'
+                                                    'R  old.txt -> new/name.txt\n?? "with space.txt"\n'),
+                         ["sample.epub", "__pycache__", "name.txt", "with space.txt"])
+
     def hold_slot(self, slot):
         """Hold a checkout slot's lock as a run does, with its record, and return what releases it."""
         base = self.checkout(slot).parents[1]
@@ -1851,7 +1886,10 @@ class RemoteTests(unittest.TestCase):
             self.hold_slot(slot)
 
         process, log = self.slot_dispatcher("remote", "run", "check")
-        self.await_condition(process, log, lambda: "every checkout of example is in use" in log.read_text())
+        # The checkout a run left changed is passed over, not busy, and the wait says so (vocaro/queuekeeper#44).
+        waiting = (f"{remote.CHECKOUTS - 1} of {remote.CHECKOUTS} checkouts of example are in use and 1 is passed "
+                   "over, changed by a run (left.txt)")
+        self.await_condition(process, log, lambda: waiting in log.read_text())
         release()
         self.assertEqual(process.wait(stretched(120)), 0, log.read_text())
         self.assertEqual(self.slot_receipt()["result"]["slot"], 1)
