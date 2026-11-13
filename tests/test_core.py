@@ -1143,7 +1143,8 @@ class ResourceTests(unittest.TestCase):
                                                                "ahead of it: gate; and HEAVY_SLOTS_MAX=2 allows none "
                                                                "beyond them")):
             with resources.Admission("tests", timeout=0): self.fail("took a guaranteed slot the gate waits for")
-        self.assertIn("heavy: waiting (0s): a guaranteed slot is free but kept", error.getvalue())
+        # A loaded host may take a second over the attempt (#15).
+        self.assertRegex(error.getvalue(), r"heavy: waiting \(\d+s\): a guaranteed slot is free but kept")
         # The gate waits in the queue, which a whole-host request joins as an exclusive one does.
         queued = json.loads((directory / resources.QUEUE).read_text())["waiters"]
         self.assertEqual([(waiter["label"], waiter["wholeHost"]) for waiter in queued], [("gate", True)])
@@ -1375,7 +1376,7 @@ class ResourceTests(unittest.TestCase):
         cases = [("settled, under normal pressure", "0", True, 1, None, None),
                  ("never admitted, under normal pressure", "3600", False, 1, None, None),
                  ("within the settle time", "3600", True, 1,
-                  held + "the CPU of this Mac does not yet show the job admitted 0s ago, within HEAVY_SETTLE_SECONDS=3600",
+                  held + "the CPU of this Mac does not yet show the job admitted {since}s ago, within HEAVY_SETTLE_SECONDS=3600",
                   "s ago, within HEAVY_SETTLE_SECONDS=3600"),
                  ("under warning pressure", "0", True, 2, held + "on this Mac memory pressure is level 2 (warning), not 1 (normal)",
                   "memory pressure is level 2 (warning), not 1 (normal)"),
@@ -1398,7 +1399,9 @@ class ResourceTests(unittest.TestCase):
                     read = offload_host.capacity()
                     self.assertEqual((read["kept"], read["settle"], read["memory"]), ("waiting gate", float(settle), level))
                     self.assertEqual(read["sinceAdmission"] is None, not recent)
-                    self.assertEqual(remote.spare({**read, "screen": None}, "this Mac"), refused)
+                    # The seconds are the reading's own, which a slow host may make more than 0 (#15).
+                    expected = refused and refused.replace("{since}", str(int(read["sinceAdmission"] or 0)))
+                    self.assertEqual(remote.spare({**read, "screen": None}, "this Mac"), expected)
                     # Admission agrees: it takes the slot beyond them exactly when the reading finds it spare.
                     if refused is None:
                         with resources.Admission("tests", timeout=0) as admitted:
@@ -2250,6 +2253,21 @@ class CpuBusyTests(unittest.TestCase):
         self.assertGreater(sum(resources.cpu_ticks()), sum(first))
 
 
+class SlowAttempts:
+    """Admission's clock, as resources reads it, with each attempt to admit taking two seconds more by it, as an
+    attempt may on a loaded host, so that a test cannot pass only because its host was fast (#15)."""
+    skew = 0.0
+
+    class Clock:
+        def __getattr__(self, name): return getattr(time, name)
+        def monotonic(self): return time.monotonic() + SlowAttempts.skew
+    clock = Clock()
+
+    def attempt(admission, _attempt=resources.Admission._attempt):
+        try: return _attempt(admission)
+        finally: SlowAttempts.skew += 2
+
+
 class AdmissionLogTests(unittest.TestCase):
     """The host's admission log, from which an audit counts admissions, waits and holds (#51)."""
     setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
@@ -2554,15 +2572,19 @@ class AdmissionLogTests(unittest.TestCase):
                 stack.enter_context(patch.object(resources, "cpu_busy",
                                                  return_value=(None, None) if busy_read is None else (busy_read, 15.0)))
                 stack.enter_context(patch.object(resources, "memory_level", return_value=level))
+                # On a loaded Mac one attempt took over a second, and the wait was logged as 1s, not 0s (#15). Each
+                # attempt here takes two seconds by admission's clock, so the wait logged is never 0s and is not pinned.
+                stack.enter_context(patch.object(resources, "time", SlowAttempts.clock))
+                stack.enter_context(patch.object(resources.Admission, "_attempt", SlowAttempts.attempt))
                 error = stack.enter_context(contextlib.redirect_stderr(StringIO()))
                 for setup in setups: setup(stack)
                 resources.log_path().unlink(missing_ok=True)
                 admission = resources.Admission("asked", timeout=0, **options)
                 with self.assertRaises(TimeoutError) as raised:
                     with admission: self.fail("admitted")
-                # The seconds since the last admission are the one part a slow host may change.
+                # The seconds since the last admission, and the wait, are the parts a slow host may change.
                 pattern = re.escape(message).replace(re.escape("{seconds}"), r"\d+")
-                self.assertRegex(error.getvalue(), rf"heavy: waiting \(0s\): {pattern}\n")
+                self.assertRegex(error.getvalue(), rf"heavy: waiting \([1-9]\d*s\): {pattern}\n")
                 if kind in ("exclusive", "wholeHost", "model"):
                     # Work known to be running or queued only made it wait (#270).
                     self.assertRegex(str(raised.exception), rf"^Resource queue busy on \S+: {pattern}; waited \d+s; nothing ran$")
