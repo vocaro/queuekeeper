@@ -369,7 +369,7 @@ script calls by name runs through a wrapper, wherever the script sends its outpu
 fails with that message removes the module cache the message's module file is in
 (`SwiftExplicitPrecompiledModules`, `ModuleCache.noindex` or SwiftPM's `ModuleCache`), only inside the
 checkout the lane runs in, and runs the same command once more; it never runs a third time. The
-output, in whatever log the script keeps, says `eng: STALE MODULES` with what was removed and how the
+output, in whatever log the script keeps, says `queuekeeper: STALE MODULES` with what was removed and how the
 rerun ended, and the lane's `results/stale-modules.log` records it. A script that calls
 `/usr/bin/xcodebuild` by path or through `xcrun`, or clears PATH, bypasses the wrapper. Under qk run,
 `qk simulator-tests` reads that notice and does not rebuild a third time. Its tests use stand-ins;
