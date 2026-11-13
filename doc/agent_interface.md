@@ -114,4 +114,28 @@ an agent cannot fix the cause, such as a refused SSH key. With the
 [notify feature](visibility.md#the-notify-feature) on, the owner is told of such a hold when it
 happens.
 
+## Documentation changes
+
+An entry that changes only documentation skips the code gate. It lands on the spelling check and
+the documentation lanes, in seconds, beside a code gate that is running. One other path in the
+entry makes the whole entry ride the code gate:
+
+- **Documentation is Markdown in the usual places**: the root `README.md`, `CONTRIBUTING.md` and
+  `CHANGELOG.md`, and `.md` or `.markdown` files under `doc/`, `docs/`, `guides/` and `knowledge/`.
+  A project can name its own paths with `queue.docsOnly` on `main`.
+- **Everything else is code to the queue**: source, tests, configuration, agent instructions such
+  as `AGENTS.md`, a stylesheet, a script, and an image or diagram a document shows. A README
+  change committed with the screenshot it adds rides the code gate.
+- **Queue documentation as its own entry.** When a document change and a code change do not depend
+  on each other, commit the document change on a branch of its own, started from `origin/main`,
+  and land that branch separately. It lands without waiting for the code, and the code entry is no
+  larger for it. Keep them in one entry when the document describes behavior the code change
+  brings, so that neither lands without the other.
+- **A documentation landing is not a gate.** No gate receipt names the pushed commit, and
+  `qk queue status` records the entry as a documentation landing with the lanes it ran.
+
+[While a gate runs](merge_queue.md#while-a-gate-runs) says how such an entry lands beside a gate,
+and [Maintenance](../guides/maintenance.md#the-merge-queue) has the rule in full, under *A docs-only
+batch runs the docs lanes*.
+
 See also [The merge queue](merge_queue.md).
