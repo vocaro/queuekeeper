@@ -54,7 +54,12 @@ would run its work outside admission. The check reads text, so it catches a lane
 nothing, not one that admits some parts and runs others directly.
 A gate suite is heavy work, never exclusive: one that runs the project's suites side by side says
 `"wholeHost": true`, which keeps every other heavy job off its Mac while it runs
-([heavy-work admission](#heavy-work-admission)).
+([heavy-work admission](#heavy-work-admission)). `queuekeeper admit --exclusive` and `queuekeeper remote admit
+--exclusive` refuse a command that is word for word a heavy lane's `command` or `compileFirst`, and name the
+lane: run it with `queuekeeper run LANE`, or give the lane `"resource": "exclusive"` if its run really needs the
+host to itself. Any other command, and an exclusive or `self` lane's, is not refused. On 2026-11-12 a gate suite
+sent as exclusive work held every slot of the second Mac, queued and then running, for 33 minutes, while every
+other lane went to this Mac.
 `--timeout` bounds the wait for admission. The command runs in the current directory with
 its output on the terminal. Like a heavy lane, `queuekeeper admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in
@@ -926,6 +931,12 @@ lane stays on the Mac where the lane runs; foreground work runs where its foregr
 ([attended Mac sessions](#attended-mac-sessions)); and work the second Mac runs for this Mac runs
 there. A test that a lane covers runs best as that lane, `queuekeeper run LANE -- FILTER`;
 `queuekeeper remote admit -- COMMAND` sends a command on purpose, to run in the root of a checkout there.
+With `--exclusive`, it is first offered to start at once (`--if-free`): the second Mac starts it only while
+every slot is free and no request older than it waits there, and a declined offer leaves no place in its queue,
+so the second Mac goes on taking other work. Offers come 15 s apart, doubling to 120 s, all carrying the
+work's first arrival. After 900 s of declined offers (`EXCLUSIVE_PARK_SECONDS`), it takes its place in the
+second Mac's queue at that arrival, and slots drain toward it as for any exclusive request, so it is not kept
+waiting forever by a stream of later work. Foreground work with `--exclusive` still queues there at once.
 
 `queuekeeper admit --here -- COMMAND` runs the command on this Mac and offers it nowhere, `hereBecause`
 saying `queuekeeper admit --here`. It is for a command whose products the session uses here afterwards:

@@ -1516,6 +1516,99 @@ class RemoteTests(unittest.TestCase):
             self.qk("remote", "admit", "--model", "--exclusive", "--", "true")
         self.assertEqual(refused.exception.code, 2)
 
+    def test_a_heavy_lane_command_sent_as_exclusive_work_is_refused_and_any_other_is_not(self):
+        # 2026-11-12: a gate suite sent with `remote admit --exclusive` held every slot of the second Mac, queued and
+        # then running, for 33 minutes, while every other lane went to this Mac.
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        lane = settings["lanes"]["suite"] = {"command": [sys.executable, "-c", "print('Ran 1 suite test')"],
+                                             "resource": "heavy"}
+        lane = lane["command"]
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+        for action in (["remote", "admit"], ["admit", "--here"]):
+            with self.subTest(action):
+                status, output, error = self.qk(*action, "--exclusive", "--", *lane)
+                self.assertEqual(status, 2, output + error)
+                self.assertIn("is the suite lane's, which its configuration admits as heavy work, never exclusive", error)
+                self.assertNotIn("Ran", output)
+                # The same command as heavy work runs, and so does exclusive work that is no heavy lane's.
+                self.assertEqual(self.qk(*action, "--", *lane)[0], 0)
+                status, output, error = self.qk(*action, "--exclusive", "--", sys.executable, "-c", "print('quiet')")
+                self.assertEqual(status, 0, output + error)
+                # Run here, the command writes to this process's own descriptors, which the test does not capture.
+                if action[0] == "remote": self.assertIn("quiet", output)
+
+    def quick_exclusive_offers(self, park):
+        """Give the toolkit the dispatcher runs offers a second apart, parked after park seconds."""
+        path = self.toolkit / "src/python/queuekeeper/remote.py"
+        source = path.read_text()
+        for fixed, quick in [(f"EXCLUSIVE_PARK_SECONDS = {remote.EXCLUSIVE_PARK_SECONDS}", f"EXCLUSIVE_PARK_SECONDS = {park}"),
+                             (f"OVERFLOW_WAIT, OVERFLOW_WAIT_MAX = {remote.OVERFLOW_WAIT}, {remote.OVERFLOW_WAIT_MAX}",
+                              "OVERFLOW_WAIT, OVERFLOW_WAIT_MAX = 1, 1")]:
+            self.assertIn(fixed, source)
+            source = source.replace(fixed, quick)
+        path.write_text(source)
+        commit_all(self.toolkit)
+
+    @contextlib.contextmanager
+    def exclusive_dispatch(self):
+        """`queuekeeper remote admit --exclusive` from a dispatcher of its own: yields its log, and waits for its end."""
+        log = Path(self.temp.name) / "exclusive.log"
+        with log.open("w") as output:
+            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
+                                           "remote", "admit", "--exclusive", "--", sys.executable, "-c",
+                                           "print('exclusive ran')"], stdout=output, stderr=subprocess.STDOUT)
+        try:
+            yield log, dispatcher
+            dispatcher.wait(timeout=stretched(300))
+        finally:
+            if dispatcher.poll() is None:
+                dispatcher.kill()
+                dispatcher.wait()
+
+    def until_said(self, log, phrase, dispatcher):
+        deadline = time.monotonic() + stretched(120)
+        while phrase not in log.read_text() and dispatcher.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertIn(phrase, log.read_text())
+
+    def ordinary_there(self, timeout):
+        """One heavy job's admission on the second Mac, waiting at most timeout seconds: its exit status."""
+        return subprocess.run([sys.executable, "-m", "queuekeeper.resources", "--timeout", str(timeout), "--",
+                               sys.executable, "-c", "pass"], capture_output=True, preexec_fn=host_isolation.default_signals,
+                              env={**os.environ, "PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python"),
+                                   "HEAVY_SLOT_DIR": os.environ["FAKE_SLOTS"],
+                                   "QUEUEKEEPER_GATE_LOCK_FILE": os.environ["FAKE_GATE"]}, timeout=stretched(120)).returncode
+
+    def test_exclusive_work_offered_to_a_busy_second_mac_leaves_it_taking_other_work(self):
+        self.quick_exclusive_offers(3600)
+        with self.exclusive_dispatch() as (log, dispatcher):
+            with self.busy_mac(kind=None):
+                self.until_said(log, "holding no place in its queue", dispatcher)
+                # Queued there, the exclusive work would hold this job back until it had run, after the holder.
+                self.assertEqual(self.ordinary_there(stretched(30)), 0, log.read_text())
+                self.assertIsNone(dispatcher.poll(), log.read_text())
+                self.assertNotIn("exclusive ran", log.read_text())
+        self.assertEqual(dispatcher.returncode, 0, log.read_text())
+        self.assertIn("exclusive ran", log.read_text())
+        self.assertNotIn("takes its place", log.read_text())
+
+    def test_exclusive_work_the_second_mac_keeps_declining_takes_its_place_there_and_its_slots_drain(self):
+        self.quick_exclusive_offers(0)
+        with self.exclusive_dispatch() as (log, dispatcher):
+            with self.busy_mac(kind=None):
+                self.until_said(log, "takes its place in the second Mac's queue", dispatcher)
+                queue = Path(os.environ["FAKE_SLOTS"]) / resources.QUEUE
+                deadline = time.monotonic() + stretched(60)
+                while time.monotonic() < deadline and not any(
+                        not waiter.get("ordinary") and not waiter.get("wholeHost")
+                        for waiter in (json.loads(queue.read_text()).get("waiters", []) if queue.exists() else [])):
+                    time.sleep(0.1)
+                # Queued, it holds later work back while the holder's slot drains toward it, as before.
+                self.assertNotEqual(self.ordinary_there(2), 0, log.read_text())
+        self.assertEqual(dispatcher.returncode, 0, log.read_text())
+        self.assertIn("exclusive ran", log.read_text())
+
     @patch.object(remote, "CHECKOUTS", 2)
     def test_a_checkout_a_run_left_changed_is_kept_and_passed_over(self):
         self.assertEqual(self.qk("remote", "run", "check")[0], 0)
@@ -8075,3 +8168,71 @@ class ToolkitGapTests(unittest.TestCase):
             self.assertIn("needs newer toolkit code fails there", gap)
             git(toolkit, "update-ref", "-d", "refs/remotes/origin/main")
             self.assertIsNone(remote.toolkit_gap(toolkit))  # control: no origin/main to compare with
+
+
+class ExclusiveOfferTests(unittest.TestCase):
+    """remote.exclusive_offers, by a clock and sleep of the test's."""
+
+    def setUp(self):
+        self.now, self.slept, self.offers = 0.0, [], 0
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+    def offers_until(self, admitted_at=None):
+        def offer():
+            self.offers += 1
+            if admitted_at is not None and self.offers >= admitted_at: return 0
+            raise remote.Busy("every slot of the second Mac is not free")
+        return offer
+
+    def run_offers(self, offer, park_after=900):
+        with contextlib.redirect_stderr(StringIO()) as error:
+            status = remote.exclusive_offers("the command", offer, lambda: "parked", park_after=park_after,
+                                             clock=lambda: self.now, sleep=self.sleep)
+        return status, error.getvalue()
+
+    def test_offers_double_their_gap_to_the_most_and_end_when_one_is_taken(self):
+        status, said = self.run_offers(self.offers_until(admitted_at=6))
+        self.assertEqual(status, 0)
+        self.assertEqual(self.slept, [15, 30, 60, 120, 120])
+        # Said once while the reason stays the same.
+        self.assertEqual(said.count("holding no place in its queue"), 1)
+        self.assertNotIn("takes its place", said)
+
+    def test_work_still_declined_after_the_bound_takes_its_place_in_the_queue(self):
+        status, said = self.run_offers(self.offers_until(), park_after=200)
+        self.assertEqual(status, "parked")
+        self.assertEqual(self.slept, [15, 30, 60, 95])
+        self.assertIn("takes its place in the second Mac's queue after 200s", said)
+
+    def test_a_second_mac_that_cannot_be_reached_or_is_misconfigured_ends_the_offers_as_before(self):
+        for error in (remote.Unreachable("down", "wake it"), remote.Misconfigured("old Xcode", "update it")):
+            with self.subTest(type(error).__name__):
+                def offer():
+                    raise error
+                with self.assertRaises(type(error)):
+                    self.run_offers(offer)
+
+
+class ExclusiveRefusalTests(unittest.TestCase):
+    LANES = {"lanes": {"gate": {"command": ["python3", "scripts/qk", "unittest", "--jobs", "8"], "resource": "heavy"},
+                       "light": {"command": ["swift", "build"], "resource": "light", "compileFirst": ["swift", "package", "resolve"]},
+                       "plain": {"command": ["make", "check"]},
+                       "measure": {"command": ["scripts/benchmarks.sh"], "resource": "exclusive"},
+                       "own": {"command": ["scripts/own.sh"], "resource": "self"},
+                       "pair": {"parallel": ["gate", "light"]}}}
+
+    def test_only_a_heavy_lane_command_word_for_word_is_refused(self):
+        refused = lambda command: config.exclusive_refusal(self.LANES, command)
+        self.assertIn("the gate lane's", refused(["python3", "scripts/qk", "unittest", "--jobs", "8"]))
+        self.assertIn("the light lane's", refused(["swift", "build"]))
+        self.assertIn("the light lane's", refused(["swift", "package", "resolve"]))
+        self.assertIn("the plain lane's", refused(["make", "check"]))
+        for allowed in (["python3", "scripts/qk", "unittest", "--jobs", "4"], ["scripts/benchmarks.sh"],
+                        ["scripts/own.sh"], ["xcodebuild", "test-without-building"], ["python3", "scripts/qk"]):
+            with self.subTest(allowed):
+                self.assertIsNone(refused(allowed))
+        self.assertIsNone(config.exclusive_refusal({}, ["make", "check"]))
+

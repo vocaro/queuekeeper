@@ -11,6 +11,10 @@ slots, CPU busy share and memory pressure. The agent does not.
 
 - **Gate hosts.** The queue's gates can use a list of Macs, tried in order. A rented Mac with SSH
   can be one of them.
+- **Exclusive work.** Exclusive work sent to another Mac is offered until it can start there at once,
+  and takes a place in that Mac's queue only after 15 minutes. A queued exclusive request holds every
+  later request back, so queuing it from the start left a Mac idle while it waited. A heavy lane's own
+  command is never admitted as exclusive work.
 - **Unreachable hosts.** A Mac that cannot be reached is skipped and the lane runs locally. A Mac
   that is reachable but set up wrongly, with a different Xcode build for example, runs nothing and
   says so, instead of producing results that cannot be compared.

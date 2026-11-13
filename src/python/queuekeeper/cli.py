@@ -12,7 +12,7 @@ import time
 
 from . import __version__, budgets, disk, docs, extensions, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, processes, remote, resources, shims, spelling
-from .config import TOOLKIT_ROOT, admission as admission_of, extensions_of, lane_to_run, load, source_identity, \
+from .config import TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, source_identity, \
     display_lane_warnings, lane_devices, self_lane_warnings, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
@@ -480,6 +480,8 @@ def admit(root, args, config=None, *, device_window=None):
     if not command: raise ValueError("Name the command: queuekeeper admit [--exclusive | --model] [--here] -- COMMAND")
     if args.time_limit <= 0: raise ValueError("--time-limit needs a positive number of seconds")
     config = config if config is not None else load(root)
+    refused = exclusive_refusal(config, command) if args.exclusive else None
+    if refused: raise ValueError(f"queuekeeper admit --exclusive refused: {refused}")
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
     # Only a limit of its own goes to the second Mac, whose toolkit may not take the option.
     if args.time_limit != processes.DEFAULT_LIMIT: kind += ["--time-limit", f"{args.time_limit:g}"]

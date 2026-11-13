@@ -66,7 +66,7 @@ import time
 import uuid
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, processes, resources, git_state
-from .config import TOOLKIT_ROOT, sibling_folders, unlocked_screen
+from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 
 # The SSH destinations tried in turn when neither --host nor QUEUEKEEPER_OFFLOAD_HOST names one: aliases the
@@ -2171,6 +2171,44 @@ def checkout_request(args):
     return int(slot), wait
 
 
+# Seconds exclusive work sent with `queuekeeper remote admit --exclusive` is offered to the second Mac to start at once,
+# before it takes a place in the second Mac's queue (exclusive_offers).
+EXCLUSIVE_PARK_SECONDS = 900
+
+
+def exclusive_offers(name, offer, park, park_after=None, clock=time.monotonic, sleep=time.sleep):
+    """offer()'s status once the second Mac starts the exclusive work at once, or park()'s, its status after
+    waiting in the second Mac's queue, once EXCLUSIVE_PARK_SECONDS of offers it declined have passed.
+
+    Exclusive work queued on a Mac holds back every later request there while the slots it needs drain
+    (resources.Admission, guides/shared-host.md). Queued from the start, a gate suite sent as exclusive work
+    kept the second Mac at under 20% CPU, refusing every lane for 12 minutes while one lane drained, and those
+    lanes all went to this Mac (2026-11-12). So it is offered first as `--if-free` work: the second Mac starts it
+    only while every slot is free and no request queued ahead of it waits, carrying the work's arrival from the
+    first offer (requestStarted), so it never starts before older work; a declined offer leaves no place behind,
+    since the second Mac's admit leaves its place as its process ends. Offers come OVERFLOW_WAIT apart, doubling
+    to OVERFLOW_WAIT_MAX. Work that keeps finding a slot busy would wait forever that way, so after park_after
+    seconds it queues there at its first arrival, and slots drain toward it as before."""
+    deadline = clock() + (EXCLUSIVE_PARK_SECONDS if park_after is None else park_after)
+    window, said = OVERFLOW_WAIT, None
+    while True:
+        try:
+            return offer()
+        except Busy as busy:
+            left = deadline - clock()
+            if left <= 0: break
+            if str(busy) != said:
+                print(f"queuekeeper: {name} waits to start on the second Mac with every slot free, asked again every "
+                      f"{OVERFLOW_WAIT_MAX}s or sooner, holding no place in its queue for {int(left)}s more: {busy}",
+                      file=sys.stderr, flush=True)
+                said = str(busy)
+            sleep(min(window, left))
+            window = min(2 * window, OVERFLOW_WAIT_MAX)
+    print(f"queuekeeper: {name} takes its place in the second Mac's queue after {EXCLUSIVE_PARK_SECONDS if park_after is None else park_after:g}s "
+          "of offers it declined, and its slots drain toward it", file=sys.stderr, flush=True)
+    return park()
+
+
 def not_run_if_busy(name, send):
     """send()'s status, or BUSY, after saying so, when a named slot's wait ran out: nothing ran, as with
     cli.admitted_here, and Busy raised would be queuekeeper's own error, exit 2."""
@@ -2249,12 +2287,20 @@ def main(root, config, args):
         (["--foreground"] if args.foreground else []) + \
         [word for app in (getattr(args, "app", None) or []) for word in ("--app", app)] + \
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
+    refused = exclusive_refusal(config, command) if args.exclusive else None
+    if refused: raise ValueError(f"queuekeeper remote admit --exclusive refused: {refused}")
     commits = commit_arguments(getattr(args, "git_commit", None) or [])
     held = extensions.DISPATCH.lease(args.device or [], args.device_owner, command, root=root,
                                      budget=args.time_limit, commits=commits)
     work = ["admit", *kind, "--", *command]
     sent = {}
     send = lambda: execute(root, config, host, work, lease=held, sent=sent, slot=slot, slot_wait=slot_wait)
+    if args.exclusive and not args.foreground:
+        # Offered while it can start at once, and only then queued there (exclusive_offers).
+        parked = send
+        free = ["admit", *kind, "--if-free", "--", *command]
+        send = lambda: exclusive_offers("the command", lambda: execute(
+            root, config, host, free, decline=True, lease=held, sent=sent, slot=slot, slot_wait=slot_wait), parked)
     if slot is not None:
         sending = send
         send = lambda: not_run_if_busy("the command", sending)

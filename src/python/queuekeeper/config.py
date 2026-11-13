@@ -286,6 +286,27 @@ def unadmitted(lane):
 def admission(lane):
     """The admission queuekeeper run takes for the lane, or group: heavy, exclusive, or self for none."""
     return resource_of("the lane", lane)
+
+
+def exclusive_refusal(config, command):
+    """Why `queuekeeper admit --exclusive` or `queuekeeper remote admit --exclusive` refuses command, or None.
+
+    A command word for word a heavy lane's own (its command or compileFirst) is that lane's work, which its
+    configuration admits as heavy: a gate suite sent as exclusive work held every slot of the second Mac for 33
+    minutes, queued and then running, while every other lane went to this Mac (2026-11-12). Any other command,
+    an exclusive lane's, or a self lane's, whose script admits its own parts, is not refused."""
+    words = list(command)
+    for name, lane in (config.get("lanes") or {}).items():
+        if not isinstance(lane, dict) or "parallel" in lane: continue
+        if words not in (lane.get("command"), lane.get("compileFirst")): continue
+        try:
+            if admission(lane) != "heavy": continue
+        except ValueError:
+            continue
+        return (f"the command is the {name} lane's, which its configuration admits as heavy work, never exclusive "
+                f"(guides/shared-host.md, Heavy-work admission): run it with `queuekeeper run {name}`, or, if its run "
+                f"really needs the host to itself, give the lane \"resource\": \"exclusive\"")
+    return None
 # The platforms `queuekeeper app` builds an app for, and whether each is kept after every gated landing unless the
 # project says otherwise: the Mac build is, so that the newest landed app opens at once; a device build is
 # made when a device asks for it (app_builds.py).
