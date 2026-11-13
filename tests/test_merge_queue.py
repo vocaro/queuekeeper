@@ -3671,7 +3671,7 @@ class DefaultDocsOnly(Fixture):
                      "AGENTS.md", "agents/core.md", ".github/workflows/check.yml", "README.md.orig"):
             with self.subTest(path=path): self.assertIsNone(mq.docs_lanes(config, [path]))
         self.assertIsNone(mq.docs_lanes(config, []))
-        self.assertEqual(configuration.lane_to_run(config, "docs")["command"], configuration.IMPLICIT_DOCS)
+        self.assertEqual(configuration.lane_to_run(config, "docs", self.repo)["command"], configuration.IMPLICIT_DOCS)
 
     def test_a_default_docs_file_moved_into_source_keeps_code_gate(self):
         self.commit("README.md", "guide", "# Guide\n")
@@ -3825,6 +3825,48 @@ class ImplicitSpelling(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertFalse(own.exists())
         self.assertTrue(any("runs the toolkit's" in words for words in said), said)
+
+    def unlaunched(self):
+        """Take the launcher out of main, as a project that followed getting started has none, and return how the
+        queue's toolkit is run in its place (vocaro/queuekeeper#108)."""
+        run(self.repo, "git", "rm", "-q", "scripts/qk")
+        run(self.repo, "git", "commit", "-qm", "Drop the launcher")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        return [sys.executable, str(Path(os.environ["QUEUEKEEPER_ROOT"]).resolve() / "bin/qk")]
+
+    def test_a_project_with_no_launcher_runs_it_with_the_queues_toolkit(self):
+        qk = self.unlaunched()
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with self.lanes_run() as started: said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        # The lanes still go through qk run, admitted and placed, now the toolkit's own.
+        self.assertEqual([(command[:2], command[2], command[-2:]) for command in started[:2]],
+                         [(qk, "--project", ["run", "spelling"]), (qk, "--project", ["run", "gate"])])
+        told = next(words for words in said if words.startswith("spelling: the project has no spelling lane"))
+        self.assertIn(f"runs the toolkit's: {shlex.join(qk)} --project ", told)
+        self.assertTrue(told.endswith(" spelling"), told)
+        self.assertTrue(any(words.startswith("spelling exited 0 on this Mac (") for words in said), said)
+
+    def test_with_no_launcher_a_british_spelling_still_fails_before_the_gate(self):
+        # The check runs and finds it: a finding, not a lane that could not start.
+        self.unlaunched()
+        self.commit("fix", "fix", content=BRITISH)
+        [identifier] = self.add("fix", checked=False)
+        self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertEqual(self.gates(), 0)
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_with_no_launcher_a_docs_only_batch_runs_the_toolkits_checks(self):
+        self.unlaunched()
+        self.commit("guides/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.state(identifier)["docsOnly"], ["spelling", "docs"])
+        for lane in ("spelling", "docs"):
+            self.assertIn(f"{lane} exited 0 in the queue's checkout, unadmitted, as a docs-only batch's check", said)
 
     def test_queue_spelling_can_only_turn_it_off(self):
         config = json.loads((self.repo / "queuekeeper.json").read_text())
@@ -4037,6 +4079,104 @@ class ImplicitSpellingLane(Fixture):
                 contextlib.redirect_stderr(io.StringIO()) as said:
             self.assertEqual(self.eng_run("nonesuch"), 2)
         self.assertIn("No configured lane: nonesuch", said.getvalue())
+
+    def test_with_no_launcher_it_runs_with_the_toolkit_on_the_mac_that_runs_it(self):
+        # On the second Mac QUEUEKEEPER_ROOT names the toolkit sent there, and qk run there makes the command
+        # (offload_host); a project needs no launcher for it (vocaro/queuekeeper#108).
+        (self.repo / "scripts/qk").unlink()
+        sent = self.base / "sent-toolkit"
+        with patch.dict(os.environ, {"QUEUEKEEPER_ROOT": str(sent)}), \
+                patch.object(cli.remote, "first", return_value=self.OFFERED) as first:
+            self.assertEqual(self.eng_run("spelling"), 0)
+        config = first.call_args.args[1]
+        self.assertEqual(config["lanes"]["spelling"], {
+            "command": [sys.executable, str(sent / "bin/qk"), "--project", str(self.repo), "spelling"],
+            "timeout": mq.SPELLING_LIMIT})
+        self.assertIsNone(configuration.stays(config["lanes"], "spelling"))
+        self.assertEqual(configuration.implicit_command(self.repo, "docs", sent),
+                         [sys.executable, str(sent / "bin/qk"), "--project", str(self.repo), "docs", "check"])
+
+    def test_with_no_launcher_it_runs_and_finds_a_british_spelling(self):
+        (self.repo / "scripts/qk").unlink()
+        (self.repo / "note.txt").write_text(BRITISH)
+        run(self.repo, "git", "add", "note.txt")  # qk spelling reads the files Git tracks
+        with patch.object(cli, "refresh_policy", return_value="policy"), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            # A finding, whose log names no test, which qk run tells apart as BEFORE_TESTS, launcher or none.
+            self.assertEqual(self.eng_run("--here", "spelling"), mq.lane_results.BEFORE_TESTS)
+        receipt = json.loads((self.repo / ".build/queuekeeper/spelling/source.json").read_text())
+        self.assertEqual((receipt["outcome"], receipt["exitStatus"]), ("failed", 1))
+        self.assertIn("note.txt", (self.repo / ".build/queuekeeper/spelling/run.log").read_text())
+
+
+class LaneThatCannotStart(Fixture):
+    """A lane whose command cannot start is reported as that, not as the commit failing: qk run exits NOT_STARTED
+    with a not-started receipt, and the queue holds for a session with every entry waiting (vocaro/queuekeeper#108)."""
+
+    def eng_run(self, *words):
+        with patch.object(cli, "refresh_policy", return_value="policy"), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as said:
+            status = cli.main(["--project", str(self.repo), "run", "--here", *words])
+        return status, said.getvalue()
+
+    def lane(self, command):
+        config = self.config()
+        config["lanes"]["gate"] = {"command": command}
+        self.publish(config, "Change the gate")
+
+    def receipt(self):
+        return json.loads((self.repo / ".build/queuekeeper/gate/source.json").read_text())
+
+    def test_an_interpreter_with_no_file_to_run_could_not_start(self):
+        # python3 exits 2 with "can't open file", as a failure would; qk run reads the file system instead.
+        self.lane(["python3", "scripts/missing.py"])
+        status, said = self.eng_run("gate")
+        self.assertEqual(status, mq.lane_results.NOT_STARTED)
+        self.assertEqual(self.receipt()["outcome"], "not-started")
+        self.assertIn("python3 has no scripts/missing.py to run in ", self.receipt()["notStarted"])
+        self.assertIn("qk run gate: could not start (exit 127), on this Mac", said)
+        self.assertTrue((self.repo / ".build/queuekeeper/gate/run.log").read_text().startswith(
+            "queuekeeper: gate could not start: "))
+
+    def test_a_command_the_system_cannot_start_could_not_start(self):
+        self.lane(["./no-such-tool"])
+        status, _said = self.eng_run("gate")
+        self.assertEqual(status, mq.lane_results.NOT_STARTED)
+        self.assertEqual(self.receipt()["outcome"], "not-started")
+        self.assertIn("Command did not start", self.receipt()["notStarted"])
+
+    def test_a_command_that_starts_and_exits_127_or_2_is_a_failure(self):
+        # Negative control: what the command itself exits is its own, whatever the status.
+        for exit_status in (127, 2):
+            with self.subTest(exit_status=exit_status):
+                self.lane(["python3", "-c", f"import sys; sys.exit({exit_status})"])
+                status, said = self.eng_run("gate")
+                self.assertEqual(status, exit_status)
+                self.assertEqual(self.receipt()["outcome"], "failed")
+                self.assertNotIn("notStarted", self.receipt())
+                self.assertNotIn("could not start", said)
+
+    def test_the_queue_holds_and_blames_no_commit(self):
+        self.lane(["python3", "scripts/missing.py"])
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with patch("builtins.print"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        held = mq.Queue(self.repo).held()
+        self.assertIn("for a session, not the owner: gate could not start on this Mac (", held)
+        self.assertIn("python3 has no scripts/missing.py to run in ", held)
+        self.assertIn("says nothing of the batch's commits and none is sent back", held)
+        self.assertNotIn("fail on this commit", held)
+
+    def test_a_lane_whose_own_command_exits_127_still_sends_the_commit_back(self):
+        # Negative control: a command that started and exited 127 leaves no not-started receipt.
+        self.lane(["python3", "-c", "import sys; sys.exit(127)"])
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with patch("builtins.print"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertIn("the queue's lanes fail on this commit", self.state(identifier)["why"])
+        self.assertIsNone(mq.Queue(self.repo).held())
 
 
 class SpellingStoppedByRemoval(Fixture):

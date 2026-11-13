@@ -70,7 +70,9 @@ It reports missing commands, lanes without a timeout, and tests that no lane run
 Two defaults to know about:
 
 - **Spelling.** Before the gate, the queue runs a spelling check that flags British spellings. Turn
-  it off with `"queue": {"spelling": false}`, or define your own lane named `spelling`.
+  it off with `"queue": {"spelling": false}`, or define your own lane named `spelling`. It runs
+  with the Queuekeeper that runs the queue, so the project needs no copy of Queuekeeper's
+  `scripts/qk` for it.
 - **Documentation.** A change that touches only Markdown documents skips the gate and runs the
   documentation lanes instead. Set `"queue": {"docsOnly": false}` to gate every change.
 

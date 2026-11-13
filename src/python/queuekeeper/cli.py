@@ -130,11 +130,33 @@ def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_afte
     return (1 if status == lane_results.UNMEASURED else status), None
 
 
+def unstartable(command, cwd):
+    """Why command cannot start in cwd, or None. An interpreter SCRIPT_RUNNERS names, whose first argument is no option
+    and names nothing in cwd, has no file to run, as python3 had no scripts/qk in apple-engineering's checkout on
+    2026-11-13 and exited 2, the status of a failure (vocaro/queuekeeper#108). The check reads the file system, not
+    what the interpreter prints. A command the system cannot start at all raises processes.NotStarted instead."""
+    if len(command) < 2 or not SCRIPT_RUNNERS.fullmatch(Path(command[0]).name): return None
+    script = command[1]
+    if script.startswith("-") or (Path(cwd) / script).exists(): return None
+    return f"{command[0]} has no {script} to run in {cwd}"
+
+
+def not_started(directory, receipt, lane, why):
+    """Record that the lane's command could not start, why, in its receipt as notStarted and at the end of its log,
+    which would otherwise hold an earlier run's, and return NOT_STARTED, which the lane then exits with."""
+    receipt["notStarted"] = why
+    words = f"queuekeeper: {lane} could not start: {why}"
+    with contextlib.suppress(OSError), (directory / "run.log").open("a") as log: print(words, file=log)
+    print(words, file=sys.stderr, flush=True)
+    return lane_results.NOT_STARTED
+
+
 def conclude(directory, receipt, status, **fields):
     """Record a completed run's verdict, the status qk run returns, beside its command's exit
-    status: passed only for 0, so a zero exit that ran too few tests is failed."""
+    status: passed only for 0, so a zero exit that ran too few tests is failed, and not-started for a command that never
+    started (not_started)."""
     outcome = "passed" if status == 0 else "unmeasured" if status == lane_results.UNMEASURED else \
-        "build-failed" if compile_failed(receipt) else "failed"
+        "not-started" if receipt.get("notStarted") else "build-failed" if compile_failed(receipt) else "failed"
     receipt.update(outcome=outcome, **fields)
     (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
@@ -373,6 +395,8 @@ REAP_SWITCH = "QUEUEKEEPER_REAP_BEFORE_RUN"
 # The status of a command that refused how it was called, as argparse's does: lane_report.before_tests leaves it as it
 # is, since it already tells a refusal apart from a test's failure (vocaro-engineering#393).
 USAGE = 2
+# The interpreters whose first argument, when it is no option, is the file they run (unstartable).
+SCRIPT_RUNNERS = re.compile(r"(python|pypy)(\d+(\.\d+)*)?|(ba|z|da|k)?sh")
 
 
 def reap_here(root, inherited):
@@ -1001,7 +1025,7 @@ def perform(argv, report):
             if args.build_host_only:
                 raise ValueError("--build-host-only was --offload-only's name until vocaro-engineering#58, and is no "
                                  "longer read: use --offload-only (guides/shared-host.md, Earlier names)")
-            lane = lane_to_run(config, args.lane)
+            lane = lane_to_run(config, args.lane, root)
             if lane is None: raise ValueError(f"No configured lane: {args.lane}")
             if args.expect is not None and args.expect < 1: raise ValueError("--expect needs at least 1 test")
             if args.unlocked_screen:
@@ -1119,10 +1143,15 @@ def perform(argv, report):
                         failed, left = compile_first(lane, root, directory, receipt, limit,
                                                      env, on_stop, kill_after)
                         if failed is not None: return failed
-                        return processes.run(command, cwd=root, log_path=directory / "run.log", timeout=left,
-                                             on_stop=on_stop, env=env, kill_after=kill_after,
-                                             **({"stall": lane["stall"], "progress_path": directory / "results/progress.json"}
-                                                if "stall" in lane else {}))
+                        why = unstartable(lane["command"], root)
+                        if why: return not_started(directory, receipt, args.lane, why)
+                        try:
+                            return processes.run(command, cwd=root, log_path=directory / "run.log", timeout=left,
+                                                 on_stop=on_stop, env=env, kill_after=kill_after,
+                                                 **({"stall": lane["stall"], "progress_path": directory / "results/progress.json"}
+                                                    if "stall" in lane else {}))
+                        except processes.NotStarted as error:
+                            return not_started(directory, receipt, args.lane, str(error))
                     return record(directory, receipt, lambda: prepared(work))
             else:
                 jobs = 1 if args.serial else lane.get("jobs", len(group))
@@ -1209,6 +1238,10 @@ def perform(argv, report):
                 if reads_screen and result == lane_results.UNMEASURED: unmeasured_screen(args.lane, receipt)
                 concluded(result)
                 return result
+            # A command that never started says nothing of the code it would have run (vocaro/queuekeeper#108).
+            if receipt.get("notStarted"):
+                concluded(lane_results.NOT_STARTED)
+                return lane_results.NOT_STARTED
             # The command has a confirmed terminal result. Coverage validation cannot turn
             # that completed process into an orphan reservation.
             log = (directory / "run.log").read_text(errors="replace")

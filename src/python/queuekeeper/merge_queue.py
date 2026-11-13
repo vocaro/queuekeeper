@@ -54,7 +54,7 @@ from . import budgets, disk, extensions, lane_results, landing_proofs, lane_prog
     resources
 from . import events, pre_push
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
-    TOOLKIT_ROOT, admission, lane_to_run, load, parse, stays, unlocked_screen
+    TOOLKIT_ROOT, admission, implicit_command, lane_to_run, load, parse, stays, toolkit_command, unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -640,12 +640,12 @@ def carried_over(path, config, batch_files):
     return (declared is not False and path.endswith(".md")) or any(named(path, key) for key in listed)
 
 
-def carry_checks(config, moved, base):
-    """The commands a carry-over over moved must pass on the rebased tree: `qk docs check` when a document
-    moved, then each of queue.carryOverChecks whose paths include a moved file, or that has none. {base} in
+def carry_checks(config, moved, base, docs_check=IMPLICIT_DOCS):
+    """The commands a carry-over over moved must pass on the rebased tree: `qk docs check`, docs_check, when a
+    document moved, then each of queue.carryOverChecks whose paths include a moved file, or that has none. {base} in
     a command is the commit the result passed on, so a check that compares with origin/main, which the
     batch now sits on, can read what main's new commits added."""
-    commands = [["python3", "scripts/qk", "docs", "check"]] if any(path.endswith(".md") for path in moved) else []
+    commands = [list(docs_check)] if any(path.endswith(".md") for path in moved) else []
     for check in config.get("queue", {}).get("carryOverChecks", []):
         if "paths" not in check or any(named(path, key) for path in moved for key in check["paths"]):
             commands.append([word.replace("{base}", base) for word in check["command"]])
@@ -805,16 +805,9 @@ def spelling_run(queue, root, commit):
     """(exit status, the lines it printed, the command) of the spelling lane on commit, in a scratch worktree outside
     every checkout, as the worker picks it (Worker.gate): the project's own spelling lane when commit's queuekeeper.json
     configures one (Worker.has_lane), run as its command, here and with no admission, or the toolkit's check,
-    IMPLICIT_SPELLING, when it does not. A status of None says why it was not run: a lane that is no one command, or
-    a run that reached SPELLING_LIMIT."""
+    IMPLICIT_SPELLING, when it does not, or with no launcher the same check run by this toolkit (implicit_command). A
+    status of None says why it was not run: a lane that is no one command, or a run that reached SPELLING_LIMIT."""
     with scratch(queue, commit, "spelling") as path:
-        try: lanes = load(path).get("lanes", {})
-        except (OSError, ValueError): lanes = {}
-        lane = lanes.get(SPELLING)
-        command = IMPLICIT_SPELLING if SPELLING not in lanes else lane.get("command") if isinstance(lane, dict) else None
-        if not (isinstance(command, list) and command) or (SPELLING in lanes and any(
-                lane.get(key) for key in ("foreground", "unlockedScreen", "parallel", "wholeHost", "model", *extensions.LANE_KEYS))):
-            return None, ["the project's spelling lane is not one command that qk land can run here"], None
         env = environment()
         if not os.environ.get(TOOLKIT_VARIABLE):
             # A project's launcher finds the toolkit beside its own checkout, which a scratch worktree has not: this
@@ -822,6 +815,14 @@ def spelling_run(queue, root, commit):
             ours = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
             if ours != text(root, "rev-parse", "--path-format=absolute", "--git-common-dir"):
                 env[TOOLKIT_VARIABLE] = str(TOOLKIT_ROOT)
+        try: lanes = load(path).get("lanes", {})
+        except (OSError, ValueError): lanes = {}
+        lane = lanes.get(SPELLING)
+        command = implicit_command(path, SPELLING, env.get(TOOLKIT_VARIABLE)) if SPELLING not in lanes \
+            else lane.get("command") if isinstance(lane, dict) else None
+        if not (isinstance(command, list) and command) or (SPELLING in lanes and any(
+                lane.get(key) for key in ("foreground", "unlockedScreen", "parallel", "wholeHost", "model", *extensions.LANE_KEYS))):
+            return None, ["the project's spelling lane is not one command that qk land can run here"], None
         log = path.parent / "spelling.log"
         try: status_ = processes.run(command, cwd=path, log_path=log, timeout=SPELLING_LIMIT, env=env)
         except processes.TimedOut as error: return None, [f"{shlex.join(command)} reached its limit: {error}"], command
@@ -1920,7 +1921,7 @@ def placement(root, name=None, as_json=False):
     base = text(root, "rev-parse", MAIN)
     config = config_at(root, base)
     name = name or (config.get("queue", {}).get("lanes") or ["gate"])[0]
-    lane = lane_to_run(config, name)
+    lane = lane_to_run(config, name, root)
     if lane is None:
         raise ValueError(f"{name} is not a lane on {MAIN}; give the lane to inspect")
     lanes = config["lanes"]
@@ -2898,13 +2899,11 @@ class Worker:
             self.sent_unlocked = bool(screen)
             if screen: self.say(f"{lane}: only on a Mac whose screen reads unlocked, since a locked screen left its "
                                 "last run without a verdict")
-            command = ["python3", "scripts/qk", "run", *where, *screen, lane]
-            if lane == SPELLING and not self.has_lane(lane):
-                self.say(f"{lane}: the project has no spelling lane, so qk run runs the toolkit's: "
-                         f"{shlex.join(IMPLICIT_SPELLING)}")
-            if lane == DOCS and not self.has_lane(lane):
-                self.say(f"{lane}: the project has no docs lane, so qk run runs the toolkit's: "
-                         f"{shlex.join(IMPLICIT_DOCS)}")
+            # The project's launcher, or the toolkit's own qk where it has none (vocaro/queuekeeper#108).
+            command = toolkit_command(self.checkout, ["run", *where, *screen, lane], self.toolkit_root())
+            if lane in (SPELLING, DOCS) and not self.has_lane(lane):
+                self.say(f"{lane}: the project has no {lane} lane, so qk run runs the toolkit's: "
+                         f"{shlex.join(self.implicit(lane))}")
             watch = GateWatch(self, lane, began, log).start()
             try:
                 try:
@@ -2985,12 +2984,14 @@ class Worker:
         """The status of lane, one of a docs-only batch's lanes, run in this checkout without admission, when it is the
         toolkit's spelling check or `qk docs check` (QUICK_CHECKS), the project's own lane of that name or none, so
         that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394); None for any other
-        lane, or one that did not end within DOCS_CHECK_LIMIT, which qk run then runs admitted as before."""
+        lane, or one that did not end within DOCS_CHECK_LIMIT, which qk run then runs admitted as before. With no lane
+        of that name, the check runs as qk run would run it (implicit)."""
         command = QUICK_CHECKS.get(lane)
         if command is None: return None
         try: configured = load(self.checkout).get("lanes", {}).get(lane)
         except (OSError, ValueError): return None
         if configured is not None and configured.get("command") != command: return None
+        if configured is None: command = self.implicit(lane)
         try:
             status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT,
                                     env=self.environment)
@@ -3035,6 +3036,35 @@ class Worker:
         runs the toolkit's spelling check as that lane (lane_to_run)."""
         try: return lane in load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return False
+
+    def toolkit_root(self):
+        """The toolkit this worker runs the project's lanes with: the copy that QUEUEKEEPER_ROOT names in its
+        environment (toolkit), else its own."""
+        return self.environment.get(TOOLKIT_VARIABLE) or str(TOOLKIT_ROOT)
+
+    def implicit(self, lane):
+        """The command of the toolkit's spelling or docs check in this checkout, as the qk run this worker starts runs
+        it where the project has no such lane (implicit_command): by the project's launcher, else by the toolkit."""
+        return implicit_command(self.checkout, lane, self.toolkit_root())
+
+    def unstarted(self, result):
+        """Why the lane at which the last gate stopped with result could not start, or None: qk run exited
+        NOT_STARTED and its receipt since the lane began says not-started, with why under notStarted
+        (lane_report.not_started). The dispatch's receipt holds the lane's own from the second Mac, as for
+        receipt_error. A lane's own command that exits 127 leaves no such receipt, and stays a failure."""
+        if result != lane_results.NOT_STARTED or not self.lane_now: return None
+        lane, began = self.lane_now[0], self.lane_now[1]
+        ran = remote.dispatch(self.checkout, lane, began)[0]
+        paths = ([ran / "source.json"] if ran is not None else []) \
+            + [self.checkout / ".build/queuekeeper" / lane / "source.json"]
+        for path in paths:
+            try:
+                if path.stat().st_mtime < began: continue
+                why = lane_report.not_started(json.loads(path.read_text()))
+            except (OSError, ValueError):
+                continue
+            if why: return why
+        return None
 
     def placed(self, lane, began):
         """Where the lane ran, for the log, which qk run chose by both Macs' capacity (vocaro-engineering#168):
@@ -3123,7 +3153,7 @@ class Worker:
         if text(self.checkout, "diff", new_base, "HEAD") != patch:
             self.say("the batch's patch changed on main: gating again")
             return None
-        if not self.carry_passes(carry_checks(config, moved, base)): return None
+        if not self.carry_passes(carry_checks(config, moved, base, self.implicit(DOCS))): return None
         self.say(f"carried the result over {len(moved)} file(s) on main: {', '.join(moved[:5])}")
         return new_base, self.head()
 
@@ -3898,6 +3928,18 @@ class Worker:
             busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
             if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
             return NO_VERDICT_OUTCOME
+        unstarted = runner.unstarted(result)
+        if unstarted:
+            # Its command never ran, so it says nothing of the commits, and running it again would not start it
+            # either: no entry is sent back or bisected, and a session makes the lane start (vocaro/queuekeeper#108).
+            queue.mark(applied, QUEUED)
+            lane = runner.lane_now[0]
+            self.say(f"{lane} could not start{runner.ran_where}: {unstarted}; no commit is blamed")
+            queue.hold(worded(SESSION, f"{lane} could not start{runner.ran_where}: {unstarted}. Its command never ran, "
+                                       "so this says nothing of the batch's commits and none is sent back: make the "
+                                       "lane's command start, or remove the entry whose commits took away what it "
+                                       f"runs; see {log}"))
+            return NO_VERDICT_OUTCOME
         self.no_verdicts = self.locked_screens = 0
         if result:
             # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
@@ -4474,6 +4516,14 @@ class Beside(Worker):
             self.say(f"no verdict (exit {result}){self.ran_where}: queued again, behind the older half"
                      + (f"; {locked[0]} ran behind a locked screen, and goes next only to a Mac whose screen reads "
                         "unlocked" if locked else ""))
+            self.queue.mark(self.newer, QUEUED)
+            self.outcome = QUEUED
+            return
+        unstarted = self.unstarted(result)
+        if unstarted:
+            # Never ran, as no verdict did: the older half meets the same and holds (Worker.older, #108).
+            self.say(f"{self.lane_now[0]} could not start{self.ran_where}: {unstarted}; no commit is blamed: queued "
+                     "again, behind the older half")
             self.queue.mark(self.newer, QUEUED)
             self.outcome = QUEUED
             return

@@ -325,6 +325,19 @@ class Summary(unittest.TestCase):
         self.assertIsNone(lane_results.counted(summary))
         self.assertEqual(merge_queue.FAILED_TEST.findall(summary), [])
 
+    def test_a_lane_that_could_not_start_says_so_and_not_that_it_failed(self):
+        # vocaro/queuekeeper#108: python3 with no file to run exits 2, as a failure does.
+        self.configure(lane={"command": ["python3", "scripts/qk", "spelling"]})
+        status, lines = self.qk("lane")
+        self.assertEqual(status, lane_results.NOT_STARTED)
+        self.assertEqual(lines[-3:], ["qk run lane: could not start (exit 127), on this Mac",
+                                      f"  tests: none ran, as its command never started: python3 has no scripts/qk to "
+                                      f"run in {self.root}",
+                                      f"  receipt: {self.lane_dir / 'source.json'}"])
+        receipt = json.loads((self.lane_dir / "source.json").read_text())
+        self.assertEqual((receipt["outcome"], receipt["exitStatus"]), ("not-started", lane_results.NOT_STARTED))
+        self.assertNotIn(lane_results.NOT_STARTED, merge_queue.NO_VERDICT)
+
     def test_a_lane_whose_tests_crashed_before_their_counts_stays_failed(self):
         crashed = ("Test Suite 'All tests' started at 2026-11-11 08:34:00.000\n"
                    "Test Case '-[Mod.ReaderTests testPage]' started.\nFatal error: index out of range\n")

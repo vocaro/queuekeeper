@@ -16,6 +16,7 @@ Exit codes separate the cases an agent must treat differently:
 | 4 | Failed before any test started |
 | 75 | Busy or held; nothing ran |
 | 78 | A host is misconfigured |
+| 127 | A lane's command could not start |
 
 ## Output
 

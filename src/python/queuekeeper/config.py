@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 from . import extensions as hooks
@@ -366,13 +367,18 @@ def app(declared):
 # here too because merge_queue reads this module.
 LANDING_FIRST = ["spelling", "provision"]
 SPELLING = "spelling"
+# A project's launcher: its copy of this repository's scripts/qk, which runs Queuekeeper on the project it is in.
+LAUNCHER = "scripts/qk"
 # The toolkit's spelling check, the spelling lane of a project that has none: the queue runs it before the gate, on an
 # ungated landing and before a docs-only batch's lanes, unless main's queue.spelling is false, so that a British spelling
 # fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). qk run admits and places it
-# as any lane (lane_to_run).
-IMPLICIT_SPELLING = ["python3", "scripts/qk", SPELLING]
+# as any lane (lane_to_run). This is its command in a project with a launcher; a project with none runs it with the
+# toolkit that runs qk run (implicit_command, vocaro/queuekeeper#108).
+IMPLICIT_SPELLING = ["python3", LAUNCHER, SPELLING]
 DOCS = "docs"
-IMPLICIT_DOCS = ["python3", "scripts/qk", "docs", "check"]
+IMPLICIT_DOCS = ["python3", LAUNCHER, "docs", "check"]
+# What the toolkit's two checks ask of Queuekeeper, by whichever command runs it (implicit_command).
+IMPLICIT_WORDS = {SPELLING: [SPELLING], DOCS: ["docs", "check"]}
 # Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates.
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/", "guides/", "knowledge/")
@@ -562,16 +568,36 @@ def unlocked_screen(lanes, name):
     return bool(lanes.get(name, {}).get("unlockedScreen"))
 
 
-def lane_to_run(config, name):
-    """The lane qk run runs as name, or None when there is no such lane: the one config has, or, for spelling and docs in a
-    project with no such lane, the toolkit's check, added to config's lanes so that the run treats it as any other,
-    which is how the merge queue's gate runs it (owner's decision, 2026-11-09, vocaro-engineering#305). queue.spelling
-    says only whether the queue asks for it, and main's says that, so a batch's own setting cannot leave a lane unknown."""
+def toolkit_command(root, words, toolkit=None):
+    """The command that runs Queuekeeper's words on the project at root: its launcher, `python3 scripts/qk`, when it
+    has one, which finds the toolkit itself; otherwise the toolkit's own bin/qk, with the Python that runs this
+    Queuekeeper, and the project named. The toolkit is toolkit, else the one QUEUEKEEPER_ROOT names, as a launcher
+    reads it, else this one. A project need not hold a launcher for what the queue runs in it: on 2026-11-13
+    apple-engineering's first landing failed in the implicit spelling lane, as python3 could not open the
+    scripts/qk that getting started never asked it for (vocaro/queuekeeper#108)."""
+    root = Path(root)
+    if (root / LAUNCHER).is_file(): return ["python3", LAUNCHER, *words]
+    named = toolkit or os.environ.get("QUEUEKEEPER_ROOT")
+    kit = (root / named).resolve() if named else TOOLKIT_ROOT
+    return [sys.executable, str(kit / "bin/qk"), "--project", str(root.resolve()), *words]
+
+
+def implicit_command(root, name, toolkit=None):
+    """The command of the toolkit's spelling or docs check, name in IMPLICIT_WORDS, in the project at root: its
+    launcher's IMPLICIT_SPELLING or IMPLICIT_DOCS, else the same words run by the toolkit (toolkit_command). qk run
+    makes it on the Mac that runs the lane, so that on the second Mac it names the toolkit sent there."""
+    return toolkit_command(root, IMPLICIT_WORDS[name], toolkit)
+
+
+def lane_to_run(config, name, root):
+    """The lane qk run runs as name in the project at root, or None when there is no such lane: the one config has,
+    or, for spelling and docs in a project with no such lane, the toolkit's check (implicit_command), added to config's
+    lanes so that the run treats it as any other, which is how the merge queue's gate runs it (owner's decision,
+    2026-11-09, vocaro-engineering#305). queue.spelling says only whether the queue asks for it, and main's says that,
+    so a batch's own setting cannot leave a lane unknown."""
     lanes = config.setdefault("lanes", {})
-    if name == SPELLING and name not in lanes:
-        lanes[name] = {"command": list(IMPLICIT_SPELLING), "timeout": SPELLING_LIMIT}
-    if name == DOCS and name not in lanes:
-        lanes[name] = {"command": list(IMPLICIT_DOCS), "timeout": SPELLING_LIMIT}
+    if name in IMPLICIT_WORDS and name not in lanes:
+        lanes[name] = {"command": implicit_command(root, name), "timeout": SPELLING_LIMIT}
     return lanes.get(name)
 
 

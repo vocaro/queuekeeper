@@ -141,6 +141,18 @@ def before_tests(text):
     return errors[-1][:QUOTED] if errors else None
 
 
+def not_started(receipt):
+    """Why the lane a receipt is of could not start, on one line, or None: its outcome is not-started, with why under
+    notStarted (cli.not_started). A dispatch's receipt holds the lane's own from the second Mac under result, as
+    receipt and as the result itself. The receipt says so, not the log, since a command may print or exit anything."""
+    there = receipt.get("result") if isinstance(receipt, dict) else None
+    for said in (there.get("receipt") if isinstance(there, dict) else None, there, receipt):
+        if not isinstance(said, dict) or said.get("outcome") != "not-started": continue
+        why = said.get("notStarted")
+        return " ".join(why.split()) if isinstance(why, str) and why.strip() else "its command did not start"
+    return None
+
+
 def records(results):
     """Each failure record a run returned under its results, as (its failures.json's path, what it holds)."""
     kept = []
@@ -274,6 +286,13 @@ class Report:
         # One line when nothing ran: the refusal or reason queuekeeper printed just before it says the rest.
         if directory is None: return [f"qk run {self.lane}: {verdict}{ending}{NOTHING_RAN}"]
         lines = [f"qk run {self.lane}: {verdict}{ending}, {where}"]
+        if verdict == "failed" and status == lane_results.NOT_STARTED and self.group is None:
+            try: unstarted = not_started(json.loads((directory / "source.json").read_text()))
+            except (OSError, ValueError): unstarted = None
+            if unstarted is not None:
+                return [f"qk run {self.lane}: could not start{ending}, {where}",
+                        f"  tests: none ran, as its command never started: {unstarted}",
+                        f"  receipt: {directory / 'source.json'}"]
         why = self.why or (str(error) if error is not None else None)
         if self.group is None: logs = {self.lane: directory / "run.log"}
         else: logs = {name: directory / "lanes" / f"{name}.log" for name in self.group}

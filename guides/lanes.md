@@ -50,7 +50,10 @@ shortfall under `error`. `eng release` counts this checkout's gate receipt only 
 test started, such as one whose project could not be generated, exits 4 rather than its command's
 status and quotes the log's last error line in its summary and under `beforeTests`; it is still
 `failed` (`lane_report.before_tests`, vocaro-engineering#393). A command's own status 2, a refused usage,
-stays 2.
+stays 2. A command that never started, as when the system cannot start it or `python3` is given a
+file the checkout does not hold, exits 127 with `outcome` `not-started` and why under `notStarted`,
+and the queue blames no commit for it ([#108](https://github.com/vocaro/queuekeeper/issues/108);
+[maintenance](maintenance.md#the-merge-queue)).
 
 `python3 scripts/qk admit -- COMMAND` records the same fields, with the directory the command
 ran in and whether it was exclusive, in `.build/queuekeeper/admit/source.json`. Its output stays

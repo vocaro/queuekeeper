@@ -105,6 +105,11 @@ UNMEASURED = 3
 # generation (lane_report.before_tests, vocaro-engineering#393). It is a failure, as any status but 0 and the no-verdict
 # ones is: it tells a setup or build that stopped the run apart from a test that failed, not a defect from the host.
 BEFORE_TESTS = 4
+# The exit status of qk run when the lane's command could not start: the system could not start it, or the interpreter
+# it names has no file to run (cli.unstartable), as a shell's 127 says a command was not found. The receipt's outcome,
+# not-started, and its notStarted say so too, which is what the merge queue reads, since a lane's own command may exit
+# 127 (vocaro/queuekeeper#108).
+NOT_STARTED = 127
 
 # A test the host left unmeasured skips (XCTest, unittest) or cancels itself (Swift Testing) with a
 # reason that begins "Unmeasured:", and swift test and xcodebuild still exit 0. unittest prints the

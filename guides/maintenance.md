@@ -55,7 +55,12 @@ batch until `main` has any, so that the commit naming them can land
 lane gets the toolkit's: `qk run spelling` runs `python3 scripts/qk spelling` as a lane like any
 other, admitted and placed as every lane is, before anything else, so that a British spelling fails in
 about a minute instead of after a full gate and a bisect, in every project without each declaring the
-same lane. A run that gets no admission or ends unmeasured is a no verdict, as any lane's is, and a
+same lane. A project needs no launcher for it, nor for the round's `qk run`: where the checkout has
+no `scripts/qk`, the worker runs `qk run` with the toolkit's own `bin/qk`, and `qk run` runs the
+check with the toolkit that runs it, on whichever Mac that is, where the second Mac's is the toolkit
+sent with the lane. On 2026-11-13 apple-engineering's first landing failed in this lane, as `python3`
+could not open the `scripts/qk` that getting started never asked it for
+([#108](https://github.com/vocaro/queuekeeper/issues/108)). A run that gets no admission or ends unmeasured is a no verdict, as any lane's is, and a
 finding rejects the batch. A project's own `spelling` lane runs in its place, and
 `"queue": {"spelling": false}` on `main` keeps the queue from running the toolkit's for a project
 that cannot pass it yet; the round's log says when the toolkit's ran. The
@@ -276,7 +281,8 @@ the toolkit's 45 test modules it took 0.7 to 1.2 s on this Mac at a one-minute l
 Then, after the trial integration, they run the spelling lane the worker would run before the gate,
 on the entry's commits replayed onto `origin/main`, in a scratch worktree outside every checkout:
 the lane the replayed commit's `queuekeeper.json` names `spelling`, run as its command, or, when it
-names none, the toolkit's `python3 scripts/qk spelling`, unless `main`'s `queue.spelling` is
+names none, the toolkit's `python3 scripts/qk spelling`, or the same check by the toolkit's own
+`bin/qk` in a project with no launcher, unless `main`'s `queue.spelling` is
 `false`. It runs on this Mac with no admission, as the toolkit's check does in the worker, since it
 takes seconds. A finding, exit 1, refuses the entry with nothing queued and exit 1, quoting the
 lane's last 40 lines. On 2026-11-07 one EPUBLib spelling slip found by the worker cost a queue round
@@ -495,6 +501,20 @@ change on that branch from `origin/main`, as with `git reset --hard origin/main`
 branch of your own once `qk land` says `landed`. In a rebase already under way, `git rebase
 --skip` drops a landed commit. On 2026-11-05 one EPUBLib session's rebases stopped on
 `CHANGELOG.md` three times this way.
+
+**A lane that could not start blames nobody.** `qk run` exits 127 when a lane's command never
+started: the system could not start it, or the interpreter it names, such as `python3` or `sh`, was
+given a first argument that names no file in the checkout. Its receipt's `outcome` is then
+`not-started`, with why under `notStarted`, and its log and summary say "could not start". `python3`
+itself exits 2 for a missing file, as a failure does, so `qk run` reads the file system rather than
+what the interpreter prints. The worker reads the receipt, here or from the second Mac's dispatch,
+not the status alone, since a lane's own command may exit 127. Such a lane says nothing of the
+commits, and running it again would not start it either, so the worker holds the queue at once for a
+session, with every entry waiting and none sent back or bisected: the session makes the command start,
+or removes the entry whose commits took away what it runs, and resumes. Until 2026-11-13 such a lane
+sent the entry back as failing "on this commit on top of origin/main", as apple-engineering's first
+landing was when its checkout had no `scripts/qk` ([#108](https://github.com/vocaro/queuekeeper/issues/108)).
+A lane group's members are not told apart this way yet.
 
 **A run with no verdict blames nobody.** Exit 3 (unmeasured), 69 (a worker that lost Local Network
 access, on which it exits instead of counting the run), 75 (no admission) and 78 (a misconfigured host) say nothing
@@ -750,7 +770,8 @@ records no queue lane reads, and check first: studywright's gate compiles source
 repositories use this path for root `README.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`, and
 Markdown files (`.md` or `.markdown`) under `doc/`, `docs/`, `guides/`, and `knowledge/`.
 The worker runs spelling, unless disabled, followed by the project's `docs` lane or the toolkit's
-implicit `docs` lane (`python3 scripts/qk docs check`). This includes this toolkit's guides and
+implicit `docs` lane (`python3 scripts/qk docs check`, or `qk docs check` by the toolkit's own
+`bin/qk` in a project with no launcher). This includes this toolkit's guides and
 knowledge articles. The toolkit's two checks, `qk spelling` and `qk docs check`, run in the
 worker's checkout without admission, so that seconds of checks never wait behind a whole-host
 gate or busy slots (vocaro-engineering#394): implicit, or a project lane of that name whose
