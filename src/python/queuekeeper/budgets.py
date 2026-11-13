@@ -3,8 +3,9 @@ vocaro-engineering#135), which a landing prints after its result and `doctor` gi
 
 - the gate's median wall time over its recent passing runs in the merge queue made on an unloaded host exceeds the
   gate lane's budgetMinutes, naming its slowest parts and how many loaded runs it left out;
-- and, from doctor alone, a direct-main gate with no budget, a gate that takes a physical device, and a
-  device pass's lane that would go to the second Mac.
+- and, from doctor alone, a direct-main gate with no budget, a gate that takes a physical device (not one whose
+  --device options only name simulator types for `qk simulator-tests` or `qk simulator-pool`, vocaro/queuekeeper#113),
+  and a device pass's lane that would go to the second Mac.
 
 A project's own tooling adds what else a landing warns of, such as a release gate's commit limit
 (extensions.LANDING_WARNINGS).
@@ -132,13 +133,30 @@ def lane_commands(config, name):
     return [lane["command"]] if "command" in lane else []
 
 
+# The qk commands whose --device names a simulator device type, which the simulator pool supplies, and not a
+# physical device: `qk simulator-tests --device iPhone-17-Pro` and `qk simulator-pool take|template --device TYPE`
+# (vocaro/queuekeeper#113).
+SIMULATOR_TYPES = ("simulator-tests", "simulator-pool")
+
+
 def takes_device(command):
-    """Whether a command reserves a physical device: a --device option, `devices take` or `reserve`, or a device
-    pass (`qk device-pass`)."""
-    if any(word == "--device" or word.startswith("--device=") or word == "device-pass" for word in command):
+    """Whether a command reserves a physical device: a device pass (`qk device-pass`), `devices take` or `reserve`,
+    or a --device option of any command but those whose --device names a simulator type (SIMULATOR_TYPES). Such an
+    option belongs to the qk command before it up to a --, after which the words are another command's or arguments
+    passed through, so a --device there counts."""
+    if "device-pass" in command: return True
+    if any(word == "devices" and command[index + 1:index + 2] in (["take"], ["reserve"])
+           for index, word in enumerate(command)):
         return True
-    return any(word == "devices" and command[index + 1:index + 2] in (["take"], ["reserve"])
-               for index, word in enumerate(command))
+    in_qk = simulator = False
+    for word in command:
+        if word == "--" or Path(word).name == "qk":
+            in_qk, simulator = Path(word).name == "qk", False
+        elif in_qk and word in SIMULATOR_TYPES:
+            simulator = True
+        elif (word == "--device" or word.startswith("--device=")) and not simulator:
+            return True
+    return False
 
 
 def passes_devices(command):

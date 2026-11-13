@@ -184,6 +184,37 @@ class DoctorChecks(unittest.TestCase):
         self.assertEqual(budgets.doctor_warnings({"lanes": {"gate": {**GATE, **budgeted},
                                                             "device": {"command": taking[0]}}}), [])
 
+    def test_a_gate_that_names_only_simulator_types_does_not_warn(self):
+        # vocaro/queuekeeper#113: qk simulator-tests's --device names a simulator type the pool supplies.
+        budgeted = {"budgetMinutes": 30, "timeout": 60}
+        simulators = [["python3", "scripts/qk", "simulator-tests", "--scheme", "S", "--runtime", "iOS-27-0",
+                       "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--"],
+                      ["qk", "simulator-tests", "--device=iPhone-17-Pro", "--runtime", "iOS-27-0"],
+                      ["python3", "scripts/qk", "simulator-pool", "take", "--device", "iPhone-17-Pro",
+                       "--runtime", "iOS-27-0"]]
+        for command in simulators:
+            with self.subTest(command=command):
+                self.assertFalse(budgets.takes_device(command))
+                self.assertEqual(budgets.doctor_warnings({"lanes": {"gate": {"command": command, **budgeted}}}), [])
+        group = {"lanes": {"ios-tests": {"command": simulators[0]}, "unit": GATE,
+                           "gate": {"parallel": ["unit", "ios-tests"], "budgetMinutes": 30}}}
+        self.assertEqual(budgets.doctor_warnings(group), [])
+        # The positive controls: a physical device taken beside, or after, a simulator command's options.
+        for command in [["python3", "scripts/qk", "device-pass", "--device", "iPad", "--", "run"],
+                        ["python3", "scripts/qk", "remote", "run", "--device", "iPhone", "ui-tests"],
+                        ["python3", "scripts/qk", "devices", "take", "iPad", "--", "python3", "scripts/qk",
+                         "simulator-tests", "--device", "iPhone-17-Pro"],
+                        ["python3", "scripts/qk", "simulator-tests", "--device", "iPhone-17-Pro", "--", "tool",
+                         "--device", "iPad"],
+                        ["simulator-tests", "--device", "iPad"]]:
+            with self.subTest(command=command):
+                self.assertTrue(budgets.takes_device(command))
+                warnings = budgets.doctor_warnings({"lanes": {"gate": {"command": command, **budgeted}}})
+                self.assertTrue(any("gate takes a physical device" in warning for warning in warnings), warnings)
+        mixed = {"lanes": {"ios-tests": {"command": simulators[0]}, "device": {"command": ["tool", "--device", "iPad"]},
+                           "gate": {"parallel": ["ios-tests", "device"], "budgetMinutes": 30}}}
+        self.assertEqual(len(budgets.doctor_warnings(mixed)), 1)
+
     def test_eng_doctor_gives_them(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",

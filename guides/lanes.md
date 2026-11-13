@@ -129,7 +129,11 @@ slowest parts ([#135](https://github.com/vocaro/vocaro-engineering/issues/135)).
 is left out of that median, and the warning says how many it left out
 ([#235](https://github.com/vocaro/vocaro-engineering/issues/235)). A run with no reading, as before this record existed, counts.
 `qk doctor` also warns of a direct-main `gate` with no budget, and of a `gate` that takes a
-physical device.
+physical device: one that runs `qk device-pass`, `qk devices take` or `reserve`, or passes
+`--device` to any other command. A `--device` of `qk simulator-tests` or `qk simulator-pool`
+names a simulator type, which the pool supplies, so it gives no warning
+([#113](https://github.com/vocaro/queuekeeper/issues/113)). A `--device` after such a command's `--`
+belongs to what follows and still counts.
 
 What a project does when its gate is over budget is its owner's policy; the toolkit's is in
 [keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#keeping-the-split).
