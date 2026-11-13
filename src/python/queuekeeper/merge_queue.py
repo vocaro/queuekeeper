@@ -247,6 +247,10 @@ RESULT_FOLDERS_NAMED = 8
 # BreezEPUB's gate waited 86 min behind three dead entries while status said only "waiting" (#315).
 STUCK_SECONDS = 15 * 60
 WAIT_LIMIT = 6 * 3600
+# While nothing about an entry it follows changes, `qk land --wait` and `qk queue wait` say what it still waits for
+# this often, the gate's own heartbeat cadence (Follow). On 2026-11-12 an entry's wait printed nothing for 90 minutes,
+# behind a failed round and then in its own gate on the second Mac (vocaro/queuekeeper#41).
+HEARTBEAT = 5 * 60
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
 # The folder, beside the main checkouts and outside every repository, that holds each queue's checkouts as
@@ -1758,6 +1762,73 @@ def ahead_of_round(state, at=None):
     return None
 
 
+def situation(queue, entry, state, at=None):
+    """Where entry, still waiting, stands by the round's account (round_lines), as (what makes it this situation and
+    no other, the words that follow its ID). state is the round's account, or None when no worker runs. The first
+    leaves out times and counts that change while nothing else does, so that a wait says a situation once (Follow)."""
+    if entry["state"] == PASSED: return ("passed",), "passed its gate and waits for the push"
+    if state is None: return ("no worker",), f"is {entry['state']}, and no worker runs yet: the wait starts one"
+    identifier, name = entry["id"], state.get("round")
+    for role, gate in (state.get("gates") or {}).items():
+        if identifier not in gate.get("entries", []): continue
+        where = f"{gate.get('lane')} lane on {gate.get('mac') or 'no Mac yet'}"
+        if gate.get("waiting"): where += f", waiting: {gate['waiting']}"
+        key = ("gate", name, role, gate.get("lane"), gate.get("mac"), gate.get("waitingKind") or bool(gate.get("waiting")))
+        count = entries_word(len(gate.get("entries", [])))
+        if role == "stacked": return key, f"gates stacked on round {name}'s batch, {count}: {where}"
+        if role in ("older half", "newer half"):
+            suspects = (state.get("bisect") or {}).get("suspects")
+            return key, (f"had its batch halved after a failure: the {role} of round {name}, {count}"
+                         + (f" of {suspects}" if suspects else "") + f": {where}")
+        return key, f"is in round {name}, {count}, whose gate runs: {where}"
+    if identifier in state.get("entries", []):
+        count, suspects = entries_word(len(state["entries"])), (state.get("bisect") or {}).get("suspects")
+        waits = f"; the round waits for {state['waiting']}" if state.get("waiting") else ""
+        said = (f"had its batch halved after a failure: the older half of round {name}, {count} of {suspects}"
+                if suspects else f"is in round {name}, {count}")
+        return ("round", name, bool(suspects), bool(waits)), f"{said}, whose gate has not started{waits}"
+    if entry["state"] == QUEUED and entry.get("front") and entry.get("noGate"):
+        ahead = ahead_of_round(state, at)
+        if ahead: return ("ahead", name, bool(state.get("gates"))), ahead
+    ahead = [other for other in state.get("entries", []) if (queue.read(other) or {}).get("state") in WAITING]
+    if name and ahead:
+        return (("behind", name, tuple(ahead)),
+                f"waits behind round {name} ({', '.join(ahead)}), which has run {ago(state.get('started', 0), at)}")
+    return ("between", entry["state"]), f"is {entry['state']}, and the worker is between rounds"
+
+
+def round_facts(state, identifier, at=None):
+    """What `qk queue status` says of the round an entry waits on (round_lines), on one line: the round, and the
+    gates that hold the entry, or every gate when it is in none of them; no log path, which status names."""
+    gates = (state or {}).get("gates") or {}
+    own = {role: gate for role, gate in gates.items() if identifier in gate.get("entries", [])}
+    lines = round_lines({**(state or {}), "gates": own or gates}, at)
+    parts = [part.strip() for line in lines for part in line.splitlines() if not part.strip().startswith("log: ")]
+    return "; ".join(parts)
+
+
+class Follow:
+    """What `qk land --wait` and `qk queue wait` print of an entry while it waits (vocaro/queuekeeper#41): a line
+    each time its situation changes, never the same situation twice, and, after HEARTBEAT seconds with no line, a
+    heartbeat that says what it still waits for, with the facts `qk queue status` shows of its round."""
+    def __init__(self, identifier, clock=time.monotonic):
+        self.identifier, self.clock = identifier, clock
+        self.said, self.last = set(), clock()
+
+    def look(self, queue, entry, state, at=None):
+        """The line to print now for entry, or None."""
+        key, words = situation(queue, entry, state, at)
+        now = self.clock()
+        if key not in self.said:
+            self.said.add(key)
+            self.last = now
+            return f"{self.identifier} {words}"
+        if now - self.last < HEARTBEAT: return None
+        self.last = now
+        facts = round_facts(state, self.identifier, at) if state else ""
+        return f"heartbeat: {self.identifier} {words}" + (f"; {facts}" if facts else "")
+
+
 def refused_modules(line):
     """The test modules a refusal of qk unittest's names (parallel.refusals), by file name, whatever checkout it
     was printed in."""
@@ -2073,11 +2144,23 @@ def failed_lane_excerpt(lane_log, dispatch_output, lane, swift_assertions=()):
     return excerpt
 
 
+def followed(queue, looks):
+    """Print what each (Follow, entry) of looks has to say now, by the round's account while a worker runs. Nothing
+    here may end the wait: a line that cannot be made is left out."""
+    try:
+        state = (queue.round_state() or {}) if queue.working() else None
+        for follow, entry in looks:
+            line = follow.look(queue, entry, state)
+            if line: print(line, flush=True)
+    except Exception: pass  # noqa: BLE001
+
+
 def wait(root, identifier, limit=WAIT_LIMIT):
     """Exit 0 once the entry lands, 1 when it comes back to its author, 75 while the queue is held or
     the limit passes with the entry still waiting. A worker a reboot ended starts again here."""
     queue = Queue(root)
     deadline = time.monotonic() + limit
+    follow = Follow(identifier)
     while True:
         entry = queue.read(identifier)
         if entry is None: raise ValueError(f"The queue has no entry {identifier}")
@@ -2099,6 +2182,7 @@ def wait(root, identifier, limit=WAIT_LIMIT):
         if time.monotonic() >= deadline:
             print(f"{identifier} is still {entry['state']} after {limit:g}s")
             return resources.BUSY
+        followed(queue, [(follow, entry)])
         queue.start()
         time.sleep(POLL)
 
@@ -2114,6 +2198,7 @@ def wait_for(root, identifiers, limit=WAIT_LIMIT):
     unknown = [identifier for identifier in identifiers if queue.read(identifier) is None]
     if unknown: raise ValueError(f"The queue has no entr{'y' if len(unknown) == 1 else 'ies'} {', '.join(unknown)}")
     deadline = time.monotonic() + limit
+    follows = {identifier: Follow(identifier) for identifier in identifiers}
     while True:
         entries = [queue.read(identifier) or {"id": identifier, "state": REMOVED, "subject": "(no record)"}
                    for identifier in identifiers]
@@ -2135,6 +2220,7 @@ def wait_for(root, identifiers, limit=WAIT_LIMIT):
         if time.monotonic() >= deadline:
             print(f"{said} still waiting after {limit:g}s")
             return resources.BUSY
+        followed(queue, [(follows[entry["id"]], entry) for entry in waiting])
         queue.start()
         time.sleep(POLL)
 

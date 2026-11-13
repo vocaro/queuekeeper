@@ -299,7 +299,12 @@ gate: once they land, rebase onto `origin/main` and add it again. A session ther
 lands with `qk land --wait` run as a background command, whose end wakes it within seconds of a
 send-back; on 2026-11-03 a session that had run plain `qk land` learned of a conflict only half an
 hour later, from `qk queue status`
-([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). When a batch fails, the oldest half runs next, and so on until one entry fails
+([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). While it waits, `qk land --wait`, like
+`qk queue wait`, prints a line each time its entry's situation changes, such as the round it waits behind or the Mac
+its gate runs on, and a `heartbeat:` line at most every 5 minutes while nothing does, with what `qk queue status`
+shows of that round. On 2026-11-12 a landing printed nothing for 90 minutes, behind a failed round and then in its
+own gate on the second Mac, until the owner asked why
+([#41](https://github.com/vocaro/queuekeeper/issues/41)). When a batch fails, the oldest half runs next, and so on until one entry fails
 alone; every entry that passes along the way lands.
 
 **A later commit does not repair an earlier one.** The check and the round cherry-pick an entry's

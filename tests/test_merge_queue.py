@@ -8569,6 +8569,109 @@ class RoundAccount(Fixture):
         self.assertIsNone(worker.queue.round_state()["waiting"])
 
 
+class WaitFollows(Fixture):
+    """`qk land --wait` and `qk queue wait` say each change of their entry's situation once, by the round's account,
+    and a heartbeat while nothing changes; their result lines and exit statuses stay as they were
+    (vocaro/queuekeeper#41)."""
+    MAC = "the second Mac (build-host)"
+    # When the rounds of these tests are looked at: each began 125 s before it, and its gate 65 s.
+    NOW = 1_800_000_000.0
+
+    @staticmethod
+    def round(queue, name, entries, gates, bisect=None, started=None):
+        def change(state):
+            state.clear()
+            state.update(round=name, started=started or WaitFollows.NOW - 125, entries=entries, gates=gates,
+                         bisect=bisect)
+        queue.note(change)
+
+    @staticmethod
+    def gate(entries, mac=None, waiting=None, kind=None):
+        return {"lane": "gate", "began": WaitFollows.NOW - 65, "entries": entries, "mac": mac, "waiting": waiting,
+                "waitingKind": kind, "log": "/logs/round-gate.log"}
+
+    def test_each_change_is_one_line_and_the_result_lines_stay(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        a, b = self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        self.round(queue, "R1", [a], {"batch": self.gate([a], self.MAC)})
+        # Each poll moves the round one step; one step changes nothing, and a wait says nothing of it.
+        steps = [lambda: None,
+                 lambda: self.round(queue, "R2", [b], {"batch": self.gate([b])}),
+                 lambda: self.round(queue, "R2", [b], {"batch": self.gate([b], self.MAC)}),
+                 lambda: self.round(queue, "R2", [b], {"older half": self.gate([b], self.MAC)},
+                                    bisect={"suspects": 2, "older": 1, "newer": 1}),
+                 lambda: queue.settle(self.state(b), mq.FAILED, why="its gate failed")]
+        slept = []
+        def poll():
+            slept.append(mq.POLL)
+            steps[len(slept) - 1]()
+        with patch.object(mq.Queue, "start"), patch.object(mq.Queue, "working", return_value=True), \
+                patch.object(mq.time, "time", return_value=self.NOW), \
+                LandWaitsForAhead.polls(poll), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(mq.wait(self.repo, b), 1)
+        lines = said.getvalue().splitlines()
+        self.assertEqual(lines[:4], [
+            f"{b} waits behind round R1 ({a}), which has run 2m05s",
+            f"{b} is in round R2, 1 entry, whose gate runs: gate lane on no Mac yet",
+            f"{b} is in round R2, 1 entry, whose gate runs: gate lane on {self.MAC}",
+            f"{b} had its batch halved after a failure: the older half of round R2, 1 entry of 2: gate lane on "
+            f"{self.MAC}"])
+        # The result, exactly as before.
+        self.assertEqual(lines[4:], mq.describe(self.state(b)).splitlines())
+
+    def test_queue_wait_follows_each_entry_it_waits_for(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        a, b = self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        self.round(queue, "R1", [a], {"batch": self.gate([a], self.MAC)})
+        def poll():
+            for identifier in (a, b): queue.settle(self.state(identifier), mq.FAILED, why="its gate failed")
+        with patch.object(mq.Queue, "start"), patch.object(mq.Queue, "working", return_value=True), \
+                patch.object(mq.time, "time", return_value=self.NOW), \
+                LandWaitsForAhead.polls(poll), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(mq.wait_for(self.repo, [a, b]), 1)
+        self.assertEqual(said.getvalue().splitlines()[:2], [
+            f"{a} is in round R1, 1 entry, whose gate runs: gate lane on {self.MAC}",
+            f"{b} waits behind round R1 ({a}), which has run 2m05s"])
+
+    def test_a_heartbeat_while_nothing_changes_says_what_status_shows(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        a, b = self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        waiting = "admission on the second Mac (build-host): its one-minute load 239 is past the busy limit"
+        self.round(queue, "R1", [a], {"batch": self.gate([a], self.MAC, waiting, mq.lane_wait.ADMISSION)})
+        now = [1000.0]
+        follow = mq.Follow(b, clock=lambda: now[0])
+        def look(seconds):
+            now[0] += seconds
+            return follow.look(queue, self.state(b), queue.round_state(), self.NOW)
+        first = look(0)
+        self.assertEqual(first, f"{b} waits behind round R1 ({a}), which has run 2m05s")
+        self.assertIsNone(look(mq.HEARTBEAT - 1))
+        beat = look(1)
+        self.assertTrue(beat.startswith(f"heartbeat: {b} waits behind round R1 ({a}), which has run 2m05s; "
+                                        f"round R1: 1 entry; batch ({a}): gate lane on {self.MAC}, running 1m05s; "
+                                        f"waiting: {waiting}"), beat)
+        self.assertNotIn("log:", beat)
+        self.assertIsNone(look(60))
+        # A change is said at once, and a situation already said is not said again, but in a heartbeat.
+        self.round(queue, "R2", [b], {"batch": self.gate([b], self.MAC)})
+        self.assertEqual(look(1), f"{b} is in round R2, 1 entry, whose gate runs: gate lane on {self.MAC}")
+        self.round(queue, "R1", [a], {"batch": self.gate([a], self.MAC, waiting, mq.lane_wait.ADMISSION)})
+        self.assertIsNone(look(1))
+        self.assertTrue(look(mq.HEARTBEAT).startswith(f"heartbeat: {b} waits behind round R1"))
+        # With no worker, and once passed.
+        self.assertEqual(follow.look(queue, self.state(b), None), f"{b} is queued, and no worker runs yet: the wait "
+                                                                    "starts one")
+        self.assertEqual(follow.look(queue, {**self.state(b), "state": mq.PASSED}, queue.round_state()),
+                         f"{b} passed its gate and waits for the push")
+        # Its own round, halved, before its gate starts.
+        self.round(queue, "R3", [b], {}, bisect={"suspects": 4, "older": 1, "newer": 3})
+        self.assertEqual(look(1), f"{b} had its batch halved after a failure: the older half of round R3, 1 entry of "
+                                  "4, whose gate has not started")
+
+
 class GateResultsNamed(Fixture):
     """A passing gate says where its per-test results are, in its log and `qk land --wait`'s output, and copies
     none of them there (#266): a session once searched the queue's checkout to confirm its new tests had run."""
