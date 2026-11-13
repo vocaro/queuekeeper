@@ -133,6 +133,13 @@ def second_mac(host):
     return f"the second Mac ({host})"
 
 
+def host_of(mac):
+    """The second Mac's host that second_mac named in mac, or None for this Mac or for words it did not write."""
+    if isinstance(mac, str) and mac.startswith("the second Mac (") and mac.endswith(")") and len(mac) > 17:
+        return mac[len("the second Mac ("):-1]
+    return None
+
+
 def sent(host):
     """The lane has gone to host to run. A wait goes on until the second Mac takes it (relayed) or declines it."""
     if not os.environ.get(VARIABLE): return

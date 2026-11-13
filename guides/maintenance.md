@@ -920,9 +920,29 @@ gates and speculative stacks whose last lane no Mac admitted. Its signals:
   from the same branch, or with the same subject, held when it failed or was taken out.
 - **no worker**: entries waiting, the queue not held, and no worker running
   ([#287](https://github.com/vocaro/vocaro-engineering/issues/287)); **held**: the hold's reason.
+- **held back on a Mac with spare CPU**: a running gate that has waited 15 minutes or more for
+  admission (`IDLE_WAIT_SECONDS`) on a Mac whose CPU busy share is under its `HEAVY_BUSY_LIMIT`. It
+  says what the gate waits behind, in the waiter's own refusal, and each holder of admission on that
+  Mac: its command, PID, how long it has held, the CPU it and what it started use, and where its work
+  comes from, its repository, branch, worktree and agent session, so that the session that owns it can
+  be found and asked. On 2026-11-11 BreezEPUB's gate waited 45 minutes on this Mac, 83% idle, behind
+  one slot held by another session's iPad Quick Look run at about 3% CPU, while doctor said
+  `healthy`; finding the holder took `ps`, `lsof`, the slot files and a guess at the worktree
+  ([vocaro/queuekeeper#89](https://github.com/vocaro/queuekeeper/issues/89)). The bound is
+  `STUCK_SECONDS`'s: an idle Mac admits within `HEAVY_SETTLE_SECONDS` (30 seconds) of a slot freeing,
+  so a quarter hour is no settle and no short lane ahead, and it is already three quarters of the
+  20-minute gate goal. The busy share is read as the gate's busy sampler reads it, and the holders as
+  `qk admissions now` reads them, over ssh for a gate that waits for the second Mac. Holders that
+  cannot be read are `unknown`, and a holder whose process could not be checked
+  ([vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23)) has its CPU use unknown;
+  neither is guessed light. A Mac at or above its limit is busy, and its gate's wait is no finding; one
+  whose busy share cannot be read gets a `note:` saying whether it has spare CPU is unknown.
 
-It exits 0 and says `healthy` when it finds none of these, and 1 otherwise; `--json` gives the same.
-A running gate that waits for admission is no finding; doctor adds a `note:` pointing to `qk admissions
+It exits 0 and says `healthy` when it finds none of these, and 1 otherwise; `--json` gives the same,
+and a held-back gate's finding there carries its Mac, busy share and limit, and the holders as `qk
+admissions now --json` gives them.
+A running gate that waits for admission for less than that bound, or on a busy Mac, is no finding;
+doctor adds a `note:` pointing to `qk admissions
 now` ([shared-host.md, Who holds and who waits](shared-host.md#who-holds-and-who-waits)), and so does
 `qk doctor` for a lane of its checkout.
 It changes nothing: no entry, no hold, no worker. The worker acts on a refused gate itself: it sends

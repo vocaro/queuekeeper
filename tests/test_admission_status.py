@@ -90,6 +90,25 @@ class HoldersTests(Namespace):
         self.assertTrue(any(line.startswith("    Gamma model: heavy with the model, slot 2 (beyond the guaranteed)")
                             for line in lines))
 
+    def test_each_running_holder_says_how_much_cpu_it_and_what_it_started_use(self):
+        # What `qk queue doctor` names beside a gate the holder holds back on an idle Mac (vocaro/queuekeeper#89).
+        self.holders({"a": self.owner("Alpha"), "dead": self.owner("Gone", start="Thu Jan  1 00:00:00 1970")},
+                     slots=[(0, "a"), (1, "dead")])
+        found = {holder["label"]: holder for holder in self.read()["holders"]}
+        self.assertIsInstance(found["Alpha"]["cpuPercent"], float)
+        self.assertIsNone(found["Gone"]["cpuPercent"])
+        # Children count: a holder mostly waits on what it started.
+        listing = subprocess.CompletedProcess([], 0, f"{os.getpid()} 1 0.5\n 900001 {os.getpid()} 40,0\n900002 900001 2.5\n"
+                                                     "900003 1 99.0\n", "")
+        with patch.object(offload_host.subprocess, "run", return_value=listing):
+            self.assertEqual(offload_host.cpu_use([os.getpid(), 123]), {os.getpid(): 43.0})
+        # A ps that cannot say leaves it unknown, and the reading partial, never idle.
+        with patch.object(offload_host, "cpu_use", return_value=None):
+            reading = self.read()
+        self.assertEqual(reading["state"], "partial")
+        self.assertIn("ps could not say how much CPU the holders use", reading["reasons"])
+        self.assertIsNone({holder["label"]: holder for holder in reading["holders"]}["Alpha"]["cpuPercent"])
+
     def test_exclusive_work_holds_every_slot_and_the_model(self):
         self.holders({"x": self.owner("Bench", exclusive=True, model=True)}, slots=[(0, "x")])
         reading = self.read()

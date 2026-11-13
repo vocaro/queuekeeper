@@ -1163,6 +1163,97 @@ class Doctor(UnittestGate):
         queue.note(lambda state: state["gates"]["main"].update(waitingKind="admission"))
         self.assertEqual(self.doctor(working=False)[2]["hints"], [])
 
+    # vocaro/queuekeeper#89: on 2026-11-11 BreezEPUB's gate waited 45 minutes on this Mac, 83% idle, behind one slot
+    # held by another session's iPad Quick Look run at about 3% CPU, while doctor said healthy.
+    REFUSAL = "all 3 guaranteed slots are busy"
+    QUICK_LOOK = {"identity": "q", "label": "python3 scripts/qk run quicklook-ipad", "pid": 4242, "start": "x",
+                  "heldSeconds": 5 * 3600, "process": "running", "cpuPercent": 3.0, "exclusive": False,
+                  "wholeHost": False, "model": False, "guaranteed": [0], "extra": [], "slots": [0], "stranded": False,
+                  "origin": {"repository": "BreezEPUB", "branch": "quicklook",
+                             "worktree": "/Users/x/.claude/worktrees/quicklook-ipad", "session": "local_1"}}
+
+    def waiting_gate(self, minutes, mac="this Mac"):
+        """A worker's account of a gate waiting minutes for admission on mac, as GateWatch records it."""
+        self.commit("tests/test_new.py", "new", ISOLATED)
+        self.add("new")
+        queue = mq.Queue(self.repo)
+        queue.note(lambda state: state.setdefault("gates", {}).__setitem__("main", {
+            "lane": "gate", "waiting": f"admission on {mac}: {self.REFUSAL}", "waitingKind": "admission",
+            "waitingOn": mac, "waitingSince": time.time() - minutes * 60}))
+        return queue
+
+    def reading(self, *holders):
+        """offload_host.admissions_now's reading of a Mac with holders, as `qk admissions now` takes it."""
+        return {"schemaVersion": 1, "mac": "m", "observedAt": time.time(), "state": "observed", "reasons": [],
+                "namespace": {"shared": True}, "limits": {"slots": 3, "slotsMax": 4}, "slots": [], "model": {"holder": None},
+                "holders": list(holders), "unattributed": [], "waiters": []}
+
+    def test_a_gate_held_back_long_by_a_light_holder_on_an_idle_mac_names_the_holder_and_changes_nothing(self):
+        queue = self.waiting_gate(45)
+        unsure = {**self.QUICK_LOOK, "identity": "u", "label": "python3 scripts/qk admit -- xcodebuild test", "pid": 77,
+                  "heldSeconds": 600, "process": "unknown", "cpuPercent": None, "origin": None}
+        before, account = self.snapshot(), queue.round_state()["gates"]
+        from queuekeeper import remote
+        with patch.object(offload_host, "admissions_now", return_value=self.reading(self.QUICK_LOOK, unsure)), \
+                patch.object(remote, "admissions_there", side_effect=AssertionError("asked the second Mac")):
+            status_, said, found = self.doctor()
+        self.assertEqual((status_, found["healthy"]), (1, False), said)
+        (finding,) = found["findings"]
+        self.assertEqual(finding["signal"], "held back on a Mac with spare CPU")
+        diagnosis = finding["diagnosis"]
+        # What it waits behind, in the waiter's own words, and how idle the Mac is.
+        self.assertIn(f"the main gate's gate has waited 45m00s for admission on this Mac: {self.REFUSAL}, while this "
+                      "Mac is 25% busy, under its 75% limit", diagnosis)
+        # Each holder: command, PID, hold time, CPU use and where its work comes from.
+        self.assertIn("python3 scripts/qk run quicklook-ipad (PID 4242, held 5h00m, CPU 3% of one core, with what it "
+                      "started, from repository BreezEPUB, branch quicklook, worktree "
+                      "/Users/x/.claude/worktrees/quicklook-ipad, session local_1", diagnosis)
+        # A holder whose process could not be checked (vocaro/queuekeeper#23) is said so, never guessed light.
+        self.assertIn("python3 scripts/qk admit -- xcodebuild test (PID 77, held 10m00s, its process could not be "
+                      "checked, so its CPU use is unknown, where its work comes from was not recorded)", diagnosis)
+        self.assertIn("qk admissions now", finding["remedy"])
+        self.assertEqual([holder["pid"] for holder in finding["holders"]], [4242, 77])
+        self.assertIn("held back on a Mac with spare CPU: the main gate's gate has waited", said)
+        self.assertEqual((self.snapshot(), queue.round_state()["gates"]), (before, account))
+        self.busy_of.assert_called_with(None)
+
+    def test_a_gate_waiting_long_on_a_busy_mac_or_briefly_on_an_idle_one_is_no_finding(self):
+        # The negative control: a Mac at or above its busy limit is busy, and its holders are not read.
+        self.waiting_gate(45)
+        from queuekeeper import remote
+        never = (patch.object(offload_host, "admissions_now", side_effect=AssertionError("read")),
+                 patch.object(remote, "admissions_there", side_effect=AssertionError("asked")))
+        self.busy_of.return_value = (90.0, 75.0, "this Mac")
+        with never[0], never[1]: status_, said, found = self.doctor()
+        self.assertEqual((status_, found["findings"]), (0, []), said)
+        self.assertIn("note: the main gate's gate has waited 45m", said)
+        # A busy share that cannot be read is unknown, never idle: a note, no finding.
+        self.busy_of.return_value = None
+        with never[0], never[1]: status_, said, found = self.doctor()
+        self.assertEqual((status_, found["findings"]), (0, []), said)
+        self.assertIn("whether this Mac has spare CPU is unknown, as its busy share could not be read", said)
+        # Under the bound, an idle Mac's wait is read no further.
+        self.busy_of.return_value = (25.0, 75.0, "this Mac")
+        mq.Queue(self.repo).note(lambda state: state["gates"]["main"].update(
+            waitingSince=time.time() - mq.IDLE_WAIT_SECONDS + 60))
+        with never[0], never[1]: self.assertEqual(self.doctor()[2]["findings"], [])
+
+    def test_a_gate_waiting_for_the_second_mac_reads_its_holders_there_or_says_unknown(self):
+        self.waiting_gate(30, mac="the second Mac (build-host)")
+        from queuekeeper import remote
+        self.busy_of.return_value = (10.0, 75.0, "build-host")
+        with patch.object(offload_host, "admissions_now", side_effect=AssertionError("read this Mac")), \
+                patch.object(remote, "admissions_there", return_value=self.reading(self.QUICK_LOOK)) as there:
+            found = self.doctor()[2]
+        self.busy_of.assert_called_with("build-host")
+        self.assertEqual(there.call_args.args[0], "build-host")
+        self.assertIn("while the second Mac (build-host) is 10% busy", found["findings"][0]["diagnosis"])
+        self.assertIn("PID 4242, held 5h00m, CPU 3% of one core", found["findings"][0]["diagnosis"])
+        with patch.object(remote, "admissions_there", side_effect=remote.Unreachable("build-host did not answer in 10s", "wake it")):
+            found = self.doctor()[2]
+        self.assertIn("Holders: unknown: build-host did not answer in 10s", found["findings"][0]["diagnosis"])
+        self.assertIsNone(found["findings"][0]["holders"])
+
     def test_gates_refused_before_running_name_the_entry_that_brings_the_refusal_and_change_nothing(self):
         self.commit("tests/test_new.py", "new", ISOLATED)
         self.commit("tests/test_forgot.py", "forgot", UNISOLATED)
@@ -8576,6 +8667,13 @@ class RoundAccount(Fixture):
         self.assertEqual(gate["waitingKind"], mq.lane_wait.UNREACHABLE)
         mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
         self.assertEqual(self.gate_after_look(queue, watch)["waitingKind"], mq.lane_wait.ADMISSION)
+        # The Mac it waits for, which qk queue doctor reads that Mac's busy share and holders by (#89).
+        self.assertEqual(queue.round_state()["gates"]["batch"]["waitingOn"], "this Mac")
+        mq.lane_wait.relayed(json.dumps({"kind": mq.lane_wait.ADMISSION, "reason": "all slots are busy"}), "build-host")
+        gate = self.gate_after_look(queue, watch)
+        self.assertEqual(gate["waitingOn"], "the second Mac (build-host)")
+        self.assertEqual(mq.lane_wait.host_of(gate["waitingOn"]), "build-host")
+        self.assertIsNone(mq.lane_wait.host_of("this Mac"))
         mq.lane_wait.running()
         gate = self.gate_after_look(queue, watch)
         self.assertEqual((gate["mac"], gate["waiting"], gate["waitingSince"], gate["waitingKind"]),

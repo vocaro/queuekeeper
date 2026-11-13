@@ -102,7 +102,9 @@ operations are degraded.
 ## A queue that looks stuck
 
 `qk queue doctor` reads the queue's own records and says whether it is testing or stuck,
-and what would unstick it. `qk queue placement` shows whether each build Mac could start a
+and what would unstick it. It names a gate that has waited 15 minutes for admission on a
+Mac with spare CPU, and each holder there with its command, PID, hold time, CPU use and
+worktree. `qk queue placement` shows whether each build Mac could start a
 gate now, without running one.
 
 `qk queue events` prints the queue's journal, one line for each change of its state. See

@@ -533,8 +533,12 @@ isolated `HEAVY_SLOT_DIR` or `QUEUEKEEPER_GATE_LOCK_FILE`. What it reads, and wh
 that one bad PID or one failed `ps` does not leave every holder unchecked. A holder whose PID is gone, or runs
 another process, is ended and shown stranded. One whose PID runs but whose start neither can read is shown as
 could not be checked, not as ended: a holder alive but slow to confirm is not freed on a guess. Recovery reads
-an owner's end the same way ([#23](https://github.com/vocaro/queuekeeper/issues/23)). It does not yet flag a wait as
-too long: the owner deferred that until there is history to calibrate it.
+an owner's end the same way ([#23](https://github.com/vocaro/queuekeeper/issues/23)). `--json` gives each running
+holder's `cpuPercent`, the percent of one core it and the processes under it use, by `ps`'s own `%cpu`, null when
+`ps` cannot say. It does not itself flag a wait as too long: the owner deferred that until there is history to
+calibrate it. `qk queue doctor` does flag one narrower case from this reading, a queue's gate that has waited 15
+minutes on a Mac with spare CPU, and names its holders there
+([the merge queue](maintenance.md#the-merge-queue); [vocaro/queuekeeper#89](https://github.com/vocaro/queuekeeper/issues/89)).
 
 Under each running holder, a `progress:` line gives each of its leaves' live quiet-interval
 observations: the lane and Mac, how long it has been quiet against the bound it declares, and

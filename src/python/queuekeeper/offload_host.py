@@ -1687,6 +1687,38 @@ def census(pids):
     return listed
 
 
+def cpu_use(pids):
+    """{PID: the percent of one core it and every process under it use, by ps's own decaying %cpu} for those of pids
+    that run, or None when ps cannot say: what each holder `qk admissions now` reads costs the Mac, for `qk queue
+    doctor` to name beside a gate it holds back (vocaro/queuekeeper#89). A holder's own process mostly waits on what it
+    started, so its children count. One bounded ps reads every process; nothing here judges a holder."""
+    pids = {pid for pid in pids if type(pid) is int and pid > 0}
+    if not pids: return {}
+    try:
+        found = subprocess.run(["ps", "-axo", "pid=,ppid=,%cpu="], capture_output=True, text=True, timeout=5,
+                               stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError): return None
+    if found.returncode: return None
+    used, children = {}, {}
+    for line in found.stdout.splitlines():
+        parts = line.split()
+        try: pid, parent, share = int(parts[0]), int(parts[1]), float(parts[2].replace(",", "."))
+        except (IndexError, ValueError): continue
+        used[pid] = share
+        children.setdefault(parent, []).append(pid)
+    totals = {}
+    for pid in pids & set(used):
+        total, left, seen = 0.0, [pid], set()
+        while left:
+            each = left.pop()
+            if each in seen: continue
+            seen.add(each)
+            total += used.get(each, 0.0)
+            left += children.get(each, [])
+        totals[pid] = round(total, 1)
+    return totals
+
+
 def kernel_start(pid):
     """When pid started, as `ps -o lstart=` prints it with its spacing collapsed, from the kernel's own record of the
     process (sysctl KERN_PROC_PID), which reads none of its arguments and starts no process: LookupError when no such
@@ -1899,6 +1931,12 @@ def admissions_now(at=None):
                             "process": process, "progress": progress,
                             # A dead or uncertain entry is stranded: admission counts it until recovery removes it.
                             "stranded": owner.get("uncertain") is True or process == "ended"})
+        # What each running holder costs the CPU now, None when that cannot be read or it does not run (#89).
+        running = [holder["pid"] for holder in holders if holder["process"] == "running"]
+        used = cpu_use(running) if running else {}
+        if used is None: reasons.append("ps could not say how much CPU the holders use")
+        for holder in holders:
+            holder["cpuPercent"] = (used or {}).get(holder["pid"]) if holder["process"] == "running" else None
         reading["holders"] = sorted(holders, key=lambda holder: holder["admittedAt"] or 0)
         reading["slots"] = [{"slot": slot, "guaranteed": slots is None or slot < slots,
                              "holder": named.get(slot) if named.get(slot) in owners else None,

@@ -249,6 +249,13 @@ RESULT_FOLDERS_NAMED = 8
 # stranded refusal, which its wait record says) is stuck, not waiting, once it has waited this long: on 2026-11-07
 # BreezEPUB's gate waited 86 min behind three dead entries while status said only "waiting" (#315).
 STUCK_SECONDS = 15 * 60
+# A gate that has waited this long for admission on a Mac whose CPU busy share is under its limit is held back by
+# what holds admission there, not by load, and `qk queue doctor` names the holders (idle_waits). On 2026-11-11
+# BreezEPUB's gate waited 45 min on this Mac, 83% idle, behind one slot held by an iPad Quick Look run at about 3% CPU
+# (vocaro/queuekeeper#89). The bound is STUCK_SECONDS's: once a slot frees, an idle Mac admits within
+# HEAVY_SETTLE_SECONDS (30 s), so a quarter hour's wait is no settle and no short lane ahead, and it is already three
+# quarters of the owner's 20-minute gate goal; a shorter bound would name holders running an ordinary short lane.
+IDLE_WAIT_SECONDS = STUCK_SECONDS
 WAIT_LIMIT = 6 * 3600
 # While nothing about an entry it follows changes, `qk land --wait` and `qk queue wait` say what it still waits for
 # this often, the gate's own heartbeat cadence (Follow). On 2026-11-12 an entry's wait printed nothing for 90 minutes,
@@ -1196,8 +1203,9 @@ class GateWatch:
             self.say(f"{self.lane}: {held_up}")
             self.queue.emit("gate.stuck", lane=self.lane, role=self.role, why=held_up, waitingSince=since)
         self.said_stuck = bool(held_up)
+        # waitingOn is the Mac the wait is for, by the record's own words, which qk queue doctor reads (#89).
         self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingKind=record.get("kind") if waiting else None,
-                             waitingSince=since, stranded=stranded,
+                             waitingOn=record.get("mac") if waiting else None, waitingSince=since, stranded=stranded,
                              progress=lane_progress.current(lane_wait.path_of(self.checkout, self.lane), self.began))
 
     def every(self):
@@ -1930,10 +1938,13 @@ def gate_logs(queue, lanes, working):
 
 
 def doctor(root, as_json=False):
-    """`qk queue doctor`: print diagnose's findings, or that the queue is healthy. 0 when it finds the queue healthy,
-    1 when it finds anything."""
+    """`qk queue doctor`: print diagnose's findings, and idle_waits', or that the queue is healthy. 0 when it finds the
+    queue healthy, 1 when it finds anything."""
     findings, waiting, working = diagnose(root)
     hints = admission_hints(root) if working else []
+    if working:
+        held_back, unknown = idle_waits(root)
+        findings, hints = findings + held_back, hints + unknown
     if as_json:
         print(json.dumps({"healthy": not findings, "waiting": len(waiting), "worker": working, "findings": findings,
                           "hints": hints}, indent=2))
@@ -1964,6 +1975,71 @@ def admission_hints(root, at=None):
         hints.append(f"the {role} gate's {gate.get('lane') or 'lane'} has waited{waited} for {gate.get('waiting')}; "
                      "`python3 scripts/qk admissions now` shows who holds and who waits for admission on each Mac")
     return hints
+
+
+def idle_waits(root, at=None, busy=None, read=None):
+    """(findings, notes) for each running gate that has waited IDLE_WAIT_SECONDS or more for admission on a Mac whose
+    CPU busy share is under its limit (vocaro/queuekeeper#89): what it waits behind, in the waiter's own words, and each
+    holder there, with its command, PID, hold time, CPU use and where its work comes from (its repository and
+    worktree), so that the session that owns it can be found and asked. busy reads the Mac's busy share, as the gate's
+    busy sampler does (busy_of); read reads its holders, as `qk admissions now` does (holders_on). A Mac at or above
+    its limit is busy, and its wait no finding: a gate waiting for admission is how a busy Mac looks. One whose busy
+    share or holders cannot be read is said to be unknown, never idle. It changes nothing."""
+    busy, read, at = busy or busy_of, read or holders_on, time.time() if at is None else at
+    try: state = Queue(root).round_state() or {}
+    except Exception: return [], []  # noqa: BLE001 - a reading never fails the doctor
+    findings, notes = [], []
+    for role, gate in sorted((state.get("gates") or {}).items()):
+        if not isinstance(gate, dict) or gate.get("waitingKind") != lane_wait.ADMISSION: continue
+        since, mac = gate.get("waitingSince"), gate.get("waitingOn")
+        if not isinstance(since, (int, float)) or at - since < IDLE_WAIT_SECONDS: continue
+        host = lane_wait.host_of(mac)
+        if mac != lane_wait.HERE and host is None: continue  # a record from before waitingOn names no Mac to read
+        what = f"the {role} gate's {gate.get('lane') or 'lane'} has waited {ago(since, at)} for {gate.get('waiting')}"
+        try: found = busy(host)
+        except Exception: found = None  # noqa: BLE001
+        if found is None:
+            notes.append(f"{what}; whether {mac} has spare CPU is unknown, as its busy share could not be read")
+            continue
+        share, limit = found[0], found[1]
+        if share >= limit: continue
+        holders, why = read(host)
+        named = ("unknown: " + why if holders is None else "; ".join(map(holder_words, holders))
+                 if holders else "none recorded, as admission's guard stood when read")
+        findings.append({
+            "signal": "held back on a Mac with spare CPU",
+            "diagnosis": f"{what}, while {mac} is {share:.0f}% busy, under its {limit:g}% limit: what holds admission "
+                         f"there holds it back, not load. Holders: {named} (vocaro/queuekeeper#89)",
+            "remedy": "ask the session that owns each holder, found by its worktree, whether its run is still needed: "
+                      "stopping it is that session's to do; `python3 scripts/qk admissions now` shows the same",
+            "gate": role, "mac": mac, "waitingSince": since, "cpuBusy": share, "busyLimit": limit, "holders": holders})
+    return findings, notes
+
+
+def holders_on(host):
+    """(the holders of admission on host, the second Mac, or with host None on this Mac, as `qk admissions now` reads
+    them; None when they cannot be read, with why)."""
+    try: reading = remote.admissions_there(host) if host else offload_host.admissions_now()
+    except Exception as error: return None, str(error)  # noqa: BLE001 - unknown, never idle
+    holders = reading.get("holders") if isinstance(reading, dict) else None
+    if not isinstance(holders, list):
+        reasons = reading.get("reasons") if isinstance(reading, dict) else None
+        return None, "; ".join(reasons or []) or "the reading named no holders"
+    return holders, None
+
+
+def holder_words(holder):
+    """A holder of admission as idle_waits names it: its command, PID, hold time, CPU use and origin."""
+    held = holder.get("heldSeconds")
+    process, cpu = holder.get("process"), holder.get("cpuPercent")
+    if process == "ended": used = "its process has ended, and admission counts it until it is recovered"
+    elif process == "unknown": used = "its process could not be checked, so its CPU use is unknown"
+    elif isinstance(cpu, (int, float)): used = f"CPU {cpu:g}% of one core, with what it started"
+    else: used = "CPU use unknown"
+    origin = resources.whence(holder.get("origin"))
+    return (f"{holder.get('label') or 'an unnamed owner'} (PID {holder.get('pid')}, held "
+            + (resources.duration(held) if isinstance(held, (int, float)) else "for an unknown time")
+            + f", {used}, " + (f"from {origin}" if origin else "where its work comes from was not recorded") + ")")
 
 
 def placement(root, name=None, as_json=False):
