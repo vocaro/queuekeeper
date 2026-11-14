@@ -192,3 +192,21 @@ def unfixed(root, hosts):
 
 
 cli.fix_hosts = unfixed
+
+
+# What this module sets in the environment, which every process a test starts carries when it inherits that environment.
+ISOLATION = {name: os.environ[name] for name in (
+    "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "QUEUEKEEPER_OFFLOAD_HOST", "HEAVY_QUIET_SECONDS",
+    "QUEUEKEEPER_CRASH_DIALOG_RECORD", device_notifications.WATCH, offload_host.SCROLL_BARS_RECORDING,
+    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, TOLD)}
+
+
+def reduced(variables=(), **more):
+    """An environment of only variables and more, for a process a test starts with less than its own environment,
+    which still carries ISOLATION; variables and more win over it.
+
+    A bare `env={...}` drops ISOLATION. On 2026-11-12 three tests started `qk unittest` with only PATH and a limit,
+    and each stand-in suite asked this Mac's real admission for a slot and waited behind another project's gate
+    (vocaro/queuekeeper#45). test_host_isolation fails a test module that starts qk with an environment that is
+    built neither from os.environ nor by this, unless the command passes --unadmitted."""
+    return {**ISOLATION, **dict(variables), **more}

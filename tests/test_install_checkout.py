@@ -46,7 +46,7 @@ class Setup(unittest.TestCase):
         self.run_script()
         # A PATH with no python3 at all: the command names its interpreter itself.
         ran = subprocess.run([str(self.local / "qk"), "--version"], capture_output=True, text=True, cwd=self.home,
-                             env={"HOME": str(self.home), "PATH": "/usr/bin:/bin", "HEAVY_SLOT_DIR": os.environ["HEAVY_SLOT_DIR"]},
+                             env=host_isolation.reduced(HOME=str(self.home), PATH="/usr/bin:/bin"),
                              timeout=host_isolation.stretched(60))
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertRegex(ran.stdout, r"\d+\.\d+")

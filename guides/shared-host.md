@@ -2938,7 +2938,12 @@ Three kinds of marker coexist, and they are reclaimed differently:
   repository's test modules each import `tests/host_isolation.py`, which redirects it and
   `HEAVY_SLOT_DIR` for the whole process, and `test_host_isolation` fails a module that does not
   ([vocaro-engineering#88](https://github.com/vocaro/vocaro-engineering/issues/88)): an entry a
-  test leaked had no process record, and it blocked the host's heavy work until removed by hand. Admission takes no lock at the gate lock's own path, and a file
+  test leaked had no process record, and it blocked the host's heavy work until removed by hand.
+  A test that starts `qk` with an `env=` of its own builds it from `os.environ`, or from
+  `host_isolation.reduced`, which carries what `host_isolation` set, or passes `--unadmitted`;
+  `test_host_isolation` fails one that does none of these, naming its file and line
+  (vocaro/queuekeeper#45). On 2026-11-12 three tests started `qk unittest` with only `PATH` and
+  a limit, and each stand-in suite waited for a slot in this Mac's real admission. Admission takes no lock at the gate lock's own path, and a file
   left there holds nothing back. The guard is never reclaimed by PID or by time, because a dead
   owner's compilers or simulator children can outlive it. A dead or uncertain owner's entry that
   recovery leaves counts as the slots it held, every slot for exclusive work, and the model if it

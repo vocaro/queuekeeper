@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,91 @@ from host_isolation import stretched
 TESTS = Path(__file__).resolve().parent
 # A test marking a file executable itself, not through host_isolation.executable.
 MARKS_EXECUTABLE = re.compile(r"\.chmod\(\s*0o7|\.chmod\(.*S_IEXEC|os\.chmod\(")
+
+
+def starts_qk_unisolated(module):
+    """Where module starts qk, `qk` or a path ending in /qk, with an `env=` built neither from os.environ nor by
+    host_isolation.reduced and with no --unadmitted, as "test_x.py:LINE" (vocaro/queuekeeper#45).
+
+    Such an environment drops what host_isolation set, so the qk it starts admits into this Mac's real namespace. A
+    name is followed to what it is assigned in the function or the module, and self.NAME to what it is assigned in
+    the class. An environment counts as built from os.environ when it is os.environ, a copy of it, a dict that spreads
+    it or comprehends over it, or a name every assignment of which is one of these; reading one variable of it is not."""
+    tree = ast.parse(module.read_text(), str(module))
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+    def key(node):
+        if isinstance(node, ast.Name): return node.id
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
+            return f"self.{node.attr}"
+
+    def assignments(scope):
+        found = []
+        for node in ast.walk(scope):
+            targets = node.targets if isinstance(node, ast.Assign) else \
+                [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None else []
+            found += [(key(target), node.value) for each in targets for target in ast.walk(each) if key(target)]
+        return found
+
+    def enclosing(node, kinds):
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, kinds): return node
+
+    def environ(node):
+        return isinstance(node, ast.Attribute) and node.attr == "environ" and isinstance(node.value, ast.Name) \
+            and node.value.id == "os"
+
+    def carries(node, names):
+        """Whether node is an environment built from os.environ or by reduced, given the names that are."""
+        if environ(node) or key(node) in names: return True
+        if isinstance(node, ast.Dict):
+            return any(name is None and carries(value, names) for name, value in zip(node.keys, node.values))
+        if isinstance(node, ast.DictComp):
+            return any(carries(each.iter.func.value if isinstance(each.iter, ast.Call)
+                               and isinstance(each.iter.func, ast.Attribute) else each.iter, names)
+                       for each in node.generators)
+        if isinstance(node, ast.Call):
+            function = node.func
+            if isinstance(function, ast.Attribute) and function.attr == "reduced": return True
+            if isinstance(function, ast.Attribute) and function.attr == "copy": return carries(function.value, names)
+            if isinstance(function, ast.Name) and function.id == "dict" and node.args:
+                return carries(node.args[0], names)
+        return False
+
+    def mentions(node, names, constant):
+        return any(constant(each) or key(each) in names for each in ast.walk(node))
+
+    is_qk = lambda node: isinstance(node, ast.Constant) and isinstance(node.value, str) \
+        and (node.value == "qk" or node.value.endswith("/qk"))
+    is_unadmitted = lambda node: isinstance(node, ast.Constant) and node.value == "--unadmitted"
+    module_level = [pair for statement in tree.body if isinstance(statement, ast.Assign) for pair in assignments(statement)]
+    found = set()
+    for call in ast.walk(tree):
+        environment = next((each.value for each in getattr(call, "keywords", ()) if each.arg == "env"), None)
+        if not isinstance(call, ast.Call) or environment is None or not call.args: continue
+        function, cls = enclosing(call, (ast.FunctionDef, ast.AsyncFunctionDef)), enclosing(call, ast.ClassDef)
+        pairs = module_level + [pair for pair in (assignments(cls) if cls else []) if pair[0].startswith("self.")] \
+            + (assignments(function) if function else [])
+        # Names whose any assignment mentions qk or --unadmitted, followed through names that mention those.
+        reach = lambda constant: _closure(pairs, lambda value, names: mentions(value, names, constant))
+        if not mentions(call.args[0], reach(is_qk), is_qk) or mentions(call.args[0], reach(is_unadmitted), is_unadmitted):
+            continue
+        # Names every assignment of which carries the isolation.
+        carrying = {name for name, _ in pairs}
+        while True:
+            fewer = {name for name, value in pairs if name in carrying and not carries(value, carrying)}
+            if not fewer: break
+            carrying -= fewer
+        if not carries(environment, carrying): found.add(f"{module.name}:{call.lineno}")
+    return sorted(found, key=lambda place: int(place.rpartition(":")[2]))
+
+
+def _closure(pairs, holds):
+    names = set()
+    while more := {name for name, value in pairs if name not in names and holds(value, names)}: names |= more
+    return names
+
 
 # Admits a heavy job with whatever namespace the environment names, after importing host_isolation
 # when the first argument says so, and prints the guard and slot directory the admission used.
@@ -88,6 +174,77 @@ class HostIsolationTests(unittest.TestCase):
             self.assertTrue(MARKS_EXECUTABLE.search(line), line)
         # A read-only directory is not a stand-in.
         self.assertIsNone(MARKS_EXECUTABLE.search("self.root.chmod(0o500)"))
+
+    def test_no_test_module_starts_qk_with_an_environment_that_drops_the_isolation(self):
+        # On 2026-11-12 three tests started `qk unittest` with only PATH and a limit, and each stand-in suite waited for
+        # a slot in this Mac's real admission (vocaro/queuekeeper#45).
+        found = [place for module in sorted(TESTS.glob("test*.py")) for place in starts_qk_unisolated(module)]
+        self.assertEqual(found, [])
+
+    def test_the_check_finds_a_test_that_starts_qk_with_an_environment_that_drops_the_isolation(self):
+        planted = textwrap.dedent('''
+            import os, subprocess, sys
+            from pathlib import Path
+            import host_isolation
+            QK = Path(__file__).resolve().parents[1] / "scripts/qk"
+
+            class T:
+                def setUp(self):
+                    self.environment = {**os.environ, "A": "1"}
+                    self.bare = {"PATH": "/usr/bin:/bin"}
+
+                def test_bare(self):
+                    subprocess.run([sys.executable, str(QK), "unittest", "-s", "x"], env={"PATH": "/usr/bin:/bin"})  # dropped
+
+                def test_one_variable_read(self):
+                    subprocess.run(["bin/qk", "--version"], env={"HEAVY_SLOT_DIR": os.environ["HEAVY_SLOT_DIR"]})  # dropped
+
+                def test_named(self):
+                    command = [sys.executable, str(QK), "admit", "--", "true"]
+                    environment = {"PATH": "/usr/bin:/bin"}
+                    subprocess.run(command, env=environment)  # dropped
+
+                def test_named_twice(self):
+                    environment = dict(os.environ)
+                    environment = {"PATH": "/usr/bin:/bin"}
+                    subprocess.run([str(Path("local") / "qk")], env=environment)  # dropped
+
+                def test_the_class(self):
+                    subprocess.Popen([sys.executable, str(QK), "run", "gate"], env=self.bare)  # dropped
+
+                def test_inherited(self):
+                    subprocess.run([sys.executable, str(QK), "run", "gate"], env=os.environ)
+                    subprocess.run([sys.executable, str(QK), "run", "gate"], env={**os.environ, "A": "1"})
+                    subprocess.run([sys.executable, str(QK), "run", "gate"], env=dict(os.environ, A="1"))
+                    subprocess.run([sys.executable, str(QK), "run", "gate"], env=os.environ.copy())
+                    subprocess.run([sys.executable, str(QK), "run", "gate"],
+                                   env={k: v for k, v in os.environ.items() if k != "B"})
+                    subprocess.run([sys.executable, str(QK), "run", "gate"], env={**self.environment, "C": "1"})
+                    subprocess.run([sys.executable, str(QK), "run", "gate"], env=host_isolation.reduced(PATH="/bin"))
+
+                def test_unadmitted(self):
+                    command = [sys.executable, str(QK), "unittest", "--unadmitted", "-s", "x"]
+                    subprocess.run(command, env={"PATH": "/usr/bin:/bin"})
+
+                def test_not_qk(self):
+                    subprocess.run([sys.executable, "-c", "pass"], env={"PATH": "/usr/bin:/bin"})
+        ''')
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory) / "test_planted.py"
+            module.write_text(planted)
+            expected = [f"test_planted.py:{number}" for number, line in enumerate(planted.splitlines(), 1)
+                        if line.endswith("# dropped")]
+            self.assertEqual(starts_qk_unisolated(module), expected)
+
+    def test_a_reduced_environment_carries_the_isolation_and_what_the_test_gives_it(self):
+        environment = host_isolation.reduced({"PATH": "/bin"}, HOME="/h", HEAVY_SLOT_DIR="/mine")
+        self.assertEqual({name: environment[name] for name in ("PATH", "HOME", "HEAVY_SLOT_DIR")},
+                         {"PATH": "/bin", "HOME": "/h", "HEAVY_SLOT_DIR": "/mine"})
+        self.assertEqual(environment["QUEUEKEEPER_GATE_LOCK_FILE"], host_isolation.GATE)
+        self.assertEqual(environment["QUEUEKEEPER_OFFLOAD_HOST"], "none")
+        self.assertEqual(host_isolation.reduced()["HEAVY_SLOT_DIR"], os.environ["HEAVY_SLOT_DIR"])
+        # Each variable it carries is the one this process runs with.
+        self.assertEqual({name: os.environ.get(name) for name in host_isolation.ISOLATION}, host_isolation.ISOLATION)
 
     def test_a_stand_in_that_would_not_run_is_refused_before_the_real_tool_runs_in_its_place(self):
         with tempfile.TemporaryDirectory() as directory:
