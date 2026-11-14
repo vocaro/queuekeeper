@@ -1,8 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
+import ast
+import base64
 import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
 import gc
+import hashlib
 import importlib.util
 from io import StringIO
 import json
@@ -21,6 +24,7 @@ import threading
 import time
 import unittest
 import uuid
+import zlib
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
@@ -335,6 +339,45 @@ def ignored_exceptions():
     with patch.object(sys, "unraisablehook", lambda raised: ignored.append(
             f"{raised.err_msg or 'Exception ignored in'}: {raised.object!r}: {raised.exc_value!r}")):
         yield ignored
+
+
+class HostCommandTests(unittest.TestCase):
+    """The self-contained host program, including the login shell's second quoting layer."""
+
+    def test_the_maintained_program_and_large_request_fit_the_ssh_packet(self):
+        source = Path(offload_host.__file__).read_text()
+        helper = ("print('transport fixture')\n" * 400)[:9550]
+        request = json.dumps({"work": ["python3", "-c", helper]})
+        # OpenSSH's packet.c bounds the entire packet at 256 KiB. The former command alone exceeds it;
+        # the compressed command leaves room for the SSH channel-request fields and project metadata.
+        former = remote.login(shlex.join(["python3", "-c", source, request]))
+        command = remote.host_command(source, request)
+        self.assertGreater(len(former.encode()), 256 * 1024)
+        self.assertLess(len(remote.login(command).encode()), 128 * 1024)
+        python, option, program, sent = shlex.split(command)
+        self.assertEqual((python, option, sent), ("python3", "-c", request))
+        packed = max((node.value for node in ast.walk(ast.parse(program))
+                      if isinstance(node, ast.Constant) and isinstance(node.value, str)), key=len)
+        decoded = zlib.decompress(base64.b64decode(packed))
+        self.assertEqual(decoded, source.encode("utf-8"))
+        self.assertEqual(hashlib.sha256(decoded).digest(), hashlib.sha256(source.encode()).digest())
+
+    def test_bootstrap_preserves_main_unicode_arguments_stdin_and_exit_status(self):
+        source = "import json, sys\nprint(json.dumps([__name__, 'café 漢字', sys.argv, sys.stdin.read()]))\nsys.exit(7)\n"
+        request = json.dumps({"quote": "'\"\\\n", "word": "café"})
+        arguments = shlex.split(remote.host_command(source, request))
+        done = subprocess.run([sys.executable, *arguments[1:]], input="attached\nreceived\nstop\n",
+                              text=True, capture_output=True)
+        self.assertEqual(done.returncode, 7, done.stderr)
+        self.assertEqual(json.loads(done.stdout),
+                         ["__main__", "café 漢字", ["-c", request], "attached\nreceived\nstop\n"])
+
+    def test_bootstrap_keeps_the_host_source_line_in_tracebacks(self):
+        arguments = shlex.split(remote.host_command("# first\nraise RuntimeError('host failure')\n", "{}"))
+        done = subprocess.run([sys.executable, *arguments[1:]], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('File "<string>", line 2', done.stderr)
+        self.assertIn("RuntimeError: host failure", done.stderr)
 
 
 class ChannelWriterTests(unittest.TestCase):

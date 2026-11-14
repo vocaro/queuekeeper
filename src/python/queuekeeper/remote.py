@@ -64,6 +64,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zlib
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, processes, resources, git_state
 from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, unlocked_screen
@@ -869,6 +870,14 @@ def developer_directory():
     return selected if selected and Path(selected).is_dir() else None
 
 
+def host_command(source, request):
+    """Compress the self-contained host program before the login shell's second quoting layer.
+    The request remains the next argument, and standard input remains the dispatch control channel."""
+    packed = base64.b64encode(zlib.compress(source.encode("utf-8"))).decode("ascii")
+    program = f"exec(__import__('zlib').decompress(__import__('base64').b64decode({packed!r})).decode('utf-8'))"
+    return shlex.join(["python3", "-c", program, request])
+
+
 def login(script):
     """Have the second Mac's login shell run script, so its PATH is Terminal's, Homebrew's included."""
     return f'exec "$SHELL" -l -c {shlex.quote(script)}'
@@ -1571,7 +1580,7 @@ def stop_dead_dispatches():
         source = source or Path(offload_host.__file__).read_text()
         request = json.dumps({"reattach": {"root": ROOT, "id": journal, "stop": True}})
         try:
-            done = ssh(host, shlex.join(["python3", "-c", source, request]), stdin=subprocess.DEVNULL,
+            done = ssh(host, host_command(source, request), stdin=subprocess.DEVNULL,
                        capture_output=True, text=True, timeout=STOP_DEAD_WAIT)
             state = final_object(done).get("stop") if done.returncode == 0 else None
         except (OSError, subprocess.SubprocessError):
@@ -2008,7 +2017,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     plan["requestAge"] = max(0, time.time() - resources.request_started())
     if sent is not None and "requestStarted" in sent:
         plan["requestStarted"] = sent["requestStarted"]
-    command = [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", source, json.dumps(plan)]))]
+    command = [*SSH, *moved(host), host, login(host_command(source, json.dumps(plan)))]
     stopping = None
     record = remember_dispatch(journal, host) if detached is not None else None
     # A lane's log comes as it grows. An `qk admit` command's output comes on stdout, live, already.
@@ -2076,8 +2085,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                 tries += 1
                 frames.rewind()
                 carry(subprocess.Popen(
-                    [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", source, json.dumps(
-                        {"reattach": {"root": ROOT, "id": journal}})]))],
+                    [*SSH, *moved(host), host, login(host_command(source, json.dumps(
+                        {"reattach": {"root": ROOT, "id": journal}})))],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment()))
             return tries
 
@@ -2673,8 +2682,8 @@ def send_runtime(host, image, developer, report):
     it. Return None once it is added there, else why not."""
     request = {"receive": {"staging": RUNTIME_STAGING, "build": image["build"], "size": image["sizeBytes"],
                            "developerDir": developer}}
-    command = [*SSH, *moved(host), host, login(shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(),
-                                             json.dumps(request)]))]
+    command = [*SSH, *moved(host), host, login(host_command(Path(offload_host.__file__).read_text(),
+                                             json.dumps(request)))]
     failure = None
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           env=environment()) as channel:
@@ -3330,7 +3339,7 @@ def ask(host, request, timeout=SURVEY_TIMEOUT, unsent=False):
     Mac ssh cannot reach raises Misconfigured, which qk doctor and the merge queue's wait report; with unsent,
     for a question asked before work is sent (capacity_there), it raises as execute's preparing connection does
     (ssh_failure): Unreachable, so that the work runs on this Mac, unless the second Mac refused the login."""
-    request = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
+    request = host_command(Path(offload_host.__file__).read_text(), json.dumps(request))
     attempt = asleep()
     failed = lambda said, *context: ssh_failure(host, said, *context) if unsent else unreachable(host, said, *context)
     try:
@@ -3397,8 +3406,8 @@ def admissions_there(host, budget=ADMISSIONS_BUDGET):
     `qk admissions now` (vocaro-engineering#342). One noninteractive connection, bounded in all by budget seconds: no
     search for a renamed Mac (ssh's rediscover), which could take longer, and nothing changed there. A second Mac that
     cannot be reached in time raises Unreachable, and one whose answer is no reading Unavailable."""
-    script = shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(),
-                         json.dumps({"admissionsNow": offload_host.NOW_SCHEMA})])
+    script = host_command(Path(offload_host.__file__).read_text(),
+                         json.dumps({"admissionsNow": offload_host.NOW_SCHEMA}))
     seconds = max(1, int(budget))
     options = [f"ConnectTimeout={seconds}" if option.startswith("ConnectTimeout=") else option for option in SSH]
     try:
@@ -3653,7 +3662,7 @@ def census_command(advertise=None, reap=None, update=None, stop_leftovers=True, 
                **({"reap": reap} if reap is not None else {}), **({"toolkitCheckout": update} if update else {}),
                **({"siblingCheckouts": siblings} if siblings else {}),
                **({} if stop_leftovers else {"leftoverStops": "list"})}
-    return shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), json.dumps(request)])
+    return host_command(Path(offload_host.__file__).read_text(), json.dumps(request))
 
 
 def update_request(want=True):
@@ -3816,7 +3825,7 @@ def device_users(host, udid, since):
     request = json.dumps({"device": {"udid": udid, "root": ROOT, "since": since}})
     attempt = asleep()
     try:
-        found = ssh(host, shlex.join(["python3", "-c", Path(offload_host.__file__).read_text(), request]),
+        found = ssh(host, host_command(Path(offload_host.__file__).read_text(), request),
                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=CENSUS_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise Unavailable(f"{host} did not list its processes in {CENSUS_TIMEOUT}s") from None
