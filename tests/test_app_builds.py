@@ -485,6 +485,44 @@ class Queue(Fixture):
         spawn.assert_not_called()
         self.assertEqual(said, [])
 
+    def test_a_pushed_docs_configuration_is_accepted_when_keeping_an_app_or_no_app(self):
+        # The worker at 4905b91 parsed the newly pushed configuration with its older, in-memory parser,
+        # which did not know docs yet (#146). Retention must accept the same settings as the queue.
+        for keeps_app in (True, False):
+            with self.subTest(keeps_app=keeps_app):
+                settings = {**project(), "docs": {"citations": True}}
+                if not keeps_app: settings.pop("app")
+                (self.root / "queuekeeper.json").write_text(json.dumps(settings))
+                git(self.root, "commit", "-q", "-am", f"docs, app={keeps_app}")
+                git(self.root, "push", "-q", "origin", "HEAD:main")
+                head = git(self.root, "rev-parse", "HEAD")
+                self.assertEqual(merge_queue.config_at(self.root, head), settings)
+                worker, said = self.worker()
+                with patch.object(app_builds, "spawn_keep") as spawn:
+                    merge_queue.Worker.keep_app(worker, head)
+                if keeps_app:
+                    spawn.assert_called_once_with(self.root, head, worker.queue.logs / f"app-keep-{head[:12]}.log",
+                                                  env={"A": "1"})
+                    self.assertEqual(len(said), 1)
+                    self.assertIn("in the background", said[0])
+                else:
+                    spawn.assert_not_called()
+                    self.assertEqual(said, [])
+
+    def test_a_pushed_invalid_configuration_still_reports_why_no_app_is_kept(self):
+        for extra, reason in (({"docs": {"citations": "yes"}}, "docs.citations must be true or false"),
+                              ({"unknown": True}, "Unknown configuration keys: ['unknown']")):
+            with self.subTest(extra=extra):
+                (self.root / "queuekeeper.json").write_text(json.dumps({**project(), **extra}))
+                git(self.root, "commit", "-q", "-am", "invalid settings")
+                git(self.root, "push", "-q", "origin", "HEAD:main")
+                head = git(self.root, "rev-parse", "HEAD")
+                worker, said = self.worker()
+                with patch.object(app_builds, "spawn_keep") as spawn:
+                    merge_queue.Worker.keep_app(worker, head)
+                spawn.assert_not_called()
+                self.assertEqual(said, [f"keeping no app build of {head[:12]}: {reason}"])
+
     def test_the_spawned_keep_outlives_the_round_and_writes_its_log(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
