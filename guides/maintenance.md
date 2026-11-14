@@ -428,7 +428,13 @@ flake is recorded in four places: in each entry's `flakes` (the test ID, the gat
 logs, which `qk queue status` shows); in the worker's log; in a `Flaky-test:` trailer on a landed tip,
 one per test, which survives a carry-over; and on the tracker. For the tracker the worker searches the
 project's open issues for the test's name just before it writes, then comments on the first match, or
-files a hardening issue. A tracker gh cannot reach is noted in the entry and stops nothing.
+files a hardening issue. A tracker gh cannot reach is noted in the entry and stops nothing. The comment
+or issue quotes the test's failure from the gate's log, beside the logs' paths: its first `FAIL:` or
+`ERROR:` block there, heading, traceback and assertion, cut as a send-back's excerpt is, at most
+`FAILURE_LINE_LIMIT` (500) characters a line and `FAILURE_EXCERPT_LIMIT` (4000) in all. A longer block
+keeps its heading and the lines nearest its end, where the assertion is. The queue keeps only its newest
+logs, and an agent in another worktree cannot read them, so before 2026-11-13 an issue that named only
+the paths could outlive them (vocaro/queuekeeper#128).
 
 When adding an option to an `qk unittest` gate, check the actual lane command with the runner, the
 [test coverage checker](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#every-test-has-a-lane) and the merge queue's single-test

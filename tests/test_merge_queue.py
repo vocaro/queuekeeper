@@ -7917,6 +7917,53 @@ class FlakyParts(unittest.TestCase):
         self.assertEqual([call[:2] for call in calls], [("issue", "list"), ("issue", "create")])
         self.assertEqual(calls[1][calls[1].index("--title") + 1], "Harden the flaky test test_one (test_b.B)")
 
+    @staticmethod
+    def block(test, where, said, frames=1):
+        return ("=" * 70 + f"\nFAIL: {test} ({where})\n" + "-" * 70 + "\nTraceback (most recent call last):\n"
+                + "".join(f'  File "/x/tests/test_b.py", line {line}, in {test}\n    step()\n' for line in range(frames))
+                + f"AssertionError: {said}\n\n")
+
+    def gate_log(self, text):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        (folder / "gate.log").write_text(text)
+        return {**self.FLAKE, "gateLog": str(folder / "gate.log")}
+
+    def test_the_issue_quotes_the_tests_first_failure_from_the_gate_log(self):
+        # vocaro/queuekeeper#128: the logs the queue names are later pruned, so the issue quotes the failure itself.
+        flake = self.gate_log("== test_b: FAILED (3 tests, 1.0s)\n" + self.block("test_two", "test_b.B.test_two", "other")
+                              + self.block("test_one", "test_b.B.test_one", "first ```fenced``` 1 != 2")
+                              + self.block("test_one", "test_b.B.test_one", "second") + "-" * 70 + "\nRan 3 tests\n")
+        for answers in ({"issue list": (0, "[]", ""), "issue create": (0, "https://x/issues/240\n", "")},
+                        {"issue list": (0, json.dumps([{"number": 230, "url": "u", "title": "t"}]), ""),
+                         "issue comment": (0, "u#c\n", "")}):
+            with self.subTest(answers=list(answers)[1]):
+                gh, calls = self.gh(answers)
+                mq.hardening(Path("."), flake, gh)
+                body = calls[1][calls[1].index("--body") + 1]
+                self.assertIn("````\nFAIL: test_one (test_b.B.test_one)\n", body)
+                self.assertIn("AssertionError: first ```fenced``` 1 != 2\n````\n", body)
+                self.assertIn(f"- Gate log: `{flake['gateLog']}`", body)
+                for absent in ("AssertionError: second", "AssertionError: other", "Ran 3 tests"):
+                    self.assertNotIn(absent, body)
+
+    def test_a_long_failure_keeps_its_heading_and_its_end_within_the_limit(self):
+        log = self.block("test_one", "test_b.B.test_one", "the end " + "x" * 900, frames=200)
+        quoted = mq.flake_failure(log, "test_b.B.test_one")
+        self.assertLessEqual(sum(len(line) + 1 for line in quoted), mq.FAILURE_EXCERPT_LIMIT)
+        self.assertEqual(quoted[0], "FAIL: test_one (test_b.B.test_one)")
+        self.assertRegex(quoted[1], r"^\[\.\.\. \d+ lines left out \.\.\.\]$")
+        self.assertTrue(quoted[-1].startswith("AssertionError: the end x") and quoted[-1].endswith("..."), quoted[-1])
+        self.assertEqual(len(quoted[-1]), mq.FAILURE_LINE_LIMIT)
+        self.assertEqual(mq.flake_failure(log, "test_b.B.test_two"), [])
+
+    def test_an_issue_with_no_failure_to_quote_says_so(self):
+        for flake in (self.FLAKE, self.gate_log("no failure here\n")):
+            with self.subTest(log=flake["gateLog"]):
+                gh, calls = self.gh({"issue list": (0, "[]", ""), "issue create": (0, "https://x/issues/240\n", "")})
+                mq.hardening(Path("."), flake, gh)
+                self.assertIn("named no `FAIL:` or `ERROR:` block", calls[1][calls[1].index("--body") + 1])
+
     def test_a_tracker_gh_cannot_reach_is_said_and_stops_nothing(self):
         for answers, why in (({"issue list": (1, "", "boom\n")}, "gh issue list failed: boom"),
                              ({"issue list": (0, "not json", "")}, "gh issue list printed no issue list"),

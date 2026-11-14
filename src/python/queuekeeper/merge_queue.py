@@ -1011,16 +1011,45 @@ def flake_words(flake):
             f"times there; gate log {flake['gateLog']}; reruns {', '.join(flake['rerunLogs'])}")
 
 
+def flake_failure(log, test):
+    """The lines of the first `FAIL:` or `ERROR:` block that log, a failed qk unittest gate's, gives for test, a test
+    id: its heading, traceback and assertion, up to the line that ends it, so that a hardening issue quotes the failure
+    and not only logs the queue later prunes (vocaro/queuekeeper#128). It is cut as a send-back's excerpt is
+    (failed_lane_excerpt), FAILURE_LINE_LIMIT a line and FAILURE_EXCERPT_LIMIT in all; when it is longer, its heading
+    stays and the lines nearest its end, where the assertion is. Empty when the log names no such block."""
+    for match in FAILED_TEST.finditer(log):
+        method, where = match.groups()
+        if (where if where.endswith(f".{method}") else f"{where}.{method}") != test: continue
+        end = lane_report.UNITTEST_END.search(log, match.end())
+        lines = log[match.start():end.start() if end else len(log)].rstrip().splitlines()
+        lines = [line if len(line) <= FAILURE_LINE_LIMIT else line[:FAILURE_LINE_LIMIT - 3] + "..." for line in lines]
+        if sum(len(line) + 1 for line in lines) <= FAILURE_EXCERPT_LIMIT: return lines
+        kept, remaining = [], FAILURE_EXCERPT_LIMIT - len(lines[0]) - 1 - len("[... 99999 lines left out ...]") - 1
+        for line in reversed(lines[1:]):
+            if len(line) + 1 > remaining: break
+            kept.insert(0, line)
+            remaining -= len(line) + 1
+        return [lines[0], f"[... {len(lines) - 1 - len(kept)} lines left out ...]", *kept]
+    return []
+
+
 def hardening(checkout, flake, gh=None):
     """(the issue's URL, None) once the project's tracker has the flake: a comment on the first open issue a search
     made just before finds naming the test's name, or a new hardening issue; (None, why) when gh could not, which
     stops nothing (owner's decision of 2026-11-07, vocaro-engineering#231, and the rule that every flaky test gets a
-    hardening issue). gh(*arguments) runs gh for the project, gh_runner's by default; tests give their own."""
+    hardening issue). Its body quotes the test's failure from the gate's log (flake_failure), beside the logs' paths.
+    gh(*arguments) runs gh for the project, gh_runner's by default; tests give their own."""
     gh = gh or gh_runner(checkout)
     name = flake["test"].rsplit(".", 1)[-1]
+    try: quoted = flake_failure(Path(flake["gateLog"]).read_text(errors="replace"), flake["test"])
+    except OSError: quoted = []
+    if quoted:
+        fence = "`" * max(3, 1 + max((len(run) for run in re.findall(r"`+", "\n".join(quoted))), default=0))
+        failure = "The gate's log gave this failure:\n\n" + "\n".join([fence, *quoted, fence]) + "\n\n"
+    else: failure = "The gate's log could not be read for its failure, or named no `FAIL:` or `ERROR:` block for it.\n\n"
     body = (f"The merge queue's gate failed `{flake['test']}` at {flake['commit'][:12]}, and it then passed alone "
             f"{len(flake['rerunLogs'])} of {len(flake['rerunLogs'])} times on that commit, so it is flaky. "
-            f"{flake['outcome']}\n\n- Gate log: `{flake['gateLog']}`\n"
+            f"{flake['outcome']}\n\n{failure}- Gate log: `{flake['gateLog']}`\n"
             + "".join(f"- Rerun: `{path}`\n" for path in flake["rerunLogs"])
             + f"- Mac: {flake.get('mac') or 'this Mac'}\n\n"
             "Recorded by the merge queue (vocaro/vocaro-engineering#231).\n")
