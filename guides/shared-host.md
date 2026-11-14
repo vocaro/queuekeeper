@@ -2943,7 +2943,13 @@ Three kinds of marker coexist, and they are reclaimed differently:
   `host_isolation.reduced`, which carries what `host_isolation` set, or passes `--unadmitted`;
   `test_host_isolation` fails one that does none of these, naming its file and line
   (vocaro/queuekeeper#45). On 2026-11-12 three tests started `qk unittest` with only `PATH` and
-  a limit, and each stand-in suite waited for a slot in this Mac's real admission. Admission takes no lock at the gate lock's own path, and a file
+  a limit, and each stand-in suite waited for a slot in this Mac's real admission.
+  A variable a run sets for the commands it starts reaches the suite whenever the suite is one of
+  them, as on the second Mac when a dispatch runs it, so `host_isolation` clears each such
+  `QUEUEKEEPER_*` and `HEAVY_*` variable or lists it in `INHERITED` with why it is safe, and
+  `test_host_isolation` plants every one the toolkit's code names and fails on one that is
+  neither set, cleared nor listed (vocaro/queuekeeper#46). On 2026-11-12 the keychain's
+  `QUEUEKEEPER_KEYCHAIN_UNLOCKED` failed a test on the second Mac every time and passed here. Admission takes no lock at the gate lock's own path, and a file
   left there holds nothing back. The guard is never reclaimed by PID or by time, because a dead
   owner's compilers or simulator children can outlive it. A dead or uncertain owner's entry that
   recovery leaves counts as the slots it held, every slot for exclusive work, and the model if it

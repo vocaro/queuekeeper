@@ -35,10 +35,14 @@ import subprocess
 import sys
 import tempfile
 
+# The environment this process started with, before this module changed it: test_host_isolation reads what this module
+# leaves of it (vocaro/queuekeeper#46).
+RECEIVED = dict(os.environ)
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import cli, offload_host, remote, resources, shims
+from queuekeeper import cli, offload_host, pre_push, remote, resources, shims
 from queuekeeper import apple, mac_desktop
-from queuekeeper.apple import app_registrations, device_notifications, devices
+from queuekeeper.apple import app_registrations, device_notifications, device_pass, devices
 from queuekeeper.mac_desktop import crash_alerts, keychain, notification_center
 
 # The suite runs with the Apple extension switched on, as the command does for every project, after the desktop
@@ -138,6 +142,15 @@ for variable in (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LA
 # Nor does a dispatch a test sends count the keychain as unlocked because the dispatch that runs the suite on the second
 # Mac unlocked the real one: it would unlock nothing, and a test of a kept password that cannot unlock would pass the run.
 os.environ.pop(keychain.UNLOCKED, None)
+# Nor does a test read what a dispatch, an admission, a device pass or the merge queue tells the command it starts, which
+# the suite inherits whenever it is that command (vocaro/queuekeeper#46): the sending Mac's origin and arrival, which
+# every admission a test takes would report as its own; the file where a declined offer's reason goes; what exclusive
+# admission read of the Mac; the device a device pass lends; the queue's placement scope, bisect progress and push. A
+# test of any of them sets it itself.
+for variable in (resources.ORIGIN, resources.REQUEST_STARTED, offload_host.DECLINED, *resources.HOST_READING,
+                 device_pass.KEY_VARIABLE, device_pass.UDID_VARIABLE, remote.QUEUE_GATE, remote.QUEUE_GATE_EXCLUDE,
+                 "QUEUEKEEPER_QUEUE_PROGRESS", pre_push.QUEUE_VARIABLE):
+    os.environ.pop(variable, None)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # Nor does exclusive work a test admits wait for this Mac to settle (vocaro/queuekeeper#121): the suite runs inside the
 # gate's admission, so the CPU it reads is never quiet, and each such admission would wait out HEAVY_QUIET_SECONDS. In
@@ -199,6 +212,29 @@ ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "QUEUEKEEPER_OFFLOAD_HOST", "HEAVY_QUIET_SECONDS",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", device_notifications.WATCH, offload_host.SCROLL_BARS_RECORDING,
     "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, TOLD)}
+
+
+# The prefixes of the toolkit's variables, and those of them this module lets a test inherit, each with why that is
+# safe. A variable a run sets for the commands it starts reaches the suite whenever the suite is one of them, on either
+# Mac: on 2026-11-12 the second Mac's dispatch had unlocked the real keychain, and a test of a password that cannot
+# unlock it failed there every time and passed here (vocaro/queuekeeper#46). So test_host_isolation fails when what
+# this module leaves holds one that it neither set (ISOLATION) nor lists here, and it plants every such variable the
+# toolkit's code names to find one: a new variable is cleared above, or listed here with its reason.
+PREFIXES = ("QUEUEKEEPER_", "HEAVY_")
+OWNER_LIMIT = "the owner's override of an admission limit or interval, which no run sets for the commands it starts"
+OWNER_PATH = "a path the owner or a test names, which no run sets for the commands it starts"
+OWNER_SWITCH = "the owner's own switch, which no run sets for the commands it starts"
+INHERITED = {
+    **dict.fromkeys(("HEAVY_SLOTS", "HEAVY_SLOTS_MAX", "HEAVY_BUSY_LIMIT", "HEAVY_SETTLE_SECONDS", "HEAVY_QUIET_LIMIT",
+                     "HEAVY_POLL_SECONDS", "HEAVY_RECOVER_SECONDS", "HEAVY_PLACE_SECONDS"), OWNER_LIMIT),
+    **dict.fromkeys(("QUEUEKEEPER_APP_STORE", "QUEUEKEEPER_DEVICE_RECORD", "QUEUEKEEPER_SCREEN_IOREG"), OWNER_PATH),
+    **dict.fromkeys(("QUEUEKEEPER_VISIBILITY", "QUEUEKEEPER_PREPUSH", "QUEUEKEEPER_UNITY_OPEN", "QUEUEKEEPER_UNITY_QUIET"),
+                    OWNER_SWITCH),
+    cli.parallel.SHARD_VARIABLE: "qk unittest's mark on the test processes it starts, which this module reads above to "
+                                 "know the run is accounted for; a suite a test starts gets the mark from its own qk unittest",
+    "QUEUEKEEPER_LAUNCHER_PYTHON": "scripts/qk and bin/qk set it only to run themselves again under another Python, and "
+                                   "take it out before they run anything, so no command they start inherits it",
+}
 
 
 def reduced(variables=(), **more):

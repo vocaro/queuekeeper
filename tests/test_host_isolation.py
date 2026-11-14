@@ -376,6 +376,67 @@ class HostIsolationTests(unittest.TestCase):
                 self.assertFalse(Path(outcomes["isolated"][key]).exists())
 
 
+TOOLKIT = TESTS.parent
+# A variable of the toolkit's, as its code names it.
+VARIABLE = re.compile(rf"\b(?:{'|'.join(host_isolation.PREFIXES)})[A-Z0-9_]*[A-Z0-9]\b")
+# Prints the toolkit's variables, with their values, that a process importing host_isolation is left with.
+LEFT = ("import json, os, sys; sys.path.insert(0, sys.argv[1]); import host_isolation; print(json.dumps({name: value "
+        "for name, value in os.environ.items() if name.startswith(host_isolation.PREFIXES)}))")
+
+
+def toolkit_variables():
+    """Every variable the toolkit's code names: the launchers, the package and the tools."""
+    code = [TOOLKIT / "bin/qk", TOOLKIT / "scripts/qk", *sorted((TOOLKIT / "src").rglob("*.py")),
+            *sorted((TOOLKIT / "tools").glob("*.py"))]
+    return sorted({name for path in code for name in VARIABLE.findall(path.read_text())})
+
+
+class InheritedVariableTests(unittest.TestCase):
+    """What host_isolation leaves of the toolkit's variables, which a run sets for the commands it starts and a suite
+    run as one of them inherits (vocaro/queuekeeper#46). Each is set by host_isolation, cleared, or listed in INHERITED
+    with why it is safe."""
+
+    PLANTED = "planted by test_host_isolation"
+    CONTROL = "QUEUEKEEPER_PLANTED_BY_TEST_HOST_ISOLATION"
+
+    def left(self, planted):
+        """The toolkit's variables a process importing host_isolation is left with, given the environment this
+        process started with and planted."""
+        result = subprocess.run([sys.executable, "-c", LEFT, str(TOOLKIT / "src/python")], cwd=TESTS,
+                                env={**host_isolation.RECEIVED, **planted}, capture_output=True, text=True,
+                                timeout=stretched(60))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout.splitlines()[-1])
+
+    def unexplained(self, left):
+        """The variables in left that host_isolation neither set over what was planted nor lists."""
+        return sorted(name for name, value in left.items() if name not in host_isolation.INHERITED
+                      and (name not in host_isolation.ISOLATION or value == self.PLANTED))
+
+    def test_what_this_suite_inherited_leaves_no_variable_that_is_neither_set_nor_listed(self):
+        # On the second Mac, run for a dispatch, the suite inherits what the dispatch set; here, what this Mac's run did.
+        self.assertEqual(self.unexplained(self.left({})), [])
+
+    def test_every_variable_the_toolkit_names_is_set_cleared_or_listed(self):
+        names = toolkit_variables()
+        self.assertGreater(len(names), 40)
+        # The keychain's, which reached the second Mac's suite before it was cleared, is among those found.
+        self.assertIn(host_isolation.keychain.UNLOCKED, names)
+        left = self.left(dict.fromkeys([*names, self.CONTROL], self.PLANTED))
+        # The control, a variable neither set nor listed, is the only one found.
+        self.assertEqual(self.unexplained(left), [self.CONTROL])
+        self.assertNotIn(host_isolation.keychain.UNLOCKED, left)
+        for name in host_isolation.ISOLATION: self.assertNotEqual(left.get(name), self.PLANTED, name)
+
+    def test_each_inherited_variable_is_one_the_toolkit_names_and_says_why_it_is_safe(self):
+        names = toolkit_variables()
+        for name, reason in host_isolation.INHERITED.items():
+            with self.subTest(name=name):
+                self.assertIn(name, names)
+                self.assertNotIn(name, host_isolation.ISOLATION)
+                self.assertGreater(len(reason.split()), 5)
+
+
 class SignalDispositionTests(unittest.TestCase):
     """default_signals, from a runner that ignores every stop signal, as a background job's shell or nohup can.
 
