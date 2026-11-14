@@ -3345,9 +3345,10 @@ class RemoteTests(unittest.TestCase):
     def busy_mac(self, slots="FAKE_SLOTS", gate="FAKE_GATE", kind="--exclusive"):
         """Work admitted in a Mac's queue while the block runs: the second Mac's, or with HEAVY_SLOT_DIR and
         QUEUEKEEPER_GATE_LOCK_FILE this Mac's. Exclusive work, which holds every slot, unless kind is --whole-host, which
-        holds every guaranteed slot, or None, one heavy slot."""
+        holds every guaranteed slot, or None, one heavy slot. The holder ends only when the block releases it,
+        never because staging a snapshot on a busy host took longer than a sleep (#149)."""
         holder = subprocess.Popen([sys.executable, "-m", "queuekeeper.resources", *([kind] if kind else []),
-                                   "--", sys.executable, "-c", "print('held', flush=True); import time; time.sleep(300)"],
+                                   "--", sys.executable, "-c", "import signal; print('held', flush=True); signal.pause()"],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, preexec_fn=host_isolation.default_signals, env={
                                       **os.environ, "PYTHONPATH": str(config.TOOLKIT_ROOT / "src/python"),
                                       "HEAVY_SLOT_DIR": os.environ[slots], "QUEUEKEEPER_GATE_LOCK_FILE": os.environ[gate]})
@@ -3518,7 +3519,7 @@ class RemoteTests(unittest.TestCase):
         receipt = self.ran_here()
         self.assertEqual(receipt["ranOn"], "this Mac")
         self.assertTrue(receipt["hereBecause"].startswith(busy), receipt["hereBecause"])
-        self.assertIn("time.sleep(300)", receipt["hereBecause"])
+        self.assertIn("signal.pause()", receipt["hereBecause"])
         # Its wait in this Mac's queue, as a run on the second Mac's receipt gives it there.
         self.assertIsInstance(receipt["queueSeconds"], float)
         # Nothing was offered there: no result of the second Mac's is kept.
@@ -5146,10 +5147,14 @@ exec {shlex.quote(real)} "$@"
                                          env={key: value for key, value in os.environ.items()
                                               if key != "QUEUEKEEPER_ROOT"})
         try:
-            # A bound for a busy host, not a measure: the phrase ends the wait.
-            deadline, phrase = time.monotonic() + stretched(120), "the command waits for whichever Mac admits it first"
-            while phrase not in log.read_text() and admitting.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.1)
+            # Staging and provisioning the snapshot can keep working past a 120 s wall-clock deadline
+            # under gate load (#149). Bound a stall instead, watching the snapshot, fake host and log;
+            # the phrase still proves both admissions are waiting before release changes the sent tree.
+            phrase = "the command waits for whichever Mac admits it first"
+            progress = waiting.combined(waiting.files(self.project, self.toolkit, self.home / remote.ROOT),
+                                        lambda: log.stat().st_size)
+            waiting.wait_until(lambda: phrase in log.read_text() or admitting.poll() is not None,
+                               progress, stall=120)
             self.assertIn(phrase, log.read_text())
             self.assertIsNone(admitting.poll(), log.read_text())
             release()
@@ -5185,12 +5190,12 @@ exec {shlex.quote(real)} "$@"
         return [line for line in git(checkout, "worktree", "list", "--porcelain").splitlines()
                 if line.startswith("worktree ")]
 
-    def test_a_command_this_mac_takes_after_the_tree_changed_runs_from_what_was_sent(self):
+    def test_a_command_this_mac_takes_after_waiting_runs_in_place_when_the_tree_is_unchanged(self):
         # vocaro-engineering#276: a command sent to a declining second Mac waited here behind a gate, then refused over
         # a documentation edit the session made meanwhile, with nothing run.
         self.work_in_progress()
         reader, receipt_file = self.reader(), self.project / ".build/queuekeeper/admit/source.json"
-        with self.subTest("unchanged"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+        with contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             # The control: a tree still the one sent runs in place, in the session's checkout.
             here.enter_context(self.busy_here())
             there.enter_context(self.busy_second_mac())
@@ -5202,7 +5207,11 @@ exec {shlex.quote(real)} "$@"
             receipt = json.loads(receipt_file.read_text())
             self.assertNotIn("sentTree", receipt)
             self.assertEqual(receipt["project"], config.source_identity(self.project))
-        with self.subTest("changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+
+    def test_a_command_this_mac_takes_after_the_tree_changed_runs_from_what_was_sent(self):
+        self.work_in_progress()
+        reader, receipt_file = self.reader(), self.project / ".build/queuekeeper/admit/source.json"
+        with contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
             there.enter_context(self.busy_second_mac())
             def change():
@@ -5235,10 +5244,11 @@ exec {shlex.quote(real)} "$@"
             self.assertEqual(receipt["project"]["revision"], receipt["sent"])
             self.assertEqual(receipt["sentTree"]["moved"][0]["tree"], "working tree")
             self.assertEqual(receipt["exitStatus"], 0)
-        (self.project / "new.txt").write_text("new\n")
-        (self.project / "edited.txt").write_text("edited\n")
-        with self.subTest("changed, and the command fails and edits"), contextlib.ExitStack() as here, \
-                contextlib.ExitStack() as there:
+
+    def test_a_failing_command_run_from_what_was_sent_keeps_its_edits_off_the_changed_tree(self):
+        self.work_in_progress()
+        reader, receipt_file = self.reader(), self.project / ".build/queuekeeper/admit/source.json"
+        with contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
             there.enter_context(self.busy_second_mac())
             def change():
@@ -5256,9 +5266,11 @@ exec {shlex.quote(real)} "$@"
             self.assertFalse(Path(self.read()["directory"]).parent.parent.exists())
             self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
             self.assertEqual(json.loads(receipt_file.read_text())["exitStatus"], remote.UNAPPLIED)
-        (self.project / "notes.txt").unlink()
-        with self.subTest("changed, and the command fails"), contextlib.ExitStack() as here, \
-                contextlib.ExitStack() as there:
+
+    def test_a_failing_command_run_from_what_was_sent_keeps_its_exit_status(self):
+        self.work_in_progress()
+        reader = self.reader()
+        with contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
             there.enter_context(self.busy_second_mac())
             def change():
@@ -5268,11 +5280,14 @@ exec {shlex.quote(real)} "$@"
             self.assertEqual(status, 4, output)
             self.assertFalse(Path(self.read()["directory"]).parent.parent.exists())
             self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
-        (self.project / "notes.txt").unlink()
+
+    def test_a_command_this_mac_takes_after_the_toolkit_changed_runs_from_what_was_sent(self):
+        self.work_in_progress()
+        reader = self.reader()
         # The toolkit's tree is held to what was sent the same way: a worktree of it at the commit sent goes beside.
         settings = self.toolkit / "queuekeeper.json"
         sent_settings = settings.read_text()
-        with self.subTest("toolkit changed"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+        with contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
             there.enter_context(self.busy_second_mac())
             def change():
