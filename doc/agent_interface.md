@@ -9,12 +9,12 @@ Exit codes separate the cases an agent must treat differently:
 
 | Code | Meaning |
 |---|---|
-| 0 | Passed, or landed |
-| 1 | Failed, or came back |
+| 0 | Passed or landed; for `queue result` and `queue logs`, the read succeeded |
+| 1 | Failed or came back; for `queue logs`, the log is unavailable or the cursor is stale |
 | 2 | Usage or configuration error |
 | 3 | Unmeasured |
 | 4 | Failed before any test started |
-| 75 | Busy or held; nothing ran. From `qk queue status --idle`, the queue is not idle |
+| 75 | Busy, held, or the wait reached its limit. From `qk queue status --idle`, the queue is not idle |
 | 78 | A host is misconfigured |
 | 127 | A lane's command could not start |
 
@@ -23,8 +23,8 @@ Exit codes separate the cases an agent must treat differently:
 - **Fixed status lines** end every run with the verdict, the test counts, up to twenty failing
   tests with file and line, and the path of the full log.
 - **Refusals** say what did not run and the command to run next.
-- **JSON** is available from `queue status`, `queue doctor`, `queue placement`, `queue events`,
-  `admissions now` and `doctor`.
+- **JSON** is available from `land`, `queue add`, `queue wait`, `queue result`, `queue status`,
+  `queue logs`, `queue doctor`, `queue placement`, `queue events`, `admissions now` and `doctor`.
 - **Nothing prompts.** Commands are meant to run in the background and be followed to their result.
 - **`qk queue status --idle` answers by exit status** whether the queue is idle, for a script that
   must not end a running gate, such as one that removes the queue's login agent
@@ -33,6 +33,81 @@ Exit codes separate the cases an agent must treat differently:
   otherwise. A live worker between rounds with nothing waiting is not idle, and neither is a held
   queue with entries waiting. A worker that died leaves no worker: its lock is released with it.
   With `--json`, the `idle` field says the same.
+
+## Structured results and recovery
+
+Use `qk land --wait --json` for a single JSON result on standard output. Progress and
+diagnostics go to standard error. `qk queue add --json` returns the submitted entry immediately;
+`qk queue wait ID --json` follows an existing entry. These commands retain their text-mode exit
+statuses. A wait for several IDs returns an `entries` array.
+
+`qk queue result ID --json` reads a specific entry, including old settled entries outside the
+status view's recent window, without starting a worker. Its exit status is 0 when the lookup
+succeeds, even for a failed or pending entry; inspect `state` and `terminal` for the outcome.
+An unknown ID exits 2. Use `queue wait` when the exit status must reflect the landing verdict.
+
+Entry results name the submitted `commit`, `landedAs`, failure details, test counts when known,
+and the exact run's artifacts. An artifact's `location` says where its path can be read;
+`producedOn` identifies a host that produced a returned file. Missing or pruned artifacts remain
+listed with `available: false`. Diagnostic excerpts are bounded; `logTruncated` says when they
+omit earlier bytes. A result is a summary, not a replacement for the complete log.
+
+Status and entry results carry `schemaVersion: 1`. Readers should tolerate added keys and
+unrecognized states or reason codes. Existing status keys, including the `held` explanation,
+remain available. The nested `recovery` object supplies:
+
+- `reasonCode`: a category such as `queue-held`, `wait-limit` or `entry-failed`;
+- `responsibleParty`: `owner`, `session`, `unknown`, or null when no action is needed;
+- `retryable`: whether the same operation can be repeated without first repairing a cause;
+- `action`, `message`, and `suggestedCommands`: the next step, with commands as argument lists.
+
+A held queue suggests diagnosis, never an unconditional resume. An expired wait leaves the
+entry queued and suggests following that entry again. Suggested commands name their project
+explicitly, including after `land --repo`.
+
+## Reading logs without losing earlier output
+
+Terminal output may be shortened by an agent's tools. `tail` shows only the end of a file, which
+can hide the first failure. Keep the entry ID and use `qk queue result ID --json` for its verdict,
+failure summary and artifact references, including after an interrupted wait. A successful log
+read is not evidence that the gate passed.
+
+To inspect the full log in bounded pieces, start at its beginning:
+
+```sh
+qk queue logs ID --json --limit 16384
+```
+
+The response includes `content`, the selected `artifact`, `nextOffset`, `nextCursor` and
+`hasMore`. Pass the returned cursor unchanged to continue:
+
+```sh
+qk queue logs ID --json --cursor CURSOR
+```
+
+Retain each chunk before advancing its cursor. When `hasMore` is false, the cursor can still
+read output appended later; check `queue result` to know whether the entry has settled.
+`waitingForBytes` means an unfinished UTF-8 character is waiting for the writer to finish it;
+wait before asking again rather than spinning. A settled file's incomplete final character is
+shown as a replacement character so reading can finish.
+
+The cursor identifies the file and byte position and checks the last returned chunk. If the file
+is replaced, truncated or that chunk changes, the command reports `log-cursor-stale`; restarting
+from the beginning is explicit. `--offset N` can also seek to a byte position, but lacks these
+cursor checks. Use the returned offsets so that a position never splits a UTF-8 character.
+
+Reads default to 16,384 bytes and accept `--limit` from 4 to 1,048,576 bytes. With several logs,
+the default preference is a live gate, an exact failed dispatch's run log, the entry's primary
+gate log, then its latest recorded lane log. Earlier attempts remain listed as artifacts, while
+the result's diagnostic summary uses the final attempt's evidence.
+`--artifact KIND` or `--artifact PATH` selects a listed log; use its full path when several have
+the same kind. A missing or unreturned remote log is reported as unavailable. Reads never fetch
+from another Mac or substitute a newer run's log.
+
+The log command exits 0 for a successful read, 1 for an unavailable log or stale cursor, and 2
+for an invalid request. Its JSON errors include `reasonCode` and the available artifact references.
+The default text mode prints content on standard output and continuation information on standard
+error. These are Queuekeeper commands built on file offsets, rather than a Unix `tail` option.
 
 ## Verifying
 

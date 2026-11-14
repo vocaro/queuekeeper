@@ -1,0 +1,51 @@
+# Working on Queuekeeper
+
+Read [the agent interface](doc/agent_interface.md) for exit codes, verification, landing and recovery.
+Queuekeeper requires macOS and Python 3.14 or newer; its Python package has no runtime dependencies.
+Use this checkout's launcher, `python3 scripts/qk`, to operate on this repository.
+
+## Verify through admission
+
+Run focused tests with:
+
+```sh
+python3 scripts/qk unittest -s tests test_merge_queue.Landing
+```
+
+Replace the example with the relevant module, class or test. Run the configured full gate with
+`python3 scripts/qk run gate`. Every test or build must take admission, even a single test:
+use `python3 scripts/qk admit -- COMMAND` for other build commands. Do not run bare
+`python3 -m unittest`, `swift test` or `xcodebuild`. Use `--unadmitted` only when testing a runner
+itself, as described in [the admission guide](guides/shared-host.md#heavy-work-admission).
+
+## Land and recover
+
+When landing work, commit on your own branch and run `python3 scripts/qk land --wait --json` in the
+background, following it to its result. Never push directly to `main`. Exit 0 means landed,
+1 means refused or sent back, and 75 means held or still waiting at the limit.
+
+Interrupting the wait does not withdraw the entry. After interruption or settlement, retrieve its
+record with `python3 scripts/qk queue result ID --json`; use this record for the verdict, failures
+and artifact locations, since a terminal's last lines may omit them. To keep waiting, use
+`python3 scripts/qk queue wait ID --json`, or repeat the same `land --wait --json` to follow the
+existing entry. Omit `--json` for text output. Check the result before submitting replacement work.
+For complete log output, use `python3 scripts/qk queue logs ID --json` and continue with its
+`nextCursor` through `--cursor CURSOR`. Retain each chunk; a terminal tail is not the full log.
+Use `queue status` and `queue doctor` to investigate holds; fix and resume a session's hold yourself,
+and involve the owner when the hold says it requires the owner.
+
+## Find the implementation
+
+- `src/python/queuekeeper/cli.py`: command dispatch and lane execution.
+- `src/python/queuekeeper/merge_queue.py`: submission, batching, workers and landing.
+- `src/python/queuekeeper/agent_cli.py`, `agent_results.py`, `agent_logs.py` and `recovery.py`:
+  structured results, resumable log reads and recovery commands.
+- `src/python/queuekeeper/config.py` and `schemas/queuekeeper.schema.json`: project settings;
+  keep the parser and schema consistent.
+- `src/python/queuekeeper/extensions.py`: extension hooks. Keep platform behavior in its extension;
+  the core does not import extensions directly.
+- `src/python/queuekeeper/visibility/`: optional visibility features.
+- `tests/`: tests and host isolation. Follow neighboring tests' `host_isolation` setup.
+- `doc/`: user documentation; `guides/`: operational detail and design decisions.
+
+See [maintenance](guides/maintenance.md) for queue operation and spelling rules.

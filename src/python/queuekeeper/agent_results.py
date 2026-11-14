@@ -1,0 +1,165 @@
+"""Bounded, versioned results for an entry, independent of the status view's recent window.
+
+Artifact paths identify the exact recorded run. Missing or pruned artifacts stay in the result
+with available=false; a later run's artifacts are never substituted for them.
+"""
+import json
+from pathlib import Path
+import re
+import stat
+import sys
+
+from . import lane_report
+
+VERSION = 1
+LOG_BYTES = 1 << 20
+SHOWN = 20
+WAITING = {"queued", "testing", "passed"}
+
+
+def diagnostic_excerpt(path):
+    """At most LOG_BYTES of a local file, and whether earlier bytes were omitted."""
+    try:
+        if not stat.S_ISREG(Path(path).stat().st_mode): return "", False
+        with Path(path).open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - LOG_BYTES))
+            return stream.read(LOG_BYTES).decode("utf-8", errors="replace"), size > LOG_BYTES
+    except OSError:
+        return "", False
+
+
+def artifact(kind, path, host=None):
+    """Returned dispatch files live locally even when a different host produced them."""
+    path = Path(path)
+    return {"kind": kind, "path": str(path), "location": "local", "producedOn": host,
+            "available": path.exists()}
+
+
+def entry_artifacts(queue, entry):
+    """Recorded artifact paths and current gates, without opening any log."""
+    artifacts = []
+    host = None
+    dispatch = entry.get("failedDispatch") or {}
+    if dispatch.get("directory"):
+        directory = Path(dispatch["directory"])
+        raw, _ = diagnostic_excerpt(directory / "source.json")
+        try: receipt = json.loads(raw)
+        except ValueError: receipt = {}
+        if isinstance(receipt, dict):
+            host = receipt.get("host") or receipt.get("mac")
+            if not isinstance(host, str): host = None
+        for kind, name in (("run-log", "run.log"), ("dispatch-log", "output.log"),
+                           ("receipt", "source.json"), ("results", "results")):
+            artifacts.append(artifact(kind, directory / name, host))
+    log = entry.get("log") or (entry.get("gate") or {}).get("log")
+    if log:
+        artifacts.append({**artifact("queue-log", log, host), "primary": True})
+    for reference in entry.get("logs", []):
+        if not reference.get("path"): continue
+        item = artifact("queue-log", reference["path"], reference.get("mac"))
+        item["lane"] = reference.get("lane")
+        item["status"] = reference.get("status")
+        artifacts.append(item)
+    gates = []
+    if entry["state"] in WAITING and queue.working():
+        for gate in (queue.round_state() or {}).get("gates", {}).values():
+            if entry["id"] not in gate.get("entries", []): continue
+            gates.append({key: gate.get(key) for key in ("lane", "mac", "began", "waiting")})
+            if gate.get("log"):
+                artifacts.append({**artifact("queue-log", gate["log"], gate.get("mac")),
+                                  "current": True, "lane": gate.get("lane")})
+    unique = {}
+    for item in artifacts:
+        unique.setdefault(item["path"], {}).update(item)
+    return list(unique.values()), gates
+
+
+def entry_result(queue, entry):
+    """Normalize one persisted entry without listing other entries or contacting another host."""
+    from . import recovery
+
+    state = entry["state"]
+    pending = state in WAITING
+    held = recovery.read_hold(queue.hold_file, queue.held()) if pending else None
+    artifacts, gates = entry_artifacts(queue, entry)
+    texts, truncated = [], False
+    # These optional diagnostic excerpts are not the full log. The cursor-based logs command
+    # reads the complete file; logTruncated explicitly identifies incomplete diagnostics here.
+    diagnostic_logs = [item for item in artifacts if item["kind"] == "run-log"]
+    primary = [item for item in artifacts if item.get("primary")]
+    # Earlier failed/bisected rounds are history, not evidence about the final attempt. A
+    # custom successful lane may have no measured gate, so its newest completed log is used.
+    completed = [item for item in artifacts if item["kind"] == "queue-log"]
+    diagnostic_logs.extend(primary or completed[-1:])
+    for item in diagnostic_logs:
+        if pending: continue
+        text, clipped = diagnostic_excerpt(item["path"])
+        texts.append(text)
+        truncated |= clipped
+    # Prefer the exact dispatch's complete test output to the queue's potentially repeated summary.
+    counts = next((found for text in texts if (found := lane_report.counts(text)) is not None), None)
+    failures = {}
+    for text in texts:
+        for name, place in lane_report.failing(text):
+            if name not in failures or place: failures[name] = place
+    failure = None
+    if state in ("failed", "conflict"):
+        failure = {"category": "conflict" if state == "conflict" else "gate-failed",
+                   "message": entry.get("why"), "tests": [
+                       {"name": name, "location": place} for name, place in list(failures.items())[:SHOWN]],
+                   "moreTests": max(0, len(failures) - SHOWN),
+                   "excerpt": ((entry.get("failedDispatch") or {}).get("excerpt") or [])[:SHOWN]}
+    return {"schemaVersion": VERSION, "project": str(queue.root),
+            "id": entry["id"], "commit": entry.get("tip"),
+            "state": state, "terminal": not pending, "landedAs": entry.get("landedAs"),
+            "subject": entry.get("subject"), "branch": entry.get("branch"),
+            "submitted": entry.get("submitted"), "settled": entry.get("settled"),
+            "failure": failure, "tests": counts, "logTruncated": truncated,
+            "artifacts": artifacts, "gates": gates,
+            "resultsSummary": (entry.get("gate") or {}).get("results"),
+            "docsOnly": entry.get("docsOnly"), "ungated": entry.get("ungated"),
+            "recovery": recovery.in_project(recovery.for_entry(entry, held), queue.root)}
+
+
+def read_entry(queue, identifier):
+    """Read a safe entry ID directly, rather than searching the bounded status snapshot."""
+    if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", identifier):
+        raise ValueError("An entry ID must be a name, without path separators")
+    entry = queue.read(identifier)
+    if not isinstance(entry, dict): raise ValueError(f"The queue has no entry {identifier}")
+    return entry
+
+
+def lookup(queue, identifier):
+    return entry_result(queue, read_entry(queue, identifier))
+
+
+def result(root, identifier, as_json=False):
+    """A successful lookup exits 0 for any state; queue wait supplies the verdict exit status."""
+    from . import merge_queue
+
+    try:
+        found = lookup(merge_queue.Queue(root), identifier)
+    except (ValueError, OSError) as error:
+        if not as_json: raise
+        from .agent_cli import error_result
+        print(f"queuekeeper: {error}", file=sys.stderr)
+        found = error_result("usage-or-configuration-error", str(error))
+        found.update(operation="queue.result", exitStatus=2, requestedIds=[identifier])
+        print(json.dumps(found, indent=2))
+        return 2
+    found.update(operation="queue.result", exitStatus=0)
+    if as_json:
+        print(json.dumps(found, indent=2))
+    else:
+        print(f"{found['state']:8} {found['id']}  {found['subject'] or ''}")
+        if found["landedAs"]: print(f"landed: {found['landedAs']}")
+        if found["failure"]:
+            print(found["failure"]["message"] or found["failure"]["category"])
+            for test in found["failure"]["tests"]:
+                print(f"  failed: {test['name']}" + (f" at {test['location']}" if test["location"] else ""))
+        for item in found["artifacts"]:
+            print(f"{item['kind']}: {item['path']}" + ("" if item["available"] else " (unavailable or pruned)"))
+    return 0
