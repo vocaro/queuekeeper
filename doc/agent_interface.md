@@ -59,6 +59,16 @@ a test of a runner itself runs with `--unadmitted`, written after the runner's n
 and outside `qk unittest`, this repository's tests say so once on standard error and run on
 (vocaro/queuekeeper#36).
 
+Nor does a session wait for a quiet Mac before it starts. The load average on these Macs counts
+hundreds of simulator threads and stays in the hundreds under ordinary work: on 2026-11-12 a loop
+that waited for a one-minute load under 10 would never have fired, while `qk run gate` passed on
+the second Mac in 925 s. Admission waits for a slot and chooses the Mac, so a session never polls
+`uptime`, `sysctl vm.loadavg` or `top`, and asks `qk admissions now` when it needs to know why its
+work has not started. Exclusive work settles before its command starts and tells the command what
+it read of the Mac (vocaro/queuekeeper#121)
+([Ask admission, not the load average](../guides/shared-host.md#ask-admission-not-the-load-average),
+vocaro/queuekeeper#134).
+
 ## Landing
 
 `qk land --wait` follows a commit to its result, so an agent starts it in the background and is

@@ -395,6 +395,36 @@ ps -Ao pid,args | grep -E '[x]ctest|[x]codebuild|[c]heck-all\.sh|[t]est-ios\.sh'
 Several projects have a `check-all.sh`; its path says whose run it is. Never stop a process
 merely because it is busy.
 
+### Ask admission, not the load average
+
+A session never waits for a Mac to go quiet by reading its load average. Work that needs a fair
+run, such as a clean run of a suite after flaky ones, goes through admission: `qk run LANE`, or
+`qk admit -- COMMAND` for anything else, which waits for a slot and chooses the Mac, the second
+Mac first. The session does not poll `uptime`, `sysctl vm.loadavg` or `top` to decide when to
+start, and starts no loop that waits for the load to fall. When `qk admit` has to wait, it says
+for what and behind whom, and `qk admissions now` shows who holds and who waits on both Macs
+([who holds and who waits](#who-holds-and-who-waits)), for a session that needs to know why its
+work has not started.
+
+The load average on these Macs is not a measure of whether a Mac is free. It counts every
+runnable thread, simulators keep hundreds of them, and it stays in the hundreds under ordinary
+work; admission stopped judging by it for that reason
+([vocaro-engineering#200](https://github.com/vocaro/vocaro-engineering/issues/200)). On 2026-11-12
+a session wanted a clean run of Queuekeeper's suite after three runs flaked on a busy Mac, and
+started a background loop that would run it once the one-minute load had stayed under 10 for
+three minutes. Both Macs then read loads between 250 and 550 for hours of ordinary queue work, so
+the loop would never have fired. `qk run gate` instead sent the suite to the second Mac, where it
+passed in 925 s (vocaro/queuekeeper#134).
+
+Work that must have the Mac to itself asks admission for that too, not the load. A suite runs as
+its lane, heavy or whole-host, never exclusive; a timed measurement runs with `qk admit --here
+--exclusive` ([heavy-work admission](#heavy-work-admission)). Since 2026-11-13 an exclusive
+admission settles before its command starts, waiting up to HEAVY_QUIET_SECONDS for the CPU's busy
+share to fall below HEAVY_QUIET_LIMIT, and tells the command what it read in the
+`QUEUEKEEPER_HOST_*` variables, so a check that must judge the host reads
+`QUEUEKEEPER_HOST_QUIET` rather than waiting on a reading of its own
+([vocaro/queuekeeper#121](https://github.com/vocaro/queuekeeper/issues/121)).
+
 ### Model admission
 
 A generative-model run takes one heavy slot and the host's model lock, an `flock` on `model` in
