@@ -1,4 +1,7 @@
 """The Markdown link and anchor check, and the check of citations by path and section title."""
+import contextlib
+import io
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -7,7 +10,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import docs
+from queuekeeper import cli, config, docs
 
 
 class DocumentationTests(unittest.TestCase):
@@ -116,13 +119,14 @@ class CitationTests(unittest.TestCase):
                 f"# A Markdown link's target is the link check's: [x](absent{MD}#nowhere)\n")
         with tempfile.TemporaryDirectory() as directory:
             root = self.checkout(directory, code)
-            self.assertEqual(docs.check(root), [])
+            self.assertEqual(docs.check(root, citations=True), [])
             (root / "src/tool.py").write_text(
                 code + f"# (guides/host{MD}, Setting up a build host), (guides/host{MD}, Heavy work)\n"
                 f"# (guides/gone{MD}, Heavy-work admission), guides/host{MD}#heavy-work, (guides/host{MD}, Not a heading)\n")
             (root / f"guides/lanes{MD}").write_text("# Lanes\n\nSee host" + MD + ", The first Mac.\n")
             tool, lanes = root / "src/tool.py", root / f"guides/lanes{MD}"
-            self.assertEqual(docs.check(root), [
+            self.assertEqual(docs.check(root), [])   # off unless the project turns it on
+            self.assertEqual(docs.check(root, citations=True), [
                 f"{lanes}:3: cites no heading or bold lead-in of host{MD}: The first Mac.",
                 f"{tool}:11: cites no heading or bold lead-in of guides/host{MD}: Setting up a build host",
                 f"{tool}:11: cites no heading or bold lead-in of guides/host{MD}: Heavy work",
@@ -133,8 +137,54 @@ class CitationTests(unittest.TestCase):
     def test_named_files_are_the_only_ones_read(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.checkout(directory, f"# (guides/host{MD}, Heavy work)\n")
-            self.assertEqual(docs.check(root, [f"guides/lanes{MD}"]), [])
-            self.assertEqual(len(docs.check(root, ["src/tool.py"])), 1)
+            self.assertEqual(docs.check(root, [f"guides/lanes{MD}"], citations=True), [])
+            self.assertEqual(len(docs.check(root, ["src/tool.py"], citations=True)), 1)
+            self.assertEqual(docs.check(root, ["src/tool.py"]), [])
+
+    def test_data_logs_records_and_code_after_a_comma_are_not_read(self):
+        stale = f"(guides/host{MD}, Heavy work)\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.checkout(directory, f'GUIDES = {{"guides/host{MD}": 1}}; pick(guides/host{MD}, Path(x), [y])\n'
+                                            f"# guides/host{MD}, {{'a': 1}}\n")
+            for name in ["data/manifest.json", "lane.log", "notes.txt", "evidence/run/README.md",
+                         "doc/archive/old.md", "vendor/Vendor/lib.py"]:
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(stale)
+            (root / "schemas").mkdir()
+            (root / "schemas/project.schema.json").write_text('{"description": "' + stale.strip() + '"}\n')
+            (root / "scripts").mkdir()
+            (root / "scripts/run").write_text("#!/bin/sh\n# " + stale)
+            (root / "scripts/plain").write_text(stale)
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            self.assertEqual(docs.check(root, citations=True), [
+                f"{root / 'schemas/project.schema.json'}:1: cites no heading or bold lead-in of guides/host{MD}: Heavy work",
+                f"{root / 'scripts/run'}:2: cites no heading or bold lead-in of guides/host{MD}: Heavy work"])
+
+
+class CitationSettingTests(unittest.TestCase):
+    """queuekeeper.json's docs.citations turns the citation check on for a project (vocaro/queuekeeper#114)."""
+    def test_docs_takes_only_a_boolean_citations_and_the_schema_lists_it(self):
+        self.assertTrue(config.parse(json.dumps({"schemaVersion": 1, "name": "Example",
+                                                 "docs": {"citations": True}}))["docs"]["citations"])
+        for docs_value, message in [({"citations": "yes"}, "docs.citations must be true or false"),
+                                    ({"links": True}, "docs supports only citations"),
+                                    (True, "docs supports only citations")]:
+            with self.subTest(docs=docs_value), self.assertRaisesRegex(ValueError, message):
+                config.parse(json.dumps({"schemaVersion": 1, "name": "Example", "docs": docs_value}))
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
+        self.assertEqual(schema["properties"]["docs"]["properties"]["citations"]["type"], "boolean")
+        self.assertTrue(config.load(config.TOOLKIT_ROOT)["docs"]["citations"])   # Queuekeeper checks its own
+
+    def test_qk_docs_check_reads_citations_only_when_the_project_turns_them_on(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = CitationTests().checkout(directory, f"# (guides/host{MD}, Heavy work)\n")
+            for setting, status in [({}, 0), ({"docs": {"citations": False}}, 0), ({"docs": {"citations": True}}, 1)]:
+                with self.subTest(setting=setting):
+                    (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                                                                       "extensions": [], **setting}))
+                    with contextlib.redirect_stdout(io.StringIO()) as printed:
+                        self.assertEqual(cli.main(["--project", str(root), "docs", "check"]), status,
+                                         printed.getvalue())
 
 
 if __name__ == "__main__":

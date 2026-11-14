@@ -99,7 +99,7 @@ def parse(source):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository", "spelling", "simulatorPool",
-               "queue", "release", "app", "testLanes", "gitHooks"}
+               "queue", "release", "app", "testLanes", "gitHooks", "docs"}
     if set(value) - allowed - set(EXTENSION_CONFIG_KEYS):
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(EXTENSION_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:
@@ -171,8 +171,18 @@ def parse(source):
                                                 or not r.strip() for k, r in entries.items()):
             raise ValueError(f"spelling.{key} maps each entry to the reason it is kept")
     test_lanes(value.get("testLanes", {}))
+    documentation(value.get("docs", {}))
     return value
 
+
+def documentation(docs):
+    """docs, the settings of qk docs check: citations, true to have it check citations of a document by path and
+    section title or anchor in the project's Markdown and source files too (vocaro/queuekeeper#114). Off unless
+    set, since a project's records and data quote other repositories' guides that this checkout cannot resolve."""
+    if not isinstance(docs, dict) or set(docs) - {"citations"}:
+        raise ValueError("docs supports only citations")
+    if "citations" in docs and not isinstance(docs["citations"], bool):
+        raise ValueError("docs.citations must be true or false")
 
 def git_hooks(folder):
     """gitHooks, the folder of the project's tracked hooks, which qk doctor sets core.hooksPath to where it is unset

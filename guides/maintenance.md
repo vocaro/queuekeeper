@@ -1211,20 +1211,33 @@ source line (`PATH:LINE`) must exist, and an `AGENTS.md` must stay under 32 KiB.
 reads the Markdown at the root and under `doc/`, `docs/`, `guides/`, `knowledge/`, `agents/` and
 `policies/`.
 
-It also checks citations of a document by its path and a section title, as in
-`(guides/shared-host.md, Heavy-work admission)`, and by its path and an anchor, as in
-`guides/shared-host.md#probing-stop-signals` (vocaro/queuekeeper#114). Code comments, messages and
-schema descriptions cite the guides that way, so with no paths it reads every tracked text file,
-code included, and with paths the files named. The path is from the checkout's root or from the
-citing file's folder. The title must begin with a heading of that document, or with a bold lead-in
+**Citations, for a project that turns them on.** With `"docs": {"citations": true}` in
+queuekeeper.json, the check also reads citations of a document by its path and a section title,
+as in `(guides/shared-host.md, Heavy-work admission)`, and by its path and an anchor, as in
+`guides/shared-host.md#probing-stop-signals` (vocaro/queuekeeper#114). Queuekeeper turns it on; a
+project without the key gets the Markdown checks alone. Code comments, messages and schema
+descriptions cite the guides that way, so with no paths it reads every tracked Markdown file,
+source file, script (an extensionless file that starts `#!`) and `*.schema.json`, and with paths
+those of the files named. It reads no other data, logs or plain text, and nothing under an
+`evidence/` or `archive/` folder, which records what a guide said when it was written. The path is
+from the checkout's root or from the citing file's folder. The title must begin with a heading of that document, or with a bold lead-in
 that opens one of its paragraphs or list items, such as **Landing ahead of the queue.** A citation
 may go on past the title, as in `Two gates and Checkpoints`, and may wrap across the lines of a
 comment or across adjacent string literals. A hit reads `PATH:LINE: cites a missing document`, `cites
 a missing anchor` or `cites no heading or bold lead-in of`, and the fix is the citation, or a
-heading that a rename lost. Text after the comma that begins in lower case, or names another
-document, is a list or prose, not a citation. A citation of another repository's document, marked
-by the possessive before its path as in "the toolkit's guides/releasing.md, Keeping the split", is
-not read, since this checkout cannot resolve it.
+heading that a rename lost. Text after the comma that begins in lower case, names another
+document, or holds braces, brackets, operators or a call before it closes is a list, prose or
+code, not a citation. A citation of another repository's document, marked by the possessive before
+its path as in "the toolkit's guides/releasing.md, Keeping the split", is not read, since this
+checkout cannot resolve it.
+
+It is each project's choice because the projects' records and code quote guides their checkouts
+cannot resolve. On 2026-11-13, read in every project, it failed in nine: 395 hits in BreezEPUB
+alone, mostly lane logs and archived instructions citing the toolkit's guides without a
+possessive, and JSON data in PDFReflowLib read as citations. Off, each project's check fails
+exactly as it did before. With data, logs and records left unread, the same projects had 67 hits,
+25 of them mpm's placeholders and citations of its own `doc/phase_log.md` from code by its bare
+name; a project fixes those before it turns the check on.
 
 When guide sections moved here from the toolkit (vocaro/vocaro-engineering#403), citations of
 them went stale with nothing reporting it, and a one-off script found them. On 2026-11-13 this

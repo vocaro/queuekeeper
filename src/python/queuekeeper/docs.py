@@ -31,6 +31,16 @@ WRAP_END = re.compile(r"""[\s"'+\\]*$""")
 WRAP_START = re.compile(r"""^\s*(?:(?:#+|//+|/?\*+|--|>|\+)\s*)*(?:[rbfuRBFU]{0,2}(?:\"\"\"|'''|"|'))?""")
 # A text file larger than this is data, not prose that cites a guide.
 LARGEST_CITING = 2 << 20
+# The files whose citations are read: Markdown, source code, scripts (an extensionless file that starts #!) and
+# JSON schemas, whose descriptions cite the guides. Data, logs and plain text are not read, nor recorded evidence
+# and archives, which quote what a guide said when they were written.
+SOURCE = MARKDOWN | {".py", ".swift", ".m", ".mm", ".h", ".hpp", ".c", ".cc", ".cpp", ".cs", ".js", ".mjs", ".ts",
+                     ".tsx", ".jsx", ".sh", ".bash", ".zsh", ".rb", ".go", ".rs", ".java", ".kt", ".kts", ".gradle",
+                     ".toml", ".yml", ".yaml", ".hlsl", ".shader", ".metal"}
+RECORDS = {"evidence", "archive", "archives", "archived"}
+# What no section title holds, which marks text after a path's comma as code or data: braces, brackets,
+# operators, or a call such as Path(x).
+NOT_A_TITLE = re.compile(r"[{}\[\]<>=$|\\]|\w\(")
 
 
 def slug(text):
@@ -105,7 +115,10 @@ def anchors_from(headings, ids):
     return found
 
 
-def check(root, paths=None):
+def check(root, paths=None, citations=False):
+    """Each failure of the project's Markdown: a missing link, anchor or source line, a wrong-case link, and an
+    AGENTS.md of 32 KiB or more. With citations, queuekeeper.json's docs.citations, also each citation that names
+    no document or section of this checkout (cited)."""
     root = Path(root).resolve()
     failures = []
     tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, timeout=30)
@@ -180,13 +193,27 @@ def check(root, paths=None):
                         failures.append(f"{path}: wrong-case link: {raw}")
                         break
                     probe = probe / part
-    citing = files if paths is not None else [
-        root / name for name in sorted(tracked_names)
-        if not any(part.startswith(".") or part in VENDORED for part in Path(name).parts)]
-    return failures + citations(root, citing)
+    if not citations: return failures
+    reading = files if paths is not None else [root / name for name in sorted(tracked_names)]
+    return failures + cited(root, reading)
 
 
-def citations(root, files):
+def citing(root, path):
+    """Whether cited reads path, a file of the checkout at root: Markdown, source, a script or a JSON schema,
+    outside dot, vendored and record folders."""
+    try: parts = path.relative_to(root).parts
+    except ValueError: parts = path.parts
+    if any(part.startswith(".") or part in VENDORED or part.lower() in RECORDS for part in parts[:-1]): return False
+    suffix = path.suffix.lower()
+    if suffix in SOURCE or path.name.endswith(".schema.json"): return True
+    if suffix: return False
+    try:
+        with open(path, "rb") as file: return file.read(2) == b"#!"
+    except OSError:
+        return False
+
+
+def cited(root, files):
     """Each citation in files of a Markdown document by its path and a section title, as in
     (guides/shared-host.md, Heavy-work admission), or by its path and an anchor, that names no document
     in this checkout, or no heading or bold lead-in of it (vocaro/queuekeeper#114). The path is from
@@ -207,6 +234,7 @@ def citations(root, files):
         path = Path(path)
         if not path.is_absolute(): path = root / path
         try:
+            if not citing(root, path): continue
             if path.is_symlink() or not path.is_file() or path.stat().st_size > LARGEST_CITING: continue
             raw = path.read_bytes()
         except OSError:
@@ -230,6 +258,9 @@ def citations(root, files):
                 # A title begins with a capital or a code span; anything else is a comma in prose or a list.
                 if not anchor and (not tail or not (tail[0].isupper() or rest.lstrip().startswith("`"))
                                    or re.match(r"\S+\.(?:md|markdown)\b", tail)):
+                    continue
+                # Braces, brackets or operators before the title closes are code or data, not a title.
+                if not anchor and NOT_A_TITLE.search(re.split(r"""[);"]""", rest if rest.strip() else tail)[0]):
                     continue
                 target = document(cited, path)
                 where = f"{path}:{number}"

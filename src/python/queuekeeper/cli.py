@@ -926,9 +926,9 @@ def perform(argv, report):
     merge_queue.land_arguments(commands.add_parser("land", help="land a finished commit through the merge queue of this "
         "repository, or with --repo of another, and return at once: the queue gates it on origin/main and pushes it"))
     documentation = commands.add_parser("docs", help="check the project's Markdown: each link's file, anchor and "
-        "source line exists, and each citation of a document by path and section title or anchor, in any tracked "
-        "text file, names a heading or bold lead-in of it; exit 1 on any that does not (guides/maintenance.md, "
-        "Docs check)")
+        "source line exists, and, with queuekeeper.json's docs.citations, each citation of a document by path and "
+        "section title or anchor in its Markdown and source names a heading or bold lead-in of it; exit 1 on any "
+        "that does not (guides/maintenance.md, Docs check)")
     documentation.add_argument("operation", choices=["check"])
     documentation.add_argument("paths", nargs="*")
     spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "
@@ -1041,7 +1041,7 @@ def perform(argv, report):
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)
         elif args.action == "docs":
-            failures = docs.check(root, args.paths or None)
+            failures = docs.check(root, args.paths or None, citations=config.get("docs", {}).get("citations", False))
             print("\n".join(failures) if failures else "Documentation checks passed")
             return int(bool(failures))
         elif args.action == "spelling": return spelling.check(root, config, args.paths)
