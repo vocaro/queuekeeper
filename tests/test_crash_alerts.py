@@ -141,6 +141,42 @@ class AlertTests(HostTest):
         self.host = Host(alerts=[CRASH], pressable=False)
         self.assertEqual(crash_alerts.clear(self.said.append), ([], [CRASH]))
 
+    def test_a_look_clears_more_than_ten_distinct_or_identical_crash_reports(self):
+        for alerts in ([{**CRASH, "frame": [n, 20, 260, 250]} for n in range(25)], [CRASH] * 25):
+            with self.subTest(identical=alerts[0] == alerts[-1]):
+                self.host = Host(alerts=alerts)
+                cleared, left = crash_alerts.clear(self.said.append)
+                self.assertEqual(cleared, alerts)
+                self.assertEqual(left, [])
+                self.assertEqual(len(self.host.pressed), 25)
+
+    def test_a_successful_press_that_leaves_or_returns_the_same_alert_is_bounded(self):
+        with patch.object(crash_alerts, "press", return_value=True) as pressed:
+            cleared, left = crash_alerts.clear(self.said.append, windows=lambda: [CRASH])
+        self.assertEqual(left, [CRASH])
+        self.assertEqual(len(cleared), crash_alerts.ATTEMPTS + 1)
+        self.assertEqual(pressed.call_count, crash_alerts.ATTEMPTS + 1)
+
+    def test_many_failed_presses_are_bounded_even_when_alerts_change(self):
+        reads = []
+        def windows():
+            reads.append(True)
+            return [{**CRASH, "frame": [len(reads), 20, 260, 250]}]
+        with patch.object(crash_alerts, "press", return_value=False) as pressed:
+            cleared, left = crash_alerts.clear(self.said.append, windows=windows)
+        self.assertEqual(cleared, [])
+        self.assertTrue(left)
+        self.assertEqual(pressed.call_count, crash_alerts.ATTEMPTS)
+
+    def test_a_mixed_stop_tells_the_owner_prompt_apart_from_the_crash_report(self):
+        message = crash_alerts.stopping([CRASH, ACCESS])
+        prompt, remaining = message.split("; also, ")
+        self.assertIn("owner's to answer and queuekeeper never touches", prompt)
+        self.assertIn(crash_alerts.describe(ACCESS), prompt)
+        self.assertNotIn(crash_alerts.describe(CRASH), prompt)
+        self.assertIn("a system alert queuekeeper cannot dismiss", remaining)
+        self.assertIn(crash_alerts.describe(CRASH), remaining)
+
 
 class GuardTests(HostTest):
     def test_dialogs_are_off_only_for_the_run_and_put_back_exactly_however_it_ends(self):

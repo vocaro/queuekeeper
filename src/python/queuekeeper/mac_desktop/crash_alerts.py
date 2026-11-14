@@ -49,7 +49,7 @@ JSON.stringify(list.filter(function (w) { return names.indexOf(w.kCGWindowOwnerN
   var b = w.kCGWindowBounds || {};
   return {app: w.kCGWindowOwnerName, layer: w.kCGWindowLayer, frame: [b.X, b.Y, b.Width, b.Height]};
 }));""" % json.dumps(list(offload_host.ALERT_PROCESSES))
-# Crash-report alerts dismissed in one clearing, each looked for again after the last one went.
+# Failed or repeated presses allowed in one clearing. Successful dismissals that make progress have no limit.
 ATTEMPTS = 10
 # The buttons that dismiss a crash-report alert, in preference order. Reopen starts the app again and
 # Report… opens another window; neither is pressed.
@@ -146,16 +146,24 @@ def clear(said, windows=None, pressed=None):
     each as its press returns; (cleared, left), left being the system alerts still there, or None when they cannot
     be read."""
     windows = windows or (lambda: offload_host.system_alerts(run))
-    cleared, missed = [], []
-    for _ in range(ATTEMPTS):
+    cleared, missed, counts = [], [], {}
+    attempts = 0
+    while attempts < ATTEMPTS:
         found = windows()
         if found is None: return cleared, None
         # One press missed stays: one the window took after it went, as when a run's watcher and a driver's
         # check both press it (2026-11-03), is looked for again and is gone.
         target = next((alert for alert in found if dismissal(alert) and alert not in missed), None)
         if target is None: return cleared, found
+        name = key(target)
+        count = sum(key(alert) == name for alert in found)
+        # Identical crash reports can be stacked at the same frame. A smaller count proves progress;
+        # an unchanged or larger count after a successful press may be a stuck or returning alert.
+        if name in counts and count >= counts[name]: attempts += 1
+        counts[name] = count
         button = dismissal(target)
         if not press(target, button):
+            attempts += 1
             missed.append(target)
             continue
         said(f"queuekeeper: dismissed a crash-report alert with {button}: {describe(target)}")
@@ -183,11 +191,17 @@ def stamp(when):
 
 def stopping(left):
     """Why left, the system alerts queuekeeper could not clear, stop a run."""
-    named = "; ".join(describe(alert) for alert in left)
-    if any(owners(alert) for alert in left):
-        return (f"a password, permission or keychain prompt is over the screen, which is the owner's to answer and "
-                f"queuekeeper never touches: {named}")
-    return f"a system alert queuekeeper cannot dismiss is over the screen: {named}"
+    prompts = [alert for alert in left if owners(alert)]
+    others = [alert for alert in left if not owners(alert)]
+    reasons = []
+    if prompts:
+        named = "; ".join(describe(alert) for alert in prompts)
+        reasons.append(f"a password, permission or keychain prompt is over the screen, which is the owner's to answer and "
+                       f"queuekeeper never touches: {named}")
+    if others:
+        named = "; ".join(describe(alert) for alert in others)
+        reasons.append(f"a system alert queuekeeper cannot dismiss is over the screen: {named}")
+    return "; also, ".join(reasons)
 
 
 def record_path():

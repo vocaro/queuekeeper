@@ -405,7 +405,10 @@ either Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocar
   looks that read the alerts, failed, and were spared by the window list. A run that fails with no look able to
   read them says so, and its failure stands. It dismisses a crash report, a window of `UserNotificationCenter`,
   `Problem Reporter` or `CrashReporter` that says the app quit unexpectedly, with Ignore, or OK, and logs each
-  with its window's frame. It never presses Reopen or Report…, and never touches a password, permission or
+  with its window's frame. A look clears any number of crash reports when each press makes progress;
+  ten failed or repeated presses end the look so that an alert that stays or returns cannot keep it spinning.
+  Stacked identical reports make progress when fewer remain at the same frame after a press.
+  It never presses Reopen or Report…, and never touches a password, permission or
   keychain prompt (`SecurityAgent`, `coreautha`, or any alert asking for a password, access or permission):
   those are the owner's.
 - **Unmeasured, never failed.** A system alert Queuekeeper may not clear before the run stops it with nothing run, as
