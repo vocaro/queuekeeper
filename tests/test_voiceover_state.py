@@ -21,9 +21,10 @@ from queuekeeper.apple.voiceover import guard, state
 
 def idle(test):
     """An idle host for the test: every bound is its base value, so a fake clock's arithmetic stays exact."""
-    loaded = patch.object(state.os, "getloadavg", return_value=(0.5, 0.5, 0.5))
-    loaded.start()
-    test.addCleanup(loaded.stop)
+    for patcher in (patch.object(state.os, "getloadavg", return_value=(0.5, 0.5, 0.5)),
+                    patch.object(state.waiting, "busy_now", return_value=None)):
+        patcher.start()
+        test.addCleanup(patcher.stop)
 
 
 def system(public="true\n", processes=(), comm=None):
@@ -105,6 +106,34 @@ class StaleKeyTests(unittest.TestCase):
 
 
 class StretchTests(unittest.TestCase):
+    def setUp(self):
+        quiet = patch.object(state.waiting, "busy_now", return_value=None)
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
+    def test_a_low_load_beside_a_saturated_cpu_stretches_to_the_limit(self):
+        # build-host on 2026-11-12: a 5 s Command-F5 bound ended KEY_LATE with the load at or below 10 on 10 cores,
+        # the CPU 100% busy and the load around it 490 to 630 (vocaro/queuekeeper#43).
+        for load, busy, expected in [(7.45, 100.0, 5 * state.STRETCH_LIMIT), (10, 99.0, 5),
+                                     (7.45, 50.0, 5), (7.45, None, 5), (250, 100.0, 5 * state.STRETCH_LIMIT)]:
+            with self.subTest(load=load, busy=busy), patch.object(state.os, "getloadavg", return_value=(load,) * 3), \
+                    patch.object(state.os, "cpu_count", return_value=10), \
+                    patch.object(state.waiting, "busy_now", return_value=busy):
+                self.assertAlmostEqual(state.stretched(5), expected)
+                self.assertEqual(state.stretch_reading()["factor"], expected / 5)
+
+    def test_a_failed_transition_says_the_reading_its_bounds_used(self):
+        def timed_out(): raise subprocess.TimeoutExpired("osascript", state.WAIT)
+        lease = type("Lease", (), {"check": lambda self, restoring=False: None, "scopes": [[]]})()
+        with patch.object(state.os, "getloadavg", return_value=(7.45,) * 3), \
+                patch.object(state.os, "cpu_count", return_value=10), \
+                patch.object(state.waiting, "busy_now", return_value=100.0), \
+                self.assertRaises(state.TransitionFailed) as failed:
+            state._set(lease, False, lambda: True, timed_out)
+        self.assertIn("(stretched 24 times, by a one-minute load of 7.45 on 10 cores with the CPU 100% busy)",
+                      str(failed.exception))
+        self.assertIn("stretched 24 times", lease.scopes[-1][0])
+
     def test_bounds_stretch_with_load_per_core_up_to_the_limit(self):
         for load, cores, expected in [(0.5, 10, 5), (10, 10, 5), (217, 10, 108.5), (5000, 10, 5 * state.STRETCH_LIMIT)]:
             with self.subTest(load=load), patch.object(state.os, "getloadavg", return_value=(load,) * 3), \

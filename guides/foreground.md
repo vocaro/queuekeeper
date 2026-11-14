@@ -246,7 +246,14 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
 - Every query and Command-F5 rechecks the exact lease. Initial unreadable state refuses without
   changing anything. Every bound stretches with the one-minute load average per core, at most
   `state.STRETCH_LIMIT`, 24, times: on 2026-11-03, at loads near 217 on the second Mac, a fixed
-  5 s Command-F5 timed out and VoiceOver came on after it (#137).
+  5 s Command-F5 timed out and VoiceOver came on after it (#137). A load under one per core while
+  the CPU's busy share, as admission reads it, is 95% or more is doubted, and stretches by the
+  limit, as a load that cannot be read does: on 2026-11-12 the second Mac's `getloadavg` fell
+  from 951 to 307 in 27 s and rose from 7.45 to 250 in 12 s, each time with the CPU 99 to 100%
+  busy, and a Command-F5 whose bound had stretched to only 5 s ended `KEY_LATE` while the load
+  around it was 490 to 630 (vocaro/queuekeeper#43). A failed transition's error ends with the
+  reading its bounds used, such as `(stretched 24 times, by a one-minute load of 7.45 on 10 cores
+  with the CPU 100% busy)`.
 - A transition that fails or times out inside a `preserved` scope fails the run, not the lease:
   the scope sets the original state again, under the unchanged lease, and watches it hold for a
   stretched `state.SETTLE`, 5 s, so that a key System Events delivers late is seen and undone, up
@@ -480,7 +487,9 @@ Checked live on the second Mac (macOS 27.2) on 2026-11-07, under admitted foregr
 - The setter sends Command-F5 through System Events only when the known state differs and waits
   up to 5 s for the public getter to verify it. Every bound here stretches with the one-minute
   load average per core, at most 24 times (`state.stretched`): a fixed 5 s Command-F5 timed out
-  at loads near 217 (vocaro-engineering#137). Before sending an ON key, a separate readiness
+  at loads near 217 (vocaro-engineering#137). A load under one per core beside a CPU 95% busy or
+  more is doubted and stretches 24 times (vocaro/queuekeeper#43); `state.stretch_reading()` gives
+  the reading a driver records as its evidence. Before sending an ON key, a separate readiness
   check waits up to 20 s for this user's recognized system VoiceOver process to finish quitting,
   then rereads the public state. This uses the speech runner's existing quitting bound: public
   off and ready to enable are different observations. Process residence never makes an on by itself:

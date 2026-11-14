@@ -6,11 +6,14 @@ loaded host: on 2026-11-07, at load averages of 70 to 112, a BreezEPUB script te
 idle Mac outlived a 30 s `communicate` while it was still working (vocaro/BreezEPUB 5ffdf3d5).
 """
 import ast
+import functools
 import os
 from pathlib import Path
 import re
 import subprocess
 import time
+
+from .resources import cpu_busy, slot_directory
 
 # A literal `timeout=` of this many seconds or more on a wait in a test reads as one on the work, not on a cleanup.
 FIXED_LEAST = 20
@@ -23,8 +26,65 @@ SHOWN = 5
 STALL = 15  # seconds without progress, before stretching; apple-engineering's guides/app-testing.md, Waits bound stalls: "15 s has served"
 
 
+# A CPU busy share at or above SATURATED percent leaves no idle time to speak of, so the host's run queue is at least
+# its core count, and a one-minute load under one per core beside it is a reading not to believe: build-host's
+# getloadavg read 951 and then 307 27 s later, and 7.45 and then 250 12 s later, each time with the CPU 99 to 100%
+# busy, which a true one-minute average cannot do (vocaro/queuekeeper#43). Such a load, or one that cannot be read,
+# stretches by DOUBTED_STRETCH instead: 120 s for a 5 s bound, as voiceover state's STRETCH_LIMIT allows.
+SATURATED = 95.0
+DOUBTED_STRETCH = 24
+
+
+@functools.lru_cache(maxsize=None)
+def _slots(named):
+    """Admission's slot directory, once for each HEAVY_SLOT_DIR: macOS names its default by a getconf call."""
+    return slot_directory()
+
+
+def busy_now():
+    """The CPU's busy share in percent as admission reads it, from the samples every process on the host keeps
+    (resources.cpu_busy, without waiting), or None when it cannot be read yet."""
+    try:
+        return cpu_busy(_slots(os.environ.get("HEAVY_SLOT_DIR")))[0]
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def stretch_reading():
+    """What a stretched bound is stretched by now: a dict of the one-minute load (`load`, None when it cannot be
+    read), the core count (`cores`), the CPU's busy share in percent (`busy`, read only when the load is under one
+    per core, else None) and the factor these give (`factor`), which a run records as the reading its bounds used.
+
+    The factor is the load per core, at least 1. The load decides it rather than the busy share, which admission
+    judges by (the owner's decision, 2026-11-06, vocaro-engineering#200), because a busy share stops at 100% and a
+    bound must stretch by how far the CPU is oversubscribed beyond that: at loads of 145 to 590 on 18 cores, work
+    that takes seconds on an idle Mac outlived bounds of 20 to 120 s (#81). The busy share checks a low load
+    instead: at SATURATED or more, the load is doubted and the factor is DOUBTED_STRETCH (vocaro/queuekeeper#43),
+    as it is for a load that cannot be read."""
+    cores = os.cpu_count() or 1
+    try:
+        load = os.getloadavg()[0]
+    except OSError:
+        load = None
+    busy = busy_now() if load is not None and load < cores else None
+    if load is None or (busy is not None and busy >= SATURATED):
+        factor = DOUBTED_STRETCH
+    else:
+        factor = max(1, load / cores)
+    return {"load": None if load is None else round(load, 2), "cores": cores, "busy": busy, "factor": factor}
+
+
+def stretch_words(reading):
+    """A reading from stretch_reading, as a run's evidence says it."""
+    load = "a one-minute load that could not be read" if reading["load"] is None \
+        else f"a one-minute load of {reading['load']:g} on {reading['cores']} cores"
+    busy = "" if reading["busy"] is None else f" with the CPU {reading['busy']:g}% busy"
+    return f"stretched {reading['factor']:g} times, by {load}{busy}"
+
+
 def stretched(seconds):
-    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is (#128).
+    """These seconds stretched by the host's one-minute load per core, as a bound on a stall is (#128), or by
+    DOUBTED_STRETCH when that load reads under one per core beside a saturated CPU (stretch_reading).
 
     A test's wall-clock bound that only catches a hang, such as a subprocess's `timeout=`, an `--limit`, a
     wait for an event or a ceiling on elapsed time, takes this, and so does the life of a stand-in process
@@ -36,7 +96,7 @@ def stretched(seconds):
     more, which a fixed bound under test stops at a second or so, or which a quick in-process test kills; a
     take or slot refused before it waits; and a timeout a fake receives or a test reads back, which no clock
     enforces. The stretch is finite, so a test that really hangs still fails at it (test_host_isolation)."""
-    return seconds * max(1, os.getloadavg()[0] / (os.cpu_count() or 1))
+    return seconds * stretch_reading()["factor"]
 
 
 def wait_until(done, progress=None, stall=None, interval=0.1, pause=None):

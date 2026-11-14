@@ -14,7 +14,17 @@ from queuekeeper import waiting
 WORKS = "import sys, time\nend = time.monotonic() + float(sys.argv[2])\nwhile time.monotonic() < end: pass\n"
 
 
+def quiet(test):
+    """No busy share to doubt the load by, so that a test's patched load alone stretches its bounds."""
+    patcher = patch.object(waiting, "busy_now", return_value=None)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
 class WaitUntilTests(unittest.TestCase):
+    def setUp(self):
+        quiet(self)
+
     def test_a_condition_already_true_returns_at_once(self):
         started = time.monotonic()
         self.assertTrue(waiting.wait_until(lambda: True, stall=60))
@@ -71,6 +81,8 @@ def until_exit(process, done):
 
 class PauseTests(unittest.TestCase):
     """A caller's pause wakes the wait early, and never turns it into a busy loop (#395)."""
+    def setUp(self):
+        quiet(self)
 
     def child(self, seconds):
         process = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"],
@@ -98,6 +110,59 @@ class PauseTests(unittest.TestCase):
         gaps = [later - earlier for earlier, later in zip(samples, samples[1:])]
         self.assertTrue(gaps)
         self.assertGreaterEqual(min(gaps), 0.2, f"Progress was sampled {len(samples)} times, {min(gaps):.3f} s apart.")
+
+
+class StretchReadingTests(unittest.TestCase):
+    """A bound stretches by the load per core, and by DOUBTED_STRETCH when a low load sits beside a saturated CPU
+    (vocaro/queuekeeper#43)."""
+
+    def reading(self, load, busy, cores=10):
+        loaded = patch.object(waiting.os, "getloadavg", **({"side_effect": OSError("no load")} if load is None
+                                                             else {"return_value": (load,) * 3}))
+        with loaded, patch.object(waiting.os, "cpu_count", return_value=cores), \
+                patch.object(waiting, "busy_now", return_value=busy) as read:
+            return waiting.stretch_reading(), waiting.stretched(5), read.called
+
+    def test_build_hosts_low_reading_beside_a_saturated_cpu_is_doubted(self):
+        # 2026-11-12: 7.45 on 10 cores with the CPU 100% busy, 12 s before the load read 250. Before #43 this
+        # stretched a 5 s bound not at all.
+        for busy in (100.0, 99.0, waiting.SATURATED):
+            with self.subTest(busy=busy):
+                reading, bound, _ = self.reading(7.45, busy)
+                self.assertEqual(reading, {"load": 7.45, "cores": 10, "busy": busy, "factor": waiting.DOUBTED_STRETCH})
+                self.assertEqual(bound, 5 * waiting.DOUBTED_STRETCH)
+        self.assertEqual(waiting.stretch_words(reading),
+                         "stretched 24 times, by a one-minute load of 7.45 on 10 cores with the CPU 95% busy")
+
+    def test_a_low_load_beside_a_cpu_with_idle_time_or_no_busy_reading_stretches_by_the_load(self):
+        """The negative control: a quiet Mac's bounds are not stretched for nothing."""
+        for busy in (94.9, 10.0, None):
+            with self.subTest(busy=busy):
+                reading, bound, _ = self.reading(7.45, busy)
+                self.assertEqual((reading["factor"], bound), (1, 5))
+
+    def test_a_load_at_or_over_the_cores_stretches_by_itself_and_reads_no_busy_share(self):
+        for load, factor in ((10.0, 1), (250.0, 25), (951.0, 95.1)):
+            with self.subTest(load=load):
+                reading, bound, read = self.reading(load, 100.0)
+                self.assertEqual((reading["busy"], read), (None, False))
+                self.assertAlmostEqual(reading["factor"], factor)
+                self.assertAlmostEqual(bound, 5 * factor)
+        self.assertEqual(waiting.stretch_words(reading), "stretched 95.1 times, by a one-minute load of 951 on 10 cores")
+
+    def test_a_load_that_cannot_be_read_is_doubted(self):
+        reading, bound, read = self.reading(None, None)
+        self.assertEqual((reading["load"], reading["factor"], bound, read), (None, waiting.DOUBTED_STRETCH, 120, False))
+        self.assertEqual(waiting.stretch_words(reading), "stretched 24 times, by a one-minute load that could not be read")
+
+    def test_the_busy_share_is_admissions_reading_of_its_slot_directory(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, HEAVY_SLOT_DIR=directory), \
+                patch.object(waiting, "cpu_busy", return_value=(97.5, 15.0)) as read:
+            self.assertEqual(waiting.busy_now(), 97.5)
+        self.assertEqual(read.call_args.args, (Path(directory),))
+        with patch.object(waiting, "cpu_busy", side_effect=OSError("unreadable")):
+            self.assertIsNone(waiting.busy_now())
+
 
 class ProbeTests(unittest.TestCase):
     def test_files_change_with_a_new_file_a_size_or_a_removal(self):

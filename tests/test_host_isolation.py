@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import offload_host, parallel, resources, shims
+from queuekeeper import offload_host, parallel, resources, shims, waiting
 from queuekeeper.parallel import unisolated
 import host_isolation
 from host_isolation import stretched
@@ -491,8 +491,10 @@ class SignalDispositionTests(unittest.TestCase):
 class StretchedTests(unittest.TestCase):
     def test_a_bound_stretches_by_the_load_per_core_and_never_shrinks(self):
         cores = os.cpu_count() or 1
+        # With no busy share to doubt a low load by (waiting.stretch_reading, vocaro/queuekeeper#43).
         for load, expected in ((0.0, 2), (cores / 2, 2), (cores, 2), (3 * cores, 6)):
-            with self.subTest(load=load), patch.object(host_isolation.os, "getloadavg", return_value=(load,) * 3):
+            with self.subTest(load=load), patch.object(host_isolation.os, "getloadavg", return_value=(load,) * 3), \
+                    patch.object(waiting, "busy_now", return_value=None):
                 self.assertAlmostEqual(stretched(2), expected)
 
     def test_a_stretched_bound_still_fails_a_test_that_really_hangs(self):

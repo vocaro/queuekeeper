@@ -6,7 +6,8 @@ VoiceOver inside either context; its inner restoration finishes before the outer
 No preference is written: a checked Command-F5 is sent only when a known state differs.
 
 Every bound is stretched by the host's load (#137): on a second Mac at a load average near 200 a fixed
-5 s Command-F5 timed out, and the late key left VoiceOver on. A transition that fails inside a
+5 s Command-F5 timed out, and the late key left VoiceOver on. A load under one per core beside a saturated CPU
+is doubted and stretches by the limit (vocaro/queuekeeper#43). A transition that fails inside a
 preserved() scope is not yet uncertainty: the scope restores the original state, watches it stay
 there for a stretched settle window, and only an unverified restoration retains the lease.
 """
@@ -19,6 +20,7 @@ import time
 
 from .. import devices
 from ...mac_desktop import reservations
+from ... import waiting
 from . import guard
 
 WAIT = 5
@@ -53,14 +55,20 @@ class TransitionFailed(RuntimeError):
     restored = False
 
 
-def stretched(seconds):
-    """seconds scaled by the one-minute load average per core, as the tests' host_isolation.stretched scales
-    theirs, at most STRETCH_LIMIT times; the limit itself when the load cannot be read."""
-    try:
-        factor = os.getloadavg()[0] / (os.cpu_count() or 1)
-    except OSError:
-        factor = STRETCH_LIMIT
-    return seconds * min(STRETCH_LIMIT, max(1, factor))
+def stretch_reading():
+    """The reading this module's bounds stretch by now, as waiting.stretch_reading gives it, its factor at most
+    STRETCH_LIMIT and the limit itself when the load cannot be read or reads under one per core beside a saturated
+    CPU: on 2026-11-12 build-host's load read 10 or less on 10 cores, with the CPU 100% busy and the loads around
+    it 490 to 630, and a 5 s Command-F5 bound ended KEY_LATE (vocaro/queuekeeper#43)."""
+    reading = waiting.stretch_reading()
+    factor = STRETCH_LIMIT if reading["load"] is None else min(STRETCH_LIMIT, reading["factor"])
+    return {**reading, "factor": factor}
+
+
+def stretched(seconds, reading=None):
+    """seconds scaled by stretch_reading's factor, or by that of reading, a reading already taken: the one-minute
+    load average per core, as the tests' host_isolation.stretched scales theirs, at most STRETCH_LIMIT times."""
+    return seconds * (reading or stretch_reading())["factor"]
 
 
 def _public(timeout=None):
@@ -260,7 +268,10 @@ def _set(lease, desired, reader, toggle, *, restoring=False, wait=None, poll=POL
     """Reach desired with one checked Command-F5. A failure inside a preserved() scope, or while restoring,
     is the scope's to restore; only one with no scope to restore it marks the lease uncertain at once."""
     if type(desired) is not bool: raise ValueError("VoiceOver target must be on or off")
-    wait = stretched(WAIT) if wait is None else wait
+    # The reading its bounds stretch by, taken as the transition begins, goes into its failure as the run's evidence
+    # of it (vocaro/queuekeeper#43).
+    reading = stretch_reading()
+    wait = stretched(WAIT, reading) if wait is None else wait
     if _known(lease, reader, restoring=restoring) == desired: return
     if desired:
         _wait_to_enable(lease, ready or _ready_to_enable, restoring=restoring, wait=ready_wait, poll=poll)
@@ -280,13 +291,14 @@ def _set(lease, desired, reader, toggle, *, restoring=False, wait=None, poll=POL
                 raise UnknownState(f"VoiceOver did not reach {'on' if desired else 'off'} within {wait:g}s")
             time.sleep(poll)
     except Exception as error:
-        reason = f"VoiceOver transition to {'on' if desired else 'off'} was not verified: {error}"
+        said = f"{error} ({waiting.stretch_words(reading)})"
+        reason = f"VoiceOver transition to {'on' if desired else 'off'} was not verified: {said}"
         if restoring or lease.scopes:
             if not restoring: lease.scopes[-1].append(reason)
             raise TransitionFailed(f"VoiceOver transition was not verified; the original state is restored under "
-                                   f"the same lease: {error}") from error
+                                   f"the same lease: {said}") from error
         lease.uncertain(reason)
-        raise TransitionFailed(f"VoiceOver transition was not verified; foreground lease retained: {error}") from error
+        raise TransitionFailed(f"VoiceOver transition was not verified; foreground lease retained: {said}") from error
 
 
 def _steady(lease, desired, reader, *, wait, poll=POLL):

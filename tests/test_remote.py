@@ -6421,8 +6421,9 @@ class SecondMacDoctorTests(unittest.TestCase):
         self.assertIn("def listing(command, timeout=60000.0,", sent)
         self.assertIn("UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40000.0, 25000.0", sent)
         self.assertNotRegex(sent, r"timeout=60\b")
-        # The stretch is finite and only load makes it: an idle host keeps each limit as it is, and it still ends.
-        with idle:
+        # The stretch is finite and only load makes it: an idle host keeps each limit as it is, and it still ends. No
+        # busy share is read, so that a busy Mac running this test does not doubt the idle load (vocaro/queuekeeper#43).
+        with idle, patch.object(waiting, "busy_now", return_value=None):
             self.assertEqual(Path(stretched_host(temp / "idle.py")).read_text(), OFFLOAD_HOST.read_text())
             with self.assertRaises(subprocess.TimeoutExpired):
                 subprocess.run(["sleep", "1"], timeout=0.2)
