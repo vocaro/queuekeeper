@@ -172,7 +172,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         # Only while the lease is the run's: an app that opened after another run took the foreground is that run's.
         launched = (current or {}).get("launchedApps", [])
         try:
-            settled = opened_apps.settle(opened, own, said=said, launched=launched) \
+            # Any Mac but the second is the owner's workstation, where only the apps the run is shown to own are its.
+            settled = opened_apps.settle(opened, own, said=said, launched=launched,
+                                         workstation=not second_mac(record)) \
                 if same_lease and reservations.condition(current) != "released" else None
         except Exception as error:  # a release goes ahead however the apps' look went
             said(f"queuekeeper: could not quit the apps the run opened: {error}")

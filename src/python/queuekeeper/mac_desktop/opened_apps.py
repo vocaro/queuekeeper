@@ -5,8 +5,11 @@ foreground with Safari's window still in front; 6 of the next 7 foreground runs 
 read it into its transcript (vocaro/EPUBLib#1034). So foreground.slot reads the regular apps, those with a Dock icon,
 running once it holds the foreground, and again before it releases it. An app that started in between is the run's
 to quit when nothing else could have started it: the second Mac is no workstation, and the run holds its whole
-foreground, so an app installed in an Applications folder, or built in the run's own checkout, or one the session
-recorded as launched (`devices update mac-foreground --launched BUNDLE`), is the run's. queuekeeper asks each to quit,
+foreground (owner's decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207), so an app installed in an
+Applications folder, or built in the run's own checkout, or one the session recorded as launched (`devices update
+mac-foreground --launched BUNDLE`), is the run's. On any other Mac, the owner's workstation, only an app the run is
+shown to own, built in its checkout or recorded as launched, is the run's: the owner may open Safari or Mail there
+while a run holds the screen. queuekeeper asks each to quit,
 as the Dock's Quit does, waits up to QUIT_WAIT seconds for it to end, and never forces it.
 
 Any other new app is reported and left running: one built somewhere else, such as a gate's test host in its own
@@ -35,6 +38,10 @@ SYSTEM = "/System/Library/CoreServices/"
 # The folders an installed app runs from, Safari from its cryptex. An app nested in another, such as Xcode's Device
 # Hub, is not installed there in this sense: a background simulator lane may have opened it.
 APPLICATIONS = ("/Applications", "/System/Applications", "/System/Volumes/Preboot/Cryptexes/App/System/Applications")
+
+# Why a new app the run is not shown to own is left on a Mac that is not the second: the owner's workstation, where
+# he may open any app while a run holds the screen.
+WORKSTATION = "this Mac is a workstation"
 
 run = offload_host.output
 
@@ -100,15 +107,18 @@ def within(path, directory):
     return path == directory or path.startswith(directory.rstrip("/") + "/")
 
 
-def why_kept(app, before, own, launched=()):
-    """None when the new app is the run's to quit; otherwise why it is left running."""
+def why_kept(app, before, own, launched=(), workstation=False):
+    """None when the new app is the run's to quit; otherwise why it is left running. On a workstation, any Mac but
+    the second, only an app the run is shown to own, built in its checkout or recorded as launched, is the run's."""
     if app.get("bundle") and app["bundle"] in launched: return None
     path = app.get("path")
     if not path: return "its bundle cannot be read, so whose it is is unknown"
     if path.startswith(SYSTEM): return "it is macOS's own"
     if app.get("bundle") and app["bundle"] in {other.get("bundle") for other in before}:
         return "a copy of it ran before the run took the foreground"
-    if installed(path) or (own and within(path, own)): return None
+    if own and within(path, own): return None
+    if workstation: return WORKSTATION
+    if installed(path): return None
     return ("it is neither installed in an Applications folder nor built in the run's checkout, so it may be another "
             "run's, such as a gate's test host")
 
@@ -125,7 +135,7 @@ def ask(app):
     return run(["osascript", "-l", "JavaScript", "-e", QUIT_SCRIPT % {"pid": app["pid"]}]) in ("asked", "gone")
 
 
-def settle(before, own, *, said, launched=(), wait=None, step=None, sleep=time.sleep, ending=None):
+def settle(before, own, *, said, launched=(), workstation=False, wait=None, step=None, sleep=time.sleep, ending=None):
     """Quit the regular apps that started since before, the apps running when the run took the foreground, that
     are the run's (why_kept), and say what was quit and what is left: {"quit": [...], "left": [...]}, each a
     description, a left one with why, or None when nothing is new. Unreadable apps, now or before, quit nothing."""
@@ -140,7 +150,7 @@ def settle(before, own, *, said, launched=(), wait=None, step=None, sleep=time.s
     if not new: return None
     left, asked = [], []
     for app in new:
-        reason = why_kept(app, before, own, launched)
+        reason = why_kept(app, before, own, launched, workstation)
         if reason is None and not ask(app): reason = "it could not be asked to quit"
         if reason is None: asked.append(app)
         else: left.append(f"{describe(app)}: {reason}")

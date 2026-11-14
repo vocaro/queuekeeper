@@ -554,6 +554,41 @@ class OpenedAppsTests(unittest.TestCase):
         self.assertEqual(entry["ownerChatID"], "other run")
         self.assertEqual(self.listings, [[self.FINDER, self.SAFARI]], "the release read no apps")
 
+    def test_on_a_workstation_only_the_apps_the_run_is_shown_to_own_are_quit(self):
+        # Any Mac but the second is the owner's workstation: he may open Safari or Mail while a run holds the screen.
+        built = {"pid": 202, "name": "Reader", "bundle": "com.example.Reader",
+                 "path": str(self.checkout / ".build/Products/Debug/Reader.app")}
+        recorded = {"pid": 203, "name": "Host", "bundle": "com.example.Host",
+                    "path": "/Users/me/Library/Developer/Xcode/DerivedData/Host-abc/Build/Products/Debug/Host.app"}
+        mail = {**self.OWNERS, "pid": 207, "bundle": "com.apple.mail.other"}
+        self.listings = [[self.FINDER], [self.FINDER, self.SAFARI, built, recorded, mail]]
+        # The record stops deferring to another Mac's during the run: the release finds a workstation.
+        workstation = patch.object(foreground, "second_mac", side_effect=[True, False])
+        def launch(owner):
+            current = self.record.entry(devices.FOREGROUND)
+            self.record.update(devices.FOREGROUND, owner=owner, revision=current["revision"],
+                               launched=["com.example.Host"])
+        with workstation:
+            entry = self.slot(launch)
+        self.assertEqual(self.asked, [202, 203])
+        left = [line for line in self.said if line.startswith("queuekeeper: left running")]
+        self.assertEqual(len(left), 2, self.said)
+        self.assertIn("Safari (com.apple.Safari, pid 201): this Mac is a workstation", left[0])
+        self.assertIn("Mail (com.apple.mail.other, pid 207): this Mac is a workstation", left[1])
+        self.assertEqual(entry["state"], "released")
+        self.assertIn("left running Safari (com.apple.Safari, pid 201): this Mac is a workstation", entry["appsQuit"])
+
+    def test_the_second_mac_quits_installed_apps_a_workstation_leaves(self):
+        settled = {}
+        for workstation in (False, True):
+            self.asked, self.listings = [], [[self.FINDER, self.SAFARI]]
+            settled[workstation] = opened_apps.settle([self.FINDER], str(self.checkout), said=self.said.append,
+                                                      workstation=workstation)
+        self.assertEqual(settled[False], {"quit": ["Safari (com.apple.Safari, pid 201)"], "left": []})
+        self.assertEqual(settled[True], {"quit": [], "left": [
+            f"Safari (com.apple.Safari, pid 201): {opened_apps.WORKSTATION}"]})
+        self.assertEqual(self.asked, [])
+
     def test_the_suite_switch_reads_no_apps(self):
         os.environ[opened_apps.SWITCH] = "off"
         self.listings = []

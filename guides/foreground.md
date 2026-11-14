@@ -331,11 +331,21 @@ Safari after the last session; Queuekeeper's quit is the net under it
   running, those with a Dock icon, through AppKit's `NSWorkspace.runningApplications`. After the
   run's command and its guards have ended, and only while the `mac-foreground` lease is still the
   run's, it reads them again. An app running at the first look is never touched, whoever opened it.
-- **What is the run's.** The second Mac is no workstation, and the run holds its whole foreground,
-  so a new app is the run's when it is installed in an Applications folder (`/Applications`,
-  `/System/Applications`, `~/Applications`, their `Utilities`, or Safari's cryptex), when it was
-  built in the run's own checkout, or when the session recorded its bundle with
+- **What is the run's, on the second Mac.** The second Mac is used only for file serving and build
+  hosting, not as a workstation, and a run takes its whole foreground without asking (owner's
+  decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207). So there a new app is the run's when
+  it is installed in an Applications folder (`/Applications`, `/System/Applications`,
+  `~/Applications`, their `Utilities`, or Safari's cryptex), when it was built in the run's own
+  checkout, or when the session recorded its bundle with
   `python3 -m queuekeeper.apple.devices update mac-foreground --launched BUNDLE`.
+- **What is the run's, on any other Mac.** That decision does not reach this Mac, the owner's
+  workstation, where he may open Safari or Mail while a run holds the screen. A Mac is the second
+  Mac when its device record defers physical devices to another Mac's (`foreground.second_mac`),
+  never by its name. On any other, only an app the run is shown to own is quit: one built in the
+  run's checkout or recorded with `--launched`. Every other new app is left running and reported
+  as "this Mac is a workstation". `foreground.slot` takes the foreground only on the second Mac
+  today, so this holds for a record that stopped deferring during a run, and for any later route
+  that runs foreground work here.
 - **How it quits one.** It asks the app to quit by its process, as the Dock's Quit does, waits up
   to `opened_apps.QUIT_WAIT`, 30 s, for all of them, and never forces one: an app asking to save
   is left for the report.
