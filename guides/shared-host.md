@@ -2619,6 +2619,9 @@ to the record always needs its reservation. The command receives the original ha
 the dependency checkout path is used only for local verification and need not exist on the
 second Mac. A missing object, tree, tag object, invalid hash, or unreadable repository refuses
 the dispatch. Declare each foreign commit separately; this grants no exemption to other hashes.
+Since 2026-11-13 the refusal of 40 hex digits that no entry holds says they may be such a commit,
+and names `--git-commit` with its limit to a separate argument; the refusal of an 8-16 UDID does
+not (vocaro/queuekeeper#91).
 
 `qk doctor` reports both Macs' records under `deviceRecord`. It is an error for this Mac's record
 to defer physical devices, or for the second Mac's to hold one or to defer them to another Mac;

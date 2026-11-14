@@ -68,6 +68,13 @@ class Lease(devices.BoundedRun):
                   file=sys.stderr, flush=True)
 
 
+# What a refusal adds for forty hex digits, which may be a commit the checkout's Git lacks rather than an older
+# device's UDID (#91). --git-commit exempts only the hash as an argument of its own (remote.commit_arguments).
+FOREIGN_COMMIT = (" If it is instead a commit of another repository, which this checkout's Git lacks, declare it "
+                  "with `qk remote admit --git-commit REPOSITORY=SHA` and pass the hash as a separate argument: "
+                  "the option never exempts a hash inside a shell string such as bash -c's.")
+
+
 def named_devices(words, record=None):
     """{KEY: UDID} of the physical devices in this Mac's record that words name."""
     named = " ".join(words).upper()
@@ -99,7 +106,7 @@ def lease(keys, owner, words, record=None, root=None, *, budget=None, commits=()
         for udid in sorted(devices.named(words, root=root, commits=commits)):
             raise devices.Refused(f"the command names the hardware UDID {udid}, which no entry of this Mac's record "
                                   "holds and no --device covers: reserve its device here under a key and add "
-                                  "--device KEY. Nothing was sent")
+                                  f"--device KEY.{FOREIGN_COMMIT if len(udid) == 40 else ''} Nothing was sent")
         return None
     if not owner:
         raise ValueError(f"name the session whose reservations --device carries: --device-owner, or {devices.OWNER}")

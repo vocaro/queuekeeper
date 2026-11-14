@@ -1343,6 +1343,9 @@ class RemoteTests(unittest.TestCase):
                              "00008020-0011223344556677"),
                             (["run", "check", "--", f"platform=iOS,id={older}"], older.upper()),
                             (["admit", "--", "git", "show", elsewhere], elsewhere.upper()),
+                            # Declared, but inside a shell string, as vocaro/BreezEPUB#67's checkout was (#91).
+                            (["admit", "--git-commit", f"{self.toolkit}={elsewhere}", "--", "bash", "-c",
+                              f"git -C dependency checkout -q --detach {elsewhere}"], elsewhere.upper()),
                             # A signing identity's setting covers only the digits it takes (#86).
                             (["admit", "--", "env", f"SIGN_IDENTITY={IDENTITY}", sys.executable, "-c", "pass", older],
                              older.upper())]:
@@ -1350,8 +1353,15 @@ class RemoteTests(unittest.TestCase):
                 status, _output, error = self.qk("remote", *words)
                 self.assertEqual(status, 2)
                 self.assertIn(f"names the hardware UDID {udid}, which no entry of this Mac's record holds and no "
-                              "--device covers: reserve its device here under a key and add --device KEY. "
-                              "Nothing was sent", error)
+                              "--device covers: reserve its device here under a key and add --device KEY. ", error)
+                self.assertIn("Nothing was sent", error)
+                # Forty hex digits may be another repository's commit, which --git-commit declares only as an
+                # argument of its own; the 8-16 form never is one (#91).
+                foreign = ("If it is instead a commit of another repository, which this checkout's Git lacks, "
+                           "declare it with `qk remote admit --git-commit REPOSITORY=SHA` and pass the hash as a "
+                           "separate argument: the option never exempts a hash inside a shell string")
+                if len(udid) == 40: self.assertIn(foreign, error)
+                else: self.assertNotIn("--git-commit", error)
                 self.assertTrue(self.nothing_sent())
         # Positive controls: nothing named, a simulator's UUID, the checkout's commit by its whole hash and
         # abbreviated, and a SHA-256.
