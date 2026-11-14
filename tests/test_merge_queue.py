@@ -7621,6 +7621,101 @@ class FlakyReruns(Fixture):
         self.assertNotIn("blaming", log)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
 
+    def test_a_test_module_the_batch_adds_that_fails_once_and_passes_alone_sends_its_entry_back_and_files_nothing(self):
+        # On 2026-11-13 a test a batch added failed its first gate and passed alone, and the queue filed it as a
+        # flake to harden (vocaro/queuekeeper#129); a test origin/main lacks has no history to be a flake by.
+        added_runs, added_plan = self.base / "added-runs", self.base / "added-plan"
+        added_plan.write_text("F")
+        self.commit("b", "b")
+        self.commit("tests/test_added.py", "a", FLAKY_MODULE.format(runs=str(added_runs), plan=str(added_plan)))
+        ids = self.add("b", "a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        test = "test_added.Flaky.test_sometimes"
+        self.assertIn(f"{test} passed alone, but origin/main has no such test, as the batch adds it, so it is no flake "
+                      "and no issue is filed", log)
+        self.assertIn(f"blaming {ids[1]} (Add tests/test_added.py), which adds {test}; sending it back and gating the "
+                      "other 1 at once instead of bisecting", log)
+        self.assertNotIn("fail together", log)
+        self.assertNotIn("flaky:", log)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "failed"])
+        self.assertIn(f"{test}, a test this entry adds, failed the gate and then passed alone {mq.RERUNS} times on that "
+                      "commit. origin/main has no such test, so it has no history to call it flaky by, and no "
+                      "flaky-test issue is filed: fix it before this entry lands. Fix it and add it again.",
+                      entries[1]["why"])
+        self.assertEqual(len(added_runs.read_text()), 1 + mq.RERUNS)
+        self.assertEqual(self.tracked, [])
+        self.assertTrue(all("flakes" not in entry for entry in entries))
+        self.assertNotIn(f"{mq.FLAKY}:", self.main_messages())
+
+    def test_a_test_method_a_lone_entry_adds_to_an_existing_class_that_fails_once_sends_it_back(self):
+        added_runs = self.base / "added-runs"
+        method = (f"    def test_added(self):\n        runs = pathlib.Path({str(added_runs)!r})\n"
+                  "        done = len(runs.read_text()) if runs.exists() else 0\n"
+                  "        runs.write_text(\"x\" * (done + 1))\n"
+                  "        self.assertTrue(done, \"the first run fails\")\n\n")
+        module = (self.repo / "tests/test_flaky.py").read_text().replace("    def test_steady(self):",
+                                                                         method + "    def test_steady(self):")
+        self.commit("tests/test_flaky.py", "a", module)
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        test = "test_flaky.Flaky.test_added"
+        self.assertIn(f"{test} passed alone, but origin/main has no such test", log)
+        self.assertIn(f"blaming {identifier} (Add tests/test_flaky.py), which adds {test}; sending it back\n", log)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed")
+        self.assertIn(f"{test}, a test this entry adds, failed the gate", entry["why"])
+        # The test the entry changes but origin/main already has passed the gate, and nothing was filed.
+        self.assertEqual(self.runs_of_the_test(), 1)
+        self.assertEqual(self.tracked, [])
+        self.assertNotIn("flakes", entry)
+
+    def test_an_old_flake_beside_a_test_the_batch_adds_is_filed_and_the_batch_bisects_blaming_no_commit(self):
+        # Both tests fail the gate and pass alone. The old one is a flake, filed as ever; the added one is none. No
+        # one entry explains both, so none is blamed and the batch bisects (owner's decision of 2026-11-07,
+        # vocaro/queuekeeper#88).
+        added_runs, added_plan = self.base / "added-runs", self.base / "added-plan"
+        self.plan.write_text("F")
+        added_plan.write_text("F")
+        self.commit("b", "b")
+        self.commit("tests/test_added.py", "a", FLAKY_MODULE.format(runs=str(added_runs), plan=str(added_plan)))
+        ids = self.add("b", "a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        test = "test_added.Flaky.test_sometimes"
+        self.assertIn(f"{test} passed alone, but origin/main has no such test, as the batch adds it, so it is no flake "
+                      "and no issue is filed", log)
+        self.assertIn(f"flaky: {self.TEST} failed the gate at", log)
+        self.assertNotIn(f"flaky: {test}", log)
+        self.assertIn(f"every failed test passed alone, but the batch reaches {test}, which the batch adds, so "
+                      "origin/main has no such test: bisecting", log)
+        self.assertIn("2 commits fail together: next the oldest 1", log)
+        self.assertNotIn("blaming", log)
+        [tracked] = self.tracked
+        self.assertEqual(tracked["test"], self.TEST)
+        self.assertIn("it also adds a failed test that passed alone, which is no flake", tracked["outcome"])
+        for identifier in ids:
+            self.assertEqual([flake["test"] for flake in self.state(identifier)["flakes"]], [self.TEST])
+
+    def test_a_flake_of_a_test_origin_main_has_is_still_filed_when_the_batch_adds_other_tests(self):
+        # The existing-test side of vocaro/queuekeeper#129: a batch that adds a test module of its own, which passes,
+        # still files the old test's flake and lands.
+        self.plan.write_text("F")
+        self.commit("tests/test_more.py", "a", "import unittest\n\n\nclass More(unittest.TestCase):\n"
+                                              "    def test_more(self):\n        pass\n")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertNotIn("origin/main has no such test", log)
+        self.assertIn(f"flaky: {self.TEST} failed the gate at", log)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed")
+        self.assertEqual([flake["test"] for flake in entry["flakes"]], [self.TEST])
+        [tracked] = self.tracked
+        self.assertEqual(tracked["test"], self.TEST)
+
     def test_a_lone_entry_whose_failure_is_real_stops_at_the_first_real_rerun(self):
         self.plan.write_text("FF")
         self.commit("docs/a.md", "a", "The wrongword\n")
@@ -7886,6 +7981,28 @@ class FlakyParts(unittest.TestCase):
                              ["tests/suite/__init__.py", "tests/suite/helper.py", "tests/suite/more.py",
                               "tests/suite/test_y.py"])
             self.assertIsNone(mq.imported_files(root, root / "tests", "test_missing.X.test_one"))
+
+    def test_a_test_is_added_when_origin_main_lacks_its_module_or_its_method_and_never_when_it_cannot_tell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            old = "import unittest\n\n\nclass X(unittest.TestCase):\n    def test_old(self):\n        pass\n"
+            (root / "tests/test_x.py").write_text(old)
+            run(root, "git", "init", "-q")
+            run(root, "git", "add", ".")
+            run(root, "git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base")
+            base = run(root, "git", "rev-parse", "HEAD")
+            (root / "tests/test_x.py").write_text(old + "\n    def test_new(self):\n        pass\n\n\n"
+                                                  "class Y(X):\n    pass\n")
+            (root / "tests/test_y.py").write_text(old)
+            added = lambda test: mq.added_test(root, root / "tests", test, base)
+            self.assertIsNone(added("test_x.X.test_old"))
+            self.assertEqual(added("test_x.X.test_new"), ("tests/test_x.py", ["X", "test_new"]))
+            self.assertEqual(added("test_y.X.test_old"), ("tests/test_y.py", ["X", "test_old"]))
+            # A test a base class gives is not in its class's own body, so whether main has it is not told.
+            self.assertIsNone(added("test_x.Y.test_old"))
+            self.assertIsNone(added("test_missing.X.test_old"))
+            self.assertIsNone(mq.added_test(root, root / "tests", "test_x.X.test_new", "0" * 40))
 
     FLAKE = {"test": "test_b.B.test_one", "commit": "c" * 40, "gateLog": "/logs/gate.log",
              "rerunLogs": ["/logs/rerun-1.log", "/logs/rerun-2.log"], "outcome": "The batch landed.", "mac": "fixture-mac"}

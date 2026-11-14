@@ -436,6 +436,25 @@ keeps its heading and the lines nearest its end, where the assertion is. The que
 logs, and an agent in another worktree cannot read them, so before 2026-11-13 an issue that named only
 the paths could outlive them (vocaro/queuekeeper#128).
 
+**A test the batch adds is no flake.** A failed test that passes alone but that `origin/main` does
+not have has no history to be a flake by, so the worker records it nowhere, files no issue and does
+not land the batch ([vocaro/queuekeeper#129](https://github.com/vocaro/queuekeeper/issues/129)). A
+test is the batch's own when its module, under the suite's top-level directory, defines its class and
+method in the batch, and `origin/main` has no such module or a module without them. A test that a
+base class gives, or that is made at run time, cannot be told this way and is judged as any other.
+When every failed test that passed alone is one the batch adds, the worker sends back the entry that
+adds them, saying that a test it adds failed the gate and passed alone and must be fixed before the
+entry lands, and queues the rest to gate again at once. That entry is the one whose commits change
+the test's module, or, among several, the one whose own tip defines the test; a lone entry is the
+one. Any doubt bisects, as for a real failure: no entry or several that add the test, or added tests
+that come from different entries. A test of `origin/main` that passed alone beside an added test is
+a flake, recorded and filed as any other, but then no one entry explains every failed test, so by
+the blame decision below no entry is sent back and the batch bisects, which finds the entry that
+adds the test. Whether to relax that decision is open in
+[vocaro/queuekeeper#88](https://github.com/vocaro/queuekeeper/issues/88). A batch that changes an
+older test without adding it is judged as before, by its module and imports. On 2026-11-13 a test a batch added expected a wait of "45m00s", read "45m01s" on a slow run,
+and was filed as a flake to harden, although it had never passed a gate.
+
 When adding an option to an `qk unittest` gate, check the actual lane command with the runner, the
 [test coverage checker](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#every-test-has-a-lane) and the merge queue's single-test
 rerun. The first toolkit gate with `--batch-size` ran the suite and failed its coverage check because

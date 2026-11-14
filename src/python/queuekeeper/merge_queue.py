@@ -930,6 +930,63 @@ def failed_tests(log):
     return list(dict.fromkeys(found)), None
 
 
+def module_files(base, parts):
+    """The files that importing parts, a dotted name's parts, from base loads: each package's __init__.py on the way,
+    and the module; none when base holds no such module."""
+    found, place = [], Path(base)
+    for number, part in enumerate(parts):
+        place = place / part
+        if (place / "__init__.py").is_file(): found.append(place / "__init__.py")
+        elif number == len(parts) - 1 and place.with_suffix(".py").is_file(): found.append(place.with_suffix(".py"))
+        else: return []
+    return found
+
+
+def module_of_test(top, test):
+    """(the file under top, the suite's top-level directory, that is the module of test, a test id, the rest of the
+    id: its class and method), or None when no file under top is its module."""
+    parts = test.split(".")
+    for count in range(len(parts), 0, -1):
+        found = module_files(Path(top), parts[:count])
+        if found: return found[-1], parts[count:]
+    return None
+
+
+def defines(source, names):
+    """Whether source, a test module's text, defines names, a test's class and then its method, each in the body of
+    the one before: a test a base class gives, or one made at run time, is not found. None when source does not
+    parse."""
+    try: tree = ast.parse(source)
+    except (SyntaxError, ValueError): return None
+    body = tree.body
+    for name in names:
+        node = next((node for node in body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                     and node.name == name), None)
+        if node is None: return False
+        body = node.body
+    return True
+
+
+def added_test(checkout, top, test, base):
+    """(the file of test's module, relative to checkout, the test's class and method) when the batch checked out
+    there adds test, a test id, that origin/main at base lacks (vocaro/queuekeeper#129): the module defines it in
+    checkout, and at base it is missing or does not. None when base has it, or when either cannot be told, as for a
+    test a base class gives, so that such a test is judged as before."""
+    found = module_of_test(top, test)
+    if found is None or not found[1]: return None
+    path, names = found
+    checkout = Path(checkout).resolve()
+    try:
+        relative = path.resolve().relative_to(checkout).as_posix()
+        if defines(path.read_text(errors="replace"), names) is not True: return None
+    except (OSError, ValueError): return None
+    if git(checkout, "cat-file", "-e", f"{base}^{{commit}}").returncode: return None
+    try: shown = git(checkout, "show", f"{base}:{relative}")
+    except (UnicodeDecodeError, subprocess.SubprocessError): return None
+    if shown.returncode: return relative, names
+    return (relative, names) if defines(shown.stdout, names) is False else None
+
+
 def imported_files(checkout, top, test):
     """The repository's files that the module of test, a test id, is and imports, each relative to checkout: the
     module's own import statements, at any depth of it, each with the packages' __init__.py on the way, not what those
@@ -939,25 +996,15 @@ def imported_files(checkout, top, test):
     no file under top is the test's module."""
     checkout, top = Path(checkout).resolve(), Path(top).resolve()
     roots = [top, checkout / "src/python", checkout / "src", checkout]
-
-    def module(base, parts):
-        """The files that importing parts from base loads: each package's __init__.py on the way, and the module."""
-        found, place = [], base
-        for number, part in enumerate(parts):
-            place = place / part
-            if (place / "__init__.py").is_file(): found.append(place / "__init__.py")
-            elif number == len(parts) - 1 and place.with_suffix(".py").is_file(): found.append(place.with_suffix(".py"))
-            else: return []
-        return found
+    module = module_files
 
     def absolute(dotted):
         parts = dotted.split(".")
         return next((found for found in (module(root, parts) for root in roots) if found), [])
 
-    parts = test.split(".")
-    start = next((found[-1] for count in range(len(parts), 0, -1) for found in [module(top, parts[:count])]
-                  if found), None)
-    if start is None: return None
+    found = module_of_test(top, test)
+    if found is None: return None
+    start = found[0]
     files = [start]
     try: tree = ast.parse(start.read_text(errors="replace"), str(start))
     except (OSError, SyntaxError, ValueError): tree = ast.Module(body=[], type_ignores=[])
@@ -2552,6 +2599,7 @@ class Worker:
         self.failed_load = None  # load_words for that lane, or None (gate)
         self.group_failed = []  # the lanes of the last group lane that did not pass (read_group)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
+        self.added = None  # (entry, why) of the entry that adds the tests the last rerun passed alone, for blame (rerun)
         self.refused = None  # (lane, line, config) of the last gate qk unittest refused before running, for blame (rerun)
         self.unblamed = None  # {"key", "line"} of that refusal when blame found no one entry that brings it (blame)
         # {refusal_key: which gate} of the refusals that blamed no entry in the gates just before this one, the
@@ -3542,8 +3590,12 @@ class Worker:
         RERUNS times. A rerun that fails makes the failure real. When every rerun passes, each test is a flake,
         recorded in the entries and on the tracker (hardening), and the batch lands only when none of its commits
         changes a file the test's module is or imports (imported_files); otherwise it bisects. In a batch of several
-        entries, a rerun that fails goes on to rerun the other failed tests, so that blame can weigh them all."""
-        self.confirmed = self.refused = None
+        entries, a rerun that fails goes on to rerun the other failed tests, so that blame can weigh them all. A test
+        that passes alone but that origin/main at base lacks, as the batch adds it (added_test), has no history to be
+        a flake by: it is recorded nowhere, and when every test that passed alone is such a test, the one entry that
+        adds them is sent back by blame (adder, vocaro/queuekeeper#129). Beside an old test that passed alone, which
+        is recorded as a flake, no entry explains them all, and the batch bisects (vocaro/queuekeeper#88)."""
+        self.confirmed = self.refused = self.added = None
         lane = self.failed_lane
         lanes = config.get("lanes", {})
         member = unittest_member(lanes, lane) if lane else None
@@ -3600,6 +3652,7 @@ class Worker:
                 continue
             flakes.append({"test": test, "commit": head, "gateLog": str(log), "rerunLogs": logs,
                            "mac": offload_host.mac_name()})
+        top = self.suite_top(command)
         if real:
             if flakes:
                 self.say(f"{', '.join(flake['test'] for flake in flakes)} passed alone beside the real failure, so "
@@ -3607,19 +3660,36 @@ class Worker:
             elif None in real.values():
                 self.say("a rerun ended with no verdict, so no commit is blamed")
             else:
-                self.confirmed = {"tests": real, "top": self.suite_top(command)}
+                self.confirmed = {"tests": real, "top": top}
             return None
+        added = {}
+        for flake in flakes:
+            found = added_test(self.checkout, top, flake["test"], base)
+            if found: added[flake["test"]] = found
+        if added:
+            one = len(added) == 1
+            self.say(f"{', '.join(added)} passed alone, but origin/main has no such test, as the batch adds "
+                     f"{'it' if one else 'them'}, so {'it is' if one else 'they are'} no flake and no issue is filed")
+            flakes = [flake for flake in flakes if flake["test"] not in added]
+            if not flakes:
+                self.added = self.adder(applied, added)
+                return None
         changed = {path for path in text(self.checkout, "log", "--format=", "--name-only", "--no-renames",
                                          f"{base}..{head}").splitlines() if path}
-        top = self.suite_top(command)
         touching = {}
+        # Old tests that passed alone beside a test the batch adds are flakes, recorded as any; but no one entry
+        # explains every failed test, so none is blamed and the batch bisects (owner's decision of 2026-11-07;
+        # whether to relax it is vocaro/queuekeeper#88).
+        for test in added: touching[test] = "which the batch adds, so origin/main has no such test"
         for flake in flakes:
             files = imported_files(self.checkout, top, flake["test"])
             reached = sorted(changed & set(files)) if files is not None else None
             if reached is None: touching[flake["test"]] = "whose module the worker cannot find"
             elif reached: touching[flake["test"]] = f"which changes {', '.join(reached[:5])}, which it imports"
         for flake in flakes:
-            flake["outcome"] = ("The batch was bisected, as one of its commits changes the module of a failed test, or "
+            flake["outcome"] = ("The batch was bisected, as it also adds a failed test that passed alone, which is no "
+                                "flake." if added else
+                                "The batch was bisected, as one of its commits changes the module of a failed test, or "
                                 "a file it imports." if touching else
                                 f"No commit of the batch's {len(applied)} changes its module or a file it imports, so "
                                 "the batch landed.")
@@ -3641,6 +3711,44 @@ class Worker:
                  "it imports: landing the batch")
         return flakes
 
+    def adder(self, applied, added):
+        """(the one entry of applied that adds every test of added, {test: (its module's file, its class and method)},
+        why), to send back while the rest gate again at once; or None to bisect (vocaro/queuekeeper#129). An entry adds
+        a test when its commits change the test's module; among several that do, the one whose own tip defines the
+        test. A lone entry is the one."""
+        tests, plural = ", ".join(added), len(added) > 1
+        found = set()
+        for test, (relative, names) in added.items():
+            candidates = applied if len(applied) == 1 else [entry for entry in applied
+                                                            if relative in self.changed_by(entry)]
+            if len(candidates) > 1:
+                candidates = [entry for entry in candidates if defines(self.blob_at(entry["tip"], relative), names)]
+            if len(candidates) != 1:
+                self.say(f"{test}, which the batch adds, is added by "
+                         f"{'no entry' if not candidates else f'{len(candidates)} entries'} of the batch's "
+                         f"{len(applied)} that the worker can tell, so no commit is blamed: bisecting")
+                return None
+            found.add(candidates[0]["id"])
+        if len(found) != 1:
+            self.say(f"the tests the batch adds, {tests}, come from different entries, so no commit is blamed: bisecting")
+            return None
+        [identifier] = found
+        entry = next(entry for entry in applied if entry["id"] == identifier)
+        why = (f"{tests}, {'tests' if plural else 'a test'} this entry adds, failed the gate and then passed alone "
+               f"{RERUNS} times on that commit. origin/main has no such test, so {'they have' if plural else 'it has'} "
+               f"no history to call {'them' if plural else 'it'} flaky by, and no flaky-test issue is filed: fix "
+               f"{'them' if plural else 'it'} before this entry lands")
+        rest = len(applied) - 1
+        self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}), which adds {tests}; sending it "
+                 "back" + (f" and gating the other {rest} at once instead of bisecting" if rest else ""))
+        return entry, why
+
+    def blob_at(self, commit, relative):
+        """The text of relative, a repository path, at commit, read from the project's checkout as own_paths reads
+        an entry's commits; "" when commit has no such file."""
+        shown = git(self.queue.main_checkout, "show", f"{commit}:{relative}")
+        return "" if shown.returncode else shown.stdout
+
     def blame(self, applied):
         """(the one entry of applied that every failed test the last rerun confirmed reaches, why), to send back while
         the rest gate again at once, sparing the bisect's gates; or None to bisect. A test reaches an entry whose
@@ -3650,7 +3758,9 @@ class Worker:
         refused before running anything is blamed by its refusal instead (blame_refusal)."""
         confirmed, self.confirmed = self.confirmed, None
         refused, self.refused, self.unblamed = self.refused, None, None
+        added, self.added = self.added, None
         if refused: return self.blame_refusal(applied, *refused)
+        if added: return added
         if not confirmed or len(applied) < 2: return None
         changes = {entry["id"]: self.changed_by(entry) for entry in applied}
         prefix = f"{self.checkout.resolve()}/"

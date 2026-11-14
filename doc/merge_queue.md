@@ -50,7 +50,8 @@ The worker tries the cheap explanations before the expensive one:
 1. **Flake.** It reruns each failed test alone, up to three times. If every rerun passes, and no
    commit in the batch changes the test's module or a file that module imports, the batch lands.
    The flake is recorded in the queue's status, in a `Flaky-test:` trailer on the landed commit, and
-   as a comment or new issue on the tracker.
+   as a comment or new issue on the tracker. A test the batch adds, which `origin/main` does not
+   have, is no flake: the entry that adds it is sent back to fix it, and nothing is filed.
 2. **One obvious culprit.** If the failure is real and every failed test points at the same entry,
    by a path its output names or a file it imports, that entry is sent back and the rest gate again
    at once.
