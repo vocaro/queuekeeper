@@ -564,7 +564,11 @@ class ProcessTests(unittest.TestCase):
                     return {pid: (start, ticks[0] if pid == active else 0) for pid, start in identities.items()}
                 should_stop = primary and working == "primary"
                 root = STAYS if should_stop else ROOT.replace("raise SystemExit(3)", "time.sleep(3)")
-                with patch.object(progress, "cpu", side_effect=readings):
+                # Keep real PID/start identities and orphan cleanup, but ask ps for full
+                # identities only in our tree. Listing every process's lstart timed out
+                # under gate load (#142); pin the children after the root exits, too.
+                with patch.object(progress, "cpu", side_effect=readings), \
+                     patch.object(processes, "snapshot", self.own_tree(here / "children")):
                     result, error, births = self.outlive_the_root(directory, HANDLES_TERM, HANDLES_TERM,
                         root=root, progress=monitor, timeout=stretched(5), kill_after=0.5,
                         awaits="terminated" if should_stop else None)
