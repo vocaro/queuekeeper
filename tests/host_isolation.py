@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, offload_host, pre_push, remote, resources, shims
 from queuekeeper import apple, mac_desktop
 from queuekeeper.apple import app_registrations, device_notifications, device_pass, devices
-from queuekeeper.mac_desktop import crash_alerts, keychain, notification_center
+from queuekeeper.mac_desktop import crash_alerts, keychain, notification_center, opened_apps
 
 # The suite runs with the Apple extension switched on, as the command does for every project, after the desktop
 # extension it requires.
@@ -166,6 +166,11 @@ crash_alerts.change = lambda value: True
 # finds none, and closes nothing. A test of them replaces this again.
 notification_center.run = lambda command, environment=None: "[]" if command[:3] == ["osascript", "-l", "JavaScript"] \
     else None
+# Nor does any quit an app on this Mac (vocaro/queuekeeper#104): a foreground run a test makes, in this process or a
+# child, reads no running app, so it finds none it opened, and asks none to quit. A test of them replaces both again.
+os.environ[opened_apps.SWITCH] = "off"
+opened_apps.run = lambda command, environment=None: "[]" if command[-1] == opened_apps.LIST_SCRIPT else None
+opened_apps.alive = lambda pid: False
 # Nor does any reach a paired device's Focus (#144): a reservation a test makes that would run the owner's
 # notification shortcuts finds devicectl unable to open Shortcuts. A test of them replaces this again.
 device_notifications.run = lambda command: (None, "tests never reach a device")

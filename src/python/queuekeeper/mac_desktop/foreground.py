@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import reservations
+from . import opened_apps, reservations
 from .. import lane_wait, offload_host, processes
 
 # Seconds between looks at the second Mac's mac-foreground entry while another run holds it.
@@ -86,7 +86,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     is entered for the run, with options, and left before the release.
     The entry records this process as its active run, so that the entry outlives a run that
     dies only as an orphan, and QUEUEKEEPER_DEVICE_OWNER names it for the block. The release records the
-    block's outcome and whether the application in front before the run is in front after it."""
+    block's outcome and whether the application in front before the run is in front after it. Before it releases
+    the foreground, while the lease is still the run's, it quits the apps the run opened and reports those it leaves
+    running (opened_apps.settle, vocaro/queuekeeper#104)."""
     record = record or reservations.Record()
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
     if not second_mac(record):
@@ -146,6 +148,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
                           hostProcessIdentifier=os.getpid())
     identity = reservations.identity(entry)
     before = front()
+    opened, own = opened_apps.read(), opened_apps.checkout()
     said(f"queuekeeper: holding the second Mac's foreground as {owner} for {purpose}; {before or 'no application'} is in front")
     previous = os.environ.get(reservations.OWNER)
     os.environ[reservations.OWNER] = owner
@@ -163,10 +166,20 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     finally:
         if previous is None: os.environ.pop(reservations.OWNER, None)
         else: os.environ[reservations.OWNER] = previous
-        after = front()
         current = record.entry(reservations.FOREGROUND)
         same_lease = current is not None and current.get("ownerChatID") == owner \
             and reservations.identity(current) == identity
+        # Only while the lease is the run's: an app that opened after another run took the foreground is that run's.
+        launched = (current or {}).get("launchedApps", [])
+        try:
+            settled = opened_apps.settle(opened, own, said=said, launched=launched) \
+                if same_lease and reservations.condition(current) != "released" else None
+        except Exception as error:  # a release goes ahead however the apps' look went
+            said(f"queuekeeper: could not quit the apps the run opened: {error}")
+            settled = {"quit": [], "left": [f"the running apps could not be settled: {error}"]}
+        apps = opened_apps.summary(settled) or \
+            (f"apps the run opened: none of {', '.join(launched)} ran at the release" if launched else None)
+        after = front()
         if uncertain or not same_lease or reservations.condition(current) in ("orphan", "uncertain", "released"):
             said("queuekeeper: foreground retained: a guard's restoration or owned-process state is unverified")
         else:
@@ -174,8 +187,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
             restored = before is not None and before == after
             record.release(reservations.FOREGROUND, owner=owner, revision=entry["revision"], outcome=outcome,
                            restoration=f"in front before the run: {before or 'unread'}; after it: {after or 'unread'}; "
-                                       "the lease's guards put back what they changed, or changed nothing",
-                           frontmost="restored" if restored else "not-ours")
+                                       "the lease's guards put back what they changed, or changed nothing"
+                                       + (f"; {apps}" if apps else ""),
+                           frontmost="restored" if restored else "not-ours", apps_quit=apps)
             said(f"queuekeeper: released the second Mac's foreground; {after or 'no application'} is in front")
 
 

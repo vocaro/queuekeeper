@@ -188,7 +188,8 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   the kernel instead. A sandboxed runner's check once failed on `ps` alone, so its test skipped
   itself (2026-10-30, [vocaro-engineering#68](https://github.com/vocaro/vocaro-engineering/issues/68)).
   The release records the run's outcome and whether the application in front before the run is in
-  front after it.
+  front after it. Before it, a foreground run quits every app it opened and reports any it leaves
+  running ([apps a run opened](#apps-a-run-opened)).
 - Put arguments a session needs after `--`: the lane's command receives them, such as session
   settings as `KEY=VALUE` words that a project's session runner reads. Check a step list here
   first with the project's own check, such as `scripts/run-voiceover-sessions.py --check`; the
@@ -315,6 +316,46 @@ may recover once ([waiting for the foreground](#waiting-for-the-foreground)). On
    queuekeeper.apple.devices show mac-foreground` prints and the refusal names:
    `python3 -m queuekeeper.apple.devices recover mac-foreground --by SESSION --revision N
    --verified "WHAT WAS CHECKED"`. It is not a `qk` subcommand.
+
+## Apps a run opened
+
+A foreground run quits every app it opened before it releases the screen. On 2026-11-12 an EPUBLib
+`voiceover-mac` run that opened Safari for a MathML comparison released the second Mac's foreground
+with Safari's window still in front; 6 of the next 7 foreground runs met it, and a Mac VoiceOver
+session read it into its transcript ([EPUBLib#1034](https://github.com/vocaro/EPUBLib/issues/1034)).
+A driver still quits what it opened as soon as it is done with it, as EPUBLib's runner now quits its
+Safari after the last session; Queuekeeper's quit is the net under it
+(`opened_apps.py`, vocaro/queuekeeper#104).
+
+- **What it compares.** Once the run holds the foreground, Queuekeeper reads the regular apps
+  running, those with a Dock icon, through AppKit's `NSWorkspace.runningApplications`. After the
+  run's command and its guards have ended, and only while the `mac-foreground` lease is still the
+  run's, it reads them again. An app running at the first look is never touched, whoever opened it.
+- **What is the run's.** The second Mac is no workstation, and the run holds its whole foreground,
+  so a new app is the run's when it is installed in an Applications folder (`/Applications`,
+  `/System/Applications`, `~/Applications`, their `Utilities`, or Safari's cryptex), when it was
+  built in the run's own checkout, or when the session recorded its bundle with
+  `python3 -m queuekeeper.apple.devices update mac-foreground --launched BUNDLE`.
+- **How it quits one.** It asks the app to quit by its process, as the Dock's Quit does, waits up
+  to `opened_apps.QUIT_WAIT`, 30 s, for all of them, and never forces one: an app asking to save
+  is left for the report.
+- **What it leaves, and says so.** Any other new app is left running and reported, with why: one
+  built somewhere else, such as a gate's test host in its own checkout or in DerivedData, may be
+  another run's, since background lanes run beside a foreground one; one nested in another app,
+  such as Xcode's Device Hub, may be a simulator lane's; one whose bundle already ran before the
+  run is the owner's to have; and macOS's own, in `/System/Library/CoreServices`, is not the run's.
+  An app list that cannot be read, at either look, quits nothing and says so.
+- **Where it is reported.** The run's log has a line for each app quit or left, and the released
+  entry's `appsQuit`, which its `restoration` repeats, says the same. A run that no longer holds
+  the lease at its end quits nothing: an app opened after another run took the foreground is that
+  run's.
+- **Windows are not apps.** A window the run opened in an app that was already running, such as
+  the Finder "Recents" windows a Quick Look corpus run left in 2026-11, stays; closing those is
+  vocaro/queuekeeper#99.
+
+The test suite never quits an app: `tests/host_isolation.py` sets `QUEUEKEEPER_QUIT_OPENED_APPS`
+to `off` for every run a test makes, in its process and its children, so that each reads no
+running app, and its tests of quitting use stand-ins for the app list and the quit.
 
 ## Crash-report alerts
 

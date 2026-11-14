@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, config, offload_host, processes, remote, resources
 from queuekeeper.apple import devices
 from queuekeeper.mac_desktop import reservations
-from queuekeeper.mac_desktop import foreground
+from queuekeeper.mac_desktop import foreground, opened_apps
 import host_isolation
 from host_isolation import stretched
 from queuekeeper.apple.voiceover import state as voiceover_state
@@ -386,6 +386,188 @@ class SlotTests(unittest.TestCase):
             with self.assertRaisesRegex(devices.Refused, "orphan.*attended recovery"):
                 with self.slot(): self.fail("ran over an orphan")
         self.assertEqual(self.record.entry(devices.FOREGROUND)["ownerChatID"], "other run")
+
+
+class OpenedAppsTests(unittest.TestCase):
+    """A foreground run quits the apps it opened before it releases the screen, and reports those it leaves
+    (vocaro/queuekeeper#104). Every app here is a fake: the listing and the quit requests go to a stand-in for
+    osascript, and whether a process still runs to a stand-in for os.kill, so no test quits an app on this Mac."""
+    OWNERS = {"pid": 101, "name": "Mail", "bundle": "com.apple.mail", "path": "/System/Applications/Mail.app"}
+    FINDER = {"pid": 102, "name": "Finder", "bundle": "com.apple.finder", "path": "/System/Library/CoreServices/Finder.app"}
+    SAFARI = {"pid": 201, "name": "Safari", "bundle": "com.apple.Safari",
+              "path": "/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app"}
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.checkout = self.root / "checkout"
+        self.record = devices.Record(self.root / "device-handoff.json")
+        self.record.defer(SECOND)
+        self.said, self.asked, self.listings, self.running = [], [], [], set()
+        environment = patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop(opened_apps.SWITCH, None)
+        os.environ.pop(devices.OWNER, None)
+        for patcher in (patch.object(foreground, "front", return_value="Finder (ASN:0x0-0x1:)"),
+                        patch.object(opened_apps, "run", self.osascript),
+                        patch.object(opened_apps, "alive", lambda pid: pid in self.running),
+                        patch.object(opened_apps, "checkout", lambda directory=None: str(self.checkout)),
+                        patch.object(opened_apps, "QUIT_WAIT", 0.3), patch.object(opened_apps, "STEP", 0.01),
+                        patch.object(voiceover_state, "SETTLE", 0.3)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def osascript(self, command, environment=None):
+        """The stand-in for osascript: the next listing, or a quit request, which ends the app unless it is stubborn."""
+        self.assertEqual(command[:4], ["osascript", "-l", "JavaScript", "-e"])
+        if command[-1] == opened_apps.LIST_SCRIPT:
+            listed = self.listings.pop(0)
+            if listed is None: return None
+            self.running = {app["pid"] for app in listed}
+            return json.dumps(listed)
+        pid = int(re.search(r"WithProcessIdentifier\((\d+)\)", command[-1]).group(1))
+        self.asked.append(pid)
+        if pid not in self.stubborn: self.running.discard(pid)
+        return "asked"
+
+    stubborn = ()
+
+    def slot(self, inside=None):
+        with foreground.slot("Project voiceover-mac", timeout=stretched(5), record=self.record, poll=0.05,
+                             ready=lambda: [], voiceover=lambda: False, said=self.said.append) as owner:
+            if inside: inside(owner)
+        return self.record.entry(devices.FOREGROUND)
+
+    def test_a_run_quits_the_apps_it_opened_and_leaves_the_owners_and_others(self):
+        built = {"pid": 202, "name": "Reader", "bundle": "com.example.Reader",
+                 "path": str(self.checkout / ".build/Products/Debug/Reader.app")}
+        host = {"pid": 203, "name": "Host", "bundle": "com.example.Host",
+                "path": "/Users/me/Library/Developer/Xcode/DerivedData/Host-abc/Build/Products/Debug/Host.app"}
+        hub = {"pid": 204, "name": "Device Hub", "bundle": "com.apple.dt.Devices",
+               "path": "/Applications/Xcode.app/Contents/Applications/DeviceHub.app"}
+        mail = {**self.OWNERS, "pid": 205}
+        reporter = {"pid": 206, "name": "Problem Reporter", "bundle": "com.apple.ProblemReporter",
+                    "path": "/System/Library/CoreServices/Problem Reporter.app"}
+        self.listings = [[self.OWNERS, self.FINDER],
+                         [self.OWNERS, self.FINDER, self.SAFARI, built, host, hub, mail, reporter]]
+        entry = self.slot()
+        # Safari, installed, and the app built in the run's own checkout are the run's: asked to quit, and gone.
+        self.assertEqual(self.asked, [201, 202])
+        self.assertIn("queuekeeper: quit Safari (com.apple.Safari, pid 201), which the run opened", self.said)
+        self.assertIn("queuekeeper: quit Reader (com.example.Reader, pid 202), which the run opened", self.said)
+        # The owner's apps, running before, are untouched; the others new since are reported and left.
+        left = [line for line in self.said if line.startswith("queuekeeper: left running")]
+        self.assertEqual(len(left), 4, self.said)
+        self.assertIn("Host (com.example.Host, pid 203): it is neither installed", left[0])
+        self.assertIn("such as a gate's test host", left[0])
+        self.assertIn("Device Hub (com.apple.dt.Devices, pid 204): it is neither installed", left[1])
+        self.assertIn("Mail (com.apple.mail, pid 205): a copy of it ran before the run took the foreground", left[2])
+        self.assertIn("Problem Reporter (com.apple.ProblemReporter, pid 206): it is macOS's own", left[3])
+        # The release records them, and released the foreground.
+        self.assertEqual(entry["state"], "released")
+        self.assertTrue(entry["appsQuit"].startswith("apps the run opened: quit Safari (com.apple.Safari, pid 201); "
+                                                     "Reader (com.example.Reader, pid 202), and left running Host"),
+                        entry["appsQuit"])
+        self.assertIn(entry["appsQuit"], entry["restoration"])
+
+    def test_the_quits_come_before_the_release_and_after_the_guards(self):
+        order = []
+        self.listings = [[self.FINDER], [self.FINDER, self.SAFARI]]
+        def guard(owner, record=None, said=None, **options):
+            @contextlib.contextmanager
+            def held():
+                yield
+                order.append("guard left")
+            return held()
+        asking = self.osascript
+        def osascript(command, environment=None):
+            if command[-1] != opened_apps.LIST_SCRIPT:
+                order.append(("asked", self.record.entry(devices.FOREGROUND)["state"]))
+            return asking(command, environment)
+        with patch.object(foreground, "GUARDS", [guard]), patch.object(opened_apps, "run", osascript):
+            entry = self.slot()
+        self.assertEqual(order, ["guard left", ("asked", "reserved")])
+        self.assertEqual(entry["state"], "released")
+
+    def test_an_app_that_will_not_quit_is_reported_and_never_forced(self):
+        self.stubborn = (201,)
+        self.listings = [[self.FINDER], [self.FINDER, self.SAFARI]]
+        with patch.object(os, "kill") as kill:
+            entry = self.slot()
+        kill.assert_not_called()
+        self.assertEqual(self.asked, [201])
+        self.assertIn("Safari (com.apple.Safari, pid 201): it was asked to quit and still ran after 0.3s, perhaps "
+                      "asking to save", entry["appsQuit"])
+        self.assertTrue(any(line.startswith("queuekeeper: left running Safari") for line in self.said), self.said)
+        self.assertEqual(entry["state"], "released")
+
+    def test_a_bundle_the_session_recorded_as_launched_is_quit_wherever_it_was_built(self):
+        host = {"pid": 203, "name": "Host", "bundle": "com.example.Host",
+                "path": "/Users/me/Library/Developer/Xcode/DerivedData/Host-abc/Build/Products/Debug/Host.app"}
+        self.listings = [[self.FINDER], [self.FINDER, host]]
+        def launch(owner):
+            current = self.record.entry(devices.FOREGROUND)
+            self.record.update(devices.FOREGROUND, owner=owner, revision=current["revision"],
+                               launched=["com.example.Host"])
+        entry = self.slot(launch)
+        self.assertEqual(self.asked, [203])
+        self.assertEqual(entry["appsQuit"], "apps the run opened: quit Host (com.example.Host, pid 203)")
+        # A launched bundle that no longer runs at the release still lets the release record how it went.
+        self.listings = [[self.FINDER], [self.FINDER]]
+        entry = self.slot(launch)
+        self.assertEqual((entry["state"], entry["appsQuit"]),
+                         ("released", "apps the run opened: none of com.example.Host ran at the release"))
+
+    def test_nothing_new_quits_nothing_and_says_nothing(self):
+        self.listings = [[self.OWNERS, self.FINDER], [self.OWNERS, self.FINDER]]
+        entry = self.slot()
+        self.assertEqual(self.asked, [])
+        self.assertNotIn("appsQuit", entry)
+        self.assertFalse([line for line in self.said if "quit" in line or "left running" in line], self.said)
+
+    def test_apps_that_cannot_be_read_are_never_quit(self):
+        for listings in ([None, [self.FINDER, self.SAFARI]], [[self.FINDER], None]):
+            self.said.clear()
+            self.listings = listings
+            entry = self.slot()
+            self.assertEqual(self.asked, [])
+            self.assertEqual(entry["state"], "released")
+            self.assertIn("could not read the second Mac's running apps", "\n".join(self.said))
+            self.assertIn("the running apps could not be read", entry["appsQuit"])
+
+    def test_a_run_that_no_longer_holds_the_lease_quits_nothing(self):
+        self.listings = [[self.FINDER], [self.FINDER, self.SAFARI]]
+        def lost(owner):
+            # Attended recovery, then another run, took the foreground while this one still ran.
+            record = self.record.load()
+            record["devices"][devices.FOREGROUND]["ownerChatID"] = "other run"
+            self.record.path.write_text(json.dumps(record))
+        # The guard cannot restore VoiceOver under a lease that is no longer the run's, and says so.
+        with self.assertRaises(voiceover_state.TransitionFailed):
+            self.slot(lost)
+        entry = self.record.entry(devices.FOREGROUND)
+        self.assertEqual(self.asked, [])
+        self.assertIn("queuekeeper: foreground retained: a guard's restoration or owned-process state is unverified",
+                      self.said)
+        self.assertEqual(entry["ownerChatID"], "other run")
+        self.assertEqual(self.listings, [[self.FINDER, self.SAFARI]], "the release read no apps")
+
+    def test_the_suite_switch_reads_no_apps(self):
+        os.environ[opened_apps.SWITCH] = "off"
+        self.listings = []
+        self.assertEqual(opened_apps.read(), [])
+
+    def test_which_apps_count_as_installed(self):
+        for path in ("/Applications/Safari.app", "/Applications/Utilities/Script Editor.app",
+                     "/System/Applications/Mail.app", "/System/Applications/Utilities/Terminal.app",
+                     "/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app",
+                     str(Path.home() / "Applications/Tool.app")):
+            self.assertTrue(opened_apps.installed(path), path)
+        for path in ("/Applications/Xcode.app/Contents/Applications/DeviceHub.app", "/Applications/Folder/App.app",
+                     "/tmp/Applications/App.app", "/Applications/tool"):
+            self.assertFalse(opened_apps.installed(path), path)
 
 
 class Clock:
