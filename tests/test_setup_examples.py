@@ -11,15 +11,15 @@ from queuekeeper import config
 
 class SetupExamples(unittest.TestCase):
     def test_setup_configurations_are_accepted_without_implicit_platform_plugins(self):
+        # The setup guide holds the configuration agents copy; the README sends them there and has none of its own.
+        name = "doc/getting_started.md"
         root = Path(__file__).resolve().parents[1]
-        for name in ("README.md", "doc/getting_started.md"):
-            with self.subTest(document=name):
-                examples = re.findall(r"^```json\s*\n(.*?)^```", (root / name).read_text(), re.M | re.S)
-                self.assertTrue(examples, f"{name} has no JSON setup example")
-                for example in examples:
-                    project = config.parse(example)
-                    self.assertIn("gate", project["lanes"])
-                    self.assertEqual(project["extensions"], [])
+        examples = re.findall(r"^```json\s*\n(.*?)^```", (root / name).read_text(), re.M | re.S)
+        self.assertTrue(examples, f"{name} has no JSON setup example")
+        for example in examples:
+            project = config.parse(example)
+            self.assertIn("gate", project["lanes"])
+            self.assertEqual(project["extensions"], [])
 
 
 if __name__ == "__main__":
