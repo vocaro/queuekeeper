@@ -1,7 +1,7 @@
 # Getting started
 
-What to install and set up before the [walk-through in the README](../README.md#getting-started),
-and what to add afterward.
+Installation and configuration details for the [setup guide in the README](../README.md#getting-started),
+plus optional features to add afterward.
 
 ## Requirements
 
@@ -86,7 +86,10 @@ Two defaults to know about:
 
 ## Land a first change
 
-Follow the [walk-through in the README](../README.md#getting-started).
+After reviewing the configuration and agent instructions, ask your agent to commit them on its
+branch and run `qk land --wait` in the project. It should follow the entry to its result and confirm
+that the setup landed on `origin/main`. The first landing uses the gate in the setup commit;
+later landings use the settings on `main`.
 
 ## Add a second Mac
 
