@@ -133,6 +133,15 @@ entry makes the whole entry ride the code gate:
   and land that branch separately. It lands without waiting for the code, and the code entry is no
   larger for it. Keep them in one entry when the document describes behavior the code change
   brings, so that neither lands without the other.
+- **`qk land` says which gate an entry will ride** as it queues it, on standard output after the
+  `queued ID` line, by `main`'s settings as a round reads them (vocaro/queuekeeper#118). An entry
+  of documentation alone gets `queue: ID is documentation only: lands on the spelling and docs
+  lanes, not the code gate`. Any other entry gets `queue: ID rides the code gate: PATH is not
+  documentation`, naming the first of its paths, in sorted order, that is not documentation, and
+  adds `; the docs lane runs too, ahead of it, for its documents` when it changes documents as
+  well. When that path should not have been in the entry, move it to an entry of its own, as
+  below. An entry landing with `--no-gate` gets no such line: it says it lands alone on the
+  spelling lane.
 - **A documentation landing is not a gate.** No gate receipt names the pushed commit, and
   `qk queue status` records the entry as a documentation landing with the lanes it ran.
 

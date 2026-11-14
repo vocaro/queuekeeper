@@ -1699,6 +1699,11 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
           [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
     # Then the spelling lane, on its commits replayed onto origin/main, which takes seconds where a slip costs a round.
     spelled_before_queued(root, queue, tip, gating)
+    # Which gate it will ride, found before anything is queued, so that no slip here leaves it queued unsaid (#118).
+    # The round reads main's settings, or the batch's less what only main may say (settings), as gating stands for.
+    riding = None if no_gate else rides(config if gating is config else as_batch(config_at(root, tip)), {
+        path for path in text(root, "log", "--no-walk", "--format=", "--name-only", "--no-renames",
+                              *commits).splitlines() if path})
     for entry in replaced:
         remove(queue, entry["id"], quiet=True)
         print(f"queue: replaced {entry['id']}, the branch's earlier commits", file=sys.stderr)
@@ -1713,6 +1718,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     queue.emit("entry.queued", entry=identifier, subject=entry["subject"], commits=len(commits), branch=entry["branch"],
                note=note, **flags)
     print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
+    if riding: print(f"queue: {identifier} {riding}")
     for name in OPTIONS:
         if name in flags: print(f"queue: {identifier} {asked_for(name)}{because(flags)}")
     why = queue.held()
@@ -1722,6 +1728,29 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         print("nothing else is needed for it to land; to be told at once if it comes back, run as a background "
               f"command: python3 {shlex.quote(str(root))}/scripts/qk queue wait {identifier}")
     return identifier
+
+
+def rides(config, changed):
+    """Which gate an entry whose own commits change the paths changed will ride, by config, the settings a round reads
+    for it, for qk land's line: the docs lanes alone, which docs_lanes gives for an entry of documents, or the code
+    gate, with the first path that puts it there and the docs lanes that run ahead of the gate for its documents
+    (docs_also). A session that queued a README change with a stylesheet and screenshots expected a documentation
+    landing, and found out only by waiting that it rode the code gate (vocaro/queuekeeper#118)."""
+    changed = sorted(changed)
+    docs = docs_lanes(config, changed)
+    if docs: return f"is documentation only: lands on {spoken(docs)}, not the code gate"
+    if config.get("queue", {}).get("docsOnly") is False: why = "main's queue.docsOnly is false, so every entry does"
+    elif not changed: why = "its commits change no file"
+    else: why = f"{next(path for path in changed if not docs_lanes(config, [path]))} is not documentation"
+    also = [lane for lane in lanes_of(config, changed) if lane not in lanes_of(config)]
+    return f"rides the code gate: {why}" + (f"; {spoken(also)} run{'s' if len(also) == 1 else ''} too, ahead of "
+                                            "it, for its documents" if also else "")
+
+
+def spoken(lanes):
+    """lanes as a line says them, such as the spelling and docs lanes."""
+    named = lanes[0] if len(lanes) == 1 else ", ".join(lanes[:-1]) + " and " + lanes[-1]
+    return f"the {named} lane{'s' if len(lanes) > 1 else ''}"
 
 
 def check(root, queue, entry, ahead, front):

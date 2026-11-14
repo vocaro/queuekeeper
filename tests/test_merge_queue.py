@@ -3480,6 +3480,31 @@ class DocsOnly(Fixture):
         self.assertTrue(any("the batch changes documents beside code: running docs as well as the gate" in words
                             for words in said), said)
 
+    def landed_saying(self, branch, **options):
+        """What qk land prints to standard output as it queues branch, with no worker started."""
+        said = io.StringIO()
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(said):
+            mq.add(self.repo, branch, **options)
+        return said.getvalue()
+
+    def test_qk_land_says_which_gate_each_entry_rides(self):
+        """vocaro/queuekeeper#118: an entry that changed README.md with a stylesheet and screenshots was expected to
+        land as documentation and rode the full gate, which its author learned only by waiting."""
+        self.both()
+        self.assertRegex(self.landed_saying("both"), r"queue: \S+ rides the code gate: code is not documentation; "
+                                                     r"the docs lane runs too, ahead of it, for its documents\n")
+        self.commit("README.md", "readme", "readme")
+        self.assertRegex(self.landed_saying("readme"), r"queue: \S+ is documentation only: lands on the spelling and "
+                                                       r"docs lanes, not the code gate\n")
+        self.commit("app.css", "style")
+        self.assertRegex(self.landed_saying("style"), r"queue: \S+ rides the code gate: app.css is not documentation\n")
+        # An ungated landing says what it does instead.
+        self.commit("other.css", "ungated")
+        said = self.landed_saying("ungated", no_gate=True, why="an incident")
+        self.assertNotIn("gate:", said)
+        self.assertNotIn("documentation only", said)
+        self.assertIn("lands alone on the spelling lane, without the gate", said)
+
     def test_an_entry_that_changes_code_and_a_document_its_docs_lane_fails_is_sent_back(self):
         """vocaro/queuekeeper#122: on 2026-11-12 vocaro/mpm's gate passed a commit that changed tooling and took
         AGENTS.md, a docsOnly path, past what its docs lane allows, three times, as no gate lane held that check. The
@@ -3699,6 +3724,29 @@ class DocsFirst(unittest.TestCase):
         self.assertEqual(kept("code", "guide", "readme"), ["code"])
         self.assertEqual(kept("guide", "code", "both"), ["code"])
         self.assertEqual(kept("code", "pdf"), ["code", "pdf"])
+
+
+class Riding(unittest.TestCase):
+    """rides, the line qk land prints of the gate an entry will ride (vocaro/queuekeeper#118)."""
+
+    def test_the_first_path_that_is_not_documentation_is_named(self):
+        config = {"lanes": {"gate": {}}}
+        self.assertEqual(mq.rides(config, {"README.md", "guides/a.md"}),
+                         "is documentation only: lands on the spelling and docs lanes, not the code gate")
+        self.assertEqual(mq.rides(config, {"README.md", "static/app.css", "shot.png"}),
+                         "rides the code gate: shot.png is not documentation; the docs lane runs too, ahead of it, "
+                         "for its documents")
+        self.assertEqual(mq.rides({"lanes": {"gate": {}}, "queue": {"spelling": False}}, {"doc/a.md"}),
+                         "is documentation only: lands on the docs lane, not the code gate")
+        self.assertEqual(mq.rides(config, set()), "rides the code gate: its commits change no file")
+        self.assertEqual(mq.rides({"lanes": {"gate": {}}, "queue": {"docsOnly": False}}, {"README.md"}),
+                         "rides the code gate: main's queue.docsOnly is false, so every entry does")
+
+    def test_a_move_out_of_documentation_names_the_path_it_left_or_took(self):
+        """Both sides of a move arrive, as docs_lanes reads them, so a document moved into source names its new path."""
+        self.assertEqual(mq.rides({"lanes": {"gate": {}}}, {"doc/a.md", "src/a.md"}),
+                         "rides the code gate: src/a.md is not documentation; the docs lane runs too, ahead of it, "
+                         "for its documents")
 
 
 class DocsCarryPolicy(unittest.TestCase):

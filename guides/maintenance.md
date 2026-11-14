@@ -912,6 +912,13 @@ hook is skipped for a docs-only batch, including in projects without `queue.hook
 put required documentation checks in the docs lanes rather than that hook. Code and mixed
 landings keep their ordinary hook policy. No emergency option is needed for documentation.
 
+`qk land` says which of the two an entry will ride as it queues it, by the same paths and
+settings: `ID is documentation only: lands on LANES, not the code gate`, or `ID rides the code
+gate: PATH is not documentation`, with the first such path in sorted order and, when the entry
+changes documents too, the docs lanes that run ahead of the gate (`rides`, vocaro/queuekeeper#118).
+An entry of a README change, a stylesheet, a script, a test and three screenshots was expected to
+land as documentation and rode the full gate, which its author learned only by waiting.
+
 A docs-only landing is no full gate of the pushed commit: `gate` may not be a docs lane, no
 gate receipt names that commit, and `eng release` will not take it as a release qualification.
 A release commit gets its gate from the release procedure. The worker's log and
