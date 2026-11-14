@@ -839,7 +839,7 @@ def perform(argv, report):
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
     logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
-        "       %(prog)s recover [OWNER]\n       %(prog)s remove OWNER --why TEXT\n       %(prog)s limits\n"
+        "       %(prog)s recover [--host HOST] [OWNER]\n       %(prog)s remove OWNER --why TEXT\n       %(prog)s limits\n"
         "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]\n       %(prog)s now [--json] [--here]",
         help="summarize this host's heavy-work admission "
         "log: for each kind and label, the requests admitted and withdrawn, how long they waited and held, and how "

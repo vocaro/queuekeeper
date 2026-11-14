@@ -3366,6 +3366,19 @@ def screen_there(host):
     return ask(host, {"screen": True}, timeout=CENSUS_TIMEOUT)
 
 
+def recover_admission(host, owner=None):
+    """Run the remote checkout's ordinary recovery in its login shell, without assuming sshd's PATH.
+    No owner lists only; an owner goes through exactly the same census and refusal checks as a local call.
+    A timeout leaves the outcome unknown: callers should list again before deciding what to do next."""
+    launcher = '"$HOME"/' + shlex.quote(offload_host.TOOLKIT_CHECKOUT + "/bin/qk")
+    script = f"python3 {launcher} admissions recover"
+    if owner is not None: script += " " + shlex.quote(str(owner))
+    found = ssh(host, script, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=CENSUS_TIMEOUT)
+    if found.stdout: print(found.stdout, end="")
+    if found.stderr: print(found.stderr, end="", file=sys.stderr)
+    return found.returncode
+
+
 def capacity_there(host, *, diagnostic=False, started=None):
     """The second Mac's capacity for heavy work, as offload_host.capacity reads it there, in its login shell as a
     run there reads it. A second Mac that cannot be reached raises Unreachable, as the connection that prepares

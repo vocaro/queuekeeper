@@ -5758,6 +5758,45 @@ class KeptResultsPruneTests(unittest.TestCase):
         self.assertTrue((self.base / "c00/gate.json").exists())
 
 
+class AdmissionRecoveryThereTests(unittest.TestCase):
+    """Recovery reaches the remote launcher through the existing login-shell transport (#145)."""
+
+    def test_listing_and_recovery_use_the_remote_login_shell_and_preserve_the_verdict(self):
+        for owner, status in [(None, 0), ("56766", 1), ("a" * 32, 0), ("value; echo unsafe", 2)]:
+            with self.subTest(owner=owner), \
+                    patch.object(remote.subprocess, "run", return_value=subprocess.CompletedProcess(
+                        [], status, stdout="remote listing or refusal\n", stderr="remote diagnostic\n")) as run, \
+                    contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error, \
+                    patch.object(resources, "recover", side_effect=AssertionError("local recovery")):
+                arguments = ["admissions", "recover", "--host", "build-host"] + ([] if owner is None else [owner])
+                self.assertEqual(cli.main(arguments), status)
+                self.assertEqual(output.getvalue(), "remote listing or refusal\n")
+                self.assertEqual(error.getvalue(), "remote diagnostic\n")
+                command = run.call_args.args[0]
+                self.assertIn("BatchMode=yes", command)
+                self.assertEqual(command[-2], "build-host")
+                script = 'python3 "$HOME"/Development/queuekeeper/bin/qk admissions recover'
+                if owner is not None: script += " " + shlex.quote(owner)
+                self.assertEqual(command[-1], remote.login(script))
+                options = run.call_args.kwargs
+                self.assertEqual(options["stdin"], subprocess.DEVNULL)
+                self.assertEqual(options["timeout"], remote.CENSUS_TIMEOUT)
+
+    def test_a_failed_connection_does_not_recover_locally(self):
+        for failure in [OSError("no ssh"), subprocess.TimeoutExpired("ssh", 60)]:
+            with self.subTest(failure=failure), patch.object(remote, "ssh", side_effect=failure), \
+                    patch.object(resources, "recover", side_effect=AssertionError("local recovery")), \
+                    contextlib.redirect_stderr(StringIO()) as error:
+                self.assertEqual(cli.main(["admissions", "recover", "--host", "build-host"]), 2)
+                self.assertIn("queuekeeper:", error.getvalue())
+
+    def test_without_a_host_recovery_stays_local(self):
+        with patch.object(resources, "recover", return_value=1) as recover, \
+                patch.object(remote, "ssh", side_effect=AssertionError("asked remote host")):
+            self.assertEqual(cli.main(["admissions", "recover", "56766"]), 1)
+            recover.assert_called_once_with("56766")
+
+
 class AdmissionLogThereTests(unittest.TestCase):
     """The second Mac's admission log, which `qk admissions usage` fetches over ssh as capacity_there asks."""
 

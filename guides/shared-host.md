@@ -3188,6 +3188,19 @@ python3 scripts/qk admissions recover
 python3 scripts/qk admissions recover 56766
 ```
 
+For an entry on another Mac, add its SSH name. These commands run that Mac's
+`~/Development/queuekeeper/bin/qk` through its login shell, whose PATH includes the supported
+Python installed during remote setup; neither a `qk` on SSH's initial PATH nor a guessed interpreter
+path is needed. The first command only lists; the second applies the same recovery checks there:
+
+```sh
+python3 scripts/qk admissions recover --host build-host
+python3 scripts/qk admissions recover --host build-host 56766
+```
+
+The remote command's output and exit status come back unchanged. If the connection fails or times
+out, list there again before acting: a lost reply does not establish whether recovery finished.
+
 Admission publishes a complete opening process record before it publishes the guard. If it cannot
 write the opening record, the request gives up its slots before any work starts (#336). An empty or
 missing record from an earlier or interrupted run cannot prove that no command ran.

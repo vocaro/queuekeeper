@@ -2825,8 +2825,13 @@ def recover_main(argv=None):
         "unreadable or not in admission's format alone (guides/shared-host.md, Lock reclamation).")
     parser.add_argument("owner", nargs="?", metavar="OWNER", help="the PID or identity of the entry's owner, as the "
                         "listing names it; without it, list the guard's dead or uncertain entries")
+    parser.add_argument("--host", metavar="HOST", help="list or recover on this SSH host, using its login shell "
+                        "and ~/Development/queuekeeper/bin/qk; without it, use this Mac")
     args = parser.parse_args(argv)
     try:
+        if args.host:
+            from queuekeeper import remote
+            return remote.recover_admission(args.host, args.owner)
         return recover(args.owner)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"queuekeeper: {error}", file=sys.stderr)
