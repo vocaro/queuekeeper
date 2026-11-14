@@ -3455,6 +3455,8 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
         refused = screen_refusal(reading.get("screen"), mac)
         if refused is not None: return refused
     slots, maximum, busy = reading["slots"], reading["slotsMax"], sorted(reading["busy"])
+    # Each limit quoted with whose it is and where that Mac sets it; an older toolkit's reading says not where.
+    said = lambda key, value: limit_words(reading, key, value, mac)
     running, holding = reading.get("wholeHost") or [], reading.get("exclusive") or []
     if running:
         return f"{mac} is running a whole-host lane: {running[0]}"
@@ -3465,7 +3467,7 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
     if isinstance(queued, str) and queued:
         return f"exclusive work is queued ahead on {mac}: {queued}"
     if exclusive and busy:
-        return (f"exclusive work needs every slot of {mac} up to HEAVY_SLOTS_MAX={maximum} free, and {len(busy)} "
+        return (f"exclusive work needs every slot of {mac} up to {said('slotsMax', maximum)} free, and {len(busy)} "
                 f"{'is' if len(busy) == 1 else 'are'} busy")
     # An older toolkit's reading has no kept, and keeps nothing by it.
     kept = reading.get("kept") if isinstance(reading.get("kept"), str) and reading.get("kept") else None
@@ -3475,7 +3477,7 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
         if exclusive or whole_host:
             return f"{held}, which the lane would wait behind"
         if len([slot for slot in busy if slot >= slots]) >= maximum - slots:
-            return f"{held}, and every slot beyond them up to HEAVY_SLOTS_MAX={maximum} is busy"
+            return f"{held}, and every slot beyond them up to {said('slotsMax', maximum)} is busy"
     taken = [slot for slot in busy if slot < slots]
     if whole_host and taken:
         return (f"a whole-host lane needs every guaranteed slot of {mac} (HEAVY_SLOTS={slots}) free, and {len(taken)} "
@@ -3495,17 +3497,38 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
     found, limit = reading.get("cpuBusy"), reading["busyLimit"]
     busy = found if isinstance(found, (int, float)) and not isinstance(found, bool) else None
     if busy is None:
-        return f"the CPU busy share of {mac}, which HEAVY_BUSY_LIMIT={limit:g}% bounds, is unavailable"
+        return f"the CPU busy share of {mac}, which {said('busyLimit', limit)} bounds, is unavailable"
     if busy >= limit:
-        return f"{mac} is busy (CPU {busy:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%)"
+        whence = limit_whence(reading, "busyLimit")
+        return (f"{mac} is busy (CPU {busy:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%"
+                f"{', ' + whence if whence else ''})")
     # Beyond the guaranteed slots, memory pressure that is not normal, or cannot be read, withholds the slot, judged
     # as admission judges it; an older toolkit's reading has no memory, and withholds nothing by it.
     if "memory" in reading:
         level = reading["memory"] if isinstance(reading["memory"], int) and not isinstance(reading["memory"], bool) else None
-        refused = resources.judged(busy, limit, lambda: level)
+        refused = resources.judged(busy, limit, lambda: level, said("busyLimit", limit))
         if refused is not None:
             return f"{held}, and on {mac} {refused[1]}"
     return None
+
+
+def limit_from(reading, key):
+    """(where the Mac whose reading this is, offload_host.capacity's or offload_host.pressure's, sets its limit key,
+    that Mac's limits file), each None for an older toolkit's reading, which does not say
+    (offload_host.limit_sources)."""
+    sources, path = reading.get("limitsFrom"), reading.get("limitsFile")
+    return (sources.get(key) if isinstance(sources, dict) else None), (path if isinstance(path, str) else None)
+
+
+def limit_whence(reading, key):
+    """Where the Mac whose reading this is sets its limit key, in words (resources.limit_source), or None."""
+    return resources.limit_source(*limit_from(reading, key))
+
+
+def limit_words(reading, key, value, mac):
+    """resources.limit_words for mac's limit key, value, from where its reading says it is set (limit_from), so
+    that a line quoting it says that it is that Mac's and where to look (vocaro/queuekeeper#29)."""
+    return resources.limit_words(key, value, *limit_from(reading, key), mac)
 
 
 def retry_macs(host, lanes, lane, screen=False):
@@ -3551,7 +3574,8 @@ def pressure_there(host):
     answered, busy = reading_there(host)
     load = answered.get("load")
     load = load if isinstance(load, (int, float)) else None
-    return resources.judged(busy, answered["busyLimit"], lambda: answered.get("memory")), load
+    return resources.judged(busy, answered["busyLimit"], lambda: answered.get("memory"),
+                            limit_words(answered, "busyLimit", answered["busyLimit"], host)), load
 
 
 def reading_there(host):

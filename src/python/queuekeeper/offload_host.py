@@ -1376,12 +1376,15 @@ def slot_directory():
     return Path(base) / SLOTS
 
 
-def limits():
+def limits(sources=None):
     """The admission limits the capacity reading needs, by key: HEAVY_SLOTS, HEAVY_SLOTS_MAX, HEAVY_BUSY_LIMIT and
     HEAVY_SETTLE_SECONDS, each from its environment variable, else the host's limits file, admission-limits.json
     beside the admission log, as a number or {"perCore": F}, else its default, as resources.limits reads them,
     which this file cannot import (#49). A file or variable admission could not read raises ValueError naming it, as admission does:
-    its owner fixes it rather than queuekeeper guessing."""
+    its owner fixes it rather than queuekeeper guessing. sources, a dict, is given where each comes from, by key:
+    its variable's name, the file's path or "default", as resources.limits names them, so that a line quoting the
+    second Mac's limit can say where it is set (limit_sources, vocaro/queuekeeper#29)."""
+    sources = {} if sources is None else sources
     cores = os.cpu_count() or 1
     path = admission_directory() / ADMISSION_LIMITS
     try: text = path.read_text()
@@ -1411,13 +1414,21 @@ def limits():
             except ValueError:
                 raise ValueError(f"Invalid resource limits: {variable}={os.environ[variable]} is not a "
                                  f"{'whole ' if counts else ''}number")
-        elif key in configured: found[key] = configured[key]
-        else: found[key] = default(cores, slots)
+            sources[key] = variable
+        elif key in configured: found[key], sources[key] = configured[key], str(path)
+        else: found[key], sources[key] = default(cores, slots), "default"
         if key == "slots": slots = found[key]
     if found["slots"] < 1 or found["slotsMax"] < found["slots"] or found["settleSeconds"] < 0:
         raise ValueError(f"Invalid resource limits: HEAVY_SLOTS={found['slots']} must be at least 1, "
                          f"HEAVY_SLOTS_MAX={found['slotsMax']} at least HEAVY_SLOTS, and HEAVY_SETTLE_SECONDS at least 0")
     return found
+
+
+def limit_sources(sources):
+    """What a reading adds so that a line quoting one of this Mac's limits can say where it is set: where each
+    limit comes from (limitsFrom, as limits gives sources) and this Mac's limits file (limitsFile), which a
+    default names as where to set it (resources.limit_words, vocaro/queuekeeper#29)."""
+    return {"limitsFrom": dict(sources), "limitsFile": str(admission_directory() / ADMISSION_LIMITS)}
 
 
 def busy_slots(directory, count):
@@ -1607,7 +1618,8 @@ def capacity(own=None, *, diagnostic=False, before=None):
     its console screen (screen), which a lane that needs it unlocked reads. A reading it cannot take says why, as
     error, as pressure does. A diagnostic keeps no CPU sample and identifies blockers by admission and process,
     since their command labels can be long and need not identify the work."""
-    try: found = limits()
+    sources = {}
+    try: found = limits(sources)
     except ValueError as error: return {"error": str(error)}
     try: directory = slot_directory()
     except RuntimeError as error: return {"error": str(error)}
@@ -1635,7 +1647,8 @@ def capacity(own=None, *, diagnostic=False, before=None):
             "kept": label(ahead, "an unnamed request") if kind == "wholeHost" else None,
             "queuedExclusive": label(ahead, "an unnamed request") if kind == "exclusive" else None,
             "sinceAdmission": since_admission(directory, found["slotsMax"]), "settle": found["settleSeconds"],
-            "memory": memory_level(), "screen": screen(), **({"blockers": blockers} if diagnostic else {})}
+            "memory": memory_level(), "screen": screen(), **limit_sources(sources),
+            **({"blockers": blockers} if diagnostic else {})}
 
 
 def admission_log(since):
@@ -3192,9 +3205,11 @@ def pressure():
     again a lane that ran here and gave no verdict (guides/maintenance.md, The merge queue)."""
     try: load = round(os.getloadavg()[0], 2)
     except OSError: load = None
-    try: limit, directory = limits()["busyLimit"], slot_directory()
+    sources = {}
+    try: limit, directory = limits(sources)["busyLimit"], slot_directory()
     except (ValueError, RuntimeError) as error: return {"error": str(error)}
-    return {"load": load, "cpuBusy": cpu_busy(directory), "busyLimit": limit, "memory": memory_level()}
+    return {"load": load, "cpuBusy": cpu_busy(directory), "busyLimit": limit, "memory": memory_level(),
+            **limit_sources(sources)}
 
 
 def guarded_update(request):

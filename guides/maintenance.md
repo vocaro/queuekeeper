@@ -609,7 +609,9 @@ of 84 to 222, and the queue held until a manual resume once the load had fallen
 ([#124](https://github.com/vocaro/vocaro-engineering/issues/124)). The worker looks every 15 seconds
 (`SETTLE_POLL`) for up to an hour (`SETTLE_LIMIT`), no longer than the gate run the wait may save. Past
 that it holds, with every entry waiting, whatever runs the bound has left, and the hold names the
-reason it last read, such as `the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%`. Its log names the
+reason it last read, such as `the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75% (this Mac's limit, the
+default, since PATH does not set it)`, which says whose limit it is and where it comes from: the Mac's limits file
+by its path, the environment, or the default (vocaro/queuekeeper#29). Its log names the
 reason when the wait starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
 looks it took and the first, highest and last one-minute load. A stop request (SIGTERM, SIGINT or SIGHUP)
 ends the wait at its next look, with the entries still waiting. With a second Mac configured, the test
@@ -627,8 +629,9 @@ on, since a lane that the second Mac ran left its load there
 lane's dispatch, which `qk run` files under `.build/queuekeeper/remote/.dispatches/LANE/` in the
 queue's checkout: one that started during the run and reached the second Mac, rather than only
 preparing, names it. Each look asks the second Mac over SSH, as `qk doctor` does, for its
-CPU busy share, the `HEAVY_BUSY_LIMIT` it sets there (75% by default), its one-minute load, which the log
-records, and its memory pressure, and judges them as admission does; the log and the hold name that Mac. A second
+CPU busy share, the `HEAVY_BUSY_LIMIT` it sets there (75% by default) and where it sets it, its one-minute
+load, which the log records, and its memory pressure, and judges them as admission does; the log and the hold
+name that Mac, and its limit as that Mac's (`HEAVY_BUSY_LIMIT=90% (build-host's limit, set in PATH)`). A second
 Mac that cannot be reached, or does not answer with its reading, gives this Mac's reading for that look
 instead, and the log says so when that starts and again once it answers. A lane that ran here, or that
 no Mac ran, reads this Mac only. A lane that fails blames its commits at once, with no wait, and the

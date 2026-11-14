@@ -5556,8 +5556,10 @@ class KeptSlotsTests(unittest.TestCase):
             # A lighter lane still goes beyond the guaranteed slots, as admission admits it, while one is free.
             (kept, {}, None),
             ({**kept, "busy": [3]}, {}, None),
-            ({**kept, "busy": [3, 4]}, {}, f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=5 is busy"),
-            ({**kept, "slotsMax": 3}, {}, f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=3 is busy"),
+            ({**kept, "busy": [3, 4]}, {},
+             f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=5 (the second Mac's limit) is busy"),
+            ({**kept, "slotsMax": 3}, {},
+             f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=3 (the second Mac's limit) is busy"),
             # Beyond them, the CPU's busy share still bounds it.
             ({**kept, "cpuBusy": 80.0}, {}, "the second Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
             # A whole-host or exclusive lane waits its turn behind it, however idle the Mac is.

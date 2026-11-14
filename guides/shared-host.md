@@ -314,17 +314,24 @@ directory must not multiply the host's build budget.
 
 A wait is expected. Admission prints `heavy: waiting (Ns): REASON` when it starts waiting and
 every five minutes after. The reason names the limit that refused the request and the limit's
-value, beside what the attempt read, so that a wait says which limit to look at:
+value, beside what the attempt read, so that a wait says which limit to look at. A
+HEAVY_SLOTS_MAX or HEAVY_BUSY_LIMIT it quotes says too, in parentheses, that the limit is the
+Mac's and where it comes from: `(this Mac's limit, set in PATH)` for the Mac's limits file,
+`(this Mac's limit, set in the environment)` for the variable, or `(this Mac's limit, the
+default, since PATH does not set it)`, PATH being the limits file by its full path. On
+2026-11-12 a session read `at or above HEAVY_BUSY_LIMIT=70%` in `qk queue status` as mpm's
+limit, when it was the Mac's, from its limits file, and not the default this guide quotes
+(vocaro/queuekeeper#29). The table shortens the parentheses to `(…)`:
 
 | Kind | Reason, as printed |
 | --- | --- |
-| `slots` | `all 3 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=9`, or `… and HEAVY_SLOTS_MAX=3 allows none beyond them`; for a whole-host lane, `a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=3) free, and 1 is busy`; for exclusive work, `exclusive work needs every slot up to HEAVY_SLOTS_MAX=9 free, and 2 are busy` |
+| `slots` | `all 3 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=9 (…)`, or `… and HEAVY_SLOTS_MAX=3 (…) allows none beyond them`; for a whole-host lane, `a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=3) free, and 1 is busy`; for exclusive work, `exclusive work needs every slot up to HEAVY_SLOTS_MAX=9 (…) free, and 2 are busy` |
 | `settle` | `all 3 guaranteed slots are busy and the CPU does not yet show the job admitted 12s ago, within HEAVY_SETTLE_SECONDS=30`, or `… and the CPU has been read over 2s, short of the 5s a reading spans` |
-| `cpu` | `all 3 guaranteed slots are busy and the CPU is 91% busy, at or above HEAVY_BUSY_LIMIT=75%`, or `… the CPU's busy share, which HEAVY_BUSY_LIMIT=75% bounds, is unavailable`; a toolkit older than vocaro-engineering#200 logged `load` for the load average |
+| `cpu` | `all 3 guaranteed slots are busy and the CPU is 91% busy, at or above HEAVY_BUSY_LIMIT=75% (this Mac's limit, the default, since PATH does not set it)`, or `… the CPU's busy share, which HEAVY_BUSY_LIMIT=75% (…) bounds, is unavailable`; a toolkit older than vocaro-engineering#200 logged `load` for the load average |
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
-| `wholeHost` | `it waits behind a whole-host lane queued ahead of it: LABEL`, for exclusive and whole-host requests, and `it waits behind a whole-host lane holding the host: LABEL` for other heavy work while one runs; for other heavy work behind a queued one, `a guaranteed slot is free but kept for a whole-host lane queued ahead of it: LABEL; and HEAVY_SLOTS_MAX=3 allows none beyond them`, or `… and every slot beyond them up to HEAVY_SLOTS_MAX=9 is busy`, or the `settle`, `cpu` or `memory` reason. With every guaranteed slot busy anyway, the reason is the `slots` or other kind's, as with nothing queued |
+| `wholeHost` | `it waits behind a whole-host lane queued ahead of it: LABEL`, for exclusive and whole-host requests, and `it waits behind a whole-host lane holding the host: LABEL` for other heavy work while one runs; for other heavy work behind a queued one, `a guaranteed slot is free but kept for a whole-host lane queued ahead of it: LABEL; and HEAVY_SLOTS_MAX=3 (…) allows none beyond them`, or `… and every slot beyond them up to HEAVY_SLOTS_MAX=9 (…) is busy`, or the `settle`, `cpu` or `memory` reason. With every guaranteed slot busy anyway, the reason is the `slots` or other kind's, as with nothing queued |
 | `stranded` | another reason above, then `; the guard entry of LABEL, PID 4242, is dead and requires inspection (it has no process record), and is counted as slot 1; …`, `uncertain` for an entry marked so, with why [recovery](#lock-reclamation) left it in parentheses (`its owner still runs`, `it has no process record`, `its process record cannot vouch for every command` or `2 of its processes still run: PID 4250, 4251`) and what it is counted as (`slots 0, 1, 2 and the model` for exclusive work); a model request's reason is `the on-device model, one run at a time, is counted as held` |
 | `guard` | `the guard PATH is unreadable or not in admission's format and requires inspection; …` |
 
@@ -815,9 +822,11 @@ The reading applies admission's rule for a whole-host request queued there
 HEAVY_PLACE_SECONDS, the Mac keeps its guaranteed slots for it, so a whole-host or exclusive lane
 has no spare capacity there (`the guaranteed slots of the second Mac are kept for a whole-host
 lane queued ahead: LABEL, which the lane would wait behind`), and a lighter heavy lane has it only
-in a free slot beyond them (`…: LABEL, and every slot beyond them up to HEAVY_SLOTS_MAX=5 is
-busy`), and only as admission takes such a slot: once HEAVY_SETTLE_SECONDS have passed since the
-Mac's last admission (`…: LABEL, and the CPU of the second Mac does not yet show the job admitted
+in a free slot beyond them (`…: LABEL, and every slot beyond them up to HEAVY_SLOTS_MAX=5 (the
+second Mac's limit, set in PATH) is busy`, the reading saying where that Mac sets each limit, which a
+reading from a toolkit older than vocaro/queuekeeper#29 does not, and then only whose it is), and
+only as admission takes such a slot: once HEAVY_SETTLE_SECONDS have passed since the Mac's
+last admission (`…: LABEL, and the CPU of the second Mac does not yet show the job admitted
 12s ago, within HEAVY_SETTLE_SECONDS=30`), under its HEAVY_BUSY_LIMIT, and while its memory
 pressure is level 1, normal, and can be read (`…: LABEL, and on the second Mac memory pressure is
 level 2 (warning), not 1 (normal)`). The reading reports the seconds since that admission, the
@@ -850,7 +859,8 @@ whose admission then held it back for as long as the exclusive work waited and r
 2. When the second Mac's reading shows no spare capacity and this Mac's shows some, the lane goes
    to this Mac's queue at once, and nothing is offered: `queuekeeper: trying LANE on this Mac:` says why,
    and the receipt's `hereBecause` records it, naming the second Mac's CPU when that is it, as
-   `the second Mac is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%)`, else the
+   `the second Mac is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%, set in PATH)`, PATH
+   being that Mac's limits file, else the
    whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
    kept for a whole-host lane queued there, or exclusive work queued there. The CPU limit counts
    only when the lane would need a slot beyond the guaranteed ones: a free guaranteed slot is

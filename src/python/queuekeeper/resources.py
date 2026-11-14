@@ -555,6 +555,40 @@ def busy_limit():
     return float(limits()["busyLimit"][0])
 
 
+def limit_source(source, path=None):
+    """Where a Mac's admission limit comes from, in words, given its source as limits gives it or as
+    offload_host.limits gives the second Mac's: the limit's environment variable, the default (a source that
+    begins with "default"), or the path of the Mac's limits file. path is that Mac's limits file, which a default
+    names as where to set the limit. None when the source is unknown, as from an older toolkit
+    (vocaro/queuekeeper#29)."""
+    if not isinstance(source, str) or not source:
+        return None
+    if source in {variable for variable, _counts, _default in LIMIT_KEYS.values()}:
+        return "set in the environment"
+    if source.startswith("default"):
+        return f"the default, since {path} does not set it" if path else "the default"
+    return f"set in {source}"
+
+
+def limit_words(key, value, source=None, path=None, mac="this Mac"):
+    """A limit as a line quotes it: its variable and value, and whose limit it is and where it comes from
+    (limit_source), so that a reader can tell it belongs to the Mac and which file or setting to look at without
+    reading the guides. On 2026-11-12 "at or above HEAVY_BUSY_LIMIT=70%" was read as a project's limit; it was the
+    Mac's, from its limits file, and not the default the guides quote (vocaro/queuekeeper#29)."""
+    variable = LIMIT_KEYS[key][0]
+    shown = f"{value:g}%" if key == "busyLimit" else f"{value:g}"
+    whence = limit_source(source, path)
+    return f"{variable}={shown} ({mac}'s limit{', ' + whence if whence else ''})"
+
+
+def limits_words(found=None, mac="this Mac"):
+    """limit_words for each limit in force on this Mac, by key, from limits' answer (found) or a new one, saying it is
+    mac's."""
+    found = limits() if found is None else found
+    path = limits_path()
+    return {key: limit_words(key, value, source, path, mac) for key, (value, source) in found.items()}
+
+
 def limits_main(argv=None, out=print):
     """qk admissions limits: the admission limits in force for a process started like this one, and their sources."""
     parser = argparse.ArgumentParser(prog="qk admissions limits", description="Print the heavy-work admission "
@@ -577,18 +611,23 @@ def pressure(limit=None):
     cpu or memory, and its reason, which names the limit and its value beside what was read; None when it has.
     The merge queue waits for it to clear before it runs a gate again that gave no verdict (guides/maintenance.md,
     The merge queue); admission judges its own attempt's reading the same way (Admission._extra_refusal)."""
-    limit = busy_limit() if limit is None else limit
-    return judged(cpu_busy(slot_directory(), wait=True)[0], limit, memory_level)
+    said = None
+    if limit is None:
+        found = limits()
+        limit, said = float(found["busyLimit"][0]), limits_words(found)["busyLimit"]
+    return judged(cpu_busy(slot_directory(), wait=True)[0], limit, memory_level, said)
 
 
-def judged(busy, limit, level):
+def judged(busy, limit, level, said=None):
     """pressure's answer for a reading of a Mac: its CPU's busy share in percent, None when unavailable, the limit
     of that Mac, and level, a function that reads its memory pressure level, called only when the share is below
-    the limit. The merge queue judges the second Mac's reading by it too (remote.pressure_there)."""
+    the limit. said quotes the limit with whose it is and where it comes from (limit_words); without it the reason
+    quotes the bare limit. The merge queue judges the second Mac's reading by it too (remote.pressure_there)."""
+    said = f"HEAVY_BUSY_LIMIT={limit:g}%" if said is None else said
     if busy is None:
-        return "cpu", f"the CPU's busy share, which HEAVY_BUSY_LIMIT={limit:g}% bounds, is unavailable"
+        return "cpu", f"the CPU's busy share, which {said} bounds, is unavailable"
     if busy >= limit:
-        return "cpu", f"the CPU is {busy:.0f}% busy, at or above HEAVY_BUSY_LIMIT={limit:g}%"
+        return "cpu", f"the CPU is {busy:.0f}% busy, at or above {said}"
     level = level()
     if level is None:
         return "memory", "memory pressure, which must be level 1 (normal), cannot be read"
@@ -813,6 +852,10 @@ class Admission:
         found = limits()
         self.slots, self.maximum = found["slots"][0], found["slotsMax"][0]
         self.busy_limit = float(found["busyLimit"][0])
+        # Each limit as a refusal quotes it: whose it is and where it comes from (vocaro/queuekeeper#29). The Mac is
+        # named, not "this Mac": the second Mac's refusal is relayed to the Mac that offered it the work.
+        from . import offload_host
+        self.said = limits_words(found, offload_host.mac_name())
         # The CPU's busy share, read over about BUSY_WINDOW seconds, shows a new job only once it has started work.
         self.settle = float(found["settleSeconds"][0])
         self.poll = float(os.environ.get("HEAVY_POLL_SECONDS", "1"))
@@ -1074,7 +1117,7 @@ class Admission:
         """Why no slot beyond the guaranteed ones may be taken now, as the refusal's kind and its reason, or None.
         The reason names the limit that refuses and its value beside what was read (#49)."""
         if self.maximum == self.slots:
-            return "slots", f"HEAVY_SLOTS_MAX={self.maximum} allows none beyond them"
+            return "slots", f"{self.said['slotsMax']} allows none beyond them"
         settling = time.time() - last_admission(self.directory, self.maximum)
         if settling < self.settle:
             return "settle", (f"the CPU does not yet show the job admitted {int(settling)}s ago, "
@@ -1083,7 +1126,7 @@ class Admission:
         if busy is None and seconds is not None:
             # The samples kept do not span a reading yet: the next attempts' will.
             return "settle", f"the CPU has been read over {seconds:g}s, short of the {BUSY_MINIMUM:g}s a reading spans"
-        return judged(busy, self.busy_limit, memory_level)
+        return judged(busy, self.busy_limit, memory_level, self.said["busyLimit"])
 
     def _take_model(self):
         """The model lock's descriptor, or None with its holder named. The caller holds the coordination lock,
@@ -1115,8 +1158,8 @@ class Admission:
             taken = take_slot(self.directory, self.maximum, start=self.slots, skip=reserved)
             if taken is not None:
                 return taken
-            refusal = "slots", (f"so is every slot up to HEAVY_SLOTS_MAX={self.maximum}" if kept is None else
-                                f"every slot beyond them up to HEAVY_SLOTS_MAX={self.maximum} is busy")
+            refusal = "slots", (f"so is every slot up to {self.said['slotsMax']}" if kept is None else
+                                f"every slot beyond them up to {self.said['slotsMax']} is busy")
         kind, reason = refusal
         free = None
         if kept is not None:
@@ -1277,8 +1320,9 @@ class Admission:
                 if taken is None:
                     busy = wanted - len(self.descriptors)
                     if self.exclusive:
-                        self.refusal, self.waiting = "slots", (f"exclusive work needs every slot up to HEAVY_SLOTS_MAX="
-                                                               f"{self.maximum} free, and {busy} {'is' if busy == 1 else 'are'} busy")
+                        self.refusal, self.waiting = "slots", (f"exclusive work needs every slot up to "
+                                                               f"{self.said['slotsMax']} free, and {busy} "
+                                                               f"{'is' if busy == 1 else 'are'} busy")
                     elif self.whole_host:
                         self.refusal, self.waiting = "slots", (f"a whole-host lane needs every guaranteed slot "
                                                                f"(HEAVY_SLOTS={self.slots}) free, and {busy} "

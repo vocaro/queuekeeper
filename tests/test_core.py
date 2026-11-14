@@ -27,6 +27,13 @@ import host_isolation
 from host_isolation import stretched
 
 
+def mine(limit, where="set in the environment"):
+    """limit, such as HEAVY_SLOTS_MAX=3, as admission quotes it: saying it is this Mac's, by its name, and where it is
+    set (vocaro/queuekeeper#29)."""
+    from queuekeeper import offload_host
+    return f"{limit} ({offload_host.mac_name()}'s limit, {where})"
+
+
 def setUpModule():
     # qk doctor compares this Mac with the second Mac. These tests configure none, so that it
     # never reaches the owner's; test_remote's doctor tests reach a fake one. It also checks the
@@ -731,8 +738,8 @@ class ResourceTests(unittest.TestCase):
                 with self.assertRaisesRegex(TimeoutError, "a whole-host lane needs every guaranteed slot \\(HEAVY_SLOTS=2\\) "
                                                           "free, and 2 are busy"):
                     with resources.Admission("second gate", whole_host=True, timeout=0): pass
-                with self.assertRaisesRegex(TimeoutError, "exclusive work needs every slot up to HEAVY_SLOTS_MAX=3 free, "
-                                                          "and 2 are busy"):
+                with self.assertRaisesRegex(TimeoutError, re.escape(f"exclusive work needs every slot up to "
+                                                                    f"{mine('HEAVY_SLOTS_MAX=3')} free, and 2 are busy")):
                     with resources.Admission("timed", exclusive=True, timeout=0): pass
                 # A lighter heavy lane is refused beside it, even with a slot beyond the guaranteed ones free and the
                 # host showing spare capacity: the lane's load dips between its phases (#196).
@@ -831,17 +838,17 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])),
                          {"slots", "slotsMax", "busy", "load", "cpuBusy", "busyLimit", "wholeHost", "exclusive", "kept",
-                          "queuedExclusive", "sinceAdmission", "settle", "memory", "screen"})
+                          "queuedExclusive", "sinceAdmission", "settle", "memory", "screen", "limitsFrom", "limitsFile"})
 
     def test_a_busy_cpu_memory_pressure_or_an_unsettled_admission_withholds_extra_slots(self):
         self.hold(0, 1)
         os.environ["HEAVY_BUSY_LIMIT"] = "40"
-        cases = [("the CPU is 90% busy, at or above HEAVY_BUSY_LIMIT=40%", (90.0, 15.0), 1, "0"),
+        cases = [(f"the CPU is 90% busy, at or above {mine('HEAVY_BUSY_LIMIT=40%')}", (90.0, 15.0), 1, "0"),
             ("memory pressure is level 2 (warning), not 1 (normal)", (10.0, 15.0), 2, "0"),
             ("s ago, within HEAVY_SETTLE_SECONDS=3600", (10.0, 15.0), 1, "3600"),
             # Samples that do not span a reading yet withhold it as settling, not as a busy CPU.
             ("the CPU has been read over 2s, short of the 5s a reading spans", (None, 2.0), 1, "0"),
-            ("the CPU's busy share, which HEAVY_BUSY_LIMIT=40% bounds, is unavailable", (None, None), 1, "0")]
+            (f"the CPU's busy share, which {mine('HEAVY_BUSY_LIMIT=40%')} bounds, is unavailable", (None, None), 1, "0")]
         for reason, load, memory, settle in cases:
             with self.subTest(reason):
                 os.environ["HEAVY_SETTLE_SECONDS"] = settle
@@ -901,6 +908,35 @@ class ResourceTests(unittest.TestCase):
         os.environ.pop("HEAVY_BUSY_LIMIT")
         self.assertEqual(resources.limits()["busyLimit"], (85.0, str(resources.limits_path())))
 
+    def test_a_quoted_limit_says_it_is_the_macs_and_where_it_is_set(self):
+        # On 2026-11-12 "at or above HEAVY_BUSY_LIMIT=70%" was read as a project's limit, when it was the Mac's, from
+        # its limits file (vocaro/queuekeeper#29). Each source by its words, here and in the second Mac's reading.
+        os.environ.pop("HEAVY_SLOTS_MAX")
+        path = self.write_limits({"busyLimit": 70})
+        os.environ["HEAVY_BUSY_LIMIT"] = "60"
+        said = resources.limits_words()
+        self.assertEqual(said["busyLimit"], "HEAVY_BUSY_LIMIT=60% (this Mac's limit, set in the environment)")
+        self.assertEqual(said["slotsMax"], f"HEAVY_SLOTS_MAX={resources.limits()['slotsMax'][0]} (this Mac's limit, "
+                                           f"the default, since {path} does not set it)")
+        os.environ.pop("HEAVY_BUSY_LIMIT")
+        self.assertEqual(resources.limits_words()["busyLimit"],
+                         f"HEAVY_BUSY_LIMIT=70% (this Mac's limit, set in {path})")
+        with patch.object(resources, "cpu_busy", return_value=(76.0, 15.0)):
+            self.assertEqual(resources.pressure(), ("cpu", f"the CPU is 76% busy, at or above HEAVY_BUSY_LIMIT=70% "
+                                                           f"(this Mac's limit, set in {path})"))
+        # The second Mac's reading says where it sets each limit, and the line names that Mac; an older toolkit's
+        # reading does not say where, and the line says only whose the limit is.
+        from queuekeeper import offload_host, remote
+        os.environ.pop("HEAVY_SLOTS")
+        reading = offload_host.capacity()
+        self.assertEqual((reading["limitsFrom"]["busyLimit"], reading["limitsFrom"]["slots"], reading["limitsFile"]),
+                         (str(path), "default", str(path)))
+        self.assertEqual(remote.limit_words(reading, "busyLimit", 70.0, "build-host"),
+                         f"HEAVY_BUSY_LIMIT=70% (build-host's limit, set in {path})")
+        self.assertEqual(remote.limit_words(reading, "slots", 3, "build-host"),
+                         f"HEAVY_SLOTS=3 (build-host's limit, the default, since {path} does not set it)")
+        self.assertEqual(remote.limit_words({}, "slotsMax", 5, "build-host"), "HEAVY_SLOTS_MAX=5 (build-host's limit)")
+
     def test_a_limits_file_admission_cannot_read_refuses_admission_and_names_the_file(self):
         cases = {"not JSON": ("{slots: 4", "is not JSON"), "a list": ([4], "holds no JSON object"),
                  "an unknown key": ({"slot": 4}, "names slot, not one of slots"),
@@ -943,10 +979,12 @@ class ResourceTests(unittest.TestCase):
                         self.assertIsNone(resources.pressure())
                     else:
                         with self.assertRaisesRegex(TimeoutError, re.escape(
-                                "all 2 guaranteed slots are busy and the CPU is 90% busy, at or above HEAVY_BUSY_LIMIT=40%")):
+                                "all 2 guaranteed slots are busy and the CPU is 90% busy, at or above "
+                                + mine("HEAVY_BUSY_LIMIT=40%", f"set in {resources.limits_path()}"))):
                             with resources.Admission("blocked", timeout=0): pass
-                        # The merge queue's settle test reads the same limit.
-                        self.assertEqual(resources.pressure(), ("cpu", "the CPU is 90% busy, at or above HEAVY_BUSY_LIMIT=40%"))
+                        # The merge queue's settle test reads the same limit, quoted as this Mac's.
+                        self.assertEqual(resources.pressure(), ("cpu", "the CPU is 90% busy, at or above HEAVY_BUSY_LIMIT=40% "
+                                                                       f"(this Mac's limit, set in {resources.limits_path()})"))
 
     def test_the_files_guaranteed_slots_admit_at_any_load_and_no_more(self):
         for name in ["HEAVY_SLOTS", "HEAVY_SLOTS_MAX"]: os.environ.pop(name)
@@ -956,7 +994,9 @@ class ResourceTests(unittest.TestCase):
             with resources.Admission("third", timeout=0) as admission:
                 self.assertEqual([slot for slot, _fd in admission.descriptors], [2])
             self.write_limits({"slots": 2, "slotsMax": 2})
-            with self.assertRaisesRegex(TimeoutError, "all 2 guaranteed slots are busy and HEAVY_SLOTS_MAX=2 allows none"):
+            with self.assertRaisesRegex(TimeoutError, re.escape(
+                    "all 2 guaranteed slots are busy and "
+                    f"{mine('HEAVY_SLOTS_MAX=2', f'set in {resources.limits_path()}')} allows none")):
                 with resources.Admission("refused", timeout=0): pass
 
     def test_eng_admissions_limits_prints_each_limit_and_its_source(self):
@@ -1030,7 +1070,7 @@ class ResourceTests(unittest.TestCase):
         running = os.fdopen(resources.take_slot(directory, 1)[1])
         self.addCleanup(running.close)
         exclusive, line = self.request_exclusive("exclusive")
-        self.assertIn("exclusive work needs every slot up to HEAVY_SLOTS_MAX=3 free, and 1 is busy", line)
+        self.assertIn(f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 1 is busy", line)
         # It ends as soon as it is admitted.
         exclusive.stdin.close()
         # A guaranteed slot is free, and the heavy request still waits.
@@ -1094,7 +1134,8 @@ class ResourceTests(unittest.TestCase):
             queued.append([waiter["label"] for waiter in json.loads(queue.read_text())["waiters"]] if queue.exists() else [])
             return admitted
         self.addCleanup(processes._stops.clear)
-        cases = [("timed out", TimeoutError, "exclusive work needs every slot up to HEAVY_SLOTS_MAX=3 free, and 1 is busy", 0),
+        cases = [("timed out", TimeoutError, re.escape(f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} "
+                                                       "free, and 1 is busy"), 0),
                  ("stopped", processes.Interrupted, "while waiting for admission", 60)]
         for label, failure, reason, timeout in cases:
             with self.subTest(label), patch.object(resources.Admission, "_attempt", attempt), contextlib.redirect_stderr(StringIO()):
@@ -1140,8 +1181,8 @@ class ResourceTests(unittest.TestCase):
         # slot 1 here, the next took slot 0 once the first job freed it, and so on for as long as heavy work came.
         with patch.dict(os.environ, {"HEAVY_SLOTS_MAX": "2"}), contextlib.redirect_stderr(StringIO()) as error, \
                 self.assertRaisesRegex(TimeoutError, re.escape("a guaranteed slot is free but kept for a whole-host lane queued "
-                                                               "ahead of it: gate; and HEAVY_SLOTS_MAX=2 allows none "
-                                                               "beyond them")):
+                                                               f"ahead of it: gate; and {mine('HEAVY_SLOTS_MAX=2')} "
+                                                               "allows none beyond them")):
             with resources.Admission("tests", timeout=0): self.fail("took a guaranteed slot the gate waits for")
         # A loaded host may take a second over the attempt (#15).
         self.assertRegex(error.getvalue(), r"heavy: waiting \(\d+s\): a guaranteed slot is free but kept")
@@ -1156,7 +1197,7 @@ class ResourceTests(unittest.TestCase):
             # With no slot beyond them free, the next waits for one, not for a guaranteed one.
             with patch.dict(os.environ), self.assertRaisesRegex(TimeoutError, re.escape(
                     "kept for a whole-host lane queued ahead of it: gate; and every slot beyond them up to "
-                    "HEAVY_SLOTS_MAX=3 is busy")):
+                    f"{mine('HEAVY_SLOTS_MAX=3')} is busy")):
                 os.environ.pop(resources.TOKEN)
                 with resources.Admission("more tests", timeout=0): self.fail("admitted")
             # The job running when the gate asked ends, and the gate is admitted beside the later heavy work.
@@ -1172,7 +1213,7 @@ class ResourceTests(unittest.TestCase):
         self.queue(self.waiter("gate", wholeHost=True, seen=time.time()))
         with patch.dict(os.environ, {"HEAVY_SLOTS_MAX": "2"}), contextlib.redirect_stderr(StringIO()), \
                 self.assertRaisesRegex(TimeoutError, re.escape("inspection (all 2 guaranteed slots are busy and "
-                                                               "HEAVY_SLOTS_MAX=2 allows none beyond them)")):
+                                                               f"{mine('HEAVY_SLOTS_MAX=2')} allows none beyond them)")):
             with resources.Admission("tests", timeout=0): self.fail("admitted")
         self.assertEqual(self.withdrawn()[-1], "slots")
 
@@ -1297,7 +1338,8 @@ class ResourceTests(unittest.TestCase):
             self.queue(fresh)
             read = {**offload_host.capacity(), "load": 0.0, "screen": None}
             self.assertEqual(remote.spare(read, "this Mac"), "the guaranteed slots of this Mac are kept for a whole-host "
-                             "lane queued ahead: waiting gate, and every slot beyond them up to HEAVY_SLOTS_MAX=2 is busy")
+                             "lane queued ahead: waiting gate, and every slot beyond them up to HEAVY_SLOTS_MAX=2 (this "
+                             "Mac's limit, set in the environment) is busy")
             self.queue(stale)
             self.assertIsNone(remote.spare({**offload_host.capacity(), "load": 0.0, "screen": None}, "this Mac"))
 
@@ -1581,7 +1623,7 @@ class ResourceTests(unittest.TestCase):
     def test_nested_work_does_not_wait_behind_an_exclusive_request_that_waits_for_it(self):
         with contextlib.redirect_stderr(StringIO()), resources.Admission("running", timeout=0):
             exclusive, line = self.request_exclusive("exclusive")
-            self.assertIn("exclusive work needs every slot up to HEAVY_SLOTS_MAX=3 free, and 1 is busy", line)
+            self.assertIn(f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 1 is busy", line)
             # Waiting would deadlock until the timeout: the exclusive request waits for this job.
             with resources.Admission("nested", timeout=0) as nested:
                 self.assertTrue(nested.reused)
@@ -1658,7 +1700,7 @@ class ResourceTests(unittest.TestCase):
         running = os.fdopen(resources.take_slot(directory, 1)[1])
         self.addCleanup(running.close)
         exclusive, line = self.request_exclusive("exclusive")
-        self.assertIn("exclusive work needs every slot up to HEAVY_SLOTS_MAX=3 free, and 1 is busy", line)
+        self.assertIn(f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 1 is busy", line)
         exclusive.stdin.close()
         # A guaranteed slot and the model are free, and the model run still waits.
         with contextlib.redirect_stderr(StringIO()) as error, self.assertRaisesRegex(TimeoutError, "behind exclusive work queued ahead of it: exclusive"):
@@ -2624,28 +2666,30 @@ class AdmissionLogTests(unittest.TestCase):
         # Each kind, what refuses the request with it, and the waiting message it prints, word for word: the limit that
         # refused it and the limit's value, beside what the attempt read. A busy share or level of None cannot be read.
         cases = [
-            ("cpu", [hold(0, 1)], {}, 90.0, 1, {}, 0, busy + "the CPU is 90% busy, at or above HEAVY_BUSY_LIMIT=40%"),
-            ("cpu", [hold(0, 1)], {}, None, 1, {}, 0, busy + "the CPU's busy share, which HEAVY_BUSY_LIMIT=40% bounds, is unavailable"),
+            ("cpu", [hold(0, 1)], {}, 90.0, 1, {}, 0, busy + f"the CPU is 90% busy, at or above {mine('HEAVY_BUSY_LIMIT=40%')}"),
+            ("cpu", [hold(0, 1)], {}, None, 1, {}, 0,
+             busy + f"the CPU's busy share, which {mine('HEAVY_BUSY_LIMIT=40%')} bounds, is unavailable"),
             ("memory", [hold(0, 1)], {}, 10.0, 2, {}, 0, busy + "memory pressure is level 2 (warning), not 1 (normal)"),
             ("memory", [hold(0, 1)], {}, 10.0, 4, {}, 0, busy + "memory pressure is level 4 (critical), not 1 (normal)"),
             ("memory", [hold(0, 1)], {}, 10.0, None, {}, 0, busy + "memory pressure, which must be level 1 (normal), cannot be read"),
             ("settle", [hold(0, 1)], {}, 10.0, 1, {"HEAVY_SETTLE_SECONDS": "3600"}, 0,
              busy + "the CPU does not yet show the job admitted {seconds}s ago, within HEAVY_SETTLE_SECONDS=3600"),
-            ("slots", [hold(0, 1, 2)], {}, 10.0, 1, {}, 0, busy + "so is every slot up to HEAVY_SLOTS_MAX=3"),
-            ("slots", [hold(0, 1)], {}, 10.0, 1, {"HEAVY_SLOTS_MAX": "2"}, 0, busy + "HEAVY_SLOTS_MAX=2 allows none beyond them"),
+            ("slots", [hold(0, 1, 2)], {}, 10.0, 1, {}, 0, busy + f"so is every slot up to {mine('HEAVY_SLOTS_MAX=3')}"),
+            ("slots", [hold(0, 1)], {}, 10.0, 1, {"HEAVY_SLOTS_MAX": "2"}, 0,
+             busy + f"{mine('HEAVY_SLOTS_MAX=2')} allows none beyond them"),
             ("slots", [hold(0)], {"exclusive": True}, 10.0, 1, {}, 0,
-             "exclusive work needs every slot up to HEAVY_SLOTS_MAX=3 free, and 1 is busy"),
+             f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 1 is busy"),
             ("slots", [hold(0, 2)], {"exclusive": True}, 10.0, 1, {}, 0,
-             "exclusive work needs every slot up to HEAVY_SLOTS_MAX=3 free, and 2 are busy"),
+             f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 2 are busy"),
             # A stranded entry recovery leaves is counted as the slot it held, here the lowest, since no slot file names
             # it, so that only work beyond the free slots waits (#89).
             ("stranded", [write(guard, {"vocaroEngineering": 1, "owners": {"stuck": {"pid": os.getpid(), "start": born,
              "label": "stuck", "exclusive": False, "uncertain": True}}}), hold(1, 2)], {}, 10.0, 1, {}, 1,
-             busy + f"so is every slot up to HEAVY_SLOTS_MAX=3; the guard entry of stuck, PID {os.getpid()}, is uncertain "
+             busy + f"so is every slot up to {mine('HEAVY_SLOTS_MAX=3')}; the guard entry of stuck, PID {os.getpid()}, is uncertain "
              "and requires inspection (its owner still runs), and is counted as slot 0" + listed),
             ("stranded", [write(guard, {"vocaroEngineering": 1, "owners": {"ended": {"pid": os.getpid(),
              "start": "Thu Jan  1 00:00:00 1970", "label": "ended", "exclusive": False}}})], {"exclusive": True}, 10.0, 1, {}, 1,
-             f"exclusive work needs every slot up to HEAVY_SLOTS_MAX=3 free, and 1 is busy; the guard entry of ended, PID "
+             f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 1 is busy; the guard entry of ended, PID "
              f"{os.getpid()}, is dead and requires inspection (it has no process record), and is counted as slot 0" + listed),
             ("guard", [write(guard, {"vocaroEngineering": 2, "owners": {}})], {}, 10.0, 1, {}, None,
              f"the guard {guard} is unreadable or not in admission's format" + recover),
@@ -2721,7 +2765,8 @@ class AdmissionLogTests(unittest.TestCase):
             os.write(fd, b"other holder\n")
             stack.callback(os.close, fd)
 
-        limit = "all 2 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=3"
+        limit = ("all 2 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=3 (Mac-A's limit, set in the "
+                 "environment)")
         with patch.object(offload_host, "mac_name", return_value="Mac-A"), \
                 patch.object(resources, "cpu_busy", return_value=(10.0, 15.0)), \
                 patch.object(resources, "memory_level", return_value=1), contextlib.redirect_stderr(StringIO()):
@@ -3363,9 +3408,11 @@ class RecoveryTests(unittest.TestCase):
                            "is counted as slot 1; `python3 scripts/qk admissions recover` lists it")
                 self.assertIn(f"heavy: admitted beside a stranded entry: {counted}", error.getvalue())
                 # Beyond them, and exclusive work: each waits, naming the entry and its slot.
-                for options, reason in [({}, "all 2 guaranteed slots are busy and HEAVY_SLOTS_MAX=2 allows none beyond them"),
+                for options, reason in [({}, f"all 2 guaranteed slots are busy and {mine('HEAVY_SLOTS_MAX=2')} allows none "
+                                             "beyond them"),
                                         ({"exclusive": True},
-                                         "exclusive work needs every slot up to HEAVY_SLOTS_MAX=2 free, and 2 are busy")]:
+                                         f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=2')} free, and 2 are "
+                                         "busy")]:
                     refused = resources.Admission("beyond", timeout=0, **options)
                     with self.assertRaisesRegex(TimeoutError, re.escape(f"({reason}; {counted}); no lock was reclaimed")):
                         with refused: self.fail("admitted")
@@ -3395,7 +3442,7 @@ class RecoveryTests(unittest.TestCase):
     def test_a_stranded_exclusive_or_model_entry_counts_as_every_slot_or_the_model_it_held(self):
         os.environ["HEAVY_SLOTS_MAX"] = "2"
         cases = [({"exclusive": True, "model": True}, {}, "slots 0, 1 and the model",
-                  "all 2 guaranteed slots are busy and HEAVY_SLOTS_MAX=2 allows none beyond them"),
+                  f"all 2 guaranteed slots are busy and {mine('HEAVY_SLOTS_MAX=2')} allows none beyond them"),
                  ({"model": True}, {"model": True}, "slot 0 and the model",
                   "the on-device model, one run at a time, is counted as held")]
         for entry, options, held, reason in cases:
