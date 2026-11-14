@@ -63,6 +63,10 @@ load is never hidden. An entry whose owner has provably finished is recovered au
 ## Checking a project's setup
 
 `qk doctor` checks a project's lanes, such as a lane with no timeout or a test that no lane
-runs, and every Mac's setup.
+runs, and every Mac's setup. Its JSON includes `offload.pythonCrashes`: read-only notes about
+`Python-*.ips` reports written during the last 24 hours, on this Mac and each second Mac that
+answers the host survey. Each report names its path, capture time, signal, parent process and
+first five frames of the crashed thread. Unreadable reports are notes too. These observations
+never change the doctor's verdict and do not stop processes or remove reports.
 
 See also [The merge queue](merge_queue.md) and [The build farm](build_farm.md).

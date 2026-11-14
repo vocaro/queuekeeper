@@ -4012,7 +4012,8 @@ def compare_hosts():
     devices in this Mac's alone. Differing runtimes also set runtimesDiffer, which `qk doctor` evens
     out (match_runtimes) before it compares again."""
     host = configured()
-    report = {"host": host, "errors": [], "unchecked": []}
+    report = {"host": host, "errors": [], "unchecked": [],
+              "pythonCrashes": {"local": offload_host.python_crash_reports()}}
     if host is None:
         report["unchecked"].append(f"no second Mac is configured ({HOST_VARIABLE}, or the ssh alias "
                                    f"{' or '.join(ALIASES)} in ~/.ssh/config), so this Mac was compared with none")
@@ -4040,6 +4041,7 @@ def compare_hosts():
         return report
     try:
         there = report["remote"] = survey(host, developer)
+        report["pythonCrashes"][host] = there.get("pythonCrashes", {"notes": ["host did not report Python crashes"]})
     except Misconfigured as problem:
         report["errors"].append(str(problem))
         report["unchecked"].append(f"{host}'s default Xcode, its Xcode at this Mac's developer directory and its "

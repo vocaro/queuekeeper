@@ -991,6 +991,38 @@ def foreground():
             "crashDialogs": crash_dialogs(), "captureApprovals": screen_capture_approvals()}
 
 
+def python_crash_reports(directory=None, now=None):
+    """Read the last day's Python reports without changing files or any run's verdict.
+    An ips file has a metadata JSON line followed by the report JSON (macOS crash reporter)."""
+    directory = Path(directory) if directory is not None else Path.home() / "Library/Logs/DiagnosticReports"
+    since = (time.time() if now is None else now) - 86400
+    result = {"since": datetime.fromtimestamp(since, timezone.utc).isoformat(), "reports": [], "notes": []}
+    try:
+        paths = sorted(directory.glob("Python-*.ips"))
+    except OSError as error:
+        result["notes"].append(f"cannot list {directory}: {error}")
+        return result
+    for path in paths:
+        try:
+            if path.stat().st_mtime < since: continue
+            text = path.read_text()
+            decoder = json.JSONDecoder()
+            first, end = decoder.raw_decode(text.lstrip())
+            rest = text.lstrip()[end:].strip()
+            report = decoder.raw_decode(rest)[0] if rest else first
+            threads = report.get("threads", [])
+            fault = report.get("faultingThread")
+            crashed = next((thread for thread in threads if thread.get("triggered")), None)
+            if crashed is None and isinstance(fault, int) and 0 <= fault < len(threads): crashed = threads[fault]
+            frames = (crashed or {}).get("frames", [])[:5]
+            result["reports"].append({"path": str(path), "time": report.get("captureTime", first.get("timestamp")),
+                "signal": report.get("exception", {}).get("signal"), "parentProcess": report.get("parentProc"),
+                "frames": frames})
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            result["notes"].append(f"cannot read {path}: {error}")
+    return result
+
+
 def toolchain(developer_dir):
     """The Mac's identity with the Xcode at developer_dir, its default Xcode (`xcode-select -p`), the
     simulator runtimes the Xcode at developer_dir lists and its device record, which `qk doctor`
@@ -1006,7 +1038,7 @@ def toolchain(developer_dir):
         except (TypeError, ValueError, KeyError):
             pass
     return {**found, "defaultDeveloperDir": default, "defaultXcode": xcode(default), "runtimes": runtimes,
-            "deviceRecord": device_record()}
+            "deviceRecord": device_record(), "pythonCrashes": python_crash_reports()}
 
 
 def image_file(record):
