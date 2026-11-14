@@ -3455,21 +3455,63 @@ class DocsOnly(Fixture):
         self.assertEqual(self.landed_order(code, guide, more), [guide, code, more])
         self.assertTrue(any("1 docs-only entry lands first, on the docs lanes alone" in words for words in said), said)
 
-    def test_one_entry_that_changes_docs_and_code_runs_every_lane(self):
-        """The control: an entry is docs-only by its own paths, and one that changes code beside a document gates."""
+    def both(self):
+        """A branch, both, whose one commit changes doc/guide.md and code."""
         run(self.repo, "git", "checkout", "-q", "-B", "both", "origin/main")
         (self.repo / "doc").mkdir(exist_ok=True)
         (self.repo / "doc/guide.md").write_text("guide")
         (self.repo / "code").write_text("code")
         run(self.repo, "git", "add", "doc/guide.md", "code")
         run(self.repo, "git", "commit", "-qm", "Both")
+
+    def test_one_entry_that_changes_docs_and_code_runs_every_lane(self):
+        """The control: an entry is docs-only by its own paths, and one that changes code beside a document gates,
+        and runs the docs lanes as well (vocaro/queuekeeper#122)."""
+        self.both()
         self.commit("README.md", "readme", "readme", start="origin/main")
         both, readme = self.add("both", "readme")
-        self.work()
+        said = []
+        with patch.object(mq.Worker, "say", lambda worker, words: said.append(words)): self.work()
         self.assertEqual([self.state(i)["state"] for i in (both, readme)], ["landed"] * 2)
-        self.assertEqual((self.gates(), self.docs_runs()), (1, 1))
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 2))
         self.assertNotIn("docsOnly", self.state(both))
+        self.assertIn("gatedOn", self.state(both))
         self.assertEqual(self.state(readme)["docsOnly"], ["spelling", "docs"])
+        self.assertTrue(any("the batch changes documents beside code: running docs as well as the gate" in words
+                            for words in said), said)
+
+    def test_an_entry_that_changes_code_and_a_document_its_docs_lane_fails_is_sent_back(self):
+        """vocaro/queuekeeper#122: on 2026-11-12 vocaro/mpm's gate passed a commit that changed tooling and took
+        AGENTS.md, a docsOnly path, past what its docs lane allows, three times, as no gate lane held that check. The
+        docs lanes run ahead of the gate, so such an entry is sent back before the gate starts."""
+        self.docs_status.write_text("1")
+        self.both()
+        [both] = self.add("both")
+        self.work()
+        self.assertEqual(self.state(both)["state"], "failed")
+        self.assertEqual((self.gates(), self.docs_runs()), (0, 1))
+        self.assertNotIn("code", self.main_files())
+
+    def test_the_docs_lanes_a_batch_of_documents_and_code_runs_too(self):
+        lanes = {"gate": {}, "docs": {}, "notes": {}, "both": {"parallel": ["gate", "notes"]}}
+        declared = {"paths": {"doc/": "no code lane reads it"}, "lanes": ["docs"]}
+        config = {"lanes": lanes, "queue": {"docsOnly": declared}}
+        self.assertEqual(mq.lanes_of(config, ["doc/a.md", "src/a.py"]), ["spelling", "docs", "gate"])
+        self.assertEqual(mq.lanes_of(config, ["src/a.py"]), ["spelling", "gate"])
+        # A batch of documents alone takes the docs lanes instead (docs_lanes), never these.
+        self.assertEqual(mq.lanes_of(config, ["doc/a.md"]), ["spelling", "gate"])
+        self.assertEqual(mq.lanes_of(config), ["spelling", "gate"])
+        # A lane the gate runs, itself or as a group's member, runs once; queue.docsOnly false gates as before.
+        self.assertEqual(mq.lanes_of({"lanes": lanes, "queue": {"lanes": ["docs", "gate"], "docsOnly": declared}},
+                                     ["doc/a.md", "src/a.py"]), ["spelling", "docs", "gate"])
+        grouped = {"lanes": lanes, "queue": {"lanes": ["both"], "docsOnly": {**declared, "lanes": ["notes"]}}}
+        self.assertEqual(mq.lanes_of(grouped, ["doc/a.md", "src/a.py"]), ["spelling", "both"])
+        self.assertEqual(mq.lanes_of({"lanes": lanes, "queue": {"docsOnly": False}}, ["doc/a.md", "src/a.py"]),
+                         ["spelling", "gate"])
+        # The defaults: conventional Markdown beside code runs the docs lane, the toolkit's where there is none.
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}, ["README.md", "AGENTS.md"]), ["spelling", "docs", "gate"])
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}, "queue": {"spelling": False}}, ["guides/a.md", "x"]),
+                         ["docs", "gate"])
 
     def test_a_docs_entry_that_changes_a_path_an_older_entry_changes_waits_for_it(self):
         """Order is kept where two entries change a path in common: the docs entry waits for the older code entry,
@@ -3491,7 +3533,8 @@ class DocsOnly(Fixture):
         said = []
         with patch.object(mq.Worker, "say", lambda worker, words: said.append(words)): self.work()
         self.assertEqual([self.state(i)["state"] for i in (code, guide)], ["landed"] * 2)
-        self.assertEqual((self.gates(), self.docs_runs()), (1, 1))
+        # The code entry's gate runs the docs lanes too, for the guide it changes (vocaro/queuekeeper#122).
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 2))
         self.assertEqual(self.landed_order(code, guide), [code, guide])
         self.assertEqual(self.state(guide)["docsOnly"], ["spelling", "docs"])
         self.assertTrue(any("wait for a round of their own on the docs lanes" in words for words in said), said)
@@ -3526,7 +3569,8 @@ class DocsOnly(Fixture):
         [identifier] = self.add("move")
         self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertEqual((self.gates(), self.docs_runs()), (1, 0))
+        # The gate, for the path it left, and the docs lanes beside it, for the path it now has (#122).
+        self.assertEqual((self.gates(), self.docs_runs()), (1, 1))
 
     def test_a_bisects_gates_look_for_docs_entries_to_land_beside_them(self):
         """A bisect's gates stack nothing, but docs entries that arrive during them still land beside them: the old

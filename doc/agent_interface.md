@@ -125,7 +125,9 @@ entry makes the whole entry ride the code gate:
   A project can name its own paths with `queue.docsOnly` on `main`.
 - **Everything else is code to the queue**: source, tests, configuration, agent instructions such
   as `AGENTS.md`, a stylesheet, a script, and an image or diagram a document shows. A README
-  change committed with the screenshot it adds rides the code gate.
+  change committed with the screenshot it adds rides the code gate, and runs the documentation
+  lanes too, ahead of the gate, so that a document the documentation lanes would fail never lands
+  with code.
 - **Queue documentation as its own entry.** When a document change and a code change do not depend
   on each other, commit the document change on a branch of its own, started from `origin/main`,
   and land that branch separately. It lands without waiting for the code, and the code entry is no

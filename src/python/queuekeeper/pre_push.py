@@ -57,12 +57,16 @@ def pushed(root, lines, remote="origin", git=git_state.git):
 
 
 def lanes_for(config, changed):
-    """The lanes a push that changes these paths runs: the docs lanes for a docs-only one, else the gate's."""
+    """The lanes a push that changes these paths runs: the docs lanes for a docs-only one, else the gate's, with the
+    docs lanes first for one that changes documents too, as the queue runs them (merge_queue.docs_also)."""
     from . import merge_queue
     docs = merge_queue.docs_lanes(config, changed)
     if docs: return docs, "it changes only documentation paths"
     queue = config.get("queue", {})
-    return list(queue.get("lanes") or (["gate"] if "gate" in config.get("lanes", {}) else [])), "it changes code paths"
+    named = list(queue.get("lanes") or (["gate"] if "gate" in config.get("lanes", {}) else []))
+    also = merge_queue.docs_also(config, changed, named) if named else []
+    if also: return also + named, "it changes code paths and documentation paths"
+    return named, "it changes code paths"
 
 
 def run(root, lane):

@@ -446,17 +446,36 @@ def spelled(config, name):
     return name in config.get("lanes", {}) or (name == SPELLING and implicit_spelling(config))
 
 
-def lanes_of(config):
+def lanes_of(config, changed=()):
     """The lanes a batch must pass, in order: the project's spelling lane, or the toolkit's when it has
     none (implicit_spelling), and its provision lane when it has one, the cheap checks and setup that a
-    gate assumes, and then `queue.lanes` or its gate lane."""
+    gate assumes, then the docs lanes of a batch whose changed paths hold documents beside code (docs_also),
+    and then `queue.lanes` or its gate lane."""
     lanes = config.get("lanes", {})
     named = config.get("queue", {}).get("lanes") or (["gate"] if "gate" in lanes else None)
     if not named:
         raise ValueError(f"{config.get('name')} has no gate lane, so the queue has nothing to run: name the lane "
                          "holding what a commit must pass before it lands gate (guides/maintenance.md, "
                          "The merge queue)")
-    return [name for name in BEFORE_GATE if spelled(config, name) and name not in named] + named
+    first = [name for name in BEFORE_GATE if spelled(config, name) and name not in named]
+    return first + [lane for lane in docs_also(config, changed, named) if lane not in first] + named
+
+
+def docs_also(config, changed, named):
+    """The docs lanes that a batch changing both documents and code runs as well as named, its gate lanes: those
+    docs_lanes gives for its docs paths, when it changes some and other paths too, less a lane named holds, itself
+    or as a group's member, and less the spelling lane where there is one, which lanes_of runs anyway. A gate need
+    not check what the docs lanes check, and on 2026-11-12 vocaro/mpm's gate ran three times on a commit that took
+    its AGENTS.md past the 32 KiB its docs lane allows, and never said so (vocaro/queuekeeper#122). Empty for a
+    batch of documents alone, which docs_lanes takes, or of code alone."""
+    changed = sorted(changed)
+    docs = [path for path in changed if docs_lanes(config, [path])]
+    if not docs or len(docs) == len(changed): return []
+    lanes = config.get("lanes", {})
+    held = set(named) | {member for name in named if isinstance(lanes.get(name), dict)
+                         for member in lanes[name].get("parallel", ())}
+    if spelled(config, SPELLING): held.add(SPELLING)
+    return [lane for lane in docs_lanes(config, docs) or [] if lane not in held]
 
 
 def config_source(root, commit):
@@ -3867,27 +3886,33 @@ class Worker:
                  + (" at the front of the queue, as qk land --front asked" if applied[0].get("front") else ""))
         ungated = self.ungated(applied, config)
         # Without renames, so that a file moved into a docs path also names the path it left.
-        docs = None if ungated else docs_lanes(config, [path for path in text(
-            self.checkout, "diff", "--name-only", "--no-renames", base, head).splitlines() if path])
+        changed = [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base, head).splitlines()
+                   if path]
+        docs = None if ungated else docs_lanes(config, changed)
         if docs: self.say(f"every path the batch changes is in main's queue.docsOnly: running only {', '.join(docs)}, "
                           "which is no gate of the pushed commit")
         round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}"
-        beside = self.beside(waiting, batch, base, config, docs, ungated)
+        beside = self.beside(waiting, batch, base, config, docs, ungated, changed)
+        # A batch that changes documents and code runs main's docs lanes too, both halves of a bisect alike (#122).
+        lanes = beside.lanes if beside else None if docs or ungated else lanes_of(config, changed)
+        also = [lane for lane in lanes if lane not in lanes_of(config)] if lanes else []
+        if also:
+            self.say(f"the batch changes documents beside code: running {', '.join(also)} as well as the gate, for "
+                     "what only the docs lanes check")
         self.role = "older half" if beside else "batch"
         self.begun(round_name, head, base, applied, beside)
         # A bisect's gates, and the gate of an entry qk land --front put on its own, stack nothing, but docs entries
         # still land beside them (docs_beside, #394).
         if beside:
-            result, log = self.watched(self, config, lanes_of(config), base, head, [*applied, *beside.newer],
-                                       lambda: beside.both(self, lanes_of(config), round_name), stacks=False)
+            result, log = self.watched(self, config, lanes, base, head, [*applied, *beside.newer],
+                                       lambda: beside.both(self, lanes, round_name), stacks=False)
         elif (self.limit or self.alone) and not (docs or ungated):
-            result, log = self.watched(self, config, lanes_of(config), base, head, applied,
-                                       lambda: self.gate(lanes_of(config), round_name), stacks=False)
+            result, log = self.watched(self, config, lanes, base, head, applied,
+                                       lambda: self.gate(lanes, round_name), stacks=False)
         elif self.alone or docs or ungated:
-            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes_of(config), round_name,
+            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes, round_name,
                                     quick=bool(docs))
         else:
-            lanes = lanes_of(config)
             self.lane_now = None
             result, log = self.watched(self, config, lanes, base, head, applied,
                                        lambda: self.gate(lanes, round_name))
@@ -4175,7 +4200,7 @@ class Worker:
         base = text(self.queue.main_checkout, "rev-parse", MAIN)
         try:
             config = config_at(self.queue.main_checkout, base)
-            lanes = lanes_of(config)
+            lanes = lanes_of(config, stacked.paths)
         except ValueError as error:
             stacked.drop(f"main's configuration at {base[:12]} cannot be read: {error}")
             return True
@@ -4260,6 +4285,9 @@ class Worker:
         if not fresh: return
         mac = self.admitted_mac(runner, lanes[-1])
         if mac is None: return
+        # The stacked entries' own lanes: main's docs lanes too when they change documents and code (#122).
+        paths = set().union(*(self.own_paths(entry) for entry in fresh))
+        lanes = lanes_of(config, paths)
         excluded = None
         hosts = remote.gate_hosts()
         # A foreground lane uses the designated foreground Mac, outside pooled placement.
@@ -4280,7 +4308,7 @@ class Worker:
         other = Beside(self, self.queue.checkout if runner.checkout != self.queue.checkout else None, "stacked",
                        settles=False)
         if excluded is not None: other.environment = {**other.environment, remote.QUEUE_GATE_EXCLUDE: excluded}
-        stacked = Stack(self, other, fresh, head, lanes, where, below=applied)
+        stacked = Stack(self, other, fresh, head, lanes, where, below=applied, paths=paths)
         if not stop.is_set() and stacked.begin(): self.pending = stacked
 
     def admitted_mac(self, runner, final_lane):
@@ -4318,16 +4346,19 @@ class Worker:
             setattr(self, name, None)
             if stacked is not None: stacked.drop(why)
 
-    def beside(self, waiting, batch, base, config, docs, ungated):
+    def beside(self, waiting, batch, base, config, docs, ungated, changed=()):
         """The Beside that gates a bisect's newer half while batch, its older half, gates here, or None to gate batch
         alone, as before: no bisect is going on, batch is an entry an option put on its own, a docs-only or ungated
         round, a newer entry an option of qk land marked, a lane that runs only here (offerable), or a newer entry
-        that does not apply to origin/main without the older half, which waits for it (vocaro-engineering#241)."""
+        that does not apply to origin/main without the older half, which waits for it (vocaro-engineering#241). Its
+        lanes, which both halves run, are lanes_of the paths of both, changed the older half's, so that a docs path in
+        either runs the docs lanes in each (docs_also, vocaro/queuekeeper#122)."""
         if self.alone or docs or ungated or not self.limit or self.suspects <= len(batch): return None
         rest = waiting[len(batch):self.suspects]
         if not rest or any(entry.get("front") or entry.get("noGate") or entry["state"] == PASSED for entry in rest):
             return None
-        why = offerable(config, lanes_of(config))
+        lanes = lanes_of(config, set(changed).union(*(self.own_paths(entry) for entry in rest)))
+        why = offerable(config, lanes)
         if why:
             self.say(f"the newer {len(rest)} of the bisect wait for the older half, since {why}")
             return None
@@ -4339,7 +4370,7 @@ class Worker:
                      f"{', '.join(entry['id'] for entry in other.unreachable)} does not apply to origin/main without it")
             return None
         if not newer: return None
-        other.newer, other.tip = newer, other.head()
+        other.newer, other.tip, other.lanes = newer, other.head(), lanes
         self.queue.mark(newer, TESTING)
         self.say(f"testing the newer {len(newer)} entr{'y' if len(newer) == 1 else 'ies'} of the bisect at "
                  f"{other.tip[:12]} on {base[:12]} beside them, on the second Mac if it can start them now")
@@ -4621,6 +4652,7 @@ class Beside(Worker):
         self.unreachable = []  # the newer entries that apply to origin/main only after the older half (left_out)
         self.kept_for = []  # the entries whose changelog resolutions it recorded (noted)
         self.newer, self.tip = [], None  # the newer half on top of origin/main, and its commit (Worker.beside)
+        self.lanes = None  # the lanes both halves run (Worker.beside)
         self.result = None  # (status, log) of its lanes (both)
         self.ran_where, self.round_name = "", None  # where its lanes ran (gate), and its round's name (both)
         self.outcome = None  # LANDED, FAILED, BISECT, PASSED (passed, gating again) or QUEUED (weigh)
@@ -4757,8 +4789,9 @@ class Stack:
     Mac (where), in a thread of their own (owner's decision of 2026-11-07, vocaro-engineering#241). The batch's push
     makes head origin/main, and then the next round adopts the stacked gate as its own (Worker.adopted); any other
     outcome throws it away (drop), canceling its lanes, with its entries queued again. It settles nothing itself."""
-    def __init__(self, worker, runner, entries, base, lanes, where, below=()):
+    def __init__(self, worker, runner, entries, base, lanes, where, below=(), paths=()):
         self.worker, self.runner, self.entries, self.base, self.lanes = worker, runner, entries, base, lanes
+        self.paths = set(paths)  # what entries change, by which lanes_of chose lanes and adopted checks them
         self.where, self.tip, self.name = where, None, None
         self.below = list(below)  # the batch whose tip base is, which a conflict names (Worker.conflict)
         self.cancel, self.box, self.thread = threading.Event(), {}, None

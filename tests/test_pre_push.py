@@ -71,17 +71,22 @@ class PrePushTests(unittest.TestCase):
         self.ran.clear()
         self.assertEqual(self.push([self.line(docs, code)])[0], 0)
         self.assertEqual(self.ran, ["docs"])
-        # A new branch is compared with the remote's main, so the code commit below it counts.
+        # A new branch is compared with the remote's main, so the code commit below it counts, and the push runs the
+        # docs lane as well as the gate, for the document it changes beside code (vocaro/queuekeeper#122).
         self.ran.clear()
-        self.push([self.line(docs)])
-        self.assertEqual(self.ran, ["gate"])
+        status, said = self.push([self.line(docs)])
+        self.assertEqual(self.ran, ["docs", "gate"])
+        self.assertIn("running docs, gate: it changes code paths and documentation paths (2 path(s))", said)
 
     def test_the_project_s_own_docs_paths_and_queue_lanes_choose(self):
         config = {**CONFIG, "lanes": {**CONFIG["lanes"], "fast": {"command": ["x"]}, "notes": {"command": ["y"]}},
                   "queue": {"spelling": False, "lanes": ["fast", "gate"],
                             "docsOnly": {"paths": {"notes/": "prose"}, "lanes": ["notes"]}}}
         self.assertEqual(pre_push.lanes_for(config, ["notes/a.txt"])[0], ["notes"])
-        self.assertEqual(pre_push.lanes_for(config, ["notes/a.txt", "README.md"])[0], ["fast", "gate"])
+        # A push of documents and code runs the docs lanes too, first, as the queue does (vocaro/queuekeeper#122).
+        self.assertEqual(pre_push.lanes_for(config, ["notes/a.txt", "README.md"]),
+                         (["notes", "fast", "gate"], "it changes code paths and documentation paths"))
+        self.assertEqual(pre_push.lanes_for(config, ["src/a.py", "README.md"])[0], ["fast", "gate"])
         self.assertEqual(pre_push.lanes_for(config, ["README.md"])[0], merge_queue.docs_lanes(config, ["README.md"]) or ["fast", "gate"])
 
     def test_a_lane_that_fails_or_is_unmeasured_refuses_the_push_and_later_lanes_do_not_run(self):

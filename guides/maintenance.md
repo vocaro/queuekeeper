@@ -680,7 +680,8 @@ exec python3 scripts/qk pre-push "$@"
 
 `qk pre-push` reads what Git gives a hook and finds the paths the push changes. A push that changes
 only the paths of `queue.docsOnly`, or only conventional Markdown in a project without it, runs the
-docs lanes. Any other push runs `queue.lanes`, or `gate`. So the hook holds no second copy of what
+docs lanes. Any other push runs `queue.lanes`, or `gate`, after those docs lanes when it changes
+such a path beside others. So the hook holds no second copy of what
 the configuration says. The lanes run with `qk run` in the checkout being pushed from, and are
 admitted and placed as always.
 
@@ -825,6 +826,20 @@ admission, since queuekeeper cannot know its cost. Either way the lanes leave th
 Code, configuration, agent instructions, non-Markdown data, and documents under source or test
 folders retain the code gate. A batch that changes nothing runs every code lane, and so does an
 entry whose own commits change a document and code.
+
+**A batch of documents and code runs the docs lanes too** (vocaro/queuekeeper#122). When the paths
+a batch changes include a docs-only path, by `main`'s settings as above, beside any other, the
+worker runs the docs lanes that a docs-only batch would run for those documents as well as the
+gate: after spelling and provision, ahead of `queue.lanes` or `gate`, so that a cheap failure
+sends the batch back before the gate starts. A docs lane that `queue.lanes` already names, itself
+or as a member of a group, runs once. Both halves of a bisect run the docs lanes when either
+changes a document, and a gate stacked on a batch chooses its own lanes by its own entries' paths.
+`qk pre-push` does the same, with the docs lanes first. A project need not copy its docs checks
+into its gate. On 2026-11-12 a vocaro/mpm commit that changed tooling and `AGENTS.md`, one of its
+`queue.docsOnly` paths, took that file past the 32 KiB its docs lane allows. Its gate ran three
+times, never held that check, and the commit landed; the next docs-only batch would have failed
+on a file it did not change. `queue.docsOnly: false` turns this off with the rest of docs-only
+handling.
 
 **A docs-only entry never rides a code gate** (owner's rule of 2026-11-11,
 vocaro-engineering#394). The worker classifies each waiting entry by the paths its own commits
