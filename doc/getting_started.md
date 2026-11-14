@@ -47,12 +47,18 @@ one lane, `gate`, which is the command every change must pass:
 
 ```json
 {
+  "schemaVersion": 1,
+  "name": "my-project",
+  "extensions": [],
   "lanes": {
     "gate": {"command": ["scripts/test.sh"], "timeout": 1800}
   }
 }
 ```
 
+- `schemaVersion` must be `1`, and `name` is your project's nonempty name.
+- `extensions: []` starts with the core alone. Without `extensions`, the Apple plugin is loaded
+  by default; add the [plugins](../README.md#plugins) the project needs explicitly.
 - `command` is an argument list, not a shell string.
 - `timeout` is in seconds. A lane that reaches it ends as unmeasured, not failed.
 - The queue reads its settings from `main`, so a branch cannot loosen its own gate. Only the commit

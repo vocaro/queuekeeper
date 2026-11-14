@@ -45,11 +45,17 @@ needs one lane named `gate`, which is the command every change must pass:
 
 ```json
 {
+  "schemaVersion": 1,
+  "name": "my-project",
+  "extensions": [],
   "lanes": {
     "gate": {"command": ["scripts/test.sh"], "timeout": 1800}
   }
 }
 ```
+
+Use your project's name for `name`. The empty `extensions` list starts with the core alone; add
+a [plugin](#plugins) when the project needs one.
 
 **2. Check the setup.** `qk doctor` reports anything missing, such as a lane with no timeout.
 

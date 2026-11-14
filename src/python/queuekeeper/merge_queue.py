@@ -52,7 +52,7 @@ import urllib.request
 
 from . import budgets, disk, extensions, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
-from . import events, pre_push
+from . import events, pre_push, recovery
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
     TOOLKIT_ROOT, admission, implicit_command, lane_to_run, load, parse, stays, toolkit_command, unlocked_screen
 
@@ -1465,6 +1465,7 @@ class Queue:
 
     def hold(self, why):
         self.hold_file.write_text(why + "\n")
+        recovery.write_hold(self.hold_file, why)
         print(f"queue: held: {why}", flush=True)
         self.emit("queue.held", why=why, **{"for": OWNER if why.startswith("for the owner") else SESSION})
 
@@ -1558,6 +1559,15 @@ def repository(root, named):
 
 
 def land(root, args, directory=None):
+    if getattr(args, "json", False):
+        from . import agent_cli
+        details = {"root": root}
+        return agent_cli.execute(root, "land", lambda: _land(root, args, directory, details),
+                                 reference=args.reference or "HEAD", details=details)
+    return _land(root, args, directory)
+
+
+def _land(root, args, directory=None, details=None):
     """`qk land`: add to this repository's queue or, with --repo, another's, whose own queue, lanes and
     worker take it exactly as they take that repository's own sessions' commits. With another
     repository's main checkout HEAD would be whatever it has checked out, so the commit is named.
@@ -1566,6 +1576,7 @@ def land(root, args, directory=None):
     here would queue that project's HEAD, or report it landed (vocaro-engineering#210)."""
     elsewhere = None if args.repo or directory is None else other_repository(root, directory)
     if elsewhere is not None:
+        if details is not None: details["refused"] = "current directory belongs to another repository"
         print(f"queuekeeper: this queuekeeper lands {root}, but the current directory is in {elsewhere}: run that "
               "checkout's own scripts/qk land, or name the commit with --repo", file=sys.stderr)
         return 1
@@ -1575,6 +1586,7 @@ def land(root, args, directory=None):
         if args.reference is None:
             raise ValueError(f"--repo lands a commit you name: `qk land --repo {args.repo} BRANCH`, since HEAD "
                              "there is another session's")
+    if details is not None: details["root"] = target
     deadline = time.monotonic() + args.limit
     while True:
         try:
@@ -1583,6 +1595,7 @@ def land(root, args, directory=None):
                              why=getattr(args, "why", None))
             break
         except Refused as error:
+            if details is not None: details.update(refused=str(error), waitsFor=list(error.waits_for))
             print(f"queuekeeper: {error}", file=sys.stderr)
             if not args.wait or not error.waits_for: return 1
             # Refused for entries ahead alone: wait for them, then check again against the whole queue, which may
@@ -1591,6 +1604,10 @@ def land(root, args, directory=None):
                   "queue", file=sys.stderr, flush=True)
             waited = wait_for(target, error.waits_for, max(0.0, deadline - time.monotonic()))
             if waited == resources.BUSY: return waited
+    if details is not None:
+        details["id"] = identifier
+        details.pop("refused", None)
+        details.pop("waitsFor", None)
     left = max(0.0, deadline - time.monotonic())
     status_ = wait(target, identifier, left) if args.wait and identifier is not None else 0
     warn(target)
@@ -1930,7 +1947,10 @@ def reading(root, recent=5):
     # Idle is no live worker and nothing queued, testing or passed (vocaro/queuekeeper#21). A worker between rounds
     # with nothing waiting is not idle: what ends it ends whatever it starts next. A held queue with entries waiting is
     # not idle either. The worker's lock is a flock, so a dead worker's lock file holds nothing and counts as none.
-    return {"worker": working, "held": why, "round": current, "waiting": waiting, "recent": done,
+    return {"schemaVersion": 1, "worker": working, "held": why,
+            "recovery": recovery.in_project(
+                recovery.for_queue(recovery.read_hold(queue.hold_file, why), working=working, waiting=waiting), root),
+            "round": current, "waiting": waiting, "recent": done,
             "ungated": [entry["id"] for entry in ungated], "idle": not working and not waiting}, ungated
 
 
@@ -3123,6 +3143,17 @@ class Worker:
     def gate_ended(self, lane, round_name, status_, log, seconds=None):
         """Tell the journal how a lane of a gate ended: its exit status, or WITHDRAWN for one stopped as its entries
         left the queue, and the Mac it ran on, where a record says."""
+        # Keep every exact gate log on each entry, including successful, custom and documentation lanes.
+        # The live round stops naming it when the lane ends; a terminal session or cursor may resume later.
+        with contextlib.suppress(OSError), self.queue.locked():
+            for identifier in self.gating:
+                entry = self.queue.read(identifier)
+                if entry is None: continue
+                reference = {"lane": lane, "path": str(log), "mac": self.ran_where.removeprefix(" on ") or None,
+                             "status": status_}
+                logs = [item for item in entry.get("logs", []) if item.get("path") != str(log)]
+                entry["logs"] = [*logs, reference]
+                self.queue.save(entry)
         self.queue.emit("gate.ended", lane=lane, round=round_name, role=self.role, status=status_, log=str(log),
                         mac=self.ran_where.removeprefix(" on ") or None,
                         seconds=None if seconds is None else round(seconds))
@@ -5336,6 +5367,7 @@ def land_arguments(parser):
                         "again")
     parser.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
     parser.add_argument("--note", help="what the entry is, for `qk queue status`")
+    parser.add_argument("--json", action="store_true", help="write one versioned JSON result; progress goes to standard error")
     options(parser)
 
 
@@ -5359,6 +5391,7 @@ def add_arguments(parser):
     adding = operations.add_parser("add", help="queue the commits a ref has and origin/main lacks, and return at once")
     adding.add_argument("reference", nargs="?", default="HEAD")
     adding.add_argument("--note", help="what the entry is, for `qk queue status`")
+    adding.add_argument("--json", action="store_true", help="write one versioned JSON submission result")
     options(adding)
     state = operations.add_parser("status", help="say what is waiting, what is running, what came back and, when the "
                                   "queue is held, why and for whom")
@@ -5378,6 +5411,17 @@ def add_arguments(parser):
                                        "or one did, 75 held or still waiting at the limit")
     following.add_argument("id", nargs="+")
     following.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
+    following.add_argument("--json", action="store_true", help="write one versioned JSON result; progress goes to standard error")
+    logs = operations.add_parser("logs", help="read a bounded portion of an entry's exact log with a continuation cursor")
+    logs.add_argument("id", help="entry whose exact recorded logs are read, including settled entries")
+    logs.add_argument("--json", action="store_true", help="one JSON chunk with content, artifact and nextCursor")
+    logs.add_argument("--offset", type=int, default=0, help="starting byte offset (default: 0); use nextOffset to continue")
+    logs.add_argument("--limit", type=int, default=16384, help="maximum bytes per read, 4..1048576 (default: 16384)")
+    logs.add_argument("--artifact", help="recorded log kind or full path; full path resolves ambiguous kinds")
+    logs.add_argument("--cursor", help="nextCursor from the previous read; detects replaced or truncated logs")
+    result = operations.add_parser("result", help="read one entry and its durable result without starting a worker")
+    result.add_argument("id", help="entry to look up directly, including old settled entries")
+    result.add_argument("--json", action="store_true", help="one versioned result; exit 0 means lookup succeeded, not gate passed")
     told = operations.add_parser("events", help="print the queue's journal, one line for each change of its state: "
                                  "entries queued, testing, landed and sent back, rounds, gates, flaky tests and holds")
     told.add_argument("--json", action="store_true", help="each event as the journal holds it, one JSON object a line")
@@ -5398,6 +5442,24 @@ def add_arguments(parser):
 
 
 def main(root, args):
+    if args.operation == "logs":
+        from . import agent_logs
+        return agent_logs.main(root, args)
+    if args.operation == "result":
+        from . import agent_results
+        return agent_results.result(root, args.id, args.json)
+    if args.operation in {"add", "wait"} and getattr(args, "json", False):
+        from . import agent_cli
+        if args.operation == "add":
+            details = {"root": root}
+            def submit():
+                details["id"] = add(root, args.reference, args.note, quiet_wait=True,
+                                    front=args.front, no_gate=args.no_gate, why=args.why)
+                return 0
+            return agent_cli.execute(root, "queue.add", submit, reference=args.reference, details=details)
+        return agent_cli.execute(root, "queue.wait",
+                                 lambda: wait(root, args.id[0], args.limit) if len(args.id) == 1
+                                 else wait_for(root, args.id, args.limit), identifiers=args.id)
     if args.operation == "add":
         try: add(root, args.reference, args.note, front=args.front, no_gate=args.no_gate, why=args.why)
         except Refused as error:
