@@ -30,7 +30,8 @@ statement of what it needs from the machine:
   selects nothing fails. Counts are read from unittest, pytest, XCTest and Swift Testing output.
 - **Groups.** A lane group runs its members side by side under one admission.
 - **Budgets.** `budgetMinutes` warns when the median of the gate's own work, from its admission to its
-  end, drifts past the target, and names the slowest parts and the median wait for admission beside it.
+  end, drifts past the target, and names the slowest parts, the median wait for admission and the median
+  landing latency beside it.
 
 ## Admission
 

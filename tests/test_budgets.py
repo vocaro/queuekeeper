@@ -173,6 +173,16 @@ class GateBudget(unittest.TestCase):
                                           [landed(1, 1200, wait=600), landed(2, 1260, wait=300), landed(3, 1140, wait=900)])
         self.assertIn("is 20.0 min, over its budget of 15 min (gate.budgetMinutes); their median wait for admission "
                       "before it, which the budget leaves out, was 10.0 min", warning)
+        # The landing latency, the wall time as the queue saw it, is given apart: medians of 1800, 1560 and 2040 s.
+        self.assertIn("and their median landing latency, the gate's time as the queue saw it with that wait, was "
+                      "30.0 min", warning)
+        # The latency's median is its own, not the sum of the other two: latencies of 1200, 1900 and 2900 s give
+        # 1900 s, where the medians of work (1200 s) and wait (600 s) sum to 1800 s.
+        [warning] = budgets.gate_warnings(self.config(budgetMinutes=15),
+                                          [landed(1, 1200, wait=0), landed(2, 1300, wait=600), landed(3, 1100, wait=1800)])
+        self.assertIn("is 20.0 min,", warning)
+        self.assertIn("was 10.0 min, and their median landing latency", warning)
+        self.assertIn("with that wait, was 31.7 min", warning)
 
     def test_a_run_recorded_without_its_own_work_is_left_out_of_the_median(self):
         """A record made before 2026-11-13, or whose admission was unseen, holds only a wall time with its wait in it."""
@@ -208,8 +218,9 @@ class GateBudget(unittest.TestCase):
         self.assertEqual(budgets.timed(100, None, 1000.0), {"seconds": 100})
         self.assertIsNone(budgets.own(budgets.timed(100, None, 1000.0)))
         self.assertEqual(budgets.time_words({"seconds": 600, "workSeconds": 240, "waitSeconds": 360}),
-                         "10.0 min: 4.0 min of its own work after 6.0 min waiting for admission")
-        self.assertIn("its admission unseen, so the gate's budget median leaves it out", budgets.time_words({"seconds": 600}))
+                         "10.0 min of landing latency: 4.0 min of its own work after 6.0 min waiting for admission")
+        self.assertEqual(budgets.time_words({"seconds": 600}), "10.0 min of landing latency, its admission unseen, so "
+                         "the gate's budget median leaves it out")
 
     def test_the_median_reads_only_the_recent_runs(self):
         old = [landed(n, 9000) for n in range(10)]

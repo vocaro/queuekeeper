@@ -2,8 +2,8 @@
 vocaro-engineering#135), which a landing prints after its result and `doctor` gives:
 
 - the gate's median own time, from its admission to its end, over its recent passing runs in the merge queue made on
-  an unloaded host exceeds the gate lane's budgetMinutes, naming its median wait for admission beside it, its slowest
-  parts and how many loaded runs it left out;
+  an unloaded host exceeds the gate lane's budgetMinutes, naming its median wait for admission and median landing
+  latency beside it, its slowest parts and how many loaded runs it left out;
 - and, from doctor alone, a direct-main gate with no budget, a gate that takes a physical device (not one whose
   --device options only name simulator types for `qk simulator-tests` or `qk simulator-pool`, vocaro/queuekeeper#113),
   and a device pass's lane that would go to the second Mac.
@@ -12,7 +12,8 @@ A project's own tooling adds what else a landing warns of, such as a release gat
 (extensions.LANDING_WARNINGS).
 
 The queue's worker records each landed entry's gate run (Worker.gate): its wall time as the queue saw
-it, wherever the lane ran, any wait for admission included (seconds), and apart from it, since 2026-11-13, the lane's
+it, wherever the lane ran, any wait for admission included (seconds, the landing latency, which the warning reports
+apart from the budget), and apart from it, since 2026-11-13, the lane's
 own work from its admission to its end (workSeconds) and the wait for admission before it (waitSeconds,
 merge_queue.Admission, vocaro/queuekeeper#112); the parts its log reports with their times; and the CPU busy share of
 the Mac it ran on over its own work, beside the busy limit that Mac sets (cpuBusy and busyLimit,
@@ -113,8 +114,9 @@ def time_words(run):
     """The worker log's words for a gate run's time (Worker.gate): its wall time, and its own work and its wait for
     admission apart where the record has them."""
     if own(run) is None:
-        return (f"{minutes(run['seconds'])}, its admission unseen, so the gate's budget median leaves it out")
-    return (f"{minutes(run['seconds'])}: {minutes(run['workSeconds'])} of its own work after "
+        return (f"{minutes(run['seconds'])} of landing latency, its admission unseen, so the gate's budget median "
+                f"leaves it out")
+    return (f"{minutes(run['seconds'])} of landing latency: {minutes(run['workSeconds'])} of its own work after "
             f"{minutes(run.get('waitSeconds', 0.0))} waiting for admission")
 
 
@@ -141,7 +143,8 @@ def busy_words(busy):
 
 def gate_warnings(config, entries):
     """A warning when the median own work (own) of the gate's RECENT_RUNS latest passing runs made on an unloaded host
-    (loaded) exceeds its budget, giving their median wait for admission beside it and saying how many loaded runs newer
+    (loaded) exceeds its budget, giving their median wait for admission beside it, and their median landing latency,
+    the wall time as the queue saw it, which the budget does not judge, and saying how many loaded runs newer
     than the oldest of them it left out. A run recorded without its own work is no run here (vocaro/queuekeeper#112).
     None without a budget, or with fewer than FEWEST_RUNS such runs to judge it by. The warning sends the reader to the
     project's open budget proposal, to add to it rather than open another (vocaro/queuekeeper#96)."""
@@ -159,6 +162,9 @@ def gate_warnings(config, entries):
     waits = [run["waitSeconds"] for run in recent if number(run.get("waitSeconds"))]
     waited = (f"; their median wait for admission before it, which the budget leaves out, was "
               f"{minutes(statistics.median(waits))}") if waits else ""
+    walls = [run["seconds"] for run in recent if number(run.get("seconds"))]
+    if walls: waited += (f", and their median landing latency, the gate's time as the queue saw it with that wait, "
+                         f"was {minutes(statistics.median(walls))}")
     slowest = next((run["parts"] for run in recent if run.get("parts")), [])[:NAMED_PARTS]
     named = (f"; its slowest parts in its latest run that reports them: "
              + ", ".join(f"{name} {seconds:g}s" for name, seconds in slowest)) if slowest \

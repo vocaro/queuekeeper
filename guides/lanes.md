@@ -166,8 +166,10 @@ busy Mac, not one that waited while the Mac was busy.
 
 When the median own work of the last 10 passing runs made on an unloaded host, with at least 3 to judge
 by, exceeds the budget, `qk land` warns after its result and `qk doctor` warns, naming the
-slowest parts ([#135](https://github.com/vocaro/vocaro-engineering/issues/135)) and the median wait for admission of those runs
-beside it. A run whose busy share was at or above its Mac's limit
+slowest parts ([#135](https://github.com/vocaro/vocaro-engineering/issues/135)) and, beside it, the median wait for admission of those
+runs and their median landing latency: the wall time as the queue saw it, wait included, which the
+budget does not judge. A project sees which of the two is over: its own work, which moving a check
+out of the gate shortens, or the wait, which it does not. A run whose busy share was at or above its Mac's limit
 is left out of that median, and the warning says how many it left out
 ([#235](https://github.com/vocaro/vocaro-engineering/issues/235)). A run with no reading counts.
 A whole-host gate's run is never left out for its busy share, and its record says `wholeHost`:
