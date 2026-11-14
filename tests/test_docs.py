@@ -1,5 +1,6 @@
-"""The Markdown link and anchor check."""
+"""The Markdown link and anchor check, and the check of citations by path and section title."""
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -46,12 +47,11 @@ class DocumentationTests(unittest.TestCase):
             (root / "target.md").write_text(target.replace("Setext title", "Setext heading"))
             (root / "README.md").write_text(links + "[j](target.md#repeated-2) [k](target.md#not-a-heading)\n"
                                             "[l](target.md#a-list-item) [m](#nowhere)\n")
+            missing = f"{root / 'README.md'}: missing anchor: "
             self.assertEqual(docs.check(root, ["README.md"]), [
-                f"{root / 'README.md'}: missing anchor: target.md#setext-title",
-                f"{root / 'README.md'}: missing anchor: target.md#repeated-2",
-                f"{root / 'README.md'}: missing anchor: target.md#not-a-heading",
-                f"{root / 'README.md'}: missing anchor: target.md#a-list-item",
-                f"{root / 'README.md'}: missing anchor: #nowhere"])
+                missing + "target" + ".md#setext-title", missing + "target" + ".md#repeated-2",
+                missing + "target" + ".md#not-a-heading", missing + "target" + ".md#a-list-item",
+                missing + "#nowhere"])
 
     def test_a_path_line_link_must_name_a_line_of_an_existing_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -81,6 +81,60 @@ class DocumentationTests(unittest.TestCase):
                                   ("Ünïcode café", "ünïcode-café"), ("**Bold** *it*", "bold-it")]:
             with self.subTest(heading):
                 self.assertEqual(docs.slug(docs.heading_text(heading)), expected)
+
+
+# The citations below name documents that exist only in each test's temporary checkout, so this file spells
+# their suffix through MD, which the citation check of this checkout does not read.
+MD = ".md"
+
+
+class CitationTests(unittest.TestCase):
+    """Citations of a guide by path and section title, or by path and anchor (vocaro/queuekeeper#114)."""
+    GUIDE = ("# Host\n\n## Heavy-work admission\n\nText.\n\n**Landing ahead of the queue.** Text.\n\n"
+             "- **A `qk` lead-in**: text\n\n## The second Mac\n\n```sh\n# Not a heading\n```\n")
+
+    def checkout(self, directory, code):
+        root = Path(directory).resolve()
+        (root / "guides").mkdir()
+        (root / "src").mkdir()
+        (root / f"guides/host{MD}").write_text(self.GUIDE)
+        (root / f"guides/lanes{MD}").write_text("# Lanes\n\nSee host" + MD + ", The second Mac.\n")
+        (root / "src/tool.py").write_text(code)
+        # The whole check reads the files git tracks.
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        return root
+
+    def test_a_citation_must_name_a_heading_or_bold_lead_in_of_an_existing_document(self):
+        code = (f'"""Admits heavy work (guides/host{MD}, Heavy-work admission; guides/host{MD}, Landing\n'
+                f'ahead of the queue)."""\n'
+                f"# Wraps in a comment (guides/host{MD},\n# The second Mac), and in strings:\n"
+                f'HINT = ("run it alone (guides/host{MD}, The "\n        f"second Mac); as guides/host{MD}#the-second-mac says")\n'
+                f'LEAD = "guides/host{MD}, A qk lead-in"\n'
+                f"# Lists and prose: guides/host{MD}, guides/lanes{MD}, and the rest; guides/host{MD}, which says so.\n"
+                f"# Another repository's: the toolkit's guides/releasing{MD}, Keeping the split.\n"
+                f"# A Markdown link's target is the link check's: [x](absent{MD}#nowhere)\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.checkout(directory, code)
+            self.assertEqual(docs.check(root), [])
+            (root / "src/tool.py").write_text(
+                code + f"# (guides/host{MD}, Setting up a build host), (guides/host{MD}, Heavy work)\n"
+                f"# (guides/gone{MD}, Heavy-work admission), guides/host{MD}#heavy-work, (guides/host{MD}, Not a heading)\n")
+            (root / f"guides/lanes{MD}").write_text("# Lanes\n\nSee host" + MD + ", The first Mac.\n")
+            tool, lanes = root / "src/tool.py", root / f"guides/lanes{MD}"
+            self.assertEqual(docs.check(root), [
+                f"{lanes}:3: cites no heading or bold lead-in of host{MD}: The first Mac.",
+                f"{tool}:11: cites no heading or bold lead-in of guides/host{MD}: Setting up a build host",
+                f"{tool}:11: cites no heading or bold lead-in of guides/host{MD}: Heavy work",
+                f"{tool}:12: cites a missing document: guides/gone{MD}",
+                f"{tool}:12: cites a missing anchor: guides/host{MD}#heavy-work",
+                f"{tool}:12: cites no heading or bold lead-in of guides/host{MD}: Not a heading"])
+
+    def test_named_files_are_the_only_ones_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.checkout(directory, f"# (guides/host{MD}, Heavy work)\n")
+            self.assertEqual(docs.check(root, [f"guides/lanes{MD}"]), [])
+            self.assertEqual(len(docs.check(root, ["src/tool.py"])), 1)
 
 
 if __name__ == "__main__":

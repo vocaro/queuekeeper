@@ -2291,7 +2291,7 @@ starts, the release that had passed or, for an early one, what the owner's censu
 `Shutdown` it saw; it logs a `releasing` line, with the same `qualified`,
 before it writes the record, then `released`, in `simulator-reaps.jsonl`, so a log that cannot be written
 releases nothing. A released reservation that `qk simulator-pool take` made also gets a `reap` line in
-`simulator-holds.jsonl` (simulator-testing.md, Reserved simulator pool), which, unlike these, never holds
+`simulator-holds.jsonl` (simulator-pool.md, Reserved simulator pool), which, unlike these, never holds
 the release up. Each release is printed (`released KEY (UDID), held for owner …`); `--dry-run` says
 `would release` and changes nothing.
 

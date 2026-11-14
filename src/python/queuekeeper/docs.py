@@ -18,6 +18,19 @@ CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 HTML_ANCHOR = re.compile(r"<[A-Za-z][^>]*?\s(?:id|name)\s*=\s*([\"'])(.*?)\1")
 # A link to a source line, PATH:LINE, as in [kernel](../Shaders/Grid.hlsl:180).
 LINE_LINK = re.compile(r"(.+):(\d+)")
+# A paragraph's bold lead-in, which a citation may name as it names a heading.
+BOLD_LEAD = re.compile(r" {0,3}(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+)?\*\*(.+?)\*\*")
+VENDORED = {"licenses", "ThirdParty", "Vendor"}
+# A citation of a document by its path, from the checkout's root or the citing file's folder, and a
+# section title or an anchor: guides/shared-host.md, Heavy-work admission or guides/lanes.md#every-test-has-a-lane.
+CITED = re.compile(r"(?<![\w./\\-])((?:[\w.-]+/)*[\w-][\w.-]*\.(?:md|markdown))(?:(#[\w-]+)|,[ \t]*)")
+# Another repository's document, as in the toolkit's guides/releasing.md: the words before its path.
+OTHER_REPOSITORY = re.compile(r"[\w-]+'s\s*$")
+# What ends a line of a comment or a string literal that a citation wraps across, and what opens the next.
+WRAP_END = re.compile(r"""[\s"'+\\]*$""")
+WRAP_START = re.compile(r"""^\s*(?:(?:#+|//+|/?\*+|--|>|\+)\s*)*(?:[rbfuRBFU]{0,2}(?:\"\"\"|'''|"|'))?""")
+# A text file larger than this is data, not prose that cites a guide.
+LARGEST_CITING = 2 << 20
 
 
 def slug(text):
@@ -43,18 +56,11 @@ def heading_text(source):
     return "".join(pieces + [inline(source[last:])]).strip()
 
 
-def anchors(text):
-    """The fragments GitHub defines for a Markdown document: heading slugs and HTML ids."""
-    found, occurrences = set(), {}
-    def heading(source):
-        base = slug(heading_text(source))
-        if not base: return
-        name = base
-        while name in occurrences:  # a repeated heading gets -1, -2, as GitHub numbers them
-            occurrences[base] += 1
-            name = f"{base}-{occurrences[base]}"
-        occurrences[name] = 0
-        found.add(name)
+def sections(text):
+    """A Markdown document's headings, each as GitHub renders its text, in order, and the bold lead-ins
+    that open its paragraphs and list items, such as **Landing ahead of the queue.**, without the closing
+    stop: what a citation by path and section title may name. Also the HTML ids it defines."""
+    headings, leads, ids = [], [], set()
     fence, paragraph = None, []
     for line in text.splitlines():
         if fence:
@@ -64,14 +70,38 @@ def anchors(text):
         if opening:
             fence, paragraph = opening[1], []
             continue
-        found.update(match[2] for match in HTML_ANCHOR.finditer(CODE_SPAN.sub("", line)))
+        ids.update(match[2] for match in HTML_ANCHOR.finditer(CODE_SPAN.sub("", line)))
+        lead = BOLD_LEAD.match(line)
+        if lead and (not paragraph or OTHER_BLOCK.match(line)):
+            leads.append(heading_text(lead[1]).rstrip(".:"))
         atx = ATX.match(line)
         if not line.strip(): paragraph = []
-        elif paragraph and SETEXT.match(line): heading("\n".join(paragraph)); paragraph = []
-        elif atx: heading(atx[1] or ""); paragraph = []
+        elif paragraph and SETEXT.match(line): headings.append(heading_text("\n".join(paragraph))); paragraph = []
+        elif atx: headings.append(heading_text(atx[1] or "")); paragraph = []
         elif BREAK.match(line): paragraph = []
         elif OTHER_BLOCK.match(line): paragraph = None   # until the next blank line
         elif paragraph is not None: paragraph.append(line.strip())
+    return headings, leads, ids
+
+
+def anchors(text):
+    """The fragments GitHub defines for a Markdown document: heading slugs and HTML ids."""
+    headings, _, ids = sections(text)
+    return anchors_from(headings, ids)
+
+
+def anchors_from(headings, ids):
+    """The fragments of a document with these heading texts, in order, and these HTML ids."""
+    found, occurrences = set(ids), {}
+    for heading in headings:
+        base = slug(heading)
+        if not base: continue
+        name = base
+        while name in occurrences:  # a repeated heading gets -1, -2, as GitHub numbers them
+            occurrences[base] += 1
+            name = f"{base}-{occurrences[base]}"
+        occurrences[name] = 0
+        found.add(name)
     return found
 
 
@@ -93,7 +123,7 @@ def check(root, paths=None):
         files = [p for suffix in MARKDOWN for p in root.glob(f"*{suffix}")]
         for folder in ["doc", "docs", "guides", "knowledge", "agents", "policies"]:
             files.extend(p for suffix in MARKDOWN for p in (root / folder).rglob(f"*{suffix}")
-                if not any(part.startswith(".") or part in {"licenses", "ThirdParty", "Vendor"}
+                if not any(part.startswith(".") or part in VENDORED
                            for part in p.relative_to(root / folder).parts))
     for path in files:
         path = Path(path)
@@ -150,4 +180,71 @@ def check(root, paths=None):
                         failures.append(f"{path}: wrong-case link: {raw}")
                         break
                     probe = probe / part
+    citing = files if paths is not None else [
+        root / name for name in sorted(tracked_names)
+        if not any(part.startswith(".") or part in VENDORED for part in Path(name).parts)]
+    return failures + citations(root, citing)
+
+
+def citations(root, files):
+    """Each citation in files of a Markdown document by its path and a section title, as in
+    (guides/shared-host.md, Heavy-work admission), or by its path and an anchor, that names no document
+    in this checkout, or no heading or bold lead-in of it (vocaro/queuekeeper#114). The path is from
+    the checkout's root or the citing file's folder. A title may wrap across lines of a comment or of
+    adjacent string literals, and it may run on past the section's name. A citation of another
+    repository's document, as in the toolkit's guides/releasing.md, is not read, since this checkout
+    cannot resolve it, and a Markdown link's target is the link check's."""
+    root = Path(root).resolve()
+    failures, read = [], {}
+    def document(cited, citing):
+        for base in (root, citing.parent):
+            target = (base / cited).resolve()
+            if target.is_relative_to(root) and target.is_file():
+                if target not in read: read[target] = sections(target.read_text(errors="replace"))
+                return target
+        return None
+    for path in files:
+        path = Path(path)
+        if not path.is_absolute(): path = root / path
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > LARGEST_CITING: continue
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        if b"\0" in raw or (b".md" not in raw and b".markdown" not in raw): continue
+        try: text = raw.decode()
+        except UnicodeDecodeError: continue
+        lines = text.splitlines()
+        for number, line in enumerate(lines, 1):
+            for match in CITED.finditer(line):
+                before = line[:match.start()]
+                if before.endswith("]("): continue
+                if not WRAP_START.sub("", before).strip() and number > 1:
+                    before = WRAP_END.sub("", lines[number - 2])
+                if OTHER_REPOSITORY.search(before): continue
+                cited, anchor = match[1], match[2]
+                rest = line[match.end():]
+                tail = " ".join([WRAP_END.sub("", rest)] + [WRAP_END.sub("", WRAP_START.sub("", following))
+                                                           for following in lines[number:number + 2]])
+                tail = " ".join(tail.replace("`", "").split())
+                # A title begins with a capital or a code span; anything else is a comma in prose or a list.
+                if not anchor and (not tail or not (tail[0].isupper() or rest.lstrip().startswith("`"))
+                                   or re.match(r"\S+\.(?:md|markdown)\b", tail)):
+                    continue
+                target = document(cited, path)
+                where = f"{path}:{number}"
+                if target is None:
+                    failures.append(f"{where}: cites a missing document: {cited}")
+                    continue
+                headings, leads, ids = read[target]
+                if anchor:
+                    if anchor[1:] not in anchors_from(headings, ids):
+                        failures.append(f"{where}: cites a missing anchor: {cited}{anchor}")
+                    continue
+                titles = {" ".join(title.replace("`", "").split()) for title in headings + leads} - {""}
+                if not any(tail.startswith(title) and not tail[len(title):len(title) + 1].isalnum()
+                           for title in titles):
+                    shown = re.split(r"""[);"']""", tail)[0]   # where a title in parentheses or a string ends
+                    shown = shown if len(shown) <= 60 else shown[:57] + "..."
+                    failures.append(f"{where}: cites no heading or bold lead-in of {cited}: {shown}")
     return failures

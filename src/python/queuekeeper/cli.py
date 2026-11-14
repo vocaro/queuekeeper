@@ -766,7 +766,7 @@ def perform(argv, report):
         "Mac: the reference a failure seen only side by side is checked against")
     run.add_argument("--unlocked-screen", action="store_true", help="place the lane only on a Mac whose screen reads "
         "unlocked, and wait for one, as \"unlockedScreen\": true does: the merge queue's next run of a lane whose "
-        "run a locked screen left without a verdict (guides/maintenance.md, A run with no verdict)")
+        "run a locked screen left without a verdict (guides/maintenance.md, A run with no verdict blames nobody)")
     run.add_argument("--repeat", type=int, metavar="N", help="run a lane of qk simulator-tests N times, on one build, "
         "each run on a member taken from the pool afresh, and report each run's outcome, test counts and one-minute "
         "load (apple-engineering's guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
@@ -926,7 +926,9 @@ def perform(argv, report):
     merge_queue.land_arguments(commands.add_parser("land", help="land a finished commit through the merge queue of this "
         "repository, or with --repo of another, and return at once: the queue gates it on origin/main and pushes it"))
     documentation = commands.add_parser("docs", help="check the project's Markdown: each link's file, anchor and "
-        "source line exists; exit 1 on any that does not")
+        "source line exists, and each citation of a document by path and section title or anchor, in any tracked "
+        "text file, names a heading or bold lead-in of it; exit 1 on any that does not (guides/maintenance.md, "
+        "Docs check)")
     documentation.add_argument("operation", choices=["check"])
     documentation.add_argument("paths", nargs="*")
     spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "

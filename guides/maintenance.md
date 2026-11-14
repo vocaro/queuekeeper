@@ -1204,3 +1204,32 @@ and foreign words whose endings British words share stay with each project, in `
 because the project knows why its fixtures and corpora hold them; the toolkit ships no shared
 list of them.
 
+## Docs check
+
+`python3 scripts/qk docs check [PATHS]` checks a project's Markdown: each link's file, anchor and
+source line (`PATH:LINE`) must exist, and an `AGENTS.md` must stay under 32 KiB. With no paths it
+reads the Markdown at the root and under `doc/`, `docs/`, `guides/`, `knowledge/`, `agents/` and
+`policies/`.
+
+It also checks citations of a document by its path and a section title, as in
+`(guides/shared-host.md, Heavy-work admission)`, and by its path and an anchor, as in
+`guides/shared-host.md#probing-stop-signals` (vocaro/queuekeeper#114). Code comments, messages and
+schema descriptions cite the guides that way, so with no paths it reads every tracked text file,
+code included, and with paths the files named. The path is from the checkout's root or from the
+citing file's folder. The title must begin with a heading of that document, or with a bold lead-in
+that opens one of its paragraphs or list items, such as **Landing ahead of the queue.** A citation
+may go on past the title, as in `Two gates and Checkpoints`, and may wrap across the lines of a
+comment or across adjacent string literals. A hit reads `PATH:LINE: cites a missing document`, `cites
+a missing anchor` or `cites no heading or bold lead-in of`, and the fix is the citation, or a
+heading that a rename lost. Text after the comma that begins in lower case, or names another
+document, is a list or prose, not a citation. A citation of another repository's document, marked
+by the possessive before its path as in "the toolkit's guides/releasing.md, Keeping the split", is
+not read, since this checkout cannot resolve it.
+
+When guide sections moved here from the toolkit (vocaro/vocaro-engineering#403), citations of
+them went stale with nothing reporting it, and a one-off script found them. On 2026-11-13 this
+check found two more in Queuekeeper: one in `guides/shared-host.md` that named Reserved simulator
+pool in `simulator-testing.md`, a guide not in this checkout, for a section now in
+`simulator-pool.md`, and one in `qk run --help` that named `A run with no verdict`, a bold lead-in
+cut short. The whole check of this checkout, 239 tracked files, took 0.8 s that day, well inside
+the docs lane's limit.

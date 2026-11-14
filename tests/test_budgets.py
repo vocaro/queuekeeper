@@ -77,7 +77,7 @@ class GateBudget(unittest.TestCase):
         # The newest run that reports its parts.
         self.assertIn("slowest parts in its latest run that reports them: test_remote 1200s, test_queue 900s", warning)
         self.assertNotIn("old", warning)
-        self.assertIn("guides/releasing.md, Keeping the split", warning)
+        self.assertIn("the toolkit's guides/releasing.md, Keeping the split", warning)
 
     def test_a_run_that_reports_no_parts_says_so(self):
         [warning] = budgets.gate_warnings(self.config(budgetMinutes=1), [landed(n, 120) for n in range(3)])
