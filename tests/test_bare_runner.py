@@ -103,6 +103,24 @@ class WhichCommands(Folder):
 
 
 class CommandSent(Folder):
+    def test_unittest_repeats_its_result_after_admission_notes_without_counting_it_twice(self):
+        summary = "queuekeeper unittest: 7 tests (0 skipped) in 1 processes, 4 at a time, 1.0s: OK"
+        for note in ("Verified cached artifact: https://example.com/artifact.zip",
+                     "queuekeeper: the command ran on the second Mac, so its build products stayed there"):
+            for status in (0, 73):
+                with self.subTest(note=note, status=status):
+                    output = self.root / "output.log"
+                    output.write_text(summary + "\n" + note + "\n")
+                    @contextlib.contextmanager
+                    def admitted(command):
+                        yield {"status": None, "output": output}
+                    said = io.StringIO()
+                    with patch.object(cli.run_progress, "admitted", admitted), \
+                            patch.object(cli, "admitted_run", return_value=status), contextlib.redirect_stderr(said):
+                        self.assertEqual(cli.admitted_runner(self.root, ["unittest"], 0), status)
+                    self.assertEqual(said.getvalue().splitlines()[-1], f"  {summary} (command exit {status})")
+                    self.assertEqual(cli.merge_queue.UNITTEST_SUMMARY.findall(output.read_text() + said.getvalue()), ["OK"])
+
     def test_a_project_with_a_launcher_is_run_again_by_its_path_from_here(self):
         (self.root / "scripts").mkdir()
         (self.root / "scripts/qk").write_text("")

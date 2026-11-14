@@ -209,6 +209,7 @@ def admitted(command, environment=os.environ):
         yield outcome
         return
     announce(folder)
+    outcome["output"] = folder / OUTPUT
     record = started_record(command)
     write(folder / RECORD, record)
     previous = environment.get(VARIABLE)

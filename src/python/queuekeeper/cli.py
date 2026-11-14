@@ -681,6 +681,17 @@ def admitted_runner(root, argv, first):
     everything it prints, whatever its standard output is, such as a pipe into `tail` (vocaro/queuekeeper#22)."""
     with run_progress.admitted(["qk", *argv[first:]]) as outcome:
         outcome["status"] = admitted_run(root, argv, first)
+    if argv[first:first + 1] == ["unittest"] and outcome.get("output"):
+        # Admission's artifact checks and returned-products notes run after the runner. Repeat its
+        # verdict last, indented so log readers do not count another suite (vocaro/queuekeeper#139).
+        with contextlib.suppress(OSError):
+            summary = None
+            with outcome["output"].open(errors="replace") as output:
+                for line in output:
+                    if re.match(r"^queuekeeper unittest: \d+ tests ", line): summary = line.rstrip()
+            if summary:
+                sys.stdout.flush()
+                print(f"  {summary} (command exit {outcome['status']})", file=sys.stderr, flush=True)
     return outcome["status"]
 
 
