@@ -216,7 +216,7 @@ cli.fix_hosts = unfixed
 ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "QUEUEKEEPER_OFFLOAD_HOST", "HEAVY_QUIET_SECONDS",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", device_notifications.WATCH, offload_host.SCROLL_BARS_RECORDING,
-    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, TOLD)}
+    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, opened_apps.SWITCH, TOLD)}
 
 
 # The prefixes of the toolkit's variables, and those of them this module lets a test inherit, each with why that is
