@@ -455,7 +455,10 @@ entry is sent back with ends with the load during the failed lane and with the f
 ([#273](https://github.com/vocaro/vocaro-engineering/issues/273)). The load is said in two parts:
 the readings taken while the lane ran, which count the lane's own work, and those taken while it
 waited to start, which are of other work alone and are set against that Mac's busy limit
-([vocaro/queuekeeper#12](https://github.com/vocaro/queuekeeper/issues/12)). A gate holds the whole
+([vocaro/queuekeeper#12](https://github.com/vocaro/queuekeeper/issues/12)). Each is of the Mac the lane's wait record
+names, the second Mac from the moment the lane is sent there, and only those of the Mac the lane ran on are said; the
+dispatch's own record, filed only when it ends, had left a lane on the second Mac with its one reading at the end
+([vocaro/queuekeeper#132](https://github.com/vocaro/queuekeeper/issues/132)). A gate holds the whole
 Mac and loads it heavily by itself, so a high load while it ran is no sign of other work. The tests come from the lane's
 `qk unittest` summary when it has one, and each test's module and what it imports are compared with
 the entry's commits, as for a flake above. Otherwise they come from the summary `qk run LANE:` ends

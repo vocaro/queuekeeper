@@ -135,7 +135,12 @@ the CPU busy share of the Mac the gate ran on, `cpuBusy`, the reading admission 
 ([#200](https://github.com/vocaro/vocaro-engineering/issues/200)). That is the mean of readings taken every minute from the gate's
 admission to its end, kept with their highest, the limit that Mac sets (`busyLimit`, `HEAVY_BUSY_LIMIT`), the Mac and
 the count of readings. A gate that ends before a minute of its own work has one reading, at its end.
-The worker's log says them too.
+The worker's log says them too. Each reading is of the Mac the lane's wait record names as it runs, which is the
+second Mac from the moment the lane is sent there. Before 2026-11-13 it was the Mac the lane's dispatch record named,
+and that record is filed only when the dispatch ends, so a gate that ran on the second Mac was read on this Mac and
+judged by this Mac's limit: on 2026-11-13 three of Queuekeeper's gates on `build-host` were recorded against this
+Mac's 70% and not that Mac's 90%, and one of them was left out of the median as loaded
+([vocaro/queuekeeper#132](https://github.com/vocaro/queuekeeper/issues/132)).
 
 The budget judges the gate's own work, not its wall time. On 2026-11-12 three of BreezEPUB's
 whole-host gates did 4.7 to 6.7 minutes of their own work against a 15-minute budget, after

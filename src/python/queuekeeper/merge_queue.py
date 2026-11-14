@@ -1094,19 +1094,34 @@ class BusySampler:
     """The CPU busy share of the Mac a gate lane runs on, read every BUSY_SAMPLE seconds while it runs once admitted,
     and once at its end when no reading was taken (vocaro-engineering#235). With an Admission, no reading is taken
     before the lane's admission, so that a loaded run is one whose own work met a busy Mac and not one that waited
-    while the Mac was busy (vocaro/queuekeeper#112). The Mac is the second Mac once the lane's dispatch names it
-    (remote.dispatched), and this Mac before that. A reading that fails is left out."""
+    while the Mac was busy (vocaro/queuekeeper#112). The Mac is the one the lane runs on now (host). A reading that
+    fails is left out."""
     def __init__(self, checkout, lane, began, admission=None):
         self.checkout, self.lane, self.began, self.admission = checkout, lane, began, admission
         self.readings = []
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self.every, name="gate busy share", daemon=True)
 
+    def record(self):
+        """The lane's wait record (lane_wait) as it stands now, or None."""
+        try: return lane_wait.current(lane_wait.path_of(self.checkout, self.lane), self.began)
+        except Exception: return None  # noqa: BLE001
+
+    def host(self, record):
+        """The second Mac the lane runs on now, or None for this Mac: the Mac its wait record names, which is the second
+        Mac from the moment the lane is sent there (lane_wait.sent, relayed), or, when the record names none, as once
+        the run has ended and removed it, the second Mac its dispatch's record names (remote.dispatched). That record is
+        filed only when the dispatch ends, so while the lane ran there it named no Mac, and every reading was this
+        Mac's (vocaro/queuekeeper#132)."""
+        mac = record.get("mac") if record else None
+        if mac: return lane_wait.host_of(mac)
+        return remote.dispatched(self.checkout, self.lane, self.began)
+
     def read(self, admitted=True):
         """One reading, unless admitted asks for the lane's admission first and no reading of it has seen it."""
         if admitted and self.admission is not None and self.admission.at is None: return
         # A measurement only: nothing a reading raises may end the gate or the round.
-        try: found = busy_of(remote.dispatched(self.checkout, self.lane, self.began))
+        try: found = busy_of(self.host(self.record()))
         except Exception: found = None  # noqa: BLE001
         if found: self.readings.append(found)
 
@@ -1173,13 +1188,8 @@ class LoadSampler(BusySampler):
     that failed, so that a rejection can say it (vocaro-engineering#273). Each reading names the Mac it read, this Mac
     until the lane's dispatch names the second Mac, and whether the lane's wait record (lane_wait) said it was waiting
     to start then; finish keeps only the readings of the Mac the lane ran on, those of its wait apart from those of
-    its run (vocaro/queuekeeper#12). A measurement only: it decides nothing, and nothing a reading raises reaches the
-    gate."""
-    def waiting(self):
-        """Whether the lane waits to start now, for admission, a screen or a Mac. Unknown is not waiting."""
-        try: record = lane_wait.current(lane_wait.path_of(self.checkout, self.lane), self.began)
-        except Exception: return False  # noqa: BLE001
-        return bool(record and record.get("kind"))
+    its run (vocaro/queuekeeper#12). The Mac is the one the lane runs or waits on now, by the record (host). A
+    measurement only: it decides nothing, and nothing a reading raises reaches the gate."""
 
     def look(self, host, waiting=False):
         try: reading = load_of(host)
@@ -1187,9 +1197,11 @@ class LoadSampler(BusySampler):
         self.readings.append((host, reading, waiting))
 
     def read(self):
-        try: host = remote.dispatched(self.checkout, self.lane, self.began)
+        # Whether the lane waits to start now, for admission, a screen or a Mac. Unknown is not waiting.
+        record = self.record()
+        try: host = self.host(record)
         except Exception: return  # noqa: BLE001
-        self.look(host, self.waiting())
+        self.look(host, bool(record and record.get("kind")))
 
     def finish(self, host):
         """load_words for the lane, which ran on host, the second Mac, or with host None on this Mac."""

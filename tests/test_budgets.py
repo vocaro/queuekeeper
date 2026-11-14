@@ -306,6 +306,40 @@ class AdmittedSpan(unittest.TestCase):
             self.assertEqual(busy_of.call_count, 2)
 
 
+    def test_a_gate_sent_to_the_second_mac_is_read_there_while_it_runs(self):
+        """vocaro/queuekeeper#132: the dispatch's record is filed only when it ends, so while the gate ran there it named
+        no Mac, and each reading was this Mac's. The wait record names the second Mac from the moment the lane is sent."""
+        began = time.time() - 1
+        with patch.object(mq, "busy_of", side_effect=lambda host: (60.0, 90.0, host or "this Mac")) as busy_of:
+            sampler = mq.BusySampler(self.checkout, "gate", began, argparse.Namespace(at=began)).start()
+            mq.lane_wait.sent("build-host")
+            mq.lane_wait.relayed(json.dumps({"kind": None, "admitted": True}), "build-host")
+            # The real dispatch record: none filed yet, as for a dispatch still running.
+            self.assertIsNone(mq.remote.dispatched(self.checkout, "gate", began))
+            sampler.read()
+            sampler.read()
+            # Waiting for admission there, it is still that Mac.
+            mq.lane_wait.relayed(json.dumps({"kind": "admission", "reason": "a nested wait"}), "build-host")
+            sampler.read()
+            mq.lane_wait.remove(self.record)
+            found = sampler.finish()
+        self.assertEqual([call.args[0] for call in busy_of.call_args_list], ["build-host"] * 3)
+        self.assertEqual((found["busyOn"], found["busyLimit"], found["busyReadings"]), ("build-host", 90.0, 3))
+        # The negative control: a lane that runs here is read here.
+        mq.lane_wait.running()
+        with patch.object(mq, "busy_of", return_value=(20.0, 70.0, "this Mac")) as here:
+            local = mq.BusySampler(self.checkout, "gate", began, argparse.Namespace(at=began))
+            local.read()
+        here.assert_called_once_with(None)
+
+    def test_once_the_record_is_gone_the_dispatch_names_the_mac(self):
+        began = time.time() - 1
+        with patch.object(mq, "busy_of", return_value=(60.0, 90.0, "build-host")) as busy_of, \
+                patch.object(mq.remote, "dispatched", return_value="build-host"):
+            mq.BusySampler(self.checkout, "gate", began).read()
+        busy_of.assert_called_once_with("build-host")
+
+
 class DoctorChecks(unittest.TestCase):
     def test_a_direct_main_gate_with_no_budget_warns(self):
         warned = budgets.doctor_warnings({"lanes": {"gate": GATE}})
@@ -448,9 +482,17 @@ class Landing(Fixture):
         def dispatched(root, name, since):
             asked.append(name)
             return "fake-mac" if name == "gate" else real(root, name, since)
+        # While it runs, the lane's wait record names the Mac, as the second Mac's relayed record does
+        # (vocaro/queuekeeper#132): its dispatch's record is filed only at its end.
+        current = mq.lane_wait.current
+        def relayed(path, since=None):
+            record = current(path, since)
+            if record and Path(path).stem == "gate": record = {**record, "mac": mq.lane_wait.second_mac("fake-mac")}
+            return record
         self.commit("a", "a")
         [identifier] = self.add("a")
         with patch.object(mq, "BUSY_SAMPLE", 0.4), patch.object(mq.remote, "dispatched", side_effect=dispatched), \
+                patch.object(mq.lane_wait, "current", side_effect=relayed), \
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.work()
         gate = self.state(identifier)["gate"]

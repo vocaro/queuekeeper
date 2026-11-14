@@ -7236,6 +7236,29 @@ class LoadReadings(unittest.TestCase):
         self.assertIn("on the second Mac (fake-mac), the one-minute load was highest 12, last 12 over 2 readings", said)
         self.assertNotIn("70", said)
 
+    def test_the_sampler_reads_the_second_mac_its_wait_record_names_before_the_dispatch_is_filed(self):
+        """vocaro/queuekeeper#132: a dispatch's record is filed only when it ends, so the lane's wait record names the
+        Mac while the lane runs there, and a failed gate there keeps more than its one reading at the end."""
+        readings = {None: (70.0, 99.0, 70.0), "build-host": (12.0, 40.0, 90.0)}
+        records = iter([{"kind": "admission", "mac": "the second Mac (build-host)"},
+                        {"kind": None, "mac": "the second Mac (build-host)"},
+                        {"kind": None, "mac": "the second Mac (build-host)"}])
+        with patch.object(mq, "load_of", side_effect=readings.get), \
+                patch.object(mq.remote, "dispatched", return_value=None), \
+                patch.object(mq.lane_wait, "current", side_effect=lambda path, since: next(records)):
+            sampler = mq.LoadSampler("/nowhere", "gate", 0).start()
+            for _ in range(3): sampler.read()
+            said = sampler.finish("build-host")
+        self.assertIn("on the second Mac (build-host), the one-minute load was highest 12, last 12 over 3 readings", said)
+        self.assertIn("While it waited to start, before any of its own work, the load was highest 12 over 1 reading", said)
+        self.assertNotIn("70", said)
+        # The negative control: a record that names this Mac is read here.
+        with patch.object(mq, "load_of", side_effect=readings.get) as load_of, \
+                patch.object(mq.remote, "dispatched", return_value="build-host"), \
+                patch.object(mq.lane_wait, "current", return_value={"kind": None, "mac": mq.lane_wait.HERE}):
+            mq.LoadSampler("/nowhere", "gate", 0).read()
+        load_of.assert_called_once_with(None)
+
     def test_a_reading_that_raises_reaches_no_gate(self):
         with patch.object(mq, "load_of", side_effect=ValueError("no")), \
                 patch.object(mq.remote, "dispatched", side_effect=OSError("no")):
