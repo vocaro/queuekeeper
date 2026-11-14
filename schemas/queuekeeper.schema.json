@@ -44,6 +44,11 @@
     "repository": {
       "type": "string"
     },
+    "gitHooks": {
+      "description": "The folder of the project's tracked Git hooks, relative to the checkout's top, such as .githooks. qk doctor sets core.hooksPath to it where it is unset, as in a fresh clone, and warns where it names another folder",
+      "type": "string",
+      "minLength": 1
+    },
     "simulatorPool": {
       "description": "The name every member of the project's simulator pool starts with, as in 'NAME iPhone 17 Pro 1'; required with the simulator-pool capability",
       "type": "string",

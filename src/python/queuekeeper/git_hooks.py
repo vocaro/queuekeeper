@@ -14,8 +14,14 @@ like a gated one. So `doctor` puts the path back to the relative one, in this wo
 warns of what it cannot fix. It changes nothing in a project with no core.hooksPath, or with one outside the
 repository, such as a person's own global hooks.
 
+A fresh clone has no core.hooksPath at all, and so runs no hook. A project names its hooks folder in queuekeeper.json's
+gitHooks, and `doctor` then sets the path where it is unset. Without that key, a tracked pre-push hook in a hooks
+folder that runs `qk pre-push` is the project's own, and `doctor` says that the path is unset, changing nothing
+(vocaro/queuekeeper#131).
+
 Moved from vocaro/mpm's tools/repository/install-hooks.sh (vocaro/queuekeeper#6)."""
 from pathlib import Path
+import re
 
 from . import git_state
 
@@ -41,11 +47,55 @@ def relative(value, root, checkouts):
     return found if found is not None and str(found) != "." else None
 
 
-def check(root, git=git_state.git):
+# A hook that hands the push to Queuekeeper, as guides/maintenance.md's one-line hook does.
+RUNS_QK = re.compile(r"\bqk\s+pre-push\b")
+
+
+def tracked_hooks(root, git=git_state.git):
+    """The folder of a tracked pre-push hook that runs `qk pre-push`, in a folder whose name says hooks, or None."""
+    for path in (git(root, "ls-files", "--", "pre-push", "*/pre-push") or "").splitlines():
+        folder = Path(path).parent
+        if "hooks" not in folder.name.lower(): continue
+        try: text = (root / path).read_text(errors="replace")
+        except OSError: continue
+        if RUNS_QK.search(text): return folder
+    return None
+
+
+def unset(root, declared, git=git_state.git):
+    """The warnings for a checkout with no core.hooksPath anywhere, as a fresh clone has, after setting the one
+    declared, the project's gitHooks."""
+    if declared:
+        if not (root / declared).is_dir():
+            return [f"{KEY} is unset and queuekeeper.json's gitHooks names {declared}, which does not exist here: "
+                    "a push by hand from this checkout runs no hook and succeeds"]
+        if git(root, "config", "--local", KEY, declared) is not None:
+            return [f"repaired {KEY}: it was unset, so a push by hand from this checkout ran no hook, and is now "
+                    f"{declared}, the folder queuekeeper.json's gitHooks names"]
+        return [f"{KEY} is unset, so a push by hand from this checkout runs no hook, and setting it to {declared} "
+                f"failed: run `git config {KEY} {declared}`"]
+    folder = tracked_hooks(root, git)
+    if folder is None: return []
+    return [f"{KEY} is unset, so a push by hand from this checkout runs no hook and succeeds, though {folder}/pre-push "
+            f"runs qk pre-push: run `git config {KEY} {folder}`, or name {folder} in queuekeeper.json's gitHooks so "
+            "that doctor sets it"]
+
+
+def differs(effective, declared, root, checkouts):
+    """A warning when core.hooksPath, effective, is not the folder the project declares; none when it declares no
+    folder."""
+    if not declared or not effective or relative(effective, root, checkouts) == Path(declared): return []
+    return [f"{KEY} is {effective}, but queuekeeper.json's gitHooks names {declared}: a push by hand from this "
+            f"checkout runs no hook of the project's; run `git config {KEY} {declared}` if it should"]
+
+
+def check(root, declared=None, git=git_state.git):
     """The warnings for the checkout at root, after repairing what can be repaired. Each repair is a warning too,
-    so that the change is said."""
+    so that the change is said, and begins with "repaired". declared is the project's gitHooks, the folder of its
+    tracked hooks, or None."""
     root = Path(root).resolve()
-    if git(root, "rev-parse", "--show-toplevel") is None or not git(root, "config", "--get", KEY): return []
+    if git(root, "rev-parse", "--show-toplevel") is None: return []
+    if not git(root, "config", "--get", KEY): return unset(root, declared, git)
     checkouts = [Path(entry["worktree"]) for entry in git_state.worktrees(root)]
     found = []
     # Without extensions.worktreeConfig, --worktree reads and writes the repository's own value: asking it there
@@ -55,7 +105,8 @@ def check(root, git=git_state.git):
     own = git(root, "config", "--worktree", "--get", KEY) if separate else None
     wanted = relative(shared, root, checkouts) if shared else None
     # A person's own hooks, set for every repository or outside this one, are not the project's.
-    if own is None and (shared is None or wanted is None): return []
+    if own is None and (shared is None or wanted is None):
+        return differs(git(root, "config", "--get", KEY), declared, root, checkouts)
     if shared and Path(shared).is_absolute() and wanted is not None:
         if (root / wanted).is_dir() and git(root, "config", "--local", KEY, str(wanted)) is not None:
             found.append(f"repaired {KEY}: the repository's value was the absolute {shared}, which ran one "
@@ -80,6 +131,7 @@ def check(root, git=git_state.git):
                          "push from here should run the project's hooks")
     effective = git(root, "config", "--get", KEY)
     if not effective: return found
+    found += differs(effective, declared, root, checkouts)
     folder = root / effective  # an absolute value stays itself
     if not folder.is_dir():
         return found + [f"{KEY} names {effective}, which does not exist here: Git skips a missing hooks folder "

@@ -700,6 +700,19 @@ def main(argv=None):
     return status
 
 
+def hooks_path(root, config):
+    """`qk doctor --hooks`: what a push by hand from this checkout runs, put right where it can be, and nothing else
+    doctor checks, so that a session-start hook asks it quickly and parses no JSON (vocaro/queuekeeper#131)."""
+    found = git_hooks.check(root, config.get("gitHooks"))
+    left = [finding for finding in found if not finding.startswith("repaired ")]
+    for finding in found: print(finding if finding not in left else f"warning: {finding}")
+    if not found:
+        value = git_state.git(root, "config", "--get", git_hooks.KEY)
+        print(f"fine: {git_hooks.KEY} is {value}" if value else f"fine: {git_hooks.KEY} is unset, and the project "
+              "declares no hooks of its own")
+    return int(bool(left))
+
+
 def load_extensions(argv):
     """Load the extensions of the project argv names: its folder is --project's when that comes first, as a launcher
     gives it, else the current one, and a linked worktree's extensions are found from its main checkout."""
@@ -718,7 +731,10 @@ def perform(argv, report):
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="action", required=True)
-    commands.add_parser("doctor")
+    doctor = commands.add_parser("doctor")
+    doctor.add_argument("--hooks", action="store_true", help="check and repair core.hooksPath alone, as a session-start "
+        "hook asks: one line for each finding, each beginning repaired or warning, or one beginning fine; exit 0 "
+        "unless a warning is left (guides/maintenance.md)")
     hook = commands.add_parser("pre-push", help="a pre-push hook: run the lanes the project names for the paths a push "
         "changes, the docs lanes for a docs-only push and queue.lanes or gate for any other, and refuse the push "
         "when one fails or is unmeasured; a project's hook is `exec python3 scripts/qk pre-push \"$@\"`")
@@ -983,6 +999,7 @@ def perform(argv, report):
         if args.action in {"run", "admit"} or (args.action == "remote" and args.operation in {"run", "admit"}):
             for check in extensions.BEFORE_LANE: check(root, config)
         if args.action in extensions.PARSED_COMMANDS: return extensions.PARSED_COMMANDS[args.action][2](root, args, config)
+        if args.action == "doctor" and args.hooks: return hooks_path(root, config)
         if args.action == "doctor":
             required = {"git", "python3"}
             for needed in extensions.REQUIRED_COMMANDS: required |= set(needed(config))
@@ -1005,7 +1022,7 @@ def perform(argv, report):
             warnings += fixed_wait_warnings(root)
             warnings += lane_wait.admission_warnings(root)
             # What a push by hand from this checkout runs, put right where it can be (git_hooks).
-            warnings += git_hooks.check(root)
+            warnings += git_hooks.check(root, config.get("gitHooks"))
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = fix_hosts(root, remote.compare_hosts())
             for check in extensions.DOCTOR: warnings += check(root, config)

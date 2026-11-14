@@ -99,7 +99,7 @@ def parse(source):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository", "spelling", "simulatorPool",
-               "queue", "release", "app", "testLanes"}
+               "queue", "release", "app", "testLanes", "gitHooks"}
     if set(value) - allowed - set(EXTENSION_CONFIG_KEYS):
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(EXTENSION_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:
@@ -115,6 +115,7 @@ def parse(source):
             raise ValueError(f"{key} is the {module} extension's key, and the project does not switch that extension "
                              f"on: list {module} in extensions")
         hooks.CONFIG_KEYS[key](value[key])
+    git_hooks(value.get("gitHooks"))
     if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
         raise ValueError("Unknown integration policy")
     pool = value.get("simulatorPool")
@@ -171,6 +172,16 @@ def parse(source):
             raise ValueError(f"spelling.{key} maps each entry to the reason it is kept")
     test_lanes(value.get("testLanes", {}))
     return value
+
+
+def git_hooks(folder):
+    """gitHooks, the folder of the project's tracked hooks, which qk doctor sets core.hooksPath to where it is unset
+    (git_hooks.py, vocaro/queuekeeper#131): a path inside the checkout, relative to its top."""
+    if folder is None: return
+    if not isinstance(folder, str) or not folder.strip() or folder != folder.strip() or Path(folder).is_absolute() \
+            or ".." in Path(folder).parts or Path(folder) == Path("."):
+        raise ValueError("gitHooks must be the folder of the project's tracked hooks, relative to the checkout's top, "
+                         "such as \".githooks\"")
 
 
 def stall(name, lane):

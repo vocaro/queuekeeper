@@ -708,6 +708,36 @@ that, and Git reports none of them:
 Each repair is listed among `doctor`'s warnings. A project with no `core.hooksPath`, or with one
 outside the repository such as a person's own global hooks, is left alone.
 
+A fresh clone has no `core.hooksPath` at all, so it runs no hook until someone sets it, and Git
+says nothing. A project names its hooks folder in `queuekeeper.json` so that `doctor` sets it:
+
+```json
+"gitHooks": "tools/repository/hooks"
+```
+
+With `gitHooks`, `doctor` sets `core.hooksPath` to that folder where it is unset, and warns where it
+names another folder, a person's own global hooks among them, or where the folder is missing.
+Without the key, a tracked `pre-push` in a folder whose name says hooks and which runs
+`qk pre-push` is taken for the project's own: `doctor` warns that the path is unset and changes
+nothing. Any other project with no `core.hooksPath` is left alone, as before. This replaced the part
+of vocaro/mpm's `install-hooks.sh` that set the path on a fresh clone (vocaro/queuekeeper#131,
+2026-11-13).
+
+**`qk doctor --hooks` is the quick form for a session-start hook.** It checks and repairs
+`core.hooksPath` alone, as above, and nothing else `doctor` checks, in about a second. It prints one
+line for each finding, each beginning `repaired` or `warning:`, or one line beginning `fine:`:
+
+| Exit | Meaning |
+|---|---|
+| 0 | Nothing was wrong, or everything wrong was repaired |
+| 1 | A warning is left, which the person must act on |
+
+A Claude Code `SessionStart` hook runs it as it is, and need not read `doctor`'s JSON:
+
+```json
+{"type": "command", "command": "python3 scripts/qk doctor --hooks", "timeout": 15}
+```
+
 **A gate that fails on a test the change cannot reach.** On an `qk unittest` gate the queue does this
 itself when the test passes alone ([a failed test that passes alone is a flake](#the-merge-queue)).
 Otherwise, record the failure on that test's issue,
