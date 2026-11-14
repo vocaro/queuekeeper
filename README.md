@@ -105,6 +105,10 @@ new agent sessions in either project can use the same workflow for their changes
 across projects, or [notifications](doc/visibility.md) when the queue needs your attention. Agents
 can check their own project's queue with `qk queue status`.
 
+Run `qk disk` for a read-only inventory of Queuekeeper-managed build caches, test results and
+simulator resources, including safe cleanup candidates; see
+[Reclaiming disk space](guides/shared-host.md#reclaiming-disk-space).
+
 ## Dashboard
 
 The dashboard is a web page of the queue and the build farm, served from your own Mac. It shows
