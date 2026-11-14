@@ -139,6 +139,11 @@ for variable in (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LA
 # Mac unlocked the real one: it would unlock nothing, and a test of a kept password that cannot unlock would pass the run.
 os.environ.pop(keychain.UNLOCKED, None)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
+# Nor does exclusive work a test admits wait for this Mac to settle (vocaro/queuekeeper#121): the suite runs inside the
+# gate's admission, so the CPU it reads is never quiet, and each such admission would wait out HEAVY_QUIET_SECONDS. In
+# this process too, for a test that clears the environment. A test of the settle sets its own.
+os.environ["HEAVY_QUIET_SECONDS"] = "0"
+resources.QUIET_SECONDS = 0
 # Nor does any reach the host's crash-report setting or its screen's alerts (#118): a foreground run a test
 # makes reads DialogType unset and no alert, and changes nothing. A test of either replaces these again.
 os.environ["QUEUEKEEPER_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")

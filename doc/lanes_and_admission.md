@@ -42,6 +42,9 @@ the Mac for a slot first, in one first-come, first-served queue for the whole ma
   the CPU busy share is under 75% and memory pressure is normal.
 - A lane can ask for the whole host, for work that starts its own parallel jobs, or for exclusive
   use, for timing measurements. One lane at a time may use an on-device model or the GPU.
+- Exclusive work, once admitted, waits up to five minutes for the CPU to read quiet before its
+  command starts, so that the work it waited out does not void its timing, and tells the command
+  what it read of the Mac (vocaro/queuekeeper#121).
 - A waiting lane says what it is waiting for and behind whom, and repeats it every five minutes.
 - `qk admissions now` shows who holds slots and who is waiting on every Mac. An admission
   log records every wait and hold.

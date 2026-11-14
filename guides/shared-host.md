@@ -177,6 +177,35 @@ running either has no spare capacity for any heavy lane, which goes to the other
 offered to both, to share where admission allows, only when neither has capacity
 ([which Mac runs a lane](#which-mac-runs-a-lane)).
 
+Holding the host is not the same as a host that reads quiet. Exclusive work is admitted the moment
+the work ahead of it ends, and every trailing measure of the Mac still counts that work: on
+2026-11-13 mpm's timed gates, an exclusive lane, waited 1,672 s behind two whole-host lanes, were
+admitted as they ended, read a one-minute load of 25.9 against their limit of 13.5 with nothing
+admitted running, and voided (vocaro/queuekeeper#121). So an
+exclusive admission settles before its command starts: holding every slot, it waits while the
+CPU's busy share is at or above HEAVY_QUIET_LIMIT (25, percent of the CPU's time), for at most
+HEAVY_QUIET_SECONDS (300), and then starts the command however busy the Mac reads. It says so
+on standard error (`heavy: waiting for the Mac to settle: the CPU is 90% busy, at or above
+HEAVY_QUIET_LIMIT=25%; …`, then `heavy: the Mac settled after 14s: the CPU is 9% busy`, or
+`heavy: starting without a quiet Mac: …` at the bound or when the busy share cannot be read), and
+its `ended` line in the [admission log](#admission-log) says how long it waited. A stop while it
+settles releases every slot, and nothing has run. The two limits are environment variables only,
+not keys of the limits file, which an older toolkit would refuse; HEAVY_QUIET_SECONDS=0 starts at
+once. The busy share spans about 15 seconds, so on a Mac that unadmitted work leaves quiet the
+wait is about that long; how long the one-minute load takes to fall there is not known, and the
+settle does not wait for it.
+
+The command is then told what admission read, so that a project's check judges that reading
+rather than taking its own: `QUEUEKEEPER_HOST_BUSY`, the CPU's busy share in percent;
+`QUEUEKEEPER_HOST_BUSY_SECONDS`, the seconds that reading spans; `QUEUEKEEPER_HOST_LOAD`, the
+one-minute load; `QUEUEKEEPER_HOST_SETTLED_SECONDS`, how long it waited; and
+`QUEUEKEEPER_HOST_QUIET`, 1 when the Mac read quiet and 0 when it started at the bound or could
+not read the busy share. A value that could not be read is unset. A check that voids a timed run
+on a busy host reads `QUEUEKEEPER_HOST_QUIET`, or the busy share, and needs no wait of its own; a
+check that judges the load average still sees the work admission waited out, for the reasons the
+busy share replaced it above (mpm's is vocaro/mpm#108). Only exclusive work settles and is told:
+heavy and whole-host work starts as soon as it is admitted.
+
 A host's own limits go in its limits file, `admission-limits.json` beside the admission log
 (`~/Library/Application Support/queuekeeper/`; an isolated HEAVY_SLOT_DIR namespace keeps
 its own there), which every process on that host reads. Its keys are `slots`, `slotsMax`,
@@ -430,7 +459,12 @@ A line holds:
   `qk admit`, or the label a caller gives, such as `warm push REV`.
 - `slots`: the slot numbers held, on `admitted` and `ended` lines.
 - `waited`: seconds from the request to its admission or withdrawal, on `admitted` and `withdrawn`
-  lines; `held`: seconds from admission to its end, on `ended` lines.
+  lines; `held`: seconds from admission to its end, on `ended` lines, the settle of exclusive work
+  among them.
+- `settled`, on the `ended` line of exclusive work: how its settle went before the command started
+  (vocaro/queuekeeper#121): `seconds` it waited, the `busy` share
+  it last read, null when it could not be read, and whether the Mac read `quiet`. It is absent with
+  HEAVY_QUIET_SECONDS=0 and in lines an older toolkit wrote.
 - `holders`, `load` and `busy`, on `admitted` and `withdrawn` lines: how many admissions the guard
   recorded when the request asked, a dead or uncertain one among them, the one-minute load average
   then and the CPU's busy share, null until a reading spans five seconds.

@@ -2253,6 +2253,103 @@ class CpuBusyTests(unittest.TestCase):
         self.assertGreater(sum(resources.cpu_ticks()), sum(first))
 
 
+class ExclusiveSettleTests(unittest.TestCase):
+    """An exclusive admission holds every slot and waits for the CPU to read quiet before its command starts, bounded,
+    and tells the command what it read (vocaro/queuekeeper#121): mpm's timed gates, admitted the moment two whole-host
+    lanes ended, read the load those lanes left behind and voided (2026-11-13)."""
+    setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
+
+    def lines(self):
+        log = resources.log_path()
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    def admit(self, readings, quiet_seconds="60", **options):
+        """Admit exclusive work while the CPU reads each of readings in turn, the last for good, and return the
+        command's environment as the admission told it, what admission said and the ended line."""
+        readings = list(readings)
+        busy = lambda *_args, **_kwargs: readings.pop(0) if len(readings) > 1 else readings[0]
+        told = {}
+        with patch.dict(os.environ, {"HEAVY_QUIET_SECONDS": quiet_seconds, "HEAVY_QUIET_LIMIT": "25"}), \
+                patch.object(resources, "cpu_busy", side_effect=busy), contextlib.redirect_stderr(StringIO()) as said:
+            with resources.Admission("timed gates", exclusive=True, timeout=0, **options):
+                told = {name: os.environ.get(name) for name in resources.HOST_READING}
+            after = {name: os.environ.get(name) for name in resources.HOST_READING}
+        self.assertEqual(after, {name: None for name in resources.HOST_READING})
+        return told, said.getvalue(), self.lines()[-1]
+
+    def test_it_waits_while_the_work_it_waited_out_still_shows_and_starts_once_the_cpu_is_quiet(self):
+        # The first reading is the attempt's, which takes the slots; the settle reads the rest, a poll apart, long
+        # enough that the seconds it waited round to more than none.
+        os.environ["HEAVY_POLL_SECONDS"] = "0.05"
+        told, said, ended = self.admit([(90.0, 15.0), (90.0, 15.0), (None, 2.0), (60.0, 15.0), (12.0, 15.0)])
+        self.assertIn("heavy: waiting for the Mac to settle: the CPU is 90% busy, at or above HEAVY_QUIET_LIMIT=25%; "
+                      "it starts within HEAVY_QUIET_SECONDS=60 either way", said)
+        self.assertEqual(said.count("waiting for the Mac to settle"), 1)
+        self.assertRegex(said, r"heavy: the Mac settled after [0-9.]+s: the CPU is 12% busy")
+        self.assertEqual((told[resources.HOST_BUSY], told[resources.HOST_BUSY_SECONDS], told[resources.HOST_QUIET]),
+                         ("12", "15", "1"))
+        self.assertGreater(float(told[resources.HOST_SETTLED]), 0)
+        self.assertEqual((ended["event"], ended["outcome"], ended["settled"]["busy"], ended["settled"]["quiet"]),
+                         ("ended", "released", 12.0, True))
+        self.assertGreater(ended["settled"]["seconds"], 0)
+
+    def test_a_mac_already_quiet_starts_at_once_and_says_nothing(self):
+        told, said, ended = self.admit([(8.0, 15.0)])
+        self.assertNotIn("settle", said)
+        self.assertEqual((told[resources.HOST_BUSY], told[resources.HOST_QUIET]), ("8", "1"))
+        self.assertEqual(ended["settled"], {"seconds": 0.0, "busy": 8.0, "quiet": True})
+
+    def test_a_mac_that_stays_busy_starts_at_the_bound_and_says_it_is_not_quiet(self):
+        told, said, ended = self.admit([(90.0, 15.0)], quiet_seconds="0.05")
+        self.assertRegex(said, r"heavy: starting without a quiet Mac: the CPU is still 90% busy after [0-9.]+s, at or "
+                               r"above HEAVY_QUIET_LIMIT=25%")
+        self.assertEqual((told[resources.HOST_BUSY], told[resources.HOST_QUIET]), ("90", "0"))
+        self.assertEqual((ended["settled"]["busy"], ended["settled"]["quiet"]), (90.0, False))
+
+    def test_a_busy_share_that_cannot_be_read_starts_at_once_unsettled(self):
+        told, said, ended = self.admit([(None, None)])
+        self.assertIn("heavy: starting without a quiet Mac: the CPU's busy share cannot be read", said)
+        self.assertEqual((told[resources.HOST_BUSY], told[resources.HOST_BUSY_SECONDS], told[resources.HOST_QUIET]),
+                         (None, None, "0"))
+        self.assertEqual(ended["settled"], {"seconds": 0.0, "busy": None, "quiet": False})
+
+    def test_no_settle_waits_for_nothing_and_logs_nothing_but_still_tells_the_reading(self):
+        told, said, ended = self.admit([(90.0, 15.0)], quiet_seconds="0")
+        self.assertNotIn("settle", said)
+        self.assertNotIn("quiet Mac", said)
+        self.assertEqual((told[resources.HOST_BUSY], told[resources.HOST_QUIET]), ("90", "0"))
+        self.assertNotIn("settled", ended)
+
+    def test_a_stop_while_the_mac_settles_releases_every_slot_and_starts_nothing(self):
+        stops = iter([None, signal.SIGTERM])
+        with patch.object(processes, "requested", side_effect=lambda: next(stops, signal.SIGTERM)), \
+                self.assertRaisesRegex(processes.Interrupted, "while the Mac settled for exclusive work"):
+            self.admit([(90.0, 15.0)])
+        ended = self.lines()[-1]
+        self.assertEqual((ended["event"], ended["outcome"], ended["slots"]), ("ended", "stopped", [0, 1, 2]))
+        self.assertFalse(resources.guard_path(os.environ).exists())
+        self.assertIsNone(os.environ.get(resources.TOKEN))
+        with contextlib.redirect_stderr(StringIO()), resources.Admission("next", exclusive=True, timeout=0):
+            pass
+
+    def test_heavy_and_whole_host_work_neither_settle_nor_are_told(self):
+        for options in [{}, {"whole_host": True}, {"model": True}]:
+            with self.subTest(options), patch.dict(os.environ, {"HEAVY_QUIET_SECONDS": "60"}), \
+                    patch.object(resources, "cpu_busy", return_value=(90.0, 15.0)), \
+                    contextlib.redirect_stderr(StringIO()) as said:
+                with resources.Admission("work", timeout=0, **options):
+                    self.assertEqual({name: os.environ.get(name) for name in resources.HOST_READING},
+                                     {name: None for name in resources.HOST_READING})
+                self.assertNotIn("settle", said.getvalue())
+                self.assertNotIn("settled", self.lines()[-1])
+
+    def test_invalid_settle_limits_are_refused(self):
+        for variable in ["HEAVY_QUIET_SECONDS", "HEAVY_QUIET_LIMIT"]:
+            with self.subTest(variable), patch.dict(os.environ, {variable: "-1"}), \
+                    self.assertRaisesRegex(ValueError, "Invalid resource limits"):
+                resources.Admission("timed", exclusive=True)
+
+
 class SlowAttempts:
     """Admission's clock, as resources reads it, with each attempt to admit taking two seconds more by it, as an
     attempt may on a loaded host, so that a test cannot pass only because its host was fast (#15)."""

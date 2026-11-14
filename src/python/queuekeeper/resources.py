@@ -31,6 +31,9 @@ taking freed slots, exclusive gates waited for hours (October 2026). A whole-hos
 the same queue: exclusive and whole-host requests behind it wait their turn, and other heavy work
 takes no guaranteed slot while it waits, only a slot beyond them, so that the guaranteed slots
 drain toward it rather than a steady stream of heavy jobs keeping one busy for good (#174).
+Admitted, exclusive work holds every slot and waits, bounded, for the CPU's busy share to read quiet before its
+command starts, and tells the command what it read: the work it waited out still shows in every trailing measure
+of the Mac (Admission._quiet, vocaro/queuekeeper#121).
 
 A generative-model run takes one heavy slot and the host's model lock, an flock on `model` in
 the slot directory, both or neither: two model runs exclude each other while builds and tests
@@ -438,6 +441,24 @@ def cpu_busy(directory, wait=False, ticks=cpu_ticks, now=time.time, sleep=time.s
     return busy_share(base[1:], current), round(at - base[0], 1)
 
 
+# An exclusive admission settles before its command starts (vocaro/queuekeeper#121). Admitted the moment the work ahead
+# of it ends, it holds every slot of a Mac whose trailing readings still count that work: on 2026-11-13 mpm's timed
+# gates read a one-minute load of 25.9 against their limit of 13.5 with nothing admitted running, and voided. So it
+# waits, holding the slots, while the CPU's busy share is at or above QUIET_LIMIT percent, for at most QUIET_SECONDS,
+# and then starts its command however busy the Mac reads. HEAVY_QUIET_LIMIT and HEAVY_QUIET_SECONDS override them
+# for one process; HEAVY_QUIET_SECONDS=0 starts at once. They are not keys of the limits file, which an older toolkit
+# would refuse as misconfigured.
+QUIET_LIMIT, QUIET_SECONDS = 25.0, 300.0
+# What an exclusive command is told of the Mac as it starts, so that a project's check judges admission's reading
+# rather than taking its own: the CPU's busy share in percent and the seconds that reading spans, the one-minute load,
+# the seconds it waited for the Mac to settle, and whether the Mac read quiet (1) or not (0: it ran at the bound, or
+# the busy share could not be read). A value that could not be read is left unset.
+HOST_BUSY, HOST_BUSY_SECONDS, HOST_LOAD, HOST_SETTLED, HOST_QUIET = (
+    "QUEUEKEEPER_HOST_BUSY", "QUEUEKEEPER_HOST_BUSY_SECONDS", "QUEUEKEEPER_HOST_LOAD", "QUEUEKEEPER_HOST_SETTLED_SECONDS",
+    "QUEUEKEEPER_HOST_QUIET")
+HOST_READING = (HOST_BUSY, HOST_BUSY_SECONDS, HOST_LOAD, HOST_SETTLED, HOST_QUIET)
+
+
 # The host's admission limits, beside its admission log: the limits its owner chose for this host (#49).
 LIMITS = "admission-limits.json"
 # Each limit by its key in the limits file: the environment variable that overrides it, whether it counts
@@ -799,8 +820,13 @@ class Admission:
         self.recheck = float(os.environ.get("HEAVY_RECOVER_SECONDS", "60"))
         # How long a queued request holds later work back after it last asked (_holds).
         self.hold = float(os.environ.get("HEAVY_PLACE_SECONDS", str(PLACE_SECONDS)))
+        # How quiet the Mac must read before an exclusive command starts, and how long it may wait for that (#121).
+        self.quiet_limit = float(os.environ.get("HEAVY_QUIET_LIMIT", str(QUIET_LIMIT)))
+        self.quiet_seconds = float(os.environ.get("HEAVY_QUIET_SECONDS", str(QUIET_SECONDS)))
+        # What the settle found, for the ended line, and the reading variables it replaced, for the end to restore.
+        self.settled, self.told = None, None
         if self.slots < 1 or self.maximum < self.slots or self.settle < 0 or self.poll <= 0 or timeout < 0 \
-                or self.recheck < 0 or self.hold < 0:
+                or self.recheck < 0 or self.hold < 0 or self.quiet_limit < 0 or self.quiet_seconds < 0:
             raise ValueError("Invalid resource limits")
         # Why the latest attempt was refused: its kind, which the log counts (#49), and the waiting message,
         # which names the limit that refused it and its value beside what the attempt read.
@@ -1358,7 +1384,55 @@ class Admission:
               f"{self.label[:LABEL_LIMIT]}", file=sys.stderr, flush=True)
         if self.counted:
             print(f"heavy: admitted beside a stranded entry: {self._stranded_text()}", file=sys.stderr, flush=True)
+        if self.exclusive:
+            try:
+                self._quiet()
+            except BaseException as error:
+                # Admitted, it holds every slot, and no command has started: a stop while the Mac settles releases
+                # them as a stopped run does, and anything else as a command that could not start.
+                from queuekeeper.processes import Interrupted, NotStarted
+                self.__exit__(type(error) if isinstance(error, Interrupted) else NotStarted, error, error.__traceback__)
+                raise
         return self
+
+    def _quiet(self):
+        """Wait, holding every slot, until the CPU's busy share reads under HEAVY_QUIET_LIMIT, for at most
+        HEAVY_QUIET_SECONDS, and then tell the command what admission read of the Mac (HOST_READING, #121). A busy
+        share that cannot be read starts the command at once. HEAVY_QUIET_SECONDS=0 waits for nothing and says
+        nothing, though the command is still told the reading."""
+        from queuekeeper.processes import Interrupted, requested
+        began, said = time.monotonic(), False
+        while True:
+            busy, seconds = cpu_busy(self.directory)
+            waited = round(time.monotonic() - began, 1)
+            quiet = None if busy is None and seconds is None else busy is not None and busy < self.quiet_limit
+            if quiet is None or quiet or waited >= self.quiet_seconds:
+                break
+            if requested() is not None:
+                raise Interrupted(requested(), "while the Mac settled for exclusive work")
+            if not said:
+                shown = "has been read too briefly" if busy is None else f"is {busy:.0f}% busy"
+                print(f"heavy: waiting for the Mac to settle: the CPU {shown}, at or above HEAVY_QUIET_LIMIT="
+                      f"{self.quiet_limit:g}%; it starts within HEAVY_QUIET_SECONDS={self.quiet_seconds:g} either way",
+                      file=sys.stderr, flush=True)
+                said = True
+            time.sleep(self.poll)
+        load = one_minute_load()
+        if self.quiet_seconds > 0:
+            self.settled = {"seconds": waited, "busy": busy, "quiet": bool(quiet)}
+        if self.quiet_seconds > 0 and not quiet:
+            why = ("the CPU's busy share cannot be read" if quiet is None else
+                   f"the CPU is still {busy:.0f}% busy after {waited:g}s, at or above HEAVY_QUIET_LIMIT={self.quiet_limit:g}%"
+                   if busy is not None else f"the CPU has not been read over {BUSY_MINIMUM:g}s after {waited:g}s")
+            print(f"heavy: starting without a quiet Mac: {why}", file=sys.stderr, flush=True)
+        elif said:
+            print(f"heavy: the Mac settled after {waited:g}s: the CPU is {busy:.0f}% busy", file=sys.stderr, flush=True)
+        self.told = {name: os.environ.get(name) for name in HOST_READING}
+        reading = {HOST_BUSY: busy, HOST_BUSY_SECONDS: seconds if busy is not None else None, HOST_LOAD: load,
+                   HOST_SETTLED: waited, HOST_QUIET: int(bool(quiet))}
+        for name, value in reading.items():
+            if value is None: os.environ.pop(name, None)
+            else: os.environ[name] = f"{value:g}"
 
     def _open_record(self, born):
         """Begin the process record with its admission line, before the guard entry is published: the owner, its
@@ -1445,6 +1519,10 @@ class Admission:
         _held.pop(self.identity, None)
         if self.previous is None: os.environ.pop(TOKEN, None)
         else: os.environ[TOKEN] = self.previous
+        for name, value in (self.told or {}).items():
+            if value is None: os.environ.pop(name, None)
+            else: os.environ[name] = value
+        self.told = None
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
             slots = [slot for slot, _fd in self.descriptors]
@@ -1455,7 +1533,8 @@ class Admission:
             outcome = ending(kind)
             self._settle(release=outcome != "uncertain")
             self.held_seconds = round(time.monotonic() - self.admitted, 3)
-            self._log("ended", outcome=outcome, slots=slots, held=self.held_seconds)
+            self._log("ended", outcome=outcome, slots=slots, held=self.held_seconds,
+                      **({"settled": self.settled} if self.settled is not None else {}))
         return False
 
     def device_lane_passed(self, keys):
