@@ -128,6 +128,13 @@ UNMEASURED_TEST = re.compile(r"^.*:\d+: -\[[^\]\n]+\] : Test skipped - Unmeasure
                              r"|^[ \t]*SKIPPED \[\d+\] [^\n]*?: Unmeasured: .*$", re.M)
 
 
+# A project's own account of what it could not measure, for a run that ends unmeasured with no test its log reports so,
+# such as a gate whose timing check voided itself under load: a line of the lane's log that begins `Unmeasured:`, the
+# word a test's own unmeasured reason begins with, after any spaces or tabs. On 2026-11-12 mpm's gate named the check
+# in a line of its own that no hold quoted, and a reader had to open a log of several hundred lines to learn it
+# (vocaro/queuekeeper#30).
+UNMEASURED_REASON = re.compile(r"^[ \t]*Unmeasured:[ \t]*\S.*$", re.M)
+
 SERIES = re.compile(r"^Repeat series: asked (\d+) repeats?\b", re.M)
 
 
@@ -145,6 +152,11 @@ def series_reported(text):
     reports no series: a command that ignored --repeat ran it once at most, whatever its status says."""
     found = SERIES.findall(text)
     return int(found[-1]) if found else None
+
+
+def unmeasured_reasons(text):
+    """The distinct lines in which a lane's log gives its project's own reason for a run left unmeasured, in order."""
+    return list(dict.fromkeys(match.group(0).strip() for match in UNMEASURED_REASON.finditer(text)))
 
 
 def unmeasured_tests(text):

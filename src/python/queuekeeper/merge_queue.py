@@ -4074,8 +4074,9 @@ class Worker:
                 self.locked_screens = 0
             self.no_verdicts += 1
             runs = no_verdict_runs(config)
+            cause = runner.no_verdict_cause(result, log)
             gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
-                    f"row, the last with exit {result}{runner.ran_where}, {runner.no_verdict_cause(result, log)}")
+                    f"row, the last with exit {result}{runner.ran_where}, {cause}")
             # A shared host's configuration is the owner's; a host that stays busy, or tests left unmeasured, a
             # session reads, and resumes once the host has settled or the cause is gone.
             kind = OWNER if result == remote.MISCONFIGURED else SESSION
@@ -4084,7 +4085,9 @@ class Worker:
                                         + runner.shared_timing(result, config)))
                 return NO_VERDICT_OUTCOME
             self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
-                     + f", run {self.no_verdicts} of at most {runs}")
+                     + f", run {self.no_verdicts} of at most {runs}"
+                     # What an unmeasured run could not measure, so that the worker's log says it before any hold does.
+                     + (f": {cause}" if result == lane_results.UNMEASURED else ""))
             # Every retry waits, so that none starts into the load that voided the run before it, or another Mac's.
             busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
             if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
@@ -4405,8 +4408,9 @@ class Worker:
 
     def no_verdict_cause(self, result, log):
         """Why the gate that exited result gave no verdict, for a hold's reason: the lane's limit it reached, the
-        tests its log reports unmeasured, else the error its receipt records (#288), no admission, or a shared host's
-        configuration."""
+        tests its log reports unmeasured, else the error its receipt records (#288), else the last line in which its log
+        gives the project's own reason (lane_results.unmeasured_reasons, vocaro/queuekeeper#30), no admission, or a
+        shared host's configuration."""
         if self.timed_out: return f"unmeasured: {self.timed_out}"
         if result == lane_results.UNMEASURED:
             try: said = log.read_text(errors="replace") if log else ""
@@ -4414,7 +4418,11 @@ class Worker:
             found = lane_results.unmeasured_tests(said)
             if not found:
                 error = self.receipt_error()
-                return f"unmeasured: {shortened(error)}" if error else "unmeasured, with no test its log names"
+                if error: return f"unmeasured: {shortened(error)}"
+                reasons = lane_results.unmeasured_reasons(said)
+                if not reasons: return "unmeasured, with no test its log names"
+                more = f" ({len(reasons)} such lines, the last)" if len(reasons) > 1 else ""
+                return f"unmeasured, and its log says{more}: {shortened(reasons[-1])}"
             first = shortened(found[0])
             # The run's last reading of its screen, which queuekeeper writes for a lane whose result depends on it.
             screens = SCREEN_LINE.findall(said)

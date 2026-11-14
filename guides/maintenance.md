@@ -554,7 +554,14 @@ The `queue.noVerdictRuns` hold's reason says how many
 runs gave no verdict, on which Mac the last ran (`on this Mac (NAME)` or `on the second Mac (HOST)`, when
 its receipt or dispatch says), and why it gave none: the lane that reached its limit, the number of tests
 its log reports unmeasured with the first of them and the last screen reading queuekeeper logged
-(vocaro-engineering#185), no admission, or the host's configuration. When the last run ended unmeasured
+(vocaro-engineering#185), the error its receipt records, no admission, or the host's configuration. A log
+that reports no test unmeasured and whose receipt records no error gives the project's own reason when it
+has one, a line that begins `Unmeasured:` ([lanes](lanes.md)): the reason quotes the last such line, at
+most `UNMEASURED_SHOWN` (300) characters of it, as a test's line is bounded, and so does `qk queue status`, which shows
+the hold's reason. The worker's own `no verdict (exit 3), run N of at most M` line in its log ends with the
+same cause, so it is there before any hold. On 2026-11-12 mpm's gate named the timing check that voided
+itself in a line of its own, `NON-RUN: ...`, while its hold said only "with no test its log names"
+([#30](https://github.com/vocaro/queuekeeper/issues/30)). When the last run ended unmeasured
 in a lane that takes one slot of heavy-work admission and is not `"wholeHost": true`, the reason adds
 that other heavy work can join the lane after it starts, since admission looks only at a run's start, and
 points a timed part that needs a quiet Mac at `qk admit --here --exclusive` from a `self` lane

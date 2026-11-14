@@ -36,7 +36,13 @@ as PDFReflowLib's gate lanes do by running the steps serially, or sets no `minim
 A lane is unmeasured, exit 3, when its command exits 3, when its command exits 0 but its log
 reports a test unmeasured ([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#honest-outcome-states)), or when its
 `timeout` stops it. Its receipt then records `"outcome": "unmeasured"`, with the log's lines for
-those tests under `unmeasured`, or the timeout under `error`. A lane's timeout is a wall-clock
+those tests under `unmeasured`, or the timeout under `error`. A command that exits 3 itself, such as a
+gate whose own timing check voided itself under load, says what it could not measure in a line of its log
+that begins `Unmeasured:`, after any spaces or tabs, as `Unmeasured: CHECK voided its own measurement; rerun
+on an idle Mac`. Such a line names no test and makes no run unmeasured by itself; when the log reports no
+test unmeasured, the merge queue quotes the last such line in its worker log, its hold and `qk queue
+status` ([maintenance](maintenance.md#the-merge-queue), [#30](https://github.com/vocaro/queuekeeper/issues/30)).
+A line of any other prefix is not read. A lane's timeout is a wall-clock
 backstop that a busy host can reach
 ([core-wait time](https://github.com/vocaro/vocaro-engineering/blob/main/guides/measurement.md#cpu-scheduling-and-core-wait-time)), and the log it cuts short
 counts nothing. A run that exits 3 is counted too, but a shortfall only prints, because the

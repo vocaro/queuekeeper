@@ -113,6 +113,19 @@ class LaneResultTests(unittest.TestCase):
         self.assertEqual(lane_results.unmeasured_tests(log), [xctest, swift_testing, python])
         self.assertEqual(lane_results.unmeasured_tests("\n".join(measured)), [])
 
+    def test_a_line_that_begins_unmeasured_is_the_projects_own_reason(self):
+        # As mpm's gate said on 2026-11-12, had it begun its line so (vocaro/queuekeeper#30).
+        voided = ("Unmeasured: RunGroupAwareFractureComponentUnionChecks voided its own measurement (gate exit 3) - 15 "
+                  "row(s) pass, none fail, but a timing it depends on could not be trusted. Rerun on an idle machine.")
+        others = ["NON-RUN: a line of another prefix", "queuekeeper: unmeasured: Owned command timed out after 2s",
+                  "test_x (m.X) ... skipped 'Unmeasured: the voices were not ready'", "Unmeasured:", "Unmeasured:   ",
+                  "unmeasured: lower case", "The check said Unmeasured: mid-line"]
+        log = "\n".join([*others, voided, "\tUnmeasured: indented ", voided]) + "\n"
+        self.assertEqual(lane_results.unmeasured_reasons(log), [voided, "Unmeasured: indented"])
+        self.assertEqual(lane_results.unmeasured_reasons("\n".join(others)), [])
+        # Such a line is no test, so it never makes a run that exits 0 unmeasured.
+        self.assertEqual(lane_results.unmeasured_tests(log), ["test_x (m.X) ... skipped 'Unmeasured: the voices were not ready'"])
+
 
     # pytest 8.4.2's output, with and without pytest-xdist 3.8.0 (Python 3.12, 2026-11-03), on a
     # module of passes, skips, unittest skips, xfails, a failure, a fixture error and a warning.

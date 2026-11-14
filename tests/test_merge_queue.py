@@ -2201,6 +2201,52 @@ class NoVerdict(Fixture):
         worker.timed_out = "gate reached its limit: after 7200 s"
         self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: gate reached its limit: after 7200 s")
 
+    VOIDED = ("Unmeasured: RunGroupAwareFractureComponentUnionChecks voided its own measurement (gate exit 3) - 15 "
+              "row(s) pass, none fail, but a timing it depends on could not be trusted. Rerun on an idle machine.")
+
+    def test_a_log_that_names_no_test_gives_the_projects_own_reason(self):
+        """mpm's gate of 2026-11-12, which said in a line of its own what it could not measure (vocaro/queuekeeper#30)."""
+        worker, log, receipt = self.stopped_worker()
+        log.write_text("test_last (m.Passed) ... ok\n" + self.VOIDED + "\n" + "done\n")
+        self.assertEqual(worker.no_verdict_cause(3, log), f"unmeasured, and its log says: {self.VOIDED}")
+        # The last of several, bounded as a test's line is.
+        log.write_text(f"Unmeasured: the first\n{self.VOIDED}\nUnmeasured: {'x' * 400}\n")
+        said = worker.no_verdict_cause(3, log)
+        self.assertTrue(said.startswith("unmeasured, and its log says (3 such lines, the last): Unmeasured: xxx"), said)
+        self.assertEqual(len(said.split("the last): ", 1)[1]), mq.UNMEASURED_SHOWN)
+        # A test the log reports unmeasured, and an error the receipt records, still come first.
+        log.write_text(self.VOIDED + "\ntest_voices (m.Voices) ... skipped 'Unmeasured: the voices were not ready'\n")
+        self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: 1 test, the first test_voices (m.Voices) ... "
+                                                          "skipped 'Unmeasured: the voices were not ready'")
+        log.write_text(self.VOIDED + "\n")
+        receipt.write_text(json.dumps({"error": self.TIMED_OUT}))
+        self.assertEqual(worker.no_verdict_cause(3, log), f"unmeasured: {self.TIMED_OUT}")
+        # A line of another prefix is not guessed at.
+        receipt.unlink()
+        log.write_text(self.VOIDED.replace("Unmeasured:", "NON-RUN:") + "\n")
+        self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)
+
+    def test_a_hold_and_the_worker_log_quote_the_projects_reason(self):
+        """A real qk run of a gate that says why in its own line and exits 3: the worker's no-verdict line, the hold's
+        reason and qk queue status quote it (vocaro/queuekeeper#30)."""
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "-c", f"print({self.VOIDED!r}); raise SystemExit(3)"]}
+        config["queue"]["noVerdictRuns"] = 2
+        self.publish(config)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch.object(mq.Worker, "settle", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn(f"no verdict (exit 3), run 1 of at most 2: unmeasured, and its log says: {self.VOIDED}",
+                      said.getvalue())
+        held = mq.Queue(self.repo).held()
+        self.assertIn(f"the last with exit 3 on this Mac ({offload_host.mac_name()}), unmeasured, and its log says: "
+                      f"{self.VOIDED}, the most queue.noVerdictRuns allows (2)", held)
+        snapshot, _ = mq.reading(self.repo)
+        self.assertIn(self.VOIDED, json.dumps(snapshot))
+
     BUSY = ("cpu", "the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%")
 
     def test_a_retry_waits_while_the_load_is_high_and_starts_once_it_drops(self):
