@@ -255,6 +255,27 @@ class Fixture(unittest.TestCase):
             yield slept, said
 
 
+class EntryIdentifiers(Fixture):
+    def test_branch_subject_and_explicit_issue_names_are_ref_safe(self):
+        self.assertEqual(mq.entry_slug("codex/fix-share-sheet", "Fix #42"), "issue-42-fix-share-sheet")
+        self.assertEqual(mq.entry_slug("agent/layout", "Fix layout", "Closes #29"), "issue-29-layout")
+        self.assertEqual(mq.entry_slug("HEAD", "Fix the share sheet"), "fix-the-share-sheet")
+        self.assertEqual(mq.entry_slug("main", "Fix café / layout.. @{x}"), "fix-cafe-layout-x")
+        self.assertEqual(mq.entry_slug(None, "🚀"), "change")
+        self.assertLessEqual(len(mq.entry_slug("a" * 200, "subject")), 56)
+
+    def test_new_ids_are_descriptive_and_existing_ids_are_never_overwritten(self):
+        self.commit("a.txt", "codex/fix-layout")
+        queue = mq.Queue(self.repo)
+        queue.save({"id": "qk0007-fix-layout", "submitted": 0, "state": "landed"})
+        with patch.object(mq.secrets, "randbelow", side_effect=[7, 8]), queue.locked():
+            identifier = mq.entry_identifier(queue, "codex/fix-layout", "Fix layout")
+        self.assertEqual(identifier, "qk0008-fix-layout")
+        first, = self.add("codex/fix-layout")
+        self.assertRegex(first, r"^qk\d{4}-fix-layout$")
+        self.assertEqual(self.state(first)["branch"], "codex/fix-layout")
+
+
 class Landing(Fixture):
     def test_advisory_queue_read_error_preserves_wait_status(self):
         parser = argparse.ArgumentParser()

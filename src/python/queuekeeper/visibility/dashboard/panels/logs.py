@@ -4,7 +4,7 @@ Only a file in the queue's own logs folder, or its worker.log, is read, by a nam
 import os
 import stat
 
-TITLE, ORDER = "Logs", 30
+TITLE, ORDER = "Logs", 100
 MOST, TAIL, CHUNK = 60, 64 << 10, 256 << 10
 WORKER = "worker.log"
 

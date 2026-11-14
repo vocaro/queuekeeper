@@ -1158,7 +1158,8 @@ after a change to how the dashboard looks:
 python3 tools/dashboard-screenshots.py
 ```
 
-It writes `assets/dashboard-home.png`, `dashboard-queue.png` and `dashboard-farm.png`, in the dark theme, and needs
+It writes `assets/dashboard-home.png` (the Queue home view) and `dashboard-farm.png`, with compact sample data
+in the dark theme, and needs
 Google Chrome. The made-up data is in the script. `tests/test_dashboard_screenshots.py` fails when a panel's data
 no longer has the fields the script makes up, which is when to change the script.
 

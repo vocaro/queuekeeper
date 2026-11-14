@@ -29,10 +29,11 @@ def totals(journal, now):
 
 
 def data(repository, query):
+    from . import load
     journal = repository.events()
     wanted = query.get("kind")
     found = [event for event in journal if not wanted or event["kind"].startswith(wanted)]
-    return {"today": totals(journal, time.time()), "events": [shown(event) for event in reversed(found[-MOST:])],
+    return {"recent": [load("queue").entry(found) for found in reversed(repository.snapshot().get("recent") or [])], "today": totals(journal, time.time()), "events": [shown(event) for event in reversed(found[-MOST:])],
             "total": len(found)}
 
 

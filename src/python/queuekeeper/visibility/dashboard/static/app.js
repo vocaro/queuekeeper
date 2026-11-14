@@ -22,6 +22,23 @@
     }
     return element;
   };
+  QK.entry = function (found, context, options = {}) {
+    const h = QK.h, short = commit => commit ? String(commit).slice(0, 12) : "";
+    const log = name => name ? h("a", { href: QK.href(context.repository, "logs", { name }) }, "log") : null;
+    const settled = typeof found.settled === "number";
+    const facts = options.compact ? found.id : [found.id, found.branch, found.commits > 1 ? QK.count(found.commits, "commit") : null, found.note,
+      found.front ? "front of the queue" : null, found.noGate ? "no gate" : null,
+      found.flakes ? QK.count(found.flakes, "flaky test") : null, found.ungated ? "landed ungated" : null]
+      .filter(Boolean).join(" · ");
+    return h("li", null,
+      h("span", { class: "pill " + found.state }, found.state),
+      h("span", null,
+        h("a", { class: "entry-title ellipsis", href: QK.href(context.repository, "queue", { entry: found.id }) }, found.subject || found.id,
+          !options.compact && found.landedAs ? h("span", { class: "muted mono" }, " → " + short(found.landedAs)) : null),
+        h("div", { class: "sub mono wrap" }, facts),
+        !options.compact && found.why ? h("div", { class: "sub wrap" }, found.why, " ", log(found.log)) : null),
+      h("span", { class: "muted" }, settled ? QK.ago(found.settled) : QK.since(found.submitted)));
+  };
   QK.fill = function (element, ...children) { element.replaceChildren(...children.flat().filter(Boolean)); };
   QK.span = function (seconds) {
     seconds = Math.max(0, Math.round(seconds || 0));
@@ -62,7 +79,7 @@
   function route() {
     const parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
     const query = Object.fromEntries(new URLSearchParams(location.search));
-    return parts[0] === "r" && parts[1] ? { repository: parts[1], tab: parts[2] || "home", query } : { query };
+    return parts[0] === "r" && parts[1] ? { repository: parts[1], tab: parts[2] === "home" ? "queue" : parts[2] || "queue", query } : { query };
   }
 
   function live(ok) {
@@ -82,7 +99,7 @@
       QK.fill(picker, QK.h("option", { value: "" }, "All repositories"), state.repositories.map(one =>
         QK.h("option", { value: one.name, selected: one.name === current.repository }, (marks[one.level] || "") + one.name)));
       picker.value = current.repository || "";
-      picker.onchange = () => QK.go(picker.value ? QK.href(picker.value, current.tab || "home") : "/");
+      picker.onchange = () => QK.go(picker.value ? QK.href(picker.value, current.tab || "queue") : "/");
     }
     QK.fill(tabs, current.repository ? state.panels.map(panel => QK.h("a", {
       href: QK.href(current.repository, panel.name), class: panel.name === current.tab ? "on" : null,
@@ -118,9 +135,9 @@
         QK.h("p", null, "Queue a commit with qk land, or start qk serve inside a repository.")));
     }
     QK.fill(main, QK.h("div", { class: "card" }, QK.h("h2", null, "All repositories"),
-      QK.h("ul", { class: "rows lines" }, state.repositories.map(one => QK.h("li", null, QK.h("a", {
-        class: "row", href: QK.href(one.name, "home") },
-        QK.h("span", null, QK.h("span", { class: "dot " + one.level }), " ", QK.h("b", null, one.name)),
+      QK.h("ul", { class: "rows lines repositories" }, state.repositories.map(one => QK.h("li", null, QK.h("a", {
+        class: "row", href: QK.href(one.name, "queue") },
+        QK.h("span", { class: "repository-label" }, QK.h("span", { class: "dot " + one.level }), QK.h("b", null, one.name)),
         QK.h("span", { class: "ellipsis" }, one.headline, QK.h("span", { class: "muted" }, " " + one.detail)),
         QK.h("span", { class: "muted" }, "›")))))));
   }
@@ -133,7 +150,7 @@
       live(true);
       header();
       if (!current.repository) {
-        if (state.repositories.length === 1) return QK.go(QK.href(state.repositories[0].name, "home"), true);
+        if (state.repositories.length === 1) return QK.go(QK.href(state.repositories[0].name, "queue"), true);
         if (!selecting()) all();
         return;
       }

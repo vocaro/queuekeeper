@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -18,17 +19,19 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
 from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
-from queuekeeper.visibility.dashboard import panels, registry, repository, server
+from queuekeeper.visibility.dashboard import admission_ids, panels, registry, repository, server
 from queuekeeper.visibility.dashboard.panels import farm, history, home, logs, queue
 
+READ_CONNECTIONS = farm.read_connections
+READ_DEVICES = farm.read_devices
 READ_DETAIL = farm.read_detail  # the real one, which Fixture replaces so that no test asks a Mac
 import test_merge_queue
 
 HOSTS = {"schemaVersion": 1, "hosts": [
     {"name": "this Mac (desk)", "role": "here", "state": "observed", "reasons": [], "limits": {"slots": 3, "slotsMax": 7},
      "slots": [{"slot": 0, "holder": "a"}, {"slot": 1, "holder": "b"}, {"slot": 2, "holder": None}],
-     "holders": [{"label": "project gate", "heldSeconds": 90.0, "slots": [0], "wholeHost": True, "exclusive": False}],
-     "waiters": [{"label": "other unit", "waitedSeconds": 12.5, "reason": "every slot is busy"}]},
+     "holders": [{"identity": "holder-1", "label": "project gate", "heldSeconds": 90.0, "slots": [0], "wholeHost": True, "exclusive": False}],
+     "waiters": [{"identity": "place-1", "request": "request-1", "label": "other unit", "waitedSeconds": 12.5, "reason": "every slot is busy"}]},
     {"name": "second Mac (build)", "role": "second", "state": "unknown", "reasons": ["ssh could not reach build"]}]}
 
 
@@ -43,7 +46,12 @@ class Fixture(test_merge_queue.Fixture):
         listed = patch.object(registry, "path", lambda: self.base / "settings" / registry.FILE)
         listed.start()
         self.addCleanup(listed.stop)
-        for name, value in (("read", lambda: HOSTS), ("read_detail", lambda: dict(LOADS))):
+        names = patch.object(admission_ids, "names_for", return_value={})
+        names.start()
+        self.addCleanup(names.stop)
+        for name, value in (("read", lambda: HOSTS), ("read_detail", lambda: dict(LOADS)),
+                            ("read_devices", lambda: {"devices": [], "deferredTo": None, "error": None}),
+                            ("read_connections", lambda: {})):
             reading = patch.object(farm, name, value)
             reading.start()
             self.addCleanup(reading.stop)
@@ -64,10 +72,189 @@ class Fixture(test_merge_queue.Fixture):
         while farm.STATE["busy"] and time.monotonic() < deadline: time.sleep(0.01)
 
 
+class DeviceConnections(unittest.TestCase):
+    PHONE = "00000000-0000000000000001"
+    PAD = "00000000-0000000000000002"
+
+    def test_current_and_legacy_xcode_inventory_use_hardware_ids_and_exclude_simulators(self):
+        found = farm.connections_of({"result": {"devices": [
+            {"identifier": "core-device-uuid", "properties": {
+                "hardware": {"udid": self.PHONE.lower(), "reality": "physical"},
+                "connection": {"state": "connected", "transportType": "localNetwork"}}},
+            {"hardwareProperties": {"udid": self.PAD},
+             "connectionProperties": {"tunnelState": "disconnected", "transportType": "wired"}},
+            {"properties": {"hardware": {"udid": self.PHONE, "reality": "simulated"},
+                            "connection": {"state": "disconnected"}}},
+            {"identifier": self.PHONE, "deviceProperties": {"name": "iPhone"}},
+        ]}})
+        self.assertEqual(found, {
+            self.PHONE: {"connection": "connected", "transport": "localNetwork"},
+            self.PAD: {"connection": "disconnected", "transport": "wired"}})
+        with self.assertRaises(ValueError): farm.connections_of({"result": {"devices": None}})
+        self.assertEqual(farm.connections_of({"result": {"devices": [{"hardwareProperties": {"udid": self.PHONE}}]}})
+                         [self.PHONE]["connection"], "unknown")
+
+    def test_inventory_query_is_bounded_and_reports_command_and_json_failures(self):
+        result = subprocess.CompletedProcess([], 0, json.dumps({"result": {"devices": []}}), "")
+        with patch.object(farm.subprocess, "run", return_value=result) as run:
+            self.assertEqual(READ_CONNECTIONS(), {})
+        self.assertEqual(run.call_args.kwargs["timeout"], 15)
+        self.assertIn("--timeout", run.call_args.args[0])
+        self.assertIn("--json-output", run.call_args.args[0])
+        for result in (subprocess.CompletedProcess([], 1, "", "CoreDevice unavailable"),
+                       subprocess.CompletedProcess([], 0, "not JSON", "")):
+            with self.subTest(result=result), patch.object(farm.subprocess, "run", return_value=result):
+                with self.assertRaises((RuntimeError, ValueError)): READ_CONNECTIONS()
+
+    def test_connection_failures_preserve_reservations_and_do_not_claim_disconnection(self):
+        record = {"devices": {"iPhone": {"device": self.PHONE, "state": "held", "ownerChatID": "session"}}}
+        for error in (FileNotFoundError("xcrun unavailable"), subprocess.TimeoutExpired("devicectl", 15),
+                      ValueError("invalid inventory")):
+            with self.subTest(error=error), patch.object(farm.offload_host, "device_record_whole", return_value=record), \
+                    patch.object(farm, "read_connections", side_effect=error):
+                found = READ_DEVICES()
+            self.assertIsNone(found["error"])
+            self.assertTrue(found["connectionError"])
+            self.assertIsNone(found["checkedAt"])
+            self.assertEqual(found["devices"][0]["connection"], "unknown")
+            self.assertEqual(found["devices"][0]["owner"], "session")
+
+    def test_live_connections_join_reservations_by_udid_and_deferrals_are_not_queried(self):
+        record = {"devices": {"iPhone": {"device": self.PHONE, "state": "held"},
+                              "iPad": {"device": self.PAD, "state": "released"}}}
+        with patch.object(farm.offload_host, "device_record_whole", return_value=record), \
+                patch.object(farm, "read_connections", return_value={self.PHONE: {"connection": "connected", "transport": "localNetwork"}}):
+            found = READ_DEVICES()
+        self.assertEqual([(device["name"], device["connection"]) for device in found["devices"]],
+                         [("iPad", "notDetected"), ("iPhone", "connected")])
+        self.assertIsNotNone(found["checkedAt"])
+        self.assertIsNone(found["connectionError"])
+        record[farm.offload_host.DEFERRED] = "other-mac"
+        with patch.object(farm.offload_host, "device_record_whole", return_value=record), \
+                patch.object(farm, "read_connections") as read:
+            found = READ_DEVICES()
+        read.assert_not_called()
+        self.assertEqual(found["devices"][0]["connection"], "unknown")
+
+
+class PublicAdmissionIDs(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "ids.json"
+        patcher = patch.object(admission_ids, "path", return_value=self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_readable_names_are_persistent_collision_checked_and_follow_requests_into_running(self):
+        reading = {"hosts": [{"role": "here", "waiters": [
+            {"identity": "place", "label": "Fix share sheet (#42)", "origin": {"branch": "codex/fix-share-sheet"}}]}]}
+        with patch.object(admission_ids.secrets, "randbelow", return_value=7318):
+            first = admission_ids.names_for(reading)
+        self.assertEqual(first["place"], "qk7318-issue-42-fix-share-sheet")
+        reading["hosts"][0]["waiters"][0]["request"] = "request"
+        names = admission_ids.names_for(reading)
+        self.assertEqual(names["request"], first["place"])
+        reading["hosts"][0] = {"role": "here", "holders": [{"identity": "request", "label": "changed metadata"}]}
+        self.assertEqual(admission_ids.names_for(reading)["request"], first["place"])
+        reading["hosts"][0]["holders"].append({"identity": "different", "label": "Fix share sheet (#42)",
+                                              "origin": {"branch": "codex/fix-share-sheet"}})
+        with patch.object(admission_ids.secrets, "randbelow", side_effect=[7318, 7319]):
+            names = admission_ids.names_for(reading)
+        self.assertEqual(names["different"], "qk7319-issue-42-fix-share-sheet")
+        self.assertEqual(json.loads(self.path.read_text())["request"], first["place"])
+
+    def test_command_names_use_repository_and_action_when_the_branch_is_generic(self):
+        self.assertEqual(admission_ids.slug({"label": "/Applications/Xcode.app/bin/xcodebuild build -project App.xcodeproj",
+            "origin": {"repository": "Pagepour", "branch": "main"}}), "pagepour-xcodebuild-build")
+        self.assertEqual(admission_ids.slug({"label": "Fix layout (vocaro/queuekeeper#91)",
+            "origin": {"branch": "worktree-agent-abc123"}}), "issue-91-fix-layout-vocaro-queuekeeper-91")
+
+    def test_friendly_and_legacy_links_resolve_to_the_same_live_admission(self):
+        names = {"request-1": "qk7318-project-tests", "place-1": "qk7318-project-tests"}
+        for identifier in ("request-1", "place-1", "qk7318-project-tests"):
+            detail = farm.admission(HOSTS, "here", identifier, names)
+            self.assertEqual((detail["id"], detail["state"]), ("qk7318-project-tests", "waiting"))
+        self.assertEqual(farm.host(HOSTS["hosts"][0], names)["waiters"][0]["id"], "qk7318-project-tests")
+
+
+class AdmissionDetails(unittest.TestCase):
+    def setUp(self):
+        names = patch.object(admission_ids, "names_for", return_value={})
+        names.start()
+        self.addCleanup(names.stop)
+
+    def test_detail_preserves_recorded_wait_reason_and_origin_while_list_shows_ids(self):
+        reading = json.loads(json.dumps(HOSTS))
+        waiter = reading["hosts"][0]["waiters"][0]
+        waiter.update(pid=42, origin={"repository": "project", "branch": "codex/fix"},
+                      reason="it waits behind a whole-host lane holding the host: another gate", secret="not a detail field")
+        with patch.object(farm, "current", return_value=(reading, 123.0, None)):
+            found = farm.data(None, {"host": "here", "admission": "request-1"})
+            listing = farm.data(None, {})
+        self.assertEqual(listing["hosts"][0]["waiters"][0]["id"], "request-1")
+        self.assertNotIn("admission", listing)
+        detail = found["admission"]
+        self.assertEqual((detail["id"], detail["identity"], detail["state"]), ("request-1", "place-1", "waiting"))
+        self.assertEqual(detail["reason"], waiter["reason"])
+        self.assertEqual(detail["origin"]["branch"], "codex/fix")
+        self.assertEqual(detail["pid"], 42)
+        self.assertNotIn("secret", detail)
+
+    def test_a_request_link_keeps_working_when_it_moves_from_waiting_to_running(self):
+        reading = json.loads(json.dumps(HOSTS))
+        host = reading["hosts"][0]
+        host["waiters"] = []
+        host["holders"].append({"identity": "request-1", "label": "other unit", "heldSeconds": 5, "slots": [0]})
+        found = farm.admission(reading, "here", "request-1")
+        self.assertEqual((found["state"], found["label"], found["heldSeconds"]), ("running", "other unit", 5))
+        self.assertEqual(farm.host(host)["holders"][-1]["id"], "request-1")
+
+    def test_a_missing_request_or_wrong_host_never_resolves_to_another_request(self):
+        for role, identifier in (("second", "request-1"), ("here", "finished"), ("here", "../hold")):
+            with self.subTest(role=role, identifier=identifier):
+                self.assertEqual(farm.admission(HOSTS, role, identifier), {"id": identifier, "state": "missing"})
+        self.assertEqual(farm.admission(None, "here", "request-1")["state"], "missing")
+
+
+class QueueDetails(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.repository = type("Repository", (), {"directory": Path(self.directory.name)})()
+        (self.repository.directory / "entries").mkdir()
+
+    def test_entry_details_retain_notes_commits_and_metadata(self):
+        found = {"id": "qk7318-fix-layout", "state": "testing", "subject": "Fix layout", "note": "Long explanation",
+                 "branch": "codex/fix-layout", "tip": "a" * 40, "base": "b" * 40, "commits": ["a" * 40], "submitted": 1}
+        detail = queue.detail(self.repository, {"entry": found["id"]}, {"waiting": [found]})
+        self.assertEqual(detail["kind"], "entry")
+        self.assertEqual((detail["entry"]["note"], detail["entry"]["commitList"], detail["entry"]["tip"]),
+                         (found["note"], found["commits"], found["tip"]))
+
+    def test_old_entry_details_are_read_safely_outside_the_recent_window(self):
+        found = {"id": "20261113-100000-aaaaaaaa", "subject": "Old entry", "state": "landed"}
+        path = self.repository.directory / "entries" / (found["id"] + ".json")
+        path.write_text(json.dumps(found))
+        self.assertEqual(queue.lookup(self.repository, found["id"], {}), found)
+        (path.parent / "link.json").symlink_to(path)
+        for identifier in ("../hold", "link", "missing", "/etc/passwd"):
+            with self.subTest(identifier=identifier): self.assertIsNone(queue.lookup(self.repository, identifier, {}))
+
+    def test_gate_details_keep_wait_reasons_and_do_not_switch_silently_to_a_new_round(self):
+        gate = {"lane": "spelling", "waiting": "long admission explanation", "entries": ["qk7318-fix"], "began": 1}
+        state = {"round": {"round": "round-1", "gates": {"batch": gate}},
+                 "waiting": [{"id": "qk7318-fix", "state": "testing", "subject": "Fix"}]}
+        detail = queue.detail(self.repository, {"gate": "batch", "round": "round-1"}, state)
+        self.assertEqual(detail["gate"]["waiting"], gate["waiting"])
+        self.assertEqual(detail["entries"][0]["subject"], "Fix")
+        self.assertEqual(queue.detail(self.repository, {"gate": "batch", "round": "old"}, state)["kind"], "missing")
+
+
 class Panels(Fixture):
     def test_the_panels_are_found_by_name_in_tab_order_with_a_script_each(self):
         self.assertEqual([(panel["name"], panel["title"]) for panel in panels.listed()],
-                         [("home", "Home"), ("queue", "Queue"), ("farm", "Farm"), ("logs", "Logs"), ("history", "History")])
+                         [("queue", "Queue"), ("farm", "Farm"), ("history", "History"), ("logs", "Logs")])
         for name in panels.available():
             self.assertTrue((panels.FOLDER / f"{name}.js").is_file(), name)
             self.assertIn(f'QK.panel("{name}"', (panels.FOLDER / f"{name}.js").read_text())
@@ -149,6 +336,31 @@ class Panels(Fixture):
                          (failed, "failed", "its gate failed", "round-gate.log"))
         self.assertNotIn(str(self.base), json.dumps(found))
 
+    def test_queue_includes_the_overview_and_history_includes_settled_changes(self):
+        identifier = self.settle("human-readable", why="gate failed")
+        found = queue.data(self.one, {})
+        self.assertEqual(found["overview"]["counts"]["cameBack"], 1)
+        self.assertEqual(history.data(self.one, {})["recent"][0]["id"], identifier)
+
+    def test_physical_devices_are_read_separately_from_mac_slots(self):
+        record = {"devices": {
+            "iphone": {"device": "00000000-0000000000000001", "state": "reserved", "ownerChatID": "session",
+                       "purpose": "release tests", "expectedReleaseBy": "2026-11-14T10:00:00Z"},
+            "ipad": {"device": "00000000-0000000000000002", "state": "released"},
+            "simulator": {"device": "00000000-0000-0000-0000-000000000003", "state": "reserved"},
+            "mac-foreground": {"state": "reserved"}}, "queues": {"iphone": [{"owner": "next"}]}}
+        with patch.object(farm.offload_host, "device_record_whole", return_value=record):
+            found = READ_DEVICES()
+        self.assertEqual([device["name"] for device in found["devices"]], ["ipad", "iphone"])
+        self.assertEqual(found["devices"][1]["waiting"], 1)
+        self.assertEqual(found["devices"][1]["owner"], "session")
+        self.assertIsNone(found["devices"][0]["owner"])
+        self.assertEqual(found["devices"][0]["connection"], "notDetected")
+        with patch.object(farm.offload_host, "device_record_whole", return_value={"devices": {}, farm.offload_host.DEFERRED: "studio"}):
+            self.assertEqual(READ_DEVICES()["deferredTo"], "studio")
+        with patch.object(farm.offload_host, "device_record_whole", side_effect=ValueError("broken record")):
+            self.assertEqual(READ_DEVICES()["error"], "broken record")
+
     def test_the_queue_panels_line_on_home_is_what_needs_the_owner(self):
         self.assertIsNone(queue.summary(self.one))
         self.settle("one", why="its gate failed")
@@ -174,9 +386,9 @@ class Panels(Fixture):
         found = farm.data(self.one, {})
         here, second = found["hosts"]
         self.assertEqual(here["slots"], {"used": 2, "guaranteed": 3, "most": 7})
-        self.assertEqual(here["holders"], [{"label": "project gate", "heldSeconds": 90.0, "slots": 1, "wholeHost": True,
+        self.assertEqual(here["holders"], [{"id": "holder-1", "label": "project gate", "heldSeconds": 90.0, "slots": 1, "wholeHost": True,
                                            "exclusive": False}])
-        self.assertEqual(here["waiters"], [{"label": "other unit", "waitedSeconds": 12.5, "reason": "every slot is busy"}])
+        self.assertEqual(here["waiters"], [{"id": "request-1", "label": "other unit", "waitedSeconds": 12.5, "reason": "every slot is busy"}])
         self.assertEqual((second["state"], second["reasons"]), ("unknown", ["ssh could not reach build"]))
         self.assertEqual((here["load"], second["load"]), (LOADS["here"], None))
         self.assertEqual(farm.summary(self.one), {
@@ -393,7 +605,7 @@ class Served(Fixture):
             self.assertNotIn("innerHTML", path.read_text(), path.name)
 
     def test_the_api_lists_the_panels_and_the_repositories(self):
-        self.assertEqual([panel["name"] for panel in self.api("/panels")[1]], ["home", "queue", "farm", "logs", "history"])
+        self.assertEqual([panel["name"] for panel in self.api("/panels")[1]], ["queue", "farm", "history", "logs"])
         status, found = self.api("/repositories")
         self.assertEqual((status, found), (200, [{"name": "project", "level": "idle", "headline": "Idle",
                                                   "detail": "Nothing is waiting.", "waiting": 0}]))

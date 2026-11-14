@@ -33,6 +33,7 @@ def listed():
     for name in available():
         try:
             module = load(name)
+            if getattr(module, "HIDDEN", False): continue
             found.append({"name": name, "title": module.TITLE, "order": module.ORDER})
         except Exception as error:  # noqa: BLE001
             found.append({"name": name, "title": name.capitalize(), "order": 1000, "error": str(error)})

@@ -108,28 +108,21 @@ qk visibility enable dashboard
 qk serve --open
 ```
 
-**Home** says what the queue is doing in one line, counts the day, and puts whatever needs you
-first.
+**Home** (the Queue tab) shows the day's summary, the current test round, entries in progress, and
+entries up next. New arrivals tested on top of the current batch are labeled **Testing ahead**.
 
 <p align="center">
-  <img src="assets/dashboard-home.png" alt="The dashboard's Home tab: the queue is testing 3 entries, with 5 in the queue, 41 landed today and 3 that came back, and a line each for an entry that came back, the farm and the last landing." width="100%">
-</p>
-
-**Queue** shows the round being tested with each of its gates, the entries waiting, and the last
-ones settled, with why each one that came back did.
-
-<p align="center">
-  <img src="assets/dashboard-queue.png" alt="The dashboard's Queue tab: a round with a gate lane running on a second Mac and a device lane waiting for an iPhone, five entries waiting, and recent entries that landed or failed." width="100%">
+  <img src="assets/dashboard-home.png" alt="The dashboard's Queue home view with daily totals, one active test round, an entry in progress and an entry up next." width="100%">
 </p>
 
 **Farm** shows each Mac's slots, its load, and the work running and waiting on it, for every
-project.
+project. It also shows iOS device connections and reservations.
 
 <p align="center">
-  <img src="assets/dashboard-farm.png" alt="The dashboard's Farm tab: two Macs, each with its slots in use, its CPU and memory, and the lanes running and waiting on it." width="100%">
+  <img src="assets/dashboard-farm.png" alt="The dashboard's Farm tab: two Macs, each with its slots in use, its CPU and memory, running and waiting work, plus an iPhone connection and reservation." width="100%">
 </p>
 
-The **Logs** and **History** tabs hold each gate's log and the day's events. See
+**History** holds recent changes and events; **Logs** holds debug output. See
 [Visibility](doc/visibility.md#the-dashboard-feature) for details.
 
 ## Plugins

@@ -132,11 +132,10 @@ qk serve ../other-project # show another repository too
 
 | Tab | What it shows |
 |---|---|
-| Home | What the queue is doing in one line, three numbers for the day, and a line from each other tab that has something to say, what needs you first |
-| Queue | The round's gates, every entry waiting, and the last twenty settled, with why each came back |
-| Farm | Each Mac's admission slots, what holds them and what waits, for every project, with its CPU's busy share against its limit, its load, its memory pressure and whether its screen is locked |
+| Queue (home) | Daily totals and alerts, the round's gates, entries in progress, and entries up next; Testing ahead means new arrivals tested on top of the current batch. Compact rows link to entry and gate details |
+| Farm | Each Mac's admission slots, what holds them and what waits, for every project, with its CPU's busy share against its limit, its load, its memory pressure and whether its screen is locked; recorded physical iOS reservations, owners and expected release, with connection status and transport from Xcode. Running and waiting requests link to admission details; persistent human-friendly IDs appear below their labels |
+| History | Recent settled changes, why each came back, the day's totals and the journal's last two hundred events |
 | Logs | The queue's logs, newest first, and one of them followed as it is written |
-| History | The day's totals and the journal's last two hundred events |
 
 The page asks for its tab's data every two seconds, so it follows the queue without being
 reloaded.
@@ -247,3 +246,8 @@ The three features are the examples: `watch.py` is one file, `notify/` adds rule
 and `dashboard/` adds panels.
 
 See also [The merge queue](merge_queue.md) and [The agent interface](agent_interface.md).
+
+Admission names in the dashboard use the same `qk7318-description` format as queue entries, with
+branch and explicit issue information when available. The dashboard keeps their names in
+`dashboard-admission-ids.json` beside its repository registry. Internal admission lock tokens stay
+unchanged, and existing links using those tokens still work.

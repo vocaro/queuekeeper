@@ -1,5 +1,8 @@
 """The Queue tab: the round's gates and every entry waiting, then the last ones settled."""
+import json
 from pathlib import Path
+import re
+import stat
 import time
 
 TITLE, ORDER = "Queue", 10
@@ -26,12 +29,46 @@ def gate(role, found):
     return shown
 
 
+def lookup(repository, identifier, state):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,159}", identifier): return None
+    for found in [*(state.get("waiting") or []), *(state.get("recent") or [])]:
+        if found.get("id") == identifier: return found
+    path = repository.directory / "entries" / f"{identifier}.json"
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024: return None
+        found = json.loads(path.read_text())
+        return found if isinstance(found, dict) and found.get("id") == identifier else None
+    except (OSError, ValueError): return None
+
+
+def detail(repository, query, state):
+    if query.get("entry"):
+        identifier = query["entry"]
+        found = lookup(repository, identifier, state)
+        if found is None: return {"kind": "missing", "id": identifier}
+        return {"kind": "entry", "entry": {**entry(found), "tip": found.get("tip"), "base": found.get("base"),
+                                           "commitList": found.get("commits") or []}}
+    current = state.get("round") or {}
+    role = query.get("gate")
+    found = (current.get("gates") or {}).get(role)
+    if not found or (query.get("round") and query["round"] != current.get("round")):
+        return {"kind": "missing", "id": query.get("round") or role}
+    entries = []
+    for identifier in found.get("entries") or []:
+        record = lookup(repository, identifier, state)
+        entries.append(entry(record) if record else {"id": identifier, "subject": identifier, "state": "unknown"})
+    return {"kind": "gate", "gate": gate(role, found), "round": current.get("round"), "entries": entries}
+
+
 def data(repository, query):
+    from . import load
     state = repository.snapshot()
     current = state.get("round") or {}
     order = {"batch": 0, "older half": 1, "newer half": 2, "stacked": 3}
     gates = sorted((current.get("gates") or {}).items(), key=lambda item: (order.get(item[0], 9), item[0]))
-    return {"worker": bool(state.get("worker")), "held": state.get("held"),
+    return {**({"detail": detail(repository, query, state)} if query.get("entry") or query.get("gate") else {}),
+            "overview": load("home").data(repository, query), "worker": bool(state.get("worker")), "held": state.get("held"),
             "round": {"name": current.get("round"), "base": current.get("base"), "entries": current.get("entries") or [],
                       "bisect": current.get("bisect"), "gates": [gate(role, found) for role, found in gates]}
             if current.get("round") else None,

@@ -41,6 +41,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -48,6 +49,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.request
 
 from . import budgets, disk, extensions, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
@@ -1647,6 +1649,31 @@ def warn(root):
         print(f"warning: {warning}", flush=True)
 
 
+def entry_slug(branch, subject, message=""):
+    """A short ref-safe name from the branch (or subject for detached/main commits), with an issue when named.
+    Issue references are labels only; this does not infer or change GitHub closing claims.
+    """
+    name = re.sub(r"^(?:refs/heads/)?(?:(?:codex|agent|feature|fix|bugfix)/)?", "", branch or "")
+    if name in ("", "HEAD", "main", "master") or re.fullmatch(r"[0-9a-f]{7,40}", name): name = subject
+    issue = re.search(r"#([1-9][0-9]*)\b", f"{branch or ''} {subject} {message}")
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    name = re.sub(r"[^a-z0-9]+", "-", name).strip("-")[:56].rstrip("-") or "change"
+    return f"issue-{issue[1]}-{name}" if issue else name
+
+
+def entry_identifier(queue, branch, subject, message=""):
+    """Called under the queue lock: never reuse a name, including one belonging to a settled entry."""
+    slug = entry_slug(branch, subject, message)
+    # Four digits normally suffice. Expand if repeated collisions exhaust that space for a popular name.
+    for digits in (4, 6, 8):
+        for _ in range(100):
+            candidate = f"qk{secrets.randbelow(10 ** digits):0{digits}d}-{slug}"
+            if not (queue.entries / f"{candidate}.json").exists() and git(
+                    queue.root, "show-ref", "--verify", "--quiet", f"refs/queuekeeper/queue/{candidate}").returncode == 1:
+                return candidate
+    raise RuntimeError("could not allocate a unique queue entry ID")
+
+
 def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False, why=None):
     """Put the commits reference has and origin/main lacks in the queue, and return at once with the
     entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
@@ -1726,12 +1753,16 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         print(f"queue: replaced {entry['id']}, the branch's earlier commits", file=sys.stderr)
         if entry["state"] == TESTING: print(f"queue: {stopping(queue, entry)}", file=sys.stderr)
     now = time.time()
-    identifier = f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}-{tip[:8]}"
-    entry = {"id": identifier, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
-             "subject": text(root, "log", "-1", "--format=%s", tip), "submitted": now, "state": QUEUED,
+    subject = text(root, "log", "-1", "--format=%s", tip)
+    message = text(root, "log", "--format=%B", f"{base}..{tip}")
+    entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
+             "subject": subject, "submitted": now, "state": QUEUED,
              "directory": str(root), **({"replays": replays} if merges else {}), **flags}
-    text(root, "update-ref", f"refs/queuekeeper/queue/{identifier}", tip)
-    with queue.locked(): queue.save(entry)
+    with queue.locked():
+        identifier = entry_identifier(queue, branch, subject, message)
+        entry["id"] = identifier
+        text(root, "update-ref", f"refs/queuekeeper/queue/{identifier}", tip)
+        queue.save(entry)
     queue.emit("entry.queued", entry=identifier, subject=entry["subject"], commits=len(commits), branch=entry["branch"],
                note=note, **flags)
     print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")

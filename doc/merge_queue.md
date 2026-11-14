@@ -113,3 +113,11 @@ gate now, without running one.
 
 See also [Lanes and admission](lanes_and_admission.md), [The build farm](build_farm.md) and
 [The agent interface](agent_interface.md).
+
+### Entry names
+
+New queue entries use a readable branch slug (without an `agent/` or `codex/` prefix), or the
+commit subject when queuing main or a detached commit. An explicit `#123` issue reference in
+the branch or commit messages adds `issue-123-`. A `qk` prefix and random four-digit number make each ID recognizable and distinguish repeated
+names, with collision checks under the queue lock; heavily reused names can use a longer number.
+For example: `qk7318-issue-123-fix-share-sheet`. Existing IDs continue to work unchanged.

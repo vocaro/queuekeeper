@@ -5,6 +5,7 @@ import time
 from . import available, load
 
 TITLE, ORDER = "Home", 0
+HIDDEN = True
 NAME = __name__.rsplit(".", 1)[1]
 
 
