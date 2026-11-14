@@ -6,6 +6,8 @@ with its file and line, and the path to its failures.txt or its receipt. It read
 log and results here (ran_here), or the dispatch it sent after it began (remote.dispatch), and never an earlier run's or
 one a run of the same lane beside it sent (vocaro/queuekeeper#9). Passed, failed, skipped and unmeasured stay apart, a
 lane is passed only when it ran and returned 0, and a lane whose log counts no test says so rather than printing zeros.
+It also gives the load of the Mac the lane ran on over its run, which the receipt keeps (RunLoad, load_line;
+vocaro/queuekeeper#133).
 
 The lines go to stderr with queuekeeper's other notes, after stdout is flushed, so that they are last however the two are
 joined. They begin `qk run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
@@ -20,9 +22,10 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import threading
 import time
 
-from . import lane_results, remote
+from . import lane_results, remote, resources
 
 # The failing tests a summary names; the rest are in its failures.txt or log.
 SHOWN = 20
@@ -70,6 +73,9 @@ SUMMARY_HEAD = re.compile(r"^(?:qk|eng) run (\S+): ((?:" + "|".join(VERDICTS) + 
 SUMMARY_TESTS = re.compile(r"^  tests: (?:(\d+) passed, (\d+) failed\b)?")
 SUMMARY_FAILED = re.compile(r"^  failed: (.+?)(?: at (\S[^\n]*:\d+))?$")
 SUMMARY_MORE = re.compile(r"^  \.\.\. and (\d+) more$")
+# Seconds between readings of the load of the Mac a lane runs on, which its receipt keeps (RunLoad), as a gate's are
+# read for its send-back (merge_queue.BUSY_SAMPLE).
+LOAD_SAMPLE = 60
 # The end of the one line a summary is when nothing ran, and the starts of the line that ends any other.
 NOTHING_RAN = "; no tests ran"
 SUMMARY_ENDS = ("  details: ", "  receipt: ")
@@ -240,6 +246,96 @@ def summary(text, lane):
     return found
 
 
+def readings_over(found, of):
+    """How many of the readings of were read, found of them: `N readings` when all were, else `N of M readings`."""
+    return f"{found} reading{'' if found == 1 else 's'}" if found == len(of) else f"{found} of {len(of)} readings"
+
+
+def load_figures(readings):
+    """What readings say of the load of a Mac, each (the one-minute load, the CPU busy share in percent, the busy limit
+    it is judged by) with None for what was not read, or None for a reading that failed: (`the one-minute load was
+    highest H, last L over N readings, and the CPU was at most B% busy`, with `could not be read` for either one that
+    no reading gives, and whether any reading gave either). A queue gate's send-back says these (merge_queue.load_words),
+    and so does the summary of a lane's run (load_line)."""
+    loads = [reading[0] for reading in readings if reading and reading[0] is not None]
+    shares = [reading[1] for reading in readings if reading and reading[1] is not None and reading[2] is not None]
+    load = (f"was highest {max(loads):g}, last {loads[-1]:g} over {readings_over(len(loads), readings)}" if loads
+            else "could not be read")
+    busy = f"was at most {max(shares):g}% busy" if shares else "busy share could not be read"
+    return f"the one-minute load {load}, and the CPU {busy}", bool(loads or shares)
+
+
+class RunLoad:
+    """The load of this Mac over a lane's run, for its receipt (vocaro/queuekeeper#133): the one-minute load and the
+    CPU's busy share against its busy limit, read every LOAD_SAMPLE seconds while the lane runs and once at its end, as
+    a queue gate's are for its send-back (merge_queue.LoadSampler). The second Mac's own run of a lane sent there reads
+    that Mac, and its receipt comes back with the result. A busy share needs a sample at least resources.BUSY_MINIMUM
+    seconds old, so the one at the end of a shorter run spans the whole run, and none waits. A measurement only: it
+    decides nothing, and nothing a reading raises reaches the lane."""
+    def __init__(self):
+        self.readings, self.stopped = [], threading.Event()
+        self.first = self.busy()[1]
+        self.thread = threading.Thread(target=self.every, name="lane load", daemon=True)
+
+    @staticmethod
+    def busy():
+        """(the busy share now, or None, as resources.cpu_busy reads it without waiting, the CPU's ticks now, or None),
+        each reading also kept for later readings to span."""
+        try: ticks = resources.cpu_ticks()
+        except Exception: ticks = None  # noqa: BLE001
+        try: share = resources.cpu_busy(resources.slot_directory())[0]
+        except Exception: share = None  # noqa: BLE001
+        return share, ticks
+
+    def read(self, last=False):
+        share, ticks = self.busy()
+        if share is None and last and self.first is not None and ticks is not None:
+            share = resources.busy_share(self.first, ticks)
+        try: limit = resources.busy_limit()
+        except Exception: limit = None  # noqa: BLE001
+        self.readings.append([resources.one_minute_load(), share, limit])
+
+    def every(self):
+        while not self.stopped.wait(LOAD_SAMPLE):
+            try: self.read()
+            except Exception: pass  # noqa: BLE001
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def finish(self):
+        """What the receipt keeps as load: every reading, [one-minute load, busy share, busy limit] with null for
+        what was not read; the seconds between them, every; and of those read, oneMinuteHighest, oneMinuteLast,
+        cpuBusyHighest and the last busyLimit."""
+        self.stopped.set()
+        if self.thread.ident is not None: self.thread.join(timeout=5)
+        try: self.read(last=True)
+        except Exception: pass  # noqa: BLE001
+        found = {"readings": list(self.readings), "every": LOAD_SAMPLE}
+        loads = [reading[0] for reading in self.readings if reading[0] is not None]
+        shares = [reading[1:] for reading in self.readings if reading[1] is not None and reading[2] is not None]
+        if loads: found.update(oneMinuteHighest=max(loads), oneMinuteLast=loads[-1])
+        if shares: found.update(cpuBusyHighest=max(share for share, _ in shares), busyLimit=shares[-1][1])
+        return found
+
+
+def load_line(receipt, verdict):
+    """The summary's line for the load of the Mac a lane ran on over its run, from its receipt's load (RunLoad), the
+    second Mac's for a run there; for a run that did not pass and whose receipt keeps none, that none was kept; else
+    None. A lane that failed there on 2026-11-13 left its load to be read by hand (vocaro/queuekeeper#133)."""
+    load = receipt.get("load")
+    readings = load.get("readings") if isinstance(load, dict) else None
+    if isinstance(readings, list):
+        def figure(value):
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        kept = [[figure(value) for value in reading] if isinstance(reading, list) and len(reading) == 3 else None
+                for reading in readings]
+        return f"  load: {load_figures(kept)[0]}"
+    if verdict != "passed": return "  load: its receipt keeps no reading of the load of the Mac it ran on"
+    return None
+
+
 def lane_receipt(directory):
     """The lane's own receipt in directory, a run's: its source.json, or for a dispatch the one the second Mac wrote,
     which it holds under result; {} when there is none."""
@@ -376,6 +472,8 @@ class Report:
         else:
             lines.append("  tests: no counts, as the run did not finish and its log is incomplete")
         if self.group is not None: lines.append(self.lanes_line(directory))
+        load = load_line(lane_receipt(directory), verdict)
+        if load: lines.append(load)
         if why: lines.append(f"  why: {why}")
         names = (recorded_failing(kept) or failing(joined)) if verdict != "passed" else []
         lines += [failed_line(name, place) for name, place in names[:SHOWN]]

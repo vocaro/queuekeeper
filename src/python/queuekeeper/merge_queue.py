@@ -1191,18 +1191,13 @@ def load_words(lane, host, readings, waited=()):
     lane ran and waited those while it waited to start, which are said apart: the first count the lane's own work, a
     whole-host gate's nearly all of them, and only the second are of other work alone (vocaro/queuekeeper#12)."""
     where = f"the second Mac ({host})" if host else "this Mac"
-    def over(found, of):
-        return (f"{found} reading{'' if found == 1 else 's'}" if found == len(of)
-                else f"{found} of {len(of)} readings")
+    over = lane_report.readings_over
     def loads_of(of): return [reading[0] for reading in of if reading and reading[0] is not None]
     def shares_of(of):
         return [reading[1:] for reading in of if reading and reading[1] is not None and reading[2] is not None]
-    loads, shares = loads_of(readings), shares_of(readings)
-    load = (f"was highest {max(loads):g}, last {loads[-1]:g} over {over(len(loads), readings)}" if loads
-            else "could not be read")
-    busy = f"was at most {max(share for share, _ in shares):g}% busy" if shares else "busy share could not be read"
-    said = f"While {lane} ran on {where}, the one-minute load {load}, and the CPU {busy}"
-    if loads or shares: said += ". Both count the lane's own work, so neither says what else that Mac was doing"
+    figures, read = lane_report.load_figures(readings)
+    said = f"While {lane} ran on {where}, {figures}"
+    if read: said += ". Both count the lane's own work, so neither says what else that Mac was doing"
     before, held = loads_of(waited), shares_of(waited)
     if before or held:
         parts = ([f"the load was highest {max(before):g} over {over(len(before), waited)}"] if before else []) + (

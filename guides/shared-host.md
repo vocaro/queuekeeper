@@ -961,8 +961,10 @@ the admission it inherits, here. `qk run` looks for the second Mac only when
 lane's results come back to `.build/queuekeeper/remote/LANE/` when it ran on the second Mac and
 stay in `.build/queuekeeper/LANE/` when it ran here. Every `qk run` ends with a short summary, on
 stderr after stdout is flushed: its verdict, its passed, failed, skipped and unmeasured tests kept
-apart, or that its log counts none, each failing test with its file and line, and the path to its
-`failures.txt` or receipt (`lane_report`). The second Mac's own run leaves it to the Mac that sent it.
+apart, or that its log counts none, the load of the Mac it ran on over the run, each failing test
+with its file and line, and the path to its `failures.txt` or receipt (`lane_report`). The second
+Mac's own run leaves it to the Mac that sent it, and reads that load there for the receipt that comes
+back ([receipts](lanes.md#receipts-and-test-counts), [vocaro/queuekeeper#133](https://github.com/vocaro/queuekeeper/issues/133)).
 A lane group's results hold each of its lanes' log and receipt as well, under `lanes/` as on the
 Mac that ran it, so here `.build/queuekeeper/remote/GROUP/lanes/LANE.log` and `LANE.json`. They
 come back once the run there ends, whether the lane passed or failed, its timeout ended it or a

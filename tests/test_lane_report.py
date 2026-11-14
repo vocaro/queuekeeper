@@ -76,6 +76,9 @@ def record(results, name, **fields):
     (directory / "failures.txt").write_text("what failed\n")
     return directory / "failures.txt"
 
+# The summary's line for the one reading Summary's runs take of this Mac's load, at their end (RunLoad).
+LOAD = "  load: the one-minute load was highest 12.5, last 12.5 over 1 reading, and the CPU was at most 40% busy"
+
 SWIFT_TESTING_BESIDE_EMPTY_XCTEST = """Test Suite 'EPUBViewingTests.xctest' started at 2026-11-11 20:14:18.000.
 Test Suite 'EPUBViewingTests.xctest' passed at 2026-11-11 20:14:18.001.
 \t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
@@ -222,6 +225,15 @@ class Summary(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
         self.lane_dir = self.root / ".build/queuekeeper/lane"
+        # The Mac's load, read as fixed figures, so that a summary's load line reads the same however busy it is.
+        reading = patch.object(lane_report.RunLoad, "read", autospec=True,
+                               side_effect=lambda sampler, last=False: sampler.readings.append([12.5, 40.0, 75.0]))
+        reading.start()
+        self.addCleanup(reading.stop)
+        # And only at the run's end, however long a loaded Mac makes it.
+        sparse = patch.object(lane_report, "LOAD_SAMPLE", 24 * 60 * 60)
+        sparse.start()
+        self.addCleanup(sparse.stop)
 
     def configure(self, **lanes):
         (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
@@ -244,8 +256,8 @@ class Summary(unittest.TestCase):
         self.configure(lane=self.printing(UNITTEST_FAILED, 1))
         status, lines = self.qk("lane")
         self.assertEqual(status, 1)
-        self.assertEqual(lines[-5:], ["qk run lane: failed (exit 1), on this Mac",
-                                      "  tests: 3 passed, 2 failed, 1 skipped, 0 unmeasured",
+        self.assertEqual(lines[-6:], ["qk run lane: failed (exit 1), on this Mac",
+                                      "  tests: 3 passed, 2 failed, 1 skipped, 0 unmeasured", LOAD,
                                       "  failed: tests.test_x.X.test_b at /project/tests/test_x.py:7",
                                       "  failed: tests.test_x.X.test_c at /project/tests/test_x.py:20",
                                       f"  receipt: {self.lane_dir / 'source.json'}"])
@@ -254,28 +266,28 @@ class Summary(unittest.TestCase):
         self.configure(lane=self.printing("Ran 2 tests in 0.1s\n\nOK"))
         status, lines = self.qk("lane")
         self.assertEqual(status, 0)
-        self.assertEqual(lines[-3:], ["qk run lane: passed, on this Mac", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured",
-                                      f"  receipt: {self.lane_dir / 'source.json'}"])
+        self.assertEqual(lines[-4:], ["qk run lane: passed, on this Mac", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured",
+                                      LOAD, f"  receipt: {self.lane_dir / 'source.json'}"])
 
     def test_a_lane_with_no_test_counts_says_so(self):
         self.configure(lane=self.printing("just a build"))
-        self.assertEqual(self.qk("lane")[1][-3:-1], ["qk run lane: passed, on this Mac", "  tests: no test counts in its log"])
+        self.assertEqual(self.qk("lane")[1][-4:-2], ["qk run lane: passed, on this Mac", "  tests: no test counts in its log"])
 
     def test_an_unmeasured_lane_is_never_passed(self):
         text = "test_a (m.T.test_a) ... skipped 'Unmeasured: no model'\nRan 2 tests in 0.1s\n\nOK (skipped=1)"
         self.configure(lane=self.printing(text))
         status, lines = self.qk("lane")
         self.assertEqual(status, lane_results.UNMEASURED)
-        self.assertEqual(lines[-3:-1], ["qk run lane: unmeasured (exit 3), on this Mac",
-                                        "  tests: 1 passed, 0 failed, 0 skipped, 1 unmeasured"])
+        self.assertEqual(lines[-4:-1], ["qk run lane: unmeasured (exit 3), on this Mac",
+                                        "  tests: 1 passed, 0 failed, 0 skipped, 1 unmeasured", LOAD])
 
     def test_a_lane_past_its_limit_is_unmeasured_and_counts_nothing_from_its_cut_off_log(self):
         self.configure(lane={"command": self.command("print('Ran 2 tests in 0.1s\\n\\nOK', flush=True)\nimport time\ntime.sleep(60)"),
                              "timeout": 1})
         status, lines = self.qk("lane")
         self.assertEqual(status, lane_results.UNMEASURED)
-        self.assertEqual(lines[-4], "qk run lane: unmeasured (exit 3), on this Mac")
-        self.assertEqual(lines[-3], "  tests: no counts, as the run did not finish and its log is incomplete")
+        self.assertEqual(lines[-5:-2], ["qk run lane: unmeasured (exit 3), on this Mac",
+                                        "  tests: no counts, as the run did not finish and its log is incomplete", LOAD])
         self.assertIn("  why: ", lines[-2])
 
     def test_a_qk_unittest_lane_past_its_limit_names_what_it_did_not_finish_and_how_to_run_it_alone(self):
@@ -300,7 +312,7 @@ class Summary(unittest.TestCase):
         self.assertIn("    test_b.Hung.test_hung", listing.read_text())
         end = lines.index("qk run lane: unmeasured (exit 3), on this Mac")
         self.assertEqual(lines[end + 1:], [
-            "  tests: no counts, as the run did not finish and its log is incomplete",
+            "  tests: no counts, as the run did not finish and its log is incomplete", LOAD,
             f"  why: Owned command timed out after {limit}s: {sys.executable}; it and its observed descendants ended",
             f"  unreached: 1 tests did not finish (stopped by SIGTERM); the list is in {listing}",
             f"  run them: {shlex.join([*launcher, 'run', 'lane', '--', 'test_b'])}",
@@ -353,8 +365,8 @@ class Summary(unittest.TestCase):
         self.configure(lane={"command": [sys.executable, "-c", script]})
         status, lines = self.qk("lane")
         self.assertEqual(status, 65)
-        self.assertEqual(lines[-4:], ["qk run lane: failed (exit 65), on this Mac",
-                                      "  tests: 7 passed, 1 failed, 2 skipped, 0 unmeasured",
+        self.assertEqual(lines[-5:], ["qk run lane: failed (exit 65), on this Mac",
+                                      "  tests: 7 passed, 1 failed, 2 skipped, 0 unmeasured", LOAD,
                                       "  failed: Pages/testTurn() at /P.swift:9",
                                       f"  details: {self.lane_dir / 'results/failures/one/failures.txt'}"])
 
@@ -374,9 +386,9 @@ class Summary(unittest.TestCase):
         status, lines = self.qk("lane")
         self.assertEqual(status, lane_results.BEFORE_TESTS)
         self.assertNotIn(status, (1, lane_results.UNMEASURED))
-        self.assertEqual(lines[-4:], ["qk run lane: failed before any test ran (exit 4), on this Mac",
+        self.assertEqual(lines[-5:], ["qk run lane: failed before any test ran (exit 4), on this Mac",
                                       "  tests: none ran; the last error in its log: "
-                                      "Failed: project generation or canonical package-lock seeding failed",
+                                      "Failed: project generation or canonical package-lock seeding failed", LOAD,
                                       f"  the log is {self.lane_dir / 'run.log'}",
                                       f"  receipt: {self.lane_dir / 'source.json'}"])
         receipt = json.loads((self.lane_dir / "source.json").read_text())
@@ -384,7 +396,7 @@ class Summary(unittest.TestCase):
                          ("failed", 1, "Failed: project generation or canonical package-lock seeding failed"))
         # It is a failure to the queue, as it was: whether it gives no verdict is the owner's call.
         self.assertNotIn(lane_results.BEFORE_TESTS, merge_queue.NO_VERDICT)
-        summary = "\n".join(lines[-4:])
+        summary = "\n".join(lines[-5:])
         self.assertIsNone(lane_results.counted(summary))
         self.assertEqual(merge_queue.FAILED_TEST.findall(summary), [])
 
@@ -409,8 +421,8 @@ class Summary(unittest.TestCase):
                 self.configure(lane=self.printing(text, status))
                 result, lines = self.qk("lane")
                 self.assertEqual(result, status)
-                self.assertEqual(lines[-4:-2], [f"qk run lane: failed (exit {status}), on this Mac",
-                                                "  tests: no test counts in its log"])
+                self.assertEqual(lines[-5:-2], [f"qk run lane: failed (exit {status}), on this Mac",
+                                                "  tests: no test counts in its log", LOAD])
                 self.assertNotIn("beforeTests", json.loads((self.lane_dir / "source.json").read_text()))
 
     def test_a_lane_that_exits_unmeasured_or_a_failed_build_keeps_its_status(self):
@@ -453,8 +465,9 @@ class Summary(unittest.TestCase):
         self.configure(lane={**self.printing("Ran 1 test in 0.1s\n\nOK"), "minimumTests": 2})
         status, lines = self.qk("lane")
         self.assertEqual(status, 2)
-        self.assertEqual(lines[-5], "qk run lane: failed (exit 2), on this Mac")
-        self.assertEqual(lines[-3], "  why: Expected at least 2 executed tests; observed 1")
+        self.assertEqual(lines[-6:-4], ["qk run lane: failed (exit 2), on this Mac",
+                                        "  tests: 1 passed, 0 failed, 0 skipped, 0 unmeasured"])
+        self.assertEqual(lines[-4:-2], [LOAD, "  why: Expected at least 2 executed tests; observed 1"])
 
     def test_a_group_counts_its_lanes_together_and_names_the_one_that_gave_no_counts(self):
         group = {"parallel": ["good", "bad", "build"], "jobs": 1}
@@ -462,9 +475,9 @@ class Summary(unittest.TestCase):
                        build=self.printing("no tests here"), lane=group)
         status, lines = self.qk("lane")
         self.assertEqual(status, 1)
-        self.assertEqual(lines[-6:-3], ["qk run lane: failed (exit 1), on this Mac",
+        self.assertEqual(lines[-7:-3], ["qk run lane: failed (exit 1), on this Mac",
                                         "  tests: 5 passed, 2 failed, 1 skipped, 0 unmeasured; no test counts from build",
-                                        "  lanes: 2 passed, 1 failed (bad), 0 unmeasured"])
+                                        "  lanes: 2 passed, 1 failed (bad), 0 unmeasured", LOAD])
 
     def test_a_summary_reads_back_what_it_wrote_and_nothing_its_tests_printed(self):
         # The lane's own output imitates a summary's lines, which are not this run's (vocaro/queuekeeper#83).
@@ -544,6 +557,81 @@ class Summary(unittest.TestCase):
             status, lines = self.qk("lane")
         self.assertEqual(status, 0)
         self.assertEqual(lines[-1], "qk run lane: exit 0; its summary could not be made: OSError: disk gone")
+
+
+class RunLoads(unittest.TestCase):
+    """The load of the Mac a lane ran on, in its receipt and its summary (vocaro/queuekeeper#133): a lane that failed on
+    the second Mac on 2026-11-13 left it to be read by hand with `ssh build-host uptime`."""
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+
+    def test_a_run_shorter_than_a_busy_reading_is_read_over_the_whole_run_without_waiting(self):
+        ticks = iter([(100, 0, 100, 0), (160, 0, 140, 0)])
+        with patch.object(lane_report.resources, "cpu_ticks", side_effect=lambda: next(ticks)), \
+                patch.object(lane_report.resources, "cpu_busy", return_value=(None, 1.0)) as busy, \
+                patch.object(lane_report.resources, "one_minute_load", return_value=21.72), \
+                patch.object(lane_report.resources, "busy_limit", return_value=90.0):
+            load = lane_report.RunLoad().start().finish()
+        self.assertTrue(all(not call.kwargs and len(call.args) == 1 for call in busy.call_args_list), busy.call_args_list)
+        # 60 of the 100 ticks between the run's start and its end were outside idle.
+        self.assertEqual(load, {"readings": [[21.72, 60.0, 90.0]], "every": lane_report.LOAD_SAMPLE,
+                                "oneMinuteHighest": 21.72, "oneMinuteLast": 21.72, "cpuBusyHighest": 60.0,
+                                "busyLimit": 90.0})
+
+    def test_what_the_mac_could_not_give_is_said_so_and_nothing_raised_reaches_the_lane(self):
+        with patch.object(lane_report.resources, "cpu_ticks", side_effect=OSError("no ticks")), \
+                patch.object(lane_report.resources, "cpu_busy", side_effect=OSError("no samples")), \
+                patch.object(lane_report.resources, "busy_limit", side_effect=ValueError("no limit")), \
+                patch.object(lane_report.resources, "one_minute_load", return_value=None):
+            load = lane_report.RunLoad().start().finish()
+        self.assertEqual(load, {"readings": [[None, None, None]], "every": lane_report.LOAD_SAMPLE})
+        self.assertEqual(lane_report.load_line({"load": load}, "failed"),
+                         "  load: the one-minute load could not be read, and the CPU busy share could not be read")
+
+    def test_the_summary_of_a_lane_sent_to_the_second_mac_gives_that_macs_load_from_its_receipt(self):
+        runs = self.root / ".build/queuekeeper/remote" / lane_report.remote.DISPATCHES / "voiceover"
+        ran = runs / f"20270115T080000Z-{os.getpid()}"
+        ran.mkdir(parents=True)
+        (ran / "run.log").write_text(UNITTEST_FAILED)
+        def receipt(**fields):
+            (ran / "source.json").write_text(json.dumps({"host": "build-host", "result": {
+                "exitStatus": 1, "receipt": {"outcome": "failed", "ranOn": "second Mac", "mac": "build-host", **fields}}}))
+        report = lane_report.Report()
+        report.root, report.lane, report.began = self.root, "voiceover", 1_800_000_000  # 2027-01-15T08:00:00Z
+        receipt(load={"readings": [[605.76, 100.0, 90.0], None, [21.72, 64.5, 90.0]], "every": 60})
+        lines = report.lines(1, None)
+        self.assertEqual(lines[:3], ["qk run voiceover: failed (exit 1), on build-host",
+                                     "  tests: 3 passed, 2 failed, 1 skipped, 0 unmeasured",
+                                     "  load: the one-minute load was highest 605.76, last 21.72 over 2 of 3 readings, "
+                                     "and the CPU was at most 100% busy"])
+        self.assertEqual(lane_report.summary("\n".join(lines), "voiceover")["failed"], 2)
+        # The same run unmeasured says it too; a receipt from before the load was kept says that it keeps none, and a
+        # passed run with none says nothing of it.
+        self.assertIn(lines[2], report.lines(lane_results.UNMEASURED, None))
+        receipt()
+        self.assertEqual(report.lines(1, None)[2], "  load: its receipt keeps no reading of the load of the Mac it ran on")
+        self.assertFalse(any(line.startswith("  load: ") for line in report.lines(0, None)))
+        # What is not a figure is not read as one.
+        receipt(load={"readings": [["high", True, 90.0], "nonsense"]})
+        self.assertEqual(report.lines(1, None)[2], "  load: the one-minute load could not be read, and the CPU busy "
+                                                   "share could not be read")
+
+    def test_a_failed_lanes_receipt_keeps_the_load_of_this_mac_over_its_run(self):
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": {
+            "lane": {"command": [sys.executable, "-c", "import sys; print('no'); sys.exit(1)"]}}}))
+        stream = StringIO()
+        with patch.object(cli, "refresh_policy", return_value="policy"), \
+                patch.object(cli, "source_identity", return_value={}), \
+                patch.object(lane_report.resources, "one_minute_load", return_value=7.25), \
+                contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+            status = cli.main(["--project", str(self.root), "run", "--here", "lane"])
+        self.assertEqual(status, 1)
+        receipt = json.loads((self.root / ".build/queuekeeper/lane/source.json").read_text())
+        self.assertEqual((receipt["outcome"], receipt["load"]["oneMinuteHighest"], receipt["load"]["oneMinuteLast"],
+                          len(receipt["load"]["readings"])), ("failed", 7.25, 7.25, 1))
+        self.assertIn(lane_report.load_line(receipt, "failed"), stream.getvalue().splitlines())
 
 
 if __name__ == "__main__":

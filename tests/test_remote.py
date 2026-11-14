@@ -24,7 +24,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
-from queuekeeper import budgets, cli, config, lane_results, merge_queue, offload_host, processes, remote, resources
+from queuekeeper import budgets, cli, config, lane_report, lane_results, merge_queue, offload_host, processes, remote, resources
 from queuekeeper.apple import device_notifications, devices, disk as apple_disk, doctor as apple_doctor, leases
 from queuekeeper import disk as disk_module, extensions
 from queuekeeper import waiting
@@ -3044,15 +3044,27 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.qk("run", "check")
         self.assertEqual(status, 0, output + error)
         lines = error.splitlines()
-        receipt = lines[-1].removeprefix("  receipt: ")
-        self.assertEqual(lines[-3:-1], ["qk run check: passed, on fake", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured"])
-        self.assertEqual(json.loads(Path(receipt).read_text())["lane"], "check")
+        receipt = json.loads(Path(lines[-1].removeprefix("  receipt: ")).read_text())
+        self.assertEqual(lines[-4:-2], ["qk run check: passed, on fake", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured"])
+        self.assertEqual(receipt["lane"], "check")
+        # The load of the Mac that ran it, which its own run read and kept in the receipt that came back, beside the
+        # verdict (vocaro/queuekeeper#133).
+        there = receipt["result"]["receipt"]
+        self.assertEqual(there["ranOn"], "second Mac")
+        self.assertGreaterEqual(len(there["load"]["readings"]), 1)
+        self.assertEqual(lines[-2], lane_report.load_line(there, "passed"))
+        self.assertRegex(lines[-2], r"^  load: the one-minute load (was highest [\d.]+, last [\d.]+ over \d+ readings?"
+                                    r"|could not be read), and the CPU ")
         # The second Mac's own run prints none, which would repeat it with that Mac's paths.
         self.assertEqual((output + error).count("qk run check:"), 1, output + error)
-        # A lane that returned the unmeasured status there is not passed here.
+        # A lane that returned the unmeasured status there is not passed here, and says that Mac's load as well.
         status, output, error = self.qk("run", "fail")
         self.assertEqual(status, 3, output + error)
-        self.assertEqual(error.splitlines()[-3], "qk run fail: unmeasured (exit 3), on fake")
+        lines = error.splitlines()
+        self.assertEqual(lines[-4], "qk run fail: unmeasured (exit 3), on fake")
+        there = json.loads(Path(lines[-1].removeprefix("  receipt: ")).read_text())["result"]["receipt"]
+        self.assertEqual(lines[-2], lane_report.load_line(there, "unmeasured"))
+        self.assertIn("load", there)
 
     def test_keep_keeps_a_runs_results_beside_its_receipt_in_place_of_an_earlier_runs(self):
         base = Path(self.temp.name) / "keeping"

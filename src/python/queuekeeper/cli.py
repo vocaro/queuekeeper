@@ -83,8 +83,10 @@ def refresh_policy(root, stream=None):
 
 
 def record(directory, receipt, work):
-    """Run work, then write its exit status or failure beside the source identities."""
+    """Run work, then write its exit status or failure beside the source identities, and under load the load of this
+    Mac while it ran (lane_report.RunLoad), however it ended (vocaro/queuekeeper#133)."""
     directory.mkdir(parents=True, exist_ok=True)
+    load = lane_report.RunLoad().start()
     try:
         result = work()
         receipt["exitStatus"] = result
@@ -94,6 +96,7 @@ def record(directory, receipt, work):
         receipt["error"] = str(error)
         raise
     finally:
+        receipt["load"] = load.finish()
         (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return result
 

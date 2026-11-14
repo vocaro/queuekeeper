@@ -61,6 +61,21 @@ file the checkout does not hold, exits 127 with `outcome` `not-started` and why 
 and the queue blames no commit for it ([#108](https://github.com/vocaro/queuekeeper/issues/108);
 [maintenance](maintenance.md#the-merge-queue)).
 
+A run's receipt also keeps the load of the Mac that ran it, however the run ended, under `load`:
+each reading of its one-minute load, its CPU's busy share and the busy limit that share is judged
+by, taken every 60 seconds while the command runs and once at its end, with `null` for what could
+not be read, and the highest and last load, the highest busy share and the last limit of those read
+(`lane_report.RunLoad`). A run shorter than a busy reading needs has its busy share read over the
+whole run. A lane sent to the second Mac is read there, by that Mac's own run, and its receipt comes
+back within the result. The summary that ends `qk run` gives them in a `load:` line after the
+tests, in the words a queue gate's send-back uses: `the one-minute load was highest 605.76, last
+21.72 over 64 readings, and the CPU was at most 100% busy`. A run that did not pass and whose receipt
+keeps no reading says so there. Before 2026-11-13 nothing recorded the load of a lane's run: a lane
+that failed three times on the second Mac that day had it read by hand with `ssh build-host uptime`,
+before and after each run, and after the first failure not at all
+([vocaro/queuekeeper#133](https://github.com/vocaro/queuekeeper/issues/133)). Both figures count the
+lane's own work, so neither says alone what else the Mac was doing.
+
 `python3 scripts/qk admit -- COMMAND` records the same fields, with the directory the command
 ran in and whether it was exclusive, in `.build/queuekeeper/admit/source.json`. Its output stays
 on the terminal, so it writes no log, and the next admitted command in that checkout replaces
