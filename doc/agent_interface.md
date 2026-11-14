@@ -121,7 +121,8 @@ it, in one of three ways:
 
 It never goes straight through `python3 -m unittest`. That takes no slot, so the other sessions'
 admitted work waits behind load nobody can see, and it misses what `qk unittest` does: its
-summary, the log it keeps of a failed run, its processes side by side, and the suite's own setup.
+summary, the log it keeps of a failed run, the progress it keeps while it runs
+([Long runs](#long-runs)), its processes side by side, and the suite's own setup.
 On 2026-11-13 a coordinator's `qk admit -- python3 -m unittest tests.test_merge_queue` failed at
 once on the second Mac with `ModuleNotFoundError: No module named 'host_isolation'`: a module named
 from the top of the checkout cannot import the setup beside it in `tests/`, which
@@ -143,6 +144,38 @@ work has not started. Exclusive work settles before its command starts and tells
 it read of the Mac (vocaro/queuekeeper#121)
 ([Ask admission, not the load average](../guides/shared-host.md#ask-admission-not-the-load-average),
 vocaro/queuekeeper#134).
+
+## Long runs
+
+A long run's progress has to stay readable while it runs, so that an agent or the owner can say
+whether it is moving and how far it has got. In the run vocaro/queuekeeper#22 reported on
+2026-11-12, an agent ran `python3 -m unittest test_remote 2>&1 | tail -6` on a Mac at a load
+average of about 700. It ran
+for more than two hours, and the only sign that it was alive was new processes in `ps`: `tail`
+prints nothing until its input ends, and unittest's dots name no test.
+
+- **Start it with its output in a file**, `COMMAND > FILE 2>&1`, as a background command, and trim
+  when reading the file, not when writing it. Never pipe a long run through `tail` or `head`.
+- **`qk unittest` keeps its own progress whatever its output is.** Its first line, before any work
+  starts, is `progress: FOLDER keeps this run's progress`. For a bare `qk unittest` or another
+  runner admitted first, the folder is the one its admission keeps on this Mac. Either is under
+  `.build/queuekeeper/runs/` in the directory the run started in. When standard output is a pipe,
+  the line comes on standard error too, so that a run piped into `tail` still says where to look.
+  `progress.log` there gets a line as each process ends, such as `212 of 528 processes, 1840
+  tests, 0 failed, 0 unmeasured, 4 running: test_remote: OK (276 tests, 812.4s)`, with the
+  process's whole output under it, and `progress.json` says the same with the processes running
+  now. An admitted run's folder holds `output.log` too, everything the run printed as it printed
+  it, which is all this Mac sees of a run the second Mac took.
+- **`qk progress` answers "how far along is it?"** from another shell. With no argument it reads
+  each run still running under `.build/queuekeeper/runs/`, in the current directory and the
+  project's root, or the newest one when none runs, and prints its command, how long it has run,
+  the processes and tests finished and failed, the processes running and for how long, and when
+  it last moved. `qk progress FOLDER` reads the run the first line named; `--all` reads every one
+  kept. The newest twenty ended runs are kept, and every run still running.
+
+`qk run` keeps each lane's log in `.build/queuekeeper/LANE/run.log` as before, and
+`qk land --wait` prints a line whenever the entry's situation changes; neither yet names a
+progress folder.
 
 ## Landing
 

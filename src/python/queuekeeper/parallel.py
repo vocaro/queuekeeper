@@ -8,6 +8,7 @@ group fails when any lane failed, and is otherwise unmeasured when any lane was.
 import argparse
 import ast
 import concurrent.futures
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import fnmatch
@@ -24,7 +25,7 @@ import threading
 import time
 import unittest
 
-from . import lane_results, processes, shims
+from . import lane_results, processes, run_progress, shims
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
@@ -416,6 +417,18 @@ def unittest_main(argv):
     if args.batch_size is not None and (args.batch_size < 1 or args.split != "class"):
         parser.error("--batch-size needs a positive count and --split class")
     if args.timeout <= 0: parser.error("--timeout needs a positive number of seconds")
+    # Its first line names the folder that keeps its progress whatever its standard output is (run_progress).
+    progress = run_progress.tracker(["qk", "unittest", *argv])
+    status = None
+    try:
+        status = discover_and_run(args, progress)
+        return status
+    finally:
+        if progress is not None:
+            with contextlib.suppress(OSError): progress.end(status, getattr(progress, "summary", None))
+
+
+def discover_and_run(args, progress):
     start = Path(args.start_directory).resolve()
     top = Path(args.top_level_directory).resolve() if args.top_level_directory else start
     # Before discovery imports any of them: a suite that keeps its tests off the real hosts in host_isolation.py
@@ -462,7 +475,7 @@ def unittest_main(argv):
     # A stop signal, such as the SIGTERM supervise sends a lane's command at its timeout, stops the processes; the run
     # still ends with its summary and what it did not reach, and then by that signal (vocaro/queuekeeper#37).
     with processes.forwarding_signals():
-        return run_shards(args, top, tests, found, members, chosen)
+        return run_shards(args, top, tests, found, members, chosen, progress)
 
 
 # Seconds a stopped run waits for its running processes to end before its summary, each stopped at its next look
@@ -470,11 +483,29 @@ def unittest_main(argv):
 STOP_WAIT = 4
 
 
-def run_shards(args, top, tests, found, members, chosen):
+def run_shards(args, top, tests, found, members, chosen, progress=None):
     """Run found, {shard: tests}, args.jobs at a time, print each one's output and then the run's summary, and return
     its status. tests are the discovered tests the run selected, members is {shard: test ids}, and chosen is
-    members for a run that selects tests, else None."""
+    members for a run that selects tests, else None. progress, a run_progress.Tracker, records each process as it
+    starts and ends, in whatever order they end."""
     expected = {name: len(tests) for name, tests in found.items()}
+    # Counted for the reader of an admitted run's output, whose progress folder on the second Mac it cannot read.
+    print(f"{run_progress.PREFIX}{len(tests)} tests in {len(found)} processes, {args.jobs} at a time",
+          flush=True)
+    if progress is not None:
+        with contextlib.suppress(OSError): progress.planned(len(found), len(tests), args.jobs)
+
+    def tracked(name, *arguments):
+        if progress is not None:
+            with contextlib.suppress(OSError): progress.started(name)
+        result = None
+        try:
+            result = run_shard(name, *arguments)
+            return result
+        finally:
+            if progress is not None:
+                with contextlib.suppress(OSError): progress.finished(name, result)
+
     # Each shard holds the admission lock descriptors this process holds and no others, as a test in
     # `python3 -m unittest discover` does, so a nested admission in it reuses the admission; given
     # the token alone, one was refused (#70).
@@ -496,7 +527,7 @@ def run_shards(args, top, tests, found, members, chosen):
 
     pool = ThreadPoolExecutor(max_workers=args.jobs)
     try:
-        futures = [pool.submit(run_shard, name, tests, top, args.verbose, descriptors, args.timeout,
+        futures = [pool.submit(tracked, name, tests, top, args.verbose, descriptors, args.timeout,
                                None if chosen is None else chosen[name])
                    for name, tests in found.items()]
         waiting = len(futures)
@@ -544,6 +575,7 @@ def run_shards(args, top, tests, found, members, chosen):
     summary = (f"queuekeeper unittest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
                f"{time.monotonic() - began:.1f}s: " + verdict(failed, unmeasured))
     print(summary, flush=True)
+    if progress is not None: progress.summary = summary
     if failed:
         for line in reason_lines(reasons, saved_output(report + [summary], reasons)): print(line, flush=True)
     if unfinished:

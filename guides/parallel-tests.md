@@ -349,6 +349,13 @@ finely under any coarser `--split`, as the toolkit's tests/test_merge_queue.py d
 tests built real Git repositories one after another for 900 s while the rest of the suite
 finished.
 
+A run keeps its progress in a folder of its own under `.build/queuekeeper/runs/`, whatever its
+standard output is, and names that folder in its first line, before discovery: `progress.log`
+gets a line as each process ends, in whatever order they end, with the count of processes and
+tests finished and failed, and `progress.json` names the processes running. When standard output
+is a pipe, the first line comes on standard error as well. `qk progress` reads the folder from
+another shell ([Long runs](../doc/agent_interface.md#long-runs), vocaro/queuekeeper#22).
+
 With `--split class`, `--batch-size N` limits each class process to N tests in discovery order.
 Modules that require a process per test, explicit serial groups, and modules that cannot be split
 keep their own process boundaries.

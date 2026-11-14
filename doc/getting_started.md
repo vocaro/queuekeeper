@@ -153,7 +153,9 @@ background command and follow it to its result. Exit 0 means landed, 1 means it 
 with a reason, and 75 means the queue is held or still waiting. If the wait is interrupted, the
 entry still lands: follow it with `qk queue wait ID`, or run the same `qk land --wait` again,
 which follows the entry already queued. Run tests and builds with `qk run LANE` or
-`qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs.
+`qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
+suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
+through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
 ```
 
 [The agent interface](agent_interface.md) lists the exit codes and output agents can rely on, how

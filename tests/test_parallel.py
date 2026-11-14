@@ -273,7 +273,8 @@ class UnittestRunnerTests(unittest.TestCase):
         status, output = self.run_suite(root)
         self.assertEqual(status, 0, output)
         self.assertEqual(self.after_summary(output), [])
-        self.assertFalse((root / ".build").exists())
+        # No failure record and no list of tests not reached; only the progress folder every run keeps (#22).
+        self.assertEqual([path.name for path in (root / ".build/queuekeeper").iterdir()], ["runs"])
 
     def test_a_process_that_timed_out_is_named_after_the_summary_with_the_command_that_runs_it_alone(self):
         # No failure, so no reasons and no kept output: only what did not finish (vocaro/queuekeeper#37).

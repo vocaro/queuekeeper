@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import __version__, budgets, disk, docs, extensions, git_hooks, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
-    parallel, pre_push, processes, remote, resources, shims, spelling
+    parallel, pre_push, processes, remote, resources, run_progress, shims, spelling
 from .config import FILE as CONFIG_FILE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, self_lane_warnings, sibling_folders, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -677,7 +677,14 @@ def admitted_runner(root, argv, first):
     """Run the runner argv names, from first, under a heavy-work admission, and return its status. In a project it
     runs as `qk admit -- COMMAND` runs any command: on whichever Mac has spare capacity for it, the second Mac
     first. A folder with no queuekeeper.json has no second Mac to match, so the runner waits for a slot on this Mac
-    and runs in this process; BUSY says no slot came."""
+    and runs in this process; BUSY says no slot came. Its first line names the folder that keeps its progress, and
+    everything it prints, whatever its standard output is, such as a pipe into `tail` (vocaro/queuekeeper#22)."""
+    with run_progress.admitted(["qk", *argv[first:]]) as outcome:
+        outcome["status"] = admitted_run(root, argv, first)
+    return outcome["status"]
+
+
+def admitted_run(root, argv, first):
     words = argv[first:]
     if (root / CONFIG_FILE).is_file(): return main([*argv[:first], "admit", "--", *runner_command(root, words)])
     label = " ".join(["qk", *words])
@@ -786,6 +793,9 @@ def perform(argv, report):
         "qk unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; qk unittest -h for the rest. "
         "Started outside an admission it is admitted and placed first, as qk admit would run it; --unadmitted "
         "runs it with none, on this Mac")
+    commands.add_parser("progress", help="say how far each long run started here has got, from another shell: qk "
+        "unittest's processes finished, failed and running, and when it last moved, or an admitted runner's output; "
+        "qk progress [--all] [RUN ...]")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through heavy-work admission on whichever Mac has spare capacity for "
         "it, the second Mac first, as qk run places a lane: qk admit -- COMMAND; what it changes in the "
@@ -956,6 +966,7 @@ def perform(argv, report):
     argv, bare = bare_runner(argv, first)
     if bare: return admitted_runner(Path(project or ".").resolve(), argv, first)
     if argv[first:first + 1] == ["unittest"]: return parallel.unittest_main(argv[first + 1:])
+    if argv[first:first + 1] == ["progress"]: return run_progress.main(argv[first + 1:], project)
     if argv[first:first + 1] and argv[first] in extensions.COMMANDS:
         return extensions.COMMANDS[argv[first]][1](argv[first + 1:], project)
     # The switch is the owner's and this Mac's, and reads no project.
