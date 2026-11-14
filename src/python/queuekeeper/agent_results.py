@@ -117,6 +117,9 @@ def entry_result(queue, entry):
             "subject": entry.get("subject"), "branch": entry.get("branch"),
             "submitted": entry.get("submitted"), "settled": entry.get("settled"),
             "failure": failure, "tests": counts, "logTruncated": truncated,
+            "flakes": [{**flake, "reruns": {"status": "passed", "count": len(flake["rerunLogs"])
+                                           if "rerunLogs" in flake else None}}
+                       for flake in entry.get("flakes", [])],
             "artifacts": artifacts, "gates": gates,
             "resultsSummary": (entry.get("gate") or {}).get("results"),
             "docsOnly": entry.get("docsOnly"), "ungated": entry.get("ungated"),

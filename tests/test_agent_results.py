@@ -59,6 +59,27 @@ class AgentResults(unittest.TestCase):
         missing = next(item for item in found["artifacts"] if item["kind"] == "queue-log")
         self.assertFalse(missing["available"])
 
+    def test_old_landing_retains_flakes_without_inventing_missing_gate_evidence(self):
+        flake = {"test": "test_example.Example.test_a", "commit": "c" * 40,
+                 "gateLog": "/pruned/gate.log", "rerunLogs": ["/pruned/rerun-1.log", "/pruned/rerun-2.log"],
+                 "mac": "build-host", "issue": "https://github.com/vocaro/queuekeeper/issues/142",
+                 "outcome": "The batch landed."}
+        self.entry["flakes"] = [flake]
+        output = io.StringIO()
+        with mock.patch.object(merge_queue, "Queue", return_value=self.queue), contextlib.redirect_stdout(output):
+            self.assertEqual(agent_results.result(self.root, "old-entry", True), 0)
+        found = json.loads(output.getvalue())
+        self.assertEqual(found["flakes"], [{**flake, "reruns": {"status": "passed", "count": 2}}])
+        self.assertEqual(self.entry["flakes"], [flake])
+        self.assertEqual(found["state"], "landed")
+        self.assertIsNone(found["failure"])
+        self.assertIsNone(found["tests"])
+        self.assertIsNone(found["resultsSummary"])
+        self.assertEqual(found["artifacts"], [])
+
+    def test_no_recorded_flakes_are_an_empty_list(self):
+        self.assertEqual(agent_results.lookup(self.queue, "old-entry")["flakes"], [])
+
     def test_pending_entry_exposes_only_its_current_gate_and_hold(self):
         self.entry.update(state="testing")
         self.queue.working.return_value = True

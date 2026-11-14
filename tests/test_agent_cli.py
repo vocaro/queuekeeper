@@ -84,6 +84,30 @@ class AgentCli(Fixture):
         self.assertEqual(result["recovery"]["responsibleParty"], "owner")
         self.assertFalse(result["recovery"]["retryable"])
 
+    def test_waits_that_complete_with_flakes_return_the_recorded_rerun_outcome(self):
+        self.commit("feature", "feature")
+        [identifier] = self.add("feature")
+        queue = mq.Queue(self.repo)
+        original = queue.read(identifier)
+        flake = {"test": "test_example.Example.test_a", "commit": original["tip"],
+                 "gateLog": "/pruned/gate.log", "rerunLogs": [f"/pruned/rerun-{n}.log" for n in range(3)],
+                 "trackerError": "tracker unavailable", "mac": "build-host"}
+
+        def settle(_seconds):
+            queue.record(queue.read(identifier), state=mq.LANDED, landedAs="a" * 40, flakes=[flake])
+
+        for command in (("queue", "wait", identifier), ("land", "feature", "--wait")):
+            with self.subTest(command=command):
+                queue.save(original)
+                with patch.object(mq, "add", return_value=identifier), patch.object(mq.time, "sleep", settle):
+                    status, result, _ = self.invoke(*command, "--json")
+                self.assertEqual(status, 0)
+                self.assertEqual(result["state"], mq.LANDED)
+                self.assertTrue(result["terminal"])
+                self.assertIsNone(result["failure"])
+                self.assertIsNone(result["tests"])
+                self.assertEqual(result["flakes"], [{**flake, "reruns": {"status": "passed", "count": 3}}])
+
     def test_multiple_entries_and_unknown_ids_are_structured(self):
         self.commit("first", "first")
         self.commit("second", "second")

@@ -52,6 +52,13 @@ and the exact run's artifacts. An artifact's `location` says where its path can 
 listed with `available: false`. Diagnostic excerpts are bounded; `logTruncated` says when they
 omit earlier bytes. A result is a summary, not a replacement for the complete log.
 
+The `flakes` array preserves each recorded flaky test's name, commit, gate and rerun log paths,
+Mac, batch outcome, and tracker link (`issue`) or `trackerError`. Its `reruns` object gives
+`status: "passed"` and the recorded rerun `count`. These are successful isolated reruns, not a
+failed entry verdict; `failure` remains null for a landing. Missing historical test counts and
+result summaries remain null, and unrecorded artifact paths are not invented. An entry with no
+recorded flakes returns an empty array.
+
 Status and entry results carry `schemaVersion: 1`. Readers should tolerate added keys and
 unrecognized states or reason codes. Existing status keys, including the `held` explanation,
 remain available. The nested `recovery` object supplies:
