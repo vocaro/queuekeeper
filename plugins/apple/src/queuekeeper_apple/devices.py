@@ -1024,8 +1024,7 @@ def recover_there(args):
     here in its place: `devices show` there says what became of the entry (vocaro/queuekeeper#167)."""
     from queuekeeper import remote
     arguments = ["devices", "recover", args.key, "--by", args.by, "--revision", args.revision, "--verified", args.verified]
-    for option, value in (("--offload-unchecked", args.offload_unchecked), ("--build-host-unchecked", args.build_host_unchecked)):
-        if value is not None: arguments += [option, value]
+    if args.offload_unchecked is not None: arguments += ["--offload-unchecked", args.offload_unchecked]
     try:
         return remote.toolkit_qk(args.host, arguments, project=True, timeout=remote.SURVEY_TIMEOUT)
     except subprocess.SubprocessError as error:
@@ -1148,8 +1147,6 @@ def main(argv=None):
     args = parser.parse_args(argv)
     said = lambda text: print(text, file=sys.stderr, flush=True)
     try:
-        if args.action == "recover" and args.host:
-            return recover_there(args)
         record = Record()
         if args.action == "path":
             print(record.path)
@@ -1194,6 +1191,7 @@ def main(argv=None):
             if args.build_host_unchecked is not None:
                 raise ValueError("--build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, "
                                  "and is no longer read: use --offload-unchecked (guides/shared-host.md, Earlier names)")
+            if args.host: return recover_there(args)
             entry = record.entry(args.key) or {}
             # Only once recovery would go ahead: never while its run's process still runs.
             restored = restore_for_recovery(args.key, entry, said) if entry.get("revision") == args.revision and \
