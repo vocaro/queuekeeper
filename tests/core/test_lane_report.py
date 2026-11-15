@@ -118,6 +118,24 @@ class Parsing(unittest.TestCase):
         self.assertEqual(lane_report.failing(XCTEST_FAILED),
                          [("-[Mod.ReaderTests testPage]", "/project/Tests/ReaderTests.swift:42")])
 
+    def test_xctest_counts_each_iteration_of_a_repeated_test_by_its_own_outcome(self):
+        # xcodebuild's -test-iterations runs a test again under the same name, and its total counts each run; five
+        # failed iterations read as 4 passed, 1 failed (vocaro/queuekeeper#140).
+        name = "-[UITests.LargestTextAccessibilityTests testAvailableSupportAccessibility]"
+        def iterations(outcomes):
+            failures = outcomes.count("failed")
+            lines = [f"Test Case '{name}' started (Iteration {number} of {len(outcomes)}).\n"
+                     + (f"/project/UITests/Largest.swift:30: error: {name} : XCTAssertTrue failed\n" if outcome == "failed" else "")
+                     + f"Test Case '{name}' {outcome} (2.0 seconds).\n" for number, outcome in enumerate(outcomes, 1)]
+            return "".join(lines) + (f"Test Suite 'Selected tests' {'failed' if failures else 'passed'} at 2026-11-12 10:00:00.000.\n"
+                                     f"\t Executed {len(outcomes)} tests, with {failures} failures ({failures} unexpected) "
+                                     f"in 10.0 (10.1) seconds\n")
+        self.assert_counts(iterations(["failed"] * 5), 0, 5, 0)
+        self.assert_counts(iterations(["passed"] * 5), 5, 0, 0)
+        self.assert_counts(iterations(["failed", "passed", "failed", "passed", "passed"]), 3, 2, 0)
+        # The summary still names the test once.
+        self.assertEqual(lane_report.failing(iterations(["failed"] * 5)), [(name, "/project/UITests/Largest.swift:30")])
+
     def test_swift_testing_failure_and_not_its_runs_own_line(self):
         self.assert_counts(SWIFT_TESTING_FAILED, 2, 1, 0)
         self.assertEqual(lane_report.failing(SWIFT_TESTING_FAILED), [("page()", "PageTests.swift:9")])

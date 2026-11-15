@@ -30,7 +30,10 @@ from . import lane_results, remote, resources
 # The failing tests a summary names; the rest are in its failures.txt or log.
 SHOWN = 20
 
-# XCTest's line for a failed test, once per run of it, and its total, whose unexpected failures are assertions.
+# XCTest's line for a failed test, once per run of it, and its total, whose unexpected failures are assertions. Each
+# line counts as a failed test, as its total counts each run as a test: xcodebuild's -test-iterations N runs a test N
+# times under one name, and 5 failed iterations read as 4 passed, 1 failed while the name counted once
+# (vocaro/queuekeeper#140).
 XCTEST_FAILED = re.compile(r"^Test [Cc]ase '([^'\n]+)' failed\b", re.M)
 XCTEST_TOTAL = re.compile(r"Executed \d+ tests?, with [^\n(]*\((\d+) unexpected\)")
 # FILE:LINE: error: -[Module.Class test] : message
@@ -92,7 +95,7 @@ def failed_tests(text):
         total += items.get("failed", 0) + items.get("error", 0) + items.get("errors", 0)
         errors += items.get("error", 0) + items.get("errors", 0)
     total += sum(int(n) for n in DEVICE_FAILED.findall(text))
-    cases, tests = set(XCTEST_FAILED.findall(text)), set(SWIFT_TESTING_FAILED.findall(text))
+    cases, tests = XCTEST_FAILED.findall(text), set(SWIFT_TESTING_FAILED.findall(text))
     if not cases and any(int(n) for n in XCTEST_TOTAL.findall(text)): return None, errors
     if not tests and SWIFT_TESTING_FAILED_RUN.search(text): return None, errors
     return total + len(cases) + len(tests), errors
