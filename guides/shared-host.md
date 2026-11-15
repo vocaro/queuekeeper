@@ -1314,7 +1314,12 @@ sent along and run by the host's own Python, takes one of four persistent checko
 project, checks the commit out detached with the toolkit beside it, and runs `qk run`, or
 `qk remote admit`'s command, in the checkout's root, or `qk admit`'s command in the directory that matches
 the one it was sent from. The work it runs knows it runs there for this Mac, whose name
-`QUEUEKEEPER_DISPATCHED_FROM` gives, and its receipts say so. A checkout keeps its ignored inputs and
+`QUEUEKEEPER_DISPATCHED_FROM` gives, and its receipts say so. A script or test that must know whether
+it runs on the second Mac asks only whether that variable is set
+([asking whether a command runs on the other Mac](../doc/build_farm.md#asking-whether-a-command-runs-on-the-other-mac)),
+never for a host name or a user ID, which macOS and setup can change, nor for a field of the device
+record: a project's script that compared the second Mac's `.local` name refused on every Mac once
+macOS renamed it, and nobody noticed (vocaro/queuekeeper#93). A checkout keeps its ignored inputs and
 build products, so its next build is warm; `qk remote` waits for one when all four are in use.
 Of the free checkouts, a run takes the one whose last tree is nearest its commit's, by the files
 that differ between the two, so its builds redo the least, and the log says which slot it took and
@@ -1790,7 +1795,9 @@ The owner prepares the second Mac once:
    Giving the second Mac a `LocalHostName` no other machine is likely to claim (`sudo scutil
    --set LocalHostName NAME` there) makes renames rarer, though macOS can still rename it. That
    setting, and `~/.ssh/config`, are the owner's: queuekeeper changes neither, needs `sudo` for the first,
-   and says what to set. Nothing else in queuekeeper depends on the old name.
+   and says what to set. Nothing else in queuekeeper depends on the old name, and a project's script
+   must not either: it asks whether `QUEUEKEEPER_DISPATCHED_FROM` is set
+   ([how a run reaches the second Mac](#how-a-run-reaches-the-second-mac)).
 
 3. Install the Xcode this Mac uses at the same path and follow the first-launch instructions
    from the setup report.

@@ -200,7 +200,9 @@ RENAMED = {}
 # The second Mac searched for in this process and not found, by destination: the names Bonjour offered
 # ssh under that were asked for its key, none presenting it (rediscover).
 UNFOUND = {}
-# Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records.
+# Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records. That it
+# is set is also the documented way a project's script asks whether it runs on the second Mac (doc/build_farm.md,
+# vocaro/queuekeeper#93), so neither its name nor when it is set changes without that page.
 DISPATCHER = "QUEUEKEEPER_DISPATCHED_FROM"
 # Seconds `qk doctor` waits for the second Mac to report its Xcodes and runtimes.
 SURVEY_TIMEOUT = 180

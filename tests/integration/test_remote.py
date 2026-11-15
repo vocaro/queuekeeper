@@ -1109,6 +1109,23 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"ran in {self.checkout(0).resolve()}", output)
         self.assertIn("ran in", (self.project / ".build/queuekeeper/remote/admit/output.log").read_text())
 
+    def test_a_command_asks_whether_it_was_sent_to_the_second_mac_whatever_either_mac_is_called(self):
+        # The documented check (doc/build_farm.md): the variable is set, whatever it holds (vocaro/queuekeeper#93).
+        asks = [sys.executable, "-c", f"import os; sender = os.environ.get({remote.DISPATCHER!r}); "
+                                      "print('sent by', sender); raise SystemExit(4 if sender else 0)"]
+        # As macOS renames a Mac: this Mac's name, and the name the second Mac is reached by.
+        for sender, hostname in [(offload_host.mac_name(), "127.0.0.1"), ("Renamed-MacBook-Pro-5", "localhost")]:
+            with self.subTest(sender=sender, hostname=hostname), patch.dict(os.environ, {"FAKE_HOSTNAME": hostname}), \
+                    patch.object(offload_host, "mac_name", return_value=sender):
+                # The second Mac's device record defers to one Mac only, by name, so each sender has a new one.
+                self.record_there.unlink(missing_ok=True)
+                status, output, error = self.qk("remote", "admit", "--", *asks)
+                self.assertEqual(status, 4, output + error)
+                self.assertIn(f"sent by {sender}", output)
+                # The negative control: the same command, admitted on this Mac, finds nothing.
+                status, output, error = self.qk("admit", "--here", "--", *asks)
+                self.assertEqual(status, 0, output + error)
+
     def test_what_remote_admit_changed_there_comes_back_and_its_checkout_is_restored(self):
         # vocaro/queuekeeper#80: each run left its evidence untracked in its checkout, and later runs passed it over.
         writes = [sys.executable, "-c", "import pathlib, sys\n"

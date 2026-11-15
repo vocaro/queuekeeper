@@ -28,6 +28,27 @@ measurement.
 
 Environment variables do not travel to the other Mac, so lane settings must be arguments.
 
+## Asking whether a command runs on the other Mac
+
+A command that Queuekeeper sent to another Mac, a lane's or `qk admit`'s alike, finds
+`QUEUEKEEPER_DISPATCHED_FROM` in its environment, holding the name of the Mac that sent it. A
+command that runs on the Mac where it started does not. A script or test that must know which of
+the two it is asks only whether the variable is set:
+
+```sh
+if [ -n "${QUEUEKEEPER_DISPATCHED_FROM:-}" ]; then
+    echo "sent here by another Mac"
+fi
+```
+
+Do not compare a host name or a user ID instead. macOS renames a Mac whose name another machine on
+the network claims, and a check written for the old name then refuses every Mac without saying
+why. Do not compare the variable's value either: it is the sending Mac's name, which changes the
+same way.
+
+The variable describes the run, not the Mac. A command started by hand in a shell on the other
+Mac was sent by nobody and does not have it.
+
 ## A dropped connection
 
 A run is journaled on the Mac that executes it. If the starting Mac sleeps or the connection drops,
