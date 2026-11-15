@@ -129,6 +129,36 @@ class PrePushTests(unittest.TestCase):
         moved = self.git("rev-parse", "HEAD")
         self.assertEqual(pre_push.pushed(self.root, [self.line(moved, head)]), ([moved], ["doc/a.md", "src/a.py"]))
 
+    def test_a_push_that_changes_no_path_runs_nothing_and_one_whose_paths_cannot_be_read_runs_the_gate(self):
+        # A merge that keeps a landed branch's commits and has main's own tree (vocaro/queuekeeper#165).
+        self.git("checkout", "-q", "-b", "landed", self.base)
+        side = self.commit({"README.md": "read more\n"})
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "-s", "ours", "-m", "Keep", side)
+        merge = self.git("rev-parse", "HEAD")
+        self.assertEqual(self.git("rev-parse", f"{merge}^{{tree}}"), self.git("rev-parse", f"{self.base}^{{tree}}"))
+        kept = self.line(merge, self.base, "refs/heads/main")
+        self.assertEqual(pre_push.pushed(self.root, [kept]), ([merge], []))
+        status, said = self.push([kept])
+        self.assertEqual((status, self.ran), (0, []))
+        self.assertIn("nothing runs: the push changes no path", said)
+        # A new branch at a commit the remote's main has changes no path either.
+        self.assertEqual(self.push([self.line(self.base)])[0], 0)
+        self.assertEqual(self.ran, [])
+        # With another ref that changes a path, the push runs that path's lanes.
+        self.assertEqual(self.push([kept, self.line(side, self.base)])[0], 0)
+        self.assertEqual(self.ran, ["docs"])
+        # Paths Git could not list are not an empty list: the push runs the gate.
+        self.ran.clear()
+        real = pre_push.git_state.git
+        failing = lambda root, *arguments: None if arguments[0] == "diff" else real(root, *arguments)
+        unread = pre_push.pushed(self.root, [kept, self.line(side, self.base)], git=failing)
+        self.assertEqual(unread, ([merge, side], None))
+        with patch.object(pre_push, "pushed", lambda *arguments: unread):
+            status, said = self.push([self.line(side, self.base)])
+        self.assertEqual((status, self.ran), (0, ["gate"]))
+        self.assertIn("running gate: the paths it changes could not be read, so it runs as a code change", said)
+
     def test_the_command_reads_the_project_and_the_hook_s_input(self):
         (self.root / "queuekeeper.json").write_text('{"schemaVersion": 1, "name": "Project", "lanes": {}}')
         with patch.object(sys, "stdin", io.StringIO("")):

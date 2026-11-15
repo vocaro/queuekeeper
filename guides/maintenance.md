@@ -774,12 +774,15 @@ exec python3 scripts/qk pre-push "$@"
 only the paths of `queue.docsOnly`, or only conventional Markdown in a project without it, runs the
 docs lanes. Any other push runs `queue.lanes`, or `gate`, after those docs lanes when it changes
 such a path beside others. So the hook holds no second copy of what
-the configuration says. The lanes run with `qk run` in the checkout being pushed from, and are
+the configuration says. A push that changes no path runs nothing and says so: its files are ones the
+remote already has, as when a merge keeps a landed branch's commits and has the remote's own tree
+([#165](https://github.com/vocaro/queuekeeper/issues/165)). When Git cannot list the paths, the
+push runs `queue.lanes`, or `gate`. The lanes run with `qk run` in the checkout being pushed from, and are
 admitted and placed as always.
 
 | Hook's exit | Meaning |
 |---|---|
-| 0 | Every lane passed, or the push deletes a branch |
+| 0 | Every lane passed, or the push deletes a branch or changes no path |
 | 1 | A lane failed |
 | 3 | A lane was unmeasured: nothing ran, which is not a pass, so the push is refused |
 

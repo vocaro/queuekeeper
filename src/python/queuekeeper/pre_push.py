@@ -10,6 +10,10 @@ changes pick the lanes, as they do for a landing: a push that changes only the p
 conventional Markdown in a project without it, runs the docs lanes, and any other runs queue.lanes, or gate. The
 lanes run with `qk run` in this checkout, so they are admitted and placed as always.
 
+A push that changes no path runs nothing and says so: its files are ones the remote already has, as when a merge
+keeps a landed branch's commits and has the remote's own tree (vocaro/queuekeeper#165). Paths that Git could not
+list are not such a push, and run queue.lanes, or gate.
+
 The push is refused when a lane fails, exit 1, and when one ends unmeasured, exit 3: nothing ran, which is not a
 pass. QUEUEKEEPER_PREPUSH=skip runs nothing and says so, as `git push --no-verify` does without a word.
 
@@ -40,8 +44,8 @@ def say(line):
 def pushed(root, lines, remote="origin", git=git_state.git):
     """(the commits pushed, the paths they change) for the hook's input. A ref that is deleted pushes nothing. A new
     branch is compared with the remote's main, and one with no such base changes every file it has. Both sides of
-    a rename are paths."""
-    commits, changed = [], set()
+    a rename are paths. The paths are None when Git could not list a ref's, which is not a push that changes none."""
+    commits, changed, unread = [], set(), False
     for line in lines:
         fields = line.split()
         if len(fields) != 4 or set(fields[1]) == {"0"}: continue
@@ -52,8 +56,9 @@ def pushed(root, lines, remote="origin", git=git_state.git):
             base = base or git(root, "merge-base", local, upstream)
         listed = (git(root, "diff", "--name-only", "--no-renames", base, local) if base
                   else git(root, "ls-tree", "-r", "--name-only", local))
+        unread = unread or listed is None
         changed |= set((listed or "").splitlines())
-    return commits, sorted(changed)
+    return commits, None if unread else sorted(changed)
 
 
 def lanes_for(config, changed):
@@ -86,6 +91,10 @@ def main(root, config, arguments, stream=None, environ=None, run=run):
     remote = arguments[0] if arguments else "origin"
     commits, changed = pushed(root, (sys.stdin if stream is None else stream).read().splitlines(), remote)
     if not commits: return 0
+    if changed == []:
+        say("nothing runs: the push changes no path, so its files are ones the remote already has")
+        return 0
+    unread, changed = changed is None, changed or []
     lanes, why = lanes_for(config, changed)
     if not lanes:
         say("the project has no gate lane and no queue.lanes, so nothing was verified")
@@ -94,7 +103,9 @@ def main(root, config, arguments, stream=None, environ=None, run=run):
     if head not in commits:
         say(f"the lanes run on this checkout, at {(head or 'no commit')[:12]}, which is not the commit pushed "
             f"({', '.join(commit[:12] for commit in commits)})")
-    say(f"running {', '.join(lanes)}: {why} ({len(changed)} path(s))")
+    if unread: why = "the paths it changes could not be read, so it runs as a code change"
+    else: why = f"{why} ({len(changed)} path(s))"
+    say(f"running {', '.join(lanes)}: {why}")
     for lane in lanes:
         status = run(Path(root), lane)
         if status == lane_results.UNMEASURED:

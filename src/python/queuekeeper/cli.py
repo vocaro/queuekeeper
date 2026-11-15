@@ -900,7 +900,8 @@ def perform(argv, report):
         "hook asks: one line for each finding, each beginning repaired or warning, or one beginning fine; exit 0 "
         "unless a warning is left (guides/maintenance.md)")
     hook = commands.add_parser("pre-push", help="a pre-push hook: run the lanes the project names for the paths a push "
-        "changes, the docs lanes for a docs-only push and queue.lanes or gate for any other, and refuse the push "
+        "changes, the docs lanes for a docs-only push, queue.lanes or gate for any other and none for a push that "
+        "changes no path, and refuse the push "
         "when one fails or is unmeasured; a project's hook is `exec python3 scripts/qk pre-push \"$@\"`")
     hook.add_argument("remote", nargs="*", help="the remote's name and URL, as Git gives a pre-push hook")
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] [--repeat N [--erase|--template] [--only TEST]] "
