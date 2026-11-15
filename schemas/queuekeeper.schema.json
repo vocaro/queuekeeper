@@ -109,7 +109,8 @@
                 "unity",
                 "chips",
                 "arguments",
-                "idioms"
+                "idioms",
+                "exactTests"
               ]
             }
           },
@@ -165,8 +166,13 @@
             ]
           },
           "minimumTests": {
+            "description": "The fewest executed tests the lane's log must report for a whole run that exits 0 to pass; a skipped test counts toward none. With exactTests, the count the run must equal (guides/lanes.md, Receipts and test counts)",
             "type": "integer",
             "minimum": 1
+          },
+          "exactTests": {
+            "description": "Whether a whole run of the lane must execute exactly its minimumTests, which the lane must then give: any other count fails, naming the count observed, so that adding, deleting or renaming a test the lane selects fails the lane instead of leaving minimumTests wrong. Left out or false, minimumTests is a floor. A run with arguments needs one test, or its --expect, as before",
+            "type": "boolean"
           },
           "arguments": {
             "description": "Whether the lane's command takes arguments. A lane that says false selects its own tests: qk run LANE -- ARGUMENTS, and --repeat, whose series reaches the command as arguments, are refused at once with exit status 2, before the lane is staged, admitted or sent to the second Mac. Left out or true, the arguments are appended to the command",

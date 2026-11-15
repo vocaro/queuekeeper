@@ -38,6 +38,31 @@ skipped`, with N leaving them out. Only the lane's own log is counted. A gate th
 of its own leaves no count there, so its lane either puts that output on its own output as well,
 as PDFReflowLib's gate lanes do by running the steps serially, or sets no `minimumTests`.
 
+A floor typed by hand drifts from the tests its lane selects, and a floor alone reports none of it: a
+run passes with any count at or above it. BreezEPUB had seven lanes whose floors were below what they
+ran, `navigation-keys` with a floor of 1 and 5 tests, so that four of them could have stopped running
+with nothing said, and a test that another landing added to the accessibility lanes left their floors
+short ([vocaro/queuekeeper#77](https://github.com/vocaro/queuekeeper/issues/77)). A lane that picks
+its tests by name, and so knows how many it runs, says `"exactTests": true` beside its `minimumTests`.
+A whole run of it must then execute exactly that many, as `--expect N` requires of one run: any other
+count fails, exit 2, and says the count observed, which is the figure to set once the tests selected
+are the ones meant:
+
+```text
+queuekeeper: Expected exactly 2 executed tests; observed 3. The lane says "exactTests": true, so its minimumTests, 2, is the count of the tests it selects: if these 3 are the tests it should run, set its minimumTests to 3, and otherwise correct what it selects
+```
+
+The count leaves out skips, as a floor does, so a lane whose tests skip on one device and not another
+gives each device's lane its own count; a run that selected exactly that many and skipped some is
+unmeasured, exit 3, as under `--expect`. A run with arguments still needs one test, or its `--expect`.
+A lane's own run finds the drift only when that lane runs, which for a lane outside the gate is after
+the change has landed. Such a project also keeps a script test in its gate that works out each lane's
+count from the test sources and compares it with `minimumTests`, and checks that each test the lane
+names exists, so that adding, deleting or renaming a test fails the gate. BreezEPUB's
+`scripts/tests/test_ui_test_counts.py` does so with an inventory read from its bundles' Swift sources,
+`scripts/ui_test_inventory.py`. A lane whose suite grows with every change, such as a library's whole
+unit suite, leaves `exactTests` out and keeps a floor.
+
 A lane is unmeasured, exit 3, when its command exits 3, when its command exits 0 but its log
 reports a test unmeasured ([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#honest-outcome-states)), or when its
 `timeout` stops it. Its receipt then records `"outcome": "unmeasured"`, with the log's lines for

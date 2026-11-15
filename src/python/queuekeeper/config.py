@@ -79,7 +79,7 @@ def load(root):
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms"})
+                       "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms", "exactTests"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
 EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
@@ -134,7 +134,7 @@ def parse(source):
         if not isinstance(lane, dict) or set(lane) - LANE_KEYS - set(hooks.LANE_KEYS):
             raise ValueError(f"Invalid lane {name}")
         apps(name, lane)
-        for key in ["foreground", "model", "wholeHost", "unlockedScreen", "arguments"]:
+        for key in ["foreground", "model", "wholeHost", "unlockedScreen", "arguments", "exactTests"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
         resource_of(name, lane)
@@ -154,6 +154,8 @@ def parse(source):
         for key in ["minimumTests", "timeout"]:
             if key in lane and (type(lane[key]) is not int or lane[key] <= 0):
                 raise ValueError(f"{name}.{key} must be a positive integer")
+        if lane.get("exactTests") and "minimumTests" not in lane:
+            raise ValueError(f"{name}.exactTests needs the lane's minimumTests, the count it makes exact")
     merge_queue(value.get("queue", {}), lanes)
     release(value.get("release", {}), lanes, value.get("queue", {}))
     spelling = value.get("spelling", {})

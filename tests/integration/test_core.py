@@ -514,6 +514,59 @@ class ConfigurationTests(unittest.TestCase):
                 with self.subTest(arguments), self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
                     cli.main(["--project", directory, *arguments])
 
+    def test_a_lane_that_says_its_count_is_exact_fails_when_it_runs_more_tests_than_its_minimum(self):
+        """BreezEPUB's navigation-keys had a minimumTests of 1 and ran 5, so four of its tests could have stopped
+        running with nothing said, and a test another landing added left seven lanes' floors short
+        (vocaro/queuekeeper#77)."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # Reports one executed test for each argument it receives, one of them skipped where an argument is "skip".
+            count = [sys.executable, "-c", "import sys; n = len(sys.argv) - 1; "
+                     "print('Ran', n, 'tests\\n\\nOK' + (' (skipped=1)' if 'skip' in sys.argv else ''))"]
+            def lane(*selected, **keys):
+                return {"command": [*count, *selected], "minimumTests": 2, **keys}
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                "floor": lane("a", "b", "c"), "exact": lane("a", "b", exactTests=True),
+                "grown": lane("a", "b", "c", exactTests=True), "shrunk": lane("a", exactTests=True),
+                "skipped": lane("a", "b", "skip", exactTests=True), "unasked": lane("a", "b", "c", exactTests=False),
+                "group": {"parallel": ["grown"]}}}))
+            cases = [(["floor"], 0, "passed"),  # a floor alone still passes whatever runs above it
+                     (["unasked"], 0, "passed"),
+                     (["exact"], 0, "passed"),
+                     (["grown"], 2, "failed"),
+                     (["shrunk"], 2, "failed"),
+                     (["skipped"], 0, "passed"),  # a skipped test ran nothing, and two ran
+                     (["grown", "--", "d"], 0, "passed"),  # arguments select part of the lane, which needs one test
+                     (["grown", "--expect", "4", "--", "d"], 0, "passed"),
+                     (["group"], 1, "failed")]  # a group's member is judged as it is alone, and fails its group
+            for arguments, status, outcome in cases:
+                with self.subTest(arguments):
+                    with patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as error:
+                        self.assertEqual(cli.main(["--project", directory, "run", *arguments]), status, error.getvalue())
+                    recorded = json.loads((root / ".build/queuekeeper" / arguments[0] / "source.json").read_text())
+                    self.assertEqual(recorded["outcome"], outcome)
+            said = self.run_lane(directory, "grown")
+            self.assertIn('queuekeeper: Expected exactly 2 executed tests; observed 3. The lane says "exactTests": true, so '
+                          "its minimumTests, 2, is the count of the tests it selects: if these 3 are the tests it should "
+                          "run, set its minimumTests to 3, and otherwise correct what it selects\n", said)
+            recorded = json.loads((root / ".build/queuekeeper/grown/source.json").read_text())
+            self.assertEqual(recorded["exitStatus"], 0)
+            self.assertIn("Expected exactly 2 executed tests; observed 3", recorded["error"])
+            self.assertIn("Expected exactly 2 executed tests; observed 1. The lane says", self.run_lane(directory, "shrunk"))
+            # The key is true or false, and makes exact the minimumTests the lane gives.
+            for keys, message in (({"minimumTests": 2, "exactTests": "yes"}, "gate.exactTests must be true or false"),
+                                  ({"exactTests": True}, "gate.exactTests needs the lane's minimumTests"),
+                                  ({"exactTests": False}, None)):
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                    "gate": {"command": count, **keys}}}))
+                with self.subTest(keys):
+                    if message is None: config.load(root)
+                    else:
+                        with self.assertRaisesRegex(ValueError, message): config.load(root)
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                "gate": lane(), "group": {"parallel": ["gate"], "exactTests": True}}}))
+            with self.assertRaisesRegex(ValueError, "Lane group group takes only"): config.load(root)
+
     def test_a_lane_that_takes_no_arguments_refuses_them_before_anything_runs_or_is_sent(self):
         """BreezEPUB's ways-in on 2026-11-13 refused two -only-testing arguments in its own script, after the run had
         been staged and sent to the second Mac (vocaro/queuekeeper#137)."""

@@ -171,7 +171,9 @@ def conclude(directory, receipt, status, **fields):
 
 def judge(lane, result, log, extra=(), expect=None):
     """A lane's status and unmeasured tests from its command's status and its log. A completed run
-    that executed too few tests raises ValueError."""
+    that executed too few tests raises ValueError, as does one that executed any count but its minimumTests when the
+    lane says "exactTests": true, so that a count typed by hand cannot drift from the tests the lane selects
+    (vocaro/queuekeeper#77)."""
     measured = result in (0, lane_results.UNMEASURED)
     not_run = []
     repeats = lane_results.repeats_asked(extra)
@@ -185,8 +187,10 @@ def judge(lane, result, log, extra=(), expect=None):
     if measured and (lane.get("minimumTests") or expect):
         # Arguments such as a filter select part of the lane, which must still run a test.
         minimum = 1 if extra or expect else lane["minimumTests"]
+        # The whole lane's count is exact where the lane says so, as --expect makes a filtered run's.
+        exact = lane.get("exactTests") and not extra and not expect
         try:
-            lane_results.require_tests(log, minimum, expected=expect)
+            lane_results.require_tests(log, minimum, expected=minimum if exact else expect)
         except lane_results.NotRun as error:
             # Such as a corpus test canceled for a variable this lane's command does not set on its Mac
             # (vocaro-engineering#285). The lines give each test's reason: the cause an unmeasured run records.
@@ -195,7 +199,13 @@ def judge(lane, result, log, extra=(), expect=None):
         except ValueError as error:
             # An unmeasured part may not have run at all, so the run stays unmeasured. A test the
             # host left unmeasured ran nothing, so it can also be what leaves a run short.
-            if result == 0 and not lane_results.unmeasured_tests(log): raise
+            if exact:
+                # The figure to set, for a count that changed because the lane's tests did.
+                observed = lane_results.executed_tests(log) or 0
+                error = ValueError(f'{error}. The lane says "exactTests": true, so its minimumTests, {minimum}, is the '
+                                   f"count of the tests it selects: if these {observed} are the tests it should run, set "
+                                   f"its minimumTests to {observed}, and otherwise correct what it selects")
+            if result == 0 and not lane_results.unmeasured_tests(log): raise error
             print(f"queuekeeper: {error}", file=sys.stderr)
     unmeasured = lane_results.unmeasured_tests(log) if measured else []
     if unmeasured or not_run or result == lane_results.UNMEASURED:
@@ -949,7 +959,7 @@ def perform(argv, report):
         "the lane says why it stays on this Mac: qk run LANE [-- ARGUMENTS], which appends the arguments, such as "
         "a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests: N selected with "
-        "some skipped or canceled is unmeasured, exit 3, and any other count fails; without it, a run with arguments needs at least one in place of the lane's minimumTests")
+        "some skipped or canceled is unmeasured, exit 3, and any other count fails; without it, a run with arguments needs at least one in place of the lane's minimumTests, which a whole run must reach, or equal where the lane says \"exactTests\": true")
     where = run.add_mutually_exclusive_group()
     where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on the second Mac: "
         "for a build whose products the session uses here, or, with the owner's decision, while the second Mac is "
