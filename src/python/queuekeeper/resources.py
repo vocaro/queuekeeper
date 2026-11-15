@@ -264,9 +264,13 @@ def slot_directory():
     # Preserve the legacy macOS user-temp namespace even when a command uses a private TMPDIR.
     # A process-local temporary directory must not create another host-wide build budget.
     if sys.platform == "darwin":
-        base = subprocess.check_output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], text=True, timeout=5).strip()
-        if not base:
-            raise RuntimeError("Cannot establish the host resource directory")
+        base = subprocess.check_output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], text=True, timeout=5)
+        base = base.strip() if isinstance(base, str) else base
+        # A relative answer would start another budget in whatever folder the process is in, and a test's mock of
+        # subprocess.run answers with a mock, which names a folder MagicMock/ there (vocaro/queuekeeper#161).
+        if not isinstance(base, str) or not os.path.isabs(base):
+            raise RuntimeError("Cannot establish the host resource directory: getconf DARWIN_USER_TEMP_DIR answered "
+                               f"{str(base)[:80]!r}, not an absolute path")
         return Path(base) / "queuekeeper-heavy-slots"
     return Path("/tmp/queuekeeper-heavy-slots")
 

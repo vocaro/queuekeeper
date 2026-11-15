@@ -341,6 +341,14 @@ the command's TMPDIR. A private TMPDIR set before or inside the queued command j
 queue. HEAVY_SLOT_DIR is an explicit namespace override for isolated tests; a separate scratch
 directory must not multiply the host's build budget.
 
+An answer from `getconf` that is not an absolute path is refused, as an empty one is, and nothing
+is written: a relative slot directory would start a second budget in whatever folder the process
+is in. A project's test that replaces `subprocess.run` with a mock and reaches a stretched bound
+got a mock for an answer, and `cpu-samples.json` under a `MagicMock/` folder in its checkout
+(vocaro/queuekeeper#161). Such a test now stretches its bound by the load alone, without the CPU's
+busy share; a test that admits work or reads capacity under such a mock fails instead, and sets a
+`HEAVY_SLOT_DIR` of its own, as Queuekeeper's test isolation does.
+
 A wait is expected. Admission prints `heavy: waiting (Ns): REASON` when it starts waiting and
 every five minutes after. The reason names the limit that refused the request and the limit's
 value, beside what the attempt read, so that a wait says which limit to look at. A

@@ -6,10 +6,10 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- isolates this module's host state as every test module's
-from queuekeeper import waiting
+from queuekeeper import offload_host, resources, waiting
 
 WORKS = "import sys, time\nend = time.monotonic() + float(sys.argv[2])\nwhile time.monotonic() < end: pass\n"
 
@@ -162,6 +162,40 @@ class StretchReadingTests(unittest.TestCase):
         self.assertEqual(read.call_args.args, (Path(directory),))
         with patch.object(waiting, "cpu_busy", side_effect=OSError("unreadable")):
             self.assertIsNone(waiting.busy_now())
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS names its default slot directory by getconf")
+    def test_a_mocked_getconf_answer_is_refused_and_writes_nothing_where_the_process_is(self):
+        """A project's test that patches subprocess.run with a bare mock and reaches a stretched bound got a mock
+        for the slot directory, and cpu-samples.json under MagicMock/ in its checkout (vocaro/queuekeeper#161)."""
+        environment = {name: value for name, value in os.environ.items() if name != "HEAVY_SLOT_DIR"}
+        before = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory:
+            os.chdir(directory)
+            try:
+                waiting._slots.cache_clear()
+                with patch.dict(os.environ, environment, clear=True), patch("subprocess.run", MagicMock()), \
+                        patch.object(waiting.os, "getloadavg", return_value=(0.0,) * 3):
+                    with self.assertRaisesRegex(RuntimeError, "not an absolute path"):
+                        resources.slot_directory()
+                    self.assertIsNone(waiting.busy_now())
+                    self.assertIsNone(waiting.stretch_reading()["busy"])
+                for answer in ("relative/folder\n", "\n"):
+                    with self.subTest(answer=answer), patch.dict(os.environ, environment, clear=True), \
+                            patch.object(resources.subprocess, "check_output", return_value=answer), \
+                            self.assertRaisesRegex(RuntimeError, "Cannot establish the host resource directory"):
+                        resources.slot_directory()
+                for answer in ("relative/folder", None):  # the second Mac's reading of the same directory
+                    with self.subTest(there=answer), patch.dict(os.environ, environment, clear=True), \
+                            patch.object(offload_host, "output", return_value=answer), \
+                            self.assertRaisesRegex(RuntimeError, "Cannot establish the host resource directory"):
+                        offload_host.slot_directory()
+                with patch.dict(os.environ, environment, clear=True), \
+                        patch.object(resources.subprocess, "check_output", return_value="/private/answer/\n"):
+                    self.assertEqual(resources.slot_directory(), Path("/private/answer/queuekeeper-heavy-slots"))
+                self.assertEqual(list(Path(directory).iterdir()), [])
+            finally:
+                os.chdir(before)
+                waiting._slots.cache_clear()
 
 
 class ProbeTests(unittest.TestCase):

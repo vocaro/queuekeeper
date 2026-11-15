@@ -1476,7 +1476,9 @@ def slot_directory():
     if os.environ.get("HEAVY_SLOT_DIR"): return Path(os.environ["HEAVY_SLOT_DIR"])
     if sys.platform != "darwin": return Path("/tmp") / SLOTS
     base = output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"])
-    if not base: raise RuntimeError("Cannot establish the host resource directory")
+    if not base or not os.path.isabs(base):
+        raise RuntimeError(f"Cannot establish the host resource directory: getconf DARWIN_USER_TEMP_DIR answered "
+                           f"{str(base)[:80]!r}, not an absolute path")
     return Path(base) / SLOTS
 
 
