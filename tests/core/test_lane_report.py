@@ -152,6 +152,18 @@ class Parsing(unittest.TestCase):
                 "PASS iPhone-17-Pro: Executed 3 tests, 1 skipped in 40s\n")
         self.assert_counts(text, 3, 2, 0)
 
+    def test_a_qk_unittest_gate_counts_what_its_runner_counts_whatever_its_tests_print(self):
+        # A test's fake runner prints another runner's totals into its process's output (vocaro/queuekeeper#153).
+        text = ("== test_device_pass.DevicePass[1]: OK (2 tests, 0.5s)\n"
+                "test_one (test_device_pass.DevicePass.test_one) ... Executed 1 test, with 0 failures\nok\n"
+                "test_two (test_device_pass.DevicePass.test_two) ... FAIL iPhone: Executed 5 tests, 1 skipped, 2 failed\n"
+                "Executed 4 tests, with 1 failure (1 unexpected) in 0.1 (0.2) seconds\n=== 2 passed, 1 error in 0.1s ===\nok\n"
+                f"\n{LINE}\nRan 2 tests in 0.670s\n\nOK\n"
+                "queuekeeper unittest: 2 tests (0 skipped) in 1 processes, 8 at a time, 1.2s: OK\n")
+        self.assert_counts(text, 2, 0, 0)
+        # A device's line under the run's summary is the lane's own.
+        self.assert_counts(text + "FAIL iPhone: Executed 5 tests, 1 skipped, 2 failed\n", 5, 2, 0)
+
     def test_a_total_that_says_tests_failed_and_names_none_leaves_passed_and_failed_unknown(self):
         found = lane_report.counts("Executed 4 tests, with 1 failure (1 unexpected) in 0.1 (0.2) seconds\n")
         self.assertIsNone(found["failed"])

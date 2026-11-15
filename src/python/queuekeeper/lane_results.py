@@ -27,6 +27,9 @@ PYTEST_SUMMARY = re.compile(r"^[ \t]*(?:=+ )?((?:" + PYTEST_ITEM + r")(?:, " + P
 # The tests that ran, and so count with their skips among them: not deselected ones, warnings, or
 # errors, which pytest counts apart from the tests (a fixture's, or a module's that collected none).
 PYTEST_RAN = ("failed", "passed", "skipped", "xfailed", "xpassed")
+# qk unittest's line over a process's output, `== NAME: OK (3 tests, 1.2s)`, and that output, up to the next
+# process's line or the run's summary (parallel.unittest_main). qk xctest's line names its skips before the seconds.
+UNITTEST_PROCESS = re.compile(r"^== \S[^\n]* \(\d+ tests, [\d.]+s\)\n.*?(?=^== |^queuekeeper unittest: )", re.M | re.S)
 
 
 def pytest_counts(text):
@@ -36,6 +39,14 @@ def pytest_counts(text):
         yield sum(items.get(word, 0) for word in PYTEST_RAN), items.get("skipped", 0)
 
 
+def outside_unittest(text):
+    """text without the output of each process of a qk unittest run. A test prints into it what the runner it fakes
+    would, `Executed 1 test, with 0 failures` for one, and unittest's own lines alone count that process's tests:
+    read as another runner's, each such line added a test to the 2563 a gate ran (vocaro/queuekeeper#153). The
+    output of a last process that nothing follows stays, as whatever a cut-off log holds after it would go with it."""
+    return UNITTEST_PROCESS.sub("", text)
+
+
 def counted(text):
     """(ran, skipped) over the counts a log reports, or None when it reports no count.
 
@@ -43,8 +54,10 @@ def counted(text):
     run. A wrapper's own "Executed N tests" line, one per simulator for example, counts only when
     the log holds no XCTest totals, which it would repeat. XCTest's, unittest's and Swift Testing's
     totals include their skips; XCTest and unittest name them apart, and Swift Testing gives each
-    skipped or canceled test a line. pytest names each outcome apart, its skips among them."""
-    text = SERIES_RUN_RECAP.sub("", text)
+    skipped or canceled test a line. pytest names each outcome apart, its skips among them. Within
+    a qk unittest process's output only unittest's own total counts (outside_unittest)."""
+    whole = text
+    text = outside_unittest(SERIES_RUN_RECAP.sub("", text))
     suites = list(SUITE_TOTAL.finditer(text))
     top = [(int(match.group(2)), int(match.group(3) or 0)) for match in suites
            if match.group(1) in ("All tests", "Selected tests")]
@@ -54,7 +67,7 @@ def counted(text):
     counts = top or wrapper
     runs = [int(n) for n in SWIFT_TESTING_RUN.findall(text)]
     if runs: counts.append((sum(runs), len(SWIFT_TESTING_SKIP.findall(text))))
-    for match in RAN.finditer(text):
+    for match in RAN.finditer(whole):
         skipped = re.search(r"\bskipped=(\d+)", match.group(2) or "")
         counts.append((int(match.group(1)), int(skipped.group(1)) if skipped else 0))
     counts.extend(pytest_counts(text))

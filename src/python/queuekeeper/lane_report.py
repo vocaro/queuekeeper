@@ -86,10 +86,12 @@ SUMMARY_ENDS = ("  details: ", "  receipt: ")
 
 def failed_tests(text):
     """(the tests a log reports failed, or None when its totals say some failed but name none, the errors pytest
-    counts apart from its tests)."""
+    counts apart from its tests). Within a qk unittest process's output only unittest's own totals count, as for the
+    tests that ran (lane_results.outside_unittest)."""
     total, errors = 0, 0
     for match in lane_results.RAN.finditer(text):
         total += sum(int(n) for n in re.findall(r"\b(?:failures|errors)=(\d+)", match.group(2) or ""))
+    text = lane_results.outside_unittest(text)
     for match in lane_results.PYTEST_SUMMARY.finditer(text):
         items = {word: int(n) for n, word in re.findall(r"(\d+) (\w+)", match.group(1))}
         total += items.get("failed", 0) + items.get("error", 0) + items.get("errors", 0)

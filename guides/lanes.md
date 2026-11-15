@@ -20,7 +20,10 @@ Testing run, each unittest run and each pytest run: `swift test` and `xcodebuild
 top suite, so the largest total counted one bundle (2,516 of a 3,355-test EPUBLib run, Xcode
 27.1, October 2026). A wrapper's own `Executed N tests` line, one per simulator for example,
 counts only when the log holds no XCTest totals that it would repeat, so a two-device run counts
-both devices. A skipped test ran nothing and counts toward no floor. Each of these totals
+both devices. Within the output of a `qk unittest` process, under its `== NAME: OK (N tests, S s)`
+line, only unittest's own total counts: a test there can print what the runner it fakes would, and
+each `Executed 1 test` line of Queuekeeper's own tests once added a test to its gate's count
+(vocaro/queuekeeper#153). A skipped test ran nothing and counts toward no floor. Each of these totals
 includes its skips: XCTest names them in `with M tests skipped`, unittest in `skipped=M`, and
 Swift Testing gives each test it skipped or that canceled itself a line of its own, which the
 count subtracts (Swift 6.4, Xcode 27.1, October 2026). pytest's count is its summary line,

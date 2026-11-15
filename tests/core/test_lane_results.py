@@ -158,6 +158,41 @@ class LaneResultTests(unittest.TestCase):
         self.assertEqual(lane_results.require_tests("Ran 40 tests in 1.0s\n\nOK (skipped=2)\n3 passed, 1 skipped in 0.1s\n",
                                                 expected=41), 41)
 
+    def test_what_a_test_prints_within_a_qk_unittest_process_is_no_other_suites_count(self):
+        # What test_device_pass's fake runner printed into Queuekeeper's own gate log, 15 times, each counted as a
+        # test beside the 2563 the runner counted (vocaro/queuekeeper#153), and other runners' lines a test may print.
+        ran = "\n" + "-" * 70 + "\nRan 2 tests in 0.670s\n\nOK\n"
+        printed = ["Executed 1 test, with 0 failures", "Passed: iPhone (iOS 27.0): Executed 3252 tests",
+                   "Test Suite 'All tests' passed at 2026-10-22 23:11:16.744.\n\t Executed 7 tests, with 0 failures",
+                   "✔ Test run with 65 tests in 5 suites passed after 6.436 seconds.", "=== 3 passed, 1 skipped in 0.1s ==="]
+        summary = "queuekeeper unittest: 4 tests (0 skipped) in 2 processes, 8 at a time, 1.2s: OK\n"
+        for line in printed:
+            with self.subTest(line):
+                log = (f"== test_a.A[1]: OK (2 tests, 0.5s)\ntest_one (test_a.A.test_one) ... {line}\nok\n"
+                       f"test_two (test_a.A.test_two) ... ok\n{ran}"
+                       f"== test_a.A[2]: OK (2 tests, 0.6s)\ntest_three (test_a.A.test_three) ... ok\n{line}\n"
+                       f"test_four (test_a.A.test_four) ... ok\n{ran}{summary}")
+                self.assertEqual(lane_results.counted(log), (4, 0))
+                self.assertEqual(lane_results.require_tests(log, expected=4), 4)
+                # The same line outside the processes is a run of its own, before them or after their summary.
+                beside = lane_results.counted(line + "\n")
+                self.assertEqual(lane_results.counted(line + "\n" + log), (4 + beside[0], beside[1]))
+                self.assertEqual(lane_results.counted(log + line + "\n"), (4 + beside[0], beside[1]))
+
+    def test_a_qk_xctest_process_still_counts_its_bundles_beside_a_qk_unittest_run(self):
+        # qk xctest's line over a process names its skips, and what is under it is XCTest's own.
+        bundle = ("Test Suite 'All tests' passed at 2026-10-22 23:11:16.744.\n"
+                  "\t Executed 7 tests, with 1 test skipped and 0 failures (0 unexpected) in 0.1 (0.1) seconds\n")
+        xctest = f"== Reading: OK (7 tests, 1 skipped, 1.2s)\n{bundle}"
+        self.assertEqual(lane_results.counted(xctest + xctest), (14, 2))
+        unittest_run = ("== test_a.A[1]: OK (2 tests, 0.5s)\nExecuted 1 test, with 0 failures\nRan 2 tests in 0.670s\n\nOK\n"
+                        "queuekeeper unittest: 2 tests (0 skipped) in 1 processes, 8 at a time, 1.2s: OK\n")
+        self.assertEqual(lane_results.counted(unittest_run + xctest), (9, 1))
+        self.assertEqual(lane_results.counted(xctest + unittest_run), (9, 1))
+        # A qk unittest run cut off before its summary ends at the next process's line, whichever runner's.
+        cut = "== test_a.A[1]: OK (2 tests, 0.5s)\nExecuted 1 test, with 0 failures\nRan 2 tests in 0.670s\n\nOK\n"
+        self.assertEqual(lane_results.counted(cut + xctest), (9, 1))
+
     def test_a_line_that_is_not_pytests_summary_is_no_count(self):
         for text in ["", self.PYTEST_SKIPS, "collected 16 items / 1 deselected / 15 selected\n",
                      "test_sample.py::test_pass PASSED                                         [  6%]\n",
