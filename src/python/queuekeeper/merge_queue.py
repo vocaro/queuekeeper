@@ -56,8 +56,10 @@ import urllib.request
 from . import budgets, disk, extensions, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
 from . import events, pre_push, recovery
-from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, IMPLICIT_SPELLING, SPELLING, SPELLING_LIMIT, \
-    TOOLKIT_ROOT, admission, implicit_command, lane_to_run, load, parse, stays, toolkit_command, unlocked_screen
+from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
+    PROJECT_CHECKOUT_VARIABLE, PROVISION, SPELLING, TOOLKIT_ROOT, admission, implicit_command, implicit_spelling, \
+    lane_to_run, legacy_spelling_warning, load, parse, preflight, project_checkout, stays, toolkit_command, \
+    unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -161,15 +163,12 @@ PROGRESS_VARIABLE = "QUEUEKEEPER_QUEUE_PROGRESS"
 MOVED = "moved"
 # Seconds the toolkit at origin/main has to import what a worker runs before a worker moves to it (starts).
 STARTS_LIMIT = 120
-BEFORE_GATE = ["spelling", "provision"]
-# How many of a failed run's last lines qk land's refusal quotes (spelled_before_queued, vocaro-engineering#283).
-SPELLING_SHOWN = 40
+# How many of a failed run's last lines qk land's refusal quotes (preflight_before_queued, vocaro-engineering#283).
+PREFLIGHT_SHOWN = 40
 # qk land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
-# of its own, and one landed alone on the spelling lane without the gate, whose written reason --why gives (owner's
+# of its own, and one landed alone on the preflight lanes without the gate, whose written reason --why gives (owner's
 # decision, 2026-11-04, vocaro-engineering#163). Neither is routine.
 OPTIONS = {"front": "--front", "noGate": "--no-gate"}
-# The lanes an ungated landing runs where the project has them: the short check a hand push ran.
-UNGATED_LANES = ["spelling"]
 # The trailer an ungated landing adds to its tip, so that main's history says so (Worker.mark_ungated).
 UNGATED = "Landed-without-gate"
 # While a bisect goes on, the newer half of its suspects gates beside the older half, at once, in a second checkout:
@@ -192,12 +191,10 @@ STACK_ADMISSION_DECLINED = "queue: no Mac admitted the last lane of this stacked
 # beside the gate in a checkout of its own with this suffix (Worker.docs_beside), and the code batch's pass carries over
 # the documents main gained (Worker.carry). It goes ahead of an older entry only when the two change no path in common.
 DOCS_SUFFIX = "-docs"
-# The seconds the toolkit's spelling check or `qk docs check` may run unadmitted, in the worker's checkout, as a
-# docs-only batch's lane (Worker.quick, vocaro-engineering#394). Both took 0.2-1.3 s on this Mac at a load of 15-44 on
-# 2026-11-11; one that reaches this limit runs again admitted, as any lane, so a slow check is never a failure.
+# The seconds a preflight lane or `qk docs check` may run unadmitted, in the worker's checkout, as a docs-only batch's
+# lane (Worker.quick, vocaro-engineering#394). The spelling and docs checks took 0.2-1.3 s on this Mac at a load of
+# 15-44 on 2026-11-11; one that reaches this limit runs again admitted, as any lane, so a slow check is never a failure.
 DOCS_CHECK_LIMIT = 60
-# The commands of those checks, which a project's lane must run exactly to run unadmitted.
-QUICK_CHECKS = {SPELLING: IMPLICIT_SPELLING, DOCS: IMPLICIT_DOCS}
 # What a gate's lanes return when `qk queue remove` took an entry it tests out of the queue, which stopped them by the
 # cancel a thrown-away stacked gate's lanes end with, here or on the second Mac, freeing their admission there: no
 # verdict on anything, and what is left of the batch gates again (Worker.gate, vocaro-engineering#247). The gate looks
@@ -456,36 +453,34 @@ def text(directory, *arguments):
     return git(directory, *arguments, check=True).stdout.strip()
 
 
-def implicit_spelling(config):
-    """Whether the queue runs the toolkit's spelling check, IMPLICIT_SPELLING, as the project's spelling lane: when
-    the project has no spelling lane of its own and main's queue.spelling does not opt out with false."""
-    return SPELLING not in config.get("lanes", {}) and config.get("queue", {}).get("spelling", True) is not False
-
-
 def spelled(config, name):
     """Whether name is a lane the queue can run for this project: one it configures, or the implicit spelling lane."""
     return name in config.get("lanes", {}) or (name == SPELLING and implicit_spelling(config))
 
 
+def preflighted(config):
+    """The preflight lanes the queue runs for this project, in order (config.preflight), that it can run (spelled)."""
+    return [name for name in preflight(config) if spelled(config, name)]
+
+
 def lanes_of(config, changed=()):
-    """The lanes a batch must pass, in order: the project's spelling lane, or the toolkit's when it has
-    none (implicit_spelling), and its provision lane when it has one, the cheap checks and setup that a
-    gate assumes, then the docs lanes of a batch whose changed paths hold documents beside code (docs_also),
-    and then `queue.lanes` or its gate lane."""
+    """The lanes a batch must pass, in order: the project's preflight lanes (preflighted), and its provision lane
+    when it has one, the cheap checks and setup that a gate assumes, then the docs lanes of a batch whose changed
+    paths hold documents beside code (docs_also), and then `queue.lanes` or its gate lane."""
     lanes = config.get("lanes", {})
     named = config.get("queue", {}).get("lanes") or (["gate"] if "gate" in lanes else None)
     if not named:
         raise ValueError(f"{config.get('name')} has no gate lane, so the queue has nothing to run: name the lane "
                          "holding what a commit must pass before it lands gate (guides/maintenance.md, "
                          "The merge queue)")
-    first = [name for name in BEFORE_GATE if spelled(config, name) and name not in named]
+    first = [name for name in [*preflighted(config), PROVISION] if spelled(config, name) and name not in named]
     return first + [lane for lane in docs_also(config, changed, named) if lane not in first] + named
 
 
 def docs_also(config, changed, named):
     """The docs lanes that a batch changing both documents and code runs as well as named, its gate lanes: those
     docs_lanes gives for its docs paths, when it changes some and other paths too, less a lane named holds, itself
-    or as a group's member, and less the spelling lane where there is one, which lanes_of runs anyway. A gate need
+    or as a group's member, and less the preflight lanes, which lanes_of runs anyway. A gate need
     not check what the docs lanes check, and on 2026-11-12 vocaro/mpm's gate ran three times on a commit that took
     its AGENTS.md past the 32 KiB its docs lane allows, and never said so (vocaro/queuekeeper#122). Empty for a
     batch of documents alone, which docs_lanes takes, or of code alone."""
@@ -495,7 +490,7 @@ def docs_also(config, changed, named):
     lanes = config.get("lanes", {})
     held = set(named) | {member for name in named if isinstance(lanes.get(name), dict)
                          for member in lanes[name].get("parallel", ())}
-    if spelled(config, SPELLING): held.add(SPELLING)
+    held.update(preflighted(config))
     return [lane for lane in docs_lanes(config, docs) or [] if lane not in held]
 
 
@@ -517,9 +512,10 @@ def has_config(root, commit):
 
 
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
-# paths that skip the gate, and the toolkit's spelling check turned off. A batch whose lanes the queue runs, because
-# main names none yet, gives none of them (#10); spelling joined them by the owner's decision of 2026-11-13.
-MAIN_ONLY = ("hookCoveredBy", "docsOnly", "spelling")
+# paths that skip the gate, the toolkit's spelling check turned off, and the preflight lanes, which can be none. A batch
+# whose lanes the queue runs, because main names none yet, gives none of them (#10); spelling joined them by the owner's
+# decision of 2026-11-13, and preflight replaces it (vocaro/queuekeeper#69).
+MAIN_ONLY = ("hookCoveredBy", "docsOnly", "spelling", "preflight")
 
 
 def as_batch(config):
@@ -592,9 +588,9 @@ def no_verdict_runs(config):
 
 
 def ungated_lanes(config):
-    """The lanes an ungated landing runs instead of the queue's: UNGATED_LANES that the project has, its spelling lane
-    the toolkit's when it has none (implicit_spelling)."""
-    return [name for name in UNGATED_LANES if spelled(config, name)]
+    """The lanes an ungated landing runs instead of the queue's: its preflight lanes (preflighted), the short checks a
+    hand push ran."""
+    return preflighted(config)
 
 
 def ahead(front, no_gate, why):
@@ -628,8 +624,7 @@ def docs_lanes(config, changed):
         if not all(any(named(path, key) for key in declared["paths"])
                    and not any(named(path, key) for key in declared.get("exclude", {})) for path in changed): return None
         lanes = declared["lanes"]
-    first = [SPELLING] if spelled(config, SPELLING) and SPELLING not in lanes else []
-    return first + lanes
+    return [name for name in preflighted(config) if name not in lanes] + lanes
 
 
 def docs_first(entries, config, changed_by, blocked=(), carried=None, gating=()):
@@ -664,6 +659,11 @@ def without_docs(batch, config, changed_by):
         elif paths & left: break
         else: kept.append(entry)
     return kept
+
+
+def quick_lanes(config):
+    """The lanes a docs-only batch runs unadmitted first (Worker.quick): its preflight lanes and the docs check."""
+    return {*preflighted(config), DOCS}
 
 
 def offerable(config, lanes):
@@ -863,14 +863,17 @@ def claims_before_queued(root, base, tip):
                     "The merge queue, Checked before it is queued)")
 
 
-def spelling_run(queue, root, commit):
-    """(exit status, the lines it printed, the command) of the spelling lane on commit, in a scratch worktree outside
-    every checkout, as the worker picks it (Worker.gate): the project's own spelling lane when commit's queuekeeper.json
-    configures one (Worker.has_lane), run as its command, here and with no admission, or the toolkit's check,
-    IMPLICIT_SPELLING, when it does not, or with no launcher the same check run by this toolkit (implicit_command). A
-    status of None says why it was not run: a lane that is no one command, or a run that reached SPELLING_LIMIT."""
-    with scratch(queue, commit, "spelling") as path:
+def preflight_run(queue, root, commit, name):
+    """(exit status, the lines it printed, the command) of the preflight lane name on commit, in a scratch worktree
+    outside every checkout, as the worker picks it (Worker.gate): the lane commit's queuekeeper.json configures, run as
+    its command, here and with no admission, or for the legacy spelling lane of a project with none, the toolkit's
+    check, IMPLICIT_SPELLING, or with no launcher the same check run by this toolkit (implicit_command). The command
+    finds the project's main checkout in PROJECT_CHECKOUT_VARIABLE, as a lane qk run runs does. A status of None says
+    why it was not run: a lane that is no one command, or a run that reached its limit, its timeout up to
+    PREFLIGHT_LIMIT."""
+    with scratch(queue, commit, name) as path:
         env = environment()
+        env[PROJECT_CHECKOUT_VARIABLE] = project_checkout(root)
         if not os.environ.get(TOOLKIT_VARIABLE):
             # A project's launcher finds the toolkit beside its own checkout, which a scratch worktree has not: this
             # one runs it. The toolkit's own entry runs the toolkit it brings, as its queue's gate does.
@@ -879,56 +882,71 @@ def spelling_run(queue, root, commit):
                 env[TOOLKIT_VARIABLE] = str(TOOLKIT_ROOT)
         try: lanes = load(path).get("lanes", {})
         except (OSError, ValueError): lanes = {}
-        lane = lanes.get(SPELLING)
-        command = implicit_command(path, SPELLING, env.get(TOOLKIT_VARIABLE)) if SPELLING not in lanes \
+        lane = lanes.get(name)
+        command = implicit_command(path, SPELLING, env.get(TOOLKIT_VARIABLE)) if name == SPELLING and name not in lanes \
             else lane.get("command") if isinstance(lane, dict) else None
-        if not (isinstance(command, list) and command) or (SPELLING in lanes and any(
-                lane.get(key) for key in ("foreground", "unlockedScreen", "parallel", "wholeHost", "model", *extensions.LANE_KEYS))):
-            return None, ["the project's spelling lane is not one command that qk land can run here"], None
-        log = path.parent / "spelling.log"
-        try: status_ = processes.run(command, cwd=path, log_path=log, timeout=SPELLING_LIMIT, env=env)
+        if not (isinstance(command, list) and command) or (isinstance(lane, dict) and any(
+                lane.get(key) for key in (*NOT_PREFLIGHT, *extensions.LANE_KEYS))):
+            return None, [f"the project's {name} lane is not one command that qk land can run here"], None
+        limit = min(lane.get("timeout", PREFLIGHT_LIMIT), PREFLIGHT_LIMIT) if isinstance(lane, dict) else PREFLIGHT_LIMIT
+        log = path.parent / f"{name}.log"
+        try: status_ = processes.run(command, cwd=path, log_path=log, timeout=limit, env=env)
         except processes.TimedOut as error: return None, [f"{shlex.join(command)} reached its limit: {error}"], command
+        except processes.NotStarted as error: return None, [f"{shlex.join(command)} could not start: {error}"], command
         printed = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
         return status_, printed, command
 
 
-def spelled_before_queued(root, queue, tip, config):
-    """Refuse tip, queuing nothing, when the spelling lane that config, origin/main's, has the queue run before the
-    gate (spelled) finds a British spelling, exit 1, in tip's commits replayed onto origin/main, quoting its findings.
-    The lane takes seconds, where a slip it finds costs a queue round, about 40 minutes on EPUBLib on 2026-11-07
-    (vocaro-engineering#283). It is a hint, as check is: the worker still runs the lane on the batch. A check that
-    cannot be made, or a lane that fails otherwise, queues the entry for the round to judge, and so does a failure
-    origin/main gives too, which is not the entry's to fix."""
-    if not spelled(config, SPELLING): return
+def preflight_before_queued(root, queue, tip, config):
+    """Refuse tip, queuing nothing, when a preflight lane that config, origin/main's, has the queue run before the gate
+    (preflighted) finds something, exit 1, in tip's commits replayed onto origin/main, quoting its findings. The lanes
+    run in order, and the first finding refuses. A preflight lane takes seconds, where a slip it finds costs a queue
+    round, about 40 minutes on EPUBLib on 2026-11-07 (vocaro-engineering#283). It is a hint, as check is: the worker
+    still runs the lanes on the batch. A lane that cannot be run, or that fails otherwise, queues the entry for the
+    round to judge, and so does a failure origin/main gives too, which is not the entry's to fix."""
+    names = preflighted(config)
+    if not names: return
+    warned = legacy_spelling_warning(config)
+    if warned: print(f"queue: {warned}", file=sys.stderr)
     base = text(root, "rev-parse", MAIN)
+    try: replayed = tip if git(root, "merge-base", "--is-ancestor", MAIN, tip).returncode == 0 \
+        else linear(queue, root, tip)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        print(f"queue: could not replay it onto origin/main, so the round runs its preflight lanes: {error}",
+              file=sys.stderr)
+        return
+    if replayed is None:
+        print(f"queue: could not check its {spoken(names).removeprefix('the ')}, as its commits do not apply onto "
+              "origin/main alone; the round runs them", file=sys.stderr)
+        return
+    for name in names: preflight_lane_before_queued(root, queue, tip, replayed, base, name)
+
+
+def preflight_lane_before_queued(root, queue, tip, replayed, base, name):
+    """preflight_before_queued for the one preflight lane name, on replayed, tip's commits replayed onto base."""
     began = now()
     try:
-        replayed = tip if git(root, "merge-base", "--is-ancestor", MAIN, tip).returncode == 0 else linear(queue, root, tip)
-        if replayed is None:
-            print("queue: could not check its spelling, as its commits do not apply onto origin/main alone; the round "
-                  "runs the spelling lane", file=sys.stderr)
-            return
-        status_, printed, command = spelling_run(queue, root, replayed)
-        main_status = spelling_run(queue, root, base)[0] if status_ == 1 else None
+        status_, printed, command = preflight_run(queue, root, replayed, name)
+        main_status = preflight_run(queue, root, base, name)[0] if status_ == 1 else None
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
-        print(f"queue: could not check its spelling, so the round runs the spelling lane: {error}", file=sys.stderr)
+        print(f"queue: could not check its {name}, so the round runs the {name} lane: {error}", file=sys.stderr)
         return
-    ran = shlex.join(command) if command else "the spelling lane"
+    ran = shlex.join(command) if command else f"the {name} lane"
     if status_ is None:
-        print(f"queue: could not check its spelling, so the round runs the spelling lane: {printed[0]}",
+        print(f"queue: could not check its {name}, so the round runs the {name} lane: {printed[0]}",
               file=sys.stderr)
     elif status_ == 0:
-        print(f"queue: spelling checked in {now() - began:.1f}s: {ran} passes on it replayed onto origin/main at "
+        print(f"queue: {name} checked in {now() - began:.1f}s: {ran} passes on it replayed onto origin/main at "
               f"{base[:12]}", file=sys.stderr)
     elif status_ != 1:
-        print(f"queue: {ran} exited {status_} on it, which is no finding, so the round runs the spelling lane: "
+        print(f"queue: {ran} exited {status_} on it, which is no finding, so the round runs the {name} lane: "
               + (printed[-1] if printed else "it printed nothing"), file=sys.stderr)
     elif main_status == 1:
         print(f"queue: {ran} fails on origin/main at {base[:12]} too, so its findings are not this entry's alone; the "
-              "round runs the spelling lane", file=sys.stderr)
+              f"round runs the {name} lane", file=sys.stderr)
     else:
         raise Refused(f"{tip[:12]} is not queued: {ran} fails on it replayed onto origin/main at {base[:12]}:\n  "
-                      + "\n  ".join(printed[-SPELLING_SHOWN:]) + "\nFix that and land it again (guides/maintenance.md, "
+                      + "\n  ".join(printed[-PREFLIGHT_SHOWN:]) + "\nFix that and land it again (guides/maintenance.md, "
                       "The merge queue, Checked before it is queued)")
 
 
@@ -1799,7 +1817,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         queue.start()
         return same["id"]
     # A closed queue takes nothing new, whatever its options, and replaces nothing (vocaro/queuekeeper#32): before the
-    # checks, which cost a trial and a spelling run, and again under the lock that saves the entry.
+    # checks, which cost a trial and a preflight run, and again under the lock that saves the entry.
     closure = queue.closed()
     if closure: raise closed_refusal(tip, closure)
     # A branch added again replaces what it added before; main names nobody's work in particular.
@@ -1812,8 +1830,8 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     checked_before_running(root, tip, gating)
     check(root, queue, {"id": "new", "tip": tip, "commits": commits},
           [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
-    # Then the spelling lane, on its commits replayed onto origin/main, which takes seconds where a slip costs a round.
-    spelled_before_queued(root, queue, tip, gating)
+    # Then the preflight lanes, on its commits replayed onto origin/main, which take seconds where a slip costs a round.
+    preflight_before_queued(root, queue, tip, gating)
     # Which gate it will ride, found before anything is queued, so that no slip here leaves it queued unsaid (#118).
     # The round reads main's settings, or the batch's less what only main may say (settings), as gating stands for.
     riding = None if no_gate else rides(config if gating is config else as_batch(config_at(root, tip)), {
@@ -1897,7 +1915,7 @@ def check(root, queue, entry, ahead, front):
 def asked_for(name):
     """What an entry's option, a name of OPTIONS, does, for qk land's lines and `qk queue status`."""
     return ("is tested next, ahead of everything waiting, as a batch of its own" if name == "front" else
-            "lands alone on the spelling lane, without the gate, and is recorded as ungated")
+            "lands alone on the preflight lanes, without the gate, and is recorded as ungated")
 
 
 def because(entry):
@@ -3293,7 +3311,7 @@ class Worker:
                         mac=self.ran_where.removeprefix(" on ") or None,
                         seconds=None if seconds is None else round(seconds))
 
-    def gate(self, lanes, round_name, where=(), cancel=None, quick=False):
+    def gate(self, lanes, round_name, where=(), cancel=None, quick=()):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time, its own work and its wait for admission apart (budgets.timed), and the
@@ -3305,8 +3323,8 @@ class Worker:
         those entries (Removal, vocaro-engineering#247). A lane that still waits to start is stopped in the same way for
         an entry qk land --front --no-gate put first (first_ungated), and the gate returns WITHDRAWN with self.ahead
         naming it (vocaro/queuekeeper#26). lane_now is (the lane running, when it began, where), by which a gate
-        stacked on this one goes to another Mac (Worker.admitted_mac). quick, for a docs-only batch's lanes, runs the
-        toolkit's two docs checks unadmitted first (Worker.quick)."""
+        stacked on this one goes to another Mac (Worker.admitted_mac). quick, for a docs-only batch's lanes, names the
+        lanes run unadmitted first (quick_lanes, Worker.quick)."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
         self.failed_dispatch = None
@@ -3329,7 +3347,7 @@ class Worker:
             self.say(f"{lane} on {self.head()[:12]}")
             self.queue.emit("gate.began", lane=lane, round=round_name, role=self.role, head=self.head(),
                             entries=list(self.gating))
-            if quick:
+            if lane in quick:
                 status_ = self.quick(lane, log)
                 if status_ is not None:
                     self.gate_ended(lane, round_name, status_, log)
@@ -3434,20 +3452,28 @@ class Worker:
         return 0, log
 
     def quick(self, lane, log):
-        """The status of lane, one of a docs-only batch's lanes, run in this checkout without admission, when it is the
-        toolkit's spelling check or `qk docs check` (QUICK_CHECKS), the project's own lane of that name or none, so
-        that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394); None for any other
-        lane, or one that did not end within DOCS_CHECK_LIMIT, which qk run then runs admitted as before. With no lane
-        of that name, the check runs as qk run would run it (implicit)."""
-        command = QUICK_CHECKS.get(lane)
-        if command is None: return None
-        try: configured = load(self.checkout).get("lanes", {}).get(lane)
+        """The status of lane, one of a docs-only batch's quick lanes (quick_lanes), run in this checkout without
+        admission, so that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394): a
+        preflight lane as its command, which must be one command (NOT_PREFLIGHT), or `qk docs check`, the project's own
+        docs lane only when it runs exactly that. None for any other lane, or one that did not end within
+        DOCS_CHECK_LIMIT, which qk run then runs admitted as before. With no lane of that name, the toolkit's check
+        runs as qk run would run it (implicit)."""
+        try: checkout = load(self.checkout)
         except (OSError, ValueError): return None
-        if configured is not None and configured.get("command") != command: return None
-        if configured is None: command = self.implicit(lane)
+        # Main's preflight lanes, as gate's quick says, that the batch's own configuration lists too.
+        if lane != DOCS and lane not in preflighted(checkout): return None
+        configured = checkout.get("lanes", {}).get(lane)
+        if configured is None:
+            if lane != DOCS and lane != SPELLING: return None
+            command = self.implicit(lane)
+        elif lane == DOCS and configured.get("command") != IMPLICIT_DOCS: return None
+        elif not isinstance(configured, dict) or any(configured.get(key) for key in (*NOT_PREFLIGHT, *extensions.LANE_KEYS)):
+            return None
+        else: command = configured.get("command")
+        if not (isinstance(command, list) and command): return None
         try:
             status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT,
-                                    env=self.environment)
+                                    env={**self.environment, PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
         except processes.TimedOut as error:
             self.say(f"{lane}: did not end unadmitted within {DOCS_CHECK_LIMIT}s ({error}): running it admitted")
             return None
@@ -3486,7 +3512,7 @@ class Worker:
 
     def has_lane(self, lane):
         """Whether the checkout's own queuekeeper.json, which qk run reads, configures lane: where it does not, qk run
-        runs the toolkit's spelling check as that lane (lane_to_run)."""
+        runs the toolkit's spelling or docs check as that lane (lane_to_run)."""
         try: return lane in load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return False
 
@@ -4252,7 +4278,7 @@ class Worker:
                                        lambda: self.gate(lanes, round_name), stacks=False)
         elif self.alone or docs or ungated:
             result, log = self.gate(ungated["lanes"] if ungated else docs or lanes, round_name,
-                                    quick=bool(docs))
+                                    quick=quick_lanes(config) if docs else ())
         else:
             self.lane_now = None
             result, log = self.watched(self, config, lanes, base, head, applied,
@@ -4349,7 +4375,7 @@ class Worker:
         self.queue.mark(landing_, TESTING)
         runner.say(f"{len(landing_)} docs-only entr{'y' if len(landing_) == 1 else 'ies'} at {head[:12]} on "
                    f"{base[:12]}: running only {', '.join(lanes)}, beside the gate of {len(applied)}, no code lane")
-        result, log = runner.gate(lanes, f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}", quick=True)
+        result, log = runner.gate(lanes, f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}", quick=quick_lanes(main))
         if not result:
             current = [self.queue.read(entry["id"]) for entry in landing_]
             if any(entry is None or entry["state"] not in WAITING for entry in current):

@@ -127,9 +127,11 @@ os.environ.pop(remote.lane_wait.VARIABLE, None)
 os.environ.pop("QUEUEKEEPER_LANE_PROGRESS_RUN", None)
 # Nor does a lane a test runs write into what the enclosing lane set up for its own command: its results/, whose fixture
 # files then read as the gate's own failures and per-test results (vocaro-engineering#289), the checkout whose module
-# cache a stale build may clear, its self lane, app registrations, device window and owner, or the toolkit it dispatched.
+# cache a stale build may clear, its self lane, app registrations, device window and owner, the toolkit it dispatched,
+# or the project checkout it named (vocaro/queuekeeper#69), which a lane a test runs names for itself.
 for variable in (cli.parallel.RESULTS_VARIABLE, "QUEUEKEEPER_STALE_MODULES_ROOT", cli.SELF_LANE, 'QUEUEKEEPER_APP_REGISTRATIONS_RUN',
-                 'QUEUEKEEPER_DEVICE_WINDOW', 'QUEUEKEEPER_DEVICE_OWNER', "QUEUEKEEPER_ROOT"):
+                 'QUEUEKEEPER_DEVICE_WINDOW', 'QUEUEKEEPER_DEVICE_OWNER', "QUEUEKEEPER_ROOT",
+                 cli.PROJECT_CHECKOUT_VARIABLE):
     os.environ.pop(variable, None)
 # Nor does a dispatch a test sends count the keychain as unlocked because the dispatch that runs the suite on the second
 # Mac unlocked the real one: it would unlock nothing, and a test of a kept password that cannot unlock would pass the run.

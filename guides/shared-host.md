@@ -13,8 +13,8 @@ is `heavy`, `light` or unset takes one slot, an `exclusive` one the host, and a 
 directly, since its script admits each of its parts. Every lane waits its turn, first come, first
 served: a short check, such as docs or spelling, waits for a slot like any other lane (the owner's
 decision, 2026-11-07, [vocaro-engineering#200](https://github.com/vocaro/vocaro-engineering/issues/200)).
-That includes the merge queue's spelling check in a project with no `spelling` lane, which `qk run spelling`
-runs as a lane of the toolkit's (the owner's decision, 2026-11-09,
+That includes a project's preflight lanes, and the merge queue's legacy spelling check in a project with no
+`spelling` lane and no `queue.preflight`, which `qk run spelling` runs as a lane of the toolkit's (the owner's decision, 2026-11-09,
 [vocaro-engineering#305](https://github.com/vocaro/vocaro-engineering/issues/305)).
 `light` once ran unadmitted where it started, and loads now as `heavy`, so a project may drop it
 or the whole `resource` key. Arguments after `--`,

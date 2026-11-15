@@ -12,9 +12,10 @@ import sys
 import time
 
 from . import __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
-    parallel, pre_push, processes, remote, resources, run_progress, shims, spelling
-from .config import FILE as CONFIG_FILE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
-    source_identity, lane_devices, self_lane_warnings, sibling_folders, stays, unadmitted, unlocked_screen
+    parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling
+from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
+    source_identity, lane_devices, legacy_spelling_warning, project_checkout, \
+    self_lane_warnings, sibling_folders, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -1021,6 +1022,10 @@ def perform(argv, report):
         "that does not (guides/maintenance.md, Docs check)")
     documentation.add_argument("operation", choices=["check"])
     documentation.add_argument("paths", nargs="*")
+    preflights = commands.add_parser("preflight", help="run the project's preflight lanes (queue.preflight) here, "
+        "without admission, as qk land runs them before it queues an entry; exit 1 on a finding, 3 when one could not "
+        "run (doc/merge_queue.md, Preflight lanes)")
+    preflights.add_argument("lanes", nargs="*", help="only these of the preflight lanes, in the order given")
     spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "
         "included, and file names; exit 1 on any, 2 when nothing was checked")
     spell.add_argument("paths", nargs="*", help="files or directories; untracked files under them are read too")
@@ -1102,7 +1107,8 @@ def perform(argv, report):
             missing = sorted(name for name in required if not shutil.which(name))
             warnings = []
             unbounded = sorted(name for name, lane in config.get("lanes", {}).items()
-                               if "command" in lane and "timeout" not in lane)
+                               if "command" in lane and "timeout" not in lane
+                               and name not in config.get("queue", {}).get("preflight", []))
             if unbounded:
                 warnings.append(f"{len(unbounded)} lane(s) declare no timeout and are stopped, unmeasured, after "
                                 f"queuekeeper's default {processes.DEFAULT_LIMIT}s: {', '.join(unbounded)}; give each a timeout "
@@ -1111,6 +1117,8 @@ def perform(argv, report):
                     and config.get("integration", "direct-main") == "direct-main":
                 warnings.append("no lane is named gate, which qk land runs: name the lane holding "
                                 "what a commit must pass before it lands gate (the toolkit's guides/adoption.md, Lane names)")
+            # A project whose spelling check rests on the legacy spelling lane, which a later release removes (#69).
+            if legacy_spelling_warning(config): warnings.append(legacy_spelling_warning(config))
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
             warnings += split_warnings(root, config)
@@ -1137,8 +1145,12 @@ def perform(argv, report):
             print("\n".join(failures) if failures else "Documentation checks passed")
             return int(bool(failures))
         elif args.action == "spelling": return spelling.check(root, config, args.paths)
+        elif args.action == "preflight": return preflight.run(root, config, args.lanes)
         elif args.action == "run":
             report.begin(root, args.lane)
+            # The project's main checkout, from which its lane's launcher finds the tools beside it, here and in the
+            # worker's checkout alike (vocaro/queuekeeper#69).
+            os.environ[PROJECT_CHECKOUT_VARIABLE] = project_checkout(root)
             if args.build_host_only:
                 raise ValueError("--build-host-only was --offload-only's name until vocaro-engineering#58, and is no "
                                  "longer read: use --offload-only (guides/shared-host.md, Earlier names)")

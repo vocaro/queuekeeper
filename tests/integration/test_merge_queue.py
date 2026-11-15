@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
 from queuekeeper import cli, config as configuration, landing_proofs, merge_queue as mq, offload_host
 # What qk land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
-SPELLED_BEFORE_QUEUED = mq.spelled_before_queued
+SPELLED_BEFORE_QUEUED = mq.preflight_before_queued
 import host_isolation
 from host_isolation import stretched
 
@@ -3349,7 +3349,7 @@ class DocsOnly(Fixture):
         said = self.landed_saying("ungated", no_gate=True, why="an incident")
         self.assertNotIn("gate:", said)
         self.assertNotIn("documentation only", said)
-        self.assertIn("lands alone on the spelling lane, without the gate", said)
+        self.assertIn("lands alone on the preflight lanes, without the gate", said)
 
     def test_an_entry_that_changes_code_and_a_document_its_docs_lane_fails_is_sent_back(self):
         """vocaro/queuekeeper#122: on 2026-11-12 vocaro/mpm's gate passed a commit that changed tooling and took
@@ -3676,7 +3676,8 @@ class DefaultDocsOnly(Fixture):
         [identifier] = self.add("guide")
         real = mq.processes.run
         def slow(command, **options):
-            if command in mq.QUICK_CHECKS.values(): raise mq.processes.TimedOut("the fixture's slow check")
+            if command in (configuration.IMPLICIT_SPELLING, mq.IMPLICIT_DOCS):
+                raise mq.processes.TimedOut("the fixture's slow check")
             return real(command, **options)
         said = io.StringIO()
         with patch.object(mq.processes, "run", slow), contextlib.redirect_stdout(said): self.work()
@@ -3791,7 +3792,7 @@ class ImplicitSpelling(Fixture):
         with self.lanes_run() as started: said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/qk", "run", "gate"]])
-        self.assertNotIn(mq.IMPLICIT_SPELLING, started)
+        self.assertNotIn(configuration.IMPLICIT_SPELLING, started)
         # The round says where it ran, as it does of a lane, from the receipt qk run wrote once it was admitted.
         self.assertTrue(any(words.startswith("spelling exited 0 on this Mac (") for words in said), said)
 
@@ -3815,7 +3816,7 @@ class ImplicitSpelling(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         # The toolkit's check runs unadmitted in a docs-only batch, and the project's own docs lane through qk run
         # (vocaro-engineering#394).
-        self.assertEqual(started[:2], [mq.IMPLICIT_SPELLING, ["python3", "scripts/qk", "run", "docs"]])
+        self.assertEqual(started[:2], [configuration.IMPLICIT_SPELLING, ["python3", "scripts/qk", "run", "docs"]])
         self.assertEqual(self.gates(), 0)
 
     def test_turned_off_the_queue_asks_eng_run_for_no_spelling_lane(self):
@@ -3862,7 +3863,7 @@ class ImplicitSpelling(Fixture):
         self.assertEqual(self.gates(), 0)
         self.assertNotIn("fix", self.main_files())
         self.assertIn(self.RUN, started)
-        self.assertNotIn(mq.IMPLICIT_SPELLING, started)
+        self.assertNotIn(configuration.IMPLICIT_SPELLING, started)
 
     def test_turned_off_the_gate_alone_decides(self):
         config = json.loads((self.repo / "queuekeeper.json").read_text())
@@ -4124,7 +4125,7 @@ class ImplicitSpellingLane(Fixture):
             self.assertEqual(self.eng_run("spelling"), 0)
         config, lane = first.call_args.args[1:3]
         self.assertEqual(lane, "spelling")
-        self.assertEqual(config["lanes"]["spelling"], {"command": mq.IMPLICIT_SPELLING, "timeout": mq.SPELLING_LIMIT})
+        self.assertEqual(config["lanes"]["spelling"], {"command": configuration.IMPLICIT_SPELLING, "timeout": configuration.SPELLING_LIMIT})
         self.assertIsNone(configuration.stays(config["lanes"], "spelling"))
 
     def test_a_projects_own_lane_keeps_its_command(self):
@@ -4169,7 +4170,7 @@ class ImplicitSpellingLane(Fixture):
         config = first.call_args.args[1]
         self.assertEqual(config["lanes"]["spelling"], {
             "command": [sys.executable, str(sent / "bin/qk"), "--project", str(self.repo), "spelling"],
-            "timeout": mq.SPELLING_LIMIT})
+            "timeout": configuration.SPELLING_LIMIT})
         self.assertIsNone(configuration.stays(config["lanes"], "spelling"))
         self.assertEqual(configuration.implicit_command(self.repo, "docs", sent),
                          [sys.executable, str(sent / "bin/qk"), "--project", str(self.repo), "docs", "check"])
@@ -4391,7 +4392,7 @@ class SpelledBeforeQueued(Fixture):
     (vocaro-engineering#283)."""
     def setUp(self):
         super().setUp()
-        real = patch.object(mq, "spelled_before_queued", SPELLED_BEFORE_QUEUED)
+        real = patch.object(mq, "preflight_before_queued", SPELLED_BEFORE_QUEUED)
         real.start()
         self.addCleanup(real.stop)
 
@@ -4512,6 +4513,71 @@ class SpelledBeforeQueued(Fixture):
         self.assertIsNone(error)
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertIn("could not check its spelling, so the round runs the spelling lane", said)
+
+
+class PreflightBeforeQueued(Fixture):
+    """qk land runs main's queue.preflight lanes, in order, on the entry replayed onto origin/main, and refuses it on
+    the first finding; a project that lists them gets no built-in spelling check (vocaro/queuekeeper#69)."""
+    def setUp(self):
+        super().setUp()
+        real = patch.object(mq, "preflight_before_queued", SPELLED_BEFORE_QUEUED)
+        real.start()
+        self.addCleanup(real.stop)
+
+    land = SpelledBeforeQueued.land
+    def preflight(self, *named, **lanes):
+        """Give main the lanes, each a command, and queue.preflight naming named."""
+        config = self.config()
+        config["lanes"].update({name: {"command": command, "timeout": 60} for name, command in lanes.items()})
+        config["queue"]["preflight"] = list(named)
+        self.publish(config, "Name the preflight lanes")
+
+    @staticmethod
+    def finding(word):
+        """A check that prints a finding naming word and exits 1 on a tree holding a file named fix, else 0."""
+        return ["python3", "-c", f"import os, sys; found = os.path.exists('fix'); print('{word} ran'); "
+                                 f"found and print('fix:1: {word} found it'); sys.exit(1 if found else 0)"]
+
+    def test_the_lanes_run_in_order_and_the_first_finding_refuses(self):
+        self.preflight("first", "second", first=["true"], second=self.finding("second"))
+        self.commit("fix", "fix", content=BRITISH)
+        identifier, said, error = self.land("fix")
+        self.assertIsNone(identifier)
+        self.assertIn("first checked in", said)
+        self.assertIn("fix:1: second found it", error)
+        self.assertNotIn("scripts/qk spelling", said + error)
+
+    def test_a_listed_lane_replaces_the_built_in_spelling_check(self):
+        # The British spelling is no finding of the project's only check, so nothing refuses it, and nothing warns.
+        self.preflight("lint", lint=["true"])
+        self.commit("fix", "fix", content=BRITISH)
+        identifier, said, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertIn("lint checked in", said)
+        self.assertNotIn("spelling", said)
+
+    def test_none_listed_checks_nothing(self):
+        self.preflight()
+        self.commit("fix", "fix", content=BRITISH)
+        identifier, said, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertNotIn("passes on it replayed onto origin/main", said)
+        self.assertNotIn("spelling", said)
+
+    def test_a_lane_finds_the_projects_main_checkout(self):
+        self.preflight("where", where=["python3", "-c", f"import os; print('at', os.environ['{mq.PROJECT_CHECKOUT_VARIABLE}']); "
+                                                        "raise SystemExit(1 if os.path.exists('fix') else 0)"])
+        self.commit("fix", "fix")
+        _, _, error = self.land("fix")
+        self.assertIn(f"at {self.repo.resolve()}", error)
+
+    def test_the_built_in_check_warns_that_it_goes(self):
+        self.commit("fix", "fix", content="a labeled point\n")
+        _, said, error = self.land("fix")
+        self.assertIsNone(error)
+        self.assertIn("Queuekeeper's built-in spelling check", said)
 
 
 class AheadOfTheQueue(Fixture):

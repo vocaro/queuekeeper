@@ -324,9 +324,12 @@ def exclusive_refusal(config, command):
 
 
 
-# The lanes the merge queue runs before its gate where a project has them: merge_queue.BEFORE_GATE, kept
-# here too because merge_queue reads this module.
-LANDING_FIRST = ["spelling", "provision"]
+# The lane the merge queue runs after the preflight lanes and before its gate where a project has one: the setup a gate
+# assumes.
+PROVISION = "provision"
+# The legacy name of a preflight lane: until a project lists its preflight lanes in queue.preflight, the queue runs its
+# lane of this name, or the toolkit's spelling check when it has none, as its one preflight lane (preflight). Spelling is
+# no concern of Queuekeeper's, and this goes in the release after projects have moved (vocaro/queuekeeper#69).
 SPELLING = "spelling"
 # A project's launcher: its copy of this repository's scripts/qk, which runs Queuekeeper on the project it is in.
 LAUNCHER = "scripts/qk"
@@ -343,8 +346,57 @@ IMPLICIT_WORDS = {SPELLING: [SPELLING], DOCS: ["docs", "check"]}
 # Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates.
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/", "guides/", "knowledge/")
-# Seconds the spelling check may run, as that lane and before qk land queues an entry (vocaro-engineering#283).
-SPELLING_LIMIT = 300
+# Seconds a preflight lane may run before qk land queues an entry, and its timeout when its lane gives none
+# (vocaro-engineering#283, vocaro/queuekeeper#69). A preflight lane is a cheap check, never a build.
+PREFLIGHT_LIMIT = 300
+SPELLING_LIMIT = PREFLIGHT_LIMIT
+# What a lane's command reads for the project's main checkout on the Mac that runs it, from which a launcher finds the
+# tools beside it: a preflight lane runs in a scratch worktree, and a queue's lanes in its worker's checkout, neither of
+# which has the project's neighbors beside it (vocaro/queuekeeper#69).
+PROJECT_CHECKOUT_VARIABLE = "QUEUEKEEPER_PROJECT_CHECKOUT"
+# The lane keys a preflight lane cannot have: it is one command, run before the queue takes an entry, in a scratch
+# worktree on the Mac that ran qk land, with no admission.
+NOT_PREFLIGHT = ("parallel", "foreground", "unlockedScreen", "wholeHost", "model", "compileFirst")
+
+
+def preflight(config):
+    """The project's preflight lanes, in order: the cheap checks the queue runs on an entry before it queues it, and
+    first in every round, ungated landing and docs-only batch. queue.preflight names them. Until a project gives it,
+    the legacy spelling lane: the project's lane named spelling, or the toolkit's spelling check where it has none and
+    queue.spelling is not false (implicit_spelling, vocaro/queuekeeper#69)."""
+    queue, lanes = config.get("queue", {}), config.get("lanes", {})
+    if "preflight" in queue: return list(queue["preflight"])
+    return [SPELLING] if SPELLING in lanes or queue.get("spelling", True) is not False else []
+
+
+def implicit_spelling(config):
+    """Whether the queue runs the toolkit's spelling check, IMPLICIT_SPELLING, as the project's spelling lane: when
+    it gives no queue.preflight, has no spelling lane of its own, and main's queue.spelling does not opt out with
+    false. A project that lists its preflight lanes never gets it (vocaro/queuekeeper#69)."""
+    queue = config.get("queue", {})
+    return "preflight" not in queue and SPELLING not in config.get("lanes", {}) \
+        and queue.get("spelling", True) is not False
+
+
+def legacy_spelling_warning(config):
+    """qk doctor's and qk land's warning for a project whose spelling check rests on Queuekeeper's legacy spelling
+    lane, which goes in a later release, or None (vocaro/queuekeeper#69)."""
+    if "preflight" in config.get("queue", {}): return None
+    if implicit_spelling(config):
+        return ("the queue runs Queuekeeper's built-in spelling check for this project, which a later release removes: "
+                "define a spelling lane of the project's own and list it in queue.preflight, or give "
+                "\"queue\": {\"preflight\": []} for none (doc/merge_queue.md, Preflight lanes)")
+    if SPELLING in config.get("lanes", {}):
+        return ("the queue runs the spelling lane first only because of its name, which a later release stops: list it "
+                "in queue.preflight, as \"queue\": {\"preflight\": [\"spelling\"]} (doc/merge_queue.md, Preflight lanes)")
+    return None
+
+
+def project_checkout(root):
+    """The project's main checkout for a lane run at root: the main checkout of the repository root is a linked
+    worktree of, else root, for PROJECT_CHECKOUT_VARIABLE."""
+    from .git_state import main_checkout
+    return str(Path(main_checkout(root) or root).resolve())
 
 
 def landing_lanes(lanes, queue):
@@ -352,7 +404,8 @@ def landing_lanes(lanes, queue):
     docs-only batch runs instead, and every lane a group among them runs (guides/maintenance.md, The merge
     queue)."""
     named = queue.get("lanes") or (["gate"] if "gate" in lanes else [])
-    found = {name: "the merge queue runs it before the gate" for name in LANDING_FIRST if name in lanes}
+    first = [name for name in preflight({"lanes": lanes, "queue": queue}) if name in lanes]
+    found = {name: "the merge queue runs it before the gate" for name in [*first, PROVISION] if name in lanes}
     found.update({name: "the merge queue runs it as " + ("one of queue.lanes" if queue.get("lanes") else "the gate")
                   for name in named})
     found.update({name: "a docs-only batch runs it, by the default or queue.docsOnly.lanes"
@@ -411,9 +464,10 @@ def merge_queue(queue, lanes):
     many runs in a row may give no verdict before the queue holds, and spelling, false for a project whose queue
     runs no spelling check of the toolkit's in place of a spelling lane (guides/maintenance.md, The merge queue)."""
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
-                                                    "noVerdictRuns", "spelling", "followLandings"}:
+                                                    "noVerdictRuns", "spelling", "followLandings", "preflight"}:
         raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy, docsOnly, noVerdictRuns, "
-                         "spelling and followLandings")
+                         "spelling, followLandings and preflight")
+    if "preflight" in queue: preflight_lanes(queue, lanes)
     if "followLandings" in queue and queue["followLandings"] is not True:
         raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
                          "checkout after each landing, for a checkout other projects read, such as an extension's")
@@ -432,7 +486,7 @@ def merge_queue(queue, lanes):
         raise ValueError("queue.carryOver maps each path, a directory ending in /, to why no queue lane reads it")
     if "hookCoveredBy" in queue:
         covering = queue["hookCoveredBy"]
-        passed = {"spelling", "provision", *(named or ["gate"])} & set(lanes)
+        passed = {*preflight({"lanes": lanes, "queue": queue}), PROVISION, *(named or ["gate"])} & set(lanes)
         if not isinstance(covering, dict) or not covering or any(lane not in passed or not isinstance(what, str)
                                                                  or not what.strip() for lane, what in covering.items()):
             raise ValueError("queue.hookCoveredBy maps each lane the queue runs that covers the pre-push hook to what "
@@ -446,6 +500,29 @@ def merge_queue(queue, lanes):
     if not isinstance(checks, list) or any(not carry_over_check(check) for check in checks):
         raise ValueError("queue.carryOverChecks lists objects with a command, an argv list and never shell source, and "
                          "optional paths, a nonempty list limiting it to moves of those paths, a directory ending in /")
+
+
+def preflight_lanes(queue, lanes):
+    """queue.preflight, checked: distinct configured lanes, in the order they run, each one command that qk land can run
+    in a scratch worktree with no admission (NOT_PREFLIGHT), and none of them the gate, provision or one of
+    queue.lanes. It replaces queue.spelling, which it cannot stand beside (vocaro/queuekeeper#69)."""
+    named = queue["preflight"]
+    if not isinstance(named, list) or any(not isinstance(name, str) or not name.strip() for name in named) \
+            or len(set(named)) != len(named):
+        raise ValueError("queue.preflight lists distinct lane names, the cheap checks the queue runs on an entry before "
+                         "it queues it and first in every round, in order; [] for none")
+    if "spelling" in queue:
+        raise ValueError("queue.spelling and queue.preflight cannot both be given: queue.preflight says which lanes run "
+                         "first, so drop queue.spelling")
+    for name in named:
+        if name not in lanes: raise ValueError(f"queue.preflight names {name}, which is no configured lane")
+        if name in ("gate", PROVISION) or name in queue.get("lanes", []):
+            raise ValueError(f"queue.preflight names {name}, which the queue runs after the preflight lanes")
+        keys = [key for key in (*NOT_PREFLIGHT, *hooks.LANE_KEYS) if lanes[name].get(key)]
+        if keys or unadmitted(lanes[name]):
+            raise ValueError(f"queue.preflight names {name}, which is not one command that qk land can run before it "
+                             f"queues an entry, unadmitted, in a scratch worktree: "
+                             f"{'it has ' + ', '.join(keys) if keys else 'it is a self lane'}")
 
 
 def docs_only(declared, lanes):
@@ -558,7 +635,12 @@ def lane_to_run(config, name, root):
     so a batch's own setting cannot leave a lane unknown."""
     lanes = config.setdefault("lanes", {})
     if name in IMPLICIT_WORDS and name not in lanes:
-        lanes[name] = {"command": implicit_command(root, name), "timeout": SPELLING_LIMIT}
+        lanes[name] = {"command": implicit_command(root, name), "timeout": PREFLIGHT_LIMIT}
+    # A lane queue.preflight lists that gives no timeout is a cheap check, stopped at PREFLIGHT_LIMIT, not
+    # processes.DEFAULT_LIMIT. The legacy spelling lane keeps what it had.
+    if name in config.get("queue", {}).get("preflight", []) and isinstance(lanes.get(name), dict) \
+            and "command" in lanes[name]:
+        lanes[name].setdefault("timeout", PREFLIGHT_LIMIT)
     return lanes.get(name)
 
 

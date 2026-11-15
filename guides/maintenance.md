@@ -48,11 +48,14 @@ commit of its own, and land that in the dependent's queue.
 
 **A round.** The worker fetches, takes everything waiting, oldest first, cherry-picks each entry
 onto `origin/main` in its own checkout, `~/Development/queuekeeper-workers/NAME/NAME`, and runs the project's queue lanes through
-`qk run`: its `spelling` and `provision` lanes when it has them, and then its `gate` lane, or
+`qk run`: its preflight lanes, `queue.preflight` ([Preflight lanes](../doc/merge_queue.md#preflight-lanes)), and its
+`provision` lane when it has one, and then its `gate` lane, or
 `queue.lanes` in queuekeeper.json for a project that needs others, read from `main`, or from the
 batch until `main` has any, so that the commit naming them can land
-([A project's first landing](#a-projects-first-landing)). A project with no `spelling`
-lane gets the toolkit's: `qk run spelling` runs `python3 scripts/qk spelling` as a lane like any
+([A project's first landing](#a-projects-first-landing)). Until a project gives `queue.preflight`,
+its preflight lane is its `spelling` lane, and a project with no `spelling`
+lane gets the toolkit's, which a later release removes
+([#69](https://github.com/vocaro/queuekeeper/issues/69)): `qk run spelling` runs `python3 scripts/qk spelling` as a lane like any
 other, admitted and placed as every lane is, before anything else, so that a British spelling fails in
 about a minute instead of after a full gate and a bisect, in every project without each declaring the
 same lane. A project needs no launcher for it, nor for the round's `qk run`: where the checkout has
@@ -282,21 +285,23 @@ refusal line too. The check reads the suite's files from the entry's commit, not
 the toolkit's 45 test modules it took 0.7 to 1.2 s on this Mac at a one-minute load of about 200
 (2026-11-08).
 
-Then, after the trial integration, they run the spelling lane the worker would run before the gate,
-on the entry's commits replayed onto `origin/main`, in a scratch worktree outside every checkout:
-the lane the replayed commit's `queuekeeper.json` names `spelling`, run as its command, or, when it
-names none, the toolkit's `python3 scripts/qk spelling`, or the same check by the toolkit's own
-`bin/qk` in a project with no launcher, unless `main`'s `queue.spelling` is
-`false`. It runs on this Mac with no admission, as the toolkit's check does in the worker, since it
-takes seconds. A finding, exit 1, refuses the entry with nothing queued and exit 1, quoting the
-lane's last 40 lines. On 2026-11-07 one EPUBLib spelling slip found by the worker cost a queue round
+Then, after the trial integration, they run the preflight lanes the worker would run before the gate,
+in order, on the entry's commits replayed onto `origin/main`, in a scratch worktree outside every
+checkout: the lanes `main`'s `queue.preflight` names, each run as the replayed commit's
+`queuekeeper.json` gives its command, with `QUEUEKEEPER_PROJECT_CHECKOUT` naming the project's main
+checkout. Until a project gives `queue.preflight`, that is its `spelling` lane, or, when it has
+none, the toolkit's `python3 scripts/qk spelling`, or the same check by the toolkit's own `bin/qk`
+in a project with no launcher, unless `main`'s `queue.spelling` is `false`. They run on this Mac
+with no admission, since they take seconds. A finding, exit 1, refuses the entry with nothing
+queued and exit 1, quoting the lane's last 40 lines. On 2026-11-07 one EPUBLib spelling slip found by the worker cost a queue round
 of about 40 minutes ([#283](https://github.com/vocaro/vocaro-engineering/issues/283)). The check is a
 hint, as the trial is: the worker still runs the lane on the batch, since `main` can move in
 between. It queues the entry, saying why, when it cannot be made: commits that do not apply onto
 `origin/main` alone, a lane that is not one plain command (foreground, display, unlocked screen,
-whole host, model or a parallel group), a run past 300 s, or an exit other than 0 or 1, such as
-`qk spelling`'s 2 for nothing checked. A finding `origin/main` gives too is not the entry's, so it
-queues the entry as well; the round's lane then fails on `main`'s own spelling.
+whole host, model, compile first or a parallel group), a run past its timeout or 300 s, whichever
+is less, or an exit other than 0 or 1, such as `qk spelling`'s 2 for nothing checked. A finding
+`origin/main` gives too is not the entry's, so it queues the entry as well; the round's lane then
+fails on `main`'s own finding.
 
 **What comes back to the author.** `qk queue status` and `qk queue wait` name each entry's state,
 reason and log. An entry that conflicts with what is ahead of it, which the check could not see
@@ -826,8 +831,8 @@ python3 scripts/qk land --no-gate --why "an unrelated flaky test fails the gate"
   then tested with the fix without being queued again: they rebase onto the new `main`, and other
   projects' workers move to the toolkit at `origin/main` each round.
 - `--no-gate` needs a written reason, `--why TEXT`, and is refused without one. It lands the entry
-  alone, in its turn: the worker rebases it onto `origin/main`, runs only the project's `spelling`
-  lane, or the toolkit's where it has none and has not turned it off, and the pre-push hook, unless `main`'s `queue.hookCoveredBy` says the gate
+  alone, in its turn: the worker rebases it onto `origin/main`, runs only the project's preflight
+  lanes, as above, and the pre-push hook, unless `main`'s `queue.hookCoveredBy` says the gate
   covers the hook, and pushes. The reason is recorded everywhere the skip is: the entry's `ungated`,
   with the lanes; the worker's log; the landed tip's `Landed-without-gate:` trailer, its author,
   message and patch otherwise its own; and `qk queue status`. Example: an important fix is held up by
@@ -869,13 +874,13 @@ records no queue lane reads, and check first: studywright's gate compiles source
 **A docs-only batch runs the docs lanes.** By default, existing and newly initialized
 repositories use this path for root `README.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`, and
 Markdown files (`.md` or `.markdown`) under `doc/`, `docs/`, `guides/`, and `knowledge/`.
-The worker runs spelling, unless disabled, followed by the project's `docs` lane or the toolkit's
+The worker runs the preflight lanes, followed by the project's `docs` lane or the toolkit's
 implicit `docs` lane (`python3 scripts/qk docs check`, or `qk docs check` by the toolkit's own
 `bin/qk` in a project with no launcher). This includes this toolkit's guides and
-knowledge articles. The toolkit's two checks, `qk spelling` and `qk docs check`, run in the
-worker's checkout without admission, so that seconds of checks never wait behind a whole-host
-gate or busy slots (vocaro-engineering#394): implicit, or a project lane of that name whose
-command is exactly the toolkit's. Each has `DOCS_CHECK_LIMIT`, 60 s, about 45 times the slowest
+knowledge articles. The preflight lanes and `qk docs check` run in the worker's checkout
+without admission, so that seconds of checks never wait behind a whole-host gate or busy slots
+(vocaro-engineering#394): a preflight lane as its own command, and the docs check implicit, or a
+project lane named `docs` whose command is exactly the toolkit's. Each has `DOCS_CHECK_LIMIT`, 60 s, about 45 times the slowest
 measured run (0.2–1.3 s on this Mac at a load of 15–44, 2026-11-11). One that reaches it runs
 again through `qk run`, admitted, so a slow check is never a failure and never runs long
 outside admission. Any other docs lane, such as a project script, runs through ordinary lane
@@ -887,7 +892,7 @@ entry whose own commits change a document and code.
 **A batch of documents and code runs the docs lanes too** (vocaro/queuekeeper#122). When the paths
 a batch changes include a docs-only path, by `main`'s settings as above, beside any other, the
 worker runs the docs lanes that a docs-only batch would run for those documents as well as the
-gate: after spelling and provision, ahead of `queue.lanes` or `gate`, so that a cheap failure
+gate: after the preflight lanes and provision, ahead of `queue.lanes` or `gate`, so that a cheap failure
 sends the batch back before the gate starts. A docs lane that `queue.lanes` already names, itself
 or as a member of a group, runs once. Both halves of a bisect run the docs lanes when either
 changes a document, and a gate stacked on a batch chooses its own lanes by its own entries' paths.
@@ -1086,11 +1091,13 @@ COMMIT's for this landing alone`, and the round's log `main at COMMIT has no que
 this round reads the batch's`. The round runs the lanes it names, its `provision` lane included, as
 it would once they are on `main`.
 
-This trusts the entry with its own gate only where `main` has no gate for it to loosen. Three settings
+This trusts the entry with its own gate only where `main` has no gate for it to loosen. Four settings
 loosen what the queue checks rather than say what it runs, and only `main` gives them, even then:
 `queue.hookCoveredBy`, which skips the pre-push hook, `queue.docsOnly`, which skips the gate for
-the paths it names, and `queue.spelling: false`, which turns off the toolkit's spelling check (the
-owner's decision, 2026-11-13, [#10](https://github.com/vocaro/queuekeeper/issues/10)). A project that
+the paths it names, `queue.spelling: false`, which turns off the toolkit's spelling check (the
+owner's decision, 2026-11-13, [#10](https://github.com/vocaro/queuekeeper/issues/10)), and
+`queue.preflight`, which can name fewer checks or none
+([#69](https://github.com/vocaro/queuekeeper/issues/69)). A project that
 wants it off lands its configuration past the check once. Once the commit lands, every later entry is gated by `main`'s settings, a change to
 `queue.noVerdictRuns` or the lanes included, and a commit that has no `queuekeeper.json` while `main`
 has none is refused before it is queued.
@@ -1197,6 +1204,11 @@ Google Chrome. The made-up data is in the script. `tests/visibility/test_dashboa
 no longer has the fields the script makes up, which is when to change the script.
 
 ## Spelling check
+
+This check is Queuekeeper's legacy spelling lane, which a later release removes: a project lists a
+spelling check of its own as a preflight lane instead
+([Preflight lanes](../doc/merge_queue.md#preflight-lanes),
+[#69](https://github.com/vocaro/queuekeeper/issues/69)).
 
 `python3 scripts/qk spelling [PATHS]` finds British spellings anywhere in a project's text,
 identifiers included, and in its file and directory names, and exits 1 on any. With no paths it

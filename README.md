@@ -68,8 +68,8 @@ or remove it.
 > Set up this repository for Queuekeeper using ~/Development/queuekeeper/doc/getting_started.md.
 > Inspect the existing build and test scripts, then add queuekeeper.json with a gate that runs
 > this project's checks and has an explicit timeout. Enable the plugins this project needs;
-> read their setup docs first. Check the default spelling and documentation-only behavior with
-> me. Run `qk doctor` and resolve its findings. Work on a branch and leave the setup ready to review.
+> read their setup docs first. Ask me which cheap checks to list as preflight lanes, and check the
+> documentation-only behavior with me. Run `qk doctor` and resolve its findings. Work on a branch and leave the setup ready to review.
 
 Each repository gets its own `queuekeeper.json`, gate and queue. The projects can use different
 test commands and plugins while sharing the Mac's capacity. For an Apple app, start with the
@@ -207,7 +207,7 @@ its results are valid on. A lane whose output differs by GPU lists its chips, su
 
 The guides hold the detail, with the measurements and decisions behind each rule:
 
-- [Maintenance](guides/maintenance.md): operating the merge queue, and the spelling check
+- [Maintenance](guides/maintenance.md): operating the merge queue, and the legacy spelling check
 - [Shared host](guides/shared-host.md): admission, the second Mac, disk cleanup, device reservations
   and process supervision
 - [Lanes](guides/lanes.md): receipts, how tests are counted, compiling first, tests no lane runs,

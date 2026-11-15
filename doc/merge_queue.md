@@ -43,7 +43,50 @@ back later:
   GitHub. Such a message is refused, with the line and what to write instead.
 - **Tests that could not run.** A test module that does not parse would make the whole gate run
   nothing, so it is refused up front.
-- **Lint.** The spelling lane runs on the entry before the gate does.
+- **Preflight lanes.** The project's own cheap checks run on the entry before the gate does
+  ([Preflight lanes](#preflight-lanes)).
+
+## Preflight lanes
+
+A project's preflight lanes are the cheap checks it wants run before anything heavier: a spelling
+check, a linter, a formatter in check mode. Queuekeeper knows nothing of what they check. The
+project names them, in order, in `queue.preflight` on `main`:
+
+```json
+"lanes": {
+  "spelling": {"command": ["python3", "scripts/check_spelling.py"], "timeout": 120},
+  "pyflakes": {"command": ["python3", "-m", "pyflakes", "src/python"]},
+  "gate": {"command": ["..."]}
+},
+"queue": {"preflight": ["spelling", "pyflakes"]}
+```
+
+- **A preflight lane is one command.** It exits 0 when it passes, 1 when it finds something, and
+  anything else when it could not run, which is never a pass. It prints each finding as
+  `PATH:LINE: message`, which a refusal quotes and a bisect reads. It cannot be a lane group, a
+  foreground or whole-host lane, a self lane or one that compiles first, and it is not `gate`,
+  `provision` or one of `queue.lanes`. One that gives no `timeout` is stopped after 300 seconds.
+- **`qk land` runs each on the entry replayed onto `origin/main`**, in a scratch worktree on the
+  Mac that ran it, without admission, and refuses the entry, with nothing queued, on the first
+  finding. A finding `origin/main` gives too is not the entry's, so the entry is queued, and so is
+  one whose lane could not run: the round judges both.
+- **The worker runs them first** in every round, before `provision` and the gate, admitted and
+  placed as any lane. An entry landing with `--no-gate` runs only them, and a documentation batch
+  runs them, unadmitted while they end within a minute, ahead of its documentation lanes.
+- **`qk preflight` runs them here, now**, on the working tree, uncommitted changes included,
+  without admission, so that an agent can check before it commits. `qk preflight LANE` runs one.
+  It exits 0 when each passed, 1 when one found something, and 3 when none did but one could not
+  run.
+- **A lane's command finds the project's main checkout** in `QUEUEKEEPER_PROJECT_CHECKOUT`, here,
+  in the worker's checkout, in a scratch worktree and on the second Mac alike, so that a launcher
+  can find the tools that sit beside the project.
+- **`"queue": {"preflight": []}` runs none.**
+
+Until a project gives `queue.preflight`, the queue runs its lane named `spelling` as its one
+preflight lane, or, where it has none, Queuekeeper's built-in spelling check, unless
+`queue.spelling` is `false`. A later release removes both: spelling is the project's concern, not
+Queuekeeper's ([vocaro/queuekeeper#69](https://github.com/vocaro/queuekeeper/issues/69)).
+`qk doctor` and `qk land` warn a project that still rests on them.
 
 ## When a batch fails
 

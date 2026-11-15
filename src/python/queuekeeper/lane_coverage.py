@@ -6,7 +6,7 @@ the tracked source, without building or running anything, and each lane's select
 - swift test and qk xctest select their package's test targets, narrowed by --filter and --skip;
 - qk unittest and python3 -m unittest discover select the modules their discovery reaches;
 - xcodebuild test and qk simulator-tests, with -only-testing:Target/Class, select that class;
-- qk spelling, qk docs, qk run (whose lane is read in its own right), swift build, swift run and an xcodebuild
+- qk spelling, qk docs, qk preflight, qk run (whose lane is read in its own right), swift build, swift run and an xcodebuild
   that tests nothing select no test.
 
 Any other command, a project's own script most often, cannot be read, and queuekeeper.json's testLanes.selects
@@ -255,7 +255,7 @@ def unittest_discovery(root, words, discover_form):
 
 def eng_command(root, words):
     action, rest = words[0], words[1:]
-    if action in ("spelling", "docs", "run"): return NOTHING
+    if action in ("spelling", "docs", "run", "preflight"): return NOTHING
     if action == "xctest": return swift_package(root, rest)
     if action == "simulator-tests": return only_testing(rest)
     if action == "unittest": return unittest_discovery(root, rest, False)

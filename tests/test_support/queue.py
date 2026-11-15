@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
 from queuekeeper import cli, config as configuration, landing_proofs, merge_queue as mq, offload_host
 # What qk land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
-SPELLED_BEFORE_QUEUED = mq.spelled_before_queued
+SPELLED_BEFORE_QUEUED = mq.preflight_before_queued
 import host_isolation
 from host_isolation import stretched
 
@@ -148,8 +148,8 @@ class Fixture(unittest.TestCase):
         load = patch.object(mq, "load_of", return_value=(3.0, 25.0, 75.0))
         self.load_of = load.start()
         self.addCleanup(load.stop)
-        # qk land runs no spelling lane before it queues unless a test says so (SpelledBeforeQueued, #283).
-        unspelled = patch.object(mq, "spelled_before_queued")
+        # qk land runs no preflight lane before it queues unless a test says so (SpelledBeforeQueued, #283).
+        unspelled = patch.object(mq, "preflight_before_queued")
         unspelled.start()
         self.addCleanup(unspelled.stop)
         self.counter, self.status = self.base / "gates", self.base / "status"

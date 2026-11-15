@@ -194,7 +194,7 @@ progress folder.
 woken by its end:
 
 - **A refusal before queuing is one line**, `COMMIT is not queued: REASON`, with exit status 1: a
-  spelling finding, a closing keyword GitHub would act on, a check `qk unittest` would refuse
+  preflight lane's finding, a closing keyword GitHub would act on, a check `qk unittest` would refuse
   every gate for, or a merge that brings in another branch's work. Nothing was queued. A branch
   refreshed by merging `main` is not refused: the queue lands its own commits in a line.
 - **A queue closed for maintenance refuses the same way**, with who closed it, when and why:
@@ -252,8 +252,8 @@ happens.
 
 ## Documentation changes
 
-An entry that changes only documentation skips the code gate. It lands on the spelling check and
-the documentation lanes, in seconds, beside a code gate that is running. One other path in the
+An entry that changes only documentation skips the code gate. It lands on the project's preflight lanes
+and the documentation lanes, in seconds, beside a code gate that is running. One other path in the
 entry makes the whole entry ride the code gate:
 
 - **Documentation is Markdown in the usual places**: the root `README.md`, `CONTRIBUTING.md` and
@@ -272,12 +272,12 @@ entry makes the whole entry ride the code gate:
 - **`qk land` says which gate an entry will ride** as it queues it, on standard output after the
   `queued ID` line, by `main`'s settings as a round reads them (vocaro/queuekeeper#118). An entry
   of documentation alone gets `queue: ID is documentation only: lands on the spelling and docs
-  lanes, not the code gate`. Any other entry gets `queue: ID rides the code gate: PATH is not
+  lanes, not the code gate`, naming its preflight lanes before the docs lanes. Any other entry gets `queue: ID rides the code gate: PATH is not
   documentation`, naming the first of its paths, in sorted order, that is not documentation, and
   adds `; the docs lane runs too, ahead of it, for its documents` when it changes documents as
   well. When that path should not have been in the entry, move it to an entry of its own, as
   below. An entry landing with `--no-gate` gets no such line: it says it lands alone on the
-  spelling lane.
+  preflight lanes.
 - **A documentation landing is not a gate.** No gate receipt names the pushed commit, and
   `qk queue status` records the entry as a documentation landing with the lanes it ran.
 

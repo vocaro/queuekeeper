@@ -75,10 +75,11 @@ It reports missing commands, lanes without a timeout, and tests that no lane run
 
 Two defaults to know about:
 
-- **Spelling.** Before the gate, the queue runs a spelling check that flags British spellings. Turn
-  it off with `"queue": {"spelling": false}`, or define your own lane named `spelling`. It runs
-  with the Queuekeeper that runs the queue, so the project needs no copy of Queuekeeper's
-  `scripts/qk` for it.
+- **Preflight lanes.** List the project's cheap checks, such as a linter, in `queue.preflight`,
+  and the queue runs them on an entry before it queues it, and first in every round
+  ([Preflight lanes](merge_queue.md#preflight-lanes)). Give `"queue": {"preflight": []}` for none.
+  Until a project gives it, the queue runs a spelling check of Queuekeeper's, which a later release
+  removes.
 - **Documentation.** A change that touches only Markdown documents skips the gate and runs the
   documentation lanes instead. Set `"queue": {"docsOnly": false}` to gate every change.
 
