@@ -760,7 +760,8 @@ def moved_trees(root, offered):
 
 def changed_since(root, offered):
     """Why work this Mac admitted after offering it to the second Mac would not run what it sent, or None
-    (moved_trees). A lane then does not run here; `qk admit` runs its command from what it sent (sent_tree)."""
+    (moved_trees). A lane or a `qk admit` command then runs here from what it sent (sent_tree), and a lane whose
+    toolkit alone changed with the toolkit it sent (sent_toolkit)."""
     moved = moved_trees(root, offered)
     return moved_reason(moved[0]) if moved else None
 

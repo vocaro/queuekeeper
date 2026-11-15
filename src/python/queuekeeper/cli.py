@@ -471,21 +471,27 @@ def reap_here(root, inherited):
 
 
 def admitted_tree(stack, root, name, offered, receipt):
-    """None when work this Mac admitted may run, after recording in receipt the tree it reads, or 2 after
-    saying why not. A run here reads the working tree as it is once admitted, not as it was when the
-    work was offered or queued: work this Mac takes after sending the second Mac a commit runs only
+    """The checkout a lane this Mac admitted runs in, after recording in receipt the tree it reads, or 2 after
+    saying why it cannot run. A run in root reads the working tree as it is once admitted, not as it was when the
+    work was offered or queued, so a lane this Mac takes after sending the second Mac a commit runs in root only
     while the tree is still that commit's (remote.moved_trees), and receipt's sent names that commit.
 
-    The toolkit's tree is not held to that: once it is no longer what was sent, the work runs with the toolkit as
-    sent, from a temporary worktree of it that QUEUEKEEPER_ROOT names, entered in stack (remote.sent_toolkit), and
-    receipt's sentToolkit says so. A session editing Queuekeeper's checkout, or a landing that moved it, otherwise
-    ended with exit 2 a gate that had waited here for a Mac (vocaro/queuekeeper#33)."""
+    Once the project's tree is no longer what was sent, the lane runs from what was sent, in a temporary worktree
+    at that commit with the toolkit beside it that QUEUEKEEPER_ROOT names, entered in stack, as `qk admit` runs its
+    command (from_sent), and receipt's sentTree says so. It used to end with exit 2 there, after its wait for a
+    slot: on 2026-11-13 a lane the second Mac declined waited 104 s here and then refused over a documentation
+    edit the session made meanwhile (vocaro/queuekeeper#136).
+
+    When only the toolkit's tree changed, the lane runs in root with the toolkit as sent, from a temporary worktree
+    of it that QUEUEKEEPER_ROOT names, entered in stack (remote.sent_toolkit), and receipt's sentToolkit says so. A
+    session editing Queuekeeper's checkout, or a landing that moved it, otherwise ended with exit 2 a gate that had
+    waited here for a Mac (vocaro/queuekeeper#33)."""
     moved = remote.moved_trees(root, offered)
-    project = [move for move in moved if not move[2].startswith("toolkit")]
-    if project:
-        print(f"queuekeeper: {name} not run on this Mac: {remote.moved_reason(project[0])}\nqueuekeeper: restore the tree "
-              "that was sent, or run it again to send the tree as it is now", file=sys.stderr, flush=True)
-        return 2
+    if any(not what.startswith("toolkit") for _checkout, _commit, what, _changes in moved):
+        tree = from_sent(stack, root, offered.sent, moved, receipt, name)
+        if isinstance(tree, int): return tree
+        stack.enter_context(patch_environment({"QUEUEKEEPER_ROOT": str(tree[1])}))
+        return tree[0]
     for _checkout, commit, what, changes in moved:
         why = f"the {what} changed after {commit[:12]} was sent to the second Mac:\n{changes}"
         try: toolkit = stack.enter_context(remote.sent_toolkit(offered.sent))
@@ -500,29 +506,30 @@ def admitted_tree(stack, root, name, offered, receipt):
         receipt["sentToolkit"] = {"toolkit": str(toolkit), "commit": commit, "changes": changes}
     receipt["project"] = source_identity(root)
     if offered is not None and offered.sent.get("commit"): receipt["sent"] = offered.sent["commit"]
-    return None
+    return root
 
 
-def from_sent(stack, root, sent, moved, receipt):
-    """(checkout, toolkit) of the worktrees from which `qk admit` runs its command on this Mac, entered in stack,
-    after recording them in receipt; or 2 after saying why not. A command this Mac takes after sending the second
-    Mac a commit runs from that commit once the tree here is no longer that commit's (remote.moved_trees), in a
-    temporary worktree at it, as the second Mac runs it, rather than from the changed tree or not at all: the
-    session may go on editing meanwhile, and the result is that of what was sent (vocaro-engineering#276, whose
-    command waited behind a gate here and then refused over an unrelated documentation edit). The worktrees go
-    when the command ends, however it ends (remote.sent_tree)."""
+def from_sent(stack, root, sent, moved, receipt, name="the command"):
+    """(checkout, toolkit) of the worktrees from which `qk admit` runs its command on this Mac, or `qk run` the
+    lane name, entered in stack, after recording them in receipt; or 2 after saying why not. Work this Mac takes
+    after sending the second Mac a commit runs from that commit once the tree here is no longer that commit's
+    (remote.moved_trees), in a temporary worktree at it, as the second Mac runs it, rather than from the changed
+    tree or not at all: the session may go on editing meanwhile, and the result is that of what was sent
+    (vocaro-engineering#276, whose command waited behind a gate here and then refused over an unrelated
+    documentation edit; vocaro/queuekeeper#136, the same for a lane). The worktrees go when the work ends, however
+    it ends (remote.sent_tree)."""
     why = "; ".join(f"the {what} changed after {commit[:12]} was sent to the second Mac:\n{changes}"
                     for _checkout, commit, what, changes in moved)
     try:
         checkout, toolkit = stack.enter_context(remote.sent_tree(
             root, sent, any(what.startswith("toolkit") for _checkout, _commit, what, _changes in moved)))
     except (OSError, RuntimeError) as error:
-        print(f"queuekeeper: the command not run on this Mac: {why}\nqueuekeeper: and no worktree of what was sent could be made "
+        print(f"queuekeeper: {name} not run on this Mac: {why}\nqueuekeeper: and no worktree of what was sent could be made "
               f"here: {error}", file=sys.stderr, flush=True)
         return 2
-    print(f"queuekeeper: the command runs on this Mac from what was sent, {sent['commit'][:12]}, in a temporary worktree, "
-          f"{checkout}, since {why}\nqueuekeeper: the session's tree stays as it is, and the worktree goes when the command "
-          "ends", file=sys.stderr, flush=True)
+    print(f"queuekeeper: {name} runs on this Mac from what was sent, {sent['commit'][:12]}, in a temporary worktree, "
+          f"{checkout}, since {why}\nqueuekeeper: the session's tree stays as it is, and the worktree goes when "
+          f"{'the command' if name == 'the command' else 'the run'} ends", file=sys.stderr, flush=True)
     receipt["project"] = source_identity(checkout)
     receipt["sent"] = sent["commit"]
     receipt["sentTree"] = {"checkout": str(checkout), "toolkit": str(toolkit),
@@ -568,7 +575,7 @@ def here_because(args, inherited):
     if lane: return f"a part of the self lane {lane}, whose parts share build products on the Mac where it runs"
     return None
 
-def provisioned_here(root, config, lane, receipt, inherited, on_stop=None):
+def provisioned_here(root, config, lane, receipt, inherited, on_stop=None, tree=None):
     """None once the project's provision lane, if it has one, has run in this checkout before lane runs on this Mac,
     as it runs in the second Mac's checkout before a lane sent there (offload_host); otherwise the status lane ends
     with, after saying why it did not run. A bare `qk run gate` that stayed here ran only the gate, so it passed or
@@ -581,12 +588,18 @@ def provisioned_here(root, config, lane, receipt, inherited, on_stop=None):
     A provision lane that fails here ends lane as one that fails on the second Mac does (remote.execute): with
     remote.MISCONFIGURED, this Mac's environment and no verdict on lane's commit, which the merge queue holds for
     and does not send back (the owner's decision, 2026-11-15). One that got no admission or ended unmeasured ran
-    nothing to judge, and lane ends as it did."""
+    nothing to judge, and lane ends as it did.
+
+    tree is the worktree of what was sent, when lane runs from it (admitted_tree): the provision lane runs there, as
+    it does before `qk admit`'s command (provision_sent). Its own log goes with the worktree, so what qk run said
+    of it, kept in root, is the log named."""
     if lane == "provision" or "provision" not in config.get("lanes", {}): return None
     if inherited or os.environ.get(SELF_LANE) or os.environ.get(remote.DISPATCHER): return None
     # With the toolkit the lane runs with: the one that was sent, once its checkout has moved (admitted_tree).
-    toolkit = Path(receipt.get("sentToolkit", {}).get("toolkit") or TOOLKIT_ROOT)
+    toolkit = Path(receipt.get("sentTree", {}).get("toolkit") or receipt.get("sentToolkit", {}).get("toolkit")
+                   or TOOLKIT_ROOT)
     said = root / ".build/queuekeeper" / lane / "provision.log"
+    sent, root = tree is not None, root if tree is None else tree
     with resources.child_requests():
         status = processes.run([sys.executable, str(toolkit / "bin/qk"), "--project", str(root), "run", "--here",
                                 "provision"], cwd=root, log_path=said, on_stop=on_stop)
@@ -595,15 +608,15 @@ def provisioned_here(root, config, lane, receipt, inherited, on_stop=None):
         # record is this process's again, whose start a stacked gate reads (merge_queue.Worker.admitted_mac).
         lane_wait.running()
         return None
-    log = root / ".build/queuekeeper/provision/run.log"
+    log = said if sent else root / ".build/queuekeeper/provision/run.log"
     if status in (BUSY, lane_results.UNMEASURED):
         print(f"queuekeeper: {lane} not run on this Mac: its provision lane gave no verdict here (exit {status}); what "
               f"qk run said of it is in {said}", file=sys.stderr, flush=True)
         return status
     print(f"queuekeeper: {lane} not run: {this_mac()} {remote.UNPROVISIONED}: the provision lane exited {status} in "
-          f"{root}, so {lane} did not run here; its log is {log}\nqueuekeeper: to fix it, give this Mac what "
-          f"provisioning needs, which that log names, and run `qk run {lane}` again; what qk run said of the provision "
-          f"lane is in {said}", file=sys.stderr, flush=True)
+          f"{f'the worktree of what was sent, {root}' if sent else root}, so {lane} did not run here; its log is {log}\n"
+          f"queuekeeper: to fix it, give this Mac what provisioning needs, which that log names, and run `qk run {lane}` "
+          f"again; what qk run said of the provision lane is in {said}", file=sys.stderr, flush=True)
     return remote.MISCONFIGURED
 
 
@@ -1397,6 +1410,9 @@ def perform(argv, report):
             whole = not extra and args.expect is None and not args.serial
             keys = lane_devices(lane)
             admission = None
+            # Where the lane's command runs: this checkout, or the worktree of what was sent (admitted_tree). Its
+            # receipt, logs and results stay in this checkout's directory either way.
+            tree = root
             if whole and receipt["project"].get("workingChangesSHA256") != remote.CLEAN:
                 # vocaro-engineering#197: nothing said so until eng release stopped for it.
                 why = remote.uncounted(root, args.lane)
@@ -1404,7 +1420,9 @@ def perform(argv, report):
             def concluded(status, **fields):
                 # The verdict in this checkout, and kept by commit for every worktree (vocaro-engineering#198).
                 conclude(directory, receipt, status, **fields)
-                remote.keep_here(root, args.lane, receipt, status, whole, results=directory / "results")
+                # A worktree of a snapshot is clean at a commit no branch holds, which is no commit's run to keep.
+                counts = whole and not (tree != root and offered.sent["commit"] != offered.sent.get("head"))
+                remote.keep_here(root, args.lane, receipt, status, counts, results=directory / "results")
                 # A lane's output goes to its log; the Mac that sent a dispatch prints these once they are back.
                 if not os.environ.get(remote.DISPATCHER): extensions.report_results(directory / "results")
             def prepared(work):
@@ -1413,11 +1431,11 @@ def perform(argv, report):
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 report.ran_here(directory)
                 if resource != "self":
-                    for prepare in extensions.PREPARE_LANE: prepare(root, config)
+                    for prepare in extensions.PREPARE_LANE: prepare(tree, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else \
                     [lane["command"], *([lane["compileFirst"]] if "compileFirst" in lane else [])]
                 try:
-                    with resources.child_requests(), extensions.around_run(commands, root): return work()
+                    with resources.child_requests(), extensions.around_run(commands, tree): return work()
                 finally:
                     # Nested in another lane, its results go into that lane's too, however it ended (#218).
                     parallel.hand_up(directory / "results", args.lane)
@@ -1426,15 +1444,15 @@ def perform(argv, report):
                 receipt.update(command=command, arguments=extra, timeout=limit)
                 def execute(on_stop=None):
                     def work():
-                        env = shims.environment(parallel.results_environment(directory / "results"), root)
+                        env = shims.environment(parallel.results_environment(directory / "results"), tree)
                         kill_after = processes.FOREGROUND_KILL_AFTER if lane.get("foreground") else processes.KILL_AFTER
-                        failed, left = compile_first(lane, root, directory, receipt, limit,
+                        failed, left = compile_first(lane, tree, directory, receipt, limit,
                                                      env, on_stop, kill_after)
                         if failed is not None: return failed
-                        why = unstartable(lane["command"], root)
+                        why = unstartable(lane["command"], tree)
                         if why: return not_started(directory, receipt, args.lane, why)
                         try:
-                            return processes.run(command, cwd=root, log_path=directory / "run.log", timeout=left,
+                            return processes.run(command, cwd=tree, log_path=directory / "run.log", timeout=left,
                                                  on_stop=on_stop, env=env, kill_after=kill_after,
                                                  **({"stall": lane["stall"], "progress_path": directory / "results/progress.json"}
                                                     if "stall" in lane else {}))
@@ -1447,7 +1465,7 @@ def perform(argv, report):
                 # Each lane's receipt shows the command it ran, as its own keys make it.
                 members = [(name, {**config["lanes"][name], "command": lane_command(config["lanes"][name])}) for name in group]
                 def execute(on_stop=None):
-                    return record(directory, receipt, lambda: prepared(lambda: parallel.lanes(root, members, directory / "lanes", jobs,
+                    return record(directory, receipt, lambda: prepared(lambda: parallel.lanes(tree, members, directory / "lanes", jobs,
                                   lambda member, status, log: judge(member, status, log)[0], receipt, on_stop,
                                   results_directory=directory / "results")))
             try:
@@ -1491,8 +1509,8 @@ def perform(argv, report):
                                                       needs and not os.environ.get(resources.TOKEN),
                                                       admission_placement(offered, reason))
                             if isinstance(admission, int): return extensions.DEVICES.not_admitted(args.lane, waiting, admission)
-                            stopped = admitted_tree(stack, root, args.lane, offered, receipt)
-                            if stopped is not None: return stopped
+                            tree = admitted_tree(stack, root, args.lane, offered, receipt)
+                            if isinstance(tree, int): return tree
                             # The wait in the queue, apart from what came before it (remote.execute).
                             receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
                             if device_window is not None: extensions.DEVICES.report_window(device_window, receipt["queueSeconds"])
@@ -1516,7 +1534,7 @@ def perform(argv, report):
                                       file=sys.stderr, flush=True)
                                 return BUSY
                             unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited,
-                                                             admission.interrupted)
+                                                             admission.interrupted, tree if tree != root else None)
                             if unprovisioned is not None: return unprovisioned
                             result = execute(admission.interrupted)
                             # A failed build ran no test an alert could have disturbed.

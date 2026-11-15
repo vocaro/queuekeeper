@@ -970,15 +970,33 @@ reading runs the lane here, saying so; one whose admission limits cannot be read
 as every request there is refused ([heavy-work admission](#heavy-work-admission)).
 
 A lane this Mac takes runs in this checkout, over its working tree as it is once admitted, not over
-the commit sent to the second Mac. So when a commit was sent, this Mac runs the lane only while the
-working tree is still that commit's tree: once admitted it snapshots the tree again, and when the
-two differ it exits 2 without running, `queuekeeper: LANE not run on this Mac: the working tree changed
-after COMMIT was sent` with the changed paths, rather than run a tree other than the one sent
-([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). Restore the
-tree or run the lane again. Its receipt's `sent` names the commit, and `project` the tree as it stood
-once admitted.
+the commit sent to the second Mac. So when a commit was sent, this Mac runs the lane in this
+checkout only while the working tree is still that commit's tree: once admitted it snapshots the
+tree again, and when the two differ it runs the lane from what was sent rather than over a tree
+other than the one sent
+([vocaro-engineering#79](https://github.com/vocaro/vocaro-engineering/issues/79)). queuekeeper says
+`LANE runs on this Mac from what was sent, COMMIT, in a temporary worktree`, with the changed
+paths, and lays out what was sent as it does for `qk admit` (below): a detached worktree of the
+project at the commit sent, with the toolkit beside it and `QUEUEKEEPER_ROOT` naming it. The
+project's `provision` lane runs there first, then the lane's command. The lane used to exit 2
+without running, after its wait for a slot: on 2026-11-13 a lane the second Mac declined waited
+104 s here and then refused over a documentation edit the session made meanwhile
+([vocaro/queuekeeper#136](https://github.com/vocaro/queuekeeper/issues/136)). The lane's receipt,
+logs and results stay in this checkout's `.build/queuekeeper/LANE`, with what `qk run` said of the
+provision lane in its `provision.log`. Its receipt's `sent` names the commit, `project` is that
+commit with no changes, and `sentTree` says where it ran and what had changed; a lane that ran in
+this checkout has `project` as the tree stood once admitted. A pass is kept by commit as any run
+here is, unless the commit sent was a snapshot of uncommitted changes. The worktrees and their
+directory are removed when the lane ends, however it ends, with the build products and whatever
+else the lane wrote there, so a build there starts cold, within the lane's own timeout. What the
+lane changed in the worktree's files, tracked ones and new ones alike, goes with it: nothing is
+applied to the session's tree and no patch is kept, since a lane's changes do not come back from
+the second Mac either. Only what the lane writes under `QUEUEKEEPER_RESULTS_DIR` is kept. A
+provision lane that fails in the worktree ends the lane as one that fails in this checkout does,
+and the log it names is that `provision.log`. When no worktree can be made, the lane exits 2
+saying so.
 
-The toolkit it sent is not held to that rule. When the toolkit's working tree changed after it was
+When only the toolkit's working tree changed after it was
 sent, the lane runs in this checkout with the toolkit as it was sent: queuekeeper says
 `LANE runs on this Mac with the toolkit that was sent, COMMIT`, with the changed paths, makes a
 detached worktree of the toolkit at that commit in a new temporary directory, and runs the lane
@@ -990,7 +1008,7 @@ that had waited here for a Mac
 itself keeps the code it started with, and a project that reaches the toolkit by a relative path
 rather than through `scripts/qk` still reads the checkout.
 
-`qk admit` instead runs its command from what it sent, so that a wait here is not lost to an edit
+`qk admit` runs its command from what it sent in the same way, so that a wait here is not lost to an edit
 the session made meanwhile: on 2026-11-07 a command the second Mac kept declining waited here
 behind a gate and then refused over an unrelated documentation edit
 ([vocaro-engineering#276](https://github.com/vocaro/vocaro-engineering/issues/276)). While the tree is
@@ -1007,9 +1025,8 @@ sent, so usually kept as a patch, exit 73. Both worktrees and the directory are 
 command ends, however it ends, with the build products and other ignored files the command left
 there; a build there starts cold, and what a tool writes outside the worktree, such as Xcode's
 default DerivedData, stays. The receipt's `project` is the commit sent and its `sentTree` says
-where it ran and what had changed. Nothing but that patch touches the session's tree. A lane still
-refuses when the project's tree changed, as above: its results, kept results and logs are the
-checkout's.
+where it ran and what had changed. Nothing but that patch touches the session's tree. A lane run
+from what was sent brings no such patch back, as a lane the second Mac runs brings none.
 
 Each of this Mac's waits that ends unadmitted is logged as withdrawn, as each
 declined offer is on the second Mac ([admission log](#admission-log)); every request retains

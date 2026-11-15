@@ -3898,12 +3898,41 @@ class RemoteTests(unittest.TestCase):
             there.enter_context(self.busy_second_mac())
             def change():
                 (self.project / "new.txt").unlink()
+                (self.project / "edited.txt").write_text("edited again\n")
                 here.close()
+            # vocaro/queuekeeper#136: the lane refused here, exit 2, after its wait for a slot. It runs what was sent.
             status, output = self.waits_there("gate", waiting, change)
-            self.assertEqual(status, 2, output)
-            self.assertIn("queuekeeper: gate not run on this Mac: the working tree changed after ", output)
+            self.assertEqual(status, 0, output)
+            self.assertNotIn("not run on this Mac", output)
+            self.assertIn("queuekeeper: gate runs on this Mac from what was sent, ", output)
+            self.assertIn("since the working tree changed after ", output)
             self.assertIn("D\tnew.txt", output)
-            self.assertFalse(lane.exists(), output)
+            # It ran in a worktree of the commit sent, under the main checkout's name, after its provision lane.
+            log = (lane / "run.log").read_text()
+            ran = Path(re.search(r"^Ran 2 tests in (.+)$", log, re.M).group(1))
+            self.assertEqual(ran.name, self.project.name)
+            self.assertTrue(ran.parent.name.startswith(remote.SENT_TREE_PREFIX), ran)
+            self.assertTrue((lane / "provision.log").exists(), output)
+            # The session's edits stay, and the worktree and its directory are gone.
+            self.assertFalse((self.project / "new.txt").exists())
+            self.assertEqual((self.project / "edited.txt").read_text(), "edited again\n")
+            self.assertFalse(ran.parent.exists())
+            worktrees = [line for line in git(self.project, "worktree", "list", "--porcelain").splitlines()
+                         if line.startswith("worktree ")]
+            self.assertEqual(worktrees, [f"worktree {self.project.resolve()}"])
+            # Its receipt, in the session's checkout, names the tree the run read: the commit sent, with no changes.
+            receipt = json.loads((lane / "source.json").read_text())
+            sent = re.search(r"remote: sending (\w+), a snapshot of the working tree", output).group(1)
+            self.assertTrue(receipt["sent"].startswith(sent), receipt)
+            self.assertEqual(receipt["project"]["revision"], receipt["sent"])
+            self.assertEqual(receipt["sentTree"]["checkout"], str(ran))
+            self.assertEqual(receipt["sentTree"]["moved"][0]["tree"], "working tree")
+            self.assertIn("D\tnew.txt", receipt["sentTree"]["moved"][0]["changes"])
+            self.assertEqual((receipt["exitStatus"], receipt["outcome"]), (0, "passed"))
+            # A snapshot is no commit's run, so it is not kept by commit as one.
+            self.assertFalse((remote.store(self.project) / receipt["sent"] / "gate.json").exists())
+        (self.project / "edited.txt").write_text("edited\n")
+        shutil.rmtree(lane)
         (self.project / "new.txt").write_text("new\n")
         # A change to the toolkit's snapshot (vocaro-engineering#104) does not stop the lane, which runs with the
         # toolkit that was sent: a session editing Queuekeeper's checkout voided the gate it ran (vocaro/queuekeeper#33).
@@ -3942,6 +3971,150 @@ class RemoteTests(unittest.TestCase):
             self.assertIn("M\tqueuekeeper.json", receipt["sentToolkit"]["changes"])
             # The project's tree is the one sent, as it stood once admitted.
             self.assertEqual(receipt["project"], config.source_identity(self.project))
+        shutil.rmtree(lane)
+        commit_all(self.toolkit)
+        commit = commit_all(self.project)
+        with self.subTest("changed after a commit was sent"), contextlib.ExitStack() as here, \
+                contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                (self.project / "notes.txt").write_text("a session edited this meanwhile\n")
+                here.close()
+            status, output = self.waits_there("gate", waiting, change)
+            self.assertEqual(status, 0, output)
+            self.assertIn(f"queuekeeper: gate runs on this Mac from what was sent, {commit[:12]}, ", output)
+            self.assertIn("A\tnotes.txt", output)
+            receipt = json.loads((lane / "source.json").read_text())
+            self.assertEqual((receipt["sent"], receipt["project"]["revision"]), (commit, commit))
+            # The run read the commit and none of the session's edit, so its pass is kept as that commit's.
+            kept = json.loads((remote.store(self.project) / commit / "gate.json").read_text())
+            self.assertEqual((kept["commit"], kept["result"]["exitStatus"]), (commit, 0))
+            self.assertEqual((self.project / "notes.txt").read_text(), "a session edited this meanwhile\n")
+
+    def test_a_lane_run_from_what_was_sent_builds_and_runs_there_and_changes_nothing_in_the_session_tree(self):
+        # vocaro/queuekeeper#136: every step of the lane runs in the worktree of what was sent, with the toolkit
+        # that was sent, and what it changes there goes with the worktree.
+        self.work_in_progress()
+        python, waiting = sys.executable, "waits for whichever Mac admits it first"
+        where = "import os; print('Ran 2 tests in', os.getcwd())"
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"].update({
+            # Says the toolkit it was given, edits a tracked file and writes a new one.
+            "built": {"command": [python, "-c", where + "; root = os.environ['QUEUEKEEPER_ROOT']; print('toolkit', root); "
+                                  "print('real', os.path.realpath(root)); "
+                                  "print('settings', repr(open(os.path.join(root, 'queuekeeper.json')).read())); "
+                                  "open('edited.txt', 'a').write('by the lane\\n'); open('made.txt', 'w').write('made\\n')"],
+                      "compileFirst": [python, "-c", "import os; print('compiled in', os.getcwd())"],
+                      "resource": "heavy", "minimumTests": 2},
+            "one": {"command": [python, "-c", where], "resource": "heavy", "minimumTests": 2},
+            "two": {"command": [python, "-c", where], "resource": "heavy", "minimumTests": 2},
+            "pair": {"parallel": ["one", "two"], "resource": "heavy"}})
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
+        toolkit_settings = self.toolkit / "queuekeeper.json"
+        sent_settings = toolkit_settings.read_text()
+        with self.subTest("a compileFirst lane, the project and the toolkit both changed"), \
+                contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                (self.project / "new.txt").unlink()
+                toolkit_settings.write_text(sent_settings + "\n")
+                here.close()
+            status, output = self.waits_there("built", waiting, change)
+            self.assertEqual(status, 0, output)
+            self.assertIn("queuekeeper: built runs on this Mac from what was sent, ", output)
+            self.assertRegex(output, r"since the working tree changed after \w+ was sent to the second Mac:\nD\tnew.txt; "
+                                     r"the toolkit's working tree changed after \w+ was sent to the second Mac:\n"
+                                     r"M\tqueuekeeper.json")
+            lane = self.project / ".build/queuekeeper/built"
+            log = (lane / "run.log").read_text()
+            ran = Path(re.search(r"^Ran 2 tests in (.+)$", log, re.M).group(1))
+            self.assertEqual(ran.name, self.project.name)
+            self.assertTrue(ran.parent.name.startswith(remote.SENT_TREE_PREFIX), ran)
+            # Its build ran there too, in the lane's one admission, and its output is kept in the session's checkout.
+            self.assertIn(f"compiled in {ran}", (lane / "compile.log").read_text())
+            # The toolkit beside it is a worktree of the toolkit as sent, not the checkout that changed.
+            toolkit = Path(re.search(r"^toolkit (.+)$", log, re.M).group(1))
+            self.assertEqual(toolkit, ran.parent / self.toolkit.name)
+            self.assertEqual(re.search(r"^real (.+)$", log, re.M).group(1), str(toolkit))
+            self.assertIn(f"settings {sent_settings!r}", log)
+            self.assertEqual(toolkit_settings.read_text(), sent_settings + "\n")
+            receipt = json.loads((lane / "source.json").read_text())
+            self.assertEqual((receipt["sentTree"]["checkout"], receipt["sentTree"]["toolkit"]), (str(ran), str(toolkit)))
+            self.assertEqual([moved["tree"] for moved in receipt["sentTree"]["moved"]],
+                             ["working tree", "toolkit's working tree"])
+            # What the lane changed in the worktree, in a tracked file and a new one, went with the worktree: nothing
+            # is applied to the session's tree and no patch is kept, as from a lane the second Mac runs.
+            self.assertNotIn("applied", output)
+            self.assertEqual((self.project / "edited.txt").read_text(), "edited\n")
+            self.assertFalse((self.project / "made.txt").exists())
+            self.assertFalse((self.project / remote.UNAPPLIED_DIRECTORY).exists())
+            self.assertFalse(ran.parent.exists())
+            self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
+            self.assertEqual(self.worktrees(self.toolkit), [f"worktree {self.toolkit.resolve()}"])
+        with self.subTest("a lane group"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                (self.project / "notes.txt").write_text("a session edited this meanwhile\n")
+                here.close()
+            status, output = self.waits_there("pair", waiting, change)
+            self.assertEqual(status, 0, output)
+            self.assertIn("queuekeeper: pair runs on this Mac from what was sent, ", output)
+            lane = self.project / ".build/queuekeeper/pair"
+            receipt = json.loads((lane / "source.json").read_text())
+            ran = Path(receipt["sentTree"]["checkout"])
+            self.assertTrue(ran.parent.name.startswith(remote.SENT_TREE_PREFIX), ran)
+            # Each of its lanes ran in the worktree, and its log is in the session's checkout.
+            for name in ("one", "two"):
+                self.assertIn(f"Ran 2 tests in {ran}", (lane / "lanes" / f"{name}.log").read_text())
+            self.assertFalse(ran.parent.exists())
+            self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
+
+    def test_a_lane_run_from_what_was_sent_does_not_run_when_its_provision_lane_fails_in_the_worktree(self):
+        self.work_in_progress()
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"]["provision"]["command"] = [sys.executable, "-c", "print('no corpus'); raise SystemExit(4)"]
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
+        lane = self.project / ".build/queuekeeper/gate"
+        with contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_second_mac())
+            def change():
+                (self.project / "notes.txt").write_text("a session edited this meanwhile\n")
+                here.close()
+            status, output = self.waits_there("gate", "waits for whichever Mac admits it first", change)
+        # As a provision lane that fails in this checkout: this Mac's environment, and no verdict on the commit.
+        self.assertEqual(status, remote.MISCONFIGURED, output)
+        said = (lane / "provision.log").resolve()
+        failed = re.search(r"queuekeeper: gate not run: this Mac \(.+\) could not provision its checkout: the provision "
+                           r"lane exited 4 in the worktree of what was sent, (\S+), so gate did not run here; its log is "
+                           + re.escape(str(said)) + r"\n", output)
+        self.assertIsNotNone(failed, output)
+        # The provision lane's own log went with the worktree, so the one named is what qk run said of it, kept here.
+        self.assertIn("no corpus", said.read_text())
+        self.assertFalse((lane / "run.log").exists())
+        self.assertFalse((self.project / ".build/queuekeeper/provision").exists())
+        ran = Path(failed.group(1))
+        self.assertTrue(ran.parent.name.startswith(remote.SENT_TREE_PREFIX), ran)
+        self.assertFalse(ran.parent.exists())
+        self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
+
+    def test_a_lane_whose_worktree_of_what_was_sent_cannot_be_made_exits_2_naming_the_lane(self):
+        # No commit of the project's: git refuses the worktree, as it does when the disk or the repository does.
+        missing = "0123456789abcdef0123456789abcdef01234567"
+        class Offered: sent = {"commit": missing}
+        moved = [(self.project, missing, "working tree", "M\tnotes.txt")]
+        receipt = {}
+        with patch.object(remote, "moved_trees", return_value=moved), contextlib.redirect_stderr(StringIO()) as said, \
+                contextlib.ExitStack() as stack:
+            self.assertEqual(cli.admitted_tree(stack, self.project, "gate", Offered, receipt), 2)
+        self.assertIn("queuekeeper: gate not run on this Mac: the working tree changed after 0123456789ab was sent to the "
+                      "second Mac:\nM\tnotes.txt\nqueuekeeper: and no worktree of what was sent could be made here: ",
+                      said.getvalue())
+        self.assertNotIn("sentTree", receipt)
+        self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
 
     # Fixed: the 8 s overflow wait is the behavior under test, and both Macs stay busy past it.
     @patch.object(remote, "OVERFLOW_TIMEOUT", 8)
