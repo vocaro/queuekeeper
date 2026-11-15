@@ -3306,7 +3306,10 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     nothing, it is asked again within Offer.reprobe()'s seconds instead. Each of this Mac's waits that ends unadmitted is logged
     as withdrawn, as a declined offer is there. All kinds keep their arrival across local waits
     (resources.Place) and remote retries (elapsed age in the dispatch plan). A retained place holds
-    later work back only for HEAVY_PLACE_SECONDS after its last local attempt (#360). With once, as
+    later work back only for HEAVY_PLACE_SECONDS after its last local attempt (#360), so during each offer
+    the place is kept holding while the lane's record says that the second Mac has not started it
+    (Place.kept, lane_wait.taken_there): an offer can take longer than that, and a later whole-host gate
+    then took the slots a waiting one had arrived first for (vocaro/queuekeeper#160). With once, as
     for --if-free, each Mac is asked once. refused holds why each of this Mac's waits ended unadmitted,
     the last of which the give-up line says (vocaro-engineering#270)."""
     deadline, window, said = time.monotonic() + timeout, FREE_WAIT, None
@@ -3332,7 +3335,9 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
                   f"{OVERFLOW_WAIT_MAX}s or sooner: {offered.busy}, and this Mac has not admitted it",
                   file=sys.stderr, flush=True)
             said = offered.busy
-        status = offered.again()
+        place = getattr(offered, "place", None)
+        with place.kept(lambda: lane_wait.taken_there() is False) if place is not None else contextlib.nullcontext():
+            status = offered.again()
         if status is not None: return status
         window = min(max(2 * window, OVERFLOW_WAIT), OVERFLOW_WAIT_MAX)
 

@@ -225,6 +225,43 @@ class Waits(Named):
         self.assertEqual(self.said(), "whichever Mac admits it first, the second Mac asked again: the second Mac is busy: "
                                       "fake did not take it")
 
+    def test_an_offer_keeps_the_place_until_the_second_mac_starts_the_lane(self):
+        """vocaro/queuekeeper#160: while the lane is offered to the second Mac, its place in this Mac's queue is kept
+        holding (resources.Place.kept) for as long as the lane's record says that the second Mac has not started it:
+        through the offer and the second Mac's own wait, and no longer once its admission there is relayed."""
+        self.assertIsNone(lane_wait.taken_there())
+        offered, keeping, unplaced = self.offer(), [], []
+        class Place:
+            @contextlib.contextmanager
+            def kept(place, asked):
+                keeping.append(asked)
+                yield
+                keeping.append(None)
+        def send(host, sent):
+            unplaced.append(keeping[-1]())
+            lane_wait.relayed(json.dumps({"kind": lane_wait.ADMISSION, "reason": "all 3 guaranteed slots are busy"}).encode(), host)
+            unplaced.append(keeping[-1]())
+            # Declined there, the wait's process gone: the lane is still nowhere.
+            lane_wait.relayed(b"null", host)
+            unplaced.append(keeping[-1]())
+            lane_wait.relayed(json.dumps({"kind": None, "admitted": True}).encode(), host)
+            unplaced.append(keeping[-1]())
+            return 0
+        offered.place, offered.send = Place(), send
+        with patch.object(remote, "reachable"), contextlib.redirect_stderr(StringIO()):
+            self.assertEqual(remote.overflow(offered, lambda seconds: None, timeout=3600), 0)
+        self.assertEqual(unplaced, [True, True, True, False])
+        self.assertEqual(lane_wait.taken_there(), True)
+        # Kept during the offer alone, and ended with it.
+        self.assertEqual(len(keeping), 2)
+        self.assertIsNone(keeping[-1])
+        # Admitted on this Mac, the lane is not on the second; a run that names no record cannot say.
+        lane_wait.running()
+        self.assertEqual(lane_wait.taken_there(), False)
+        with patch.dict(os.environ):
+            del os.environ[lane_wait.VARIABLE]
+            self.assertIsNone(lane_wait.taken_there())
+
     def test_overflow_says_a_second_mac_it_cannot_reach(self):
         offered = self.offer()
         offered.away = "fake cannot be reached: it is asleep"

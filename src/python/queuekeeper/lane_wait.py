@@ -147,6 +147,16 @@ def sent(host):
     if not (found and found.get("kind")): running(second_mac(host), admitted=False)
 
 
+def taken_there():
+    """Whether a second Mac has started this run's lane, as its record says once that Mac's admission is relayed
+    (relayed): True or False, or None when no record says, as for a run that names none (`qk admit`) or one whose
+    record cannot be read. A place in this Mac's queue is kept only while this is False (remote.overflow)."""
+    if not os.environ.get(VARIABLE): return None
+    found = read(os.environ[VARIABLE])
+    if found is None: return None
+    return found.get("kind") is None and found.get("admitted") is True and host_of(found.get("mac")) is not None
+
+
 def relayed(data, host):
     """What the lane's record on host now says, as its `W` frame carries it (offload_host.relay_wait): a wait, or
     nothing to wait for, in this Mac's record of the lane, named for the Mac it is on and by this Mac's clock."""

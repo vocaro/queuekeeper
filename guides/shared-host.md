@@ -278,8 +278,9 @@ This also applies to each independently admitted part of a self lane.
 A queued request holds no slots. Admission drops it when its process has ended or its PID has a
 different start time. A stop removes its record; a timed-out local attempt can retain its place
 until the overall caller finishes waiting, when the caller removes it. A retained place stops
-holding later work back once it has not asked within HEAVY_PLACE_SECONDS (180), while keeping
-its arrival for its next attempt. This freshness bound also applies to exclusive requests.
+holding later work back once HEAVY_PLACE_SECONDS (180) have passed since it last asked or its
+caller last said that the work still waits, while keeping its arrival for its next attempt. This
+freshness bound also applies to exclusive requests.
 
 A whole-host request queued ahead holds back less. Exclusive and whole-host requests behind it
 wait their turn, but other heavy work goes on in a slot beyond the guaranteed ones while the host
@@ -292,14 +293,28 @@ and the gate could wait out its 5,400 s
 ([vocaro-engineering#174](https://github.com/vocaro/vocaro-engineering/issues/174)). Where
 HEAVY_SLOTS_MAX equals HEAVY_SLOTS, or the host shows no spare capacity, the heavy work waits
 for the whole-host lane as it would for exclusive work. A whole-host request holds anything back
-only while its process keeps asking: one that last asked more than HEAVY_PLACE_SECONDS (180) ago
-holds nothing back, though it keeps its place. That is how `qk run` keeps a lane's
-place across its waits on this Mac while it also offers the lane to the second Mac
-([which Mac runs a lane](#which-mac-runs-a-lane)): the place stays between waits, so the lane
-does not rejoin behind requests that came meanwhile, and it holds nothing back once the offer has
-kept it away that long, as when the second Mac took the lane and runs it. It leaves the place once
-it no longer waits here, admitted or not. How long an offer takes, and so whether 180 s covers
-every gap between two waits, is unmeasured.
+only while its process keeps asking, or says that its work still waits: one that did neither in
+the last HEAVY_PLACE_SECONDS (180) holds nothing back, though it keeps its place. That is how
+`qk run` keeps a lane's place across its waits on this Mac while it also offers the lane to the
+second Mac ([which Mac runs a lane](#which-mac-runs-a-lane)): the place stays between waits, so
+the lane does not rejoin behind requests that came meanwhile. It leaves the place once it no
+longer waits here, admitted or not.
+
+An offer keeps the lane away from this Mac's queue for longer than 180 s: about 260 s of each
+380 s on 2026-11-15, between waits here of 120 s. So during each offer `qk run` says every 60 s,
+a third of HEAVY_PLACE_SECONDS, that the lane still waits, for as long as the lane's wait record
+shows that the second Mac has not started it (`resources.Place.kept`, `lane_wait.taken_there`).
+The place then holds later exclusive and whole-host requests back, and keeps the guaranteed slots,
+however long the offer takes, and the lane is admitted here in its turn when it next asks. It
+stops saying so once the second Mac's admission of the lane is relayed, so a lane the second Mac
+took and runs stops holding this Mac back within 180 s, as before. A place whose process has
+ended is dropped whatever it said. Until this rule, the place of a gate that was away held
+nothing when the slots were freed, and a gate that arrived later and happened to be asking took
+them: twice in 45 minutes on 2026-11-15, one gate admitted 33 minutes after a gate that arrived
+42 minutes behind it ([vocaro/queuekeeper#160](https://github.com/vocaro/queuekeeper/issues/160)).
+Slots freed during an offer stay free until the lane returns from it, since the offer is not
+cut short. A `qk admit` command has no wait record, so nothing says whether the second Mac
+started it, and its place is not kept during an offer: it holds for 180 s after it last asked.
 
 Nested work reuses its inherited admission. Admission exports `QUEUEKEEPER_RESOURCE_TOKEN` and keeps
 its lock descriptors open across exec. A nested `qk run`, resource CLI call or project gate
@@ -3060,7 +3075,9 @@ Three kinds of marker coexist, and they are reclaimed differently:
   rather than reusing that admission.
 - The exclusive queue (`exclusive-queue.json` in the slot directory, changed only under its
   `coordination.lock`) records each waiting request's PID, process start, label, `queuedAt` arrival
-  and `seen` last attempt. Ordinary records carry `ordinary`; whole-host records carry `wholeHost`. A
+  and `seen` last attempt. While its caller says during an offer that the work still waits, `seen`
+  is when it last said so and `asked` the last attempt, which `qk admissions now` gives as when the
+  place last asked; the next attempt removes `asked`. Ordinary records carry `ordinary`; whole-host records carry `wholeHost`. A
   queued request holds no slot and has started nothing, so admission drops one whose process has
   ended or whose PID has another start time, and a request that times out or is stopped takes
   itself out, unless the overall caller keeps its place across local waits; one whose `seen` is

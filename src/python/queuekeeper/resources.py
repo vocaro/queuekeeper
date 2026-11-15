@@ -698,6 +698,8 @@ def publish_guard(path, state):
 PLACE_SECONDS = 180
 # All waiting requests, in the slot directory, changed only under its coordination lock.
 QUEUE = "exclusive-queue.json"
+# Seconds a caller waits for its place's keeper to end (Place.kept).
+KEEPER_JOIN = 5
 
 
 def queued_requests(queue):
@@ -804,12 +806,55 @@ class Place:
 
     An admission given a place leaves it there when its wait times out; its caller calls leave() once it no longer
     waits for this Mac, admitted or not, and admission removes it when admitted. While the process is away, between
-    waits, its place holds nothing back once HEAVY_PLACE_SECONDS have passed since it last asked, and a place whose
-    process has ended is dropped, as every queued request is."""
+    waits, its place holds nothing back once HEAVY_PLACE_SECONDS have passed since it last asked or last said that
+    its work still waits (kept), and a place whose process has ended is dropped, as every queued request is."""
 
     def __init__(self):
         self.identity = uuid.uuid4().hex
         self.started = request_started()
+
+    def still_waiting(self):
+        """Say that the work still waits for this Mac though its process is not asking now: the place goes on holding
+        later work back as if it had just asked. `asked` keeps when it last did, for `qk admissions now`; its next
+        attempt removes it. A place no longer in the queue, admitted or left, is not put back."""
+        directory = slot_directory()
+        if not (directory / QUEUE).exists():
+            return
+        with (directory / "coordination.lock").open("a+") as bridge:
+            fcntl.flock(bridge, fcntl.LOCK_EX)
+            waiters = queued_requests(directory / QUEUE)
+            mine = next((waiter for waiter in waiters if waiter["identity"] == self.identity), None)
+            if mine is not None:
+                if "seen" in mine: mine.setdefault("asked", mine["seen"])
+                mine["seen"] = time.time()
+                record_queue(directory / QUEUE, waiters)
+
+    @contextlib.contextmanager
+    def kept(self, unplaced, every=None):
+        """Keep the place holding later work back while its process is away from this Mac's queue and unplaced()
+        says that no Mac has taken the work: from a thread, every third of HEAVY_PLACE_SECONDS, it asks unplaced
+        and then says the work still waits (still_waiting), until the block ends. It stops for good the first time
+        unplaced does not say True, so that work the second Mac took and runs stops holding this Mac back
+        HEAVY_PLACE_SECONDS later, as does work whose placement cannot be told. Without this an offer to the second
+        Mac that kept a whole-host gate away for longer than HEAVY_PLACE_SECONDS let a later gate take the slots as
+        they were freed (vocaro/queuekeeper#160). Nothing here may stop the work: a failure ends the keeping."""
+        if every is None:
+            try: every = float(os.environ.get("HEAVY_PLACE_SECONDS", str(PLACE_SECONDS))) / 3
+            except ValueError: every = PLACE_SECONDS / 3
+        done = threading.Event()
+
+        def keep():
+            with contextlib.suppress(Exception):
+                while not done.wait(every):
+                    if unplaced() is not True: return
+                    self.still_waiting()
+        keeper = threading.Thread(target=keep, daemon=True)
+        if every > 0: keeper.start()
+        try: yield
+        finally:
+            done.set()
+            # A keeper still waiting for the coordination lock changes nothing once the place has left the queue.
+            if keeper.is_alive(): keeper.join(KEEPER_JOIN)
 
     def leave(self):
         directory = slot_directory()
@@ -1077,7 +1122,7 @@ class Admission:
     def _holds(self, waiter):
         """Whether an earlier request holds this one back. Ordinary requests hold later exclusive and
         whole-host requests back, while ordinary requests can share. A retained place stops holding
-        anything back once it has not asked within HEAVY_PLACE_SECONDS."""
+        anything back once it has neither asked nor been said to wait still (Place.kept) within HEAVY_PLACE_SECONDS."""
         if waiter.get("ordinary") and not (self.exclusive or self.whole_host):
             return False
         seen = waiter.get("seen")
@@ -1287,6 +1332,8 @@ class Admission:
                               if waiter.get("queuedAt", float("-inf")) > self.ordered), len(waiters))
                 waiters.insert(index, mine)
             self.queued = True
+            # It asks now: what its caller said while it was away (Place.still_waiting) is over.
+            mine.pop("asked", None)
             mine["seen"] = time.time()
             self._record(waiters)
             state = self._guard()

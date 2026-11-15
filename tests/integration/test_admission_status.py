@@ -164,6 +164,17 @@ class HoldersTests(Namespace):
         self.assertEqual((found["Waiter"]["away"], found["Waiter"]["holdsBack"]), (True, False))
         self.assertEqual((found["Asking"]["reason"], found["Asking"]["queued"]), ("all 2 guaranteed slots are busy", False))
 
+    def test_a_place_said_to_wait_still_reads_as_away_and_holding_since_it_last_asked(self):
+        """vocaro/queuekeeper#160: a place its caller keeps holding during an offer (resources.Place.still_waiting) is
+        still a place kept while away: `seen` is when the caller last said so, `asked` when the request last asked."""
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory / resources.QUEUE).write_text(json.dumps({"vocaroEngineering": 1, "waiters": [
+            {"identity": "w", "pid": os.getpid(), "start": self.start, "label": "Kept gate", "queuedAt": time.time() - 900,
+             "seen": time.time() - 5, "asked": time.time() - 250, "wholeHost": True}]}))
+        waiter, = self.read()["waiters"]
+        self.assertEqual((waiter["away"], waiter["holdsBack"]), (True, True))
+        self.assertAlmostEqual(waiter["lastAskedSeconds"], 250, delta=5)
+
     def observation(self, identity, name, **changes):
         """A live progress observation a holder's leaf publishes under its admission (lane_progress.destinations)."""
         folder = Path(str(self.guard) + ".progress") / identity

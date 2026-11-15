@@ -1323,6 +1323,129 @@ class ResourceTests(unittest.TestCase):
                     self.assertRaisesRegex(TimeoutError, "kept for a whole-host lane queued ahead of it: away gate"):
                 with resources.Admission("tests", timeout=0): self.fail("admitted")
 
+    def test_a_whole_host_place_said_to_wait_still_is_admitted_before_a_later_one_when_the_slots_free(self):
+        """vocaro/queuekeeper#160: a gate offered to both Macs was away from this Mac's queue for about 260 s of each
+        cycle, longer than HEAVY_PLACE_SECONDS, so its place held nothing back when the slots were freed and a gate
+        that arrived 42 minutes after it was admitted. A place whose caller says that its work still waits
+        (Place.still_waiting, as Place.kept does every 60 s) holds the later gate back however long it is away."""
+        clock = [time.time()]
+        def gate(label, place, slots=None):
+            asked = resources.Admission(label, whole_host=True, place=place, timeout=0)
+            if slots is None:
+                with self.assertRaises(TimeoutError) as refused:
+                    with asked: self.fail("admitted")
+                return str(refused.exception)
+            with asked as admitted: self.assertEqual([slot for slot, _fd in admitted.descriptors], slots)
+        for said in (False, True):
+            with self.subTest(said=said), patch.object(resources.time, "time", side_effect=lambda: clock[0]), \
+                    contextlib.redirect_stderr(StringIO()):
+                older, later = resources.Place(), resources.Place()
+                older.started, later.started = clock[0] - 2400, clock[0] - 60
+                directory = resources.slot_directory()
+                directory.mkdir(parents=True, exist_ok=True)
+                queue = directory / resources.QUEUE
+                # A gate runs here, holding both guaranteed slots.
+                running = [os.fdopen(resources.take_slot(directory, 2)[1]) for _slot in range(2)]
+                for held in running: self.addCleanup(held.close)
+                self.assertIn("a whole-host lane needs every guaranteed slot", gate("older gate", older))
+                asked = clock[0]
+                # It offers itself to the second Mac, which declines it 260 s later, saying meanwhile that it waits.
+                for _minute in range(4):
+                    clock[0] += 60
+                    if said: older.still_waiting()
+                clock[0] += 10
+                # The slots are freed, and the later gate is the one asking.
+                for held in running: held.close()
+                if not said:
+                    # The negative control, and the fault: nothing said that the older gate still waited.
+                    self.assertEqual(json.loads(queue.read_text())["waiters"][0]["seen"], asked)
+                    gate("later gate", later, slots=[0, 1])
+                else:
+                    self.assertEqual([(waiter["label"], waiter["seen"], waiter["asked"])
+                                      for waiter in json.loads(queue.read_text())["waiters"]],
+                                     [("older gate", asked + 240, asked)])
+                    self.assertIn("it waits behind a whole-host lane queued ahead of it: older gate", gate("later gate", later))
+                    clock[0] += 10
+                    # It returns from the offer and asks: admitted, ahead of the later gate, which keeps its place.
+                    with resources.Admission("older gate", whole_host=True, place=older, timeout=0) as admitted:
+                        self.assertEqual([slot for slot, _fd in admitted.descriptors], [0, 1])
+                        self.assertEqual([waiter["label"] for waiter in json.loads(queue.read_text())["waiters"]],
+                                         ["later gate"])
+                    gate("later gate", later, slots=[0, 1])
+                for place in (older, later): place.leave()
+                self.assertFalse(queue.exists())
+
+    def test_an_attempt_records_that_a_place_said_to_wait_still_asks_again(self):
+        """`asked` says when a place said to wait still last asked, for `qk admissions now`; its next attempt asks
+        now, and removes it."""
+        place = resources.Place()
+        directory = resources.slot_directory()
+        directory.mkdir(parents=True)
+        running = os.fdopen(resources.take_slot(directory, 1)[1])
+        self.addCleanup(running.close)
+        with contextlib.redirect_stderr(StringIO()):
+            queue = directory / resources.QUEUE
+            for _attempt in range(2):
+                with self.assertRaises(TimeoutError):
+                    with resources.Admission("older gate", whole_host=True, place=place, timeout=0): self.fail("admitted")
+                found, = json.loads(queue.read_text())["waiters"]
+                self.assertNotIn("asked", found)
+                place.still_waiting()
+                kept, = json.loads(queue.read_text())["waiters"]
+                self.assertEqual(kept["asked"], found["seen"])
+                # Said again, it still names the attempt, not the last saying.
+                place.still_waiting()
+                self.assertEqual(json.loads(queue.read_text())["waiters"][0]["asked"], found["seen"])
+        place.leave()
+
+    def test_a_place_is_kept_only_while_its_work_is_said_to_be_unplaced(self):
+        """Place.kept says that the work still waits only while its caller says no Mac has taken it (#160). Once the
+        second Mac has taken the lane, or its placement cannot be told, nothing more is said, so the place stops holding
+        later work back HEAVY_PLACE_SECONDS after it last asked, as before, and keeps its arrival. A place whose
+        process has ended is dropped whatever it said."""
+        place = resources.Place()
+        away = time.time() - resources.PLACE_SECONDS - 80
+        stale = {**self.waiter("away gate", wholeHost=True, seen=away), "identity": place.identity}
+        with contextlib.redirect_stderr(StringIO()):
+            # Unplaced: said at once here, every 60 s by default.
+            queue, said, real = self.queue(stale), threading.Event(), place.still_waiting
+            with patch.object(place, "still_waiting", side_effect=lambda: (real(), said.set())), \
+                    place.kept(lambda: True, every=0.001):
+                self.assertTrue(said.wait(30))
+            found, = json.loads(queue.read_text())["waiters"]
+            self.assertEqual(found["asked"], away)
+            self.assertLess(time.time() - found["seen"], resources.PLACE_SECONDS)
+            with self.assertRaisesRegex(TimeoutError, "behind a whole-host lane queued ahead of it: away gate"):
+                with resources.Admission("later gate", whole_host=True, timeout=0): self.fail("admitted")
+            # Taken by the second Mac, or unknown: the keeper asks once and ends, having said nothing.
+            for answer in (False, None):
+                with self.subTest(unplaced=answer):
+                    self.queue(stale)
+                    asked = threading.Event()
+                    with patch.object(place, "still_waiting") as told:
+                        with place.kept(lambda: (asked.set(), answer)[1], every=0.001):
+                            self.assertTrue(asked.wait(30))
+                        told.assert_not_called()
+                    with resources.Admission("later gate", whole_host=True, timeout=0) as admitted:
+                        self.assertEqual([slot for slot, _fd in admitted.descriptors], [0, 1])
+                    self.assertEqual(json.loads(queue.read_text())["waiters"], [stale])
+            # Its process ended while it was said to wait: dropped, and what a keeper says later puts nothing back.
+            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            dead = {**stale, "pid": process.pid, "start": resources.process_start(process.pid), "seen": time.time(),
+                    "asked": away}
+            process.kill()
+            process.wait()
+            self.queue(dead)
+            with resources.Admission("later gate", whole_host=True, timeout=0) as admitted:
+                self.assertEqual([slot for slot, _fd in admitted.descriptors], [0, 1])
+            self.assertFalse(queue.exists())
+            place.still_waiting()
+            self.assertFalse(queue.exists())
+            # Nor does it put back a place that left the queue, admitted or not.
+            self.queue(self.waiter("another gate", wholeHost=True, seen=away))
+            place.still_waiting()
+            self.assertEqual([waiter["label"] for waiter in json.loads(queue.read_text())["waiters"]], ["another gate"])
+
     def test_the_capacity_reading_keeps_the_guaranteed_slots_for_a_whole_host_request_as_admission_does(self):
         """offload_host.capacity, which queuekeeper reads before it offers work to a Mac (remote.spare), applies admission's
         rule for a queued whole-host request (vocaro-engineering#186): one whose process runs and asked within

@@ -2110,7 +2110,10 @@ def waiter_reading(waiter, record, kind, position, process, at, hold):
     record = record or {}
     queued_at, sampled, waited = number(waiter.get("queuedAt") or record.get("queuedAt")), number(record.get("sampledAt")), \
         number(record.get("waited"))
-    seen = number(waiter.get("seen"))
+    # While its caller says it still waits (resources.Place.still_waiting), `seen` is when it last said so and
+    # `asked` when the request last asked.
+    seen, kept = number(waiter.get("seen")), number(waiter.get("asked")) is not None
+    asked = number(waiter.get("asked")) if kept else seen
     if queued_at is not None: total = max(0.0, at - queued_at)
     elif waited is not None and sampled is not None: total = max(0.0, waited + at - sampled)
     else: total = None
@@ -2123,8 +2126,8 @@ def waiter_reading(waiter, record, kind, position, process, at, hold):
             "stale": sampled is not None and at - sampled > NOW_STALE,
             # A queued request with no record that asked lately is asking here, under a toolkit that writes no record or
             # before its first refusal; one that has not is away, its place kept.
-            "away": not record and (seen is None or at - seen > NOW_STALE),
-            "lastAskedSeconds": None if seen is None else round(max(0.0, at - seen), 1),
+            "away": not record and (kept or seen is None or at - seen > NOW_STALE),
+            "lastAskedSeconds": None if asked is None else round(max(0.0, at - asked), 1),
             "holdsBack": None if record or seen is None else at - seen < hold}
 
 
