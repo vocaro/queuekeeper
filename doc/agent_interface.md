@@ -54,8 +54,10 @@ An unknown ID exits 2. Use `queue wait` when the exit status must reflect the la
 Entry results name the submitted `commit`, `landedAs`, failure details, test counts when known,
 and the exact run's artifacts. An artifact's `location` says where its path can be read;
 `producedOn` identifies a host that produced a returned file. Missing or pruned artifacts remain
-listed with `available: false`. Diagnostic excerpts are bounded; `logTruncated` says when they
-omit earlier bytes. A result is a summary, not a replacement for the complete log.
+listed with `available: false`. `tests` counts a whole run or is null: a result reads each log
+whole up to 64 MiB, and of a longer log reads only the end, which it does not count.
+`logTruncated` then says so, and `failure.testsTruncated` says that `failure.tests` names only
+the failing tests found at that end. A result is a summary, not a replacement for the complete log.
 
 The `flakes` array preserves each recorded flaky test's name, commit, gate and rerun log paths,
 Mac, batch outcome, and tracker link (`issue`) or `trackerError`. Its `reruns` object gives

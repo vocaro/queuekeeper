@@ -12,7 +12,10 @@ import sys
 from . import lane_report
 
 VERSION = 1
-LOG_BYTES = 1 << 20
+# The most of a log a result reads. The largest queue log on the owner's Macs on 2026-11-15 was 5 MB, so
+# a result reads each such log whole: the count in the last 1 MiB of a 4.4 MB gate log was once reported
+# as the run's (vocaro/queuekeeper#163).
+LOG_BYTES = 64 << 20
 SHOWN = 20
 WAITING = {"queued", "testing", "passed"}
 
@@ -85,8 +88,8 @@ def entry_result(queue, entry):
     held = recovery.read_hold(queue.hold_file, queue.held()) if pending else None
     artifacts, gates = entry_artifacts(queue, entry)
     texts, truncated = [], False
-    # These optional diagnostic excerpts are not the full log. The cursor-based logs command
-    # reads the complete file; logTruncated explicitly identifies incomplete diagnostics here.
+    # A log longer than LOG_BYTES is read only at its end, and logTruncated says so. The cursor-based
+    # logs command reads the complete file.
     diagnostic_logs = [item for item in artifacts if item["kind"] == "run-log"]
     primary = [item for item in artifacts if item.get("primary")]
     # Earlier failed/bisected rounds are history, not evidence about the final attempt. A
@@ -96,12 +99,14 @@ def entry_result(queue, entry):
     for item in diagnostic_logs:
         if pending: continue
         text, clipped = diagnostic_excerpt(item["path"])
-        texts.append(text)
+        texts.append((text, clipped))
         truncated |= clipped
     # Prefer the exact dispatch's complete test output to the queue's potentially repeated summary.
-    counts = next((found for text in texts if (found := lane_report.counts(text)) is not None), None)
+    # Only a log read whole is counted: the end of a log counts part of a run (vocaro/queuekeeper#163).
+    counts = next((found for text, clipped in texts
+                   if not clipped and (found := lane_report.counts(text)) is not None), None)
     failures = {}
-    for text in texts:
+    for text, _ in texts:
         for name, place in lane_report.failing(text):
             if name not in failures or place: failures[name] = place
     failure = None
@@ -109,7 +114,7 @@ def entry_result(queue, entry):
         failure = {"category": "conflict" if state == "conflict" else "gate-failed",
                    "message": entry.get("why"), "tests": [
                        {"name": name, "location": place} for name, place in list(failures.items())[:SHOWN]],
-                   "moreTests": max(0, len(failures) - SHOWN),
+                   "moreTests": max(0, len(failures) - SHOWN), "testsTruncated": truncated,
                    "excerpt": ((entry.get("failedDispatch") or {}).get("excerpt") or [])[:SHOWN]}
     return {"schemaVersion": VERSION, "project": str(queue.root),
             "id": entry["id"], "commit": entry.get("tip"),

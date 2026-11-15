@@ -96,11 +96,40 @@ class AgentResults(unittest.TestCase):
 
     def test_log_reads_are_bounded_and_report_truncation(self):
         log = self.root / "large.log"
+        self.enterContext(mock.patch.object(agent_results, "LOG_BYTES", 4096))
         log.write_bytes(b"x" * (agent_results.LOG_BYTES + 1))
         self.entry.update(state="failed", log=str(log))
         found = agent_results.lookup(self.queue, "old-entry")
         self.assertTrue(found["logTruncated"])
         self.assertEqual(len(agent_results.diagnostic_excerpt(log)[0]), agent_results.LOG_BYTES)
+
+    def test_tests_counted_before_the_last_mebibyte_of_a_log_are_in_the_count(self):
+        # vocaro/queuekeeper#163: a 4.4 MB gate log's record counted only the tests in its last 1 MiB.
+        log = self.root / "gate.log"
+        log.write_text("Ran 1010 tests in 1s\n\nOK (skipped=3)\n" + ("y" * 79 + "\n") * (1 << 14)
+                       + "Ran 4723 tests in 1s\n\nOK\n")
+        self.assertGreater(log.stat().st_size, 1 << 20)
+        self.entry["log"] = str(log)
+        found = agent_results.lookup(self.queue, "old-entry")
+        self.assertEqual(found["tests"], {"passed": 5730, "failed": 0, "skipped": 3, "unmeasured": 0, "ran": 5730})
+        self.assertFalse(found["logTruncated"])
+
+    def test_a_log_read_only_at_its_end_gives_no_count_and_says_its_failing_tests_are_partial(self):
+        early = "FAIL: test_early (test_example.Example.test_early)\n\nRan 7 tests in 1s\n\nFAILED (failures=1)\n"
+        late = "FAIL: test_late (test_example.Example.test_late)\n\nRan 2 tests in 1s\n\nFAILED (failures=1)\n"
+        log = self.root / "gate.log"
+        log.write_text(early + "x" * 4096 + "\n" + late)
+        self.entry.update(state="failed", log=str(log))
+        whole = agent_results.lookup(self.queue, "old-entry")
+        self.assertEqual(whole["tests"]["ran"], 9)
+        self.assertFalse(whole["failure"]["testsTruncated"])
+        self.assertEqual(len(whole["failure"]["tests"]), 2)
+        self.enterContext(mock.patch.object(agent_results, "LOG_BYTES", 4096))
+        found = agent_results.lookup(self.queue, "old-entry")
+        self.assertTrue(found["logTruncated"])
+        self.assertIsNone(found["tests"])
+        self.assertTrue(found["failure"]["testsTruncated"])
+        self.assertEqual([test["name"] for test in found["failure"]["tests"]], ["test_example.Example.test_late"])
 
     def test_final_failure_diagnostics_exclude_previous_failed_rounds(self):
         old = self.root / "old.log"
