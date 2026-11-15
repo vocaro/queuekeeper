@@ -533,6 +533,32 @@ class DeviceRecordTests(unittest.TestCase):
                       f"'Pool iPhone 1' --by SESSION --revision {entry['revision']} --verified 'WHAT YOU CHECKED'", output)
         self.assertEqual(self.path.read_bytes(), before, "status changes nothing")
 
+    def test_a_recovery_with_a_host_runs_in_that_macs_login_shell_and_never_here(self):
+        # As `qk admissions recover --host` does (vocaro/queuekeeper#145): a command given to ssh itself finds the
+        # system's python3, which is too old to start qk (vocaro/queuekeeper#167).
+        from queuekeeper import remote
+        entry = self.reserve("Pool iPhone 1")
+        before = self.path.read_bytes()
+        arguments = ("recover", "--host", "build-host", "Pool iPhone 1", "--by", "session-b", "--revision",
+                     str(entry["revision"]), "--verified", "its simulator; is shut down")
+        for status in (0, 2):
+            with self.subTest(status=status), patch.object(remote.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], status, stdout="the entry there\n", stderr="devices: said there\n")) as run:
+                self.assertEqual(self.cli(*arguments), (status, "the entry there\n", "devices: said there\n"))
+                command = run.call_args.args[0]
+                self.assertEqual(command[-2], "build-host")
+                self.assertEqual(command[-1], remote.login(
+                    'python3 "$HOME"/Development/queuekeeper/bin/qk --project "$HOME"/Development/queuekeeper devices '
+                    f"recover 'Pool iPhone 1' --by session-b --revision {entry['revision']} "
+                    "--verified 'its simulator; is shut down'"))
+                self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        for failure in (OSError("no ssh"), subprocess.TimeoutExpired("ssh", 180)):
+            with self.subTest(failure=failure), patch.object(remote, "ssh", side_effect=failure):
+                code, _output, error = self.cli(*arguments)
+                self.assertEqual(code, 2)
+                self.assertIn("devices:", error)
+        self.assertEqual(self.path.read_bytes(), before, "nothing is recovered in this Mac's record")
+
     def test_status_does_not_name_a_live_holder_or_a_release_not_yet_due(self):
         start = process_start(os.getpid())
         self.held_by(os.getpid(), start, "2026-01-01T00:00:00+00:00")

@@ -3387,10 +3387,19 @@ def recover_admission(host, owner=None):
     """Run the remote checkout's ordinary recovery in its login shell, without assuming sshd's PATH.
     No owner lists only; an owner goes through exactly the same census and refusal checks as a local call.
     A timeout leaves the outcome unknown: callers should list again before deciding what to do next."""
-    launcher = '"$HOME"/' + shlex.quote(offload_host.TOOLKIT_CHECKOUT + "/bin/qk")
-    script = f"python3 {launcher} admissions recover"
-    if owner is not None: script += " " + shlex.quote(str(owner))
-    found = ssh(host, script, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=CENSUS_TIMEOUT)
+    return toolkit_qk(host, ["admissions", "recover", *([] if owner is None else [owner])])
+
+
+def toolkit_qk(host, arguments, *, project=False, timeout=CENSUS_TIMEOUT):
+    """Run host's own toolkit launcher with arguments in its login shell, print what it printed and return its
+    status. A command ssh starts finds only sshd's PATH, whose python3 is the system's, too old for the launcher:
+    on 2026-11-15 `ssh build-host 'python3 --version'` answered Python 3.9.6, and the login shell's PATH has the one
+    remote setup installed (vocaro/queuekeeper#145, #167). With project, the toolkit's checkout there is the
+    project, whose extensions add their commands, such as the Apple extension's `devices`."""
+    checkout = '"$HOME"/' + shlex.quote(offload_host.TOOLKIT_CHECKOUT)
+    script = " ".join([f"python3 {checkout}/bin/qk", *([f"--project {checkout}"] if project else []),
+                       *(shlex.quote(str(argument)) for argument in arguments)])
+    found = ssh(host, script, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
     if found.stdout: print(found.stdout, end="")
     if found.stderr: print(found.stderr, end="", file=sys.stderr)
     return found.returncode

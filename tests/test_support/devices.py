@@ -196,19 +196,27 @@ NO_TESTS = ("Test Suite 'Selected tests' passed at 2026-11-11 08:33:58.699.\n"
 SOME_TESTS = NO_TESTS.replace("Executed 0 tests", "Executed 3 tests")
 
 
-def printed_command_help(command):
-    """What a `qk devices` command that Queuekeeper printed says of itself: command as a reader pastes it, with
-    --help added so that it changes nothing, run by a shell in a folder that is no project, with a home whose
-    Development/queuekeeper is this checkout, a PATH of the system's tools and this Python, and no import path.
-    A printed command runs so or not at all: after the plugins left the core, `python3 -m queuekeeper_apple.devices`
-    found no such module on either Mac (vocaro/queuekeeper#167). ssh there is a stand-in that runs its words in
-    this Mac's shell, as ssh does in the other Mac's."""
+def run_printed(command):
+    """What becomes of a `qk devices` command that Queuekeeper printed, run as a reader pastes it: by a shell in a
+    folder that is no project, with a home whose Development/queuekeeper is this checkout, a PATH of the system's
+    tools and this Python, no import path, and an empty device record of its own. A printed command runs so or not
+    at all: after the plugins left the core, `python3 -m queuekeeper_apple.devices` found no such module on either
+    Mac (vocaro/queuekeeper#167).
+
+    ssh there is a stand-in for a second Mac that is this one: it runs the command it is given as sshd does, by a
+    shell whose PATH's first python3 is too old to start qk, as /usr/bin/python3 was on 2026-11-15, and only the
+    login shell, through the home's .zprofile, finds this Python. So a command handed to ssh as it stands fails
+    here as it does there."""
     with scratch() as folder:
         root = Path(folder)
-        for name in ("home/Development", "tools", "elsewhere"): (root / name).mkdir(parents=True)
+        for name in ("home/Development", "new", "old", "tools", "elsewhere"): (root / name).mkdir(parents=True)
         (root / "home/Development/queuekeeper").symlink_to(Path(__file__).resolve().parents[2])
-        (root / "tools/python3").symlink_to(sys.executable)
-        host_isolation.executable(root / "tools/ssh", '#!/bin/sh\nshift\nexec /bin/sh -c "$*"\n')
-        environment = host_isolation.reduced(HOME=str(root / "home"), PATH=f"{root / 'tools'}:/usr/bin:/bin")
-        return subprocess.run(["/bin/sh", "-c", f"{command} --help"], cwd=root / "elsewhere", env=environment,
+        (root / "home/.zprofile").write_text(f"export PATH={root / 'new'}:$PATH\n")
+        (root / "new/python3").symlink_to(sys.executable)
+        host_isolation.executable(root / "old/python3", "#!/bin/sh\necho 'python3: older than qk needs' >&2\nexit 2\n")
+        host_isolation.executable(root / "tools/ssh", "#!/bin/sh\nfor last; do :; done\n"
+                                  f'PATH={root / "old"}:/usr/bin:/bin SHELL=/bin/zsh exec /bin/sh -c "$last"\n')
+        environment = host_isolation.reduced({devices.OVERRIDE: str(root / "device-handoff.json")}, HOME=str(root / "home"),
+                                             PATH=f"{root / 'new'}:{root / 'tools'}:/usr/bin:/bin")
+        return subprocess.run(["/bin/sh", "-c", command], cwd=root / "elsewhere", env=environment,
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=stretched(120))

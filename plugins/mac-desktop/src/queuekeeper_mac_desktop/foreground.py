@@ -120,8 +120,9 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         if state in ("orphan", "uncertain"):
             raise reservations.Refused(f"the second Mac's {reservations.FOREGROUND} is {state}, held by {entry.get('ownerChatID')} "
                                   f"for {entry.get('purpose')}; it needs attended recovery first, on the second Mac: "
-                                  f"`{offload_host.recover_command(reservations.FOREGROUND, entry.get('revision'), 'WHAT')}` "
-                                  f"({GUIDE})")
+                                  f"`{offload_host.recover_command(reservations.FOREGROUND, entry.get('revision'), 'WHAT')}`, "
+                                  "or from another Mac the same with `--host` and the second Mac's SSH name after "
+                                  f"`recover`, never as a command given to ssh ({GUIDE})")
         holder, due = entry.get("ownerChatID"), entry.get("expectedReleaseBy")
         lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release {due}")
         now = time.monotonic()

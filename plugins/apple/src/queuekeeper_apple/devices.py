@@ -1017,6 +1017,21 @@ def _report(key, entry):
                       "condition": condition(entry) if entry else None, "entry": entry}, indent=2))
 
 
+def recover_there(args):
+    """`qk devices recover --host HOST`: the same recovery, with the same checks, in the record of the Mac with that
+    SSH name, run by its own toolkit checkout in its login shell (remote.toolkit_qk); what it printed and its status
+    come back unchanged. A connection that fails or times out leaves the outcome unknown, and nothing is recovered
+    here in its place: `devices show` there says what became of the entry (vocaro/queuekeeper#167)."""
+    from queuekeeper import remote
+    arguments = ["devices", "recover", args.key, "--by", args.by, "--revision", args.revision, "--verified", args.verified]
+    for option, value in (("--offload-unchecked", args.offload_unchecked), ("--build-host-unchecked", args.build_host_unchecked)):
+        if value is not None: arguments += [option, value]
+    try:
+        return remote.toolkit_qk(args.host, arguments, project=True, timeout=remote.SURVEY_TIMEOUT)
+    except subprocess.SubprocessError as error:
+        raise RuntimeError(f"{args.host} did not answer, so whether {args.key} was recovered there is not known: {error}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="qk devices",
                                      description="Read or change the shared device handoff record, or run a "
@@ -1073,6 +1088,8 @@ def main(argv=None):
     recover.add_argument("--by", required=True)
     recover.add_argument("--revision", type=int, required=True)
     recover.add_argument("--verified", required=True)
+    recover.add_argument("--host", metavar="HOST", help="recover the entry in this SSH host's record, using its "
+                         "login shell and ~/Development/queuekeeper/bin/qk; without it, in this Mac's")
     recover.add_argument("--offload-unchecked", metavar="REASON", help="the owner's reason to recover without "
                          "checking the second Mac the entry's run went to, such as that it is gone")
     # Its name until vocaro-engineering#58, which main refuses, naming the new one.
@@ -1131,6 +1148,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     said = lambda text: print(text, file=sys.stderr, flush=True)
     try:
+        if args.action == "recover" and args.host:
+            return recover_there(args)
         record = Record()
         if args.action == "path":
             print(record.path)

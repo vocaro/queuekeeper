@@ -22,7 +22,7 @@ from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import foreground, opened_apps
 import host_isolation
 from host_isolation import stretched
-from test_support.devices import printed_command_help
+from test_support.devices import run_printed
 from queuekeeper_apple.voiceover import state as voiceover_state
 
 
@@ -215,7 +215,8 @@ class SlotTests(unittest.TestCase):
                    f"mac-foreground --by SESSION --revision {entry['revision']} --verified WHAT")
         with self.assertRaisesRegex(devices.Refused, re.escape(f"`{command}`")) as refused:
             with self.slot(): self.fail("ran over an uncertain foreground")
-        ran = printed_command_help(str(refused.exception).partition("`")[2].partition("`")[0])
+        self.assertIn("or from another Mac the same with `--host`", str(refused.exception))
+        ran = run_printed(str(refused.exception).partition("`")[2].partition("`")[0] + " --help")
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertIn("usage: qk devices recover", ran.stdout)
 

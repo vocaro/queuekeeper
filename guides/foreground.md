@@ -316,7 +316,9 @@ may recover once ([waiting for the foreground](#waiting-for-the-foreground)). On
    mac-foreground` prints and the refusal names: `qk devices recover mac-foreground --by SESSION
    --revision N --verified "WHAT WAS CHECKED"`. The refusal gives the command in full, as `python3
    ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover …`, which runs
-   from any folder on the second Mac (vocaro/queuekeeper#167).
+   from any folder in a terminal on the second Mac; from another Mac, add `--host` and the second Mac's SSH
+   name after `recover`, which runs it in that Mac's login shell, where a command given to `ssh` itself
+   finds a `python3` too old to start `qk` (vocaro/queuekeeper#167).
 
 ## Apps a run opened
 

@@ -2447,7 +2447,12 @@ for one; its simulator is still under 2 hours old) and its exact `devices recove
 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover …`, which runs from any
 folder: Queuekeeper's own checkout is its project, so the command needs neither a project that uses the Apple
 extension nor an import path (vocaro/queuekeeper#167). For an entry in the second Mac's record that command
-runs there, as `ssh HOST '…'`, since run here it would read this Mac's record. `qk simulator-pool reap`, with or without `--dry-run`, and
+names it, as `… devices recover --host HOST …`, since run here without it the recovery would read this Mac's
+record. `--host` runs the same recovery, with the same checks, through that Mac's
+`~/Development/queuekeeper/bin/qk` in its login shell, as `qk admissions recover --host` does, and its output
+and exit status come back unchanged; the same words given to `ssh HOST '…'` find only sshd's PATH, whose
+`python3` is the system's and too old to start `qk`. If the connection fails or times out, read the entry
+there again before acting. `qk simulator-pool reap`, with or without `--dry-run`, and
 `qk doctor`'s `reaped` name every such entry; the reap before a dispatch or a run here names only those of
 simulators it just stopped. `devices status` names them too, and releases nothing. One not yet due that
 reap leaves (`its release is due …; reap did not release it: …`, a take's or one whose owner something

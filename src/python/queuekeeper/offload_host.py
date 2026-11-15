@@ -2836,10 +2836,14 @@ def recoverable(entries, table, early=False):
     return found
 
 
-def recover_command(key, revision, verified="'WHAT YOU CHECKED'"):
-    """The shell command that recovers the entry key at revision, on the Mac whose record holds it and from any
-    folder there (QK_DEVICES); its --by and --verified are the reader's to fill in."""
-    return f"{QK_DEVICES} recover {shlex.quote(key)} --by SESSION --revision {revision} --verified {verified}"
+def recover_command(key, revision, verified="'WHAT YOU CHECKED'", host=None):
+    """The shell command that recovers the entry key at revision, from any folder (QK_DEVICES), on the Mac whose
+    record holds it, or with host from another Mac, for the record of the Mac with that SSH name; its --by and
+    --verified are the reader's to fill in. --host has that Mac's login shell run it, as `qk admissions recover
+    --host` does: a command given to ssh itself finds the system's python3, which is too old to start qk
+    (vocaro/queuekeeper#167)."""
+    there = f"--host {shlex.quote(host)} " if host else ""
+    return f"{QK_DEVICES} recover {there}{shlex.quote(key)} --by SESSION --revision {revision} --verified {verified}"
 
 
 def passed(due):
@@ -2850,11 +2854,10 @@ def passed(due):
 
 def recoverable_line(item, host=None):
     """What is said of one entry recoverable found and reap left, with why it left it when it says. For an
-    entry in another Mac's record, host, the command runs there, through its toolkit checkout, since a recovery
-    here would read this Mac's record and refuse its revision (vocaro-engineering#156)."""
-    command = item["command"]
-    if host:
-        command = f"ssh {shlex.quote(host)} {shlex.quote(command)}"
+    entry in another Mac's record, host, the command names it with --host and so runs there, through its toolkit checkout
+    (recover_command), since a recovery here would read this Mac's record and refuse its revision
+    (vocaro-engineering#156)."""
+    command = recover_command(item["key"], item.get("revision", 0), host=host) if host else item["command"]
     left = f"; reap did not release it: {item['hold']}" if item.get("hold") else ""
     return (f"{item['key']} stays held for owner {item['owner']}, though its process "
             f"{', '.join(map(str, item['pids']))} is gone and its release "

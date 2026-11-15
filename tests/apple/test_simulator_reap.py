@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import cli, offload_host, remote, resources
 from queuekeeper_apple import devices
 import host_isolation
-from test_support.devices import printed_command_help
+from test_support.devices import run_printed
 from queuekeeper_apple.simulators import pool as simulator_pool
 
 UDID = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
@@ -163,7 +163,7 @@ class ReapTests(unittest.TestCase):
         if hold: self.assertRegex(line, "reap did not release it: .*" + hold)
         self.assertIn(f"recovers it: {command}", line)
         there = next(line for line in remote.reap_lines("build-host", report) if "stays held" in line)
-        self.assertIn("recovers it: ssh build-host " + shlex.quote(command), there)
+        self.assertIn("recovers it: " + command.replace(" recover ", " recover --host build-host "), there)
         return line, there
 
     def assertReleased(self, key=NAME, condition="held", pids=(HOLDER,)):
@@ -349,13 +349,21 @@ class ReapTests(unittest.TestCase):
         before = self.record.read_bytes()
         named = self.assertNamed(self.reap(), hold="simctl did not list its devices")
         self.assertEqual(self.record.read_bytes(), before)
-        # Each command runs as printed, here and through ssh, where no import path names the plugins: on 2026-11-15
-        # neither Mac found the module the line named, and four reservations had no recovery (vocaro/queuekeeper#167).
-        for printed in named:
-            with self.subTest(printed=printed):
-                ran = printed_command_help(printed.partition("recovers it: ")[2])
-                self.assertEqual(ran.returncode, 0, ran.stderr)
-                self.assertIn("usage: qk devices recover", ran.stdout)
+        # Each command runs as printed, where no import path names the plugins: on 2026-11-15 neither Mac found the
+        # module the line named, and four reservations had no recovery (vocaro/queuekeeper#167). Here, its --help
+        # form; for the second Mac, the command itself, which reaches that Mac's record through its login shell,
+        # since the python3 a command given to ssh finds is too old, and is refused there for an entry it lacks.
+        here, there = (printed.partition("recovers it: ")[2] for printed in named)
+        ran = run_printed(f"{here} --help")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertIn("usage: qk devices recover", ran.stdout)
+        ran = run_printed(there)
+        self.assertEqual(ran.returncode, 2, ran.stdout + ran.stderr)
+        self.assertIn(f"devices: {NAME} is at revision 0, not 7; read it again. Nothing was changed", ran.stderr)
+        # The same words handed to ssh, as the line gave them before, do not start there.
+        ran = run_printed(f"ssh build-host {shlex.quote(here)}")
+        self.assertIn("older than qk needs", ran.stderr)
+        self.assertNotIn("read it again", ran.stderr)
 
     def test_a_reap_with_a_problem_or_no_pool_releases_nothing(self):
         self.states[UDID] = "Shutdown"
