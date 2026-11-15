@@ -251,6 +251,12 @@ an agent cannot fix the cause, such as a refused SSH key. With the
 [notify feature](visibility.md#the-notify-feature) on, the owner is told of such a hold when it
 happens.
 
+A run loads each folder beside the project that its extensions load from at one commit, the folder's
+`origin/main`, pinned when the run starts, and not as the shared checkout stands. To test a change to
+such a folder before it lands, run `qk run --sibling FOLDER=WHERE LANE` with a commit or your worktree's
+path ([Extension folders beside a project](../guides/shared-host.md#extension-folders-beside-a-project)).
+The merge queue takes no such choice: land the folder's change first.
+
 A lane in which Queuekeeper itself could not start holds the queue at once, for a session, with every
 entry waiting and none sent back: `qk run` exited 70 and left no receipt of the lane, so no commit
 was tested. The reason quotes the error, names the Mac, and says to bring Queuekeeper and the folders

@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import extensions as hooks
+from . import extensions as hooks, pins
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
 # The extensions a project gets when its queuekeeper.json names none, and that a command with no project loads.
@@ -39,21 +39,32 @@ def extensions(declared):
 def extensions_of(root, base=None):
     """What the project at root switches on, as (module, folder or None) pairs: its queuekeeper.json's extensions,
     or EXTENSIONS when it names none or there is no readable project. A folder is resolved against base, the
-    project's main checkout when root is a linked worktree of it, else against root."""
+    project's main checkout when root is a linked worktree of it, else against root; but a folder beside the project
+    that the run this process belongs to pinned (pins.held) is that run's checkout of it, so that every command of
+    a run loads what the run started with (vocaro-engineering#497). A pin set that is not what it says is
+    pins.Unpinned."""
     try: declared = extensions(json.loads((Path(root) / FILE).read_text()).get("extensions", list(EXTENSIONS)))
     except (OSError, ValueError, AttributeError): declared = list(EXTENSIONS)
-    return [(entry["module"], str((Path(base or root) / entry["path"]).resolve()) if entry.get("path") else None)
+    pinned = pins.held()
+    pins.verify({name: pinned[name] for name in sibling_folders(root) if name in pinned} if pinned else None)
+    return [(entry["module"], (pins.folder(entry["path"], pinned) or str((Path(base or root) / entry["path"]).resolve()))
+             if entry.get("path") else None)
             if isinstance(entry, dict) else (entry, None) for entry in declared]
 
 
 def sibling_folders(root):
     """The folders beside the project at root that its extensions load from: NAME for each folder "../NAME/...".
-    The second Mac is not sent them; it links its own checkout of each beside a dispatched checkout
-    (offload_host.link_siblings)."""
-    try: declared = extensions(json.loads((Path(root) / FILE).read_text()).get("extensions", []))
+    A run pins each at a commit (pins), and the second Mac is not sent them: it takes that commit from its own
+    checkout of each (offload_host.place_siblings)."""
+    try: return siblings_of(json.loads((Path(root) / FILE).read_text()).get("extensions", []))
     except (OSError, ValueError, AttributeError): return []
+
+
+def siblings_of(declared):
+    """sibling_folders for a configuration's extensions as it declares them, such as main's, which the merge queue
+    reads from the commit. A ValueError says they are not a list of extensions."""
     names = []
-    for entry in declared:
+    for entry in extensions(declared):
         parts = Path(entry.get("path") or "").parts if isinstance(entry, dict) else ()
         if len(parts) > 1 and parts[0] == ".." and parts[1] not in ("..", ".") and parts[1] not in names:
             names.append(parts[1])

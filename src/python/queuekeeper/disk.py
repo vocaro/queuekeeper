@@ -37,7 +37,8 @@ from .config import TOOLKIT_ROOT
 CANDIDATE, OWNER, KEPT = "candidate", "owner", "kept"
 STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
 # The categories, in the order a report lists them and --delete removes them. An extension adds its own (extend).
-CATEGORIES = {"kept-results": "Lane results kept by commit beside the receipts (pruned by their rule)"}
+CATEGORIES = {"kept-results": "Lane results kept by commit beside the receipts (pruned by their rule)",
+              "pinned-checkouts": "Checkouts runs are pinned to, of the folders projects' extensions load from"}
 # --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
 # of 2026-11-03 from simulators and runtimes to every candidate): a candidate is what the rules prove nobody
 # owns, so it needs no second judgment; what only the owner can judge is an owner item, never removed.
@@ -365,6 +366,39 @@ def kept_results(host, usage, sizes):
     return items
 
 
+def pinned_checkouts(host, usage, sizes):
+    """This Mac's checkouts of the folders projects' extensions load from, one for each commit a run pinned
+    (offload_host.pinned_checkout), counted, with those no run has used for offload_host.PIN_DAYS days and no process
+    uses as one candidate, which `qk disk --prune-pins` removes."""
+    from . import offload_host  # which imports nothing of the toolkit
+    root = offload_host.pins_root()
+    found = [path for path in sorted(root.glob("*/*")) if path.is_dir() and not path.is_symlink()] if root.is_dir() else []
+    if not found: return []
+    stale = [checkout for checkout, _, _ in offload_host.stale_pins(now=host.now) if not usage.of(checkout)]
+    counted = f"{len(found)} checkout{'s' if len(found) != 1 else ''} of {len({path.parent for path in found})} folder(s)"
+    rule = f"one stays until no run has used it for {offload_host.PIN_DAYS} days"
+    idle = host.now - max(path.stat().st_mtime for path in found)
+    if stale:
+        return [Item("pinned-checkouts", str(root), CANDIDATE, f"{counted}; {len(stale)} past the rule: {rule}",
+                     sum(sizes.of(path) for path in stale),
+                     ["python3", str(TOOLKIT_ROOT / "bin/qk"), "disk", "--prune-pins"], idle)]
+    return [Item("pinned-checkouts", str(root), KEPT, f"{counted}; none past the rule: {rule}",
+                 sum(sizes.of(path) for path in found), None, idle)]
+
+
+def prune_pins(out=print):
+    """qk disk --prune-pins: remove the pinned checkouts past their rule that no process uses."""
+    from . import offload_host
+    usage = Usage(host_class().current(0).processes)
+    gone = [found for found in offload_host.stale_pins() if not usage.of(found[0])]
+    for found in gone:
+        offload_host.remove_pin(*found)
+        out(f"pruned {found[0]}")
+    out(f"{len(gone)} pinned checkout{'s' if len(gone) != 1 else ''} pruned, unused for {offload_host.PIN_DAYS} days, "
+        f"in {offload_host.pins_root()}")
+    return 0
+
+
 def second_mac():
     """The second Mac this Mac offloads to, or None: here alone, or on the second Mac itself."""
     from . import remote  # remote imports this module
@@ -377,6 +411,7 @@ def inventory(host, sizes, categories=None):
     wanted = set(categories or CATEGORIES)
     items = []
     if "kept-results" in wanted: items += kept_results(host, usage, sizes)
+    if "pinned-checkouts" in wanted: items += pinned_checkouts(host, usage, sizes)
     for listed in EXTENSION_ITEMS: items += listed(host, usage, sizes, wanted)
     return items
 
@@ -490,6 +525,9 @@ def add_arguments(parser):
     action.add_argument("--dry-run", action="store_true", help="list only what --delete would remove, and remove nothing")
     action.add_argument("--delete", action="store_true", help="remove every candidate, checking each again first, "
                         "without asking; owner items are only listed, with their commands")
+    action.add_argument("--prune-pins", action="store_true", help="remove the checkouts runs were pinned to that no "
+                        "run has used for a week and no process uses, and nothing else (guides/shared-host.md, "
+                        "Extension folders beside a project)")
     parser.add_argument("--yes", nargs="?", const="", metavar="WHO",
                         help="with --delete, name in each ledger entry who asked for this run (such as 'owner, "
                         "2026-11-05 chat'); --delete asks nobody since 2026-11-05, so this only records the ask")
@@ -511,6 +549,7 @@ def execute(args, run=subprocess.run, out=print):
     if args.yes is not None and not args.delete:
         print("queuekeeper disk: --yes names who asked for --delete's removals, so it needs --delete", file=sys.stderr)
         return 2
+    if args.prune_pins: return prune_pins(out)
     def collect(categories=None, measure=True):
         idle_hours = 24.0 if args.min_idle_hours is None else args.min_idle_hours
         host = host_class().current(idle_hours * 3600, args.development, run)

@@ -53,12 +53,12 @@ import time
 import unicodedata
 import urllib.request
 
-from . import budgets, disk, extensions, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
+from . import budgets, disk, extensions, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
 from . import events, pre_push, recovery
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, SPELLING, TOOLKIT_ROOT, admission, implicit_command, implicit_spelling, \
-    lane_to_run, legacy_spelling_warning, load, parse, preflight, project_checkout, stays, toolkit_command, \
+    lane_to_run, legacy_spelling_warning, load, parse, preflight, project_checkout, siblings_of, stays, toolkit_command, \
     unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
@@ -161,6 +161,8 @@ PROGRESS_VARIABLE = "QUEUEKEEPER_QUEUE_PROGRESS"
 # The file in the queue's directory that names the toolkit commit a worker moved to (Worker.move_to) until the
 # worker started from it finishes a round (Worker.arrived): one that died or held first is not moved to again.
 MOVED = "moved"
+# In a queue's directory: the last pin set its worker started Queuekeeper with (Worker.pin).
+PINS_STARTED = "pins.json"
 # Seconds the toolkit at origin/main has to import what a worker runs before a worker moves to it (starts).
 STARTS_LIMIT = 120
 # How many of a failed run's last lines qk land's refusal quotes (preflight_before_queued, vocaro-engineering#283).
@@ -329,7 +331,8 @@ def environment():
     lanes as nested work whose owner has gone."""
     names = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL)
-    drop = set(names.stdout.split()) | {resources.TOKEN}
+    # Nor the pin set of a run the worker was started from inside: each round makes its own (Worker.pin).
+    drop = set(names.stdout.split()) | {resources.TOKEN, pins.VARIABLE}
     return {key: value for key, value in os.environ.items() if key not in drop}
 
 
@@ -3024,6 +3027,82 @@ class Worker:
         if not own: self.environment = {**environment(), TOOLKIT_VARIABLE: str(copy)}
         if self.code and head != self.code: self.move_to(copy, head)
 
+    def pin(self):
+        """Pin, for this round, the folders beside the project that its extensions load from, as main's
+        queuekeeper.json names them: each at its origin/main, fetched now, in a checkout no session edits
+        (pins.make), carried to every lane and the qk commands nested in them by QUEUEKEEPER_SIBLINGS. A lane
+        otherwise loaded them from the shared checkouts beside the project as those stood when each command began, so
+        that a landing there mid-round, or a session's edit, changed what the round's later lanes ran
+        (vocaro-engineering#497). A folder an entry adds is not in main's list, and loads as it stands.
+
+        Queuekeeper's origin/main and a folder's need not work together: a change across both lands in two steps.
+        So a set this Queuekeeper has not started with before is tried first, as the command every lane begins
+        with, in the checkout at origin/main (pin_starts). One that does not start is not adopted: the round runs
+        with the folders at the commits the last set that started held, and the next round tries again. With no such
+        set, or when that does not start either, the queue holds, sending nothing back, as for a lane Queuekeeper
+        could not start for (vocaro/queuekeeper#158)."""
+        queue = self.queue
+        self.environment = {key: value for key, value in self.environment.items() if key != pins.VARIABLE}
+        try: names = siblings_of(json.loads(config_source(queue.main_checkout, MAIN)).get("extensions", []))
+        except (ValueError, AttributeError): return  # main's configuration is unreadable, which the round says itself
+        if not names: return
+        for name in names:
+            clone = pins.clone(queue.main_checkout, name)
+            if git(clone, "remote", "get-url", "origin").returncode == 0: reach(clone, *FETCH, say=self.say, check=True)
+        try: made = pins.make(queue.main_checkout, names)
+        except pins.Unpinned as error:
+            raise Hold(SESSION, f"a folder the project's extensions load from could not be pinned for the round: {error}")
+        if not made: return
+        kit = git(self.toolkit_root(), "rev-parse", "HEAD")
+        found = {"queuekeeper": kit.stdout.strip() if kit.returncode == 0 else None,
+                 "siblings": {name: pin["commit"] for name, pin in made.items()}}
+        said = ", ".join(f"{name} at {pin['commit'][:12]}" for name, pin in made.items())
+        last = self.pins_started()
+        if found != last:
+            self.drop_stacked("the folders the project's extensions load from are pinned afresh")
+            log = queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-pins.log"
+            if self.pin_starts(made, log) is False:
+                held = (last or {}).get("siblings") or {}
+                earlier = {name: (pins.clone(queue.main_checkout, name), held[name], None) for name in made if name in held}
+                why = (f"Queuekeeper does not start in the project at origin/main with {said}, each at its origin/main "
+                       f"({log.with_name(f'{log.stem}-start.log')})")
+                if not earlier or all(made[name]["commit"] == commit for name, (_, commit, _) in earlier.items()):
+                    raise Hold(SESSION, f"{why}, and no earlier set started: bring Queuekeeper and those folders to "
+                                        "commits that work together, which no entry of this queue can do")
+                try: made = pins.make(queue.main_checkout, names, earlier)
+                except pins.Unpinned as error: raise Hold(SESSION, f"{why}, and the earlier set could not be had: {error}")
+                again = queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-pins-earlier.log"
+                said = ", ".join(f"{name} at {pin['commit'][:12]}" for name, pin in made.items())
+                if self.pin_starts(made, again) is False:
+                    raise Hold(SESSION, f"{why}, nor with {said}, which the last set that started held "
+                                        f"({again.with_name(f'{again.stem}-start.log')}): bring Queuekeeper and those "
+                                        "folders to commits that work together, which no entry of this queue can do")
+                self.say(f"{why}: this round runs with {said}, which the last set that started held, and the next "
+                         "round tries origin/main again")
+            else:
+                (queue.directory / PINS_STARTED).write_text(json.dumps(found) + "\n")
+        self.say(f"folders beside the project: {said}")
+        self.environment = {**self.environment, pins.VARIABLE: pins.encoded(made)}
+
+    def pins_started(self):
+        """The last pin set this queue's worker started Queuekeeper with: {"queuekeeper", "siblings"}, or None."""
+        try: found = json.loads((self.queue.directory / PINS_STARTED).read_text())
+        except (OSError, ValueError): return None
+        return found if isinstance(found, dict) and isinstance(found.get("siblings"), dict) else None
+
+    def pin_starts(self, made, log):
+        """Whether Queuekeeper starts in the project at origin/main with the pin set made, as starts says of the
+        checkout as it is: True, False when it exits TOOL_NOT_STARTED, or None when it says neither. The checkout is
+        reset to origin/main first, as the round's integration resets it next: what an earlier batch left there may
+        be what does not start."""
+        self.reset(text(self.queue.main_checkout, "rev-parse", MAIN))
+        command = toolkit_command(self.checkout, ["--version"], self.toolkit_root())
+        try:
+            status_ = processes.run(command, cwd=self.checkout, log_path=log.with_name(f"{log.stem}-start.log"),
+                                    timeout=START_LIMIT, env={**self.environment, pins.VARIABLE: pins.encoded(made)})
+        except (OSError, processes.TimedOut): return None
+        return True if status_ == 0 else False if status_ == lane_results.TOOL_NOT_STARTED else None
+
     def refuses(self, head):
         """Why this worker does not move to the toolkit at head, origin/main, or None: a worker moved there before
         and stopped before it finished a round (MOVED), dying or holding, or head does not start (starts). Either
@@ -4358,6 +4437,7 @@ class Worker:
         reach(queue.main_checkout, *FETCH, say=self.say, check=True)
         self.prepare()
         self.toolkit()
+        self.pin()
         if self.stacked: return self.adopted()
         if passed: return self.push_passed(passed)
         base = text(queue.main_checkout, "rev-parse", MAIN)

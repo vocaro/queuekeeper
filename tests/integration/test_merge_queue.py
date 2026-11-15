@@ -4290,6 +4290,108 @@ class UnprovisionedWhereTheGateRuns(Fixture):
         self.assertNotIn("a shared host's configuration", held)
 
 
+class PinnedFolders(Fixture):
+    """vocaro-engineering#497: a round pins each folder beside the project that its extensions load from at its
+    origin/main, so that every lane of the round, and each qk command nested in one, loads one commit of it, whatever
+    lands in the shared checkout or a session edits there meanwhile."""
+    KIT = ("import os\n"
+           "VALUE = {value!r}\n"
+           "if VALUE == 'unloadable': raise RuntimeError('this kit needs a newer Queuekeeper')\n"
+           "def register():\n"
+           "    if os.environ.get('KIT_SEEN'): open(os.environ['KIT_SEEN'], 'a').write(VALUE + '\\n')\n")
+
+    def setUp(self):
+        super().setUp()
+        self.kit_origin, self.kit, self.seen = self.base / "kit.git", self.base / "kit", self.base / "seen"
+        run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.kit_origin))
+        run(self.base, "git", "clone", "-q", str(self.kit_origin), str(self.kit))
+        self.one = self.kit_lands("one")
+        seeing = patch.dict(os.environ, {"KIT_SEEN": str(self.seen)})
+        seeing.start()
+        self.addCleanup(seeing.stop)
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["extensions"] = [{"module": "fixture_kit", "path": "../kit/src/python"}]
+        self.publish(config, "Load an extension from a folder beside the project")
+
+    def kit_lands(self, value, here=True):
+        """A commit of the kit that says value, on its origin's main, and with here in the shared checkout too."""
+        (self.kit / "src/python").mkdir(parents=True, exist_ok=True)
+        (self.kit / "src/python/fixture_kit.py").write_text(self.KIT.format(value=value))
+        run(self.kit, "git", "add", ".")
+        run(self.kit, "git", "commit", "-qm", value)
+        commit = run(self.kit, "git", "rev-parse", "HEAD")
+        run(self.kit, "git", "push", "-q", "origin", "HEAD:main")
+        if not here: run(self.kit, "git", "reset", "-q", "--hard", "HEAD~1")
+        return commit
+
+    def loaded(self):
+        """What each qk command since the last look loaded of the kit."""
+        found = set(self.seen.read_text().split()) if self.seen.exists() else set()
+        self.seen.unlink(missing_ok=True)
+        return found
+
+    def round(self, name):
+        self.commit(name, name, content="a labeled point\n")
+        identifier, = self.add(name)
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said): self.work()
+        return identifier, said.getvalue()
+
+    def test_every_lane_loads_origin_main_not_what_the_shared_checkout_holds(self):
+        # A session's edit in the shared checkout, and then a landing that the checkout has not followed.
+        (self.kit / "src/python/fixture_kit.py").write_text(self.KIT.format(value="a session's edit"))
+        first, said = self.round("first")
+        self.assertEqual(self.state(first)["state"], "landed")
+        self.assertEqual(self.loaded(), {"one"})
+        self.assertIn(f"folders beside the project: kit at {self.one[:12]}", said)
+        run(self.kit, "git", "checkout", "-q", "--", ".")
+        two = self.kit_lands("two", here=False)
+        second, said = self.round("second")
+        self.assertEqual(self.state(second)["state"], "landed")
+        self.assertEqual(self.loaded(), {"two"})
+        self.assertIn(f"folders beside the project: kit at {two[:12]}", said)
+        self.assertEqual(json.loads((mq.Queue(self.repo).directory / mq.PINS_STARTED).read_text())["siblings"],
+                         {"kit": two})
+
+    def test_a_set_that_does_not_start_is_not_adopted_and_the_round_runs_with_the_last_that_did(self):
+        first, _ = self.round("first")
+        self.assertEqual(self.state(first)["state"], "landed")
+        self.loaded()
+        broken = self.kit_lands("unloadable")
+        second, said = self.round("second")
+        self.assertEqual(self.state(second)["state"], "landed")
+        self.assertIn(f"Queuekeeper does not start in the project at origin/main with kit at {broken[:12]}, each at "
+                      "its origin/main", said)
+        self.assertIn(f"this round runs with kit at {self.one[:12]}, which the last set that started held, and the "
+                      "next round tries origin/main again", said)
+        # Only the trial loaded the one that does not load, and it says nothing: every lane ran with the earlier.
+        self.assertEqual(self.loaded(), {"one"})
+        fixed = self.kit_lands("three")
+        third, said = self.round("third")
+        self.assertEqual(self.state(third)["state"], "landed")
+        self.assertIn(f"folders beside the project: kit at {fixed[:12]}", said)
+        self.assertEqual(self.loaded(), {"three"})
+
+    def test_with_no_earlier_set_one_that_does_not_start_holds_for_a_session_and_sends_nothing_back(self):
+        broken = self.kit_lands("unloadable")
+        first, _ = self.round("first")
+        self.assertEqual(self.state(first)["state"], "queued")
+        self.assertEqual(self.gates(), 0)
+        held = mq.Queue(self.repo).held()
+        self.assertIn(f"for a session, not the owner: Queuekeeper does not start in the project at origin/main with "
+                      f"kit at {broken[:12]}, each at its origin/main", held)
+        self.assertIn("and no earlier set started: bring Queuekeeper and those folders to commits that work together, "
+                      "which no entry of this queue can do", held)
+
+    def test_a_worker_started_inside_a_pinned_run_makes_its_own_set(self):
+        stale = json.dumps({"kit": {"commit": "4" * 40, "root": str(self.base / "gone")}})
+        with patch.dict(os.environ, {mq.pins.VARIABLE: stale}):
+            self.assertNotIn(mq.pins.VARIABLE, mq.environment())
+            first, _ = self.round("first")
+        self.assertEqual(self.state(first)["state"], "landed")
+        self.assertEqual(self.loaded(), {"one"})
+
+
 class QueuekeeperThatCannotStart(Fixture):
     """vocaro/queuekeeper#158: a lane in which Queuekeeper itself cannot start, as when a folder beside the project
     that one of its extensions loads from moves to a commit this Queuekeeper cannot load, tested no commit: the queue

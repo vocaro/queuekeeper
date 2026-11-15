@@ -181,6 +181,12 @@ os.environ["QUEUEKEEPER_EVIDENCE_RETRY"] = "off"
 # of the reap clears it.
 os.environ[cli.REAP_SWITCH] = "off"
 
+# Nor does any run a test makes add a pinned checkout to this Mac's own (offload_host.pinned_checkout): each is made
+# in this process's private directory. The pin set of a run the suite was started from inside is removed, since a
+# test's own run makes its own (pins).
+os.environ[offload_host.PINS_DIRECTORY] = str(ROOT / "pins")
+os.environ.pop(offload_host.PIN_VARIABLE, None)
+
 
 def unfixed(root, hosts):
     hosts.pop("runtimesDiffer", None)
@@ -194,7 +200,7 @@ cli.fix_hosts = unfixed
 ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "QUEUEKEEPER_OFFLOAD_HOST", "HEAVY_QUIET_SECONDS",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
-    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD)}
+    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD)}
 
 
 # The prefixes of the toolkit's variables, and those of them this module lets a test inherit, each with why that is

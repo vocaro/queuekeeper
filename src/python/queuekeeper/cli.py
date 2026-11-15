@@ -12,7 +12,7 @@ import sys
 import time
 import traceback
 
-from . import __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+from . import pins, __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_spelling_warning, project_checkout, \
@@ -774,6 +774,8 @@ def main(argv=None):
         # the host-local path XcodeGen expands before generating a project (#373), is read once they are loaded.
         try:
             compose_checkout()
+            refused = pin_run(argv)
+            if refused is not None: return refused
             load_extensions(argv)
         except Exception as error:  # noqa: BLE001
             return could_not_start(error)
@@ -825,6 +827,54 @@ def compose_checkout():
     queuekeeper_apple to load (vocaro-engineering#497). An installed package has no manifest beside it, and its
     plugins come from distribution metadata."""
     if (checkout.ROOT / checkout.MANIFEST).is_file(): checkout.activate(checkout.ROOT)
+
+
+SIBLING = "--sibling"
+
+
+def pin_run(argv):
+    """Pin, for a command that runs a lane, `qk run` or `qk remote run`, the folders beside the project that its
+    extensions load from, before they load: each at its origin/main, or as `--sibling NAME=WHERE` chooses, in
+    QUEUEKEEPER_SIBLINGS for this process and every command the lane starts (pins). A run of hours otherwise loaded
+    whatever landed in such a folder meanwhile, in its later lanes' nested qk commands (vocaro-engineering#497).
+
+    A command already under a pin set keeps it and makes none: a lane of the merge queue's round, of a checkpoint, of
+    a dispatch on the second Mac, or nested in another lane. Under one, --sibling is refused, so that no lane of the
+    queue chooses what it is judged with. Any other command pins nothing and loads the folders as they stand.
+    Returns None to go on, or the status to exit with, having said why; a set that cannot be made raises
+    pins.Unpinned, which ends the command as one that could not start."""
+    given = sys.argv[1:] if argv is None else list(argv)
+    first = 2 if given[:1] == ["--project"] else 1 if given[:1] and given[0].startswith("--project=") else 0
+    words = given[first:given.index("--") if "--" in given else len(given)]
+    if words[:1] != ["run"] and words[:2] != ["remote", "run"]: return None
+    asked = [words[index + 1] for index, word in enumerate(words[:-1]) if word == SIBLING] \
+        + [word.split("=", 1)[1] for word in words if word.startswith(f"{SIBLING}=")]
+    if pins.held() is not None:
+        if not asked: return None
+        print(f"queuekeeper: {SIBLING} {asked[0]} refused: this command runs under a pin set already, {pins.VARIABLE}, "
+              "as a lane of the merge queue, of a checkpoint or of another lane does, and that set stands. Choose a "
+              "folder's commit where the run starts", file=sys.stderr, flush=True)
+        return USAGE
+    root = Path(given[1] if first == 2 else given[0].split("=", 1)[1] if first == 1 else ".").resolve()
+    names = sibling_folders(root)
+    try: choices = pins.chosen(root, names, asked)
+    except ValueError as error:
+        print(f"queuekeeper: {error}", file=sys.stderr, flush=True)
+        return USAGE
+    if not names: return None
+    made = pins.make(root, names, choices,
+                     say=lambda text: print(f"queuekeeper: this run loads {text}", file=sys.stderr, flush=True))
+    if made: os.environ[pins.VARIABLE] = pins.encoded(made)
+    return None
+
+
+def unsendable(lane):
+    """Why the second Mac cannot run lane under this run's pin set, or None: a folder chosen with --sibling at a
+    commit no branch of its origin holds, which that Mac could not fetch. Nothing but the commit is sent."""
+    local = pins.local(pins.held())
+    if not local: return None
+    return (f"{' and '.join(local)} {'is' if len(local) == 1 else 'are'} pinned for this run at a commit its origin "
+            f"does not hold, which the second Mac cannot fetch; push it to run {lane} there")
 
 
 def load_extensions(argv):
@@ -888,6 +938,11 @@ def perform(argv, report):
         "template before each run; a run the pool could only erase is unmeasured")
     run.add_argument("--only", action="append", default=[], metavar="TEST", help="with --repeat: run only this test, "
         "in place of the lane's own selection; repeat for each")
+    run.add_argument(SIBLING, action="append", default=[], metavar="NAME=WHERE", help="load the project's extension "
+        "in the folder NAME beside it from WHERE for this run, in place of NAME's origin/main: a commit of this Mac's "
+        "checkout of NAME, or a checkout's path, such as a session's worktree, taken as its working tree stands. A "
+        "commit that NAME's origin does not hold runs on this Mac only. Refused in a lane of the merge queue, which "
+        "judges a project with its folders' origin/main (guides/shared-host.md, Extension folders beside a project)")
     run.add_argument("lane")
     # Listed for help only: main passes everything after these to their own parsers.
     for name, (described, _) in extensions.COMMANDS.items(): commands.add_parser(name, help=described)
@@ -1011,6 +1066,8 @@ def perform(argv, report):
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")
     remote_run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on the "
         "second Mac under its admission: the serial reference of a group that runs there, which counts for no commit")
+    remote_run.add_argument(SIBLING, action="append", default=[], metavar="NAME=WHERE", help="as qk run's; the "
+        "commit must be one NAME's origin holds")
     remote_run.add_argument("lane")
     kind = remote_admit.add_mutually_exclusive_group()
     kind.add_argument("--exclusive", action="store_true", help="hold every slot of the second Mac")
@@ -1219,8 +1276,11 @@ def perform(argv, report):
             # Otherwise it goes to the second Mac and waits there for its foreground, never falling back to this
             # Mac (foreground.py).
             second = lane.get("foreground") and extensions.FOREGROUND.foreground_mac()
+            # What keeps the lane from the second Mac under this run's pin set, or None (--sibling).
+            unsent = unsendable(args.lane)
             if lane.get("foreground") and not second:
                 if args.offload_only or not (args.here or lane.get("here")):
+                    if unsent: raise ValueError(f"{args.lane} not run: it runs on the second Mac, and {unsent}")
                     return remote.foreground_lane(root, config, args.lane, extra, args.expect)
                 extensions.FOREGROUND.require_foreground()
             group = report.group = lane.get("parallel")
@@ -1237,10 +1297,13 @@ def perform(argv, report):
                 if args.here or args.serial or os.environ.get(resources.TOKEN):
                     raise ValueError(f"{args.lane} runs only on the second Mac ({placed[1]}), so it cannot run here"
                                      + (" with --here" if args.here else ""))
+                if unsent: raise ValueError(f"{args.lane} not run: it runs only on the second Mac ({placed[1]}), and {unsent}")
                 return remote.there_lane(root, config, args.lane, extra, args.expect, placed[1])
             # Keep the queue's placement scope at the outer lane.
             queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
             exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
+            if args.offload_only and unsent:
+                raise ValueError(f"{args.lane} not run: --offload-only never runs it here, and {unsent}")
             if args.offload_only:
                 if reason is not None:
                     raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --offload-only cannot offer it "
@@ -1253,6 +1316,9 @@ def perform(argv, report):
             inherited = bool(os.environ.get(resources.TOKEN))
             reason = reason or ("--here" if args.here else "--serial runs the serial reference here" if args.serial
                                 else "nested in the admission it inherits" if inherited else None)
+            if reason is None and unsent:
+                reason = unsent
+                print(f"queuekeeper: {args.lane} runs on this Mac: {unsent}", file=sys.stderr, flush=True)
             offered = None
             if reason is None:
                 # Whichever Mac has spare capacity for the lane, the second Mac first, and while neither has,
@@ -1272,6 +1338,8 @@ def perform(argv, report):
             directory = root / ".build/queuekeeper" / args.lane
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit, **placement(reason)}
+            # The commit of each folder beside the project that this run loads its extensions from (pins).
+            if pins.held(): receipt["siblings"] = pins.recorded(pins.held())
             # A run of the whole lane, which a pass of counts for its commit once kept (concluded).
             whole = not extra and args.expect is None and not args.serial
             keys = lane_devices(lane)

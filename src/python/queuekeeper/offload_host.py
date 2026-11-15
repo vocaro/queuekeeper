@@ -202,6 +202,14 @@ SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 # there (vocaro-engineering#203); and its src/python as a shell path from the home, where a recovery that the
 # second Mac's record needs runs.
 TOOLKIT_CHECKOUT = "Development/queuekeeper"
+# Where a Mac keeps the checkouts runs are pinned to, under the home: NAME/COMMIT for each folder a project's
+# extensions load from and each commit a run pinned it at, with NAME/COMMIT.ready beside one that is whole
+# (pinned_checkout); the days one stays unused before it is pruned; and the variable that carries a run's pin set to
+# every qk command under it, {NAME: {"commit", "root"}} as JSON (pins).
+PINS, PIN_READY, PIN_DAYS, PIN_VARIABLE = "Development/queuekeeper-pins", ".ready", 7, "QUEUEKEEPER_SIBLINGS"
+# The variable naming another directory for them than the home's, which the test suite sets so that no test adds
+# a checkout to the Mac's own (tests/host_isolation.py).
+PINS_DIRECTORY = "QUEUEKEEPER_PINS_DIR"
 TOOLKIT = f"~/{TOOLKIT_CHECKOUT}/src/python"
 # Seconds one update_toolkit may take in all, the bound it adds to the connection that prepares a dispatch,
 # and at most for its fetch; and its lock beside the second Mac's repositories, under ROOT.
@@ -3429,7 +3437,7 @@ def answer(request):
             found.update(git=output(["git", "--version"]),
                          advertised={path: advertise(Path.home() / path) for path in request["advertise"]})
         if request.get("toolkitCheckout"): found["toolkitCheckout"] = guarded_update(request["toolkitCheckout"])
-        # The folders a project's extensions load from, which a dispatch links beside its checkout (link_siblings).
+        # The folders a project's extensions load from, of which a dispatch's pinned checkouts are worktrees (place_siblings).
         if request.get("siblingCheckouts"):
             found["siblingCheckouts"] = [guarded_update(each) for each in request["siblingCheckouts"]]
         return found
@@ -3639,27 +3647,173 @@ def local_url(url):
     return ":" not in url.split("/", 1)[0]
 
 
-def link_siblings(slot, names):
-    """Put beside a dispatched checkout, in its slot, the folders its project's extensions load from, which the
-    sending Mac names (config.sibling_folders): each a link to this Mac's own checkout of that name in ~/Development, which is not
-    sent and so runs as this Mac holds it. Whatever an earlier layout left under the name goes first. A name this
-    Mac has no checkout of is said and left out, and the extension then fails to load, naming it."""
-    for name in names:
-        source, link = Path.home() / "Development" / name, Path(slot) / name
-        if not source.is_dir():
-            say(f"this Mac has no {source} for the project's extension to load from")
+def pins_root(home=None):
+    """Where this Mac keeps its pinned checkouts: PINS under home when given, else where PINS_DIRECTORY names, else
+    PINS under the account's home."""
+    if home is not None: return Path(home) / PINS
+    return Path(os.environ[PINS_DIRECTORY]) if os.environ.get(PINS_DIRECTORY) else Path.home() / PINS
+
+
+def pin_head(checkout):
+    """The commit a pinned checkout is at, or None when it is none: a detached worktree's HEAD, read from its
+    private Git directory without running Git, as every qk command under a pinned run reads it (pins.verify)."""
+    try:
+        line = (Path(checkout) / ".git").read_text().strip()
+        if not line.startswith("gitdir:"): return None
+        return (Path(checkout) / line[len("gitdir:"):].strip() / "HEAD").read_text().strip()
+    except OSError:
+        return None
+
+
+def pin_git(clone, *arguments, environment=None, timeout=120):
+    """Git in clone, a Mac's own checkout of a folder a project's extensions load from: its output, stripped. It
+    never prompts, and a failure or a timeout is a RuntimeError saying git's own words."""
+    variables = {key: value for key, value in (os.environ if environment is None else environment).items()
+                 if key not in GIT_LOCATION}
+    variables.update(GIT_TERMINAL_PROMPT="0",
+                     GIT_SSH_COMMAND=variables.get("GIT_SSH_COMMAND") or "ssh -o BatchMode=yes -o ConnectTimeout=10")
+    try:
+        done = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-C", str(clone), *arguments],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, env=variables, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"`git {' '.join(arguments)}` in {clone} did not end within {timeout}s")
+    if done.returncode:
+        said = " ".join((done.stderr or done.stdout).split())
+        raise RuntimeError(f"`git {' '.join(arguments)}` in {clone} failed: {said or f'exit {done.returncode}'}")
+    return done.stdout.strip()
+
+
+def pinned_checkout(clone, name, commit, home=None, fetch=True, environment=None):
+    """The one checkout of name at commit that every run on this Mac pinned to it loads from, made when it is not
+    there yet: ~/Development/queuekeeper-pins/NAME/COMMIT, a detached worktree of clone, this Mac's own checkout of
+    name, with its files read-only (vocaro-engineering#497). Nothing is sent: a commit the clone lacks is fetched
+    from its origin, all of it first and then the commit by name, when fetch allows.
+
+    A run loads from it while others make, use and prune checkouts of other commits beside it, and nothing ever
+    moves it to another commit, so what a lane loads cannot change under it. The file beside it, COMMIT.ready, says
+    it is whole: it is written last, under the folder's lock, so no run reads a checkout another is still making, and
+    its time is each use's, by which an unused one is pruned (stale_pins). One left half-made is made again.
+    A RuntimeError or OSError says why it could not be made."""
+    folder = pins_root(home) / name
+    checkout, ready = folder / commit, folder / f"{commit}{PIN_READY}"
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / "lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if ready.is_file() and pin_head(checkout) == commit:
+            with contextlib.suppress(OSError): os.utime(ready)
+            return checkout
+        with contextlib.suppress(OSError): ready.unlink()
+
+        def has():
+            found = subprocess.run(["git", "-C", str(clone), "cat-file", "-e", f"{commit}^{{commit}}"],
+                                   stdin=subprocess.DEVNULL, capture_output=True)
+            return found.returncode == 0
+        if not has() and fetch:
+            # Everything its origin's branches hold first, which most often brings the commit; then the commit by
+            # name, for one that only another ref there holds.
+            with contextlib.suppress(RuntimeError):
+                pin_git(clone, "fetch", "--no-tags", "--quiet", "origin", environment=environment,
+                        timeout=UPDATE_FETCH_SECONDS)
+            if not has():
+                pin_git(clone, "fetch", "--no-tags", "--quiet", "origin", commit, environment=environment,
+                        timeout=UPDATE_FETCH_SECONDS)
+        if not has(): raise RuntimeError(f"{clone} does not hold {commit}")
+        if checkout.exists() or checkout.is_symlink():
+            subprocess.run(["git", "-C", str(clone), "worktree", "remove", "--force", "--force", str(checkout)],
+                           stdin=subprocess.DEVNULL, capture_output=True)
+            shutil.rmtree(checkout, ignore_errors=True)
+        pin_git(clone, "worktree", "prune")
+        pin_git(clone, "worktree", "add", "--detach", "--quiet", str(checkout), commit)
+        if pin_head(checkout) != commit: raise RuntimeError(f"{checkout} is not at {commit}")
+        for directory, _folders, files in os.walk(checkout):
+            for file in files:
+                path = Path(directory) / file
+                with contextlib.suppress(OSError):
+                    if not path.is_symlink(): path.chmod(path.stat().st_mode & ~0o222)
+        ready.write_text(f"{clone}\n")
+    return checkout
+
+
+def stale_pins(home=None, days=PIN_DAYS, now=None):
+    """The pinned checkouts no run has used for days, as (checkout, its ready file, this Mac's checkout it is a
+    worktree of, or None when its ready file does not say): what `qk disk` lists and remove_pin reclaims. One with no ready
+    file, left half-made, counts from its own time."""
+    now, found = time.time() if now is None else now, []
+    for checkout in sorted(pins_root(home).glob("*/*")):
+        if not checkout.is_dir() or checkout.is_symlink(): continue
+        ready = checkout.with_name(f"{checkout.name}{PIN_READY}")
+        try: used = (ready if ready.is_file() else checkout).stat().st_mtime
+        except OSError: continue
+        if now - used < days * 24 * 60 * 60: continue
+        try: clone = Path(ready.read_text().strip())
+        except OSError: clone = None
+        found.append((checkout, ready, clone))
+    return found
+
+
+def remove_pin(checkout, ready, clone):
+    """Remove one pinned checkout stale_pins found, under its folder's lock, unless a run has used it since."""
+    with (checkout.parent / "lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with contextlib.suppress(OSError): ready.unlink()
+        if clone is not None and clone.is_dir():
+            subprocess.run(["git", "-C", str(clone), "worktree", "remove", "--force", "--force", str(checkout)],
+                           stdin=subprocess.DEVNULL, capture_output=True)
+        shutil.rmtree(checkout, ignore_errors=True)
+        if clone is not None and clone.is_dir():
+            subprocess.run(["git", "-C", str(clone), "worktree", "prune"], stdin=subprocess.DEVNULL, capture_output=True)
+
+
+def place_siblings(slot, siblings, environment=None, home=None):
+    """Put beside a dispatched checkout, in its slot, the folders its project's extensions load from, each at the
+    commit the sending Mac pinned for the run ({"name", "commit"}; pins.dispatched): a link to this Mac's one
+    checkout of that folder at that commit (pinned_checkout), made from this Mac's own ~/Development/NAME, which is
+    not sent. It is no longer a link to that folder itself, which every connection fast-forwards and which a landing
+    mid-run therefore changed under a lane's later commands (vocaro-engineering#497). Whatever an earlier layout
+    left under the name goes first.
+
+    A folder sent with no commit, which the sending Mac could not pin, is a link to this Mac's own
+    ~/Development/NAME as it stands, and is in no pin set.
+
+    Returns the run's pin set here, for QUEUEKEEPER_SIBLINGS: {NAME: {"commit", "root"}}. A folder this Mac has no
+    checkout of, or a commit it holds none of and cannot fetch, is said and given an "error" in place of a checkout,
+    and qk then ends before any lane as Queuekeeper that could not start, saying it (pins.verify)."""
+    pins = {}
+    for sibling in siblings:
+        name, commit = sibling["name"], sibling.get("commit")
+        clone, link = (Path.home() if home is None else Path(home)) / "Development" / name, Path(slot) / name
+        if commit is None:
+            # A folder the sending Mac had no commit to pin, as one that is no Git checkout there: this Mac's own,
+            # as it stands.
+            if not clone.is_dir():
+                say(f"this Mac has no {clone} for the project's extension to load from")
+                continue
+            if not (link.is_symlink() and link.resolve() == clone.resolve()):
+                if link.is_symlink(): link.unlink()
+                elif link.exists(): shutil.rmtree(link)
+                link.symlink_to(clone, target_is_directory=True)
+                say(f"{link} is this Mac's {clone}, as it stands: the sending Mac pinned no commit of it")
             continue
-        if link.is_symlink():
-            if link.resolve() == source.resolve(): continue
-            link.unlink()
-        elif link.exists(): shutil.rmtree(link)
-        link.symlink_to(source, target_is_directory=True)
-        say(f"{link} is this Mac's {source}")
+        try:
+            if not clone.is_dir():
+                raise RuntimeError(f"this Mac has no {clone}, its own checkout, to take it from")
+            checkout = pinned_checkout(clone, name, commit, home=home, environment=environment)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            say(f"no checkout of {name} at {commit[:12]} for the project's extension to load from: {error}")
+            pins[name] = {"commit": commit, "root": str(pins_root(home) / name / commit), "error": str(error)}
+            continue
+        if not (link.is_symlink() and link.resolve() == checkout.resolve()):
+            if link.is_symlink(): link.unlink()
+            elif link.exists(): shutil.rmtree(link)
+            link.symlink_to(checkout, target_is_directory=True)
+            say(f"{link} is {name} at {commit[:12]}, {checkout}")
+        pins[name] = {"commit": commit, "root": str(checkout)}
+    return pins
 
 
 def missing_siblings(names, home=None):
     """Those of names, the folders a project's extensions load from (config.sibling_folders), that this Mac has no
-    ~/Development/NAME of for link_siblings to link, which `qk doctor` asks before any dispatch finds it
+    ~/Development/NAME of for place_siblings to take a pinned checkout from, which `qk doctor` asks before any dispatch finds it
     (vocaro/queuekeeper#117). It only looks: nothing is fetched or created."""
     home = Path.home() if home is None else Path(home)
     return [name for name in names if not (home / "Development" / name).is_dir()]
@@ -4204,11 +4358,17 @@ def main(plan):
         if toolkit is not None:
             kit = base / str(index) / toolkit["directory"]
             place(root / toolkit["repository"], kit, toolkit["commit"], toolkit["ref"], toolkit.get("origin"))
-        link_siblings(base / str(index), plan.get("siblings", []))
+        fetching = dict(os.environ)
+        if (root / "git-credentials").is_file(): credentials(fetching, root / "git-credentials")
+        pins = place_siblings(base / str(index), plan.get("siblings", []), fetching)
         timed("place", began)
         result.update(checkout=str(checkout), slot=index)
+        if pins: result["siblings"] = pins
         say(f"{checkout} at {project['commit'][:12]}")
         environment = {**os.environ, "QUEUEKEEPER_ROOT": str(kit), **NO_BYTECODE}
+        # The run's pin set, which every qk command of it loads the project's extensions by (pins.held).
+        # An empty one too: a qk run here is a command of the sending Mac's run, and pins nothing of its own.
+        if "siblings" in plan: environment[PIN_VARIABLE] = json.dumps(pins)
         if "requestAge" in plan:
             environment["QUEUEKEEPER_ADMISSION_REQUEST_STARTED"] = str(result["requestStarted"])
         if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"], plan.get("deviceSetup", []), toolkit)
@@ -4224,8 +4384,10 @@ def main(plan):
         # The provision lane is admitted here as every lane is, and runs here, never offered on. Offered work that
         # declines when it cannot start now has it decline too, rather than wait for a slot with the checkout held.
         provision = [*qk, "run", "--here", *(["--if-free"] if plan.get("decline") else []), "provision"]
+        # With a pinned folder that could not be had, no qk starts, and the work's own start says so.
+        unpinned = any("error" in pin for pin in pins.values())
         steps = [("provision", provision, checkout / ".build/queuekeeper/provision/run.log",
-                  checkout)] if plan.get("provision") else []
+                  checkout)] if plan.get("provision") and not unpinned else []
         # `qk admit --verify` runs its command in the checkout's directory that matches the sender's.
         steps.append(("work", [*qk, *plan["work"]], checkout / plan["log"] if plan.get("log") else None,
                       checkout / plan["subdirectory"] if plan.get("subdirectory") else checkout))

@@ -1590,23 +1590,66 @@ keeps its fallback, as does a second Mac that is only away (vocaro-engineering#3
 ### Extension folders beside a project
 
 A project's extension may load from a folder beside the project, named in `queuekeeper.json` as
-`{"module": NAME, "path": "../FOLDER/..."}`. The second Mac is not sent that folder. Each dispatch links
-the second Mac's own `~/Development/FOLDER` beside the dispatched checkout, so the extension runs as that
-Mac holds it, and the connection that prepares the dispatch fast-forwards that checkout to the commit
-this Mac's checkout of it names as `origin/main`, under the conditions below for the second Mac's own
-toolkit checkout. On this Mac, a project whose `main` sets `"queue": {"followLandings": true}` has its
-main checkout fast-forwarded after each landing in the same way, for a checkout other projects read.
+`{"module": NAME, "path": "../FOLDER/..."}`. Other projects share that folder, and landings move it, so a
+run does not load it as it stands: whatever runs lanes pins it at one commit when it starts, and every lane
+of that run, on either Mac, and every `qk` command nested in a lane loads that commit. Until 2026-11-15 only
+Queuekeeper was held still for a run. A landing in a shared folder during a checkpoint of hours reached its
+later lanes, whose nested `qk` commands then loaded an adapter that no longer matched the Queuekeeper they
+ran (vocaro-engineering#497).
 
-So a run on the second Mac reads the extension as that Mac's checkout holds it, not as the commit under
-test or this Mac's checkout has it. The fast-forward happens only when that checkout is on `main`, clean
-and holds no commit of its own; one that is dirty, on a branch or diverged is left as it is, the
-dispatch says so, and runs there use it as it stands. A change to the extension is therefore tested on
-the second Mac only after it has landed.
+**Which commit.** The folder's `origin/main`, as this Mac's checkout of the folder names it. The merge
+queue's worker fetches it at the start of each round; `qk run` takes it as it is, with no fetch. The
+checkout's own `HEAD`, branch and uncommitted changes are never read, so a session's edit there changes
+no run. `qk run` says the commit as it starts, and the lane's receipt holds it under `siblings`.
+
+**Which commands pin.** The queue worker's round, `qk run`, `qk remote run`, and a caller that sets the
+pin set for the lanes it runs, as the toolkit's `eng checkpoint` does. Every other command started by
+hand (`qk --version`, `qk unittest`, `qk doctor`, `qk admit`) loads the folder as its checkout stands.
+The pin set travels in `QUEUEKEEPER_SIBLINGS`. A command that finds it set uses it and makes none, which is
+how a nested command keeps its run's commit. The queue's worker drops one it inherits and makes its own.
+
+**Where the commit is checked out.** Once on each Mac, in `~/Development/queuekeeper-pins/FOLDER/COMMIT`:
+a detached worktree of that Mac's own checkout of the folder, with its files read-only. Runs pinned to the
+same commit share it, and nothing moves it to another commit, so it cannot change under a lane.
+`qk disk` lists them, and `qk disk --prune-pins` removes each that no run has used for a week.
+
+**The second Mac** is sent the commits and nothing else. It takes each from its own
+`~/Development/FOLDER`, fetching from that checkout's origin when it lacks the commit, and links the
+pinned checkout beside the dispatched one. The connection that prepares a dispatch still fast-forwards
+`~/Development/FOLDER` there to `origin/main`, under the conditions below for the second Mac's own toolkit
+checkout, so the commit is most often there already; no lane loads from that folder itself. On this Mac,
+a project whose `main` sets `"queue": {"followLandings": true}` has its main checkout fast-forwarded after
+each landing in the same way, for a checkout other projects read.
+
+**A pin set that does not start.** A folder's `origin/main` and Queuekeeper's need not work together: a
+change across both lands in two steps. Before a round adopts a set it has not started with before, the
+worker starts Queuekeeper with it in the project at `origin/main`. If that exits 70, the round runs with
+the commits of the last set that started, the log says which folder moved, and the next round tries
+again. With no earlier set, the queue holds for a session and sends nothing back.
+
+**A commit the second Mac cannot take.** When it has no checkout of the folder, or cannot fetch the
+commit, the lane sent there ends before its command with exit 70 and a line beginning
+`queuekeeper: could not start:` that names the folder, the commit and git's error. The queue then holds
+for a session, as for any lane Queuekeeper could not start for
+([maintenance](maintenance.md#the-merge-queue), *A lane Queuekeeper could not start for blames nobody*). The cause is that Mac's checkout,
+network or credentials, which the session brings to the owner.
+
+**Testing a newer commit of the folder.** `qk run --sibling FOLDER=WHERE LANE` pins the folder at `WHERE`
+for that run: a commit of this Mac's checkout of it, or a checkout's path, such as a session's worktree
+of the folder, taken as its working tree stands. The receipt records the choice. A commit that no branch
+of the folder's origin holds runs on this Mac only, and a lane that can only run on the second Mac is
+then not run; push the branch to use the second Mac. A command already under a pin set refuses
+`--sibling` with exit 2, so no lane of the merge queue chooses what it is judged with. The queue judges
+a project with its folders' `origin/main`: a project change that needs an unlanded change to a folder is
+two landings, the folder's first.
+
+A folder that is no Git checkout, or whose checkout names no `origin/main`, has no commit to pin and
+loads as it stands.
 
 The second Mac needs its own checkout of each such folder before the extension is listed: make it there,
 with a `git clone` of the origin this Mac's checkout of the folder names, into `~/Development/FOLDER`.
-A dispatch to a second Mac without one says so and goes on, and the extension then fails to load in
-every lane sent there, the gate included. On 2026-11-13 two projects listed an extension from
+A dispatch to a second Mac without one says so, and every lane sent there, the gate included, ends before
+its command as one Queuekeeper could not start for. On 2026-11-13 two projects listed an extension from
 `../apple-engineering`, which the second Mac had no checkout of, and that was first found when a
 dispatch failed (vocaro/queuekeeper#117). `qk doctor` now asks the second Mac, on the connection that
 updates its toolkit checkout, and reports each folder it has no checkout of as an error that names the

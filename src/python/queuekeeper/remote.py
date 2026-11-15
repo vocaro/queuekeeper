@@ -66,7 +66,7 @@ import time
 import uuid
 import zlib
 
-from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, processes, resources, git_state
+from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, processes, resources, git_state
 from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 
@@ -1907,9 +1907,16 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     kept = store(root) / commit
     members = group_files(config, lane)
     returns = [*(members or []), RESULTS] if lane is not None else [CHANGES] if changes else None
+    # Only commits go to the second Mac for the folders beside the project, so one its origin lacks cannot run there.
+    unsent = pins.local(pins.held())
+    if unsent:
+        raise ValueError(f"{name} not sent to {host}: {' and '.join(unsent)} {'is' if len(unsent) == 1 else 'are'} "
+                         "pinned for this run at a commit its origin does not hold, which the second Mac cannot "
+                         "fetch; push it, or run on this Mac with --here")
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
-            # The folders beside the project its extensions load from, which the second Mac links to its own.
-            "siblings": sibling_folders(root),
+            # The folders beside the project its extensions load from, each at the commit this run pinned, which the
+            # second Mac takes from its own checkout of the folder (pins.dispatched, offload_host.place_siblings).
+            "siblings": pins.dispatched(root, sibling_folders(root)),
             "decline": decline, "busy": BUSY,
             "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",

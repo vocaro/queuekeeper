@@ -85,25 +85,13 @@ class SiblingRequestTests(Fixture):
                           {"path": "Development/absent", "root": remote.ROOT}])
 
 
-class SiblingLinkTests(unittest.TestCase):
-    def test_the_second_mac_links_its_own_checkout_of_each_extension_folder_beside_a_dispatched_checkout(self):
+class MissingSiblingTests(unittest.TestCase):
+    def test_doctor_asks_which_extension_folder_the_second_mac_has_no_checkout_of_and_creates_none(self):
+        # What `qk doctor` asks before any dispatch (#117). A dispatch takes each folder's pinned commit from that
+        # checkout (offload_host.place_siblings, tests/integration/test_pins.py).
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            slot, kit = home / "build-host/checkouts/Example/0", home / "Development/kit"
-            (slot / "Example").mkdir(parents=True)
-            (kit / "src/python").mkdir(parents=True)
-            # What an earlier layout left under the name goes: a placed copy that is no longer sent.
-            (slot / "kit/old").mkdir(parents=True)
-            said = []
-            with patch.object(Path, "home", return_value=home), patch.object(offload_host, "say", said.append):
-                offload_host.link_siblings(slot, ["kit", "absent"])
-                offload_host.link_siblings(slot, ["kit", "absent"])  # again, with the link in place
-            self.assertTrue((slot / "kit").is_symlink())
-            self.assertEqual((slot / "kit").resolve(), kit)
-            self.assertFalse((slot / "absent").exists())
-            self.assertEqual(sum("has no" in line and "absent" in line for line in said), 2)
-            self.assertEqual(sum("is this Mac's" in line for line in said), 1)
-            # What `qk doctor` asks before any dispatch (#117): which it has no checkout of, creating none.
+            (home / "Development/kit/src/python").mkdir(parents=True)
             self.assertEqual(offload_host.missing_siblings(["kit", "absent"], home=home), ["absent"])
             self.assertFalse((home / "Development/absent").exists())
 
