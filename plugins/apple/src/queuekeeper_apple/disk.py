@@ -175,17 +175,22 @@ def simulators(host, usage, sizes):
             # The pruning rule reads the record's entries for a member itself.
             elif udid in pooled:
                 pool, member, every = pooled[udid]
-                allowed, why = simulator_pool.prunable(member, every, simulator_pool.entries_for(member, entries), now)
+                allowed, why = simulator_pool.prunable(member, every, simulator_pool.entries_for(member, entries), now,
+                                                       idle_kinds=True)
                 items.append(item(CANDIDATE, f"a member of the {pool} pool eligible for pruning: {why}",
                                   prune_command(pool, udid)) if allowed else
                              item(KEPT, f"a member of the {pool} pool, kept: {why}"))
             elif udid in templated:
                 pool, template = templated[udid]
-                items.append(item(KEPT, f"the {pool} pool's warmed template of its kind, which members are reset "
-                                        "from and new members cloned from") if device.get("isAvailable", True) else
-                             item(CANDIDATE, f"the {pool} pool's warmed template of its kind, unavailable, its runtime "
-                                             "gone; the next new member of the kind warms another",
-                                  prune_command(pool, udid)))
+                # Pruning the last member of a kind unused for 7 days deletes the kind's template with it.
+                allowed, why = simulator_pool.template_prunable(
+                    template, simulator_pool.members(pool, host.simulators),
+                    simulator_pool.entries_for(template, entries), now)
+                gone = "unavailable, its runtime gone" if not device.get("isAvailable", True) else why
+                items.append(item(CANDIDATE, f"the {pool} pool's warmed template of its kind, {gone}; the next new "
+                                             "member of the kind warms another", prune_command(pool, udid))
+                             if allowed else
+                             item(KEPT, f"the {pool} pool's warmed template of its kind, kept: {why}"))
             elif record: items.append(item(KEPT, f"named in the device record {record}"))
             elif disposable_name(name):
                 if idle is not None and idle >= host.min_idle:

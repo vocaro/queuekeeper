@@ -139,6 +139,25 @@ class SimulatorTests(Fixture):
         self.assertEqual(items[other["udid"]].status, disk.KEPT)
         self.assertIn("in no project's pool", items[other["udid"]].reason)
 
+    def test_a_kind_unused_for_7_days_offers_its_last_member_and_then_its_template(self):
+        stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
+        of = lambda name, kind, days: device(name, used=stamp(days), deviceTypeIdentifier=kind)
+        left, template = of("Project Duo 1", "duo", 8), of("Project Duo template (iOS-27-0)", "duo", 8)
+        kept, current = of("Project iPad 1", "ipad", 6), of("Project iPad template (iOS-27-0)", "ipad", 8)
+        orphan, fresh = of("Project Max template (iOS-27-0)", "max", 8), of("Project Mini template (iOS-27-0)", "mini", 6)
+        items = self.simulators([left, template, kept, current, orphan, fresh], pools=frozenset({"Project"}))
+        self.assertEqual(items[left["udid"]].status, disk.CANDIDATE, items[left["udid"]].reason)
+        self.assertIn("the last member of a kind unused as long", items[left["udid"]].reason)
+        self.assertEqual(items[left["udid"]].command[-2:], ["prune", left["udid"]])
+        # A template waits for its kind's last member, whose pruning deletes it; one with no member left is offered.
+        for held, why in ((template, "its kind has members"), (current, "its kind has members"), (fresh, "within 7 days")):
+            self.assertEqual(items[held["udid"]].status, disk.KEPT, why)
+            self.assertIn(why, items[held["udid"]].reason)
+        self.assertIn("within 7 days, and the lowest-numbered member", items[kept["udid"]].reason)
+        self.assertEqual(items[orphan["udid"]].status, disk.CANDIDATE, items[orphan["udid"]].reason)
+        self.assertIn("its kind has no member left", items[orphan["udid"]].reason)
+        self.assertEqual(items[orphan["udid"]].command[-2:], ["prune", orphan["udid"]])
+
     def test_the_pools_are_those_the_main_checkouts_name(self):
         (self.main / "queuekeeper.json").write_text(json.dumps({"simulatorPool": "Project"}))
         (self.development / "Unconfigured").mkdir()

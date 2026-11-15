@@ -158,7 +158,7 @@ The member pattern `POOL LABEL N` never matches a template, so no lane takes, te
 one, and `simulator-pool check` refuses its UDID. A reap may shut one down, under the same
 conditions as a member, by the owner's decision of 2026-11-04
 ([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#stale-pool-simulators)); pruning deletes one only when its
-runtime is no longer installed.
+runtime is no longer installed, or its kind has no member left and is [unused for 7 days](#pruning).
 
 - When a session takes or creates a member and its kind has no current template, it makes one under
   the template's own reservation, keyed by its name: it creates the template, boots it to
@@ -289,6 +289,15 @@ record the deletion in the device record. Delete the highest-numbered eligible m
 member takes the lowest free number. A member whose runtime is no longer installed
 follows the same rule.
 
+A kind's lowest-numbered member goes only when a session asks (`qk simulator-pool prune`, or
+[`qk disk`](shared-host.md#reclaiming-disk-space)), never at a take, and only once every member of
+the kind is unused, and its own entry released, for 7 days. Its kind's warmed template is deleted
+after it. A kind a project has left, such as one on a runtime it moved off, otherwise kept a member
+and a template for good: 11 members and 9 templates idle for 7 to 27 days on the first Mac when its
+volume filled. A kind that returns pays one warm-up and the simulator tool's approval of a new UDID
+(owner's decision, 2026-11-14). `KIND_PRUNE_AFTER` holds the 7 days, and `prunable` and
+`template_prunable` the conditions.
+
 The hour is a grace for a lane between two takes, not an idle limit: no longer one keeps a member
 (owner's decision, 2026-11-07,
 [vocaro-engineering#259](https://github.com/vocaro/vocaro-engineering/issues/259), replacing the 14
@@ -297,7 +306,7 @@ is no warmer than a new clone of it. On the first Mac that day, under one admiss
 on 18 cores, the reset took 3.0 and 8.1 s against takes of 100 to 250 s whose boot costs the same
 for a reused or a new member, and a clone takes 3.7 to 6.2 s
 ([vocaro-engineering#146](https://github.com/vocaro/vocaro-engineering/issues/146)). The lowest-numbered
-member, always kept, is the one a `--keep-state` take finds first and the one the simulator tool has
+member, kept while its kind is in use, is the one a `--keep-state` take finds first and the one the simulator tool has
 approved. The 14 days had kept 29 members, 74 GiB, there. `simulators/pool.py`'s `PRUNE_AFTER` holds
 the hour.
 

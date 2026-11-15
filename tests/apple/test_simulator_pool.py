@@ -244,8 +244,8 @@ class PoolTests(unittest.TestCase):
                  "Project Duo 5": dict(days=20), "Project Duo 6": dict(days=20), "Project Duo 7": dict(days=20),
                  "Project Duo 8": dict(days=20, available=False), "Project Duo 9": dict(days=20)}
         udids = {name: self.simctl.add(name, **values) for name, values in cases.items()}
-        # Another kind: its only member is the lowest of that kind.
-        self.simctl.add("Project Duo 10", runtime=OTHER_RUNTIME, days=40)
+        # Another kind: its only member is the lowest of that kind, used within the 7 days that keep a kind.
+        self.simctl.add("Project Duo 10", runtime=OTHER_RUNTIME, days=5)
         self.simctl.add("Other Duo 2", days=40)
         self.release_entry("Project Duo 5", udids["Project Duo 5"], days=1 / 48)
         self.release_entry("Project Duo 6", udids["Project Duo 6"], days=20)
@@ -290,6 +290,30 @@ class PoolTests(unittest.TestCase):
         self.assertIn("was released", reasons["Project Duo 4"][1])
         self.assertIn("Booted", reasons["Project Duo 6"][1])
         self.assertEqual(self.pool.prune(), ["Project Duo 5", "Project Duo 2"])
+
+    def test_the_lowest_member_goes_on_request_once_its_whole_kind_is_unused_for_7_days(self):
+        # A kind a project left, such as one on a runtime it moved off, kept its lowest member for good.
+        self.assertEqual(simulator_pool.KIND_PRUNE_AFTER, timedelta(days=7))
+        left = self.simctl.add("Project Duo 3", runtime=OTHER_RUNTIME, days=8)
+        self.simctl.add("Project Duo 1", days=8)
+        self.simctl.add("Project Duo 2", days=6)
+        ipad = "com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4"
+        self.simctl.add("Project iPad 1", ipad, days=6)
+        self.release_entry("Project iPad 2", self.simctl.add("Project iPad 2", ipad, runtime=OTHER_RUNTIME, days=8), days=6)
+        reasons = self.reasons()
+        self.assertEqual({name for name, (allowed, _) in reasons.items() if allowed}, {"Project Duo 3", "Project Duo 2"})
+        self.assertIn("more than 7 days, the last member of a kind unused as long", reasons["Project Duo 3"][1])
+        # A member of the kind used within the 7 days, its own use, or its entry's release, keeps the lowest.
+        self.assertIn("lowest-numbered member of its kind, which keeps the kind and its approval while Project Duo 2",
+                      reasons["Project Duo 1"][1])
+        self.assertIn("within 7 days, and the lowest-numbered member", reasons["Project iPad 1"][1])
+        self.assertIn("was released", reasons["Project iPad 2"][1])
+        # A take's check of its kind never lets the lowest go: the take is about to use the kind.
+        self.assertEqual([(allowed, why) for _, allowed, why in self.pool.eligible(DUO, OTHER_RUNTIME)],
+                         [(False, "the lowest-numbered member of its kind, which keeps the kind and its approval")])
+        self.assertEqual(self.pool.prune(DUO, OTHER_RUNTIME), [])
+        self.assertEqual(self.pool.prune(udids={left}), ["Project Duo 3"])
+        self.assertEqual(self.simctl.deleted(), [left])
 
     def test_a_member_used_after_it_was_found_eligible_is_not_pruned(self):
         self.simctl.add("Project Duo 1", days=40)
@@ -1872,6 +1896,30 @@ class PoolTests(unittest.TestCase):
                          ("released", source, "its runtime is no longer installed", RUNTIME))
         self.assertIn(f"PRUNED the template {template} ({source}): its runtime is no longer installed", self.log)
         self.assertEqual([found.runtime for found, _, _ in pool.templates()], [OTHER_RUNTIME])
+
+    def test_a_template_goes_with_the_last_member_of_a_kind_unused_for_7_days(self):
+        pool = self.make("me", warm=Warm())
+        member = self.simctl.add("Project Duo 1", days=40)
+        pool.release(pool.take(DUO, RUNTIME, purpose="Tests"), outcome="done")
+        template = "Project Duo template (iOS-27-1)"
+        source = devices.Record(self.path).entry(template)["device"]
+        def age(days):
+            for udid in (member, source): self.simctl.devices[udid]["lastUsedAt"] = (NOW - timedelta(days=days)).isoformat()
+            value = json.loads(self.path.read_text())
+            for entry in value["devices"].values(): entry["releasedAt"] = (NOW - timedelta(days=days)).isoformat()
+            self.path.write_text(json.dumps(value))
+        # Within the 7 days the kind keeps both, and a template whose kind has a member is never named away.
+        age(6)
+        self.assertEqual((pool.prune(), pool.prune(udids={source}), self.simctl.deleted()), ([], [], []))
+        age(8)
+        self.assertEqual((pool.prune(udids={source}), self.simctl.deleted()), ([], []))
+        # Naming the member, as `qk disk` does, deletes the kind's template after it.
+        self.assertEqual(pool.prune(udids={member}), ["Project Duo 1", template])
+        self.assertEqual(self.simctl.deleted(), [member, source])
+        entry = devices.Record(self.path).entry(template)
+        self.assertEqual((entry["state"], entry["pruned"]["udid"]), ("released", source))
+        self.assertIn("its kind has no member left and it is unused since", entry["pruned"]["why"])
+        self.assertEqual(pool.templates(), [])
 
 
 if __name__ == "__main__":
