@@ -31,7 +31,7 @@ from ..sources import ROOT, source_path
 from . import runtime_identity
 from .speech import CUE_DOMAIN, CUE_KEY
 
-# What the speech extension logs for each phrase VoiceOver speaks (VoiceCheck's guides/voiceover-simulator.md,
+# What the speech extension logs for each phrase VoiceOver speaks (AXVerify's guides/voiceover-simulator.md,
 # VoiceOver's vot log); the first one says VoiceOver has its voice.
 SPEECH = "Processing markup for voice locale"
 PREDICATE = 'process == "vot" OR process == "MauiAUSP"'

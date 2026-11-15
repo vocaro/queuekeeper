@@ -145,9 +145,9 @@ iPhone 17 Pro members, November 2026,
   after an erase took 5 s, and once failed after 53 s, where it took 2 s on a kept member.
 - With the second Mac to itself, VoiceOver was silent 26 to 45 s after `enable()` on each erased
   member and spoke at once on each kept or cloned one; on this Mac under load the difference did not
-  show ([readiness](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-simulator.md#readiness-and-silent-start)). Most kept or cloned members
+  show ([readiness](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-simulator.md#readiness-and-silent-start)). Most kept or cloned members
   put their volume back to 60 3 to 17 s after they were muted
-  ([muted speech capture](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-simulator.md#muted-speech-capture)).
+  ([muted speech capture](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-simulator.md#muted-speech-capture)).
 
 ### Warmed templates
 
@@ -163,7 +163,7 @@ runtime is no longer installed.
 - When a session takes or creates a member and its kind has no current template, it makes one under
   the template's own reservation, keyed by its name: it creates the template, boots it to
   `bootstatus -b`, reads the guest's runtime build ([runtime identity](https://github.com/vocaro/apple-engineering/blob/main/guides/simulator-testing.md#runtime-identity-in-evidence)),
-  switches VoiceOver's [sound cues](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-simulator.md#sound-cues) off and confirms them off (or
+  switches VoiceOver's [sound cues](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-simulator.md#sound-cues) off and confirms them off (or
   leaves VoiceOver cold), mutes it until the volume has read 0 twenty times in a row (a reading with
   no answer neither counts nor breaks the run, within 90 s), switches VoiceOver on until the speech
   extension logs its first phrase (`Processing markup for voice locale`), switches it off and confirms
@@ -241,7 +241,7 @@ runtime is no longer installed.
   reservation and warms a new one; so it does with one that never finished warming, and with one
   whose VoiceOver devicectl could not confirm off. VoiceOver's setting is in the data container, so a
   clone or copy of such a template would boot with VoiceOver on and speak through the Mac's output
-  once its volume came back ([muted speech capture](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-simulator.md#muted-speech-capture));
+  once its volume came back ([muted speech capture](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-simulator.md#muted-speech-capture));
   a template warmed so is recorded, shut down and never cloned or copied. devicectl's reading is of the
   running system, so the pool also reads what the shut-down template saved, `VoiceOverTouchEnabled` in
   `Library/Preferences/com.apple.Accessibility.plist`, after each warm-up and before each clone or copy,
@@ -276,7 +276,7 @@ member, and at once on a clone of a member warmed by `devicectl` alone, the temp
 had taken 63 s to speak on that just-erased member
 ([vocaro-engineering#146](https://github.com/vocaro/vocaro-engineering/issues/146)). So a clone
 saves VoiceOver's first start as well as the first boot
-([readiness](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-simulator.md#readiness-and-silent-start)).
+([readiness](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-simulator.md#readiness-and-silent-start)).
 
 ### Pruning
 
@@ -314,7 +314,7 @@ UIKit and SwiftUI answer for their own views (a `UILabel`'s label, a `UISwitch`'
 SwiftUI element) only in an app process the system has loaded their accessibility into, which it
 does while an assistive technology runs or while the simulator's `ApplicationAccessibilityEnabled`
 setting in `com.apple.Accessibility` is on. A test that reads them in process, such as an
-[accessibility snapshot](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover.md#accessibility-snapshots) of system views, asks for the
+[accessibility snapshot](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover.md#accessibility-snapshots) of system views, asks for the
 setting: `qk simulator-tests --app-accessibility`, `qk simulator-pool take --app-accessibility`
 or `pool.member(..., app_accessibility=True)` (owner's decision, 2026-11-06,
 [vocaro-engineering#181](https://github.com/vocaro/vocaro-engineering/issues/181)). It does

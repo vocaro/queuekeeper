@@ -34,7 +34,7 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
    `/usr/libexec/sshd-keygen-wrapper`: add it in Privacy & Security, Device Control and Data
    Access, and turn it on. macOS 27.2 gives Accessibility that name (its `ACCESSIBILITY` string in
    `SecurityPrivacyExtension.appex`); the list's link anchor is still `Privacy_Accessibility`. Without it `AXIsProcessTrusted()` is false for such a command (macOS 27.2 26B123,
-   2026-10-30), so the [accessibility observer](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-mac.md#accessibility-observer) exits 2
+   2026-10-30), so the [accessibility observer](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#accessibility-observer) exits 2
    and System Events sends no key.
 
    **System Events needs Accessibility of its own.** In the same list, turn on System Events
@@ -135,7 +135,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   Integrity Protection disabled. The second Mac has it enabled (2026-10-30), where bootout fails
   ("Operation not permitted while System Integrity Protection is engaged") and changes nothing.
   The banner stays: stop a session as soon as VoiceOver names it
-  ([speech capture](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-mac.md#speech-capture-and-the-key-driver)). It restarts on the
+  ([speech capture](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#speech-capture-and-the-key-driver)). It restarts on the
   second Mac as it did on the image: in EPUBLib's runs there on 2026-10-30 (macOS 27.2 26B123) the
   kernel killed it for its per-process memory limit, 15 MB (`memorystatus: killing_specific_process
   ... per-process-limit`, with over 3 million pages free), about every 10 s, 20 starts in one
@@ -157,8 +157,8 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   session, which an SSH command does not reach
   ([keychains on the right Mac](shared-host.md#keychains-on-the-right-mac)).
 - Read actual on/off state with the canonical public AppKit getter under the foreground lease
-  ([state and restoration](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration)). Read and, if a run asks, choose VoiceOver's link verbosity
-  with `voiceover-link-verbosity.swift` ([link verbosity](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-mac.md#link-verbosity)),
+  ([state and restoration](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration)). Read and, if a run asks, choose VoiceOver's link verbosity
+  with `voiceover-link-verbosity.swift` ([link verbosity](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#link-verbosity)),
   never with `defaults`; a run that chooses one chooses the setting it read again before it ends.
 
 ## Running foreground work
@@ -559,4 +559,4 @@ Checked live on the second Mac (macOS 27.2) on 2026-11-07, under admitted foregr
   `settle=True`, so it watches its own restoration hold even when the child died without a report.
 
 How a driver ends a session, and what it writes when VoiceOver will not return to its state, is in the
-toolkit's [Mac VoiceOver](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration) guide.
+toolkit's [Mac VoiceOver](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration) guide.

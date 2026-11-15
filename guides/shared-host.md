@@ -2037,7 +2037,7 @@ the candidates, with their commands: exactly what `--delete` removes.
   the build whose image CoreSimulator used last. Any other build of the identifier is superseded
   and a candidate once its own `lastUsedAt` is over 14 days old or absent, unless the toolkit
   pins it (the builds qualified for
-  [guarded VoiceOver activation](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-simulator.md), `voiceover/activation.py`'s
+  [guarded VoiceOver activation](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-simulator.md), `voiceover/activation.py`'s
   `QUALIFIED`) or a device record names it, for instance as a pool template's `runtimeBuild`. A
   template's `installedBuilds`, the builds installed when it was warmed, pins none: removing one
   only makes the pool warm that template again. An
@@ -2808,7 +2808,7 @@ build admitted as heavy work as usual.
   or when a helper expires.
 - Restore the original settings before returning control.
 
-[Background Mac testing](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md) and [Mac VoiceOver](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover-mac.md)
+[Background Mac testing](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md) and [Mac VoiceOver](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md)
 describe the drivers, key guards and VoiceOver restoration.
 
 ## Process supervision

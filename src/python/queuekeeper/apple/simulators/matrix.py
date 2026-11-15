@@ -12,7 +12,7 @@ past the pruning rule's limits are pruned (guides/simulator-pool.md, Reserved si
 With --app-accessibility each member's app processes get UIKit's and SwiftUI's own accessibility, for tests
 hosted in an app that read system views (guides/simulator-pool.md, App accessibility). With --voiceover each
 member's VoiceOver sound cues are switched off and its volume held at 0 before its tests, for a probe that
-switches VoiceOver on, and its volume is watched while they run (VoiceCheck's guides/voiceover-simulator.md, Muted speech
+switches VoiceOver on, and its volume is watched while they run (AXVerify's guides/voiceover-simulator.md, Muted speech
 capture). With --xcodegen SPEC
 the Xcode project is generated from SPEC before the build. Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
@@ -162,7 +162,7 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
                         "speech probe's: switch each member's VoiceOver sound cues off and hold its volume at 0 before "
                         "its tests, read it each second while they run, switch off a VoiceOver they left on, and print "
                         "their VOICEOVER_ lines; a member that could not be silenced, or was heard, fails "
-                        "(VoiceCheck's guides/voiceover-simulator.md, Muted speech capture)")
+                        "(AXVerify's guides/voiceover-simulator.md, Muted speech capture)")
     parser.add_argument("--build-only", action="store_true", help="build the tests for the first device and "
                         "test nothing, so that a later run with the same options finds the build up to date; the "
                         "member is taken without erasing or booting it, only to name the build's destination")
@@ -441,7 +441,7 @@ class Run:
     def silence(self, kind, device, log):
         """With --voiceover, VoiceOver's sound cues off and the volume held at 0 before any test runs: a
         simulator's VoiceOver speaks through the Mac's own output, and its cues play past the mute. False,
-        with the device failed, when either could not be done (VoiceCheck's guides/voiceover-simulator.md, Muted speech
+        with the device failed, when either could not be done (AXVerify's guides/voiceover-simulator.md, Muted speech
         capture)."""
         try:
             off, why = speech.silence_cues(device.udid), "it did not read back off"

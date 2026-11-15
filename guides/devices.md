@@ -259,6 +259,6 @@ its receipt, so `eng release` counts a pass of it at the commit as it counts any
   reservation and watched for its own notifications. Name the iPhone first when its window is
   shorter than the iPad's wait.
 - What the command does on the device is the project's, as are its own restoration steps, such as
-  switching VoiceOver off after a session stopped part way ([VoiceOver](https://github.com/vocaro/VoiceCheck/blob/main/guides/voiceover.md#physical-iphone-and-ipad)).
+  switching VoiceOver off after a session stopped part way ([VoiceOver](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover.md#physical-iphone-and-ipad)).
   A check that needs a listener or the owner's hand stays a manual step of the release, recorded
   on its tracking issue.
