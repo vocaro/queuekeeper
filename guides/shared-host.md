@@ -78,6 +78,20 @@ lane: run it with `qk run LANE`, or give the lane `"resource": "exclusive"` if i
 host to itself. Any other command, and an exclusive or `self` lane's, is not refused. On 2026-11-12 a gate suite
 sent as exclusive work held every slot of the second Mac, queued and then running, for 33 minutes, while every
 other lane went to this Mac.
+The rule has a second half: a check that times itself and voids on a busy Mac does not belong in a
+gate suite, because the suite shares the Mac. Admission looks only at a run's start, and other heavy
+work is admitted beside the gate afterward. On 2026-11-12 mpm's `gate` lane, `"resource": "heavy"`,
+ended unmeasured five times because one of its checks could not trust its timings beside other
+projects' work, once at a one-minute load of only about 35; its queue held, and one entry waited most
+of the afternoon (vocaro/mpm#108, vocaro/queuekeeper#28, vocaro/queuekeeper#24). There are two routes
+out, and either leaves the shared gate with no check that can void itself under load. The timed check
+asks for the host itself, with `qk admit --here --exclusive` from a `self` lane as above. Or it moves
+to a lane of its own with `"resource": "exclusive"`, which `queue.lanes` names after the gate, so that
+the queue runs it once the gate has passed. mpm took the second route on 2026-11-13 (vocaro/mpm#108).
+The exclusive lane alone was not enough: its first run was admitted the moment the work before it
+ended, and voided on a load average that still counted that work. Exclusive admission now settles
+before its command starts and tells the command what it read, as the paragraphs on a host that reads
+quiet say below (vocaro/queuekeeper#121).
 `--timeout` bounds the wait for admission. The command runs in the current directory with
 its output on the terminal. Like a heavy lane, `qk admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in
