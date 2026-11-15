@@ -1030,6 +1030,14 @@ has the capacity, so a session that sees the second Mac loaded and this Mac idle
 `qk run LANE` and asks nobody (the owner's decision, 2026-11-04,
 [vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)).
 `qk run --offload-only` remains for work that must not run here, below.
+A project's `provision` lane, when it has one, runs first on this Mac as it does on the second Mac:
+a lane that runs here, whether by `--here`, by its own `here` or because the second Mac had no
+room, runs after `qk run --here provision` in the same checkout, inside the lane's own admission
+(admitted itself before a self lane, which holds none), and only if that passes. Otherwise `qk run` says that the lane did not run, names the provision
+lane's log, `.build/queuekeeper/provision/run.log`, and exits with the provision lane's status. The
+`provision` lane itself, work nested in another admission or in a self lane, and work the second
+Mac was sent run no second one. Before this, a bare `qk run gate` passed or failed by the Mac it
+landed on ([vocaro/queuekeeper#19](https://github.com/vocaro/queuekeeper/issues/19)).
 `qk run --serial GROUP`, a group's serial reference, runs here too, and nested work runs inside
 the admission it inherits, here. `qk run` looks for the second Mac only when
 `QUEUEKEEPER_OFFLOAD_HOST` names one or `~/.ssh/config` defines the alias `build-host` or

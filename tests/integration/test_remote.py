@@ -2984,6 +2984,72 @@ class RemoteTests(unittest.TestCase):
                                  ("this Mac", offload_host.mac_name(), because))
                 self.assertFalse((self.project / ".build/queuekeeper/remote" / lane).exists())
 
+    def test_a_lane_run_on_this_mac_runs_after_the_provision_lane_in_its_checkout(self):
+        """vocaro/queuekeeper#19: check needs what the provision lane makes, and found it only on the second Mac."""
+        made = self.project / ".build/provisioned"
+        for arguments, because in [(("--here", "check"), "--here"), (("check",), "exclusive work holds the second Mac: ")]:
+            with self.subTest(arguments), contextlib.ExitStack() as stack:
+                made.unlink(missing_ok=True)
+                if arguments == ("check",): stack.enter_context(self.busy_second_mac())
+                status, output, error = self.run_here(*arguments)
+                self.assertEqual(status, 0, output + error)
+                self.assertTrue(made.exists())
+                receipt = json.loads((self.project / ".build/queuekeeper/check/source.json").read_text())
+                self.assertEqual(receipt["ranOn"], "this Mac")
+                self.assertTrue(receipt["hereBecause"].startswith(because), receipt["hereBecause"])
+                # The provision lane ran here as a lane of its own, with its own receipt, and said nothing.
+                provision = json.loads((self.project / ".build/queuekeeper/provision/source.json").read_text())
+                self.assertEqual((provision["exitStatus"], provision["ranOn"], provision["hereBecause"]),
+                                 (0, "this Mac", "--here"))
+                self.assertEqual(error.count("queuekeeper: scroll bars: "), 1, error)
+        # The provision lane itself runs once, and a self lane, which takes no admission, is provisioned too.
+        made.unlink()
+        self.assertEqual(self.run_here("--here", "provision")[0], 0)
+        self.assertTrue(made.exists())
+        made.unlink()
+        self.assertEqual(self.run_here("own")[0], 0)
+        self.assertTrue(made.exists())
+
+    def test_the_provision_lane_before_a_lane_here_runs_once_and_leaves_the_wait_record_the_lanes(self):
+        """vocaro/queuekeeper#19: a stacked gate reads the record for the Mac whose live process started the lane."""
+        from queuekeeper import lane_wait
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        record, ran = self.project / ".build/queuekeeper/.waits/check.json", []
+        def child(command, **options):
+            # As the nested `qk run --here provision` leaves the record it shares: started, by a process now gone.
+            ran.append(command[-3:])
+            lane_wait.write({"kind": None, "reason": None, "mac": lane_wait.HERE, "offer": None, "stranded": False,
+                             "pid": 99999999, "admitted": True, "probes": None, "since": None})
+            return 0
+        with patch.dict(os.environ, {lane_wait.VARIABLE: str(record)}), patch.object(processes, "run", child):
+            # The negative controls: the provision lane itself, nested work, a self lane's part and dispatched work.
+            self.assertIsNone(cli.provisioned_here(self.project, settings, "provision", {}, False))
+            self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, True))
+            for variable in (cli.SELF_LANE, remote.DISPATCHER):
+                with patch.dict(os.environ, {variable: "outer"}):
+                    self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, False))
+            self.assertIsNone(cli.provisioned_here(self.project, {"lanes": {"check": {}}}, "check", {}, False))
+            self.assertEqual(ran, [])
+            self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, False))
+            self.assertEqual(ran, [["run", "--here", "provision"]])
+            found = lane_wait.read(record)
+        self.assertEqual((found["pid"], found["admitted"], found["mac"]), (os.getpid(), True, lane_wait.HERE))
+
+    def test_a_lane_does_not_run_on_this_mac_when_its_provision_lane_fails_there(self):
+        """vocaro/queuekeeper#19: the lane's command never starts, and the run says which lane stopped it."""
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"]["provision"]["command"] = [sys.executable, "-c", "print('no corpus'); raise SystemExit(4)"]
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
+        commit_all(self.project)
+        status, output, error = self.run_here("--here", "gate")
+        self.assertEqual(status, 4, output + error)
+        log = self.project / ".build/queuekeeper/provision/run.log"
+        self.assertIn(f"queuekeeper: gate not run on this Mac: the provision lane exited 4 in {self.project.resolve()}; its "
+                      f"log is {log.resolve()}", error)
+        self.assertIn("no corpus", log.read_text())
+        self.assertFalse((self.project / ".build/queuekeeper/gate/run.log").exists())
+        self.assertIn("qk run gate: not run (exit 4)", error)
+
     def test_buildhost_on_a_lane_or_group_is_refused_before_anything_runs_on_either_mac(self):
         # vocaro-engineering#58 removed it. A checkout that still gives it, true to send a lane there or
         # false to keep it here, is refused, rather than having its work go where it did not say.
@@ -4113,8 +4179,11 @@ class RemoteTests(unittest.TestCase):
             stack.callback(lambda: (python.unlink(), python.symlink_to(target)))
 
         def provisioning(stack):
+            # The second Mac lacks what provisioning needs, and this Mac, which provisions before a lane here too
+            # (vocaro/queuekeeper#19), has it.
             settings = json.loads((self.project / "queuekeeper.json").read_text())
-            settings["lanes"]["provision"]["command"] = [sys.executable, "-c", "raise SystemExit(4)"]
+            settings["lanes"]["provision"]["command"] = [
+                sys.executable, "-c", f"import os; raise SystemExit(4 if os.environ.get({remote.DISPATCHER!r}) else 0)"]
             (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
             commit_all(self.project)
 
