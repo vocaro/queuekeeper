@@ -4339,6 +4339,9 @@ class QueuekeeperThatCannotStart(Fixture):
         self.assertIn("bring Queuekeeper and the folders the project's extensions load from to commits that work "
                       "together", held)
         self.assertIn("qk queue resume", held)
+        # Asked without the batch, it does not start either, so no entry is why (batch_stops_start).
+        self.assertIn("none is sent back: Queuekeeper does not start on this Mac without the batch's commits either, "
+                      "so no entry is why: bring Queuekeeper", held)
         self.assertNotIn("fail on this commit", held)
         # The cause gone, a resume lands them: nothing was sent back to be added again.
         (self.adapter / "moved").unlink()
@@ -4347,6 +4350,71 @@ class QueuekeeperThatCannotStart(Fixture):
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
         self.assertLessEqual({"first", "second"}, self.main_files())
         self.assertIsNone(mq.Queue(self.repo).held())
+
+    def breaking(self, branch):
+        """A commit on branch that has the project load an extension no folder holds, so that Queuekeeper starts on
+        main and not on the commit."""
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["extensions"].append({"module": "absent_adapter", "path": str(self.adapter)})
+        self.commit("queuekeeper.json", branch, content=json.dumps(config))
+
+    def test_an_entry_whose_own_commit_stops_queuekeeper_is_sent_back_and_the_queue_is_not_held(self):
+        # Queuekeeper starts on main alone, so the batch is why: bisected as a failed lane, with the good entry landed.
+        self.breaking("breaks")
+        self.commit("good", "good", content="a labeled point\n")
+        breaks, good = self.add("breaks", "good")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(self.state(breaks)["state"], "failed")
+        self.assertIn("the queue's lanes fail on this commit", self.state(breaks)["why"])
+        self.assertEqual(self.state(good)["state"], "landed")
+        self.assertIn("good", self.main_files())
+        self.assertNotIn("absent_adapter", run(self.repo, "git", "show", "origin/main:queuekeeper.json"))
+        self.assertIn("without the batch, so the batch's commits stop it: a failure of theirs", said.getvalue())
+        # No lane's command ran on the breaking commit: only the good entry's gate ran.
+        self.assertEqual(self.gates(), 1)
+
+    def test_only_a_start_without_the_batch_and_none_with_it_blames_the_batch(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        log = self.base / "round-gate.log"
+        resets = []
+        def asked(*answers):
+            """batch_stops_start with each start answering in turn; the commits the checkout was reset to after."""
+            del resets[:]
+            with patch.object(mq.Worker, "starts", side_effect=list(answers)), \
+                    patch.object(mq.Worker, "reset", lambda _, commit: resets.append(commit)):
+                return worker.batch_stops_start("base", "head", log)
+        # Here the lane itself showed that it does not start with the batch: only main is asked, and head restored.
+        self.assertTrue(asked(True))
+        self.assertEqual((resets, worker.probed), (["base", "head"], ""))
+        self.assertFalse(asked(False))
+        self.assertEqual(resets, ["base", "head"])
+        self.assertIn("does not start on this Mac without the batch's commits either", worker.probed)
+        # A start that says neither, as one that reached START_LIMIT, blames no entry and claims nothing.
+        self.assertFalse(asked(None))
+        self.assertEqual(worker.probed, "")
+        # The lane ran on the second Mac: a batch that starts here is not why, and main is not asked.
+        worker.ran_on = "build-host"
+        self.assertFalse(asked(True))
+        self.assertEqual(resets, [])
+        self.assertIn("so the fault is in what that Mac holds", worker.probed)
+        # One that starts here at neither is the folders' fault here too; at main alone, the batch's.
+        self.assertFalse(asked(False, False))
+        self.assertTrue(asked(False, True))
+        self.assertEqual(resets, ["base", "head"])
+
+    def test_a_start_is_read_by_its_exit(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.checkout = self.repo
+        log = self.base / "round-gate.log"
+        self.assertIs(worker.starts(log), True)
+        self.assertEqual(self.gates(), 0)
+        (self.adapter / "moved").touch()
+        self.assertIs(worker.starts(log), False)
+        self.assertIn("queuekeeper: could not start: RuntimeError", (self.base / "round-gate-start.log").read_text())
+        with patch.object(mq.processes, "run", side_effect=mq.processes.TimedOut("no end")):
+            self.assertIsNone(worker.starts(log))
+        with patch.object(mq.processes, "run", return_value=1): self.assertIsNone(worker.starts(log))
 
     def test_a_lane_whose_own_command_exits_70_still_sends_the_commit_back(self):
         # Negative control: the command ran, and qk run wrote the lane's receipt, so the status is the command's own.

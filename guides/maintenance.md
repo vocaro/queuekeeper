@@ -575,9 +575,17 @@ adapter refused the older Queuekeeper that EPUBLib's and BreezEPUB's workers ran
 that traceback with exit 1, as a failed test does, and the queues bisected their batches and sent at
 least nine entries back as failing "on this commit on top of origin/main"
 ([#158](https://github.com/vocaro/queuekeeper/issues/158)). A lane run by a Queuekeeper from before
-this change still exits 1 there, and is still read as a failure. The worker does not test whether
-`origin/main` alone starts, so an entry whose own commits break an extension holds the queue too, until
-a session removes it.
+this change still exits 1 there, and is still read as a failure.
+
+Before it holds, the worker asks whether the batch itself is the cause, since an entry may change
+`queuekeeper.json` or an extension so that nothing loads. It starts Queuekeeper in its own checkout
+on this Mac, with `--version`, which loads the extensions and runs no lane, so it takes seconds and
+no admission. When Queuekeeper starts without the batch's commits and not with them, the batch is at
+fault: it is bisected and the entry sent back as for any failed lane, and the queue is not held. When
+it starts with neither, no entry is the cause, and the queue holds as above. When the lane ran on the
+second Mac and Queuekeeper starts here with the batch's commits, the fault is in what that Mac holds,
+and the queue holds. A start that does not end within 60 seconds (`START_LIMIT`) says nothing, and
+the queue holds. The hold's reason says which of these was found.
 
 **A run with no verdict blames nobody.** Exit 3 (unmeasured), 69 (a worker that lost Local Network
 access, on which it exits instead of counting the run), 75 (no admission) and 78 (a misconfigured host) say nothing

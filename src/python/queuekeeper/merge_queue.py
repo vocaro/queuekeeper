@@ -195,6 +195,10 @@ DOCS_SUFFIX = "-docs"
 # lane (Worker.quick, vocaro-engineering#394). The spelling and docs checks took 0.2-1.3 s on this Mac at a load of
 # 15-44 on 2026-11-11; one that reaches this limit runs again admitted, as any lane, so a slow check is never a failure.
 DOCS_CHECK_LIMIT = 60
+# The seconds Queuekeeper may take to start in the worker's checkout, loading the project's extensions and running no
+# lane, when the worker asks whether a batch's commits are why it could not start (Worker.starts,
+# vocaro/queuekeeper#158). A start that reaches this limit says nothing, and the queue holds as it would unasked.
+START_LIMIT = 60
 # What a gate's lanes return when `qk queue remove` took an entry it tests out of the queue, which stopped them by the
 # cancel a thrown-away stacked gate's lanes end with, here or on the second Mac, freeing their admission there: no
 # verdict on anything, and what is left of the batch gates again (Worker.gate, vocaro-engineering#247). The gate looks
@@ -2831,6 +2835,7 @@ class Worker:
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
         self.failed_load = None  # load_words for that lane, or None (gate)
         self.tooling = None  # why Queuekeeper itself could not start for that lane, or None (tool_unstarted)
+        self.probed = ""  # what starting Queuekeeper with and without the batch found (batch_stops_start)
         self.group_failed = []  # the lanes of the last group lane that did not pass (read_group)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
         self.added = None  # (entry, why) of the entry that adds the tests the last rerun passed alone, for blame (rerun)
@@ -3599,10 +3604,49 @@ class Worker:
         return (f"Queuekeeper itself did not start {'there' if there else 'on this Mac'}, before "
                 f"the lane's command, with exit {lane_results.TOOL_NOT_STARTED}: " + (why or "its log says why"))
 
+    def starts(self, log):
+        """Whether Queuekeeper starts in this checkout as it is now, on this Mac: True when the command every lane
+        begins with, the project's launcher or the toolkit's qk, loads the project's extensions and exits 0, False
+        when it exits TOOL_NOT_STARTED, and None when it says neither, as one that did not end within START_LIMIT.
+        It runs no lane and waits for no admission: `--version` is read once the extensions have loaded (cli.main).
+        What it printed is kept beside log."""
+        command = toolkit_command(self.checkout, ["--version"], self.toolkit_root())
+        try:
+            status_ = processes.run(command, cwd=self.checkout, log_path=log.with_name(f"{log.stem}-start.log"),
+                                    timeout=START_LIMIT, env=self.environment)
+        except (OSError, processes.TimedOut): return None
+        return True if status_ == 0 else False if status_ == lane_results.TOOL_NOT_STARTED else None
+
+    def batch_stops_start(self, base, head, log):
+        """Whether the batch's own commits are why Queuekeeper could not start for the last gate's lane (tooling):
+        on this Mac, with this Queuekeeper and the folders beside the project as they are, it starts in the project at
+        base, without the batch, and not at head, with it. Then the lane's exit is a failure of the batch, as an entry
+        that names an extension that does not load is, and the batch is bisected and an entry sent back as for any
+        failed lane, where a hold would stop every project's entry behind it until a session found the one to remove
+        (the owner's decision of 2026-11-15, vocaro/queuekeeper#158). Any other reading leaves the hold: it starts at
+        neither, as on 2026-11-15, when a folder beside the project had moved; or the lane ran on the second Mac and
+        Queuekeeper starts here at head, so that the fault is in what that Mac holds. The checkout is at head when
+        this is asked, and is left there. probed says what was found, for the hold's reason (start_fix)."""
+        self.probed = ""
+        if self.ran_on and self.starts(log) is not False:
+            self.probed = "Queuekeeper starts on this Mac with the batch's commits, so the fault is in what that Mac holds"
+            return False
+        try:
+            self.reset(base)
+            without = self.starts(log)
+        finally: self.reset(head)
+        if without:
+            self.probed = ""
+            return True
+        self.probed = ("Queuekeeper does not start on this Mac without the batch's commits either, so no entry is why"
+                       if without is False else "")
+        return False
+
     def start_fix(self):
         """What a session does about the lane the last gate could not start (unstarted), in a hold's reason."""
         if self.tooling:
-            return ("bring Queuekeeper and the folders the project's extensions load from to commits that work "
+            return ((f"{self.probed}: " if self.probed else "")
+                    + "bring Queuekeeper and the folders the project's extensions load from to commits that work "
                     "together on that Mac, as `qk queue resume` does for the worker's own Queuekeeper by starting one "
                     "from the current checkout, or remove the entry whose commits changed what the project loads")
         return "make the lane's command start, or remove the entry whose commits took away what it runs"
@@ -4562,6 +4606,12 @@ class Worker:
             if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
             return NO_VERDICT_OUTCOME
         unstarted = runner.unstarted(result)
+        if unstarted and runner.tooling and runner.batch_stops_start(base, head, log):
+            # Queuekeeper starts without the batch and not with it: the batch's own commits stop it, which is a
+            # failure of theirs and no fault of this Mac's, so they are bisected and sent back (#158).
+            self.say(f"{runner.failed_lane} could not start{runner.ran_where}: {unstarted}; Queuekeeper starts on "
+                     f"this Mac at {base[:12]}, without the batch, so the batch's commits stop it: a failure of theirs")
+            unstarted = None
         if unstarted:
             # Its command never ran, so it says nothing of the commits, and running it again would not start it
             # either: no entry is sent back or bisected, and a session makes the lane start (vocaro/queuekeeper#108).

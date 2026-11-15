@@ -256,7 +256,8 @@ entry waiting and none sent back: `qk run` exited 70 and left no receipt of the 
 was tested. The reason quotes the error, names the Mac, and says to bring Queuekeeper and the folders
 the project's extensions load from to commits that work together
 ([Maintenance](../guides/maintenance.md#the-merge-queue), *A lane Queuekeeper could not start for
-blames nobody*).
+blames nobody*). An entry whose own commits stop Queuekeeper from starting is not held for: the
+worker finds that Queuekeeper starts without the batch, and sends the entry back as for a failed lane.
 
 ## Documentation changes
 
