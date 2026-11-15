@@ -28,6 +28,9 @@ statement of what it needs from the machine:
   worktree can ask whether that commit already passed a lane.
 - **Test counts.** A lane can require a minimum number of executed tests, so a run that silently
   selects nothing fails. Counts are read from unittest, pytest, XCTest and Swift Testing output.
+- **Arguments.** `qk run LANE -- ARGUMENTS` appends the arguments to the lane's command, to run
+  some of its tests. A lane whose command selects its own tests says `"arguments": false`, and such
+  a run is then refused at once, with exit status 2, before anything is staged or sent to another Mac.
 - **Groups.** A lane group runs its members side by side under one admission.
 - **Budgets.** `budgetMinutes` warns when the median of the gate's own work, from its admission to its
   end, drifts past the target, and names the slowest parts, the median wait for admission and the median

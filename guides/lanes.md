@@ -64,6 +64,23 @@ file the checkout does not hold, exits 127 with `outcome` `not-started` and why 
 and the queue blames no commit for it ([#108](https://github.com/vocaro/queuekeeper/issues/108);
 [maintenance](maintenance.md#the-merge-queue)).
 
+A run that failed or ended unmeasured, and whose log counts no test and names none, ends its summary
+with what its command last said, under `the last of its output:`: the log's last 5 lines that are not
+blank and not Queuekeeper's own, each cut at 300 characters, or for an unmeasured run its `Unmeasured:`
+lines when it has any (`lane_report.own_output`). A run that Queuekeeper explains itself in a `why:`
+line, a lane group, and a run that stopped before its tests, which already quotes its last error, quote
+nothing more. On 2026-11-13 BreezEPUB's `ways-in` lane, given two `-only-testing` arguments, exited 2
+on the second Mac, and the summary said only `no test counts in its log` and `no failing test is named`
+while the dispatch's `run.log` held the script's one line, `ways-in-native selects its own tests for
+each run and takes no arguments`
+([vocaro/queuekeeper#137](https://github.com/vocaro/queuekeeper/issues/137)).
+
+A lane whose command takes no arguments says `"arguments": false`. `qk run LANE -- ARGUMENTS` then
+exits 2 at once, as does `--repeat`, whose series reaches the command as arguments, naming the
+arguments it was given, before the lane is staged, admitted or sent to the second Mac, and its summary
+is `qk run LANE: not run (exit 2); no tests ran`. Left out or `true`, the arguments are appended to the
+command as before. A lane group takes no arguments already, and does not take the key.
+
 A run's receipt also keeps the load of the Mac that ran it, however the run ended, under `load`:
 each reading of its one-minute load, its CPU's busy share and the busy limit that share is judged
 by, taken every 60 seconds while the command runs and once at its end, with `null` for what could

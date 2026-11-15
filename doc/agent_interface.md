@@ -21,7 +21,8 @@ Exit codes separate the cases an agent must treat differently:
 ## Output
 
 - **Fixed status lines** end every run with the verdict, the test counts, up to twenty failing
-  tests with file and line, and the path of the full log.
+  tests with file and line, and the path of the full log. A run that failed or ended unmeasured
+  with no test counted or named also quotes the last lines of its command's output.
 - **Refusals** say what did not run and the command to run next.
 - **JSON** is available from `land`, `queue add`, `queue wait`, `queue result`, `queue status`,
   `queue logs`, `queue doctor`, `queue placement`, `queue events`, `admissions now` and `doctor`.

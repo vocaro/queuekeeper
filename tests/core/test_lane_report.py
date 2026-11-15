@@ -221,6 +221,15 @@ class BeforeTests(unittest.TestCase):
                      "/p/T.swift:3: -[M.T test] : Test skipped - Unmeasured: busy\nerror: then\n"):
             self.assertIsNone(lane_report.before_tests(text), text)
 
+    def test_a_commands_own_last_output_is_its_last_lines_or_an_unmeasured_runs_own_reasons(self):
+        log = "building\n\nUnmeasured: check A voided itself\n  indented \nqueuekeeper: its own note\nthe end\n"
+        self.assertEqual(lane_report.own_output(log), ["building", "Unmeasured: check A voided itself", "  indented", "the end"])
+        self.assertEqual(lane_report.own_output(log, unmeasured=True), ["Unmeasured: check A voided itself"])
+        self.assertEqual(lane_report.own_output("no reason given\n", unmeasured=True), ["no reason given"])
+        self.assertEqual(lane_report.own_output("\n \nqueuekeeper: only its own\n"), [])
+        self.assertEqual(lane_report.own_output("".join(f"{number}\n" for number in range(20))),
+                         [str(number) for number in range(20 - lane_report.OUTPUT_SHOWN, 20)])
+
     def test_a_log_that_says_nothing_failed_quotes_nothing(self):
         for text in ("", "the build broke\n", "queuekeeper: the build failed: compileFirst exited 65, and no test ran\n"):
             self.assertIsNone(lane_report.before_tests(text), text)
@@ -409,7 +418,57 @@ class Summary(unittest.TestCase):
     def test_a_failed_lane_that_names_no_test_says_where_its_log_is(self):
         self.configure(lane=self.printing("the build broke", 65))
         lines = self.qk("lane")[1]
-        self.assertEqual(lines[-2], f"  no failing test is named; the log is {self.lane_dir / 'run.log'}")
+        self.assertEqual(lines[-4:], [f"  no failing test is named; the log is {self.lane_dir / 'run.log'}",
+                                      "  the last of its output:", "    the build broke",
+                                      f"  receipt: {self.lane_dir / 'source.json'}"])
+
+    def test_a_lane_sent_to_the_second_mac_whose_command_refused_its_arguments_says_what_the_command_said(self):
+        """BreezEPUB's ways-in on 2026-11-13: the dispatch's run.log held the lane script's one line, and the summary
+        said only that the log had no test counts and named no failing test (vocaro/queuekeeper#137)."""
+        runs = self.root / ".build/queuekeeper/remote" / lane_report.remote.DISPATCHES / "ways-in"
+        ran = runs / f"20270115T080000Z-{os.getpid()}"
+        ran.mkdir(parents=True)
+        refusal = "ways-in-native selects its own tests for each run and takes no arguments"
+        (ran / "run.log").write_text(refusal + "\n")
+        (ran / "source.json").write_text(json.dumps({"host": "build-host", "result": {"exitStatus": 2, "receipt": {
+            "outcome": "failed", "load": {"readings": [[12.5, 40.0, 75.0]], "every": 60}}}}))
+        report = lane_report.Report()
+        report.root, report.lane, report.began = self.root, "ways-in", 1_800_000_000  # 2027-01-15T08:00:00Z
+        lines = report.lines(2, None)
+        self.assertEqual(lines, ["qk run ways-in: failed (exit 2), on build-host", "  tests: no test counts in its log", LOAD,
+                                 f"  no failing test is named; the log is {ran / 'run.log'}",
+                                 "  the last of its output:", f"    {refusal}",
+                                 f"  receipt: {ran / 'source.json'}"])
+        # The summary reads back whole, and nothing that reads a lane's log again reads the quoted lines as a result.
+        said = lane_report.summary("\n".join(lines), "ways-in")
+        self.assertEqual((said["tests"], said["failed"], said["names"]), ("no test counts in its log", None, []))
+        # A longer log gives its last OUTPUT_SHOWN lines, none blank and none queuekeeper's own, each cut at QUOTED.
+        (ran / "run.log").write_text("".join(f"step {number}\n\n" for number in range(9)) + "x" * 400
+                                     + "\nqueuekeeper: a note of its own\n")
+        lines = report.lines(2, None)
+        at = lines.index(lane_report.OUTPUT_HEAD)
+        self.assertEqual(lines[at + 1:-1], [*(f"    step {number}" for number in range(5, 9)), "    " + "x" * lane_report.QUOTED])
+        # The controls: a passed run, a log that counts or names a test or is empty, and a run queuekeeper explains
+        # quote nothing.
+        self.assertNotIn(lane_report.OUTPUT_HEAD, report.lines(0, None))
+        for log in (UNITTEST_FAILED, "Ran 2 tests in 0.1s\n\nOK\nthen it refused\n",
+                    "/p/T.swift:3: -[M.T test] : Test skipped - Unmeasured: busy\nthen it refused\n", ""):
+            (ran / "run.log").write_text(log)
+            self.assertNotIn(lane_report.OUTPUT_HEAD, report.lines(2, None), log)
+        (ran / "run.log").write_text(refusal + "\n")
+        report.explain("Expected at least 2 executed tests; observed 0")
+        self.assertNotIn(lane_report.OUTPUT_HEAD, report.lines(2, None))
+
+    def test_an_unmeasured_run_that_names_no_test_quotes_the_projects_own_reason_or_its_last_lines(self):
+        reason = "Unmeasured: the timing check voided its own measurement; rerun on an idle Mac"
+        self.configure(lane=self.printing(f"building\n{reason}\nexit 3", lane_results.UNMEASURED))
+        status, lines = self.qk("lane")
+        self.assertEqual(status, lane_results.UNMEASURED)
+        self.assertEqual(lines[-6:], ["qk run lane: unmeasured (exit 3), on this Mac", "  tests: no test counts in its log", LOAD,
+                                      "  the last of its output:", f"    {reason}",
+                                      f"  receipt: {self.lane_dir / 'source.json'}"])
+        self.configure(lane=self.printing("the Mac is too busy to say", lane_results.UNMEASURED))
+        self.assertEqual(self.qk("lane")[1][-3:-1], ["  the last of its output:", "    the Mac is too busy to say"])
 
     def test_a_lane_that_failed_before_any_test_is_told_apart_from_a_test_failure(self):
         self.configure(lane=self.printing(SETUP_FAILED, 1))
@@ -451,8 +510,8 @@ class Summary(unittest.TestCase):
                 self.configure(lane=self.printing(text, status))
                 result, lines = self.qk("lane")
                 self.assertEqual(result, status)
-                self.assertEqual(lines[-5:-2], [f"qk run lane: failed (exit {status}), on this Mac",
-                                                "  tests: no test counts in its log", LOAD])
+                at = lines.index(f"qk run lane: failed (exit {status}), on this Mac")
+                self.assertEqual(lines[at + 1:at + 3], ["  tests: no test counts in its log", LOAD])
                 self.assertNotIn("beforeTests", json.loads((self.lane_dir / "source.json").read_text()))
 
     def test_a_lane_that_exits_unmeasured_or_a_failed_build_keeps_its_status(self):
@@ -490,6 +549,9 @@ class Summary(unittest.TestCase):
         status, lines = self.qk("lane")
         self.assertEqual(status, 2)
         self.assertIn("qk run lane: failed (exit 2), on this Mac", lines)
+        # And its summary says what the command said (vocaro/queuekeeper#137).
+        self.assertEqual(lines[-3:-1], ["  the last of its output:",
+                                        "    error: a lane whose command runs simulator-tests ends with \"--\""])
 
     def test_a_too_short_run_says_why_in_its_summary(self):
         self.configure(lane={**self.printing("Ran 1 test in 0.1s\n\nOK"), "minimumTests": 2})

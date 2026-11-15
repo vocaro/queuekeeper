@@ -508,6 +508,46 @@ class ConfigurationTests(unittest.TestCase):
                 with self.subTest(arguments), self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
                     cli.main(["--project", directory, *arguments])
 
+    def test_a_lane_that_takes_no_arguments_refuses_them_before_anything_runs_or_is_sent(self):
+        """BreezEPUB's ways-in on 2026-11-13 refused two -only-testing arguments in its own script, after the run had
+        been staged and sent to the second Mac (vocaro/queuekeeper#137)."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ran = root / "ran"
+            touch = [sys.executable, "-c", f"import pathlib; pathlib.Path({str(ran)!r}).touch()"]
+            def configure(**keys):
+                (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                    "ways-in": {"command": touch, **keys}}}))
+            def run(*arguments):
+                ran.unlink(missing_ok=True)
+                with patch.object(cli, "source_identity", return_value={}), contextlib.redirect_stderr(StringIO()) as error, \
+                        patch.object(cli.lane_wait, "begin", wraps=cli.lane_wait.begin) as begun, \
+                        patch.object(cli.remote, "first", wraps=cli.remote.first) as offered:
+                    status = cli.main(["--project", directory, "run", "ways-in", *arguments])
+                return status, error.getvalue().splitlines(), ran.exists(), begun.called or offered.called
+            configure(arguments=False)
+            for arguments in (["--", "-only-testing:UITests/WaysInTests/testOne", "two words"], ["--repeat", "2"]):
+                with self.subTest(arguments):
+                    status, said, started, placed = run(*arguments)
+                    self.assertEqual((status, started, placed), (2, False, False), said)
+                    self.assertFalse((root / ".build/queuekeeper/ways-in").exists())
+                    self.assertEqual(said[-1], "qk run ways-in: not run (exit 2); no tests ran")
+            status, said, started, placed = run("--", "-only-testing:UITests/WaysInTests/testOne", "two words")
+            self.assertEqual(said[-2], "queuekeeper: ways-in takes no arguments, as its lane says (\"arguments\": false), and was "
+                                       "given -only-testing:UITests/WaysInTests/testOne 'two words'; nothing ran. Run it "
+                                       "without them: qk run ways-in")
+            # Without arguments it runs, and a lane that says true, or nothing, takes them as before.
+            self.assertEqual(run()[::2], (0, True))
+            for keys in ({"arguments": True}, {}):
+                configure(**keys)
+                self.assertEqual(run("--", "x")[::2], (0, True), keys)
+            # The key is true or false, and a lane's alone: a group already takes none.
+            configure(arguments="no")
+            with self.assertRaisesRegex(ValueError, "ways-in.arguments must be true or false"): config.load(root)
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                "ways-in": {"command": touch}, "group": {"parallel": ["ways-in"], "arguments": False}}}))
+            with self.assertRaisesRegex(ValueError, "Lane group group takes only"): config.load(root)
+
     def test_a_repeated_run_is_a_series_its_command_reports_or_it_is_unmeasured(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

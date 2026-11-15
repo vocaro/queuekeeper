@@ -107,7 +107,8 @@
                 "deviceRunMinutes",
                 "stall",
                 "unity",
-                "chips"
+                "chips",
+                "arguments"
               ]
             }
           },
@@ -165,6 +166,10 @@
           "minimumTests": {
             "type": "integer",
             "minimum": 1
+          },
+          "arguments": {
+            "description": "Whether the lane's command takes arguments. A lane that says false selects its own tests: qk run LANE -- ARGUMENTS, and --repeat, whose series reaches the command as arguments, are refused at once with exit status 2, before the lane is staged, admitted or sent to the second Mac. Left out or true, the arguments are appended to the command",
+            "type": "boolean"
           },
           "timeout": {
             "type": "integer",

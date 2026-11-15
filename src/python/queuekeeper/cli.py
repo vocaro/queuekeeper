@@ -1112,6 +1112,12 @@ def perform(argv, report):
                                                      *[word for test in args.only for word in ("--only", test)]]
             # Lane arguments, so that qk simulator-tests finds them on whichever Mac runs the lane.
             extra = [*series, *(args.passed or [])]
+            # A lane that says it takes none refuses them here, before it is staged, admitted or sent to the second
+            # Mac. On 2026-11-13 a lane's own script refused two -only-testing arguments only after the run had
+            # been sent there (vocaro/queuekeeper#137).
+            if extra and lane.get("arguments") is False:
+                raise ValueError(f"{args.lane} takes no arguments, as its lane says (\"arguments\": false), and was "
+                                 f"given {shlex.join(extra)}; nothing ran. Run it without them: qk run {args.lane}")
             # A series' lane runs N times inside its one admission, within N times its limit (guides/simulator-pool.md).
             limit = parallel.lane_timeout(lane, extra)
             lane_wait.begin(root, args.lane)

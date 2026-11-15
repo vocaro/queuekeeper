@@ -11,7 +11,9 @@ vocaro/queuekeeper#133).
 
 The lines go to stderr with queuekeeper's other notes, after stdout is flushed, so that they are last however the two are
 joined. They begin `qk run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
-again by what runs it: the merge queue's log, lane_results.counted and failure_records read none of them as a result. The
+again by what runs it: the merge queue's log, lane_results.counted and failure_records read none of them as a result. A
+run that ended with no verdict of a pass, and whose log counts no test and names none, has its command's own last
+lines quoted, which are then no test's (own_output, vocaro/queuekeeper#137). The
 second Mac's own run prints none: the Mac that sent it prints the summary from what came back. The merge queue reads a
 summary back by its own lines alone (summary), to name a failed gate's tests in a send-back (vocaro/queuekeeper#83).
 """
@@ -69,6 +71,10 @@ STARTED = re.compile(r"^Test (?:Suite|Case) '[^'\n]+' started"
 ERROR_LINE = re.compile(r"^.*\b(?:error|errors|fail|failed|failure|fatal)\b.*$", re.M | re.I)
 # The most of that line a summary quotes.
 QUOTED = 300
+# The most lines of a lane's own output a summary quotes (own_output), each cut at QUOTED.
+OUTPUT_SHOWN = 5
+# The line a summary puts over them.
+OUTPUT_HEAD = "  the last of its output:"
 # A summary as Report.lines writes it, for what reads one back (summary): its first line, `qk run LANE: VERDICT...`,
 # or `eng run LANE:` in logs from before the command's rename, and its lines indented by two spaces after it.
 VERDICTS = ("passed", "failed", "stopped", "not run", "unmeasured")
@@ -151,6 +157,18 @@ def before_tests(text):
         return None
     errors = [line.strip() for line in ERROR_LINE.findall(text) if not line.startswith("queuekeeper:")]
     return errors[-1][:QUOTED] if errors else None
+
+
+def own_output(text, unmeasured=False):
+    """What a lane's command itself last said, for the summary of a run that failed or ended unmeasured and whose log
+    counts no test and names none: the last OUTPUT_SHOWN lines of text, its log, that are not blank and not
+    queuekeeper's own, each cut at QUOTED. For an unmeasured run, the lines in which the log gives the project's own
+    reason instead, when it has any (lane_results.unmeasured_reasons, vocaro/queuekeeper#30). On 2026-11-13 a lane
+    whose script refused its arguments left its one line, the whole answer, only in its dispatch's run.log
+    (vocaro/queuekeeper#137)."""
+    said = lane_results.unmeasured_reasons(text) if unmeasured else []
+    said = said or [line.rstrip() for line in text.splitlines() if line.strip() and not line.startswith("queuekeeper:")]
+    return [line[:QUOTED] for line in said[-OUTPUT_SHOWN:]]
 
 
 def not_started(receipt):
@@ -488,6 +506,12 @@ class Report:
         elif verdict == "failed" and not names:
             log = directory / "run.log" if self.group is None else directory / "lanes"
             lines.append(f"  no failing test is named; the log is {log}")
+        # The command's own last words, when they are all the run left: nothing here counts or names a test, and
+        # queuekeeper gives no reason of its own (vocaro/queuekeeper#137).
+        if known and verdict in ("failed", "unmeasured") and self.group is None and self.complete and quoted is None \
+                and not why and not names and not kept and counts(joined) is None and not unmeasured_count(joined):
+            said = own_output(joined, verdict == "unmeasured")
+            if said: lines += [OUTPUT_HEAD, *(f"    {line}" for line in said)]
         if verdict != "passed": lines += unreached_lines(directory, self.lane, self.group)
         if kept:
             more = f" (and {len(kept) - 1} more under {directory / 'results'})" if len(kept) > 1 else ""

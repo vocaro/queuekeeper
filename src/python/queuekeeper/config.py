@@ -68,7 +68,7 @@ def load(root):
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes", "stall", "unity", "chips"})
+                       "deviceRunMinutes", "stall", "unity", "chips", "arguments"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
 EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
@@ -123,7 +123,7 @@ def parse(source):
         if not isinstance(lane, dict) or set(lane) - LANE_KEYS - set(hooks.LANE_KEYS):
             raise ValueError(f"Invalid lane {name}")
         apps(name, lane)
-        for key in ["foreground", "model", "wholeHost", "unlockedScreen"]:
+        for key in ["foreground", "model", "wholeHost", "unlockedScreen", "arguments"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
         resource_of(name, lane)
