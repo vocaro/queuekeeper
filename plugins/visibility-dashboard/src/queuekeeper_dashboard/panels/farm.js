@@ -58,10 +58,26 @@ QK.panel("farm", {
         found.health ? h("p", { class: "sub wrap warning" }, found.health) : null,
       ];
     }
+    // A Mac's or device's icon, by its kind, with a badge for its state: good, bad (faded), warning or reserved.
+    const BADGES = { good: "✓", bad: "✕", warning: "!", reserved: "" };
+    function icon(kind, badge, label) {
+      return h("span", { class: "device-icon" + (badge === "bad" ? " off" : ""), role: "img", "aria-label": label },
+        h("img", { src: "/static/device-" + (["laptop", "desktop", "iphone", "ipad"].includes(kind) ? kind : "other") + ".svg", alt: "" }),
+        badge ? h("span", { class: "badge " + badge, "aria-hidden": "true" }, BADGES[badge]) : null);
+    }
+    function macBadge(found) {
+      const load = found.load || {};
+      if (found.state !== "observed" || load.error) return "bad";
+      const over = typeof load.cpuBusy === "number" && typeof load.busyLimit === "number" && load.cpuBusy >= load.busyLimit;
+      return over || ["warning", "critical"].includes(load.memory) || load.health || load.screen === "locked" ? "warning" : "good";
+    }
     function host(found) {
       const slots = found.slots, read = found.state === "observed";
+      const hardware = (found.load || {}).hardware || {}, kinds = { laptop: "laptop", desktop: "desktop" };
       return h("div", { class: "card" },
-        h("h2", null, found.name, read ? null : h("span", { class: "warning" }, found.state)),
+        h("div", { class: "machead" }, icon(hardware.kind, macBadge(found), (kinds[hardware.kind] || "Mac") + ", " + macBadge(found)),
+          h("div", null, h("h2", null, found.name, read ? null : h("span", { class: "warning" }, found.state)),
+            hardware.model ? h("span", { class: "sub mono" }, hardware.model) : null)),
         read ? [
           h("div", { class: "bar" }, h("i", { width: Math.round(100 * slots.used / Math.max(1, slots.most)) + "%" })),
           h("div", { class: "sub" }, slots.used + " of " + slots.most + " slots in use"
@@ -89,9 +105,13 @@ QK.panel("farm", {
           record.error ? h("p", { class: "danger wrap" }, record.error) : null,
           record.connectionError ? h("p", { class: "warning sub wrap" }, "Connection status could not be checked: " + record.connectionError) : null,
           record.deferredTo ? h("p", { class: "warning wrap" }, "Physical-device reservations are managed on " + record.deferredTo + ". Open its dashboard to see those reservations.") : null,
-          record.devices.length ? h("ul", { class: "rows pairs" }, record.devices.map(device => h("li", null,
+          record.devices.length ? h("ul", { class: "rows pairs devices" }, record.devices.map(device => h("li", null,
+            icon(device.kind, device.state === "needs recovery" || device.connection === "connecting" ? "warning"
+              : ["notDetected", "disconnected", "unavailable"].includes(device.connection) ? "bad"
+              : device.state !== "released" ? "reserved" : device.connection === "connected" ? "good" : null,
+              (device.model || device.kind || "device") + ", " + (connectionNames[device.connection] || "connection unknown")),
             h("span", null, h("b", null, device.name),
-              h("div", { class: "sub wrap" }, [device.purpose, device.owner ? "Owner: " + device.owner : null,
+              h("div", { class: "sub wrap" }, [device.model, device.purpose, device.owner ? "Owner: " + device.owner : null,
                 device.releaseBy ? "Expected release: " + device.releaseBy : null,
                 device.waiting ? QK.count(device.waiting, "recorded waiter") : null].filter(Boolean).join(" · "))),
             h("span", { class: "device-status" },
@@ -101,6 +121,9 @@ QK.panel("farm", {
               h("span", { class: "pill", title: "Reservation status" }, reservationNames[device.state] || device.state))))) : !record.error && !record.deferredTo
               ? h("p", { class: "sub" }, "No physical devices recorded yet. Devices appear after a reservation with qk devices take or qk devices reserve.") : null,
         ]),
+      // The icons' license, CC BY 4.0, asks for credit and a link (THIRD_PARTY_NOTICES.md).
+      h("p", { class: "sub credit" }, "Device icons by ", h("a", { href: "https://streamlinehq.com", rel: "noopener" }, "Streamline"),
+        ", ", h("a", { href: "https://creativecommons.org/licenses/by/4.0/", rel: "noopener license" }, "CC BY 4.0"), "."),
       data.readAt ? h("p", { class: "sub" }, "Every project's work on each Mac. Read " + QK.ago(data.readAt) + "."
         + (data.error ? " The last reading failed: " + data.error : "")) : null);
   },

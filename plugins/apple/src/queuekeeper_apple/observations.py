@@ -20,8 +20,12 @@ def connections_of(answer):
         if hardware.get("reality") == "simulated" or not offload_host.PHYSICAL.fullmatch(udid): continue
         connection = properties.get("connection") or device.get("connectionProperties") or {}
         state = connection.get("state") or connection.get("tunnelState")
+        kind = str(hardware.get("deviceType") or "")
         found[udid] = {"connection": state if state in ("connected", "disconnected", "connecting", "unavailable") else "unknown",
-                       "transport": connection.get("transportType")}
+                       "transport": connection.get("transportType"),
+                       # What the dashboard's icon and line name: iPhone, iPad or another kind, and its marketing name.
+                       "kind": {"iphone": "iphone", "ipad": "ipad"}.get(kind.lower(), "other"),
+                       "model": hardware.get("marketingName") if isinstance(hardware.get("marketingName"), str) else None}
     return found
 
 
@@ -58,7 +62,8 @@ def read_devices():
                           "releaseBy": entry.get("expectedReleaseBy") if state != "released" else None,
                           "waiting": len(record.get("queues", {}).get(key, [])),
                           **connections.get(str(entry["device"]).upper(), {
-                              "connection": "notDetected" if checked is not None else "unknown", "transport": None})})
+                              "connection": "notDetected" if checked is not None else "unknown", "transport": None,
+                              "kind": "other", "model": None})})
         return {"devices": sorted(found, key=lambda item: item["name"]),
                 "deferredTo": record.get(offload_host.DEFERRED), "error": None,
                 "connectionError": connection_error, "checkedAt": checked}

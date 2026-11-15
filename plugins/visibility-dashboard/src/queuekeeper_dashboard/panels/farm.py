@@ -35,7 +35,19 @@ def load_of(pressure, screen, where="this Mac"):
     return {"cpuBusy": number(pressure.get("cpuBusy")), "busyLimit": number(pressure.get("busyLimit")),
             "load": number(pressure.get("load")), "memory": MEMORY.get(pressure.get("memory")),
             "screen": screen.get("state") if screen.get("state") in ("locked", "unlocked") else "unknown",
-            "error": pressure.get("error"), "health": (host_health.warnings(pressure.get("health"), where) or [None])[0]}
+            "error": pressure.get("error"), "health": (host_health.warnings(pressure.get("health"), where) or [None])[0],
+            "hardware": hardware_of(pressure.get("hardware"))}
+
+
+KINDS = ("laptop", "desktop")
+
+
+def hardware_of(found):
+    """A Mac's model and kind from its pressure answer (offload_host.hardware): its kind `other` when unknown or
+    absent, as from a second Mac whose toolkit predates the reading."""
+    found = found if isinstance(found, dict) else {}
+    model = found.get("model") if isinstance(found.get("model"), str) else None
+    return {"model": model, "kind": found.get("kind") if found.get("kind") in KINDS else "other"}
 
 
 def read_detail():

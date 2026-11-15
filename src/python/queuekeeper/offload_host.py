@@ -3364,7 +3364,27 @@ def pressure():
     try: limit, directory = limits(sources)["busyLimit"], slot_directory()
     except (ValueError, RuntimeError) as error: return {"error": str(error)}
     return {"load": load, "cpuBusy": cpu_busy(directory), "busyLimit": limit, "memory": memory_level(),
-            **limit_sources(sources)}
+            "hardware": hardware(), **limit_sources(sources)}
+
+
+_hardware = None
+
+
+def hardware(model=None, battery=None):
+    """This Mac's model identifier (hw.model) and its kind, for the dashboard's icon: `laptop` when it has a built-in
+    battery or its model names a MacBook, `desktop` for another Mac with no battery, and `unknown` when either cannot
+    be read. A model alone cannot tell: Apple silicon names laptops and desktops alike MacNN,N. model and battery
+    are the readings, `sysctl -n hw.model` and `ioreg -rc AppleSmartBattery -d1`, read once a process when None."""
+    global _hardware
+    if model is None and battery is None and _hardware is not None: return _hardware
+    found_model = model if model is not None else output(["sysctl", "-n", "hw.model"])
+    found_battery = battery if battery is not None else output(["ioreg", "-rc", "AppleSmartBattery", "-d1"])
+    if found_model and found_model.startswith("MacBook"): kind = "laptop"
+    elif found_battery is None or not found_model: kind = "unknown"
+    else: kind = "laptop" if '"BatteryInstalled" = Yes' in found_battery else "desktop"
+    found = {"model": found_model or None, "kind": kind}
+    if model is None and battery is None: _hardware = found
+    return found
 
 
 def guarded_update(request):

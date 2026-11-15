@@ -109,14 +109,16 @@ PANELS = {
         "readAt": ago(4), "error": None,
         "hosts": [
             {"name": "This Mac", "role": "here", "state": "observed", "reasons": [],
-             "load": {"cpuBusy": 38, "busyLimit": 85, "load": 6.4, "memory": "normal", "screen": "unlocked", "error": None},
+             "load": {"cpuBusy": 38, "busyLimit": 85, "load": 6.4, "memory": "normal", "screen": "unlocked", "error": None,
+                      "hardware": {"model": "Mac15,9", "kind": "laptop"}},
              "slots": {"used": 1, "guaranteed": 1, "most": 4},
              "holders": [
                  {"id": "qk4156-orbit-game-gate", "label": "orbit-game · gate", "heldSeconds": 431,
                   "slots": 1, "wholeHost": False, "exclusive": False}],
              "waiters": []},
             {"name": "studio.local", "role": "second", "state": "observed", "reasons": [],
-             "load": {"cpuBusy": 90, "busyLimit": 85, "load": 14.2, "memory": "normal", "screen": "unlocked", "error": None},
+             "load": {"cpuBusy": 90, "busyLimit": 85, "load": 14.2, "memory": "normal", "screen": "unlocked", "error": None,
+                      "hardware": {"model": "Mac14,13", "kind": "desktop"}},
              "slots": {"used": 2, "guaranteed": 2, "most": 4},
              "holders": [
                  {"id": "qk8237-lumen-ios-gate", "label": "lumen-ios · gate lane", "heldSeconds": 252, "slots": 2, "wholeHost": True, "exclusive": False}],

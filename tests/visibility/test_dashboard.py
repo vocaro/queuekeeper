@@ -285,6 +285,25 @@ class Panels(Fixture):
         self.assertEqual([queue.agent(branch) for branch in ("claude/a/b", "main", "/lead", None)], ["claude", "other", "other", "other"])
         self.assertEqual(queue.data(self.one, {})["flow"]["agents"], [])
 
+    def test_each_mac_is_drawn_by_its_kind_which_a_battery_tells_and_a_model_alone_does_not(self):
+        from queuekeeper import offload_host
+        battery = '+-o AppleSmartBattery\n    {\n      "BatteryInstalled" = Yes\n'
+        cases = [("MacBookPro18,2", None, "laptop"), ("Mac17,6", battery, "laptop"), ("Mac14,13", "", "desktop"),
+                 ("Mac14,13", None, "unknown"), ("", battery, "unknown")]
+        for model, found, kind in cases:
+            # A reading not given is read, and here cannot be.
+            with self.subTest(model=model, battery=found), patch.object(offload_host, "output", return_value=None):
+                self.assertEqual(offload_host.hardware(model, found)["kind"], kind)
+        # What the Farm tab draws: laptop or desktop, and other for unknown or for a Mac that did not say.
+        self.assertEqual([farm.hardware_of(found)["kind"] for found in ({"kind": "laptop", "model": "Mac17,6"},
+                          {"kind": "unknown"}, None)], ["laptop", "other", "other"])
+        self.assertEqual(farm.load_of({"hardware": {"kind": "desktop", "model": "Mac14,13"}}, {})["hardware"],
+                         {"kind": "desktop", "model": "Mac14,13"})
+        # Each kind's icon is served, and carries its CC BY 4.0 credit.
+        for kind in ("laptop", "desktop", "iphone", "ipad", "other"):
+            icon = server.STATIC / f"device-{kind}.svg"
+            self.assertTrue(icon.read_text().startswith("<!--") and "CC BY 4.0" in icon.read_text().splitlines()[0], kind)
+
     def test_queue_includes_the_overview_and_history_includes_settled_changes(self):
         identifier = self.settle("human-readable", why="gate failed")
         found = queue.data(self.one, {})
@@ -344,10 +363,10 @@ class Panels(Fixture):
     def test_a_macs_load_is_what_its_pressure_and_screen_readings_say(self):
         self.assertEqual(farm.load_of({"cpuBusy": 91.4, "busyLimit": 75, "load": 12.08, "memory": 4}, {"state": "unlocked"}),
                          {"cpuBusy": 91.4, "busyLimit": 75, "load": 12.08, "memory": "critical", "screen": "unlocked",
-                          "error": None, "health": None})
+                          "error": None, "health": None, "hardware": {"model": None, "kind": "other"}})
         self.assertEqual(farm.load_of({"cpuBusy": None, "memory": None, "busyLimit": True}, {"state": "asleep"}),
                          {"cpuBusy": None, "busyLimit": None, "load": None, "memory": None, "screen": "unknown",
-                          "error": None, "health": None})
+                          "error": None, "health": None, "hardware": {"model": None, "kind": "other"}})
         self.assertEqual(farm.load_of({"error": "no slot directory"}, None)["error"], "no slot directory")
         self.assertEqual(farm.load_of("nonsense", [])["screen"], "unknown")
 

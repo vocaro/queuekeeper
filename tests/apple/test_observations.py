@@ -16,17 +16,23 @@ class DeviceConnections(unittest.TestCase):
     def test_current_and_legacy_xcode_inventory_use_hardware_ids_and_exclude_simulators(self):
         found = farm.connections_of({"result": {"devices": [
             {"identifier": "core-device-uuid", "properties": {
-                "hardware": {"udid": self.PHONE.lower(), "reality": "physical"},
+                "hardware": {"udid": self.PHONE.lower(), "reality": "physical", "deviceType": "iPhone",
+                             "marketingName": "iPhone 17 Pro Max"},
                 "connection": {"state": "connected", "transportType": "localNetwork"}}},
-            {"hardwareProperties": {"udid": self.PAD},
+            {"hardwareProperties": {"udid": self.PAD, "deviceType": "iPad", "marketingName": "iPad Air 13-inch (M3)"},
              "connectionProperties": {"tunnelState": "disconnected", "transportType": "wired"}},
             {"properties": {"hardware": {"udid": self.PHONE, "reality": "simulated"},
                             "connection": {"state": "disconnected"}}},
             {"identifier": self.PHONE, "deviceProperties": {"name": "iPhone"}},
         ]}})
+        # Each device's kind and marketing name, which the Farm tab's icon and line show.
         self.assertEqual(found, {
-            self.PHONE: {"connection": "connected", "transport": "localNetwork"},
-            self.PAD: {"connection": "disconnected", "transport": "wired"}})
+            self.PHONE: {"connection": "connected", "transport": "localNetwork", "kind": "iphone", "model": "iPhone 17 Pro Max"},
+            self.PAD: {"connection": "disconnected", "transport": "wired", "kind": "ipad", "model": "iPad Air 13-inch (M3)"}})
+        # A kind it does not draw, or none, is other.
+        watch = {"result": {"devices": [{"hardwareProperties": {"udid": self.PHONE, "deviceType": "appleWatch"}}]}}
+        self.assertEqual((farm.connections_of(watch)[self.PHONE]["kind"], farm.connections_of(watch)[self.PHONE]["model"]),
+                         ("other", None))
         with self.assertRaises(ValueError): farm.connections_of({"result": {"devices": None}})
         self.assertEqual(farm.connections_of({"result": {"devices": [{"hardwareProperties": {"udid": self.PHONE}}]}})
                          [self.PHONE]["connection"], "unknown")
@@ -64,6 +70,7 @@ class DeviceConnections(unittest.TestCase):
             found = READ_DEVICES()
         self.assertEqual([(device["name"], device["connection"]) for device in found["devices"]],
                          [("iPad", "notDetected"), ("iPhone", "connected")])
+        self.assertEqual((found["devices"][0]["kind"], found["devices"][0]["model"]), ("other", None))  # not detected
         self.assertIsNotNone(found["checkedAt"])
         self.assertIsNone(found["connectionError"])
         record[farm.offload_host.DEFERRED] = "other-mac"

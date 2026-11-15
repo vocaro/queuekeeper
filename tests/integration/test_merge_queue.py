@@ -2764,7 +2764,7 @@ class SecondMacReading(unittest.TestCase):
                                json.dumps({"pressure": True})], capture_output=True, text=True, timeout=stretched(60))
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])),
-                         {"load", "cpuBusy", "busyLimit", "memory", "limitsFrom", "limitsFile"})
+                         {"load", "cpuBusy", "busyLimit", "memory", "hardware", "limitsFrom", "limitsFile"})
 
     def test_only_a_dispatch_that_ran_there_since_the_lane_began_names_its_mac(self):
         root = Path(tempfile.mkdtemp())
