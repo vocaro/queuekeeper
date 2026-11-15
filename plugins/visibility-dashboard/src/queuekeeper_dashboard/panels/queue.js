@@ -39,10 +39,15 @@ QK.panel("queue", {
         h("div", { class: "card" }, h("h2", null, "Entries"), h("ul", { class: "rows entries" },
           detail.entries.map(entry => QK.entry(entry, context, { compact: true })))));
     }
+    // A gate of the gate lane has a ring of how far it has gone against that lane's last passing runs.
     function gate(found) {
-      return h("a", { class: "gate gate-link", href: QK.href(context.repository, "queue", { gate: found.role, round: data.round.name }) },
-        h("div", { class: "top" }, h("span", null, roleName(found.role)), h("span", { class: "muted" }, QK.since(found.began), " ›")),
-        h("div", { class: "sub ellipsis" }, [found.lane, found.waiting ? "Waiting" : found.phase || "Running", found.mac].filter(Boolean).join(" · ")));
+      const median = data.overview.trend && data.overview.trend.medianGateSeconds;
+      const ring = found.lane === "gate" && median && typeof found.began === "number" ? QK.ring(Date.now() / 1000 - found.began, median) : null;
+      return h("a", { class: "gate gate-link" + (ring ? " ringed" : ""), href: QK.href(context.repository, "queue", { gate: found.role, round: data.round.name }) },
+        ring, h("div", { class: "gate-text" },
+          h("div", { class: "top" }, h("span", null, roleName(found.role)), h("span", { class: "muted" }, QK.since(found.began), " ›")),
+          h("div", { class: "sub ellipsis" }, [found.lane, found.waiting ? "Waiting" : found.phase || "Running", found.mac].filter(Boolean).join(" · ")),
+          ring ? h("div", { class: "sub" }, "Median " + QK.span(median)) : null));
     }
     // The flow map: who has entries in the queue, by branch prefix, then the queue, the round's gates, the Macs they
     // run on and main. Dots travel the edges while the worker runs; the last entry to come back within the hour draws

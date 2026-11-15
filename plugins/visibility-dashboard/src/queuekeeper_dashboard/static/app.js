@@ -69,6 +69,41 @@
       options.title ? svg("title", null, options.title) : null,
       svg("line", { class: "base", x1: 0, x2: width, y1: height - pad, y2: height - pad }), marks);
   };
+  // An arc of a circle from one angle to another, in radians clockwise from three o'clock, as a path's d.
+  QK.arc = function (x, y, radius, from, to) {
+    const at = angle => (x + radius * Math.cos(angle)).toFixed(2) + " " + (y + radius * Math.sin(angle)).toFixed(2);
+    return `M${at(from)} A${radius} ${radius} 0 ${to - from > Math.PI ? 1 : 0} 1 ${at(to)}`;
+  };
+  // A donut of parts, each {label, value, tone}, its tone a class app.css colors; middle and caption are its center's.
+  QK.donut = function (parts, middle, caption) {
+    const svg = QK.svg, total = parts.reduce((sum, part) => sum + part.value, 0), shown = parts.filter(part => part.value);
+    const gap = shown.length > 1 ? 0.03 : 0, TOP = -Math.PI / 2;
+    let angle = TOP;
+    return svg("svg", { class: "donut", viewBox: "0 0 120 120", role: "img", "aria-label": parts.map(part => part.label + " " + part.value).join(", ") },
+      svg("circle", { class: "track", cx: 60, cy: 60, r: 48 }),
+      shown.map(part => {
+        const span = Math.min(part.value / total * 2 * Math.PI, 2 * Math.PI - 0.0001), from = angle;
+        angle += span;
+        return svg("path", { class: "part " + (part.tone || ""), d: QK.arc(60, 60, 48, from + gap, from + span - gap) },
+          svg("title", null, part.label + ": " + part.value));
+      }),
+      svg("text", { class: "middle", x: 60, y: 62, "text-anchor": "middle" }, middle),
+      svg("text", { class: "caption", x: 60, y: 79, "text-anchor": "middle" }, caption));
+  };
+  // A ring of how far a run has gone against its median, with a tick at the median: it fills to the tick, then on
+  // in amber, and is full and amber at half again past it. The middle says the share of the median, as a percentage.
+  QK.ring = function (seconds, median) {
+    const svg = QK.svg, TOP = -Math.PI / 2, scale = median * 1.5, at = value => TOP + Math.min(1, value / scale) * 2 * Math.PI * 0.9999;
+    const tick = at(median), over = seconds > median;
+    return svg("svg", { class: "ring" + (over ? " over" : ""), viewBox: "0 0 64 64", role: "img",
+      "aria-label": QK.span(seconds) + " of a " + QK.span(median) + " median" },
+      svg("title", null, QK.span(seconds) + " so far; the last passing runs' median is " + QK.span(median)),
+      svg("circle", { class: "track", cx: 32, cy: 32, r: 26 }),
+      seconds > 0 ? svg("path", { class: "fill", d: QK.arc(32, 32, 26, TOP, at(Math.min(seconds, median))) }) : null,
+      over ? svg("path", { class: "fill late", d: QK.arc(32, 32, 26, tick, at(seconds)) }) : null,
+      svg("line", { class: "tick", x1: 32 + 20 * Math.cos(tick), y1: 32 + 20 * Math.sin(tick), x2: 32 + 31 * Math.cos(tick), y2: 32 + 31 * Math.sin(tick) }),
+      svg("text", { x: 32, y: 36, "text-anchor": "middle" }, Math.round(100 * seconds / median) + "%"));
+  };
   // A number tile: its label, its value, and the sparkline and caption beneath it when there is a trend to draw.
   QK.number = function (label, value, chart, caption) {
     return QK.h("div", { class: "number" }, QK.h("span", { class: "label" }, label), QK.h("b", null, value),

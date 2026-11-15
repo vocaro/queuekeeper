@@ -424,7 +424,12 @@ class Panels(Fixture):
         with patch.object(events.time, "time", return_value=time.time() - 3 * 86400):
             events.emit(directory, "entry.landed", entry="old", landedAs="f" * 40)
         found = history.data(self.one, {})
-        self.assertEqual(found["today"], {"landed": 1, "cameBack": 1, "flaky": 1, "rounds": 1, "medianGateSeconds": 900})
+        self.assertEqual(found["today"], {"landed": 1, "cameBack": 1, "failed": 1, "conflict": 0, "removed": 0, "flaky": 1,
+                                          "rounds": 1, "medianGateSeconds": 900})
+        now = time.time()
+        settled = history.totals([{"time": now, "kind": kind} for kind in
+                                  ("entry.landed", "entry.conflict", "entry.conflict", "entry.removed", "entry.failed")], now)
+        self.assertEqual([settled[key] for key in ("landed", "failed", "conflict", "removed", "cameBack")], [1, 1, 2, 1, 3])
         self.assertEqual(found["total"], 10)
         self.assertEqual(found["events"][1], {"time": found["events"][1]["time"], "kind": "entry.landed",
                                              "text": "b landed as 0123456789ab", "level": "success"})

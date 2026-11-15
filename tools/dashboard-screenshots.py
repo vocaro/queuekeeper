@@ -115,7 +115,8 @@ PANELS = {
         ],
     },
     "history": {
-        "today": {"landed": 12, "cameBack": 0, "flaky": 0, "rounds": 6, "medianGateSeconds": 252},
+        "today": {"landed": 12, "cameBack": 0, "failed": 0, "conflict": 0, "removed": 1, "flaky": 0, "rounds": 6,
+                  "medianGateSeconds": 252},
         "total": 2,
         "events": [
             {"time": ago(252), "kind": "round.began", "level": "plain", "text": "Round " + ROUND + " began with 1 entry."},

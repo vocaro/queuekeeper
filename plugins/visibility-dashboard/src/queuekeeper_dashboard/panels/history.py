@@ -24,6 +24,7 @@ def totals(journal, now):
     gates = [event["seconds"] for event in day if event["kind"] == "gate.ended" and event.get("lane") == "gate"
              and event.get("status") == 0 and isinstance(event.get("seconds"), (int, float))]
     return {"landed": kinds.count("entry.landed"), "cameBack": kinds.count("entry.failed") + kinds.count("entry.conflict"),
+            "failed": kinds.count("entry.failed"), "conflict": kinds.count("entry.conflict"), "removed": kinds.count("entry.removed"),
             "flaky": kinds.count("test.flaky"), "rounds": kinds.count("round.began"),
             "medianGateSeconds": round(statistics.median(gates)) if gates else None}
 
