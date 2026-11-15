@@ -210,6 +210,25 @@ class Panels(Fixture):
         self.assertEqual(found["lines"][0]["text"], "1 waiting with no worker")
         self.assertEqual(found["lines"][2]["text"], "Add two.txt")
 
+    def test_home_gives_the_last_days_trend_hour_by_hour_and_the_gates_last_passing_runs(self):
+        now = 1_800_000_000.0
+        at = lambda hours, kind, **fields: {"time": now - hours * 3600, "kind": kind, **fields}
+        journal = [at(30, "entry.landed"), at(30, "entry.queued"),
+                   at(5.5, "entry.queued"), at(5.4, "entry.queued"), at(5.2, "entry.queued"),
+                   at(3.5, "entry.landed"), at(3.4, "entry.failed"), at(1.5, "entry.conflict"), at(0.5, "entry.queued"),
+                   *(at(4, "gate.ended", lane="gate", status=0, seconds=seconds) for seconds in (600.4, 900, 1200)),
+                   at(4, "gate.ended", lane="gate", status=1, seconds=5), at(4, "gate.ended", lane="spelling", status=0, seconds=3)]
+        found = home.trend(journal, 2, now)
+        self.assertEqual([len(found[name]) for name in ("waiting", "landed", "cameBack")], [home.HOURS] * 3)
+        self.assertEqual(found["waiting"][-7:], [1, 4, 4, 2, 2, 1, 2])
+        self.assertEqual(found["waiting"][:18], [1] * 18)
+        self.assertEqual((sum(found["landed"]), found["landed"][20]), (1, 1))
+        self.assertEqual((found["cameBack"][20], found["cameBack"][22]), (1, 1))
+        self.assertEqual((found["gateSeconds"], found["medianGateSeconds"]), ([600, 900, 1200], 900))
+        idle = home.trend([], 0, now)
+        self.assertEqual((idle["waiting"], idle["gateSeconds"], idle["medianGateSeconds"]), ([0] * home.HOURS, [], None))
+        self.assertIn("trend", home.data(self.one, {}))
+
     def test_home_shows_a_panel_whose_line_fails_as_a_fault_and_keeps_the_others(self):
         with patch.object(history, "summary", side_effect=RuntimeError("no journal")):
             lines = {line["panel"]: line for line in home.data(self.one, {})["lines"]}

@@ -6,10 +6,7 @@ QK.panel("home", {
       h("div", { class: "card hero" },
         h("h1", null, h("span", { class: "dot " + data.level }), data.headline),
         h("p", { class: "wrap" }, data.detail + running),
-        h("div", { class: "numbers" },
-          h("div", { class: "number" }, h("span", { class: "muted" }, "In the queue"), h("b", null, data.counts.waiting)),
-          h("div", { class: "number" }, h("span", { class: "muted" }, "Landed today"), h("b", null, data.counts.landed)),
-          h("div", { class: "number" }, h("span", { class: "muted" }, "Came back today"), h("b", null, data.counts.cameBack)))),
+        QK.overview(data.counts, data.trend)),
       data.lines.length ? h("div", { class: "card" }, h("ul", { class: "rows lines" }, data.lines.map(line =>
         h("li", null, h("a", { class: "row", href: QK.href(context.repository, line.panel) },
           h("b", { class: line.level === "plain" ? null : line.level }, line.title),

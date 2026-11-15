@@ -52,9 +52,7 @@ QK.panel("queue", {
       h("div", { class: "card hero" },
         h("h1", null, h("span", { class: "dot " + overview.level }), overview.headline),
         h("p", { class: "wrap" }, overview.detail),
-        h("div", { class: "numbers" },
-          [["In the queue", overview.counts.waiting], ["Landed today", overview.counts.landed], ["Came back today", overview.counts.cameBack]].map(([label, count]) =>
-            h("div", { class: "number" }, h("span", { class: "muted" }, label), h("b", null, count))))),
+        QK.overview(overview.counts, overview.trend)),
       overview.lines.length ? h("div", { class: "card" }, h("ul", { class: "rows lines" }, overview.lines.map(line =>
         h("li", null, h("a", { class: "row", href: QK.href(context.repository, line.panel === "queue" && line.title === "Came back" ? "history" : line.panel) },
           h("b", { class: line.level === "plain" ? null : line.level }, line.title),

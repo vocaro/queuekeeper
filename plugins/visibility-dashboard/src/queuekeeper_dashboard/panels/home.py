@@ -1,5 +1,6 @@
-"""The Home tab: what the queue is doing in one line, three numbers for the day, and a line from each other panel
-that has one to give."""
+"""The Home tab: what the queue is doing in one line, three numbers for the day with the trend behind each, and a
+line from each other panel that has one to give."""
+import statistics
 import time
 
 from . import available, load
@@ -38,6 +39,35 @@ def today(journal, now):
             "cameBack": kinds.count("entry.failed") + kinds.count("entry.conflict")}
 
 
+HOURS = 24
+GATES = 20  # the passing gate runs the gate's trend and median are taken over, newest first
+JOINED, SETTLED = ("entry.queued",), ("entry.landed", "entry.failed", "entry.conflict", "entry.removed")
+
+
+def trend(journal, waiting, now):
+    """Each of the last HOURS hours, oldest first, by the journal: how many entries waited at its end, counted back
+    from the `waiting` now, and how many landed and came back in it; and the seconds of the last GATES passing runs
+    of the gate lane, oldest first, with their median, or None when there are none."""
+    start = now - HOURS * 3600
+    hour = lambda event: min(HOURS - 1, int((event["time"] - start) // 3600))
+    landed, came_back, change = [0] * HOURS, [0] * HOURS, [0] * HOURS
+    for event in journal:
+        at = event.get("time")
+        if not isinstance(at, (int, float)) or at < start: continue
+        kind = event["kind"]
+        if kind == "entry.landed": landed[hour(event)] += 1
+        if kind in ("entry.failed", "entry.conflict"): came_back[hour(event)] += 1
+        change[hour(event)] += 1 if kind in JOINED else -1 if kind in SETTLED else 0
+    depth, after = [0] * HOURS, 0
+    for index in reversed(range(HOURS)):
+        depth[index] = max(0, waiting - after)
+        after += change[index]
+    gates = [event["seconds"] for event in journal if event["kind"] == "gate.ended" and event.get("lane") == "gate"
+             and event.get("status") == 0 and isinstance(event.get("seconds"), (int, float))][-GATES:]
+    return {"waiting": depth, "landed": landed, "cameBack": came_back, "gateSeconds": [round(seconds) for seconds in gates],
+            "medianGateSeconds": round(statistics.median(gates)) if gates else None}
+
+
 def data(repository, query):
     now, state = time.time(), repository.snapshot()
     level, said, detail = headline(state, now)
@@ -56,5 +86,6 @@ def data(repository, query):
         if line: lines.append({"panel": name, "order": order, **line})
     # What needs the owner first, then the panels in tab order.
     lines.sort(key=lambda line: (line.get("level") not in ("danger", "warning"), line["order"]))
+    waiting, journal = len(state.get("waiting") or []), repository.events()
     return {"level": level, "headline": said, "detail": detail, "began": began,
-            "counts": {"waiting": len(state.get("waiting") or []), **today(repository.events(), now)}, "lines": lines}
+            "counts": {"waiting": waiting, **today(journal, now)}, "trend": trend(journal, waiting, now), "lines": lines}

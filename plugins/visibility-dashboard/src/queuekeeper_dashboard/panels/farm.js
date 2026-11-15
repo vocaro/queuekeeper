@@ -67,9 +67,9 @@ QK.panel("farm", {
             + (slots.guaranteed ? ", " + slots.guaranteed + " always open" : "")),
         ] : found.reasons.map(reason => h("p", { class: "sub wrap" }, reason)),
         load(found.load),
-        found.holders.length ? [h("h2", { class: "sub" }, "Running"), h("ul", { class: "rows pairs work" },
+        found.holders.length ? [h("h3", { class: "label" }, "Running"), h("ul", { class: "rows pairs work" },
           found.holders.map(one => work(one, found, true)))] : null,
-        found.waiters.length ? [h("h2", { class: "sub" }, "Waiting"), h("ul", { class: "rows pairs work" },
+        found.waiters.length ? [h("h3", { class: "label" }, "Waiting"), h("ul", { class: "rows pairs work" },
           found.waiters.map(one => work(one, found, false)))] : null,
         read && !found.holders.length && !found.waiters.length ? h("p", { class: "sub" }, "Nothing is running or waiting.") : null);
     }

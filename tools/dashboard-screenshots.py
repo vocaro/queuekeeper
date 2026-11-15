@@ -75,6 +75,10 @@ PANELS = {
         "level": "active", "headline": "Testing 1 entry",
         "detail": "The gate lane is running on studio.local. 1 more waiting.", "began": ago(252),
         "counts": {"waiting": 2, "landed": 12, "cameBack": 0},
+        "trend": {"waiting": [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 2, 1, 1, 2, 4, 3, 2, 1, 0, 1, 2, 3, 2],
+                  "landed": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 0, 1, 2, 1, 1, 0, 1, 1, 0, 1, 0, 0],
+                  "cameBack": [0] * 24, "gateSeconds": [262, 248, 301, 255, 240, 236, 270, 252, 244, 238, 251, 249],
+                  "medianGateSeconds": 250},
         "lines": [],
     },
     "queue": {

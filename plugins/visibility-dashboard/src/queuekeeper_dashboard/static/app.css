@@ -1,18 +1,19 @@
 :root {
   --bg: #f6f7f9; --card: #ffffff; --soft: #eff1f5; --text: #141821; --muted: #5f6877; --line: #dde1e8;
   --accent: #1f6fc2; --accent-bg: #e6f0fa; --good: #1a7f37; --good-bg: #e2f5e6; --warn: #8a5a00; --warn-bg: #fbf0d6;
-  --bad: #b3261e; --bad-bg: #fbe9e7; --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --bad: #b3261e; --bad-bg: #fbe9e7; --mark: #d99a1c; --mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0b0e15; --card: #121722; --soft: #1d2433; --text: #e9ecf2; --muted: #9aa3b5; --line: #2a3244;
     --accent: #7db7f2; --accent-bg: #17304d; --good: #7dea8a; --good-bg: #163a23; --warn: #f0c36a; --warn-bg: #3f3212;
-    --bad: #f2a199; --bad-bg: #47201d;
+    --bad: #f2a199; --bad-bg: #47201d; --mark: #e0a73a;
   }
 }
 * { box-sizing: border-box; }
-:root { font-size: 100%; --text-small: 0.875rem; --text-body: 1rem; --text-title: 1.375rem; }
-body { margin: 0; background: var(--bg); color: var(--text); font: var(--text-body)/1.5 -apple-system, system-ui, sans-serif; }
+:root { font-size: 100%; --text-micro: 0.75rem; --text-small: 0.875rem; --text-body: 1rem; --text-title: 1.375rem; --text-number: 2rem; }
+body { margin: 0; background: var(--bg); color: var(--text); font: var(--text-body)/1.5 -apple-system, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums; }
 header { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
 .brand { font-weight: 700; font-size: 1.125rem; color: var(--good); text-decoration: none; }
 header select { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: inherit; }
@@ -31,10 +32,21 @@ a { color: var(--accent); }
 .hero h1 { margin: 0; font-size: var(--text-title); font-weight: 600; display: flex; align-items: center; gap: 10px; }
 .hero p { margin: 4px 0 0; color: var(--muted); }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
-.dot.active { background: var(--good); } .dot.warning { background: #d99a1c; } .dot.danger { background: var(--bad); }
+.dot.active { background: var(--good); } .dot.warning { background: var(--mark); } .dot.danger { background: var(--bad); }
+/* The hero's dot pulses while the queue is at work, so a glance tells moving from idle. */
+.hero h1 .dot.active { animation: beacon 2s ease-out infinite; }
+@keyframes beacon { 0% { box-shadow: 0 0 0 0 var(--good); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
 .numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 16px; }
-.number { background: var(--soft); border-radius: 8px; padding: 12px; }
-.number b { display: block; font-size: 1.75rem; font-weight: 600; }
+.number { background: var(--soft); border-radius: 8px; padding: 12px 12px 8px; display: flex; flex-direction: column; min-width: 0; }
+.number b { display: block; font-size: var(--text-number); font-weight: 600; line-height: 1.2; }
+.label { margin: 0; font-size: var(--text-micro); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+h3.label { margin-top: 12px; }
+.spark { display: block; width: 100%; height: 36px; margin: 6px 0 2px; color: var(--accent); overflow: visible; }
+.spark.good { color: var(--good); } .spark.danger { color: var(--bad); }
+.spark .base { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.spark .line { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.spark .area { fill: currentColor; fill-opacity: 0.16; stroke: none; }
+.spark rect { fill: currentColor; fill-opacity: 0.5; } .spark rect.now { fill-opacity: 1; }
 .rows { margin: 0; padding: 0; list-style: none; }
 .rows > li { display: grid; gap: 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); }
 .rows > li:first-child { border-top: 0; }
@@ -65,9 +77,11 @@ a { color: var(--accent); }
 .device-status { display: grid; gap: 0.25rem; justify-items: end; }
 .device-status .pill { justify-self: end; }
 .pill.failed, .pill.conflict { background: var(--bad-bg); color: var(--bad); }
+.pill.queued::before { content: "○ "; } .pill.testing::before { content: "◐ "; } .pill.passed::before { content: "● "; }
+.pill.landed::before { content: "✓ "; } .pill.failed::before { content: "✕ "; } .pill.conflict::before { content: "⇄ "; }
 .success { color: var(--good); } .danger { color: var(--bad); } .warning { color: var(--warn); }
-.banner { border-radius: 8px; padding: 10px 12px; margin-top: 12px; overflow-wrap: anywhere; }
-.banner.danger { background: var(--bad-bg); } .banner.warning { background: var(--warn-bg); }
+.banner { border-radius: 8px; padding: 10px 12px; margin-top: 12px; overflow-wrap: anywhere; border-left: 4px solid var(--muted); }
+.banner.danger { background: var(--bad-bg); border-left-color: var(--bad); } .banner.warning { background: var(--warn-bg); border-left-color: var(--mark); }
 .gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
 .gate { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .gate-link { display: block; color: inherit; text-decoration: none; }
@@ -77,7 +91,7 @@ a { color: var(--accent); }
 .gate .top { display: flex; justify-content: space-between; gap: 8px; font-weight: 500; }
 .bar { height: 6px; border-radius: 3px; background: var(--soft); overflow: hidden; margin: 6px 0; }
 .bar i { display: block; height: 100%; background: var(--good); }
-.bar i.over { background: #d99a1c; }
+.bar i.over { background: var(--mark); }
 .columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
 .columns .card { margin-top: 12px; }
 .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
@@ -100,4 +114,7 @@ pre.log { margin: 0; background: var(--soft); border-radius: 8px; padding: 10px 
   .rows.lines > li { grid-template-columns: minmax(0, 1fr) auto; }
   .rows.lines > li > a > :first-child { grid-column: 1 / -1; }
   .rows.lines .ellipsis { white-space: normal; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero h1 .dot.active { animation: none; }
 }

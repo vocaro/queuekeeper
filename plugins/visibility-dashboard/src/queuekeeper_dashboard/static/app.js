@@ -39,6 +39,53 @@
         !options.compact && found.why ? h("div", { class: "sub wrap" }, found.why, " ", log(found.log)) : null),
       h("span", { class: "muted" }, settled ? QK.ago(found.settled) : QK.since(found.submitted)));
   };
+  // An SVG element, set as QK.h sets an HTML one: its colors come from app.css by class, never from an attribute.
+  QK.svg = function (tag, attributes, ...children) {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [name, value] of Object.entries(attributes || {})) {
+      if (value !== null && value !== undefined && value !== false) element.setAttribute(name, value);
+    }
+    for (const child of children.flat()) {
+      if (child !== null && child !== undefined && child !== false) element.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return element;
+  };
+  // A sparkline of values, oldest first: a line over a faint area, or bars with the newest drawn strongest. Its
+  // color is its tone's (good, danger or none for the accent), and title is what a pointer over it is told.
+  QK.spark = function (values, options = {}) {
+    const svg = QK.svg, width = 200, height = 40, pad = 3, bars = !!options.bars;
+    values = (values || []).filter(value => typeof value === "number");
+    if (values.length < 2 || !values.some(Boolean)) return null;
+    const top = Math.max(...values, options.floor || 0) || 1;
+    const x = index => pad + index * (width - 2 * pad) / (values.length - (bars ? 0 : 1));
+    const y = value => height - pad - value / top * (height - 2 * pad);
+    const marks = bars
+      ? values.map((value, index) => value ? svg("rect", { class: index === values.length - 1 ? "now" : null, x: x(index),
+          y: y(value), width: Math.max(1, (width - 2 * pad) / values.length - 1.5), height: height - pad - y(value), rx: 1.5 }) : null)
+      : (points => [svg("polygon", { class: "area", points: `${x(0)},${height - pad} ${points} ${x(values.length - 1)},${height - pad}` }),
+          svg("polyline", { class: "line", points })])(values.map((value, index) => `${x(index)},${y(value)}`).join(" "));
+    return svg("svg", { class: "spark " + (bars ? "bars " : "") + (options.tone || ""), viewBox: `0 0 ${width} ${height}`,
+      preserveAspectRatio: "none", role: "img", "aria-label": options.title || null },
+      options.title ? svg("title", null, options.title) : null,
+      svg("line", { class: "base", x1: 0, x2: width, y1: height - pad, y2: height - pad }), marks);
+  };
+  // A number tile: its label, its value, and the sparkline and caption beneath it when there is a trend to draw.
+  QK.number = function (label, value, chart, caption) {
+    return QK.h("div", { class: "number" }, QK.h("span", { class: "label" }, label), QK.h("b", null, value),
+      chart || null, chart && caption ? QK.h("span", { class: "sub" }, caption) : null);
+  };
+  // The queue's overview numbers, as Queue and Home show them, each with the last day's trend behind it.
+  QK.overview = function (counts, trend) {
+    trend = trend || {};
+    const gates = trend.gateSeconds || [], hourly = "per hour, last 24 h";
+    return QK.h("div", { class: "numbers" },
+      QK.number("In the queue", counts.waiting, QK.spark(trend.waiting, { title: "Entries waiting at the end of each hour, last 24 hours" }), "last 24 h"),
+      QK.number("Landed today", counts.landed, QK.spark(trend.landed, { bars: true, tone: "good", title: "Entries landed each hour, last 24 hours" }), hourly),
+      QK.number("Came back today", counts.cameBack, QK.spark(trend.cameBack, { bars: true, tone: "danger", floor: 3,
+        title: "Entries that came back each hour, last 24 hours" }), hourly),
+      QK.number("Median gate", typeof trend.medianGateSeconds === "number" ? QK.span(trend.medianGateSeconds) : "–",
+        QK.spark(gates, { title: "Seconds of each passing gate run, oldest first" }), "last " + QK.count(gates.length, "passing run")));
+  };
   QK.fill = function (element, ...children) { element.replaceChildren(...children.flat().filter(Boolean)); };
   QK.span = function (seconds) {
     seconds = Math.max(0, Math.round(seconds || 0));

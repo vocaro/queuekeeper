@@ -1,7 +1,7 @@
 QK.panel("history", {
   render(element, data, context) {
     const h = QK.h, today = data.today;
-    const number = (label, value) => h("div", { class: "number" }, h("span", { class: "muted" }, label), h("b", null, value));
+    const number = (label, value) => QK.number(label, value);
     QK.fill(element,
       h("div", { class: "card" }, h("h2", null, "Today"),
         h("div", { class: "numbers" }, number("Landed", today.landed), number("Came back", today.cameBack),
