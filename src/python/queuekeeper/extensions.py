@@ -83,7 +83,9 @@ class Devices:
         return {"devices": [], "deferredTo": None, "error": None, "connectionError": None, "checkedAt": None}
 
     def remote_setup(self, mac):
-        """Python arguments for plugin setup on a receiving Mac, or none."""
+        """Python arguments for plugin setup on a receiving Mac, or none. Its command exits 2 when the record it
+        sets up refuses; the receiving Mac reports that status alone as the record's configuration
+        (offload_host.defer_devices)."""
         return []
 
     def lane_devices(self, lane):

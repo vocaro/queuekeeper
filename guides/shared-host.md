@@ -2593,6 +2593,13 @@ physical device, stops the run as a configuration problem for the owner's decisi
 record holds them changes only by `devices defer MAC --replace` (`--end` ends a deferral), and a
 held device is released or recovered first.
 
+That setup is the sending Mac's command, run in the toolkit it sent, which is a newer one when a
+shared checkout that is behind sends `origin/main`. Only the record's own refusal, the command's
+status 2, is reported as the record's configuration. A toolkit that lacks the command's module is
+refused as a difference of versions between the sending Mac's Queuekeeper and the toolkit it sent,
+before any record is read, and any other failure of the command is reported as the command's
+([#155](https://github.com/vocaro/queuekeeper/issues/155)).
+
 A run on the second Mac uses a physical device only under a reservation held here, which it
 carries:
 

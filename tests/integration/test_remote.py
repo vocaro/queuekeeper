@@ -1187,6 +1187,48 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("iPhone holds a physical device", error)
         self.assertNotIn(devices.DEFERRED, there.load())
 
+    def test_a_toolkit_without_the_senders_device_setup_module_is_refused_as_a_version_mismatch(self):
+        # vocaro/queuekeeper#155: a sender from before the plugins left the core ran this module in a toolkit that
+        # holds queuekeeper_apple.devices, and the refusal blamed a device record that nothing had read.
+        old = lambda _self, mac: ["-m", "queuekeeper.apple.devices", "defer", mac]
+        with patch("queuekeeper_apple.lane.Devices.remote_setup", old):
+            status, _output, error = self.qk("remote", "run", "check")
+            said = " ".join(error.split())
+            self.assertEqual(status, 2)
+            head = git(self.toolkit, "rev-parse", "HEAD")
+            self.assertIn(f"fake refused it: the toolkit sent at {head[:12]} has no module queuekeeper.apple.devices, "
+                          "which the sending Mac's device setup runs (`python3 -m queuekeeper.apple.devices defer "
+                          f"{offload_host.mac_name()}`): the sending Mac's Queuekeeper and the toolkit it sent are "
+                          "different versions, and no device record was read or changed", said)
+            self.assertIn("bring the sending Mac's Queuekeeper checkout to the toolkit it sends", said)
+            # A checkout that is behind sent origin/main's toolkit, which the refusal names beside its own commit.
+            upstream, head = self.landed_ahead()
+            status, _output, error = self.qk("remote", "run", "check")
+            self.assertEqual(status, 2)
+            self.assertIn(f"the toolkit sent at {upstream[:12]}, origin/main's, from a checkout at {head[:12]} has no "
+                          "module queuekeeper.apple.devices", " ".join(error.split()))
+            said += " ".join(error.split())
+        # Neither refusal is the record's, and neither sends the owner to it.
+        self.assertNotIn("cannot defer physical devices", said)
+        self.assertNotIn("decide which Mac's record holds physical devices", said)
+        self.assertNotIn(devices.DEFERRED, devices.Record(self.record_there).load())
+        self.assertFalse((self.checkout(0) / ".build/provisioned").exists())
+        # The negative control: the same Macs with this toolkit's own setup defer and run.
+        self.assertEqual(self.qk("remote", "run", "check")[0], 0)
+        self.assertEqual(devices.Record(self.record_there).load()[devices.DEFERRED], offload_host.mac_name())
+
+    def test_a_device_setup_that_fails_otherwise_than_by_its_records_refusal_does_not_blame_the_record(self):
+        crash = "import sys; print('RuntimeError: no such table', file=sys.stderr); raise SystemExit(1)"
+        with patch("queuekeeper_apple.lane.Devices.remote_setup", lambda _self, _mac: ["-c", crash]):
+            status, _output, error = self.qk("remote", "run", "check")
+        said = " ".join(error.split())
+        self.assertEqual(status, 2)
+        self.assertIn("failed with status 1, which is not its device record's refusal: RuntimeError: no such table", said)
+        self.assertIn("nothing here says that its device record is misconfigured", said)
+        self.assertNotIn("cannot defer physical devices", said)
+        self.assertNotIn("decide which Mac's record holds physical devices", said)
+        self.assertFalse((self.checkout(0) / ".build/provisioned").exists())
+
     def test_a_run_carries_a_reservation_held_here_and_records_its_run_in_the_entry(self):
         held = self.hold()
         # During the run the entry here is active, with the dispatcher's process as the run's.
