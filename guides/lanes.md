@@ -130,6 +130,25 @@ path to the reason it is kept. `measurements/` and `evidence/` at the top of a p
 any lane selects any of it, and the check does not ask whether a runbook says when that lane runs.
 This is a warning, which changes no gate.
 
+## One selection on two idioms
+
+With the Apple extension, `qk doctor` warns of a lane whose one command names an iPhone and an iPad
+simulator type with `--device`, as `qk simulator-tests --device iPhone-17-Pro --device
+iPad-Air-13-inch-M4` does, or a project's script given both. Such a lane runs one selection on both,
+so each test whose result does not depend on the idiom runs twice
+([#105](https://github.com/vocaro/queuekeeper/issues/105); apple-engineering's
+guides/app-testing.md, Test dimensions and the snapshot layer). Three kinds of lane give no warning:
+
+- a lane in `release.lanes`, or in a group named there, which runs every class on every simulator
+  as the control for platform divergence;
+- a lane whose `"idioms"` says in words why its whole selection depends on the idiom, such as
+  where the project classifies its test classes, which the check takes at its word;
+- a lane for each idiom, each naming one type, which is the project's own split.
+
+The check reads only the lane's own words. A script that picks its simulators itself is not seen,
+and neither is a `--device` of `qk device-pass`, which names a physical device. This is a warning,
+which changes no gate.
+
 ## Compile before the tests
 
 A lane says so with `"compileFirst"`, an argv beside its `command`, which the toolkit cannot work
