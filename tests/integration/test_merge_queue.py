@@ -1914,6 +1914,13 @@ class NoVerdict(Fixture):
         self.assertEqual(worker.no_verdict_cause(3, self.base / "missing.log"), "unmeasured, with no test its log names")
         self.assertEqual(worker.no_verdict_cause(75, log), "no admission: the host stayed at capacity")
         self.assertIn("configuration", worker.no_verdict_cause(78, log))
+        # A Mac that could not provision its checkout is named, with its provision lane's log (vocaro/queuekeeper#19).
+        unprovisioned = ("this Mac (studio) could not provision its checkout: the provision lane exited 4 in /work, so "
+                         "gate did not run here; its log is /work/.build/queuekeeper/provision/run.log")
+        log.write_text(f"heavy: slot 0\nqueuekeeper: gate not run: {unprovisioned}\nqueuekeeper: to fix it, give this Mac "
+                       "what provisioning needs\n")
+        self.assertEqual(worker.no_verdict_cause(78, log), unprovisioned)
+        self.assertEqual(worker.no_verdict_cause(75, log), "no admission: the host stayed at capacity")
         worker.timed_out = "gate reached its limit: after 7200 s"
         self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: gate reached its limit: after 7200 s")
 
@@ -4248,6 +4255,38 @@ class LaneThatCannotStart(Fixture):
         self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertIn("the queue's lanes fail on this commit", self.state(identifier)["why"])
         self.assertIsNone(mq.Queue(self.repo).held())
+
+
+class UnprovisionedWhereTheGateRuns(Fixture):
+    """vocaro/queuekeeper#19: the queue places each lane by itself, so its provision lane can pass on one Mac while
+    the gate runs on the other, in a checkout nothing provisioned. qk run provisions that checkout before the gate,
+    and a provision lane that fails there is that Mac's environment: the queue holds, and sends no entry back."""
+
+    def test_a_gate_whose_checkout_cannot_be_provisioned_holds_for_the_environment_and_blames_no_commit(self):
+        config = self.config()
+        # The provision lane passes as the queue's own lane and before spelling, and fails before the gate, as it
+        # does on a Mac that lacks its inputs: the lane it runs before names the wait record it shares (lane_wait).
+        config["lanes"]["provision"] = {"command": ["python3", "-c", (
+            "import os, sys; print('3 required inputs missing'); "
+            "sys.exit(4 if os.environ.get('QUEUEKEEPER_LANE_WAIT', '').endswith('gate.json') else 0)")]}
+        config["queue"]["noVerdictRuns"] = 1
+        self.publish(config, "Add a provision lane")
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        # The gate's own command never ran, and the entry waits.
+        self.assertEqual(self.gates(), 0, said.getvalue())
+        self.assertEqual(self.state(identifier)["state"], "queued", said.getvalue())
+        self.assertNotIn("fix", self.main_files())
+        held = mq.Queue(self.repo).held()
+        checkout = mq.Queue(self.repo).checkout
+        self.assertIn(f"the lanes gave no verdict in 1 run in a row, the last with exit {mq.remote.MISCONFIGURED}, this Mac "
+                      f"({offload_host.mac_name()}) could not provision its checkout: the provision lane exited 4 in ", held)
+        self.assertIn(f"so gate did not run here; its log is {checkout / '.build/queuekeeper/provision/run.log'}", held)
+        self.assertIn("for the owner", held)
+        self.assertIn("3 required inputs missing", (checkout / ".build/queuekeeper/provision/run.log").read_text())
+        self.assertNotIn("fail on this commit", held)
+        self.assertNotIn("a shared host's configuration", held)
 
 
 class SpellingStoppedByRemoval(Fixture):

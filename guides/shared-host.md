@@ -1033,8 +1033,11 @@ has the capacity, so a session that sees the second Mac loaded and this Mac idle
 A project's `provision` lane, when it has one, runs first on this Mac as it does on the second Mac:
 a lane that runs here, whether by `--here`, by its own `here` or because the second Mac had no
 room, runs after `qk run --here provision` in the same checkout, inside the lane's own admission
-(admitted itself before a self lane, which holds none), and only if that passes. Otherwise `qk run` says that the lane did not run, names the provision
-lane's log, `.build/queuekeeper/provision/run.log`, and exits with the provision lane's status. The
+(admitted itself before a self lane, which holds none), and only if that passes. A provision lane that fails here ends the run as one that fails on the
+second Mac does: `qk run` says that this Mac could not provision its checkout, names the provision
+lane's log, `.build/queuekeeper/provision/run.log`, and exits 78 (`EX_CONFIG`), this Mac's
+environment and no verdict on the commit, so the merge queue holds, quoting that line, and sends no
+entry back. One that got no admission or ended unmeasured ends the lane with its own status. The
 `provision` lane itself, work nested in another admission or in a self lane, and work the second
 Mac was sent run no second one. Before this, a bare `qk run gate` passed or failed by the Mac it
 landed on ([vocaro/queuekeeper#19](https://github.com/vocaro/queuekeeper/issues/19)).

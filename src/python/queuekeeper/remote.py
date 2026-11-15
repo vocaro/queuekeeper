@@ -160,6 +160,9 @@ GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECT
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
 # `qk run`'s status when the second Mac's configuration stopped a lane: sysexits' EX_CONFIG.
 MISCONFIGURED = 78
+# What says that a Mac's provision lane failed before a lane there, on either Mac (execute, cli.provisioned_here):
+# the merge queue quotes the line that holds it as a hold's cause (merge_queue.Worker.no_verdict_cause).
+UNPROVISIONED = "could not provision its checkout"
 # `qk run`'s status when a queue worker's gate found its process without Local Network access and ran nothing, here
 # or there: sysexits' EX_UNAVAILABLE. No verdict, on which the worker exits, holding nothing (vocaro-engineering#300).
 LOST_ACCESS = 69
@@ -2184,7 +2187,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
               f"{local.get('macOS')} ({local.get('build')}): the result qualifies the second Mac's platform",
               file=sys.stderr, flush=True)
     if result.get("stage") == "provision" and status and not result["stopped"]:
-        raise Misconfigured(f"{host} could not provision its checkout: the provision lane exited {status} in "
+        raise Misconfigured(f"{host} {UNPROVISIONED}: the provision lane exited {status} in "
                             f"{result.get('checkout')}, so {name} did not run there; its log is {own / 'run.log'}",
                             f"give {host} what provisioning needs, which that log names, such as a tool "
                             "`qk remote setup` installs or the git-credentials token for private dependencies "

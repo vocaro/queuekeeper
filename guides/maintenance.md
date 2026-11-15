@@ -600,7 +600,9 @@ points a timed part that needs a quiet Mac at `qk admit --here --exclusive` from
 quiet Mac, voided its own timing five times as other work started beside it
 ([#28](https://github.com/vocaro/queuekeeper/issues/28)). A hold stays
 until whoever its reason names has dealt with its cause, or found it gone, and run `qk queue resume`:
-the owner only when the last run's exit was 78, a shared host's configuration, and otherwise a session,
+the owner only when the last run's exit was 78, a shared host's configuration (a Mac whose `provision`
+lane failed before the lane is such a host, this Mac included, and the reason names it and that lane's
+log), and otherwise a session,
 as [a hold says whom it is for](#the-merge-queue) below. Nothing fails over to another route.
 
 Each retry waits first for the host to settle, by the test heavy-work admission applies before it takes
