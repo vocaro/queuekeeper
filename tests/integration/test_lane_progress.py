@@ -203,6 +203,7 @@ class LiveProgress(unittest.TestCase):
         queue.all.return_value = []
         queue.working.return_value = True
         queue.held.return_value = None
+        queue.closed.return_value = None
         now = time.time()
         queue.round_state.return_value = {"gates": {"batch": {"began": now-2,
             "progress": [self.record(startedAt=now), self.record(run="stale", observedAt=now-20)]}}}
