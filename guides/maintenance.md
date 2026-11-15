@@ -66,7 +66,10 @@ finding rejects the batch. A project's own `spelling` lane runs in its place, an
 that cannot pass it yet; the round's log says when the toolkit's ran. The
 lanes therefore go where every lane goes, to whichever Mac has spare capacity for them, the second Mac
 first ([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)), and the round's log says where
-each ran and why; one gate serves the whole batch. On a pass it pushes
+each ran and why; one gate serves the whole batch. Each lane is placed by itself, so the `provision`
+lane may run on one Mac and the gate on the other: `qk run` therefore runs the project's `provision`
+lane first in the checkout of whichever Mac runs a lane, the worker's own included
+([vocaro/queuekeeper#19](https://github.com/vocaro/queuekeeper/issues/19)). On a pass it pushes
 exactly the commits it tested, as ordinary commits with their own messages and closing lines, so
 Closeout finds each branch landed by equal patches. The gate receipt is of the pushed commit, which
 `eng release` accepts, unless the result was carried over. Each landed entry records its gate's wall

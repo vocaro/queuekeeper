@@ -517,6 +517,33 @@ def here_because(args, inherited):
     if lane: return f"a part of the self lane {lane}, whose parts share build products on the Mac where it runs"
     return None
 
+def provisioned_here(root, config, lane, receipt, inherited, on_stop=None):
+    """None once the project's provision lane, if it has one, has run in this checkout before lane runs on this Mac,
+    as it runs in the second Mac's checkout before a lane sent there (offload_host); otherwise its status, after
+    saying where its log is. A bare `qk run gate` that stayed here ran only the gate, so it passed or failed by the
+    Mac it landed on, and a queue gate that fell back here found a checkout its provision lane had prepared on the
+    other Mac, or on none (vocaro/queuekeeper#19). It runs as `qk run --here provision`, a lane of its own with its
+    own receipt and log, nested in the admission lane holds, or admitted itself before a self lane. Not before the
+    provision lane itself, nor for work nested in an admission or a self lane, which the run around it provisioned,
+    nor for work a dispatch sent here, which provisioned this checkout as a step of its own."""
+    if lane == "provision" or "provision" not in config.get("lanes", {}): return None
+    if inherited or os.environ.get(SELF_LANE) or os.environ.get(remote.DISPATCHER): return None
+    # With the toolkit the lane runs with: the one that was sent, once its checkout has moved (admitted_tree).
+    toolkit = Path(receipt.get("sentToolkit", {}).get("toolkit") or TOOLKIT_ROOT)
+    said = root / ".build/queuekeeper" / lane / "provision.log"
+    with resources.child_requests():
+        status = processes.run([sys.executable, str(toolkit / "bin/qk"), "--project", str(root), "run", "--here",
+                                "provision"], cwd=root, log_path=said, on_stop=on_stop)
+    if not status:
+        # The provision lane reported into this lane's wait record, as on the second Mac (lane_wait.begin); the
+        # record is this process's again, whose start a stacked gate reads (merge_queue.Worker.admitted_mac).
+        lane_wait.running()
+        return None
+    print(f"queuekeeper: {lane} not run on this Mac: the provision lane exited {status} in {root}; its log is "
+          f"{root / '.build/queuekeeper/provision/run.log'}, and what qk run said of it is in {said}",
+          file=sys.stderr, flush=True)
+    return status
+
 
 # Set by qk run for the command of a self lane, to the lane's name: each `qk admit` its script runs stays on the
 # Mac where the lane runs, since one part builds what the next runs (config.unadmitted).
@@ -1252,6 +1279,8 @@ def perform(argv, report):
                     if resource == "self":
                         if device_window is not None: extensions.DEVICES.report_window(device_window, 0)
                         scroll_bars_recorded(receipt, args.lane, inherited)
+                        unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited)
+                        if unprovisioned is not None: return unprovisioned
                         # Each part its script admits stays on this Mac, which holds what an earlier part built.
                         lane_wait.running()
                         with patch_environment({SELF_LANE: args.lane}):
@@ -1310,6 +1339,9 @@ def perform(argv, report):
                                       "release the outer admission before waiting for an unlocked screen and retry",
                                       file=sys.stderr, flush=True)
                                 return BUSY
+                            unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited,
+                                                             admission.interrupted)
+                            if unprovisioned is not None: return unprovisioned
                             result = execute(admission.interrupted)
                             # A failed build ran no test an alert could have disturbed.
                             if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)
