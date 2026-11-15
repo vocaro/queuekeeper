@@ -8259,6 +8259,29 @@ class Stacked(Fixture):
         self.assertEqual(b["gatedOn"], self.state(first)["landedAs"])
         self.assertLessEqual({"hold", "b"}, self.main_files())
 
+    def test_a_stacked_gate_lands_what_arrived_before_the_queue_closed_and_a_later_entry_is_refused(self):
+        """vocaro/queuekeeper#32: closing the queue while a stacked gate runs leaves that gate and its entry as they
+        were, and refuses what arrives after."""
+        self.commit("hold", "a"); self.commit("b", "b"); self.commit("c", "c")
+        [first] = self.add("a")
+        queue, refused = mq.Queue(self.repo), []
+        def closed_once_stacked(log):
+            if not self.stacked_started(log): return False
+            if queue.close("a host goes away", "the maintenance session") is None:
+                with self.assertRaises(mq.Refused) as caught, contextlib.redirect_stderr(io.StringIO()):
+                    mq.add(self.repo, "c")
+                refused.append(str(caught.exception))
+            return True
+        log = self.worked("b", closed_once_stacked)
+        b = self.added("b")
+        self.assertEqual((self.state(first)["state"], b["state"]), ("landed", "landed"), log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertEqual(b["gatedOn"], self.state(first)["landedAs"])
+        self.assertEqual(len(refused), 1, refused)
+        self.assertIn("closed to new entries by the maintenance session", refused[0])
+        self.assertEqual([entry["branch"] for entry in queue.all()], ["a", "b"])
+        self.assertTrue(queue.closed())
+
     def test_a_docs_entry_that_arrives_during_a_code_gate_lands_beside_it_on_the_docs_lanes(self):
         """vocaro-engineering#394: a docs-only entry that arrives while a code batch gates lands beside the gate, on the
         docs lanes, and the batch's pass carries over the document main gained. The old worker stacked it on the
@@ -8817,6 +8840,227 @@ class IdleStatus(Fixture):
         self.add("one")
         self.assertEqual(self.asked(), mq.resources.BUSY)
         self.assertIn("held for a session: a test holds it", self.said("--idle")[1])
+
+
+class ClosedQueue(Fixture):
+    """`qk queue close --why TEXT` closes the queue to new entries: `qk land` and `qk queue add` refuse each with the
+    reason and who closed it, the worker finishes what the queue has, status shows the closure, and `qk queue reopen`
+    takes entries again, so that maintenance that needs an empty queue can close it, wait for `--idle` and reopen it
+    with no entry arriving in between (vocaro/queuekeeper#32)."""
+    WHY, BY = "the launcher is being retired", "the maintenance session"
+
+    def command(self, *words):
+        """(exit status, standard output, standard error) of `qk queue WORDS` or `qk land WORDS`, starting no worker."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), patch.object(mq.Queue, "start"), \
+                patch.object(cli.extensions, "recover"), contextlib.chdir(self.repo):
+            code = cli.main(["--project", str(self.repo), *words])
+        return code, out.getvalue(), err.getvalue()
+
+    def close(self):
+        code, said, _ = self.command("queue", "close", "--why", self.WHY, "--by", self.BY)
+        self.assertEqual(code, 0, said)
+        return said
+
+    def kept(self):
+        """The queue's entries and the refs that keep their commits."""
+        return mq.Queue(self.repo).all(), run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue")
+
+    def refused(self, branch, **options):
+        """The refusal of branch by mq.add, which must queue nothing and replace nothing."""
+        before = self.kept()
+        with self.assertRaises(mq.Refused) as caught, patch.object(mq.Queue, "start"), patch("builtins.print"):
+            mq.add(self.repo, branch, **options)
+        self.assertEqual(self.kept(), before)
+        return caught.exception
+
+    def amended(self, branch):
+        """One more commit on branch, which `qk land` of it would replace its queued entry with."""
+        run(self.repo, "git", "checkout", "-q", branch)
+        (self.repo / "more.txt").write_text("x")
+        run(self.repo, "git", "add", "more.txt")
+        run(self.repo, "git", "commit", "-qm", "Add more.txt")
+
+    def test_a_closed_queue_refuses_a_new_entry_with_the_reason_and_who_closed_it(self):
+        tip = self.commit("a.txt", "one")
+        said = self.close()
+        self.assertIn(f"closed to new entries by {self.BY} since ", said)
+        self.assertIn(self.WHY, said)
+        self.assertIn("0 waiting", said)
+        error = self.refused("one")
+        self.assertRegex(str(error), rf"^{tip[:12]} is not queued: the queue is closed to new entries by {self.BY} "
+                         rf"since \d{{4}}-\d\d-\d\d \d\d:\d\d:\d\d: {self.WHY}\. Entries already in it finish\.")
+        self.assertIn("`qk queue reopen`", str(error))
+        self.assertEqual(error.waits_for, [])
+        self.assertEqual((error.closed["why"], error.closed["by"]), (self.WHY, self.BY))
+        for words in (("land", "one"), ("land", "one", "--wait", "--limit", "0"), ("queue", "add", "one")):
+            with self.subTest(words=words):
+                code, out, err = self.command(*words)
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn(f"queuekeeper: {tip[:12]} is not queued: the queue is closed to new entries by {self.BY}", err)
+                self.assertIn(self.WHY, err)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_front_no_gate_and_a_replacement_are_refused_and_the_earlier_entry_stays(self):
+        self.commit("a.txt", "one")
+        identifier, = self.add("one")
+        self.close()
+        self.commit("fix.txt", "fix")
+        for options in ({"front": True}, {"no_gate": True, "why": "an emergency"},
+                        {"front": True, "no_gate": True, "why": "an emergency"}):
+            with self.subTest(options=options):
+                self.assertIn("closed to new entries", str(self.refused("fix", **options)))
+        # The branch's newer commits would replace its entry, which stays queued with the commits it had.
+        earlier = self.state(identifier)["tip"]
+        self.amended("one")
+        self.assertIn("closed to new entries", str(self.refused("one")))
+        self.assertEqual((self.state(identifier)["state"], self.state(identifier)["tip"]), (mq.QUEUED, earlier))
+
+    def test_a_commit_the_queue_already_holds_is_followed_and_its_options_still_move_it(self):
+        self.commit("a.txt", "one")
+        identifier, = self.add("one")
+        self.close()
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(mq.add(self.repo, "one"), identifier)
+            self.assertEqual(mq.add(self.repo, "one", front=True, why="it unblocks the queue"), identifier)
+        self.assertIn(f"{identifier} already holds", said.getvalue())
+        self.assertTrue(self.state(identifier)["front"])
+        self.assertEqual(len(mq.Queue(self.repo).all()), 1)
+
+    def test_the_worker_finishes_every_entry_a_closed_queue_has_whatever_its_round(self):
+        """A batch that fails and bisects, its halves, an entry alone and a --front entry all reach a verdict."""
+        for name in ("a", "b", "bad", "d", "first"): self.commit(name, name)
+        ids = self.add("a", "b", "bad", "d")
+        with patch.object(mq.Queue, "start"), patch("builtins.print"):
+            front = mq.add(self.repo, "first", front=True, why="it goes first")
+        self.close()
+        self.assertEqual(self.command("queue", "status", "--idle")[0], mq.resources.BUSY)
+        with patch("builtins.print"): self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(i)["state"] for i in (*ids, front)],
+                         ["landed", "landed", "failed", "landed", "landed"])
+        self.assertEqual(self.main_files() & {"a", "b", "bad", "d", "first"}, {"a", "b", "d", "first"})
+        # Still closed once drained: idle now, and nothing can arrive before the maintenance reopens it.
+        self.assertTrue(mq.Queue(self.repo).closed())
+        self.assertEqual(self.command("queue", "status", "--idle")[0], 0)
+        self.commit("late", "late")
+        self.assertIn("closed to new entries", str(self.refused("late")))
+
+    def test_status_shows_the_closure_in_words_and_as_json_apart_from_a_hold(self):
+        self.assertNotIn("closed", self.command("queue", "status")[1])
+        self.assertIsNone(json.loads(self.command("queue", "status", "--json")[1])["closed"])
+        self.close()
+        code, said, _ = self.command("queue", "status")
+        lines = said.splitlines()
+        self.assertEqual((code, lines[0]), (0, "worker: none"))
+        self.assertRegex(lines[1], rf"^closed to new entries by {self.BY} since \S+ \S+: {self.WHY}; entries already in "
+                         r"it finish, and `qk queue reopen` takes new ones again$")
+        state = json.loads(self.command("queue", "status", "--json")[1])
+        self.assertEqual((state["closed"]["why"], state["closed"]["by"]), (self.WHY, self.BY))
+        self.assertAlmostEqual(state["closed"]["at"], time.time(), delta=600)
+        self.assertEqual((state["held"], state["recovery"], state["idle"]), (None, None, True))
+        self.assertEqual(state["closed"], mq.snapshot(self.repo)["closed"])
+        # A hold beside it is the worker line's, as before, and resuming it leaves the queue closed.
+        with patch("builtins.print"): mq.Queue(self.repo).hold("for a session: a test holds it")
+        lines = self.command("queue", "status")[1].splitlines()
+        self.assertEqual(lines[0], "worker: none; held for a session: a test holds it")
+        self.assertTrue(lines[1].startswith("closed to new entries by "))
+        self.assertEqual(self.command("queue", "resume")[0], 0)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertTrue(mq.Queue(self.repo).closed())
+
+    def test_reopening_is_one_command_that_takes_entries_again_and_clears_no_hold(self):
+        self.commit("a.txt", "one")
+        self.close()
+        with patch("builtins.print"): mq.Queue(self.repo).hold("for a session: a test holds it")
+        self.refused("one")
+        code, said, _ = self.command("queue", "reopen")
+        self.assertEqual(code, 0)
+        self.assertIn(f"reopened: the queue was closed to new entries by {self.BY}", said)
+        self.assertIsNone(mq.Queue(self.repo).closed())
+        self.assertFalse(mq.Queue(self.repo).closed_file.exists())
+        self.assertEqual(mq.Queue(self.repo).held(), "for a session: a test holds it")
+        self.assertNotIn("closed to new entries", self.command("queue", "status")[1])
+        identifier, = self.add("one")
+        self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+        self.assertEqual(self.command("queue", "reopen")[:2], (0, "the queue was not closed\n"))
+
+    def test_idle_reads_a_closed_queue_as_any_other(self):
+        self.close()
+        self.assertEqual(self.command("queue", "status", "--idle")[0], 0)
+        self.command("queue", "reopen")
+        self.commit("a.txt", "one")
+        identifier, = self.add("one")
+        self.close()
+        code, said, _ = self.command("queue", "status", "--idle")
+        self.assertEqual(code, mq.resources.BUSY)
+        self.assertIn("closed to new entries", said)
+        state = json.loads(self.command("queue", "status", "--idle", "--json")[1])
+        self.assertEqual((state["idle"], state["closed"]["by"]), (False, self.BY))
+        mq.Queue(self.repo).save({**self.state(identifier), "state": mq.LANDED, "settled": time.time()})
+        self.assertEqual(self.command("queue", "status", "--idle")[0], 0)
+
+    def test_a_second_close_changes_nothing_and_names_the_first(self):
+        self.close()
+        first = mq.Queue(self.repo).closed()
+        code, out, err = self.command("queue", "close", "--why", "another reason", "--by", "another session")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(f"already closed to new entries by {self.BY}", err)
+        self.assertEqual(mq.Queue(self.repo).closed(), first)
+
+    def test_close_needs_a_reason_and_names_the_session_that_ran_it(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as usage:
+            cli.main(["--project", str(self.repo), "queue", "close"])
+        self.assertEqual(usage.exception.code, 2)
+        self.assertEqual(self.command("queue", "close", "--why", "  ")[0], 2)
+        self.assertIsNone(mq.Queue(self.repo).closed())
+        origin = {"repository": "fixture", "branch": "work", "session": "abc", "mac": "desk"}
+        with patch.object(mq.resources, "work_origin", return_value=origin):
+            self.assertEqual(self.command("queue", "close", "--why", "a move\nof state")[0], 0)
+        closure = mq.Queue(self.repo).closed()
+        self.assertEqual((closure["by"], closure["why"]),
+                         ("repository fixture, branch work, session abc, mac desk", "a move of state"))
+
+    def test_a_queue_closed_while_an_entry_is_checked_saves_nothing(self):
+        """The closure is read again under the lock that saves the entry, which close takes, so that an entry is either
+        saved before close returns or refused."""
+        self.commit("a.txt", "one")
+        queue = mq.Queue(self.repo)
+        with patch.object(mq, "check", side_effect=lambda *_: queue.close(self.WHY, self.BY)):
+            error = self.refused("one")
+        self.assertEqual(error.closed["by"], self.BY)
+        queue.reopen()
+        # Past the point where a replaced entry is taken out, the refusal says that it was.
+        earlier, = self.add("one")
+        self.amended("one")
+        real = mq.remove
+        def removed_then_closed(*arguments, **options):
+            real(*arguments, **options)
+            queue.close(self.WHY, self.BY)
+        with patch.object(mq, "remove", side_effect=removed_then_closed), patch.object(mq.Queue, "start"), \
+                patch("builtins.print"), self.assertRaises(mq.Refused) as caught:
+            mq.add(self.repo, "one")
+        self.assertIn(f"{earlier}, the branch's earlier commits, was taken out before it closed", str(caught.exception))
+        self.assertEqual([entry["state"] for entry in queue.all()], [mq.REMOVED])
+
+    def test_a_closure_that_cannot_be_read_still_closes_the_queue(self):
+        self.commit("a.txt", "one")
+        queue = mq.Queue(self.repo)
+        queue.closed_file.write_text("{")
+        self.assertIn("cannot be read", str(self.refused("one")))
+        self.assertIn("closed to new entries by an unknown session", self.command("queue", "status")[1])
+        self.assertEqual(self.command("queue", "reopen")[0], 0)
+        self.assertIsNone(queue.closed())
+
+    def test_closing_and_reopening_are_journaled(self):
+        self.close()
+        self.command("queue", "close", "--why", "again", "--by", "another")
+        self.command("queue", "reopen")
+        self.command("queue", "reopen")
+        told = mq.events.read(mq.Queue(self.repo).directory, kinds=["queue."])
+        self.assertEqual([(event["kind"], event["why"], event["by"]) for event in told],
+                         [("queue.closed", self.WHY, self.BY), ("queue.reopened", self.WHY, self.BY)])
+        self.assertTrue(mq.events.words(told[0]).endswith(f"closed to new entries by {self.BY}: {self.WHY}"))
 
 
 class RoundAccount(Fixture):

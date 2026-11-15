@@ -38,6 +38,13 @@ def for_hold(why, responsible_party=None):
                   [["qk", "queue", "doctor", "--json"]])
 
 
+def for_closed(closure, message):
+    """A submission refused by a queue closed to new entries: the same submission works once whoever closed the queue
+    reopens it, which the refused session watches for and does not do itself."""
+    return {**advice("queue-closed", "unknown", False, "wait-for-reopen", message, [["qk", "queue", "status", "--json"]]),
+            "closed": dict(closure)}
+
+
 def write_hold(path, why, responsible_party=None):
     """Persist the structured hold beside the original text file; a failure cannot stop the queue."""
     target = Path(path).with_name("hold.json")

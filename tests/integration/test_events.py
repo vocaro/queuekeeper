@@ -222,7 +222,8 @@ class QueueEvents(test_merge_queue.Fixture):
         with patch("sys.stdout", printed): mq.status(self.repo, as_json=True)
         self.assertEqual(json.loads(printed.getvalue()), json.loads(json.dumps(mq.snapshot(self.repo))))
         self.assertEqual(sorted(mq.snapshot(self.repo)),
-                         ["held", "idle", "recent", "recovery", "round", "schemaVersion", "ungated", "waiting", "worker"])
+                         ["closed", "held", "idle", "recent", "recovery", "round", "schemaVersion", "ungated", "waiting",
+                          "worker"])
 
     def run_command(self, *words):
         printed = io.StringIO()

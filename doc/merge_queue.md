@@ -14,6 +14,8 @@ qk land BRANCH          # queue a branch and return at once
 qk queue status         # what is waiting, what is testing, what came back and why
 qk queue status --idle  # the same, exiting 0 only when no worker runs and nothing waits, else 75
 qk queue remove ID      # take an entry out
+qk queue close --why "..."  # refuse new entries while the worker finishes what the queue has
+qk queue reopen         # take new entries again
 ```
 
 Each round, the worker:
@@ -99,6 +101,38 @@ operations are degraded.
 - With both, the entry lands next. It goes ahead of a round whose gate still waits for admission,
   which then gates again on top of it, and waits only for a gate that has started, which status
   says.
+
+## Closing a queue for maintenance
+
+Maintenance that needs an empty queue, such as moving its state, changing its launcher or taking a
+host away, closes the queue first
+([#32](https://github.com/vocaro/queuekeeper/issues/32)). Reading a queue as idle and then acting
+on it is two steps, and an entry can arrive between them.
+
+```sh
+qk queue close --why "moving the queue's state" && {  # new entries are refused from here on
+  until qk queue status --idle; do sleep 30; done     # the worker finishes what the queue has
+  # ... the maintenance ...
+  qk queue reopen
+}
+```
+
+- **A closed queue refuses every new entry.** `qk land` and `qk queue add` print one line,
+  `COMMIT is not queued: the queue is closed to new entries by WHO since WHEN: WHY`, and exit 1.
+  `--front` and `--no-gate` are refused too, and so is a branch's newer commits, which would
+  replace its earlier entry: that entry stays and finishes. `qk land` of a commit the queue
+  already holds queues nothing, so it follows that entry as before.
+- **Entries already in it reach their verdict.** The worker goes on as it was: batches, stacked
+  gates, bisects and send-backs. Closing is not a hold, and a hold is not a closure:
+  `qk queue resume` leaves a closed queue closed, and `qk queue reopen` clears no hold.
+- **`qk queue status` shows it** in its second line, `closed to new entries by WHO since WHEN: WHY`,
+  and as `closed` in `--json`, which is null while the queue is open. `--idle` reads a closed
+  queue as it reads any other, so once it exits 0 on a closed queue, nothing is left and nothing
+  can arrive.
+- **WHO is the session that closed it**: its repository, branch, worktree, agent session and
+  Mac, or what `--by` says. A second `close` changes nothing and exits 1, naming the first.
+- **Reopening is one command, for whoever closed it.** A session whose entry was refused waits
+  for the queue to reopen and lands again; it does not reopen a queue another session closed.
 
 ## A queue that looks stuck
 

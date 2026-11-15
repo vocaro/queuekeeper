@@ -46,6 +46,7 @@ def execute(root, operation, command, *, reference=None, identifiers=(), details
                            "recovery": recovery.advice("submission-refused" if reason else "already-present",
                                                        "session" if reason else None, False, "fix-submission" if reason else "none",
                                                        reason or "The commit is already present on origin/main.")}
+                if details.get("closed"): payload["recovery"] = recovery.for_closed(details["closed"], reason)
                 if details.get("waitsFor"):
                     payload["waitsFor"] = details["waitsFor"]
                     held = recovery.read_hold(store.hold_file, store.held())
@@ -57,6 +58,7 @@ def execute(root, operation, command, *, reference=None, identifiers=(), details
             print(f"queuekeeper: {error}", file=sys.stderr)
             payload = error_result("submission-refused", str(error), "refused")
             payload["waitsFor"] = list(error.waits_for)
+            if error.closed: payload["recovery"] = recovery.for_closed(error.closed, str(error))
         except (remote.Lost, extensions.Unavailable) as error:
             status = queue.lane_results.UNMEASURED
             print(f"queuekeeper: {error}", file=sys.stderr)

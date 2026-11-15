@@ -46,6 +46,8 @@ KINDS = {
     "test.flaky": "flaky: {test} at {commit}",
     "queue.held": "held {why}",
     "queue.resumed": "resumed",
+    "queue.closed": "closed to new entries by {by}: {why}",
+    "queue.reopened": "reopened to new entries",
 }
 SHORT = ("head", "base", "landedAs", "commit")  # commits, which a line in words shows by their first 12 characters
 

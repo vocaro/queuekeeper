@@ -26,6 +26,7 @@ each waiting commit, so a branch that moves or goes takes nothing with it:
     <common>/queuekeeper-queue/entries/ID.json   one commit range and its state
     <common>/queuekeeper-queue/logs/             what each round's lanes printed
     <common>/queuekeeper-queue/hold              why the queue stopped, until `qk queue resume`
+    <common>/queuekeeper-queue/closed.json       who closed the queue to new entries and why, until `qk queue reopen`
     refs/queuekeeper/queue/ID                    the range's tip, until it lands or is removed
     ../queuekeeper-workers/NAME/NAME            the worker's checkout, in a folder beside the main checkouts
     ../queuekeeper-workers/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
@@ -357,10 +358,28 @@ class Refused(ValueError):
     """An entry qk land queued nothing of, since the round's integration of it does not apply (check). qk land and
     `qk queue add` exit 1 for it, as `qk land --wait` does for an entry that came back. waits_for names the entries
     ahead that it conflicts with alone, not with origin/main, which `qk land --wait` waits for before it checks again
-    (vocaro-engineering#302); it is empty for any other refusal."""
-    def __init__(self, words, waits_for=()):
+    (vocaro-engineering#302); it is empty for any other refusal. closed is the closure's record (Queue.closed) when
+    the queue refused it as closed to new entries, and None for any other refusal."""
+    def __init__(self, words, waits_for=(), closed=None):
         super().__init__(words)
         self.waits_for = list(waits_for)
+        self.closed = closed
+
+
+def closed_words(closure):
+    """A closure (Queue.closed) as `qk queue status` and a refusal say it: who closed the queue, when and why."""
+    since = closure.get("at")
+    when = f" since {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(since))}" if isinstance(since, (int, float)) else ""
+    return (f"closed to new entries by {closure.get('by') or 'an unnamed session'}{when}: "
+            f"{closure.get('why') or 'no reason given'}")
+
+
+def closed_refusal(tip, closure, also=""):
+    """The refusal of tip by a queue closed to new entries (vocaro/queuekeeper#32): nothing was queued, the entries
+    already in the queue finish, and whoever closed it reopens it, not the session it refused."""
+    return Refused(f"{tip[:12]} is not queued: the queue is {closed_words(closure)}{also}. Entries already in it "
+                   "finish. Whoever closed it runs `qk queue reopen`; run `qk land` again once `qk queue status` no "
+                   "longer says closed", closed=closure)
 
 
 def worded(kind, cause):
@@ -1370,6 +1389,7 @@ class Queue:
         self.entries = self.directory / "entries"
         self.logs = self.directory / "logs"
         self.hold_file = self.directory / "hold"
+        self.closed_file = self.directory / "closed.json"
         self.round_file = self.directory / ROUND_FILE
         self.round_lock = threading.Lock()  # between the threads of one worker, the only writer of round_file
         self.home = self.main_checkout.parent / QUEUES / self.main_checkout.name
@@ -1481,6 +1501,38 @@ class Queue:
         recovery.write_hold(self.hold_file, why)
         print(f"queue: held: {why}", flush=True)
         self.emit("queue.held", why=why, **{"for": OWNER if why.startswith("for the owner") else SESSION})
+
+    def closed(self):
+        """Who closed the queue to new entries, when and why (close), or None while it is open. A record that cannot
+        be read still closes the queue: whoever wrote it meant no entry to arrive."""
+        try: found = json.loads(self.closed_file.read_text())
+        except FileNotFoundError: return None
+        except (OSError, ValueError): found = None
+        if isinstance(found, dict) and isinstance(found.get("why"), str) and isinstance(found.get("by"), str): return found
+        return {"schemaVersion": 1, "why": f"{self.closed_file} cannot be read", "by": "an unknown session", "at": None}
+
+    def close(self, why, by):
+        """Close the queue to new entries (vocaro/queuekeeper#32): add refuses each from now on, while the worker
+        finishes the entries the queue has, and holds stay as they are. Under the entries' lock, so that an entry is
+        either saved before this returns, and `qk queue status --idle` counts it, or refused. Returns the closure
+        already there, which stays as it was, or None when this one was written."""
+        with self.locked():
+            already = self.closed()
+            if already: return already
+            closure = {"schemaVersion": 1, "why": why, "by": by, "at": round(time.time(), 3)}
+            staged = self.closed_file.with_suffix(f".{os.getpid()}.tmp")
+            staged.write_text(json.dumps(closure, indent=2) + "\n")
+            os.replace(staged, self.closed_file)
+        self.emit("queue.closed", why=why, by=by)
+        return None
+
+    def reopen(self):
+        """Take new entries again, and return the closure that ended, or None when the queue was open."""
+        with self.locked():
+            was = self.closed()
+            with contextlib.suppress(FileNotFoundError): self.closed_file.unlink()
+        if was: self.emit("queue.reopened", by=was.get("by"), why=was.get("why"))
+        return was
 
     @contextlib.contextmanager
     def worker(self):
@@ -1608,7 +1660,8 @@ def _land(root, args, directory=None, details=None):
                              why=getattr(args, "why", None))
             break
         except Refused as error:
-            if details is not None: details.update(refused=str(error), waitsFor=list(error.waits_for))
+            if details is not None:
+                details.update(refused=str(error), waitsFor=list(error.waits_for), closed=error.closed)
             print(f"queuekeeper: {error}", file=sys.stderr)
             if not args.wait or not error.waits_for: return 1
             # Refused for entries ahead alone: wait for them, then check again against the whole queue, which may
@@ -1621,6 +1674,7 @@ def _land(root, args, directory=None, details=None):
         details["id"] = identifier
         details.pop("refused", None)
         details.pop("waitsFor", None)
+        details.pop("closed", None)
     left = max(0.0, deadline - time.monotonic())
     status_ = wait(target, identifier, left) if args.wait and identifier is not None else 0
     warn(target)
@@ -1692,7 +1746,9 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     settings while origin/main has no queuekeeper.json, as for a project's first landing (#10), and the round's
     integration of it after the entries ahead of it, which a conflict refuses before it is queued (check). front and
     no_gate, qk land's emergency options --front and --no-gate, and why, the reason --why gives (ahead), go
-    in the entry; an entry already queued with the same tip takes them."""
+    in the entry; an entry already queued with the same tip takes them. A queue closed to new entries (Queue.close)
+    refuses every new entry, one with --front or --no-gate and one that would replace its branch's earlier entry
+    included, and leaves what it has as it was; a tip it already holds is no new entry, and is followed as before."""
     flags = ahead(front, no_gate, why)
     queue = Queue(root)
     reach(root, *FETCH, say=lambda words: print(f"queue: {words}", file=sys.stderr), check=True)
@@ -1742,6 +1798,10 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         if flags: promote(queue, same, flags)
         queue.start()
         return same["id"]
+    # A closed queue takes nothing new, whatever its options, and replaces nothing (vocaro/queuekeeper#32): before the
+    # checks, which cost a trial and a spelling run, and again under the lock that saves the entry.
+    closure = queue.closed()
+    if closure: raise closed_refusal(tip, closure)
     # A branch added again replaces what it added before; main names nobody's work in particular.
     replaced = [entry for entry in waiting
                 if branch and branch not in ("main", "HEAD") and entry.get("branch") == branch]
@@ -1770,6 +1830,11 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
              "subject": subject, "submitted": now, "state": QUEUED,
              "directory": str(root), **({"replays": replays} if merges else {}), **flags}
     with queue.locked():
+        # Closed since the check above: Queue.close takes this lock, so no entry is saved once it has returned.
+        closure = queue.closed()
+        if closure:
+            raise closed_refusal(tip, closure, "".join(
+                f"; {entry['id']}, the branch's earlier commits, was taken out before it closed" for entry in replaced))
         identifier = entry_identifier(queue, branch, subject, message)
         entry["id"] = identifier
         text(root, "update-ref", f"refs/queuekeeper/queue/{identifier}", tip)
@@ -1964,7 +2029,8 @@ def round_lines(state, at=None):
 def snapshot(root, recent=5):
     """The queue's state as `qk queue status --json` prints it, which the visibility features read too
     (doc/visibility.md): the worker, any hold, the round's account, the entries waiting, the last recent settled, the
-    IDs of those landed ungated, and whether the queue is idle (status's --idle)."""
+    IDs of those landed ungated, whether the queue is idle (status's --idle), and who closed it to new entries and
+    why, or None while it is open (Queue.closed)."""
     return reading(root, recent)[0]
 
 
@@ -1993,7 +2059,9 @@ def reading(root, recent=5):
             "recovery": recovery.in_project(
                 recovery.for_queue(recovery.read_hold(queue.hold_file, why), working=working, waiting=waiting), root),
             "round": current, "waiting": waiting, "recent": done,
-            "ungated": [entry["id"] for entry in ungated], "idle": not working and not waiting}, ungated
+            "ungated": [entry["id"] for entry in ungated], "idle": not working and not waiting,
+            # Apart from a hold: a closed queue works on what it has, and is idle once that is done (#32).
+            "closed": queue.closed()}, ungated
 
 
 def status(root, as_json=False, recent=5, idle=False):
@@ -2007,6 +2075,8 @@ def status(root, as_json=False, recent=5, idle=False):
         return result
     working, why, current, waiting, done = (state[key] for key in ("worker", "held", "round", "waiting", "recent"))
     print(f"worker: {'running' if working else 'none'}" + (f"; held {why}" if why else ""))
+    if state["closed"]:
+        print(f"{closed_words(state['closed'])}; entries already in it finish, and `qk queue reopen` takes new ones again")
     if waiting and not working and not why: print("waiting with no worker: `qk queue resume` starts one")
     for line in round_lines(current or {}): print(line)
     for entry in ungated:
@@ -5423,6 +5493,32 @@ def resume(root):
     return 0
 
 
+def close(root, why, by=None):
+    """`qk queue close --why TEXT`: refuse new entries from now on, for maintenance that needs the queue empty, which
+    then waits for `qk queue status --idle` and reopens it (vocaro/queuekeeper#32). by names who closes it, the
+    session and worktree the command ran in unless --by says. A queue already closed stays as it was closed, with
+    status 1, so that two sessions do not each think the closure theirs and reopen under the other."""
+    if not why or not why.strip(): raise ValueError("qk queue close needs --why TEXT, which each refused `qk land` is told")
+    queue = Queue(root)
+    by = " ".join((by or resources.whence(resources.work_origin()) or "an unnamed session").split())
+    already = queue.close(" ".join(why.split()), by)
+    if already:
+        print(f"queuekeeper: the queue is already {closed_words(already)}; it stays as that closed it, and one "
+              "`qk queue reopen` opens it for everyone", file=sys.stderr)
+        return 1
+    waiting = len(queue.waiting())
+    print(f"{closed_words(queue.closed())}\n{waiting} waiting, which the worker finishes; `qk queue status --idle` "
+          "exits 0 once none is left and no worker runs, and `qk queue reopen` takes new entries again")
+    return 0
+
+
+def reopen(root):
+    """`qk queue reopen`: take new entries again. It touches no hold and starts no worker."""
+    was = Queue(root).reopen()
+    print(f"reopened: the queue was {closed_words(was)}" if was else "the queue was not closed")
+    return 0
+
+
 def land_arguments(parser):
     parser.add_argument("reference", nargs="?", help="the commit or branch; HEAD by default, and required with --repo")
     parser.add_argument("--repo", help="another project to land in: its path, or its name beside this project")
@@ -5500,6 +5596,15 @@ def add_arguments(parser):
     removing.add_argument("id")
     operations.add_parser("resume", help="clear a hold and start the worker: any session does this itself once the "
                           "hold's cause is dealt with or gone, and asks the owner only for a hold that says it is his")
+    closing = operations.add_parser("close", help="refuse new entries from now on, saying why and who closed it, "
+                                    "while the worker finishes the entries the queue has; for maintenance that needs "
+                                    "the queue empty, which waits for `status --idle` and then runs `reopen`: 0 "
+                                    "closed, 1 already closed")
+    closing.add_argument("--why", required=True, metavar="TEXT", help="the reason, which each refused `qk land` and "
+                         "`qk queue status` say")
+    closing.add_argument("--by", metavar="WHO", help="who closes it, for the same lines (default: the repository, "
+                         "branch, worktree, agent session and Mac the command ran in)")
+    operations.add_parser("reopen", help="take new entries again after `close`; it clears no hold")
     running = operations.add_parser("run", help="be the worker in the foreground; `add` starts one by itself")
     running.add_argument("--if-waiting", action="store_true", help="do nothing when the queue is empty or held")
     launcher = operations.add_parser("launcher-plist", help="print this queue's LaunchAgent for a signed launcher app")
@@ -5539,6 +5644,8 @@ def main(root, args):
     if args.operation == "events": return journal(root, args.json, args.since, args.kind, args.follow)
     if args.operation == "remove": return remove(Queue(root), args.id)
     if args.operation == "resume": return resume(root)
+    if args.operation == "close": return close(root, args.why, args.by)
+    if args.operation == "reopen": return reopen(root)
     if args.operation == "launcher-plist":
         sys.stdout.write(plistlib.dumps(Queue(root).launcher_plist(args.app)).decode())
         return 0

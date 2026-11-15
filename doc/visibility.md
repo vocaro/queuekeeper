@@ -210,6 +210,8 @@ Every event has these keys, and its kind's own beside them:
 | `test.flaky` | A failed test passed alone | `test`, `commit`, `issue`, `landed`, `entries` |
 | `queue.held` | The queue stopped | `why`, `for` (`owner` or `session`) |
 | `queue.resumed` | A hold was cleared | `was` |
+| `queue.closed` | The queue was closed to new entries | `why`, `by` |
+| `queue.reopened` | The queue takes new entries again | `why`, `by` (the closure that ended) |
 
 A key with nothing to say is left out. The schema only grows: a later version adds kinds and keys
 and never renames or removes one, so a reader ignores what it does not know.

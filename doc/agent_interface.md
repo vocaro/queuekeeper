@@ -33,7 +33,10 @@ Exit codes separate the cases an agent must treat differently:
   prints and exits 0 only when no worker runs and no entry is queued, testing or passed, and 75
   otherwise. A live worker between rounds with nothing waiting is not idle, and neither is a held
   queue with entries waiting. A worker that died leaves no worker: its lock is released with it.
-  With `--json`, the `idle` field says the same.
+  With `--json`, the `idle` field says the same. An entry can arrive after an idle reading, so
+  maintenance that needs the queue to stay empty runs `qk queue close --why TEXT` first and
+  `qk queue reopen` after; status says `closed to new entries by WHO since WHEN: WHY`, and its
+  `closed` field holds `why`, `by` and `at`, or null while the queue is open.
 
 ## Structured results and recovery
 
@@ -194,6 +197,13 @@ woken by its end:
   spelling finding, a closing keyword GitHub would act on, a check `qk unittest` would refuse
   every gate for, or a merge that brings in another branch's work. Nothing was queued. A branch
   refreshed by merging `main` is not refused: the queue lands its own commits in a line.
+- **A queue closed for maintenance refuses the same way**, with who closed it, when and why:
+  `COMMIT is not queued: the queue is closed to new entries by WHO since WHEN: WHY`
+  ([Closing a queue for maintenance](merge_queue.md#closing-a-queue-for-maintenance)). Entries
+  already queued finish. Land again once `qk queue status` no longer says closed; whoever closed
+  the queue reopens it, not the session it refused. With `--json`, the result's `state` is
+  `refused` and its `recovery` has `reasonCode: "queue-closed"`, `action: "wait-for-reopen"` and
+  the closure as `closed`, with `why`, `by` and `at`.
 - **A send-back ends the wait within seconds**, naming the files in conflict and the entries
   ahead, or the failed tests and the log.
 - **While it waits, it prints a line each time the entry's situation changes**, and so does

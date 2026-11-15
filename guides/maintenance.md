@@ -653,6 +653,27 @@ this should never need my approval"). `qk queue status`, `qk land --wait` and `q
 reason with its kind. A hold whose cause a session cannot find is still a session's: say what was
 looked at, and what remains, rather than asking the owner to resume.
 
+**A closed queue takes no new entry and finishes what it has.** Maintenance that needs an empty
+queue, such as a move of its state, a launcher change or a host going away, runs
+`qk queue close --why TEXT`, waits for `qk queue status --idle` to exit 0, does its work and runs
+`qk queue reopen` ([#32](https://github.com/vocaro/queuekeeper/issues/32)). At a cutover on
+2026-11-12 a session read nine queues as idle at about 06:50, another session queued an entry at
+06:57, and retiring the launcher stopped that entry's gate 23 minutes in: an idle reading does not
+stop the next entry. The closure is `queuekeeper-queue/closed.json`, with why, who and when, and
+`qk land` and `qk queue add` refuse with those, exit 1, before the conflict check and again under
+the lock that saves an entry, which `close` takes too: an entry is either saved before `close`
+returns, and `--idle` counts it, or refused. Every new entry is refused, whatever its kind:
+`--front`, `--no-gate`, and a branch's newer commits, whose earlier entry stays and finishes rather
+than being replaced. A commit the queue already holds is no new entry, so `qk land` of it follows
+that entry, and `--front` or `--no-gate` given with it still move it, since they bring nothing in.
+The worker does not read the closure. Every kind of round goes on as it would: a batch, a stacked
+gate, which takes only entries queued before the close, a bisect's halves, an entry alone, and a
+`--front` entry already queued. A closure is not a hold: the queue keeps working, `qk queue resume`
+leaves it closed and `qk queue reopen` clears no hold. A second `close` changes nothing and exits 1,
+naming the first, so that no session reopens a queue under the one that closed it; whoever closed it
+reopens it, and a session it refused waits. A `closed.json` that cannot be read closes the queue
+too.
+
 **A remote out of reach is tried again.** A fetch or push that never reached the remote, or whose
 connection ended, says nothing of the commits, and a brief outage clears by itself: a name that did not
 resolve, a connection refused, timed out, reset or dropped, over HTTPS or SSH. The worker tries it again
@@ -1134,19 +1155,26 @@ rm -f "$draft"
 At login and on its interval the agent runs the same worker entry point. Empty and held queues
 return before recovering dispatches or running gates. The queue lock excludes duplicate workers.
 If launchd rejects a start request, `worker.log` records the error and queuekeeper starts the session
-worker. To remove the setup, wait for the queue to be idle, run
+worker. To remove the setup, close the queue to new entries, wait for it to be idle, run
 `/bin/launchctl bootout "gui/$(id -u)/$label"`, and remove that queue's plist. Chain the bootout on
 `qk queue status --idle`, which exits 0 only when no worker runs and no entry is queued, testing or
 passed, and 75 otherwise; plain `qk queue status` exits 0 for a queue in the middle of a gate too
 ([#21](https://github.com/vocaro/queuekeeper/issues/21)). The bootout ends a running worker and its
 gate, as it did to another session's on 2026-11-12, when a bootout chained on plain
 `qk queue status` followed its `worker: running`. A worker between rounds with nothing waiting is
-still a running worker, so `--idle` does not call it idle.
+still a running worker, so `--idle` does not call it idle. An entry queued after an idle reading
+would start a worker the bootout then ends, so `qk queue close` comes first
+([#32](https://github.com/vocaro/queuekeeper/issues/32)), and `qk queue reopen` after, whether or
+not the removal went through, but only when this `close` was the one that closed the queue. A held
+queue with entries waiting never becomes idle: resume it, or remove its entries, before waiting.
 
 ```sh
-python3 scripts/qk queue status --idle &&
-  /bin/launchctl bootout "gui/$(id -u)/$label" &&
-  rm "$HOME/Library/LaunchAgents/$label.plist"
+python3 scripts/qk queue close --why "removing the queue's LaunchAgent" && {
+  until python3 scripts/qk queue status --idle; do sleep 30; done &&
+    /bin/launchctl bootout "gui/$(id -u)/$label" &&
+    rm "$HOME/Library/LaunchAgents/$label.plist"
+  python3 scripts/qk queue reopen
+}
 ```
 
 ## The README's screenshots

@@ -134,6 +134,32 @@ class AgentCli(Fixture):
         self.assertEqual(result["recovery"]["suggestedCommands"][0][:3],
                          ["qk", "--project", str(self.repo)])
 
+    def test_a_closed_queue_refuses_with_its_closure_in_the_structured_result(self):
+        """vocaro/queuekeeper#32: `qk land --wait --json` and `qk queue add --json` say who closed the queue and why."""
+        commit = self.commit("feature", "feature")
+        mq.Queue(self.repo).close("a host goes away", "the maintenance session")
+        for command, operation in ((("land", "feature", "--wait"), "land"), (("land", "feature"), "land"),
+                                   (("queue", "add", "feature"), "queue.add")):
+            with self.subTest(command=command):
+                status, result, progress = self.invoke(*command, "--json")
+                self.assertEqual((status, result["exitStatus"], result["operation"]), (1, 1, operation))
+                self.assertEqual((result["id"], result["commit"], result["state"], result["terminal"]),
+                                 (None, commit, "refused", True))
+                self.assertIn("closed to new entries by the maintenance session", result["failure"]["message"])
+                self.assertIn("a host goes away", result["failure"]["message"])
+                advice = result["recovery"]
+                self.assertEqual((advice["reasonCode"], advice["action"], advice["retryable"]),
+                                 ("queue-closed", "wait-for-reopen", False))
+                self.assertEqual((advice["closed"]["why"], advice["closed"]["by"]),
+                                 ("a host goes away", "the maintenance session"))
+                self.assertEqual(advice["suggestedCommands"],
+                                 [["qk", "--project", str(self.repo.resolve()), "queue", "status", "--json"]])
+                self.assertIn("is not queued: the queue is closed to new entries", progress)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        mq.Queue(self.repo).reopen()
+        status, result, _ = self.invoke("land", "feature", "--json")
+        self.assertEqual((status, result["state"]), (0, mq.QUEUED))
+
     def test_runtime_and_configuration_errors_have_json_results(self):
         for error in (ValueError("Invalid project configuration"), OSError("Cannot read repository")):
             with patch.object(mq, "add", side_effect=error):
