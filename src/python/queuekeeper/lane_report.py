@@ -3,7 +3,8 @@
 A lane's outcome used to be one `remote:` line in the middle of its output, and its counts and failing tests lay only
 in a file. Each run now ends with its verdict, its passed, failed, skipped and unmeasured tests, each failing test
 with its file and line, and the path to its failures.txt or its receipt. It reads only what this run wrote: a run's
-log and results here (ran_here), or the dispatch it sent after it began (remote.dispatch), and never an earlier run's or
+log and results here (ran_here), in a directory of its own when a run of the same lane beside it holds the lane's
+(cli.lane_directory), or the dispatch it sent after it began (remote.dispatch), and never an earlier run's or
 one a run of the same lane beside it sent (vocaro/queuekeeper#9). Passed, failed, skipped and unmeasured stay apart, a
 lane is passed only when it ran and returned 0, and a lane whose log counts no test says so rather than printing zeros.
 It also gives the load of the Mac the lane ran on over its run, which the receipt keeps (RunLoad, load_line;

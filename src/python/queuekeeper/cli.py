@@ -1,6 +1,7 @@
 """Queuekeeper's command: a merge queue and build farm for one developer's agents, on that developer's own Macs."""
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -404,6 +405,43 @@ REAP_SWITCH = "QUEUEKEEPER_REAP_BEFORE_RUN"
 USAGE = 2
 # The interpreters whose first argument, when it is no option, is the file they run (unstartable).
 SCRIPT_RUNNERS = re.compile(r"(python|pypy)(\d+(\.\d+)*)?|(ba|z|da|k)?sh")
+
+
+# Where a run of a lane on this Mac keeps its log, receipt and results while another run of that lane from the same
+# checkout holds .build/queuekeeper/LANE: .build/queuekeeper/RUNS/LANE/TIME-PID/, as each dispatch keeps its own
+# (remote.DISPATCHES); and how many of them each lane keeps.
+RUNS = ".runs"
+RUNS_KEPT = remote.DISPATCHES_KEPT
+
+
+def lane_directory(stack, root, lane):
+    """Where this run of lane on this Mac keeps its log, receipt and results: .build/queuekeeper/LANE, which one run
+    at a time holds, by an flock that stack releases when the run ends. A run that starts while another run of the
+    lane from this checkout holds it keeps a directory of its own, named for its start and its process as a
+    dispatch's is, and says so, and its summary names that directory's log and receipt (lane_report). Two runs of one
+    lane here from one checkout shared the lane's: the second emptied the first's results and wrote over its log, so
+    that the first read the second's tests as its own (vocaro/queuekeeper#9). Each lane keeps its newest RUNS_KEPT
+    such directories and any whose process still runs, and each one removed is named."""
+    base = Path(root) / ".build/queuekeeper"
+    runs = base / RUNS / lane
+    runs.mkdir(parents=True, exist_ok=True)
+    lock = os.open(runs / ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+    stack.callback(os.close, lock)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return base / lane
+    except BlockingIOError:
+        own = runs / (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}")
+    own.mkdir(exist_ok=True)
+    print(f"queuekeeper: another run of {lane} from this checkout is running on this Mac, so this run keeps its log, "
+          f"receipt and results in {own}, not {base / lane}", file=sys.stderr, flush=True)
+    for old in sorted(path for path in runs.iterdir() if path.is_dir())[:-RUNS_KEPT]:
+        process = old.name.rpartition("-")[2]
+        if process.isdigit() and lane_wait.alive(int(process)): continue
+        shutil.rmtree(old, ignore_errors=True)
+        print(f"queuekeeper: removed {old}, each lane keeping its newest {RUNS_KEPT} runs beside another", file=sys.stderr,
+              flush=True)
+    return own
 
 
 def reap_here(root, inherited):
@@ -1159,6 +1197,8 @@ def perform(argv, report):
     root = args.project.resolve()
     # What a run that died left changed on this Mac, the next command puts back.
     extensions.recover()
+    # What a lane's run holds until it ends, however it ends: its directory (lane_directory).
+    held = contextlib.ExitStack()
     try:
         # The inventory, the skill links and the admission log cover the whole host, so they need no project
         # configuration.
@@ -1336,7 +1376,7 @@ def perform(argv, report):
             needs = unlocked_screen(config["lanes"], args.lane)
             reads_screen = needs or any(extensions.reads_screen(config["lanes"][name]) for name in (group or [args.lane]))
             policy_commit = refresh_policy(root) if resource != "self" else None
-            directory = root / ".build/queuekeeper" / args.lane
+            directory = lane_directory(held, root, args.lane)
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit, **placement(reason)}
             # The commit of each folder beside the project that this run loads its extensions from (pins).
@@ -1522,4 +1562,5 @@ def perform(argv, report):
         report.explain(error)
         return 2
     finally:
+        held.close()
         lane_wait.finish()

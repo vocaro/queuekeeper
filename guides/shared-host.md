@@ -1069,7 +1069,13 @@ the admission it inherits, here. `qk run` looks for the second Mac only when
 `QUEUEKEEPER_OFFLOAD_HOST` names one or `~/.ssh/config` defines the alias `build-host` or
 `second-mac`, which `ssh -G` reports; `QUEUEKEEPER_OFFLOAD_HOST=none` keeps every lane here. A
 lane's results come back to `.build/queuekeeper/remote/LANE/` when it ran on the second Mac and
-stay in `.build/queuekeeper/LANE/` when it ran here. Every `qk run` ends with a short summary, on
+stay in `.build/queuekeeper/LANE/` when it ran here. One run at a time holds that directory: a run
+that starts here while another run of the lane from the same checkout is still running here keeps
+its log, receipt and results in a directory of its own, `.build/queuekeeper/.runs/LANE/TIME-PID/`,
+which it names as it starts and in its summary, and each lane keeps its newest eight. Two such runs
+shared `LANE/`, where the second emptied the first's results and wrote over its log, so that the
+first counted the second's tests with its own
+([vocaro/queuekeeper#9](https://github.com/vocaro/queuekeeper/issues/9)). Every `qk run` ends with a short summary, on
 stderr after stdout is flushed: its verdict, its passed, failed, skipped and unmeasured tests kept
 apart, or that its log counts none, the load of the Mac it ran on over the run, each failing test
 with its file and line, and the path to its `failures.txt` or receipt (`lane_report`). The second

@@ -187,7 +187,9 @@ prints nothing until its input ends, and unittest's dots name no test.
   it last moved. `qk progress FOLDER` reads the run the first line named; `--all` reads every one
   kept. The newest twenty ended runs are kept, and every run still running.
 
-`qk run` keeps each lane's log in `.build/queuekeeper/LANE/run.log` as before, and
+`qk run` keeps each lane's log in `.build/queuekeeper/LANE/run.log` as before (a run that starts
+beside another run of the same lane from the same checkout on this Mac keeps its own under
+`.build/queuekeeper/.runs/LANE/`, and the last line of its summary gives the path), and
 `qk land --wait` prints a line whenever the entry's situation changes; neither yet names a
 progress folder.
 

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 (keeps the tests off the real hosts)
 from host_isolation import stretched
 from queuekeeper import cli, lane_results, lane_report, merge_queue
+from queuekeeper.waiting import wait_until
 
 SOURCE = Path(__file__).resolve().parents[2] / "src/python"
 RULE = "=" * 70
@@ -642,6 +643,80 @@ class Summary(unittest.TestCase):
         # A dispatch this process sent again in the same second, which file_results names NAME.2, is still its own.
         dispatched(f"20270115T080000Z-{own}.2", "Ran 1 test in 0.1s\n\nOK", {"host": "other-mac"})
         self.assertEqual(report.source(), ("on other-mac", runs / f"20270115T080000Z-{own}.2"))
+
+    def test_two_runs_of_one_lane_here_side_by_side_each_keep_and_report_their_own(self):
+        """Two runs of one lane on this Mac from one checkout shared .build/queuekeeper/LANE: the second emptied the
+        first's results and wrote over its log, so the first counted the second's tests with its own
+        (vocaro/queuekeeper#9). The second now keeps a directory of its own, which its summary names."""
+        body = f"""
+            import os, pathlib, sys, time
+            here, results = pathlib.Path({str(self.root)!r}), pathlib.Path(os.environ['QUEUEKEEPER_RESULTS_DIR'])
+            results.mkdir(parents=True, exist_ok=True)
+            (results / (sys.argv[1] + '.txt')).write_text(sys.argv[1])
+            if sys.argv[1] == 'second':
+                print('Ran 2 tests in 0.1s\\n\\nOK')
+                sys.exit(0)
+            print('the first run began ' * 8, flush=True)
+            (here / 'began').touch()
+            end = time.monotonic() + {stretched(300)}
+            while not (here / 'ended').exists() and time.monotonic() < end: time.sleep(0.05)
+            print({UNITTEST_FAILED!r})
+            sys.exit(1)
+            """
+        # A self lane takes no admission, so the two run side by side however many slots this Mac guarantees.
+        self.configure(lane={"command": self.command(body), "resource": "self"})
+        def run(name):
+            return subprocess.Popen([sys.executable, "-c", "import sys\nfrom queuekeeper import cli\nsys.exit(cli.main(sys.argv[1:]))",
+                                     "--project", str(self.root), "run", "--here", "lane", "--", name],
+                                    env={**os.environ, "PYTHONPATH": str(SOURCE)},
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        first = run("first")
+        self.addCleanup(first.kill)
+        self.assertTrue(wait_until(lambda: (self.root / "began").exists() or first.poll() is not None, stall=120))
+        second = run("second")
+        self.addCleanup(second.kill)
+        beside = second.communicate(timeout=stretched(300))[0].splitlines()
+        (self.root / "ended").touch()
+        lines = first.communicate(timeout=stretched(300))[0].splitlines()
+        self.assertEqual((first.returncode, second.returncode), (1, 0), "\n".join([*lines, *beside]))
+        [own] = (self.root / ".build/queuekeeper" / cli.RUNS / "lane").glob("*-*")
+        self.assertEqual(own.name.rsplit("-", 1)[1], str(second.pid))
+        self.assertIn(f"queuekeeper: another run of lane from this checkout is running on this Mac, so this run keeps "
+                      f"its log, receipt and results in {own}, not {self.lane_dir}", beside)
+        # Each run's summary counts its own tests and names its own receipt.
+        self.assertIn("qk run lane: passed, on this Mac", beside)
+        self.assertIn("  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured", beside)
+        self.assertEqual(beside[-1], f"  receipt: {own / 'source.json'}")
+        self.assertIn("qk run lane: failed (exit 1), on this Mac", lines)
+        self.assertIn("  tests: 3 passed, 2 failed, 1 skipped, 0 unmeasured", lines)
+        self.assertEqual(lines[-1], f"  receipt: {self.lane_dir / 'source.json'}")
+        # And each directory holds its own run's log, receipt and results, whole.
+        for directory, name, outcome in ((self.lane_dir, "first", "failed"), (own, "second", "passed")):
+            with self.subTest(run=name):
+                self.assertEqual(json.loads((directory / "source.json").read_text())["outcome"], outcome)
+                self.assertEqual([path.name for path in (directory / "results").iterdir()], [f"{name}.txt"])
+                self.assertEqual("the first run began" in (directory / "run.log").read_text(), name == "first")
+                self.assertEqual("Ran 2 tests" in (directory / "run.log").read_text(), name == "second")
+        # The lane's directory is the next run's again once the run that held it has ended.
+        self.configure(lane=self.printing("Ran 1 test in 0.1s\n\nOK"))
+        self.assertEqual(self.qk("lane")[1][-1], f"  receipt: {self.lane_dir / 'source.json'}")
+
+    def test_a_lane_keeps_its_newest_runs_beside_another_and_any_still_running(self):
+        runs = self.root / ".build/queuekeeper" / cli.RUNS / "lane"
+        old = [runs / f"20200115T08000{number}Z-1" for number in range(cli.RUNS_KEPT + 1)]
+        running = runs / f"20200115T070000Z-{os.getpid()}"
+        for path in (*old, running): path.mkdir(parents=True)
+        stream = StringIO()
+        with contextlib.ExitStack() as first, contextlib.ExitStack() as second, contextlib.redirect_stderr(stream):
+            self.assertEqual(cli.lane_directory(first, self.root, "lane"), self.lane_dir)
+            own = cli.lane_directory(second, self.root, "lane")
+            self.assertEqual((own.parent, own.name.rpartition("-")[2]), (runs, str(os.getpid())))
+        # The newest eight, its own among them, and the older one whose process, this one, still runs.
+        self.assertEqual(sorted(path for path in runs.iterdir() if path.is_dir()), sorted([running, *old[2:], own]))
+        self.assertEqual(stream.getvalue().splitlines()[1:], [
+            f"queuekeeper: removed {path}, each lane keeping its newest {cli.RUNS_KEPT} runs beside another" for path in old[:2]])
+        # Released with the run that held it, the lane's directory is the next run's.
+        with contextlib.ExitStack() as later: self.assertEqual(cli.lane_directory(later, self.root, "lane"), self.lane_dir)
 
     def test_a_summary_that_cannot_be_made_never_changes_the_status(self):
         self.configure(lane=self.printing(""))

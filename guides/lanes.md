@@ -7,7 +7,9 @@ in [lanes and admission](../doc/lanes_and_admission.md).
 ## Receipts and test counts
 
 `python3 scripts/qk run LANE` writes `.build/queuekeeper/LANE/source.json` beside the lane's
-`run.log`. It records the project's and toolkit's commit with a SHA-256 of their working changes
+`run.log`, or, for a run that starts while another run of the lane from the same checkout is still
+running on this Mac, both in a directory of that run's own, which its summary names
+([shared host](shared-host.md)). It records the project's and toolkit's commit with a SHA-256 of their working changes
 (tracked diff and untracked files), the policy commit for a heavy or exclusive lane, the argv
 with any arguments given after `--` appended, those `arguments` on their own, and the exit
 status or `failed-or-interrupted`. A lane's `compileFirst` step that fails records the outcome
