@@ -40,7 +40,7 @@ from queuekeeper.resources import process_start
 SCHEMA = 1
 OVERRIDE = "QUEUEKEEPER_DEVICE_RECORD"
 ABOUT = ("Device reservations on this Mac. Change entries only through "
-         "`python3 -m queuekeeper_apple.devices` (vocaro-engineering guides/shared-host.md).")
+         "`qk devices` (vocaro-engineering guides/shared-host.md).")
 # The Mac whose record holds physical devices, in a record that defers them to it: the second Mac's.
 DEFERRED = "physicalDevicesRecordedOn"
 # Written only by the record's own operations, which say who changed ownership and why.

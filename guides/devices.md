@@ -68,7 +68,7 @@ other devices, the Macs included, for the run.
 Then a session that holds the device records his word, once per device:
 
 ```sh
-python3 -m queuekeeper_apple.devices notifications setup iPad --by owner --at 2026-11-04T09:00:00Z \
+qk devices notifications setup iPad --by owner --at 2026-11-04T09:00:00Z \
   --words "the shortcuts are on the iPad"
 ```
 

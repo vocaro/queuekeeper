@@ -199,9 +199,12 @@ MEMBER = re.compile(r".+ [1-9][0-9]*")
 TEMPLATE = re.compile(r"(?P<label>.+) template \((?P<runtime>[^()]+)\)")
 SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 # The toolkit's own checkout on each Mac, relative to its home, which update_toolkit keeps at origin/main
-# there (vocaro-engineering#203); and its src/python as a shell path from the home, where a recovery that the
-# second Mac's record needs runs.
+# there (vocaro-engineering#203); and the shell words that run the Apple extension's `qk devices` from any folder
+# on either Mac: that checkout's own launcher, which puts its plugins on the import path, with that checkout as the
+# project, which declares the extension. `python3 -m queuekeeper_apple.devices` finds no such module outside a
+# process qk started, since the plugins left src/python (vocaro/queuekeeper#167).
 TOOLKIT_CHECKOUT = "Development/queuekeeper"
+QK_DEVICES = f"python3 ~/{TOOLKIT_CHECKOUT}/bin/qk --project ~/{TOOLKIT_CHECKOUT} devices"
 # Where a Mac keeps the checkouts runs are pinned to, under the home: NAME/COMMIT for each folder a project's
 # extensions load from and each commit a run pinned it at, with NAME/COMMIT.ready beside one that is whole
 # (pinned_checkout); the days one stays unused before it is pruned; and the variable that carries a run's pin set to
@@ -210,7 +213,6 @@ PINS, PIN_READY, PIN_DAYS, PIN_VARIABLE = "Development/queuekeeper-pins", ".read
 # The variable naming another directory for them than the home's, which the test suite sets so that no test adds
 # a checkout to the Mac's own (tests/host_isolation.py).
 PINS_DIRECTORY = "QUEUEKEEPER_PINS_DIR"
-TOOLKIT = f"~/{TOOLKIT_CHECKOUT}/src/python"
 # Seconds one update_toolkit may take in all, the bound it adds to the connection that prepares a dispatch,
 # and at most for its fetch; and its lock beside the second Mac's repositories, under ROOT.
 UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40, 25
@@ -2830,9 +2832,14 @@ def recoverable(entries, table, early=False):
         found.append({"key": key, "device": entry.get("device"), "owner": entry.get("ownerChatID"),
                       "due": entry.get("expectedReleaseBy"), "pids": [item[0] for item in identities(recorded)],
                       "revision": entry.get("revision", 0), **({"early": True} if early else {}),
-                      "command": f"python3 -m queuekeeper_apple.devices recover {shlex.quote(key)} --by SESSION "
-                                 f"--revision {entry.get('revision', 0)} --verified 'WHAT YOU CHECKED'"})
+                      "command": recover_command(key, entry.get("revision", 0))})
     return found
+
+
+def recover_command(key, revision, verified="'WHAT YOU CHECKED'"):
+    """The shell command that recovers the entry key at revision, on the Mac whose record holds it and from any
+    folder there (QK_DEVICES); its --by and --verified are the reader's to fill in."""
+    return f"{QK_DEVICES} recover {shlex.quote(key)} --by SESSION --revision {revision} --verified {verified}"
 
 
 def passed(due):
@@ -2843,11 +2850,11 @@ def passed(due):
 
 def recoverable_line(item, host=None):
     """What is said of one entry recoverable found and reap left, with why it left it when it says. For an
-    entry in another Mac's record, host, the command runs there, in its toolkit checkout, since a recovery
+    entry in another Mac's record, host, the command runs there, through its toolkit checkout, since a recovery
     here would read this Mac's record and refuse its revision (vocaro-engineering#156)."""
     command = item["command"]
     if host:
-        command = f"ssh {shlex.quote(host)} {shlex.quote('cd ' + TOOLKIT + ' && ' + command)}"
+        command = f"ssh {shlex.quote(host)} {shlex.quote(command)}"
     left = f"; reap did not release it: {item['hold']}" if item.get("hold") else ""
     return (f"{item['key']} stays held for owner {item['owner']}, though its process "
             f"{', '.join(map(str, item['pids']))} is gone and its release "

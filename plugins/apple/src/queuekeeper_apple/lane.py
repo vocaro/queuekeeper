@@ -105,6 +105,10 @@ def register():
                         "device named, in turn, under its reservation, taking the iPad in turn and using an iPhone the "
                         "session reserved within the owner's window: qk device-pass --device iPad --device "
                         "iPhone -- COMMAND; -h for the rest (guides/devices.md, The device pass)", device_pass.main),
+        "devices": ("read or change this Mac's device record, which reserves its physical devices, simulator pool "
+                    "members and foreground: qk devices status|show|reserve|update|take|release|recover|run; "
+                    "-h for the rest (guides/shared-host.md, Device reservations)",
+                    lambda arguments, project: devices.main(arguments)),
         "simulator-pool": ("list, take, release, prune, reap or check members of the project's simulator pool under "
                            "device-record reservations: qk simulator-pool list|take|release|prune|reap|check; "
                            "-h for the rest", simulator_pool.main),

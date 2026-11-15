@@ -1018,7 +1018,7 @@ def _report(key, entry):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="python3 -m queuekeeper_apple.devices",
+    parser = argparse.ArgumentParser(prog="qk devices",
                                      description="Read or change the shared device handoff record, or run a "
                                      "bounded command on a physical device it reserves.")
     commands = parser.add_subparsers(dest="action", required=True)

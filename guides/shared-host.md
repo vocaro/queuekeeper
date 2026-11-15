@@ -2355,7 +2355,7 @@ it inherits, nor a `self` lane, whose `qk admit` commands reap each as it is adm
 
 **A pool member with no live reservation goes after 2 hours, whoever booted it.** That includes one the
 owner booted by hand. To keep one running, boot a simulator outside the pool, or reserve it with
-`python3 -m queuekeeper_apple.devices reserve`, which records no process and so counts as live. A
+`qk devices reserve`, which records no process and so counts as live. A
 session that took a member with `qk simulator-pool take`, whose process ends when it prints the
 UDID, holds a reservation whose process is gone, which counts as live until its expected release,
 an hour after the take unless `take --hold MINUTES` asked for longer. To work past that, it runs
@@ -2443,10 +2443,11 @@ the release up. Each release is printed (`released KEY (UDID), held for owner �
 
 An entry whose processes are gone and whose release has passed, but which reap could not prove dead by the
 rest, stays held and is named with why (`reap did not release it: simctl shows it Booted, not Shutdown`,
-for one; its simulator is still under 2 hours old) and its exact `devices recover` command; for an entry
-in the second Mac's record that command runs there, as `ssh HOST 'cd
-~/Development/queuekeeper/src/python && python3 -m queuekeeper_apple.devices recover …'`, since
-run here it would read this Mac's record. `qk simulator-pool reap`, with or without `--dry-run`, and
+for one; its simulator is still under 2 hours old) and its exact `devices recover` command, `python3
+~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover …`, which runs from any
+folder: Queuekeeper's own checkout is its project, so the command needs neither a project that uses the Apple
+extension nor an import path (vocaro/queuekeeper#167). For an entry in the second Mac's record that command
+runs there, as `ssh HOST '…'`, since run here it would read this Mac's record. `qk simulator-pool reap`, with or without `--dry-run`, and
 `qk doctor`'s `reaped` name every such entry; the reap before a dispatch or a run here names only those of
 simulators it just stopped. `devices status` names them too, and releases nothing. One not yet due that
 reap leaves (`its release is due …; reap did not release it: …`, a take's or one whose owner something
@@ -2512,18 +2513,21 @@ session details. An entry records:
 - the original accessibility settings, and the apps, outputs and owner data to preserve;
 - at handoff, the terminal outcome, the restoration checks and the explicit release time.
 
-Read and change the record through the helper's CLI, or from a script through
-`devices.Record()` and its `reserve`, `update`, `release` and `recover` methods:
+Read and change the record through the helper's CLI, `qk devices`, which the Apple extension adds in a
+project that uses it, or from a script through `devices.Record()` and its `reserve`, `update`, `release`
+and `recover` methods. Outside such a project, run it through Queuekeeper's own checkout, as the recovery
+commands Queuekeeper prints do: `python3 ~/Development/queuekeeper/bin/qk --project
+~/Development/queuekeeper devices …`. `python3 -m queuekeeper_apple.devices` finds its module only in a
+process `qk` started (vocaro/queuekeeper#167):
 
 ```sh
-export PYTHONPATH="$QUEUEKEEPER_ROOT/src/python"
-python3 -m queuekeeper_apple.devices status
-python3 -m queuekeeper_apple.devices show iPhone    # the entry and its revision; 0 if new
-python3 -m queuekeeper_apple.devices reserve iPhone --owner SESSION --revision N \
+qk devices status
+qk devices show iPhone    # the entry and its revision; 0 if new
+qk devices reserve iPhone --owner SESSION --revision N \
   --device UDID --purpose "…" --release-by 2026-10-21T18:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
-python3 -m queuekeeper_apple.devices update iPhone --owner SESSION --revision N --set 'run=…'
-python3 -m queuekeeper_apple.devices release iPhone --owner SESSION --revision N \
+qk devices update iPhone --owner SESSION --revision N --set 'run=…'
+qk devices release iPhone --owner SESSION --revision N \
   --outcome "…" --restoration "…"
 ```
 
@@ -2587,7 +2591,7 @@ session takes it whenever it is free, without asking; the iPhone is his personal
 `--release-by` at the end of the time he gave. Both are taken the same way:
 
 ```sh
-python3 -m queuekeeper_apple.devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
+qk devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
 ```
 
@@ -2635,7 +2639,7 @@ releases nothing; the session restores the device and releases it.
 Run a command on a physical device through the toolkit's one launcher for a bounded run:
 
 ```sh
-python3 -m queuekeeper_apple.devices run iPhone --owner SESSION --revision N --limit 180 \
+qk devices run iPhone --owner SESSION --revision N --limit 180 \
   --restoration 60 -- xcodebuild test-without-building … -destination "platform=iOS,id=UDID"
 ```
 
@@ -2894,13 +2898,13 @@ A new window from the owner is a new reservation, after a release. Another sessi
 holder in `devices status`, and its reservation is refused while the entry is held.
 
 ```sh
-python3 -m queuekeeper_apple.devices reserve mac-foreground --owner SESSION --revision N \
+qk devices reserve mac-foreground --owner SESSION --revision N \
   --purpose "Mac XCUITest of …" --release-by 2026-10-23T18:00:00Z
 export QUEUEKEEPER_DEVICE_OWNER=SESSION
-python3 -m queuekeeper_apple.devices check      # at the start and before each action
-python3 -m queuekeeper_apple.devices update mac-foreground --owner SESSION --revision N \
+qk devices check      # at the start and before each action
+qk devices update mac-foreground --owner SESSION --revision N \
   --own PID
-python3 -m queuekeeper_apple.devices release mac-foreground --owner SESSION --revision N \
+qk devices release mac-foreground --owner SESSION --revision N \
   --outcome "…" --restoration "…" --frontmost restored
 ```
 

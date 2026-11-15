@@ -120,8 +120,8 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         if state in ("orphan", "uncertain"):
             raise reservations.Refused(f"the second Mac's {reservations.FOREGROUND} is {state}, held by {entry.get('ownerChatID')} "
                                   f"for {entry.get('purpose')}; it needs attended recovery first, on the second Mac: "
-                                  f"`python3 -m queuekeeper_apple.devices recover {reservations.FOREGROUND} --by SESSION "
-                                  f"--revision {entry.get('revision')} --verified WHAT` ({GUIDE})")
+                                  f"`{offload_host.recover_command(reservations.FOREGROUND, entry.get('revision'), 'WHAT')}` "
+                                  f"({GUIDE})")
         holder, due = entry.get("ownerChatID"), entry.get("expectedReleaseBy")
         lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release {due}")
         now = time.monotonic()

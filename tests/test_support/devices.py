@@ -194,3 +194,21 @@ NO_TESTS = ("Test Suite 'Selected tests' passed at 2026-11-11 08:33:58.699.\n"
 
 
 SOME_TESTS = NO_TESTS.replace("Executed 0 tests", "Executed 3 tests")
+
+
+def printed_command_help(command):
+    """What a `qk devices` command that Queuekeeper printed says of itself: command as a reader pastes it, with
+    --help added so that it changes nothing, run by a shell in a folder that is no project, with a home whose
+    Development/queuekeeper is this checkout, a PATH of the system's tools and this Python, and no import path.
+    A printed command runs so or not at all: after the plugins left the core, `python3 -m queuekeeper_apple.devices`
+    found no such module on either Mac (vocaro/queuekeeper#167). ssh there is a stand-in that runs its words in
+    this Mac's shell, as ssh does in the other Mac's."""
+    with scratch() as folder:
+        root = Path(folder)
+        for name in ("home/Development", "tools", "elsewhere"): (root / name).mkdir(parents=True)
+        (root / "home/Development/queuekeeper").symlink_to(Path(__file__).resolve().parents[2])
+        (root / "tools/python3").symlink_to(sys.executable)
+        host_isolation.executable(root / "tools/ssh", '#!/bin/sh\nshift\nexec /bin/sh -c "$*"\n')
+        environment = host_isolation.reduced(HOME=str(root / "home"), PATH=f"{root / 'tools'}:/usr/bin:/bin")
+        return subprocess.run(["/bin/sh", "-c", f"{command} --help"], cwd=root / "elsewhere", env=environment,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=stretched(120))

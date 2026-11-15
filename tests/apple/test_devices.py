@@ -529,8 +529,8 @@ class DeviceRecordTests(unittest.TestCase):
         output = self.cli("status")[1]
         self.assertIn(f"Recoverable: Pool iPhone 1 stays held for owner session-a, though its process {gone.pid} is gone",
                       output)
-        self.assertIn("python3 -m queuekeeper_apple.devices recover 'Pool iPhone 1' --by SESSION "
-                      f"--revision {entry['revision']} --verified 'WHAT YOU CHECKED'", output)
+        self.assertIn("python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover "
+                      f"'Pool iPhone 1' --by SESSION --revision {entry['revision']} --verified 'WHAT YOU CHECKED'", output)
         self.assertEqual(self.path.read_bytes(), before, "status changes nothing")
 
     def test_status_does_not_name_a_live_holder_or_a_release_not_yet_due(self):

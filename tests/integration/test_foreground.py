@@ -22,6 +22,7 @@ from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import foreground, opened_apps
 import host_isolation
 from host_isolation import stretched
+from test_support.devices import printed_command_help
 from queuekeeper_apple.voiceover import state as voiceover_state
 
 
@@ -208,11 +209,15 @@ class SlotTests(unittest.TestCase):
             self.assertFalse(failed.exception.restored)
         entry = self.record.entry(devices.FOREGROUND)
         self.assertEqual(devices.condition(entry), "uncertain")
-        # The next run names the exact recovery command, not an `queuekeeper` subcommand.
-        with self.assertRaisesRegex(devices.Refused, re.escape(
-                "python3 -m queuekeeper_apple.devices recover mac-foreground --by SESSION "
-                f"--revision {entry['revision']} --verified WHAT")):
+        # The next run names the exact recovery command, which runs as printed on the second Mac, where no import
+        # path names the plugins (vocaro/queuekeeper#167).
+        command = ("python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover "
+                   f"mac-foreground --by SESSION --revision {entry['revision']} --verified WHAT")
+        with self.assertRaisesRegex(devices.Refused, re.escape(f"`{command}`")) as refused:
             with self.slot(): self.fail("ran over an uncertain foreground")
+        ran = printed_command_help(str(refused.exception).partition("`")[2].partition("`")[0])
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertIn("usage: qk devices recover", ran.stdout)
 
     def killed_child(self, toggle):
         """A run whose child driver sent Command-F5, timed out and was killed before its own restoration: the

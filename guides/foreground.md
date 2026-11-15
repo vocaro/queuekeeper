@@ -312,10 +312,11 @@ may recover once ([waiting for the foreground](#waiting-for-the-foreground)). On
    VoiceOver process confirms as off, but set the key to 0 as well after such a quit:
    `defaults write com.apple.universalaccess voiceOverOnOffKey -bool false`, and check that
    `defaults read com.apple.universalaccess voiceOverOnOffKey` prints 0 (owner, #137).
-2. Record the recovery, naming the entry's current revision, which `python3 -m
-   queuekeeper_apple.devices show mac-foreground` prints and the refusal names:
-   `python3 -m queuekeeper_apple.devices recover mac-foreground --by SESSION --revision N
-   --verified "WHAT WAS CHECKED"`. It is not a `qk` subcommand.
+2. Record the recovery, naming the entry's current revision, which `qk devices show
+   mac-foreground` prints and the refusal names: `qk devices recover mac-foreground --by SESSION
+   --revision N --verified "WHAT WAS CHECKED"`. The refusal gives the command in full, as `python3
+   ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover …`, which runs
+   from any folder on the second Mac (vocaro/queuekeeper#167).
 
 ## Apps a run opened
 
@@ -337,7 +338,7 @@ Safari after the last session; Queuekeeper's quit is the net under it
   it is installed in an Applications folder (`/Applications`, `/System/Applications`,
   `~/Applications`, their `Utilities`, or Safari's cryptex), when it was built in the run's own
   checkout, or when the session recorded its bundle with
-  `python3 -m queuekeeper_apple.devices update mac-foreground --launched BUNDLE`.
+  `qk devices update mac-foreground --launched BUNDLE`.
 - **What is the run's, on any other Mac.** That decision does not reach this Mac, the owner's
   workstation, where he may open Safari or Mail while a run holds the screen. A Mac is the second
   Mac when its device record defers physical devices to another Mac's (`foreground.second_mac`),
