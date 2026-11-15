@@ -96,6 +96,8 @@ Test results from two Macs are comparable only if the tools match. `qk doctor` c
 Xcode build and the installed simulator runtimes on every Mac. It evens out the runtimes by copying
 a runtime image to the Mac that lacks it, or deleting one that nothing uses. `qk disk`
 lists stale DerivedData folders, SwiftPM caches and unused runtimes, and deletes them on request.
+Neither deletes a runtime while any simulator on that Mac is running, since the deletion can crash
+the launch host that every simulator shares.
 
 ## Requirements
 

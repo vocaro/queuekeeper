@@ -7426,14 +7426,16 @@ class RemoteRuntimeTests(unittest.TestCase):
         status, output, error = self.qk()
         self.assertEqual((status, output.strip()), (0, self.same(EVERY_RUNTIME)), output + error)
 
-    def devices(self, mac, runtimes, defaults=()):
-        """A Mac's simulators, as {runtime name: [device name]}; those named in defaults are Xcode's defaults."""
+    def devices(self, mac, runtimes, defaults=(), booted=()):
+        """A Mac's simulators, as {runtime name: [device name]}; those named in defaults are Xcode's defaults,
+        and those in booted are running."""
         identifier = lambda name: "com.apple.CoreSimulator.SimRuntime." + name.replace(" ", "-").replace(".", "-")
         listing, chosen = {}, {}
         for name, names in runtimes.items():
             for device in names:
                 udid = str(uuid.uuid4()).upper()
-                listing.setdefault(identifier(name), []).append({"name": device, "udid": udid})
+                listing.setdefault(identifier(name), []).append(
+                    {"name": device, "udid": udid, "state": "Booted" if device in booted else "Shutdown"})
                 if device in defaults: chosen.setdefault(identifier(name), {})[device] = udid
         (self.runtimes / mac / "devices.json").write_text(json.dumps({"devices": listing}))
         sets = (self.local if mac == "here" else self.home) / "Library/Developer/CoreSimulator/Devices"
@@ -7495,6 +7497,33 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertIsNone(offload_host.delete_runtime(str(self.developer), "23F73"))
         self.assertEqual(self.held("here"), [])
         self.assertEqual(offload_host.delete_runtime(str(self.developer), "23F73"), "simctl lists 0 images of 23F73")
+
+    def test_no_runtime_is_deleted_while_a_simulator_runs(self):
+        # vocaro/queuekeeper#154: deleting two unused runtimes crashed the launch host under a gate's simulators
+        # on another runtime, so a running simulator on any runtime keeps every runtime of its Mac.
+        refusal = ("1 simulator is running (Example iPhone 2, Booted), and deleting any runtime can crash the launch "
+                   "host every simulator shares; run it again once none is running")
+        self.give("here", [("iOS 26.5", "23F73"), ("iOS 27.0", "24A434")])
+        self.devices("here", {"iOS 27.0": ["Example iPhone 1", "Example iPhone 2"]}, booted={"Example iPhone 2"})
+        self.assertEqual(offload_host.delete_runtime(str(self.developer), "23F73"), refusal)
+        self.assertEqual(self.logged("here", "deletes.log"), [])
+        # The second Mac refuses the same way, and the run says so and reports the difference left.
+        shutil.rmtree(self.runtimes / "here")
+        (self.runtimes / "here").mkdir()
+        self.give("here", [("iOS 27.0", "24A434")])
+        self.give("there", [("iOS 26.5", "23F73"), ("iOS 27.0", "24A434")])
+        self.devices("here", {"iOS 27.0": ["Example iPhone 1"]})
+        self.devices("there", {"iOS 27.0": ["Example iPhone 1", "Example iPhone 2"]}, booted={"Example iPhone 2"})
+        status, output, error = self.qk()
+        self.assertEqual(status, 1, output + error)
+        self.assertIn(f"runtimes: iOS 26.5 (23F73): not deleted from fake: {refusal}", output)
+        self.assertEqual(self.logged("there", "deletes.log"), [])
+        self.assertEqual(self.held("there"), ["iOS 26.5 (23F73)", "iOS 27.0 (24A434)"])
+        # Once it is shut down, the same run deletes the runtime.
+        self.devices("there", {"iOS 27.0": ["Example iPhone 1", "Example iPhone 2"]})
+        status, output, error = self.qk()
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(self.logged("there", "deletes.log"), ["simctl runtime delete 23F73"])
 
     # vocaro-engineering#190: builds no real record or pin names, since the second Mac's side reads this Mac's
     # account record and legacy records as they are.

@@ -313,7 +313,41 @@ def chosen_builds(host):
     return chosen
 
 
+def simulators_running(host):
+    """Why no runtime can be deleted now, or None: a simulator that is not shut down, or one a reservation in a
+    device record still holds, whose run boots it next. CoreSimulator serves every simulator from one launch
+    host, and deleting a runtime, even one no device uses, can crash it and end the tests in all of them: on
+    2026-11-13 two deletions of unused iOS 27.2 builds crashed SimLaunchHost under another project's gate on
+    iOS 27.0, and each of its four shards lost a test (vocaro/queuekeeper#154)."""
+    devices = [device for listed in host.simulators.get("devices", {}).values() for device in listed]
+    live = sorted(f"{device.get('name', '?')}, {device.get('state')}" for device in devices
+                  if device.get("state") != "Shutdown")
+    if live:
+        more = f" and {len(live) - 3} more" if len(live) > 3 else ""
+        return (f"{len(live)} simulator{' is' if len(live) == 1 else 's are'} running "
+                f"({'; '.join(live[:3])}{more})")
+    names = {device.get("name") for device in devices}
+    udids = {str(device.get("udid", "")).upper() for device in devices}
+    for key, entry in sorted(record_entries(host)["devices"].items()):
+        if not isinstance(entry, dict) or not (key in names or str(entry.get("device") or "").upper() in udids):
+            continue
+        state = device_record.condition(entry)
+        if state != "released": return f"a device record's reservation of the simulator {key} is {state}"
+    return None
+
+
 def runtimes(host):
+    """Each runtime image, none of them a candidate while simulators run (simulators_running)."""
+    busy = None if host.runtimes is None or host.simulators is None else simulators_running(host)
+    def waits(item):
+        if not busy or item.status != CANDIDATE: return item
+        return Item(item.category, item.path, KEPT, f"{item.reason}; but {busy}, and deleting any runtime can "
+                    "crash the launch host every simulator shares, so it waits until none is running or reserved",
+                    item.size, None, item.idle)
+    return [waits(item) for item in listed_runtimes(host)]
+
+
+def listed_runtimes(host):
     if host.runtimes is None or host.simulators is None: return []
     used = {}
     for runtime, devices in host.simulators.get("devices", {}).items():

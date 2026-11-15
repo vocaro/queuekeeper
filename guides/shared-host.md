@@ -1746,7 +1746,10 @@ The owner prepares the second Mac once:
    one Mac has is deleted from that Mac when no simulator but Xcode's defaults uses it there, read
    again just before the delete (`xcrun simctl runtime delete`), so a runtime nobody uses costs
    neither Mac its space; one that something uses, or whose simulators simctl cannot list, is
-   copied to the other. A superseded build, one whose identifier CoreSimulator resolves to another
+   copied to the other. The delete is refused while any simulator on that Mac is running, on
+   whatever runtime, since deleting a runtime can crash the launch host they all share
+   ([#154](https://github.com/vocaro/queuekeeper/issues/154)): the run names the simulators,
+   leaves the runtime and exits 1, and running it again once none is running deletes it. A superseded build, one whose identifier CoreSimulator resolves to another
    build by the rule `qk disk` uses (Reclaiming disk space), runs none of its identifier's
    simulators, so none uses it, unless the toolkit pins it or that Mac's device record names it,
    as `qk disk` keeps it; an unreadable record keeps every superseded build used. This Mac sends
@@ -2064,6 +2067,15 @@ the candidates, with their commands: exactly what `--delete` removes.
   only one Mac lists when no simulator uses it there, as none uses a superseded build nothing
   pins, and otherwise copies it to the other Mac. So a runtime stays kept here while the second Mac holds a copy its simulators
   count as used, or while its runtimes cannot be read; removing it would only bring it back.
+  No runtime is a candidate while any simulator on this Mac is running, on whatever runtime, or
+  while a device record's reservation still holds one: CoreSimulator serves every simulator from
+  one launch host, `SimLaunchHost`, and deleting a runtime can crash it. On 2026-11-13 two
+  deletions of unused iOS 27.2 builds crashed it under another project's gate, whose four
+  simulators ran iOS 27.0, and each of the gate's four shards lost a test
+  ([#154](https://github.com/vocaro/queuekeeper/issues/154)). The runtime is kept with that
+  reason, which names the simulators, and is a candidate again once none is running or reserved;
+  the check before each category's removal applies the same rule, so a simulator booted after the
+  inventory keeps the runtimes while the other categories' candidates still go.
 - **Build caches.** A DerivedData folder in `~/Library/Developer/Xcode` (named
   `NAME-<28 letters>`) whose `info.plist` names a workspace in `~/Development` or a temporary
   directory is a candidate when that workspace no longer exists; a folder for any other

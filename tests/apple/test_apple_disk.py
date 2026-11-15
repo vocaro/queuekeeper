@@ -307,6 +307,51 @@ class SimulatorTests(Fixture):
         self.assertEqual(items["beta"].status, disk.CANDIDATE)
         self.assertNotIn("build-host", items["beta"].reason)
 
+    def test_no_runtime_is_a_candidate_while_a_simulator_runs_or_is_reserved(self):
+        # vocaro/queuekeeper#154: deleting two unused iOS 27.2 builds crashed the launch host every simulator
+        # shares, under another project's gate on iOS 27.0.
+        stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
+        ios = lambda version: f"com.apple.CoreSimulator.SimRuntime.iOS-{version}"
+        images = {"beta": {"identifier": "beta", "sizeBytes": 8, "build": "24A5423a", "runtimeIdentifier": ios("27-0")},
+                  "release": {"identifier": "release", "sizeBytes": 8, "build": "24A434", "runtimeIdentifier": ios("27-0"),
+                              "lastUsedAt": stamp(1)},
+                  "unused": {"identifier": "unused", "sizeBytes": 8, "build": "24B100", "runtimeIdentifier": ios("27-2")}}
+        first, second = device("Other iPhone 1"), device("Other iPhone 2")
+        def found(devices, **values):
+            host = self.host(simulators={"devices": {ios("27-0"): devices}}, runtimes=images, **values)
+            return {item.path.split(" ")[0]: item for item in disk.inventory(host, disk.Sizes(measure=False), ["runtime"])}
+        def kept(items, why):
+            for key in ("beta", "unused"):
+                self.assertEqual(items[key].status, disk.KEPT, key)
+                self.assertIsNone(items[key].command, key)
+                self.assertIn(f"; but {why}, and deleting any runtime can crash the launch host every simulator "
+                              "shares, so it waits until none is running or reserved", items[key].reason)
+            self.assertIn("superseded by 24A434", items["beta"].reason)
+            self.assertIn("no device uses it", items["unused"].reason)
+        # The control: with every simulator shut down and released, both are candidates.
+        released = json.dumps({"devices": {"Other iPhone 1": {"device": first["udid"], "state": "released"}}})
+        items = found([first, second], records={"/record.json": released})
+        for key in ("beta", "unused"):
+            self.assertEqual(items[key].status, disk.CANDIDATE, items[key].reason)
+        # A simulator running on another runtime keeps them, and one still booting or shutting down does too.
+        kept(found([first, {**second, "state": "Booted"}]), "1 simulator is running (Other iPhone 2, Booted)")
+        kept(found([{**first, "state": "Booting"}, {**second, "state": "Shutting Down"}]),
+             "2 simulators are running (Other iPhone 1, Booting; Other iPhone 2, Shutting Down)")
+        many = [device(f"Other iPhone {number}", state="Booted") for number in range(1, 6)]
+        self.assertIn("5 simulators are running (Other iPhone 1, Booted; Other iPhone 2, Booted; Other iPhone 3, "
+                      "Booted and 2 more)", found(many)["unused"].reason)
+        # A reservation a run still holds on a shut-down simulator, by its name or its UDID, keeps them: the run
+        # boots it next.
+        for record in ({"Other iPhone 1": {"state": "reserved"}}, {"a lane": {"device": second["udid"].lower()}}):
+            key = next(iter(record))
+            kept(found([first, second], records={"/record.json": json.dumps({"devices": record})}),
+                 f"a device record's reservation of the simulator {key} is held")
+        # A reservation of anything but a listed simulator, such as a physical device, is not simulator work.
+        physical = json.dumps({"devices": {"00008140-000A1B2C3D4E5F60": {"state": "reserved"}}})
+        self.assertEqual(found([first, second], records={"/record.json": physical})["unused"].status, disk.CANDIDATE)
+        # A runtime kept for its own reason says only that.
+        self.assertNotIn("launch host", found([first, {**second, "state": "Booted"}])["release"].reason)
+
     def test_the_second_macs_runtimes_are_read_as_eng_remote_reads_them(self):
         from queuekeeper import remote
         self.assertIsNone(apple_disk.runtimes_there(None))
@@ -411,6 +456,32 @@ class DeletionTests(Fixture):
         with contextlib.redirect_stdout(StringIO()):
             disk.delete(collect(["simulator"]), lambda category: collect([category]), self.ledger, run=run)
         self.assertEqual(calls, [["xcrun", "simctl", "delete", disposable["udid"]]])
+
+    def test_a_simulator_booted_after_the_inventory_keeps_the_runtimes_and_nothing_else(self):
+        # vocaro/queuekeeper#154: the check before removal sees the simulator a gate booted meanwhile; the
+        # other categories' candidates still go.
+        disposable, pool = device(f"P-{uuid.uuid4()}"), device("Project Duo 1")
+        listing = {"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-27-0": [disposable, pool]}}
+        images = {"unused": {"identifier": "unused", "sizeBytes": 8, "build": "24B100",
+                             "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2"}}
+        collect = lambda categories=None: disk.inventory(self.host(simulators=listing, runtimes=images),
+                                                         disk.Sizes(measure=False), categories)
+        before = collect(["simulator", "runtime"])
+        self.assertEqual({item.category for item in before if item.status == disk.CANDIDATE}, {"simulator", "runtime"})
+        pool["state"] = "Booted"
+        calls = []
+        def run(command, **options):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        said = StringIO()
+        with contextlib.redirect_stdout(said):
+            disk.delete(before, lambda category: collect([category]), self.ledger, run=run)
+        self.assertEqual(calls, [["xcrun", "simctl", "delete", disposable["udid"]]])
+        skipped = [json.loads(line) for line in self.ledger.read_text().splitlines()][-1]
+        self.assertEqual(skipped["category"], "runtime")
+        self.assertIn("skipped: ", skipped["outcome"])
+        self.assertIn("1 simulator is running (Project Duo 1, Booted), and deleting any runtime can crash the launch "
+                      "host every simulator shares", skipped["outcome"])
 
 
 if __name__ == "__main__":

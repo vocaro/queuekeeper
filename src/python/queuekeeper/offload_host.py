@@ -1096,6 +1096,18 @@ def runtime_users(developer_dir):
         return None
 
 
+def running_simulators(developer_dir):
+    """Each simulator that is not shut down, as NAME, STATE, Xcode's defaults among them; None when simctl
+    lists no devices. Deleting a runtime, even one no device uses, can crash the launch host CoreSimulator
+    serves every simulator from, which ends the tests in all of them (vocaro/queuekeeper#154)."""
+    listed = output(["xcrun", "simctl", "list", "devices", "-j"], {**os.environ, "DEVELOPER_DIR": developer_dir})
+    try:
+        return sorted(f"{device['name']}, {device.get('state')}" for devices in json.loads(listed)["devices"].values()
+                      for device in devices if device.get("state") != "Shutdown")
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+
+
 def used_at(stamp):
     """The time an ISO 8601 stamp such as simctl's lastUsedAt names, or None. Python 3.9's fromisoformat
     reads neither a Z nor a fraction of other than 3 or 6 digits, so both are rewritten first."""
@@ -1198,14 +1210,21 @@ def images(developer_dir, pinned=()):
 
 
 def delete_runtime(developer_dir, build, pinned=()):
-    """Delete the runtime image of build once simctl lists it and no simulator but Xcode's defaults
-    uses it, both read again now: none uses a superseded build that nothing pins (images). Return None
-    once it is deleted, else why it was not."""
+    """Delete the runtime image of build once simctl lists it, no simulator but Xcode's defaults uses it
+    and no simulator on any runtime is running (running_simulators), all read again now: none uses a
+    superseded build that nothing pins (images). Return None once it is deleted, else why it was not."""
     found = [image for image in images(developer_dir, pinned) or [] if image["build"] == build]
     if len(found) != 1: return f"simctl lists {len(found)} images of {build}"
     image = found[0]
     if image["users"] is None: return "simctl did not list the simulators that might use it"
     if image["users"]: return f"{', '.join(image['users'])} use{'s' if len(image['users']) == 1 else ''} it"
+    running = running_simulators(developer_dir)
+    if running is None: return "simctl did not list the simulators that might be running"
+    if running:
+        more = f" and {len(running) - 3} more" if len(running) > 3 else ""
+        return (f"{len(running)} simulator{' is' if len(running) == 1 else 's are'} running "
+                f"({'; '.join(running[:3])}{more}), and deleting any runtime can crash the launch host every "
+                "simulator shares; run it again once none is running")
     try:
         done = subprocess.run(["xcrun", "simctl", "runtime", "delete", image["identifier"]], capture_output=True,
                               text=True, env={**os.environ, "DEVELOPER_DIR": developer_dir}, timeout=300)
