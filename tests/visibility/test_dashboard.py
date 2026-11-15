@@ -566,6 +566,17 @@ class Served(Fixture):
         self.assertEqual(self.api("/repositories")[1][1]["headline"], "Cannot be read")
         self.assertEqual(self.api("/r/project/panel/home")[0], 200)
 
+    def test_a_connection_the_browser_drops_between_requests_says_nothing(self):
+        stderr = io.StringIO()
+        with patch.object(sys, "stderr", stderr):
+            try: raise ConnectionResetError(54, "Connection reset by peer")
+            except ConnectionResetError: self.server.handle_error(None, ("127.0.0.1", 1))
+        self.assertEqual(stderr.getvalue(), "")
+        with patch.object(sys, "stderr", stderr):
+            try: raise RuntimeError("a fault")
+            except RuntimeError: self.server.handle_error(None, ("127.0.0.1", 1))
+        self.assertIn("RuntimeError: a fault", stderr.getvalue())
+
     def test_a_repository_keeps_what_it_has_read_across_listings(self):
         before = self.server.app.repository("project")
         self.api("/repositories")

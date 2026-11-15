@@ -159,9 +159,17 @@ def with_suppressed(call):
         pass
 
 
+class Server(http.server.ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # A browser drops a kept-alive connection while the handler waits for its next request, outside do_GET; that
+        # is no fault of the server's, and socketserver would print its traceback.
+        if isinstance(sys.exception(), ConnectionError): return
+        super().handle_error(request, client_address)
+
+
 def make(given=(), port=PORT, bind=BIND):
     """A server of given repositories and the registry's, bound and not yet serving."""
-    server = http.server.ThreadingHTTPServer((bind, port), Handler)
+    server = Server((bind, port), Handler)
     server.daemon_threads = True
     server.app, server.bound = App(given), bind
     return server
