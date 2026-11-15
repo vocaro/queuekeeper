@@ -89,6 +89,7 @@ class Landing(Fixture):
         self.assertEqual(worker.placed("gate", 0),
                          " on this Mac (the second Mac is loaded (load 719.0, at or above its HEAVY_LOAD_LIMIT=7.5))")
         self.assertEqual(worker.placed("gate", time.time() + 60), "")
+        worker.ran_on = "build-host"
         self.assertEqual(worker.placed("gate", 0), " on build-host")
         worker.ran_on = None
         receipt.write_text("{")
