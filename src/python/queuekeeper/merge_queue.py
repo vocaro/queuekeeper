@@ -4801,6 +4801,13 @@ class Worker:
             return (f"unmeasured: {len(found)} test{'' if len(found) == 1 else 's'}, the first {first}"
                     + (f"; the last reading {screens[-1].strip()}" if screens else ""))
         if result == resources.BUSY: return "no admission: the host stayed at capacity"
+        # A Mac whose provision lane failed before the lane says which Mac and where that lane's log is, this Mac
+        # as much as the second (vocaro/queuekeeper#19).
+        try: said = log.read_text(errors="replace") if log else ""
+        except OSError: said = ""
+        unprovisioned = [line for line in said.splitlines() if remote.UNPROVISIONED in line]
+        if unprovisioned and result == remote.MISCONFIGURED:
+            return unprovisioned[-1].partition(" not run: ")[2] or unprovisioned[-1]
         return "a shared host's configuration stopped it"
 
     def shared_timing(self, result, config):

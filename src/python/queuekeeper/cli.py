@@ -519,13 +519,18 @@ def here_because(args, inherited):
 
 def provisioned_here(root, config, lane, receipt, inherited, on_stop=None):
     """None once the project's provision lane, if it has one, has run in this checkout before lane runs on this Mac,
-    as it runs in the second Mac's checkout before a lane sent there (offload_host); otherwise its status, after
-    saying where its log is. A bare `qk run gate` that stayed here ran only the gate, so it passed or failed by the
-    Mac it landed on, and a queue gate that fell back here found a checkout its provision lane had prepared on the
-    other Mac, or on none (vocaro/queuekeeper#19). It runs as `qk run --here provision`, a lane of its own with its
-    own receipt and log, nested in the admission lane holds, or admitted itself before a self lane. Not before the
-    provision lane itself, nor for work nested in an admission or a self lane, which the run around it provisioned,
-    nor for work a dispatch sent here, which provisioned this checkout as a step of its own."""
+    as it runs in the second Mac's checkout before a lane sent there (offload_host); otherwise the status lane ends
+    with, after saying why it did not run. A bare `qk run gate` that stayed here ran only the gate, so it passed or
+    failed by the Mac it landed on, and a queue gate that fell back here found a checkout its provision lane had
+    prepared on the other Mac, or on none (vocaro/queuekeeper#19). It runs as `qk run --here provision`, a lane of
+    its own with its own receipt and log, nested in the admission lane holds, or admitted itself before a self lane.
+    Not before the provision lane itself, nor for work nested in an admission or a self lane, which the run around
+    it provisioned, nor for work a dispatch sent here, which provisioned this checkout as a step of its own.
+
+    A provision lane that fails here ends lane as one that fails on the second Mac does (remote.execute): with
+    remote.MISCONFIGURED, this Mac's environment and no verdict on lane's commit, which the merge queue holds for
+    and does not send back (the owner's decision, 2026-11-15). One that got no admission or ended unmeasured ran
+    nothing to judge, and lane ends as it did."""
     if lane == "provision" or "provision" not in config.get("lanes", {}): return None
     if inherited or os.environ.get(SELF_LANE) or os.environ.get(remote.DISPATCHER): return None
     # With the toolkit the lane runs with: the one that was sent, once its checkout has moved (admitted_tree).
@@ -539,10 +544,16 @@ def provisioned_here(root, config, lane, receipt, inherited, on_stop=None):
         # record is this process's again, whose start a stacked gate reads (merge_queue.Worker.admitted_mac).
         lane_wait.running()
         return None
-    print(f"queuekeeper: {lane} not run on this Mac: the provision lane exited {status} in {root}; its log is "
-          f"{root / '.build/queuekeeper/provision/run.log'}, and what qk run said of it is in {said}",
-          file=sys.stderr, flush=True)
-    return status
+    log = root / ".build/queuekeeper/provision/run.log"
+    if status in (BUSY, lane_results.UNMEASURED):
+        print(f"queuekeeper: {lane} not run on this Mac: its provision lane gave no verdict here (exit {status}); what "
+              f"qk run said of it is in {said}", file=sys.stderr, flush=True)
+        return status
+    print(f"queuekeeper: {lane} not run: {this_mac()} {remote.UNPROVISIONED}: the provision lane exited {status} in "
+          f"{root}, so {lane} did not run here; its log is {log}\nqueuekeeper: to fix it, give this Mac what "
+          f"provisioning needs, which that log names, and run `qk run {lane}` again; what qk run said of the provision "
+          f"lane is in {said}", file=sys.stderr, flush=True)
+    return remote.MISCONFIGURED
 
 
 # Set by qk run for the command of a self lane, to the lane's name: each `qk admit` its script runs stays on the

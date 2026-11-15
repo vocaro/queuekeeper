@@ -3036,19 +3036,29 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual((found["pid"], found["admitted"], found["mac"]), (os.getpid(), True, lane_wait.HERE))
 
     def test_a_lane_does_not_run_on_this_mac_when_its_provision_lane_fails_there(self):
-        """vocaro/queuekeeper#19: the lane's command never starts, and the run says which lane stopped it."""
+        """vocaro/queuekeeper#19: the lane's command never starts, and the run ends as a misconfigured Mac's."""
         settings = json.loads((self.project / "queuekeeper.json").read_text())
         settings["lanes"]["provision"]["command"] = [sys.executable, "-c", "print('no corpus'); raise SystemExit(4)"]
         (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
         commit_all(self.project)
         status, output, error = self.run_here("--here", "gate")
-        self.assertEqual(status, 4, output + error)
+        # As when the second Mac's provision lane fails: this Mac's environment, and no verdict on the commit.
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
         log = self.project / ".build/queuekeeper/provision/run.log"
-        self.assertIn(f"queuekeeper: gate not run on this Mac: the provision lane exited 4 in {self.project.resolve()}; its "
-                      f"log is {log.resolve()}", error)
+        self.assertIn(f"queuekeeper: gate not run: this Mac ({offload_host.mac_name()}) could not provision its checkout: the "
+                      f"provision lane exited 4 in {self.project.resolve()}, so gate did not run here; its log is "
+                      f"{log.resolve()}\nqueuekeeper: to fix it, give this Mac what provisioning needs", error)
         self.assertIn("no corpus", log.read_text())
         self.assertFalse((self.project / ".build/queuekeeper/gate/run.log").exists())
-        self.assertIn("qk run gate: not run (exit 4)", error)
+        self.assertIn(f"qk run gate: not run (exit {remote.MISCONFIGURED})", error)
+        # A provision lane that got no admission or ended unmeasured ran nothing to judge: the lane ends as it did.
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        for status in (resources.BUSY, lane_results.UNMEASURED):
+            with self.subTest(status=status), patch.object(processes, "run", return_value=status), \
+                    contextlib.redirect_stderr(StringIO()) as said:
+                self.assertEqual(cli.provisioned_here(self.project, settings, "gate", {}, False), status)
+                self.assertIn(f"gate not run on this Mac: its provision lane gave no verdict here (exit {status})",
+                              said.getvalue())
 
     def test_buildhost_on_a_lane_or_group_is_refused_before_anything_runs_on_either_mac(self):
         # vocaro-engineering#58 removed it. A checkout that still gives it, true to send a lane there or
