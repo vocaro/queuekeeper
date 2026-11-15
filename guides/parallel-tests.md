@@ -296,7 +296,7 @@ python3 scripts/qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
 - `--workers N` turns on xcodebuild's parallel testing on each device, which clones the device
   for each worker and deletes the clones itself. Its console then prints each test's outcome on a
   clone but no totals and no skip's reason (Xcode 27.2, 2026-10-31), which is why the bundle
-  counts: on `tests/fixtures/XCTestShards` with 2 workers the console held no `Executed` line and
+  counts: on `tests/apple/fixtures/XCTestShards` with 2 workers the console held no `Executed` line and
   no `Unmeasured:` reason, and the bundle held both, so the run counted 5 tests and 1 skip as it
   did one test at a time, exited 3 with the planted unmeasured skip and 1 with the planted
   failure. It stays off by default, as in the
@@ -315,7 +315,7 @@ python3 scripts/qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
   exclude each other.
 
 The Mac suite joins through a lane group beside the simulator lane, as in the example above.
-`tests/fixtures/SimulatorSmoke` is the toolkit's positive control: one XCTest and one Swift
+`tests/apple/fixtures/SimulatorSmoke` is the toolkit's positive control: one XCTest and one Swift
 Testing test, which every device must count.
 
 ## Tests within one suite
@@ -345,7 +345,7 @@ cannot be split: it runs whole in one process. Each process's output prints whol
 names it. The summary is not a `Ran N tests` line, so a lane counts each test once, and a
 process that ran fewer tests than discovery found for it fails. The slowest module bounds the
 run, so split a module that dominates: one that sets `shard_by = "class"` (or `"test"`) runs that
-finely under any coarser `--split`, as the toolkit's tests/test_merge_queue.py does, whose 126
+finely under any coarser `--split`, as the toolkit's tests/integration/test_merge_queue.py does, whose 126
 tests built real Git repositories one after another for 900 s while the rest of the suite
 finished.
 
@@ -361,7 +361,7 @@ Modules that require a process per test, explicit serial groups, and modules tha
 keep their own process boundaries.
 
 To run part of a suite, name modules, classes or tests after the options, as `python3 scripts/qk
-unittest -s tests test_merge_queue.Landing` does, or select them with `-k PATTERN`, repeated as
+unittest -s tests integration.test_merge_queue.Landing` does, or select them with `-k PATTERN`, repeated as
 unittest's own `-k` is: an fnmatch pattern on the test's id, or a substring when it has no `*`. A
 test runs when it is under a name and matches a pattern, under every `--split`, a module that runs
 whole included. A name that matches no discovered test, or a selection that leaves none, fails
@@ -417,7 +417,7 @@ A pytest lane declares `minimumTests` as any other lane does, and runs pytest wi
   is no substitute: it truncates the reason to the terminal's width, and under xdist prints none.
 - Measured with pytest 8.4.2 and pytest-xdist 3.8.0 on Python 3.12, 2026-11-03, on a module of
   passes, skips, unittest skips, xfails, a failure, a fixture error and a warning, run with and
-  without `-n 2`, `-q`, `-rA` and `--no-fold-skipped`; tests/test_core.py holds their lines.
+  without `-n 2`, `-q`, `-rA` and `--no-fold-skipped`; tests/integration/test_core.py holds their lines.
 
 ### XCTest classes side by side
 
@@ -456,7 +456,7 @@ keeps every test's wall-clock start and finish from it beside its id, shard, ver
 the order the tests started, whatever order the shards' output prints in: in `xctest/` of the lane's
 [results](#a-lanes-results), so a run on either Mac keeps them by commit, or in the package's
 `.build/queuekeeper/xctest/` outside a lane. A test still running when its process timed out keeps its
-start, unmeasured. `TEST_TIMES` and `test_times` in `src/python/queuekeeper/apple/xctest_shards.py`
+start, unmeasured. `TEST_TIMES` and `test_times` in `plugins/apple/src/queuekeeper_apple/xctest_shards.py`
 say what each record holds (vocaro-engineering#367).
 
 A project configures the run with options, not a script of its own:
@@ -473,7 +473,7 @@ A project configures the run with options, not a script of its own:
 A process that fails, or runs other than the tests it was given, fails the run. A test that skips
 with a reason beginning `Unmeasured:` ([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#honest-outcome-states))
 leaves an otherwise passing run unmeasured: it exits 3 and lists them last. A filter that selects
-nothing runs nothing and exits 5. `tests/fixtures/XCTestShards` is its positive control: two
+nothing runs nothing and exits 5. `tests/apple/fixtures/XCTestShards` is its positive control: two
 passing classes, a skip, a Swift Testing test and a Swift Testing suite of two, which
 `--split-swift-testing` runs in shards of their own. `XCTEST_SHARDS_UNMEASURED` makes the skip
 unmeasured and `XCTEST_SHARDS_FAIL` plants a failure, its negative controls.
@@ -589,7 +589,7 @@ appeared only side by side: every Mac failure, serial or not, came while the dis
 of 15-second samples in five of the six runs that had them, and one simulator at a time never
 raised it. Two cold builds at once were not measured.
 
-`qk simulator-tests` ran `tests/fixtures/SimulatorSmoke` on an iPhone 17 Pro and an iPad Air
+`qk simulator-tests` ran `tests/apple/fixtures/SimulatorSmoke` on an iPhone 17 Pro and an iPad Air
 13-inch (M4) simulator side by side on an M1 Max build host, macOS 27.2, Xcode 27.1, iOS 27.0
 (2026-10-24): one 26 s build, both devices tested at once, 2 tests counted on each, 162 s in
 all, and both devices deleted afterward. Its two tests measure the cost of booting and launching,

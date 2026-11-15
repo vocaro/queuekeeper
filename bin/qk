@@ -22,6 +22,8 @@ if sys.version_info < (3, 14):
 os.environ.pop("QUEUEKEEPER_LAUNCHER_PYTHON", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
+from queuekeeper.checkout import activate
+activate(Path(__file__).resolve().parents[1])
 from queuekeeper.cli import main
 
 raise SystemExit(main())

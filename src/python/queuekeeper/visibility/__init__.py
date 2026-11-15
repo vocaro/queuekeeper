@@ -8,7 +8,7 @@ file. A feature:
     the feature's commands to the core as an extension does;
   - reads the queue only through its journal (events) and its snapshot (merge_queue.snapshot);
   - imports the core, and never another feature. The core imports none of them
-    (tests/test_queuekeeper_imports.py).
+    (tests/architecture/test_queuekeeper_imports.py).
 
 Every feature is off until its owner turns it on. What is on is the owner's and this Mac's, not a project's, so
 it is kept beside the admission log, in visibility.json, and not in queuekeeper.json. QUEUEKEEPER_VISIBILITY=off
@@ -19,7 +19,7 @@ import ast
 import importlib.util
 import json
 import os
-import pkgutil
+from importlib.metadata import entry_points
 import sys
 
 from .. import extensions, resources
@@ -29,8 +29,13 @@ FILE, SWITCH, OFF = "visibility.json", "QUEUEKEEPER_VISIBILITY", "off"
 
 def available():
     """Each feature here as name -> its module's name, without importing any."""
-    return {found.name: f"{__name__}.{found.name}" for found in pkgutil.iter_modules(__path__)
-            if not found.name.startswith("_")}
+    found = {entry.name: entry.value for entry in entry_points(group="queuekeeper.visibility")}
+    # Checkout launchers expose source roots without installing distribution metadata.
+    from ..checkout import components
+    for module, item in components().items():
+        if item.get("visibility") and importlib.util.find_spec(module) is not None:
+            found.setdefault(item["visibility"], module)
+    return found
 
 
 def described(name):

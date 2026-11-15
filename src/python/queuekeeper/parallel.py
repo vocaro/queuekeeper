@@ -430,7 +430,7 @@ def unittest_main(argv):
 
 def discover_and_run(args, progress):
     start = Path(args.start_directory).resolve()
-    top = Path(args.top_level_directory).resolve() if args.top_level_directory else start
+    top = Path(args.top_level_directory).resolve() if args.top_level_directory else isolation_root(start) or start
     # Before discovery imports any of them: a suite that keeps its tests off the real hosts in host_isolation.py
     # runs no module that skips it, which otherwise only the full suite's own check found, in the merge queue.
     refused = refusals(start, args.pattern)
@@ -725,36 +725,50 @@ def saved_output(report, reasons):
 ISOLATION = "host_isolation.py"
 
 
+def test_paths(start, patterns=None):
+    """Matching test files throughout a suite, including component subpackages."""
+    return sorted({path for pattern in patterns or ["test*.py"] for path in Path(start).rglob(pattern)
+                   if path.is_file() and not path.is_symlink()})
+
+
+def isolation_root(start):
+    """The nearest suite bootstrap, also when running a component subdirectory."""
+    start = Path(start).resolve()
+    return next((path for path in (start, *start.parents) if (path / ISOLATION).is_file()), None)
+
+
 def refusals(start, patterns=None):
     """The lines qk unittest refuses a suite with before discovery imports any of its modules, each ending `nothing
     ran`, or none. In a suite that keeps its tests off the real hosts in host_isolation.py, a module patterns match
     that does not parse, or that does not import host_isolation at its top level, refuses the run. qk land and `qk
     queue add` run these on an entry's tree before queuing it, as they take seconds and a refusal costs a whole gate
     (merge_queue.prerun, vocaro-engineering#290)."""
-    if not (start / ISOLATION).is_file(): return []
-    paths, broken = sorted({path for pattern in patterns or ["test*.py"] for path in start.glob(pattern)}), {}
+    start = Path(start).resolve()
+    isolated = isolation_root(start)
+    if isolated is None: return []
+    paths, broken = test_paths(start, patterns), {}
     for path in paths:
         try: ast.parse(path.read_text(), str(path))
         except (SyntaxError, ValueError) as error:
             line = getattr(error, "lineno", None)
-            broken[path] = f"{path.name} does not parse ({getattr(error, 'msg', error)}" + \
+            broken[path] = f"{path.relative_to(isolated).as_posix()} does not parse ({getattr(error, 'msg', error)}" + \
                 (f", line {line})" if line else ")")
     lines = [f"queuekeeper unittest: {why}; nothing ran" for why in broken.values()]
-    forgot = unisolated([path for path in paths if path not in broken])
+    forgot = unisolated([path for path in paths if path not in broken], isolated)
     if forgot:
         lines.append(f"queuekeeper unittest: {', '.join(forgot)} must import {ISOLATION.removesuffix('.py')} at its top level, "
-                     f"as every test module beside {start / ISOLATION} does; nothing ran")
+                     f"as every test module beside {isolated / ISOLATION} does; nothing ran")
     return lines
 
 
-def unisolated(paths):
+def unisolated(paths, root=None):
     """The names of the test modules among paths that do not import host_isolation at their top level."""
     found = []
     for path in paths:
         tree = ast.parse(Path(path).read_text(), str(path))
         if not any(isinstance(node, ast.Import) and any(alias.name == "host_isolation" for alias in node.names)
                    for node in tree.body):
-            found.append(Path(path).name)
+            found.append(Path(path).relative_to(root).as_posix() if root else Path(path).name)
     return found
 
 

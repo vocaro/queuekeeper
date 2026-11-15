@@ -122,7 +122,7 @@ A verification run goes through admission, so that it takes a slot and `qk admis
 it, in one of three ways:
 
 - `python3 scripts/qk unittest -s tests NAME...`, which admits itself as `qk admit` would; NAME is
-  a module, class or test, such as `test_merge_queue.Landing`;
+  a module, class or test, such as `integration.test_merge_queue.Landing`;
 - a lane, `python3 scripts/qk run LANE -- FILTER`;
 - any other command, `python3 scripts/qk admit -- COMMAND`.
 

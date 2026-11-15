@@ -751,11 +751,11 @@ def unittest_lanes(config):
 
 
 def suite_tree(root, commit, start, patterns, into):
-    """Write the files at the top of commit's start directory that qk unittest's checks before a run read
+    """Write the files throughout commit's start directory that qk unittest's checks before a run read
     (parallel.refusals), its Python files and those patterns match, into into. False when commit has no such
     directory."""
     relative = os.path.normpath(start)
-    listed = git(root, "ls-tree", "-z", commit if relative == "." else f"{commit}:{relative}")
+    listed = git(root, "ls-tree", "-r", "-z", commit if relative == "." else f"{commit}:{relative}")
     if listed.returncode: return False
     names = {}
     for record in listed.stdout.split("\0"):
@@ -763,7 +763,7 @@ def suite_tree(root, commit, start, patterns, into):
         fields = meta.split()
         # A file, not a directory, a submodule or a symbolic link, which qk unittest's checks would follow.
         if not name or len(fields) != 3 or fields[0] not in ("100644", "100755"): continue
-        if name.endswith(".py") or any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns or ["test*.py"]):
+        if name.endswith(".py") or any(fnmatch.fnmatchcase(Path(name).name, pattern) for pattern in patterns or ["test*.py"]):
             names[name] = fields[2]
     into.mkdir(parents=True, exist_ok=True)
     if not names: return True
@@ -776,7 +776,18 @@ def suite_tree(root, commit, start, patterns, into):
         sha, _, size = done.stdout[offset:end].decode().split()
         blobs[sha] = done.stdout[end + 1:end + 1 + int(size)]
         offset = end + 2 + int(size)
-    for name, sha in names.items(): (into / name).write_bytes(blobs[sha])
+    for name, sha in names.items():
+        target = into / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blobs[sha])
+    # A component lane may start below its shared host bootstrap.
+    for depth, parent in enumerate(Path(relative).parents, 1):
+        bootstrap = git(root, "show", f"{commit}:{parent / parallel.ISOLATION}")
+        if bootstrap.returncode == 0:
+            target = into.parents[depth - 1] / parallel.ISOLATION
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(bootstrap.stdout)
+            break
     return True
 
 
@@ -3015,7 +3026,7 @@ class Worker:
     def launchers(users):
         """The PIDs of the signed queue launchers among users. The LaunchAgent runs the launcher with a worker's
         command as its arguments, which name the shared checkout's src/python, and the launcher, a native program
-        (src/objc/QueueLauncher), only spawns that command once and waits on it: by its arguments alone it would hold
+        (src/python/queuekeeper/_native/queue-launcher), only spawns that command once and waits on it: by its arguments alone it would hold
         back the checkout, its own worker's included, as it did on 2026-11-10 and 2026-11-11 (vocaro-engineering#374,
         #384). The worker it started counts by its own arguments while it runs from the checkout, until move_to
         replaces it with a command from a toolkit copy. Only the launcher's executable in an app that verifies as

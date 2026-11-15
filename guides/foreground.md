@@ -238,7 +238,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
 - VoiceOver on is a valid initial state, not evidence that a previous run failed. The owner
   authorized automatic capture, temporary off for quiet tests, and exact restoration under the
   lease (2026-10-30). `foreground.slot` uses
-  `queuekeeper.apple.voiceover.state.preserved(owner, record=record)` after acquisition and
+  `queuekeeper_apple.voiceover.state.preserved(owner, record=record)` after acquisition and
   active-owner marking. This default preserves existing clients' initial on/off behavior.
   A passive test opts into `state.preserved(owner, target=False, record=record)` inside that
   lease; it turns off only a known on state and restores on only when that was the original.
@@ -279,7 +279,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   on acquiring the foreground in the entry, as `voiceOverOriginal`, with the lease it was read
   under. Over a clean lease the session runner sets it back with `state.set_enabled(original)`.
   Over a lease that a session's own unverified restoration left uncertain, it calls
-  `queuekeeper.apple.voiceover.state.recover_restoration(owner)`, which proceeds only when the
+  `queuekeeper_apple.voiceover.state.recover_restoration(owner)`, which proceeds only when the
   owner and lease identity are unchanged, the run's host process is alive, the original was
   recorded under that lease, and the uncertainty is that restoration alone, with nothing written
   to the entry after it. It restores the original under that lease, rechecking it before every
@@ -313,8 +313,8 @@ may recover once ([waiting for the foreground](#waiting-for-the-foreground)). On
    `defaults write com.apple.universalaccess voiceOverOnOffKey -bool false`, and check that
    `defaults read com.apple.universalaccess voiceOverOnOffKey` prints 0 (owner, #137).
 2. Record the recovery, naming the entry's current revision, which `python3 -m
-   queuekeeper.apple.devices show mac-foreground` prints and the refusal names:
-   `python3 -m queuekeeper.apple.devices recover mac-foreground --by SESSION --revision N
+   queuekeeper_apple.devices show mac-foreground` prints and the refusal names:
+   `python3 -m queuekeeper_apple.devices recover mac-foreground --by SESSION --revision N
    --verified "WHAT WAS CHECKED"`. It is not a `qk` subcommand.
 
 ## Apps a run opened
@@ -337,7 +337,7 @@ Safari after the last session; Queuekeeper's quit is the net under it
   it is installed in an Applications folder (`/Applications`, `/System/Applications`,
   `~/Applications`, their `Utilities`, or Safari's cryptex), when it was built in the run's own
   checkout, or when the session recorded its bundle with
-  `python3 -m queuekeeper.apple.devices update mac-foreground --launched BUNDLE`.
+  `python3 -m queuekeeper_apple.devices update mac-foreground --launched BUNDLE`.
 - **What is the run's, on any other Mac.** That decision does not reach this Mac, the owner's
   workstation, where he may open Safari or Mail while a run holds the screen. A Mac is the second
   Mac when its device record defers physical devices to another Mac's (`foreground.second_mac`),
@@ -428,7 +428,7 @@ either Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocar
   The receipt's `crashAlerts.cleared` records each alert's process, start (UTC), duration
   (`stoodSeconds`) and whether the run had started (`duringRun`). The verdict message names the alert.
 - **Between steps.** A driver that wants to look between its own steps runs
-  `python3 -m queuekeeper.mac_desktop.crash_alerts check` under the foreground it holds: it clears crash reports and
+  `python3 -m queuekeeper_mac_desktop.crash_alerts check` under the foreground it holds: it clears crash reports and
   exits 0, or 3 naming an alert it left, or 1 when the alerts cannot be read.
 - **Reported.** `qk remote foreground` lists every system alert over the second Mac's screen, and says when
   crash-report dialogs are off with no run holding the foreground: left by a run that died, which the next Queuekeeper
@@ -491,7 +491,7 @@ never launched it until the owner closed it by hand
   in the receipt's `notificationCenter`; never what a notification says.
 - **By hand.** `qk host notifications` lists such windows over this Mac's screen, exiting 0 when none is and 3
   when one is. A driver that wants to look between its own steps, under the foreground it holds on the second
-  Mac, runs `qk host notifications --dismiss`, or `python3 -m queuekeeper.mac_desktop.notification_center check`:
+  Mac, runs `qk host notifications --dismiss`, or `python3 -m queuekeeper_mac_desktop.notification_center check`:
   exit 0 once none is left, 3 naming a window left, 1 without the lease.
 
 Checked live on the second Mac (macOS 27.2) on 2026-11-07, under admitted foreground runs:
@@ -522,7 +522,7 @@ Checked live on the second Mac (macOS 27.2) on 2026-11-07, under admitted foregr
 
 ## VoiceOver state and restoration
 
-- Use `queuekeeper.apple.voiceover.state`: `read(owner)` reads the actual running state through
+- Use `queuekeeper_apple.voiceover.state`: `read(owner)` reads the actual running state through
   the public AppKit `NSWorkspace.isVoiceOverEnabled` getter. The bounded JXA query accepts only
   an exact boolean; missing, malformed or unreadable state refuses work. The getter follows
   `com.apple.universalaccess voiceOverOnOffKey`, which VoiceOver quit through AppleScript leaves

@@ -26,7 +26,9 @@ import time
 
 CHECKOUT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CHECKOUT / "src/python"))
-from queuekeeper.visibility.dashboard import panels, server  # noqa: E402
+from queuekeeper.checkout import activate
+activate(Path(__file__).resolve().parents[1])
+from queuekeeper_dashboard import panels, server  # noqa: E402
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 REPOSITORY, WIDTH, SCALE = "lumen-ios", 1000, 2

@@ -9,7 +9,7 @@ Use this checkout's launcher, `python3 scripts/qk`, to operate on this repositor
 Run focused tests with:
 
 ```sh
-python3 scripts/qk unittest -s tests test_merge_queue.Landing
+python3 scripts/qk unittest -s tests integration.test_merge_queue.Landing
 ```
 
 Replace the example with the relevant module, class or test. Run the configured full gate with
@@ -45,7 +45,8 @@ and involve the owner when the hold says it requires the owner.
 - `src/python/queuekeeper/extensions.py`: extension hooks. Keep platform behavior in its extension;
   the core does not import extensions directly.
 - `src/python/queuekeeper/visibility/`: optional visibility features.
-- `tests/`: tests and host isolation. Follow neighboring tests' `host_isolation` setup.
+- `plugins/`: separately packaged platform and visibility plugins; `queuekeeper-workspace.json` declares checkout composition.
+- `tests/`: component suites, `integration/`, architecture checks, and `test_support/` fixtures. Follow neighboring tests' `host_isolation` setup.
 - `doc/`: user documentation; `guides/`: operational detail and design decisions.
 
 See [maintenance](guides/maintenance.md) for queue operation and spelling rules.

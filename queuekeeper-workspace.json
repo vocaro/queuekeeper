@@ -1,0 +1,47 @@
+{
+  "queuekeeper_apple": {
+    "source": "plugins/apple/src",
+    "tests": "tests/apple",
+    "requires": [
+      "queuekeeper_mac_desktop"
+    ]
+  },
+  "queuekeeper_mac_desktop": {
+    "source": "plugins/mac-desktop/src",
+    "tests": "tests/mac_desktop",
+    "requires": []
+  },
+  "queuekeeper_mac_hardware": {
+    "source": "plugins/mac-hardware/src",
+    "tests": "tests/mac_hardware",
+    "requires": []
+  },
+  "queuekeeper_unity": {
+    "source": "plugins/unity/src",
+    "tests": "tests/unity",
+    "requires": [
+      "queuekeeper_mac_desktop"
+    ]
+  },
+  "queuekeeper_dashboard": {
+    "source": "plugins/visibility-dashboard/src",
+    "tests": "tests/visibility",
+    "requires": [],
+    "visibility": "dashboard",
+    "distribution": "queuekeeper-visibility-dashboard"
+  },
+  "queuekeeper_notify": {
+    "source": "plugins/visibility-notify/src",
+    "tests": "tests/visibility",
+    "requires": [],
+    "visibility": "notify",
+    "distribution": "queuekeeper-visibility-notify"
+  },
+  "queuekeeper_watch": {
+    "source": "plugins/visibility-watch/src",
+    "tests": "tests/visibility",
+    "requires": [],
+    "visibility": "watch",
+    "distribution": "queuekeeper-visibility-watch"
+  }
+}

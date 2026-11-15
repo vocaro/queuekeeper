@@ -1098,9 +1098,9 @@ build directory, then sign it in your Terminal with an Apple-issued signing iden
 ```sh
 app="$PWD/.build/Queuekeeper.app"
 mkdir -p "$app/Contents/MacOS"
-cp src/objc/QueueLauncher/Info.plist "$app/Contents/Info.plist"
+cp src/python/queuekeeper/_native/queue-launcher/Info.plist "$app/Contents/Info.plist"
 python3 scripts/qk admit --here -- /usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror \
-  src/objc/QueueLauncher/main.c -o "$app/Contents/MacOS/QueueLauncher"
+  src/python/queuekeeper/_native/queue-launcher/main.c -o "$app/Contents/MacOS/QueueLauncher"
 /usr/bin/codesign --force --sign "Developer ID Application" --timestamp=none "$app"
 /usr/bin/codesign --verify --strict "$app"
 ```
@@ -1160,7 +1160,7 @@ python3 tools/dashboard-screenshots.py
 
 It writes `assets/dashboard-home.png` (the Queue home view) and `dashboard-farm.png`, with compact sample data
 in the dark theme, and needs
-Google Chrome. The made-up data is in the script. `tests/test_dashboard_screenshots.py` fails when a panel's data
+Google Chrome. The made-up data is in the script. `tests/visibility/test_dashboard_screenshots.py` fails when a panel's data
 no longer has the fields the script makes up, which is when to change the script.
 
 ## Spelling check

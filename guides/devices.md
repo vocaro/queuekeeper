@@ -68,7 +68,7 @@ other devices, the Macs included, for the run.
 Then a session that holds the device records his word, once per device:
 
 ```sh
-python3 -m queuekeeper.apple.devices notifications setup iPad --by owner --at 2026-11-04T09:00:00Z \
+python3 -m queuekeeper_apple.devices notifications setup iPad --by owner --at 2026-11-04T09:00:00Z \
   --words "the shortcuts are on the iPad"
 ```
 
@@ -185,7 +185,7 @@ Mac, and a Focus the owner set left on. What that window taught:
   mean a banner showed. `device_notifications.PRESENTED`, written before any real line was
   seen, matched neither, and `LINE` expected a device name before the process that these lines
   do not have, so the watch would have called a log it read unwatched. Both now follow the
-  recorded lines in `tests/fixtures/DeviceLog`.
+  recorded lines in `tests/apple/fixtures/DeviceLog`.
 
 The first approved window on another device checks, with the owner's shortcuts made and no
 Focus on:
@@ -197,7 +197,7 @@ Focus on:
    owner's from an app in the background, such as the "Vocaro test" reminder above, while
    `idevicesyslog -u UDID --no-colors -p SpringBoard` runs. Keep only SpringBoard's lines about
    that notification, check that `device_notifications.presentations` finds the banner with Do
-   Not Disturb off and nothing with it on, and add the lines to `tests/fixtures/DeviceLog` if
+   Not Disturb off and nothing with it on, and add the lines to `tests/apple/fixtures/DeviceLog` if
    they differ from the iPhone's.
 3. Run **Vocaro Restore Notifications** through `devices release`, and have the owner confirm
    that Do Not Disturb is off and that the marker reads `off`. Repeat it with a Focus he had

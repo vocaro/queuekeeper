@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "queuekeeper",
   "integration": "direct-main",
-  "extensions": ["queuekeeper.apple"],
+  "extensions": ["queuekeeper_apple"],
   "simulatorPool": "Queuekeeper",
   "docs": {"citations": true},
   "lanes": {
@@ -17,7 +17,7 @@
   "spelling": {
     "skip": {
       "LICENSE": "the Apache License 2.0, retained verbatim",
-      "tests/test_spelling.py": "plants British spellings as the check's negative controls"
+      "tests/core/test_spelling.py": "plants British spellings as the check's negative controls"
     },
     "exemptPhrases": {
       "was cancelled after": "Swift Testing's own line for a canceled test, which Queuekeeper reads in lane logs"

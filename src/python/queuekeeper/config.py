@@ -9,20 +9,31 @@ from . import extensions as hooks
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
 # The extensions a project gets when its queuekeeper.json names none, and that a command with no project loads.
-EXTENSIONS = ("queuekeeper.apple",)
+EXTENSIONS = ()
 FILE = "queuekeeper.json"
+# Historical configurations remain readable when the queue inspects main or an older commit.
+# These are configuration aliases only; the old Python packages do not exist.
+EXTENSION_ALIASES = {
+    "queuekeeper.apple": "queuekeeper_apple",
+    "queuekeeper.mac_desktop": "queuekeeper_mac_desktop",
+    "queuekeeper.mac_hardware": "queuekeeper_mac_hardware",
+    "queuekeeper.unity": "queuekeeper_unity",
+}
 
 
 def extensions(declared):
     """A project's extensions, checked: each a module's dotted name, or {"module": NAME, "path": FOLDER} for one
     whose package is in FOLDER, a path relative to the project's main checkout."""
     if not isinstance(declared, list): raise ValueError("extensions must be a list")
+    normalized = []
     for entry in declared:
         named = entry.get("module") if isinstance(entry, dict) else entry
         if not isinstance(named, str) or not re.fullmatch(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", named) or (
                 isinstance(entry, dict) and (set(entry) - {"module", "path"} or not isinstance(entry.get("path", ""), str))):
             raise ValueError('extensions lists module names, or {"module": NAME, "path": FOLDER}')
-    return declared
+        module = EXTENSION_ALIASES.get(named, named)
+        normalized.append({**entry, "module": module} if isinstance(entry, dict) else module)
+    return normalized
 
 
 def extensions_of(root, base=None):
@@ -60,55 +71,37 @@ LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foregr
                        "deviceRunMinutes", "stall", "unity", "chips"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
-EXTENSION_LANE_KEYS = {"display": "queuekeeper.mac_desktop", "unity": "queuekeeper.unity",
-                       "chips": "queuekeeper.mac_hardware"}
+EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
+                       "chips": "queuekeeper_mac_hardware", "devices": "queuekeeper_apple",
+                       "deviceRunMinutes": "queuekeeper_apple"}
 # The top-level keys an extension shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
-EXTENSION_CONFIG_KEYS = {"unity": "queuekeeper.unity"}
+EXTENSION_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
 
 
-def device_keys(name, lane):
-    """A lane's "devices", the entries of the device record its run uses, which a device pass's own --device options
-    say without it. Only an admitted lane waits for admission, which they bound (lane_devices)."""
-    if "devices" not in lane: return
-    keys = lane["devices"]
-    if not isinstance(keys, list) or not keys or any(not isinstance(key, str) or not key for key in keys):
-        raise ValueError(f"{name}.devices must be a non-empty list of device entries, such as \"iPhone\"")
-    if unadmitted(lane):
-        raise ValueError(f"{name}.devices needs an admitted lane: it bounds the wait for admission, and a self lane "
-                         "is not admitted")
 
 
 def lane_devices(lane):
-    """The device-record entries a lane's run uses (vocaro-engineering#292): its "devices", for a project's script
-    that calls device_pass.run, or each --device of an `qk device-pass` command, up to that command's own --, which
-    the words of the command it runs follow. Any other lane uses none."""
-    if lane.get("devices"): return list(lane["devices"])
-    command = lane.get("command") or []
-    if "device-pass" not in command: return []
-    words = command[command.index("device-pass") + 1:]
-    if "--" in words: words = words[:words.index("--")]
-    return [word.split("=", 1)[1] if word.startswith("--device=") else words[index + 1]
-            for index, word in enumerate(words) if word.startswith("--device=")
-            or (word == "--device" and index + 1 < len(words))]
-
+    """Reservations interpreted by the active device provider."""
+    return hooks.DEVICES.lane_devices(lane)
 
 def parse(source):
     """A project's queuekeeper.json, checked, from its text, wherever that came from."""
     value = json.loads(source)
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
-    allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository", "spelling", "simulatorPool",
-               "queue", "release", "app", "testLanes", "gitHooks", "docs"}
+    allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository", "spelling",
+               "queue", "release", "testLanes", "gitHooks", "docs"}
     if set(value) - allowed - set(EXTENSION_CONFIG_KEYS):
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(EXTENSION_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:
         raise ValueError("Project name must be a nonempty string")
     declared = extensions(value.get("extensions", list(EXTENSIONS)))
+    if "extensions" in value: value["extensions"] = declared
     # The extensions shipped here that the project switches on add keys to its lanes, so they are loaded before the
     # lanes are checked, whichever command reads the configuration. One in a folder of the project's is the
     # command's to load (cli.perform), which knows the folder.
-    hooks.load([named for named in declared if isinstance(named, str) and named.startswith(__package__ + ".")])
+    hooks.load([named for named in declared if isinstance(named, str) and (named.startswith(__package__ + ".") or named in set(EXTENSION_CONFIG_KEYS.values()) | set(EXTENSION_LANE_KEYS.values()))])
     for key, module in EXTENSION_CONFIG_KEYS.items():
         if key not in value: continue
         if key not in hooks.CONFIG_KEYS:
@@ -118,9 +111,6 @@ def parse(source):
     git_hooks(value.get("gitHooks"))
     if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
         raise ValueError("Unknown integration policy")
-    pool = value.get("simulatorPool")
-    if pool is not None and (not isinstance(pool, str) or not pool.strip() or pool != pool.strip()):
-        raise ValueError("simulatorPool must be a nonempty name, such as the project's")
     if not isinstance(value.get("lanes", {}), dict):
         raise ValueError("lanes must be an object")
     lanes = value.get("lanes", {})
@@ -133,7 +123,6 @@ def parse(source):
         if not isinstance(lane, dict) or set(lane) - LANE_KEYS - set(hooks.LANE_KEYS):
             raise ValueError(f"Invalid lane {name}")
         apps(name, lane)
-        device_keys(name, lane)
         for key in ["foreground", "model", "wholeHost", "unlockedScreen"]:
             if key in lane and type(lane[key]) is not bool:
                 raise ValueError(f"{name}.{key} must be true or false")
@@ -154,15 +143,8 @@ def parse(source):
         for key in ["minimumTests", "timeout"]:
             if key in lane and (type(lane[key]) is not int or lane[key] <= 0):
                 raise ValueError(f"{name}.{key} must be a positive integer")
-        if "deviceRunMinutes" in lane:
-            minutes = lane["deviceRunMinutes"]
-            if type(minutes) is not int or minutes <= 0:
-                raise ValueError(f"{name}.deviceRunMinutes must be a positive integer")
-            if not lane_devices(lane) or unadmitted(lane):
-                raise ValueError(f"{name}.deviceRunMinutes needs an admitted device lane")
     merge_queue(value.get("queue", {}), lanes)
     release(value.get("release", {}), lanes, value.get("queue", {}))
-    if "app" in value: app(value["app"])
     spelling = value.get("spelling", {})
     if not isinstance(spelling, dict) or set(spelling) - {"skip", "exemptPhrases", "exemptRuns", "exemptTokens"}:
         raise ValueError("spelling supports only skip, exemptPhrases, exemptRuns and exemptTokens")
@@ -338,50 +320,8 @@ def exclusive_refusal(config, command):
 # The platforms `qk app` builds an app for, and whether each is kept after every gated landing unless the
 # project says otherwise: the Mac build is, so that the newest landed app opens at once; a device build is
 # made when a device asks for it (app_builds.py).
-APP_PLATFORMS = {"mac": True, "ios": False}
 
 
-def app(declared):
-    """The app `qk app` keeps and runs (app_builds.py, guides/app-builds.md)."""
-    if not isinstance(declared, dict) or set(declared) - {"project", "workspace", "directory", "configuration",
-                                                          "prepare", "links", *APP_PLATFORMS}:
-        raise ValueError("app supports only project or workspace, directory, configuration, prepare, links, mac and ios")
-    links = declared.get("links", [])
-    if not isinstance(links, list) or any(not isinstance(link, str) or not link.strip() for link in links):
-        raise ValueError("app.links lists the checkouts beside the project that its build names by a relative path")
-    if ("project" in declared) == ("workspace" in declared):
-        raise ValueError("app names its Xcode project or its workspace, one of them")
-    for key in ("project", "workspace", "directory", "configuration"):
-        if key in declared and (not isinstance(declared[key], str) or not declared[key].strip()):
-            raise ValueError(f"app.{key} must be a nonempty string")
-    for key in ("project", "workspace", "directory"):
-        if key in declared and (Path(declared[key]).is_absolute() or ".." in Path(declared[key]).parts):
-            raise ValueError(f"app.{key} is a path inside the checkout")
-    prepare = declared.get("prepare")
-    if prepare is not None:
-        steps = prepare if isinstance(prepare, list) and prepare and all(isinstance(step, list) for step in prepare) \
-            else [prepare]
-        if any(not isinstance(step, list) or not step or any(not isinstance(word, str) or not word for word in step)
-               for step in steps):
-            raise ValueError("app.prepare needs an argv list, or a list of them run in order, never shell source")
-    platforms = [name for name in APP_PLATFORMS if name in declared]
-    if not platforms:
-        raise ValueError("app names at least one platform to build: mac or ios")
-    for name in platforms:
-        platform = declared[name]
-        if not isinstance(platform, dict) or set(platform) - {"scheme", "product", "settings", "afterLanding"}:
-            raise ValueError(f"app.{name} supports only scheme, product, settings and afterLanding")
-        if not isinstance(platform.get("scheme"), str) or not platform["scheme"].strip():
-            raise ValueError(f"app.{name}.scheme must name the scheme that builds the app")
-        product = platform.get("product")
-        if product is not None and (not isinstance(product, str) or not product.endswith(".app") or "/" in product):
-            raise ValueError(f"app.{name}.product is the built app's file name, such as Name.app")
-        settings = platform.get("settings", {})
-        if not isinstance(settings, dict) or any(not isinstance(key, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key)
-                                                 or not isinstance(text, str) for key, text in settings.items()):
-            raise ValueError(f"app.{name}.settings maps build setting names to text")
-        if "afterLanding" in platform and type(platform["afterLanding"]) is not bool:
-            raise ValueError(f"app.{name}.afterLanding must be true or false")
 
 
 # The lanes the merge queue runs before its gate where a project has them: merge_queue.BEFORE_GATE, kept

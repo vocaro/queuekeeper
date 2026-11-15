@@ -1916,7 +1916,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "receipt": f".build/queuekeeper/{name}/source.json",
             "returns": {"directory": f".build/queuekeeper/{name}", "paths": returns} if returns else None,
             "changes": f".build/queuekeeper/{name}/{CHANGES}" if changes else None,
-            "deviceRecord": local["name"], "lease": lease.plan(local["name"]) if lease is not None else None,
+            "deviceRecord": local["name"], "deviceSetup": extensions.DEVICES.remote_setup(local["name"]), "lease": lease.plan(local["name"]) if lease is not None else None,
             "dispatcher": local["name"], "subdirectory": subdirectory, "silence": HEARTBEAT_SILENCE,
             # Its admissions there name the repository, branch, worktree and session here (resources.work_origin).
             **({"origin": sender} if (sender := resources.work_origin()) else {}),

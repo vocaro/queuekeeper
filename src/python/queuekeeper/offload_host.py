@@ -2760,7 +2760,7 @@ def recoverable(entries, table, early=False):
         found.append({"key": key, "device": entry.get("device"), "owner": entry.get("ownerChatID"),
                       "due": entry.get("expectedReleaseBy"), "pids": [item[0] for item in identities(recorded)],
                       "revision": entry.get("revision", 0), **({"early": True} if early else {}),
-                      "command": f"python3 -m queuekeeper.apple.devices recover {shlex.quote(key)} --by SESSION "
+                      "command": f"python3 -m queuekeeper_apple.devices recover {shlex.quote(key)} --by SESSION "
                                  f"--revision {entry.get('revision', 0)} --verified 'WHAT YOU CHECKED'"})
     return found
 
@@ -3796,15 +3796,20 @@ def running_from(checkout, seconds, listed=listing, apart=()):
     return found, None
 
 
-def defer_devices(kit, mac):
+def defer_devices(kit, mac, command=()):
     """Make this Mac's device record defer physical devices to mac's, the sending Mac's.
 
     A paired iPhone or iPad is reachable from both Macs, so it is reserved in one record only;
     this one then refuses to reserve it. A record that defers them to another Mac, or holds one,
     is a configuration problem for the owner, so the work does not start."""
+    if not command: return
+    manifest = kit / "queuekeeper-workspace.json"
+    sources = [kit / "src/python"]
+    if manifest.is_file():
+        sources.extend(kit / item["source"] for item in json.loads(manifest.read_text()).values())
     try:
-        deferred = subprocess.run([sys.executable, "-m", "queuekeeper.apple.devices", "defer", mac], capture_output=True,
-                                  text=True, env={**os.environ, "PYTHONPATH": str(kit / "src/python"), **NO_BYTECODE},
+        deferred = subprocess.run([sys.executable, *command], capture_output=True,
+                                  text=True, env={**os.environ, "PYTHONPATH": os.pathsep.join(map(str, sources)), **NO_BYTECODE},
                                   timeout=60)
     except subprocess.TimeoutExpired:
         deferred = subprocess.CompletedProcess([], 1, "", "it did not finish in 60s")
@@ -4089,7 +4094,7 @@ def main(plan):
         environment = {**os.environ, "QUEUEKEEPER_ROOT": str(kit), **NO_BYTECODE}
         if "requestAge" in plan:
             environment["QUEUEKEEPER_ADMISSION_REQUEST_STARTED"] = str(result["requestStarted"])
-        if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"])
+        if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"], plan.get("deviceSetup", []))
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
         if plan.get("lease"): environment["QUEUEKEEPER_DEVICE_LEASE"] = json.dumps(plan["lease"])
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]

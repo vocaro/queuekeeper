@@ -2,7 +2,7 @@
 
 `qk app` keeps the last good build of a project's app on this Mac and runs it: the newest
 landed app opens on the Mac at once, and installs and launches on the paired iPhone or iPad
-with one command. The code is `src/python/queuekeeper/apple/app_builds.py`.
+with one command. The code is `plugins/apple/src/queuekeeper_apple/app_builds.py`.
 
 ## Why the gate's builds are not kept
 

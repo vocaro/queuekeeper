@@ -153,7 +153,7 @@ iPhone 17 Pro members, November 2026,
 
 Members are reset from, and new members cloned from, their kind's warmed template, `POOL LABEL
 template (RUNTIME)` such as `EPUBLib iPhone 17 Pro template (iOS-27-2)`, instead of erased to
-pristine data or created and booted for the first time (`queuekeeper.apple.simulators.template`).
+pristine data or created and booted for the first time (`queuekeeper_apple.simulators.template`).
 The member pattern `POOL LABEL N` never matches a template, so no lane takes, tests on or prunes
 one, and `simulator-pool check` refuses its UDID. A reap may shut one down, under the same
 conditions as a member, by the owner's decision of 2026-11-04
@@ -168,7 +168,7 @@ runtime is no longer installed.
   no answer neither counts nor breaks the run, within 90 s), switches VoiceOver on until the speech
   extension logs its first phrase (`Processing markup for voice locale`), switches it off and confirms
   it off. Then it uses the system's voices as a test process does, with a program `simctl spawn` runs
-  in the simulator (`src/swift/Simulator/simulator-voices.swift`: `AVSpeechSynthesisVoice.speechVoices()`,
+  in the simulator (`plugins/apple/src/queuekeeper_apple/_native/simulator-voices.swift`: `AVSpeechSynthesisVoice.speechVoices()`,
   then each language's own voice), shuts the template down, boots it again, uses them once more and
   shuts it down. A template whose second use answered is settled.
 - **Why the voices.** The first request for the system's voices on a freshly erased simulator makes
@@ -364,7 +364,7 @@ message came from two real runs on 2026-10-31, where removing that folder by han
 automatic path has not yet met a real occurrence.
 
 A lane that calls `xcodebuild` or `swift` itself gets the same recovery from `qk run` (#267). qk run
-puts `bin/shims` first on every lane's PATH, here and on the second Mac, so each of those tools a lane's
+puts the Apple package's `_shims` first on each Apple-enabled lane's PATH, here and on the second Mac, so each of those tools a lane's
 script calls by name runs through a wrapper, wherever the script sends its output. A wrapped run that
 fails with that message removes the module cache the message's module file is in
 (`SwiftExplicitPrecompiledModules`, `ModuleCache.noindex` or SwiftPM's `ModuleCache`), only inside the

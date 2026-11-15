@@ -13,7 +13,7 @@ script, whatever `python3` a shell finds first. It goes in the first folder of B
 written, or in ~/.local/bin when none is, which the script then says to add to the PATH. A `qk` that this script
 did not write is left alone and reported.
 
-The package is one line, this checkout's src/python, in a .pth file in the interpreter's user site folder, as
+The packages are this checkout's core and plugin source roots, one per line in a .pth file in the interpreter's user site folder, as
 `pip install --editable` would write. Run the script once on each Mac with the interpreter that runs Queuekeeper
 there. A process that names another copy in QUEUEKEEPER_ROOT and runs it through scripts/qk still runs that copy,
 since the launcher puts it first."""
@@ -29,6 +29,9 @@ if sys.version_info < (3, 14):
 
 CHECKOUT = Path(__file__).resolve().parents[1]
 SOURCE = CHECKOUT / "src/python"
+sys.path.insert(0, str(SOURCE))
+from queuekeeper.checkout import source_paths
+
 COMMAND = "qk"
 # Where the command may go, in order of preference: each is a folder shells commonly have on the PATH.
 BIN = ("~/.local/bin", "~/bin", "/opt/homebrew/bin", "/usr/local/bin")
@@ -74,7 +77,7 @@ def main(arguments):
     imported = package.read_text().strip() if package.is_file() else None
     current = command.read_text(errors="replace") if command.is_file() and not command.is_symlink() else None
     if arguments == ["--check"]:
-        right = imported == str(SOURCE), current == wanted() and os.access(command, os.X_OK)
+        right = imported == "\n".join(map(str, source_paths(CHECKOUT))), current == wanted() and os.access(command, os.X_OK)
         print(f"{package}: {imported or 'missing'}")
         print(f"{command}: {'runs this checkout' if right[1] else 'missing' if current is None else 'runs something else'}"
               + ("" if found else f", and {folder} is not on the PATH"))
@@ -89,7 +92,7 @@ def main(arguments):
             print(f"left {command}, which this script did not write")
         return 0
     package.parent.mkdir(parents=True, exist_ok=True)
-    package.write_text(f"{SOURCE}\n")
+    package.write_text("".join(f"{path}\n" for path in source_paths(CHECKOUT)))
     print(f"{sys.executable} now imports queuekeeper from {SOURCE} ({package})")
     if (command.exists() or command.is_symlink()) and not ours(command):
         print(f"queuekeeper: {command} is a command this script did not write, so it is left as it is: remove it, or "

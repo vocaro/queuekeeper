@@ -35,6 +35,8 @@ if not (home / "src/python/queuekeeper/cli.py").is_file():
           file=sys.stderr)
     raise SystemExit(2)
 sys.path.insert(0, str(home / "src/python"))
+from queuekeeper.checkout import activate
+activate(home)
 from queuekeeper.cli import main
 
 raise SystemExit(main(["--project", str(root), *sys.argv[1:]]))

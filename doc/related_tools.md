@@ -96,5 +96,5 @@ Mac it runs on. The gaps Queuekeeper fills are:
 - admission that counts everything the agents run, not only gates;
 - placement across Macs by measured load;
 - a screen-lock check, so a locked Mac is not mistaken for a failing test;
-- the [Apple plugin](../src/python/queuekeeper/apple/README.md)'s simulator pool and device
+- the [Apple plugin](../plugins/apple/src/queuekeeper_apple/README.md)'s simulator pool and device
   reservations.

@@ -16,7 +16,7 @@ plus optional features to add afterward.
 - **A command that tests the project** and exits with a nonzero status when it fails. This becomes
   the gate.
 
-For the Apple plugin, see [its requirements](../src/python/queuekeeper/apple/README.md#requirements).
+For the Apple plugin, see [its requirements](../plugins/apple/src/queuekeeper_apple/README.md#requirements).
 
 ## Install
 
@@ -57,8 +57,8 @@ one lane, `gate`, which is the command every change must pass:
 ```
 
 - `schemaVersion` must be `1`, and `name` is your project's nonempty name.
-- `extensions: []` starts with the core alone. Without `extensions`, the Apple plugin is loaded
-  by default; add the [plugins](../README.md#plugins) the project needs explicitly.
+- `extensions: []` starts with the core alone, as does omitting `extensions`. Add the
+  [plugins](../README.md#plugins) the project needs explicitly.
 - `command` is an argument list, not a shell string.
 - `timeout` is in seconds. A lane that reaches it ends as unmeasured, not failed.
 - The queue reads its settings from `main`, so a branch cannot loosen its own gate. Only the commit

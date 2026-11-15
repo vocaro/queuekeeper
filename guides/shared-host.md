@@ -1185,7 +1185,7 @@ Physical devices, which both Macs reach, are reserved only in this Mac's record
 A project's first run there creates its first members and lets their first boot finish. A
 session's `QUEUEKEEPER_DEVICE_OWNER` and agent session do not cross SSH, so a reservation there names
 an owner the run generates: `simulator-tests-UUID` for `qk simulator-tests`, and `POOL-UUID` for
-a gate that takes its member with `queuekeeper.apple.simulators.pool.member()`.
+a gate that takes its member with `queuekeeper_apple.simulators.pool.member()`.
 `qk simulator-pool list` and `qk disk` show the pool of the Mac they run on; a run on the second
 Mac prunes that Mac's members of the kind it takes.
 
@@ -2231,7 +2231,7 @@ it inherits, nor a `self` lane, whose `qk admit` commands reap each as it is adm
 
 **A pool member with no live reservation goes after 2 hours, whoever booted it.** That includes one the
 owner booted by hand. To keep one running, boot a simulator outside the pool, or reserve it with
-`python3 -m queuekeeper.apple.devices reserve`, which records no process and so counts as live. A
+`python3 -m queuekeeper_apple.devices reserve`, which records no process and so counts as live. A
 session that took a member with `qk simulator-pool take`, whose process ends when it prints the
 UDID, holds a reservation whose process is gone, which counts as live until its expected release,
 an hour after the take unless `take --hold MINUTES` asked for longer. To work past that, it runs
@@ -2321,7 +2321,7 @@ An entry whose processes are gone and whose release has passed, but which reap c
 rest, stays held and is named with why (`reap did not release it: simctl shows it Booted, not Shutdown`,
 for one; its simulator is still under 2 hours old) and its exact `devices recover` command; for an entry
 in the second Mac's record that command runs there, as `ssh HOST 'cd
-~/Development/queuekeeper/src/python && python3 -m queuekeeper.apple.devices recover …'`, since
+~/Development/queuekeeper/src/python && python3 -m queuekeeper_apple.devices recover …'`, since
 run here it would read this Mac's record. `qk simulator-pool reap`, with or without `--dry-run`, and
 `qk doctor`'s `reaped` name every such entry; the reap before a dispatch or a run here names only those of
 simulators it just stopped. `devices status` names them too, and releases nothing. One not yet due that
@@ -2375,7 +2375,7 @@ goes. A problem here is printed on stderr and never changes the run's result.
 Physical devices, and the members of a project's simulator pool, are
 used only under a real reservation in the host's one device record, a human-readable JSON file
 outside every repository: `~/Library/Application Support/queuekeeper/device-handoff.json`
-of the account the sessions run as. `src/python/queuekeeper/apple/devices.py` is its only
+of the account the sessions run as. `plugins/apple/src/queuekeeper_apple/devices.py` is its only
 writer. It finds the record from the account's home directory, not `HOME` or `TMPDIR`, so a
 session with a private environment joins the same record; `QUEUEKEEPER_DEVICE_RECORD` names an
 isolated record for tests only. Committed documentation keeps no device identifiers or live
@@ -2393,13 +2393,13 @@ Read and change the record through the helper's CLI, or from a script through
 
 ```sh
 export PYTHONPATH="$QUEUEKEEPER_ROOT/src/python"
-python3 -m queuekeeper.apple.devices status
-python3 -m queuekeeper.apple.devices show iPhone    # the entry and its revision; 0 if new
-python3 -m queuekeeper.apple.devices reserve iPhone --owner SESSION --revision N \
+python3 -m queuekeeper_apple.devices status
+python3 -m queuekeeper_apple.devices show iPhone    # the entry and its revision; 0 if new
+python3 -m queuekeeper_apple.devices reserve iPhone --owner SESSION --revision N \
   --device UDID --purpose "…" --release-by 2026-10-21T18:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
-python3 -m queuekeeper.apple.devices update iPhone --owner SESSION --revision N --set 'run=…'
-python3 -m queuekeeper.apple.devices release iPhone --owner SESSION --revision N \
+python3 -m queuekeeper_apple.devices update iPhone --owner SESSION --revision N --set 'run=…'
+python3 -m queuekeeper_apple.devices release iPhone --owner SESSION --revision N \
   --outcome "…" --restoration "…"
 ```
 
@@ -2463,7 +2463,7 @@ session takes it whenever it is free, without asking; the iPhone is his personal
 `--release-by` at the end of the time he gave. Both are taken the same way:
 
 ```sh
-python3 -m queuekeeper.apple.devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
+python3 -m queuekeeper_apple.devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
   --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
 ```
 
@@ -2511,7 +2511,7 @@ releases nothing; the session restores the device and releases it.
 Run a command on a physical device through the toolkit's one launcher for a bounded run:
 
 ```sh
-python3 -m queuekeeper.apple.devices run iPhone --owner SESSION --revision N --limit 180 \
+python3 -m queuekeeper_apple.devices run iPhone --owner SESSION --revision N --limit 180 \
   --restoration 60 -- xcodebuild test-without-building … -destination "platform=iOS,id=UDID"
 ```
 
@@ -2672,7 +2672,7 @@ The warning is advisory. The existing reservation bound still stops the run in t
 
 ## Unity editors
 
-A project that lists the [Unity plugin](../src/python/queuekeeper/unity/README.md) runs its editor
+A project that lists the [Unity plugin](../plugins/unity/src/queuekeeper_unity/README.md) runs its editor
 unattended. This section says what several sessions on one Mac share, and what the plugin does
 about it.
 
@@ -2763,13 +2763,13 @@ A new window from the owner is a new reservation, after a release. Another sessi
 holder in `devices status`, and its reservation is refused while the entry is held.
 
 ```sh
-python3 -m queuekeeper.apple.devices reserve mac-foreground --owner SESSION --revision N \
+python3 -m queuekeeper_apple.devices reserve mac-foreground --owner SESSION --revision N \
   --purpose "Mac XCUITest of …" --release-by 2026-10-23T18:00:00Z
 export QUEUEKEEPER_DEVICE_OWNER=SESSION
-python3 -m queuekeeper.apple.devices check      # at the start and before each action
-python3 -m queuekeeper.apple.devices update mac-foreground --owner SESSION --revision N \
+python3 -m queuekeeper_apple.devices check      # at the start and before each action
+python3 -m queuekeeper_apple.devices update mac-foreground --owner SESSION --revision N \
   --own PID
-python3 -m queuekeeper.apple.devices release mac-foreground --owner SESSION --revision N \
+python3 -m queuekeeper_apple.devices release mac-foreground --owner SESSION --revision N \
   --outcome "…" --restoration "…" --frontmost restored
 ```
 
@@ -3311,7 +3311,7 @@ entry was removed by hand.
 ### Probing stop signals
 
 The stops above were measured with `siglog.py` and `watch.py`, kept with the scripts that start
-and read them in [`src/python/StopSignals`](../src/python/StopSignals), standard library only.
+and read them in [`tools/stop-signals`](../tools/stop-signals), standard library only.
 
 - `siglog.py LOG child SECONDS` logs each SIGTERM, SIGINT and SIGHUP it receives and runs on, and
   starts a child that leads a session of its own and does the same. Each writes `exiting` after
@@ -3329,7 +3329,7 @@ Start the watcher detached, where the action under test cannot reach it, then ha
 tool under test run the probe as its command, so the probe's processes are that command's:
 
 ```sh
-K=~/Development/queuekeeper/src/python/StopSignals D=/private/tmp/stop-probe/NAME
+K=~/Development/queuekeeper/tools/stop-signals D=/private/tmp/stop-probe/NAME
 mkdir -p "$D" && python3 -I "$K/detach.py" python3 -I "$K/watch.py" "$D/probe.log" "$D/probe.watch" 1800
 python3 -I "$K/siglog.py" "$D/probe.log" child 300 && true    # run by the command under test
 python3 -I "$K/report.py" "$D"                                # once the action is done

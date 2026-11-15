@@ -14,6 +14,8 @@ class Unavailable(RuntimeError):
 
 # Each () -> {variable: value}: what the environment holds while a command runs.
 COMMAND_ENVIRONMENT = []
+# Each (environment, root) -> environment: wrappers for the command, in registration order.
+COMMAND_WRAPPERS = []
 # Each (): called before a command that reaches the hosts starts (run, admit, remote, land, queue, disk).
 HOST_COMMAND = []
 # Each (root, config): called before a lane or an admitted command is placed; a ValueError refuses the run.
@@ -75,6 +77,18 @@ class Devices:
 
     # The words a command's help uses for where the session holding a device is named.
     device_owner = "the agent session"
+
+    def observations(self):
+        """Device information contributed to visibility, empty without a device provider."""
+        return {"devices": [], "deferredTo": None, "error": None, "connectionError": None, "checkedAt": None}
+
+    def remote_setup(self, mac):
+        """Python arguments for plugin setup on a receiving Mac, or none."""
+        return []
+
+    def lane_devices(self, lane):
+        """The reservations named by a lane, or none without a device provider."""
+        return []
 
     def take_window(self):
         """The device window an enclosing run leased to this command, read once, or None."""

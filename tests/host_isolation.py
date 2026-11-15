@@ -41,14 +41,6 @@ RECEIVED = dict(os.environ)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
 from queuekeeper import cli, offload_host, pre_push, remote, resources, run_progress, shims
-from queuekeeper import apple, mac_desktop
-from queuekeeper.apple import app_registrations, device_notifications, device_pass, devices
-from queuekeeper.mac_desktop import crash_alerts, keychain, notification_center, opened_apps
-
-# The suite runs with the Apple extension switched on, as the command does for every project, after the desktop
-# extension it requires.
-mac_desktop.register()
-apple.register()
 from queuekeeper.waiting import stretched  # noqa: F401 -- the tests' bound on a stall, re-exported
 
 
@@ -136,12 +128,12 @@ os.environ.pop("QUEUEKEEPER_LANE_PROGRESS_RUN", None)
 # Nor does a lane a test runs write into what the enclosing lane set up for its own command: its results/, whose fixture
 # files then read as the gate's own failures and per-test results (vocaro-engineering#289), the checkout whose module
 # cache a stale build may clear, its self lane, app registrations, device window and owner, or the toolkit it dispatched.
-for variable in (cli.parallel.RESULTS_VARIABLE, shims.ROOT_VARIABLE, cli.SELF_LANE, app_registrations.RUN,
-                 devices.WINDOW, devices.OWNER, "QUEUEKEEPER_ROOT"):
+for variable in (cli.parallel.RESULTS_VARIABLE, "QUEUEKEEPER_STALE_MODULES_ROOT", cli.SELF_LANE, 'QUEUEKEEPER_APP_REGISTRATIONS_RUN',
+                 'QUEUEKEEPER_DEVICE_WINDOW', 'QUEUEKEEPER_DEVICE_OWNER', "QUEUEKEEPER_ROOT"):
     os.environ.pop(variable, None)
 # Nor does a dispatch a test sends count the keychain as unlocked because the dispatch that runs the suite on the second
 # Mac unlocked the real one: it would unlock nothing, and a test of a kept password that cannot unlock would pass the run.
-os.environ.pop(keychain.UNLOCKED, None)
+os.environ.pop('QUEUEKEEPER_KEYCHAIN_UNLOCKED', None)
 # Nor does a test read what a dispatch, an admission, a device pass or the merge queue tells the command it starts, which
 # the suite inherits whenever it is that command (vocaro/queuekeeper#46): the sending Mac's origin and arrival, which
 # every admission a test takes would report as its own; the file where a declined offer's reason goes; what exclusive
@@ -149,7 +141,7 @@ os.environ.pop(keychain.UNLOCKED, None)
 # progress folder an admitted runner names to the run it admits (vocaro/queuekeeper#22). A test of any of them sets it
 # itself.
 for variable in (resources.ORIGIN, resources.REQUEST_STARTED, offload_host.DECLINED, *resources.HOST_READING,
-                 device_pass.KEY_VARIABLE, device_pass.UDID_VARIABLE, remote.QUEUE_GATE, remote.QUEUE_GATE_EXCLUDE,
+                 'QUEUEKEEPER_DEVICE_KEY', 'QUEUEKEEPER_DEVICE_UDID', remote.QUEUE_GATE, remote.QUEUE_GATE_EXCLUDE,
                  "QUEUEKEEPER_QUEUE_PROGRESS", pre_push.QUEUE_VARIABLE, run_progress.VARIABLE):
     os.environ.pop(variable, None)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
@@ -158,26 +150,9 @@ resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # this process too, for a test that clears the environment. A test of the settle sets its own.
 os.environ["HEAVY_QUIET_SECONDS"] = "0"
 resources.QUIET_SECONDS = 0
-# Nor does any reach the host's crash-report setting or its screen's alerts (#118): a foreground run a test
-# makes reads DialogType unset and no alert, and changes nothing. A test of either replaces these again.
 os.environ["QUEUEKEEPER_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
-crash_alerts.run = lambda command, environment=None: "" if command[0] == "osascript" else None
-crash_alerts.change = lambda value: True
-# Nor does any reach the screen's Notification Center windows (#204): a foreground run a test makes on a second Mac
-# finds none, and closes nothing. A test of them replaces this again.
-notification_center.run = lambda command, environment=None: "[]" if command[:3] == ["osascript", "-l", "JavaScript"] \
-    else None
-# Nor does any quit an app on this Mac (vocaro/queuekeeper#104): a foreground run a test makes, in this process or a
-# child, reads no running app, so it finds none it opened, and asks none to quit. A test of them replaces both again.
-os.environ[opened_apps.SWITCH] = "off"
-opened_apps.run = lambda command, environment=None: "[]" if command[-1] == opened_apps.LIST_SCRIPT else None
-opened_apps.alive = lambda pid: False
-# Nor does any reach a paired device's Focus (#144): a reservation a test makes that would run the owner's
-# notification shortcuts finds devicectl unable to open Shortcuts. A test of them replaces this again.
-device_notifications.run = lambda command: (None, "tests never reach a device")
-# Nor does any run a test makes, in this process or a child, relay a device's log: its watch starts no relay and
-# says so. A test of the watch sets its own relay.
-os.environ[device_notifications.WATCH] = "off"
+os.environ['QUEUEKEEPER_DEVICE_LOG_WATCH'] = "off"
+os.environ['QUEUEKEEPER_QUIT_OPENED_APPS'] = "off"
 # Nor does any host identity or lane receipt a test makes read this Mac's scroll-bar setting and HID devices, a second
 # of ioreg each time (#229): it reads the setting unset and no pointing device. A test of the reading sets its own.
 (ROOT / "scroll-bars.json").write_text(json.dumps({
@@ -216,8 +191,8 @@ cli.fix_hosts = unfixed
 # What this module sets in the environment, which every process a test starts carries when it inherits that environment.
 ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "QUEUEKEEPER_OFFLOAD_HOST", "HEAVY_QUIET_SECONDS",
-    "QUEUEKEEPER_CRASH_DIALOG_RECORD", device_notifications.WATCH, offload_host.SCROLL_BARS_RECORDING,
-    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, opened_apps.SWITCH, TOLD)}
+    "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
+    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD)}
 
 
 # The prefixes of the toolkit's variables, and those of them this module lets a test inherit, each with why that is
@@ -252,3 +227,8 @@ def reduced(variables=(), **more):
     (vocaro/queuekeeper#45). test_host_isolation fails a test module that starts qk with an environment that is
     built neither from os.environ nor by this, unless the command passes --unadmitted."""
     return {**ISOLATION, **dict(variables), **more}
+
+
+def pythonpath():
+    """The source composition explicitly supplied to this test process."""
+    return os.environ.get("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src/python"))

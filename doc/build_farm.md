@@ -47,5 +47,5 @@ Queuekeeper detects this instead of reporting the other Mac as down, and include
 launcher that avoids it.
 
 See also [Lanes and admission](lanes_and_admission.md) and the
-[Apple plugin](../src/python/queuekeeper/apple/README.md), which keeps Xcode and simulator runtimes
+[Apple plugin](../plugins/apple/src/queuekeeper_apple/README.md), which keeps Xcode and simulator runtimes
 alike across Macs.
