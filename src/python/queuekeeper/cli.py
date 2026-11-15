@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, budgets, disk, docs, extensions, git_hooks, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+from . import __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, processes, remote, resources, run_progress, shims, spelling
 from .config import FILE as CONFIG_FILE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, self_lane_warnings, sibling_folders, stays, unadmitted, unlocked_screen
@@ -731,6 +731,7 @@ def main(argv=None):
     try:
         # The project's extensions first: they add commands, and what they add to a command's environment, such as
         # the host-local path XcodeGen expands before generating a project (#373), is read once they are loaded.
+        compose_checkout()
         load_extensions(argv)
         with patch_environment(extensions.command_environment()):
             status = perform(argv, report)
@@ -752,6 +753,16 @@ def hooks_path(root, config):
         print(f"fine: {git_hooks.KEY} is {value}" if value else f"fine: {git_hooks.KEY} is unset, and the project "
               "declares no hooks of its own")
     return int(bool(left))
+
+
+def compose_checkout():
+    """Put this checkout's separately packaged plugins on the import path, for this process and the Python children
+    it starts (checkout.activate), when Queuekeeper runs from a source checkout: one whose root has the workspace
+    manifest. A launcher that composed it already changes nothing here; one that put only src/python on the path, as
+    every project's scripts/qk did before the plugins moved out of the core, would otherwise find no
+    queuekeeper_apple to load (vocaro-engineering#497). An installed package has no manifest beside it, and its
+    plugins come from distribution metadata."""
+    if (checkout.ROOT / checkout.MANIFEST).is_file(): checkout.activate(checkout.ROOT)
 
 
 def load_extensions(argv):
