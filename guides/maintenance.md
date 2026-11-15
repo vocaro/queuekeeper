@@ -1280,6 +1280,21 @@ and foreign words whose endings British words share stay with each project, in `
 because the project knows why its fixtures and corpora hold them; the toolkit ships no shared
 list of them.
 
+The same check fails text that calls the command by its old name (vocaro/queuekeeper#35). The
+command has been `qk` since 2026-11-12, and nothing else stops a branch written before then, or a
+wrapped line a rename misses, from telling a reader to type the package's name. A hit is that
+name, lowercase and a word of its own, followed by a subcommand, and reads
+`PATH:LINE: the command's old name 'OLD COMMAND' -> qk COMMAND`. The subcommand names are those of
+the command line's own parser as that run built it, a loaded extension's and an enabled visibility
+feature's included, so a new subcommand is covered when it is added. The check reads through what
+a wrapped line puts between the two: spaces and line breaks, a string's `\n`, the quote closing
+one string literal and the quote opening the next, a backslash that continues a line, and a
+comment's leader at the start of the next line. What keeps the name is no hit: the capitalized
+product, a path or file name such as `queuekeeper.json`, the `queuekeeper:` that begins an error,
+and the prefix of a line a subcommand prints, which is its name and then a colon, as in the
+`queuekeeper unittest: N tests ...` summary the merge queue parses. Anything else kept on purpose
+is marked `spelling: keep` with its reason or listed in `exemptPhrases`. Fix a hit by writing `qk`.
+
 ## Docs check
 
 `python3 scripts/qk docs check [PATHS]` checks a project's Markdown: each link's file, anchor and

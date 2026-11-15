@@ -1050,7 +1050,8 @@ def perform(argv, report):
         "run (doc/merge_queue.md, Preflight lanes)")
     preflights.add_argument("lanes", nargs="*", help="only these of the preflight lanes, in the order given")
     spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "
-        "included, and file names; exit 1 on any, 2 when nothing was checked")
+        "included, and file names, and text that calls this command by its old name; exit 1 on any, 2 when nothing "
+        "was checked")
     spell.add_argument("paths", nargs="*", help="files or directories; untracked files under them are read too")
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
     commands.add_parser("visibility", help="turn the features that show the queue to its owner on and off: "
@@ -1174,7 +1175,8 @@ def perform(argv, report):
             failures = docs.check(root, args.paths or None, citations=config.get("docs", {}).get("citations", False))
             print("\n".join(failures) if failures else "Documentation checks passed")
             return int(bool(failures))
-        elif args.action == "spelling": return spelling.check(root, config, args.paths)
+        # The subcommand names are this parser's, so a new one is covered as it is added (vocaro/queuekeeper#35).
+        elif args.action == "spelling": return spelling.check(root, config, args.paths, commands=tuple(commands.choices))
         elif args.action == "preflight": return preflight.run(root, config, args.lanes)
         elif args.action == "run":
             report.begin(root, args.lane)

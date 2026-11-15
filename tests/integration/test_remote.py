@@ -6323,7 +6323,7 @@ class RemoteSetupTests(unittest.TestCase):
             self.assertEqual(self.installs(), [])
 
 
-# Two Macs on one file system, for queuekeeper doctor: FAKE_MAC names the Mac a command runs on. An Xcode is
+# Two Macs on one file system, for qk doctor: FAKE_MAC names the Mac a command runs on. An Xcode is
 # a directory whose version.MAC and runtimes.MAC.json say what that Mac has at its path, and
 # FAKE_XCODES/default.MAC is that Mac's `xcode-select -p`.
 FAKE_XCODE_SELECT = """#!/bin/sh

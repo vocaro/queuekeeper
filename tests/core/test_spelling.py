@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
-from queuekeeper import cli, config, spelling
+from queuekeeper import cli, config, extensions, spelling
 import host_isolation
 
 
@@ -352,11 +352,170 @@ class ScopeTests(Project):
             self.assertEqual(cli.main(["--project", str(self.root), "spelling"]), 0)
 
 
+class OldCommandTests(Project):
+    """Text that calls the command by its old name before a subcommand (vocaro/queuekeeper#35)."""
+    COMMANDS = ("run", "land", "admissions", "queue", "unittest", "spelling", "pre-push", "docs")
+
+    def check(self, *paths, commands=COMMANDS):
+        lines = []
+        status = spelling.check(self.root, config.load(self.root), paths, out=lines.append, commands=commands)
+        return status, lines
+
+    def found(self, text, commands=COMMANDS):
+        return spelling.Rules(commands=commands).old_commands_in(text)
+
+    def test_the_old_name_before_a_subcommand_fails_in_any_tracked_text_file(self):
+        self.write({"doc/guide.md": "# Guide\n\nRun `queuekeeper run gate`, then `queuekeeper land --wait`.\n",
+                    "tool.py": "import sys\nprint('use queuekeeper admissions usage', file=sys.stderr)\n",
+                    "hooks/pre-push": "#!/bin/sh\nexec queuekeeper pre-push \"$@\"\n",
+                    "notes.txt": "queuekeeper queue status\n"})
+        status, lines = self.check()
+        self.assertEqual(status, 1)
+        self.assertEqual(lines[:-1], [
+            "doc/guide.md:3: the command's old name 'queuekeeper run' -> qk run",
+            "doc/guide.md:3: the command's old name 'queuekeeper land' -> qk land",
+            "hooks/pre-push:2: the command's old name 'queuekeeper pre-push' -> qk pre-push",
+            "notes.txt:1: the command's old name 'queuekeeper queue' -> qk queue",
+            "tool.py:2: the command's old name 'queuekeeper admissions' -> qk admissions"])
+        self.assertTrue(lines[-1].startswith(
+            "queuekeeper spelling: FAIL — 5 use(s) of the command's old name: the command is qk"), lines[-1])
+
+    def test_the_new_name_passes_and_the_summary_counts_the_subcommands(self):
+        self.write({"doc/guide.md": "Run `qk run gate`, then `python3 scripts/qk land --wait`.\n"})
+        status, lines = self.check()
+        self.assertEqual(status, 0, lines)
+        self.assertTrue(lines[-1].startswith("queuekeeper spelling: PASS — 2 text file(s)"), lines[-1])
+        self.assertTrue(lines[-1].endswith("the command's old name precedes none of 8 subcommand name(s)"), lines[-1])
+
+    def test_it_matches_across_a_line_break(self):
+        self.assertEqual(self.found("Start the lane with queuekeeper\nrun gate and wait.\n"), [(1, "run")])
+        self.assertEqual(self.found("first\n    # as queuekeeper\n    # admissions usage reports\n"),
+                         [(2, "admissions")])
+        self.assertEqual(self.found("// queuekeeper\n// queue status\n"), [(1, "queue")])
+        self.assertEqual(self.found("> then queuekeeper\n> land --wait\n"), [(1, "land")])
+        self.assertEqual(self.found("queuekeeper \\\n    run gate\n"), [(1, "run")])
+
+    def test_it_matches_across_a_closing_and_an_opening_quote(self):
+        self.assertEqual(self.found('raise ValueError("no limit is set: see queuekeeper "\n'
+                                    '                 "admissions usage")\n'), [(1, "admissions")])
+        self.assertEqual(self.found("say('queuekeeper ' +\n    f'run {lane}')\n"), [(1, "run")])
+        self.assertEqual(self.found('help="one line, queuekeeper" " land --wait"'), [(1, "land")])
+
+    def test_it_matches_after_and_across_an_escaped_newline(self):
+        self.assertEqual(self.found('error = "refused\\nqueuekeeper run gate"\n'), [(1, "run")])
+        self.assertEqual(self.found('error = "refused: queuekeeper\\nrun gate"\n'), [(1, "run")])
+
+    def test_it_reads_past_the_project_option(self):
+        self.assertEqual(self.found("queuekeeper --project ../app run gate"), [(1, "run")])
+        self.assertEqual(self.found("queuekeeper --project=../app land"), [(1, "land")])
+
+    def test_what_keeps_the_name_on_purpose_passes(self):
+        for number, kept in enumerate(["Settings are in queuekeeper.json and schemas/queuekeeper.schema.json.",
+                     "from queuekeeper import cli", "import queuekeeper.spelling",
+                     "src/python/queuekeeper/cli.py", "cd ~/Development/queuekeeper\nrun = 1",
+                     "vocaro/queuekeeper#35", "$HOME/queuekeeper queue",
+                     "queuekeeper: run refused", 'print(f"queuekeeper: {words[0]} not run")',
+                     "queuekeeper unittest: 4 tests (0 skipped) in 2 processes",
+                     "queuekeeper spelling: PASS — 5 text file(s)", "queuekeeper pre-push: refused",
+                     'summary.startswith("queuekeeper unittest: ")',
+                     "Queuekeeper run records", "Queuekeeper\nqueue entries", "QUEUEKEEPER_ROOT run",
+                     "queuekeeper runs the lane", "queuekeeper queued it", "queuekeeper-run", "queuekeeper_unity run",
+                     "the `queuekeeper` queue", '("queuekeeper", "run")', "queuekeeper's queue",
+                     "queuekeeper queue.lanes", "qk run gate", "queuekeeper status"]):
+            with self.subTest(number):      # not the text: a summary line among them is one the merge queue parses
+                self.assertEqual(self.found(kept), [], kept.split(":")[0])
+
+    def test_a_subcommand_is_matched_whole(self):
+        self.assertEqual(self.found("queuekeeper pre-push origin"), [(1, "pre-push")])
+        self.assertEqual(self.found("queuekeeper docs check"), [(1, "docs")])
+        self.assertEqual(self.found("queuekeeper landing"), [])
+        self.assertEqual(self.found("queuekeeper pre-pushed"), [])
+        self.assertEqual(self.found("queuekeeper run", commands=()), [])
+
+    def test_a_marked_line_and_an_exempt_phrase_keep_the_name(self):
+        text = ("Before 2026-11-12 the command was `queuekeeper run`.  <!-- spelling: keep, history -->\n"
+                "It printed queuekeeper land refused, which a log reader still meets.\n"
+                "Now type queuekeeper run gate.\n")
+        self.write({"history.md": text}, spelling={"exemptPhrases": {
+            "queuekeeper land refused": "a line the command printed before the rename, read in old logs"}})
+        status, lines = self.check()
+        self.assertEqual(status, 1)
+        self.assertEqual(lines[:-1], ["history.md:3: the command's old name 'queuekeeper run' -> qk run"])
+        wrapped = 'x = ("queuekeeper "\n     "run gate")  # spelling: keep, quoted from an old log\n'
+        self.assertEqual(self.found(wrapped), [])
+
+    def test_a_skipped_path_and_a_binary_file_are_not_read(self):
+        self.write({"upstream/notes.txt": "queuekeeper run gate\n", "logo.png": b"\x89PNG\0queuekeeper run"},
+                   spelling={"skip": {"upstream/": "retained upstream text"}})
+        self.assertEqual(self.check()[0], 0)
+
+    def test_both_kinds_of_finding_are_counted(self):
+        self.write({"a.md": "The colour of queuekeeper run gate.\n"})
+        status, lines = self.check()
+        self.assertEqual(status, 1)
+        self.assertEqual(lines[:-1], ["a.md:1: British spelling 'colour' -> color",
+                                      "a.md:1: the command's old name 'queuekeeper run' -> qk run"])
+        self.assertIn("FAIL — 1 British spelling(s) in 2 text file(s)", lines[-1])
+        self.assertIn("Also 1 use(s) of the command's old name", lines[-1])
+
+    def test_without_subcommand_names_only_spelling_is_checked(self):
+        self.write({"a.md": "queuekeeper run gate\n"})
+        status, lines = self.check(commands=())
+        self.assertEqual(status, 0, lines)
+        self.assertNotIn("old name", lines[-1])
+
+    def test_a_pattern_that_stopped_matching_fails_before_reading_files(self):
+        self.write({"a.md": "queuekeeper run gate\n"})
+        with patch.object(spelling, "BETWEEN", r"(?: )+"):
+            status, lines = self.check()
+        self.assertEqual(status, 1)
+        self.assertTrue(any(line.startswith("queuekeeper spelling: CONTROL FAILED — the command's old name was not "
+                                            "flagged in") for line in lines), lines)
+        self.assertNotIn("a.md", "\n".join(lines))
+        with patch.object(spelling, "OLD_COMMAND_SAMPLES", ("queuekeeper: run refused",)):
+            self.assertEqual(spelling.controls(),
+                             ["the command's old name was not flagged in 'queuekeeper: run refused'"])
+        with patch.object(spelling, "KEPT_NAME_SAMPLES", ("queuekeeper run gate",)):
+            self.assertEqual(spelling.controls(), ["'queuekeeper run gate' was flagged as the command's old name"])
+
+    def run_command(self):
+        with contextlib.redirect_stdout(StringIO()) as output:
+            status = cli.main(["--project", str(self.root), "spelling"])
+        return status, output.getvalue()
+
+    def test_the_command_line_gives_its_own_parsers_subcommands(self):
+        self.write({"a.md": "Type queuekeeper land --wait, then queuekeeper\nadmissions usage.\n"})
+        status, output = self.run_command()
+        self.assertEqual(status, 1, output)
+        self.assertIn("a.md:1: the command's old name 'queuekeeper land' -> qk land", output)
+        self.assertIn("a.md:1: the command's old name 'queuekeeper admissions' -> qk admissions", output)
+        self.write({"a.md": "Type qk land --wait.\n"})
+        status, output = self.run_command()
+        self.assertEqual(status, 0, output)
+        self.assertRegex(output, r"the command's old name precedes none of \d+ subcommand name\(s\)")
+
+    def test_a_new_subcommand_is_covered_without_editing_the_rule(self):
+        self.write({"a.md": "Type queuekeeper frobnicate now.\n"})
+        self.assertEqual(self.run_command()[0], 0)
+        with patch.dict(extensions.COMMANDS, {"frobnicate": ("a command added after the rule", lambda *_: 0)}):
+            status, output = self.run_command()
+        self.assertEqual(status, 1, output)
+        self.assertIn("a.md:1: the command's old name 'queuekeeper frobnicate' -> qk frobnicate", output)
+
+
 class RepositoryTests(unittest.TestCase):
     def test_this_repository_is_spelled_the_american_way(self):
         root = Path(__file__).resolve().parents[2]
         lines = []
         self.assertEqual(spelling.check(root, config.load(root), out=lines.append), 0, "\n".join(lines))
+
+    def test_this_repository_calls_the_command_by_its_new_name(self):
+        root = Path(__file__).resolve().parents[2]
+        # The launcher, as the spelling lane runs it: the subcommand names are its parser's, the extensions' included.
+        ran = subprocess.run([sys.executable, str(root / "scripts/qk"), "spelling"], capture_output=True, text=True,
+                             cwd=root, timeout=host_isolation.stretched(60))
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertIn("the command's old name precedes none of", ran.stdout)
 
 
 if __name__ == "__main__":
