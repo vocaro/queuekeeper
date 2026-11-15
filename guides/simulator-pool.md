@@ -281,13 +281,15 @@ saves VoiceOver's first start as well as the first boot
 ### Pruning
 
 A session may delete a pool member an hour after its last use and release, when all of these hold:
-it is not the lowest-numbered member of its kind (device type and runtime), so every kind keeps one
-member and its approval; `simctl` shows it shut down and its `lastUsedAt` is more than an hour old;
+it is not the lowest-numbered member of its kind (device type and runtime), so a kind in use keeps
+one member and its approval ([below](#a-kind-left-unused) for a kind left unused); `simctl` shows it shut down and its `lastUsedAt` is more than an hour old;
 and its device-record entry is released, or it has none, and any release is also more than an hour
 old. Reserve it first, check again that it is still shut down and unchanged, delete it by UDID, and
 record the deletion in the device record. Delete the highest-numbered eligible member first. A new
 member takes the lowest free number. A member whose runtime is no longer installed
 follows the same rule.
+
+#### A kind left unused
 
 A kind's lowest-numbered member goes only when a session asks (`qk simulator-pool prune`, or
 [`qk disk`](shared-host.md#reclaiming-disk-space)), never at a take, and only once every member of
