@@ -1713,17 +1713,23 @@ class NotificationWatchTests(unittest.TestCase):
 
     def relaying(self, *texts):
         """A watch whose relays print texts, over USB and the network in turn, and then wait to be ended. A text may
-        be (text, after, ends): printed after that many seconds, and the relay then ends at once if ends. Ended by
+        be (text, after, ends): printed after that many seconds or once the Path after exists; the relay then ends if ends. Ended by
         SIGTERM, each prints `[disconnected:UDID]` first, as idevicesyslog 1.4.0 did on the owner's iPhone and iPad
         (2026-11-06, vocaro-engineering#194)."""
         printed = iter(texts)
 
         def relay(udid, network):
             text, after, ends = (lambda given: given if isinstance(given, tuple) else (given, 0, False))(next(printed))
+            waiting = (f"time.sleep({after})\n" if not isinstance(after, Path) else
+                       "from pathlib import Path\n"
+                       f"deadline = time.monotonic() + {stretched(60)}\n"
+                       f"while not Path({str(after)!r}).exists():\n"
+                       "    if time.monotonic() >= deadline: sys.exit('relay release never arrived')\n"
+                       "    time.sleep(0.01)\n")
             return [sys.executable, "-c", "import signal, sys, time\n"
                     "def end(*_): sys.stdout.write(sys.argv[2]); sys.stdout.flush(); sys.exit(0)\n"
                     "signal.signal(signal.SIGTERM, end)\n"
-                    f"time.sleep({after}); sys.stdout.write(sys.argv[1]); "
+                    + waiting + "sys.stdout.write(sys.argv[1]); "
                     f"sys.stdout.flush(); time.sleep({0 if ends else stretched(60)})", text,
                     device_notifications.DISCONNECTED.format(udid) + "\n"]
         for patcher in (patch.dict(os.environ, {device_notifications.WATCH: ""}),
@@ -1775,11 +1781,20 @@ class NotificationWatchTests(unittest.TestCase):
 
     def test_a_relay_that_reaches_the_device_only_after_the_run_started_leaves_it_unwatched(self):
         quiet = (LOGS / "springboard-quiet.log").read_text()
+        release = Path(self.enterContext(tempfile.TemporaryDirectory())) / "release"
         with patch.object(device_notifications, "READY", 0.5):
-            self.relaying((quiet, stretched(2), False), "")
+            self.relaying((quiet, release, False), "")
             watch = device_notifications.Watch(TABLET)
-            time.sleep(stretched(3))
-            seen = watch.stop()
+            try:
+                # The log reaches USB strictly after the watch took its initial ready snapshot.
+                release.touch()
+                usb, _ = watch.relays[0]
+                deadline = time.monotonic() + stretched(30)
+                while not device_notifications.lines(watch._read(usb)) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(device_notifications.lines(watch._read(usb)), "USB relay never produced its log")
+            finally:
+                seen = watch.stop()
         self.assertEqual((seen["watched"], seen["presented"]), (False, 0), seen)
         self.assertIn("its usb relay reached", seen["detail"])
         self.assertIn("only after the run had started", seen["detail"])
