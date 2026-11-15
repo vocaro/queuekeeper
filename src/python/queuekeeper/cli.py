@@ -1057,7 +1057,8 @@ def perform(argv, report):
             warnings += lane_coverage.doctor_warnings(test_lanes)
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "extensions": list(extensions.LOADED),
-                "missingCommands": missing, "warnings": warnings, "testLanes": test_lanes, "offload": hosts}, indent=2))
+                "missingCommands": missing, "warnings": warnings, "notes": remote.python_crash_notes(hosts),
+                "testLanes": test_lanes, "offload": hosts}, indent=2))
             return int(bool(missing or hosts["errors"]))
         elif args.action == "pre-push": return pre_push.main(root, config, args.remote)
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)

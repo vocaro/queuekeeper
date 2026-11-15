@@ -1010,11 +1010,20 @@ def python_crash_reports(directory=None, now=None):
             first, end = decoder.raw_decode(text.lstrip())
             rest = text.lstrip()[end:].strip()
             report = decoder.raw_decode(rest)[0] if rest else first
+            if not isinstance(first, dict) or not isinstance(report, dict):
+                raise ValueError("report must be an object")
             threads = report.get("threads", [])
+            if not isinstance(threads, list) or any(not isinstance(thread, dict) for thread in threads):
+                raise ValueError("threads must be a list of objects")
             fault = report.get("faultingThread")
             crashed = next((thread for thread in threads if thread.get("triggered")), None)
             if crashed is None and isinstance(fault, int) and 0 <= fault < len(threads): crashed = threads[fault]
-            frames = (crashed or {}).get("frames", [])[:5]
+            frames = (crashed or {}).get("frames", [])
+            if not isinstance(frames, list) or any(not isinstance(frame, dict) for frame in frames):
+                raise ValueError("frames must be a list of objects")
+            frames = frames[:5]
+            if not isinstance(report.get("exception", {}), dict):
+                raise ValueError("exception must be an object")
             result["reports"].append({"path": str(path), "time": report.get("captureTime", first.get("timestamp")),
                 "signal": report.get("exception", {}).get("signal"), "parentProcess": report.get("parentProc"),
                 "frames": frames})

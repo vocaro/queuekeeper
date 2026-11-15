@@ -3999,6 +3999,21 @@ def compare_device_records(report, host, here, there):
                                    "Mac until the next qk remote run there")
 
 
+def python_crash_notes(hosts):
+    """Human-readable observations, separate from doctor's errors and its verdict."""
+    notes = []
+    for host, census in hosts.get("pythonCrashes", {}).items():
+        label = "this Mac" if host == "local" else host
+        for report in census.get("reports", []):
+            frames = "; ".join(str(frame.get("symbol") or frame.get("imageOffset") or "unknown frame")
+                               for frame in report.get("frames", [])) or "no frames recorded"
+            notes.append(f"Python crash on {label}: {report.get('path', 'unknown path')}, "
+                         f"{report.get('time') or 'unknown time'}, {report.get('signal') or 'unknown signal'}, "
+                         f"parent {report.get('parentProcess') or 'unknown'}; {frames}")
+        notes += [f"Python crash reports on {label}: {note}" for note in census.get("notes", [])]
+    return notes
+
+
 def compare_hosts():
     """What `qk doctor` reports of the second Mac: this Mac's and the second Mac's default Xcodes
     (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
