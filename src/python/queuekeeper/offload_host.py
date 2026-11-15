@@ -1057,14 +1057,16 @@ def swap_usage(text):
 
 def host_health():
     """What `qk doctor` and the Farm tab judge a Mac's memory by (host_health.warnings): its physical memory
-    (memoryBytes), its swap used and total, None when unread, and its HEALTH_LARGEST largest processes by resident
+    (memoryBytes), its swap used and total and its memory pressure level (memoryLevel, as memory_level reads it),
+    None when unread, and its HEALTH_LARGEST largest processes by resident
     memory, each with its PID, executable name, resident bytes and seconds since it started. It lists processes
     without their arguments. On 2026-11-15 the second Mac's fseventsd held 34 of its 64 GB after 15 days and swap
     was full, so a gate timed out with none of its tests failed; nothing named the process."""
     memory = output(["sysctl", "-n", "hw.memsize"])
     swap = swap_usage(output(["sysctl", "-n", "vm.swapusage"]))
     reading = {"memoryBytes": int(memory) if memory and memory.isdigit() else None,
-               "swapUsedBytes": swap and swap[0], "swapTotalBytes": swap and swap[1], "largest": None}
+               "swapUsedBytes": swap and swap[0], "swapTotalBytes": swap and swap[1],
+               "memoryLevel": memory_level(), "largest": None}
     listed = output(list(HEALTH_LISTING))
     if listed is not None:
         rows = [row for row in (line.split(None, 3) for line in listed.splitlines())

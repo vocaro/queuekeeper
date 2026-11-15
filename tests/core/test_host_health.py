@@ -15,20 +15,35 @@ GB = 1024 ** 3
 DAY = 86400
 
 
-def reading(swap=(0, 0), memory=64 * GB, largest=()):
-    return {"memoryBytes": memory, "swapUsedBytes": swap[0], "swapTotalBytes": swap[1],
+def reading(swap=(0, 0), memory=64 * GB, largest=(), level=1):
+    return {"memoryBytes": memory, "swapUsedBytes": swap[0], "swapTotalBytes": swap[1], "memoryLevel": level,
             "largest": [{"pid": pid, "name": name, "residentBytes": size, "seconds": seconds}
                         for pid, name, size, seconds in largest]}
 
 
-# The second Mac on 2026-11-15.
+# The second Mac on 2026-11-15. Its memory pressure level was not recorded that day: warning is assumed here.
 SWAPPING = reading((int(31.7 * GB), 32 * GB), largest=[(312, "fseventsd", 34 * GB, 15 * DAY + 2 * 3600),
-                                                        (901, "Xcode", 4 * GB, 3600), (77, "WindowServer", GB, 15 * DAY)])
+                                                        (901, "Xcode", 4 * GB, 3600), (77, "WindowServer", GB, 15 * DAY)],
+                   level=2)
 
 
 class Warnings(unittest.TestCase):
     def test_a_healthy_mac_has_no_warning(self):
         self.assertEqual(host_health.warnings(reading((GB, 32 * GB), largest=[(1, "Xcode", 8 * GB, 60)]), "this Mac"), [])
+
+    def test_swap_near_its_total_is_no_warning_while_memory_pressure_is_normal(self):
+        # This Mac on 2026-11-15, with 45% of memory free: macOS sizes swap to what it uses, so used sits near the
+        # total on a healthy Mac (vocaro/queuekeeper#168).
+        healthy = reading((int(5.7 * GB), 7 * GB), memory=36 * GB, largest=[(5943, "Claude Helper (Renderer)", GB, DAY)])
+        self.assertEqual(host_health.warnings(healthy, "this Mac"), [])
+        self.assertEqual(host_health.warnings(reading((32 * GB, 32 * GB)), "build"), [])
+
+    def test_swap_says_nothing_where_the_pressure_level_is_unread(self):
+        for unread in (None, True, "2", 3):
+            self.assertEqual(host_health.warnings(reading((32 * GB, 32 * GB), level=unread), "build"), [])
+        older = reading((32 * GB, 32 * GB))
+        del older["memoryLevel"]
+        self.assertEqual(host_health.warnings(older, "build"), [])
 
     def test_an_unread_reading_is_no_warning(self):
         for unread in (None, "nonsense", {}, reading((None, None), memory=None, largest=[])):
@@ -37,7 +52,8 @@ class Warnings(unittest.TestCase):
     def test_full_swap_and_an_outsized_daemon_name_the_largest_processes_and_the_safe_restart(self):
         [found] = host_health.warnings(SWAPPING, "build")
         self.assertIn("build is short of memory", found)
-        self.assertIn("swap is 31.7 GB of 32.0 GB used (99%)", found)
+        self.assertIn("swap is 31.7 GB of 32.0 GB used (99%) while macOS reports memory pressure at level 2 (warning)",
+                      found)
         self.assertIn("fseventsd holds 34.0 GB of its 64.0 GB of memory (53%)", found)
         self.assertIn("fseventsd (PID 312, up 15d 2h, 34.0 GB), Xcode (PID 901, up 1h, 4.0 GB), "
                       "WindowServer (PID 77, up 15d, 1.0 GB)", found)
@@ -54,15 +70,21 @@ class Warnings(unittest.TestCase):
 
     def test_with_swap_alone_full_the_largest_process_is_the_one_to_free(self):
         [found] = host_health.warnings(reading((27 * GB, 32 * GB), largest=[(9, "Simulator", 6 * GB, 600),
-                                                                           (8, "mds_stores", 10 * GB, DAY)]), "build")
-        self.assertIn("swap is 27.0 GB of 32.0 GB used (84%)", found)
+                                                                           (8, "mds_stores", 10 * GB, DAY)], level=4),
+                                       "build")
+        self.assertIn("swap is 27.0 GB of 32.0 GB used (84%) while macOS reports memory pressure at level 4 (critical)",
+                      found)
         self.assertLess(found.index("mds_stores (PID 8"), found.index("Simulator (PID 9"))
         self.assertIn("`sudo killall mds_stores` on build", found)
         self.assertNotIn("quit Simulator", found)
 
     def test_the_thresholds_are_the_ones_it_names(self):
-        self.assertEqual(host_health.warnings(reading((int(0.79 * 32 * GB), 32 * GB)), "x"), [])
-        self.assertTrue(host_health.warnings(reading((math.ceil(host_health.SWAP_SHARE * 32 * GB), 32 * GB)), "x"))
+        self.assertEqual(host_health.warnings(reading((int(0.79 * 32 * GB), 32 * GB), level=4), "x"), [])
+        nearly_full = (math.ceil(host_health.SWAP_SHARE * 32 * GB), 32 * GB)
+        self.assertEqual(host_health.warnings(reading(nearly_full, level=1), "x"), [])
+        for level in host_health.PRESSED:
+            self.assertTrue(host_health.warnings(reading(nearly_full, level=level), "x"))
+        self.assertEqual(sorted(host_health.PRESSED), [2, 4])
         self.assertEqual(host_health.warnings(reading(largest=[(1, "a", 16 * GB, 1)]), "x"), [])
         self.assertTrue(host_health.warnings(reading(largest=[(1, "a", 16 * GB + 1, 1)]), "x"))
 
@@ -77,6 +99,7 @@ class Reading(unittest.TestCase):
 
     def test_host_health_lists_the_largest_processes_without_their_arguments(self):
         answers = {("sysctl", "-n", "hw.memsize"): str(64 * GB),
+                   ("/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"): "2",
                    ("sysctl", "-n", "vm.swapusage"): "total = 32768.00M  used = 31744.00M  free = 1024.00M",
                    offload_host.HEALTH_LISTING: "\n".join([
                        "  312 35651584 15-02:00:00 /System/Library/Frameworks/CoreServices.framework/fseventsd",
@@ -88,6 +111,7 @@ class Reading(unittest.TestCase):
             found = offload_host.host_health()
         self.assertNotIn("args", " ".join(offload_host.HEALTH_LISTING))
         self.assertEqual((found["memoryBytes"], found["swapUsedBytes"]), (64 * GB, 31744 * 1024 ** 2))
+        self.assertEqual(found["memoryLevel"], 2)
         self.assertEqual(found["largest"][0], {"pid": 312, "name": "fseventsd", "residentBytes": 34 * GB,
                                                "seconds": 15 * DAY + 2 * 3600})
         self.assertEqual([one["name"] for one in found["largest"]], ["fseventsd", "Xcode", "Google Chrome"])
@@ -95,7 +119,8 @@ class Reading(unittest.TestCase):
     def test_a_listing_that_fails_leaves_the_processes_unread(self):
         with patch.object(offload_host, "output", return_value=None):
             self.assertEqual(offload_host.host_health(), {"memoryBytes": None, "swapUsedBytes": None,
-                                                          "swapTotalBytes": None, "largest": None})
+                                                          "swapTotalBytes": None, "memoryLevel": None,
+                                                          "largest": None})
 
     def test_the_farm_asks_for_health_beside_pressure_and_the_merge_queue_does_not(self):
         with patch.object(offload_host, "pressure", return_value={"load": 1.0}), \

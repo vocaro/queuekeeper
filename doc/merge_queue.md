@@ -183,7 +183,9 @@ qk queue close --why "moving the queue's state" && {  # new entries are refused 
 and what would unstick it. It names a gate that has waited 15 minutes for admission on a
 Mac with spare CPU, and each holder there with its command, PID, hold time, CPU use and
 worktree. It also names each Mac, this one and the second Mac, that is short of memory: swap at
-least 80% full, or one process holding more than a quarter of physical memory. The finding lists
+least 80% full while macOS reports memory pressure at warning or critical, or one process holding
+more than a quarter of physical memory. Swap near its total is no sign by itself, since macOS
+sizes swap to what it uses. The finding lists
 the largest processes by resident memory, with PID, uptime and size, and says how the owner
 frees them: `sudo killall NAME` for a system daemon that launchd restarts (`fseventsd`, `mds`,
 `mds_stores`), otherwise quitting the process or restarting the Mac. The doctor stops nothing,
