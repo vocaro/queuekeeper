@@ -34,6 +34,7 @@ HOSTS = {"schemaVersion": 1, "hosts": [
     {"name": "second Mac (build)", "role": "second", "state": "unknown", "reasons": ["ssh could not reach build"]}]}
 
 
+GB = 1024 ** 3
 LOADS = {"here": {"cpuBusy": 68.0, "busyLimit": 75.0, "load": 3.2, "memory": "normal", "screen": "locked", "error": None}}
 
 
@@ -326,26 +327,42 @@ class Panels(Fixture):
             "text": "1 Mac read, 2 of 7 slots in use, 1 waiting; the screen of this Mac (desk) is locked; "
                     "second Mac (build) could not be read"})
 
+    def test_a_mac_short_of_memory_makes_the_farms_line_a_warning(self):
+        self.read_farm()
+        with farm.LOCK: farm.STATE["detail"] = {"here": {**LOADS["here"], "health": "this Mac is short of memory: ..."}}
+        found = farm.summary(self.one)
+        self.assertEqual(found["level"], "warning")
+        self.assertIn("this Mac (desk) is short of memory", found["text"])
+
     def test_a_macs_load_is_what_its_pressure_and_screen_readings_say(self):
         self.assertEqual(farm.load_of({"cpuBusy": 91.4, "busyLimit": 75, "load": 12.08, "memory": 4}, {"state": "unlocked"}),
                          {"cpuBusy": 91.4, "busyLimit": 75, "load": 12.08, "memory": "critical", "screen": "unlocked",
-                          "error": None})
+                          "error": None, "health": None})
         self.assertEqual(farm.load_of({"cpuBusy": None, "memory": None, "busyLimit": True}, {"state": "asleep"}),
                          {"cpuBusy": None, "busyLimit": None, "load": None, "memory": None, "screen": "unknown",
-                          "error": None})
+                          "error": None, "health": None})
         self.assertEqual(farm.load_of({"error": "no slot directory"}, None)["error"], "no slot directory")
         self.assertEqual(farm.load_of("nonsense", [])["screen"], "unknown")
 
     def test_both_macs_are_asked_and_one_that_cannot_be_is_given_its_reason(self):
         pressure = {"cpuBusy": 10.0, "busyLimit": 75.0, "load": 1.0, "memory": 1}
+        healthy = {"memoryBytes": 64 * GB, "swapUsedBytes": 0, "swapTotalBytes": 0, "largest": []}
+        swapping = {**healthy, "swapUsedBytes": 31 * GB, "swapTotalBytes": 32 * GB,
+                    "largest": [{"pid": 312, "name": "fseventsd", "residentBytes": 34 * GB, "seconds": 15 * 86400}]}
         with patch.object(farm.offload_host, "pressure", return_value=pressure), \
+                patch.object(farm.offload_host, "host_health", return_value=healthy), \
                 patch.object(farm.offload_host, "screen", return_value={"state": "unlocked"}), \
                 patch.object(farm.remote, "configured", return_value="build"), \
-                patch.object(farm.remote, "reading_there", return_value=({**pressure, "cpuBusy": 80.0}, 80.0)), \
+                patch.object(farm.remote, "reading_there",
+                             return_value=({**pressure, "cpuBusy": 80.0, "health": swapping}, 80.0)) as there, \
                 patch.object(farm.remote, "screen_there", return_value={"state": "locked"}):
             found = READ_DETAIL()
             self.assertEqual((found["here"]["cpuBusy"], found["here"]["screen"]), (10.0, "unlocked"))
             self.assertEqual((found["second"]["cpuBusy"], found["second"]["screen"]), (80.0, "locked"))
+            there.assert_called_with("build", health=True)
+            self.assertIsNone(found["here"]["health"])
+            self.assertIn("build is short of memory", found["second"]["health"])
+            self.assertIn("`sudo killall fseventsd` on build", found["second"]["health"])
             with patch.object(farm.remote, "screen_there", side_effect=farm.remote.Unavailable("build is asleep")):
                 self.assertEqual(READ_DETAIL()["second"]["error"], "build is asleep")
             with patch.object(farm.remote, "configured", return_value=None):

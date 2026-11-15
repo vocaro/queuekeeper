@@ -3608,10 +3608,11 @@ def pressure_there(host):
                             limit_words(answered, "busyLimit", answered["busyLimit"], host)), load
 
 
-def reading_there(host):
+def reading_there(host, health=False):
     """(offload_host's pressure answer from the second Mac, its CPU busy share in percent or None when unavailable),
-    or Unavailable when the Mac cannot be reached or does not answer with its busy limit."""
-    answered = ask(host, {"pressure": True}, timeout=CENSUS_TIMEOUT)
+    or Unavailable when the Mac cannot be reached or does not answer with its busy limit. With health, the answer
+    also carries its host_health reading under health, which a toolkit there older than it leaves out."""
+    answered = ask(host, {"pressure": True, **({"health": True} if health else {})}, timeout=CENSUS_TIMEOUT)
     if not isinstance(answered, dict) or not isinstance(answered.get("busyLimit"), (int, float)):
         why = answered.get("error") if isinstance(answered, dict) and answered.get("error") else f"it answered {answered!r}"
         raise Unavailable(f"{host} did not report its CPU busy share: {why}")

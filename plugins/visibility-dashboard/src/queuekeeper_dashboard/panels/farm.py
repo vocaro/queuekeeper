@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 
-from queuekeeper import extensions, offload_host, remote, resources
+from queuekeeper import extensions, host_health, offload_host, remote, resources
 from .. import admission_ids
 
 TITLE, ORDER = "Farm", 20
@@ -26,24 +26,25 @@ def read():
     return resources.admissions_now(here_only=isolated)
 
 
-def load_of(pressure, screen):
+def load_of(pressure, screen, where="this Mac"):
     """What a Mac's pressure answer (offload_host.pressure) and its screen reading (offload_host.screen) say, as
-    the page shows it. What either lacks is None."""
+    the page shows it. What either lacks is None. health is the warning of a Mac short of memory that the pressure
+    answer's health reading gives (host_health.warnings), where naming the Mac, or None."""
     pressure, screen = (found if isinstance(found, dict) else {} for found in (pressure, screen))
     number = lambda value: value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
     return {"cpuBusy": number(pressure.get("cpuBusy")), "busyLimit": number(pressure.get("busyLimit")),
             "load": number(pressure.get("load")), "memory": MEMORY.get(pressure.get("memory")),
             "screen": screen.get("state") if screen.get("state") in ("locked", "unlocked") else "unknown",
-            "error": pressure.get("error")}
+            "error": pressure.get("error"), "health": (host_health.warnings(pressure.get("health"), where) or [None])[0]}
 
 
 def read_detail():
     """{role: load_of(...)} for this Mac, `here`, and the second Mac when one is configured, `second`. A Mac that
     cannot be asked has its reason as its error."""
-    found = {"here": load_of(offload_host.pressure(), offload_host.screen())}
+    found = {"here": load_of({**offload_host.pressure(), "health": offload_host.host_health()}, offload_host.screen())}
     host = remote.configured()
     if host:
-        try: found["second"] = load_of(remote.reading_there(host)[0], remote.screen_there(host))
+        try: found["second"] = load_of(remote.reading_there(host, health=True)[0], remote.screen_there(host), host)
         except Exception as error:  # noqa: BLE001
             found["second"] = {**load_of({}, {}), "error": str(getattr(error, "problem", None) or error)}
     return found
@@ -138,5 +139,7 @@ def summary(repository):
             f"{sum(found['slots']['most'] for found in read_)} slots in use" + (f", {waiting} waiting" if waiting else ""))
     locked = [found["name"] for found in hosts if (found["load"] or {}).get("screen") == "locked"]
     if locked: text += f"; the screen of {', '.join(map(str, locked))} is locked"
+    short = [found["name"] for found in hosts if (found["load"] or {}).get("health")]
+    if short: text += f"; {', '.join(map(str, short))} {'is' if len(short) == 1 else 'are'} short of memory"
     if unread: text += f"; {', '.join(map(str, unread))} could not be read"
-    return {"title": "Farm", "text": text, "level": "warning" if unread else "plain"}
+    return {"title": "Farm", "text": text, "level": "warning" if unread or short else "plain"}

@@ -53,7 +53,7 @@ import time
 import unicodedata
 import urllib.request
 
-from . import budgets, disk, extensions, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
+from . import budgets, disk, extensions, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, processes, remote, \
     resources
 from . import events, pre_push, recovery
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
@@ -2248,6 +2248,8 @@ def doctor(root, as_json=False):
     if working:
         held_back, unknown = idle_waits(root)
         findings, hints = findings + held_back, hints + unknown
+    short, unknown = memory_findings()
+    findings, hints = findings + short, hints + unknown
     if as_json:
         print(json.dumps({"healthy": not findings, "waiting": len(waiting), "worker": working, "findings": findings,
                           "hints": hints}, indent=2))
@@ -2262,6 +2264,35 @@ def doctor(root, as_json=False):
         print(f"{finding['signal']}: {finding['diagnosis']}\n  next: {finding['remedy']}")
     for hint in hints: print(f"note: {hint}")
     return 1
+
+
+def health_of(host):
+    """offload_host.host_health's reading of host, the second Mac, or with host None of this Mac; None when it cannot be
+    read, as from a second Mac that cannot be reached or whose toolkit predates the reading."""
+    if not host: return offload_host.host_health()
+    try: return remote.reading_there(host, health=True)[0].get("health")
+    except remote.Unavailable: return None
+
+
+def memory_findings(read=None):
+    """(findings, notes): a finding for each Mac, this one and the second Mac when one is configured, that is short of
+    memory (host_health.assessed), naming its largest processes and how the owner frees them; a note for a Mac whose
+    reading could not be made. On 2026-11-15 the second Mac's fseventsd held 34 of its 64 GB and swap was full, and a
+    gate timed out there with no test failed. It changes nothing: stopping a process takes the owner's password."""
+    read = read or health_of
+    findings, notes = [], []
+    host = remote.configured()
+    for mac, asked in ((lane_wait.HERE, None), *(((lane_wait.second_mac(host), host),) if host else ())):
+        try: reading = read(asked)
+        except Exception: reading = None  # noqa: BLE001 - a reading never fails the doctor
+        if reading is None:
+            notes.append(f"whether {mac} is short of memory is unknown, as its processes could not be read there")
+            continue
+        found = host_health.assessed(reading, mac)
+        if found:
+            findings.append({"signal": "short of memory", "diagnosis": found[0], "remedy": found[1], "mac": mac,
+                             "largest": (reading.get("largest") or [])[:host_health.NAMED]})
+    return findings, notes
 
 
 def admission_hints(root, at=None):

@@ -2267,6 +2267,24 @@ class ResourceTests(unittest.TestCase):
             self.assertEqual(cli.main(["--project", str(root), "run", "empty"]), 2)
         self.assertFalse(Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard").exists())
 
+    def test_a_lane_whose_timeout_leaves_a_process_unconfirmed_is_unmeasured_and_keeps_its_reservation(self):
+        # On 2026-11-15 such a gate, 2235 tests passed and none failed, exited 2 and was sent back as failed.
+        root = Path(self.temp.name)
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Slow",
+            "lanes": {"slow": {"command": ["unused"], "resource": "heavy", "timeout": 1}}}))
+        guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
+        self.addCleanup(guard.unlink, missing_ok=True)
+        for timed_out, status in ((True, lane_results.UNMEASURED), (False, 2)):
+            with self.subTest(timed_out=timed_out):
+                guard.unlink(missing_ok=True)
+                left = processes.Unconfirmed("Timed out after 1s, but 1 process(es) remain; reservation retained", timed_out)
+                with patch.object(cli, "refresh_policy", return_value="policy"), \
+                        patch.object(cli, "source_identity", return_value={}), \
+                        patch.object(cli.processes, "run", side_effect=left), contextlib.redirect_stderr(StringIO()):
+                    self.assertEqual(cli.main(["--project", str(root), "run", "slow"]), status)
+                owners = json.loads(guard.read_text())["owners"]
+                self.assertEqual([owner.get("uncertain") for owner in owners.values()], [True])
+
     def test_a_shared_owner_cannot_forge_exclusive_admission(self):
         with resources.Admission("shared", timeout=0):
             token = json.loads(os.environ[resources.TOKEN])

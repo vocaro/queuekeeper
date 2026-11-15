@@ -79,7 +79,7 @@ while how == "ends":
     except ProcessLookupError: break
     time.sleep(0.01)
 (here / "orphaned").touch()
-if how == "stays": time.sleep(120)
+if how in ("stays", "times-out"): time.sleep(120)
 raise SystemExit(5)
 """
 # An admission owner that never settles: it records itself in the guard, as qk admit does, and
@@ -795,7 +795,7 @@ class ProcessTests(unittest.TestCase):
             self.assertNotIn((owner, signal.SIGTERM), sent, "a new child of an admission owner was sent the stop")
             self.assertIn((owner, signal.SIGKILL), sent)
 
-    def orphaning(self, directory, how):
+    def orphaning(self, directory, how, **options):
         """Supervise ORPHANS, sampling only once it has orphaned its grandchild, as if that all
         happened between two samples, so that only the census can find the grandchild."""
         here, real, begun = Path(directory), processes.snapshot, time.monotonic()
@@ -806,7 +806,7 @@ class ProcessTests(unittest.TestCase):
             if how == "stays" and processes.requested() is None: processes.request_stop(signal.SIGTERM)
             return real()
         with patch.object(processes, "snapshot", unobserved), contextlib.redirect_stderr(StringIO()):
-            return processes.supervise([sys.executable, "-c", ORPHANS, directory, how], cwd=directory)
+            return processes.supervise([sys.executable, "-c", ORPHANS, directory, how], cwd=directory, **options)
 
     def test_a_process_left_unobserved_in_the_command_session_keeps_a_failure_or_stop_uncertain(self):
         self.addCleanup(processes._stops.clear)
@@ -818,6 +818,17 @@ class ProcessTests(unittest.TestCase):
                 orphan = int((Path(directory) / "orphan").read_text())
                 self.assertIn(f"PID {orphan} (group {orphan}, session ", str(raised.exception))
                 self.assertIn("reservation retained", str(raised.exception))
+                self.assertIsInstance(raised.exception, processes.Unconfirmed)
+                self.assertFalse(raised.exception.timed_out)
+
+    def test_a_timeout_whose_cleanup_finds_a_process_left_keeps_its_reservation_and_says_it_timed_out(self):
+        # A gate the second Mac's full swap slowed past its limit, with no test failed, was sent back as failed
+        # (2026-11-15): the run is unmeasured, as a timeout is, though its reservation stays retained.
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(processes.Unconfirmed, "Timed out after") as raised:
+                self.orphaning(directory, "times-out", timeout=1, kill_after=0.5)
+            self.assertIn("reservation retained", str(raised.exception))
+            self.assertTrue(raised.exception.timed_out)
 
     def test_a_failed_command_whose_orphan_has_ended_keeps_its_status(self):
         with tempfile.TemporaryDirectory() as directory:

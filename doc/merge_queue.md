@@ -182,7 +182,13 @@ qk queue close --why "moving the queue's state" && {  # new entries are refused 
 `qk queue doctor` reads the queue's own records and says whether it is testing or stuck,
 and what would unstick it. It names a gate that has waited 15 minutes for admission on a
 Mac with spare CPU, and each holder there with its command, PID, hold time, CPU use and
-worktree. `qk queue placement` shows whether each build Mac could start a
+worktree. It also names each Mac, this one and the second Mac, that is short of memory: swap at
+least 80% full, or one process holding more than a quarter of physical memory. The finding lists
+the largest processes by resident memory, with PID, uptime and size, and says how the owner
+frees them: `sudo killall NAME` for a system daemon that launchd restarts (`fseventsd`, `mds`,
+`mds_stores`), otherwise quitting the process or restarting the Mac. The doctor stops nothing,
+since that takes the owner's password; `qk doctor` gives the same warning, and the Farm tab shows
+it on that Mac. `qk queue placement` shows whether each build Mac could start a
 gate now, without running one.
 
 `qk queue events` prints the queue's journal, one line for each change of its state. See

@@ -148,6 +148,10 @@ class Fixture(unittest.TestCase):
         load = patch.object(mq, "load_of", return_value=(3.0, 25.0, 75.0))
         self.load_of = load.start()
         self.addCleanup(load.stop)
+        # Each Mac's memory, read from no real Mac unless a test says otherwise (mq.memory_findings).
+        memory = patch.object(mq, "memory_findings", return_value=([], []))
+        self.memory_findings = memory.start()
+        self.addCleanup(memory.stop)
         # qk land runs no preflight lane before it queues unless a test says so (SpelledBeforeQueued, #283).
         unspelled = patch.object(mq, "preflight_before_queued")
         unspelled.start()

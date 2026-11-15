@@ -48,7 +48,8 @@ status` ([maintenance](maintenance.md#the-merge-queue), [#30](https://github.com
 A line of any other prefix is not read. A lane's timeout is a wall-clock
 backstop that a busy host can reach
 ([core-wait time](https://github.com/vocaro/vocaro-engineering/blob/main/guides/measurement.md#cpu-scheduling-and-core-wait-time)), and the log it cuts short
-counts nothing. A run that exits 3 is counted too, but a shortfall only prints, because the
+counts nothing. That holds when its cleanup cannot confirm that every process it used has ended:
+the run keeps its admission reservation for recovery, but exits 3, not 2. A run that exits 3 is counted too, but a shortfall only prints, because the
 unmeasured part may not have run at all. A run with arguments replaces the lane's last log and
 receipt like any other run.
 

@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+from . import __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_spelling_warning, project_checkout, \
@@ -93,7 +93,8 @@ def record(directory, receipt, work):
         receipt["exitStatus"] = result
     except BaseException as error:
         # A timeout is a wall-clock backstop that a busy host can reach, not a verdict on the work.
-        receipt["outcome"] = "unmeasured" if isinstance(error, processes.TimedOut) else "failed-or-interrupted"
+        receipt["outcome"] = "unmeasured" if isinstance(error, processes.TimedOut) or getattr(error, "timed_out", False) \
+            else "failed-or-interrupted"
         receipt["error"] = str(error)
         raise
     finally:
@@ -1130,6 +1131,13 @@ def perform(argv, report):
             # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
             hosts = fix_hosts(root, remote.compare_hosts())
             for check in extensions.DOCTOR: warnings += check(root, config)
+            # Each Mac short of memory, with what holds it (host_health); the second Mac's rides on its survey.
+            warnings += host_health.warnings((hosts.get("local") or {}).get("hostHealth") or offload_host.host_health(),
+                                             "this Mac")
+            if "remote" in hosts and "hostHealth" not in hosts["remote"]:
+                hosts.setdefault("unchecked", []).append(f"whether {hosts['host']} is short of memory, which its "
+                                                         "toolkit checkout did not report before it was updated")
+            elif "remote" in hosts: warnings += host_health.warnings(hosts["remote"]["hostHealth"], hosts["host"])
             test_lanes = lane_coverage.report(root, config)  # a warning at most, and never a failure (#289)
             warnings += lane_coverage.doctor_warnings(test_lanes)
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
@@ -1412,6 +1420,12 @@ def perform(argv, report):
         return lane_results.UNMEASURED
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"queuekeeper: {error}", file=sys.stderr)
+        # A timeout whose cleanup could not confirm every process ended keeps its reservation, and is still a
+        # backstop a busy host reached, not a verdict on the commit (processes.Unconfirmed).
+        if isinstance(error, processes.Unconfirmed) and error.timed_out:
+            print("queuekeeper: unmeasured: the lane reached its limit", file=sys.stderr)
+            report.explain(error, complete=False)
+            return lane_results.UNMEASURED
         report.explain(error)
         return 2
     finally:

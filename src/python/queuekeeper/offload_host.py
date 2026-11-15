@@ -1032,6 +1032,42 @@ def python_crash_reports(directory=None, now=None):
     return result
 
 
+# How many of a Mac's processes host_health names, largest by resident memory first.
+HEALTH_LARGEST = 5
+# What host_health lists every process with: no process's arguments, which a slow `ps ... args=` waits on.
+HEALTH_LISTING = ("ps", "-A", "-o", "pid=,rss=,etime=,comm=")
+# vm.swapusage's sizes, as `total = 32768.00M  used = 31744.00M  free = 1024.00M  (encrypted)`.
+SWAP_SIZE = re.compile(r"(total|used)\s*=\s*([\d.]+)([KMGT]?)")
+
+
+def swap_usage(text):
+    """(used, total) bytes in a vm.swapusage reading, or None for one that names neither."""
+    sizes = {name: float(number) * 1024 ** "BKMGT".index(unit or "B")
+             for name, number, unit in SWAP_SIZE.findall(text or "")}
+    return (int(sizes["used"]), int(sizes["total"])) if {"used", "total"} <= sizes.keys() else None
+
+
+def host_health():
+    """What `qk doctor` and the Farm tab judge a Mac's memory by (host_health.warnings): its physical memory
+    (memoryBytes), its swap used and total, None when unread, and its HEALTH_LARGEST largest processes by resident
+    memory, each with its PID, executable name, resident bytes and seconds since it started. It lists processes
+    without their arguments. On 2026-11-15 the second Mac's fseventsd held 34 of its 64 GB after 15 days and swap
+    was full, so a gate timed out with none of its tests failed; nothing named the process."""
+    memory = output(["sysctl", "-n", "hw.memsize"])
+    swap = swap_usage(output(["sysctl", "-n", "vm.swapusage"]))
+    reading = {"memoryBytes": int(memory) if memory and memory.isdigit() else None,
+               "swapUsedBytes": swap and swap[0], "swapTotalBytes": swap and swap[1], "largest": None}
+    listed = output(list(HEALTH_LISTING))
+    if listed is not None:
+        rows = [row for row in (line.split(None, 3) for line in listed.splitlines())
+                if len(row) == 4 and row[0].isdigit() and row[1].isdigit()]
+        rows.sort(key=lambda row: -int(row[1]))
+        reading["largest"] = [{"pid": int(pid), "name": Path(command).name, "residentBytes": int(rss) * 1024,
+                               "seconds": None if elapsed(etime) == float("inf") else elapsed(etime)}
+                              for pid, rss, etime, command in rows[:HEALTH_LARGEST]]
+    return reading
+
+
 def toolchain(developer_dir):
     """The Mac's identity with the Xcode at developer_dir, its default Xcode (`xcode-select -p`), the
     simulator runtimes the Xcode at developer_dir lists and its device record, which `qk doctor`
@@ -1047,7 +1083,7 @@ def toolchain(developer_dir):
         except (TypeError, ValueError, KeyError):
             pass
     return {**found, "defaultDeveloperDir": default, "defaultXcode": xcode(default), "runtimes": runtimes,
-            "deviceRecord": device_record(), "pythonCrashes": python_crash_reports()}
+            "deviceRecord": device_record(), "pythonCrashes": python_crash_reports(), "hostHealth": host_health()}
 
 
 def image_file(record):
@@ -3347,7 +3383,8 @@ def answer(request):
     if "toolchain" in request: return toolchain(request["toolchain"])
     if "keychain" in request: return keychain(request["keychain"])
     if "foreground" in request: return foreground()
-    if "pressure" in request: return pressure()
+    # The Farm tab asks for health beside pressure; the merge queue, which reads pressure between runs, does not.
+    if "pressure" in request: return {**pressure(), **({"health": host_health()} if request.get("health") else {})}
     if "capacity" in request:
         options = ({"before": request["requestStarted"]} if "requestStarted" in request else
                    {"before": time.time() - request["requestAge"]} if "requestAge" in request else {})

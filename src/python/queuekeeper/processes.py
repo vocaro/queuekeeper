@@ -214,6 +214,18 @@ class TimedOut(TimeoutError):
     """The run's timeout expired, and then the command and every observed descendant ended."""
 
 
+class Unconfirmed(RuntimeError):
+    """The command ended, or was ended, but not every process it was seen using is confirmed ended, so its
+    reservation is retained. timed_out says whether its timeout or quiet bound ended it: such a run is unmeasured,
+    as a TimedOut one is, not failed. On 2026-11-15 a gate the second Mac's full swap slowed past its limit, with
+    2235 tests passed and none failed, left one process its cleanup could not see end, and the queue sent the entry
+    back as failed."""
+
+    def __init__(self, message, timed_out=False):
+        super().__init__(message)
+        self.timed_out = timed_out
+
+
 class Canceled(TimedOut):
     """The caller canceled the run (supervise's cancel), and then the command and every observed descendant ended,
     as after a timeout: the merge queue throws away a gate stacked on a batch that did not land."""
@@ -528,6 +540,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                      else "Canceled" if canceled else f"Stalled: {stalled}" if stalled is not None
                      else f"Timed out after {timeout:g}s" if expired is not None
                      else f"{command[0]} exited with status {result}")
+            # Ended by its own timeout or quiet bound, a backstop a busy host can reach, not by a stop.
+            bounded = signum is None and not canceled and (stalled is not None or expired is not None)
             if result is not None and not live:
                 # Sampling cannot prove that a failed, stopped or timed-out command orphaned nothing
                 # between two samples, so its groups and sessions must hold nothing. A passing
@@ -541,10 +555,10 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                         closed.update(final_closures)
                     left = survivors(spaces, closed)
                 if left:
-                    raise RuntimeError(f"{cause}, but {len(left)} process(es) remain in process groups or "
+                    raise Unconfirmed(f"{cause}, but {len(left)} process(es) remain in process groups or "
                                        "sessions it was seen using: " + ", ".join(
                                            f"PID {pid} (group {group}, session {sid})" for pid, group, sid in left)
-                                       + "; reservation retained")
+                                       + "; reservation retained", bounded)
                 # Confirmed, so recovery has nothing of this command to check.
                 note(settled="stopped" if signum is not None else "stalled" if stalled is not None
                      else "timed-out" if expired is not None else "exited")
@@ -558,8 +572,8 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                                    "descendants ended")
                 return result
             if killed is not None and time.monotonic() - killed > KILL_WAIT:
-                raise RuntimeError(f"{cause}, but owned descendants have no confirmed terminal result; "
-                                   "reservation retained")
+                raise Unconfirmed(f"{cause}, but owned descendants have no confirmed terminal result; "
+                                  "reservation retained", bounded)
             if result is not None and expired is None and stopped is None:
                 if exited is None: exited = time.monotonic()
                 helpers = False

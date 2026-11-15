@@ -55,6 +55,7 @@ QK.panel("farm", {
         h("div", { class: "sub" + (found.screen === "locked" ? " warning" : "") },
           found.screen === "locked" ? "Screen locked: lanes that need an unlocked screen wait"
             : found.screen === "unlocked" ? "Screen unlocked" : "Screen state not read"),
+        found.health ? h("p", { class: "sub wrap warning" }, found.health) : null,
       ];
     }
     function host(found) {
