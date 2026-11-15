@@ -39,13 +39,13 @@
         !options.compact && found.why ? h("div", { class: "sub wrap" }, found.why, " ", log(found.log)) : null),
       h("span", { class: "muted" }, settled ? QK.ago(found.settled) : QK.since(found.submitted)));
   };
-  // An SVG element, set as QK.h sets an HTML one: its colors come from app.css by class, never from an attribute.
+  // An SVG element, set as QK.h sets an HTML one, with its children's arrays nested to any depth: its colors come from app.css by class, never from an attribute.
   QK.svg = function (tag, attributes, ...children) {
     const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
     for (const [name, value] of Object.entries(attributes || {})) {
       if (value !== null && value !== undefined && value !== false) element.setAttribute(name, value);
     }
-    for (const child of children.flat()) {
+    for (const child of children.flat(Infinity)) {
       if (child !== null && child !== undefined && child !== false) element.append(child instanceof Node ? child : document.createTextNode(String(child)));
     }
     return element;

@@ -10,6 +10,8 @@ ENTRY = ("id", "state", "subject", "note", "branch", "submitted", "settled", "la
 GATE = ("lane", "mac", "began", "waiting", "waitingSince", "stuck", "entries")
 # An entry that came back is Home's to mention for this long.
 NEWS = 3600
+# The busiest branch prefixes the flow map gives a node of their own; the others share one.
+AGENTS = 4
 
 
 def entry(found):
@@ -61,6 +63,49 @@ def detail(repository, query, state):
     return {"kind": "gate", "gate": gate(role, found), "round": current.get("round"), "entries": entries}
 
 
+def agent(branch):
+    """Whose entry this is, by its branch's prefix: claude/fix-it is claude's. A branch with no prefix is "other"."""
+    branch = str(branch or "")
+    return branch.split("/", 1)[0] if "/" in branch.strip("/") else "other"
+
+
+def macs():
+    """The farm's Macs as the flow map draws them, from the Farm panel's last reading: none without that panel or
+    before its first reading."""
+    from . import available, load
+    if "farm" not in available(): return []
+    farm = load("farm")
+    reading = farm.current()[0]
+    return [{"name": found.get("name"), "role": found.get("role"), "state": found.get("state"),
+             **{key: shown["slots"][key] for key in ("used", "most")}}
+            for found in (reading or {}).get("hosts", []) if found.get("state") != "notConfigured"
+            for shown in (farm.host(found),)]
+
+
+def flow(state, gates, now):
+    """What the Queue tab's flow map draws: who has entries in the queue, by branch prefix, busiest first; the Macs,
+    each with the roles of the round's gates that run on it; and the last entry to come back within NEWS, if one did."""
+    counts, current = {}, set((state.get("round") or {}).get("entries") or [])
+    for found in state.get("waiting") or []:
+        testing = found.get("id") in current or found.get("state") in ("testing", "passed")
+        one = counts.setdefault(agent(found.get("branch")), {"waiting": 0, "testing": 0})
+        one["testing" if testing else "waiting"] += 1
+    ranked = sorted(counts.items(), key=lambda item: (-sum(item[1].values()), item[0]))
+    agents = [{"name": name, **one} for name, one in ranked[:AGENTS]]
+    if ranked[AGENTS:]:
+        rest = [one for _, one in ranked[AGENTS:]]
+        agents.append({"name": f"{len(rest)} more", "waiting": sum(one["waiting"] for one in rest),
+                       "testing": sum(one["testing"] for one in rest), "more": True})
+    plain = lambda name: re.sub(r"^the ", "", str(name or "")).split(" (", 1)[0]
+    farm = [{**mac, "gates": [role for role, found in gates if found.get("mac") and plain(found["mac"]) == plain(mac["name"])]}
+            for mac in macs()]
+    back = next((found for found in reversed(state.get("recent") or []) if found.get("state") in ("failed", "conflict")
+                 and now - (found.get("settled") or 0) < NEWS), None)
+    return {"agents": agents, "macs": farm,
+            "back": {"agent": agent(back.get("branch")), "id": back.get("id"), "subject": back.get("subject"),
+                     "state": back.get("state"), "settled": back.get("settled")} if back else None}
+
+
 def data(repository, query):
     from . import load
     state = repository.snapshot()
@@ -74,7 +119,7 @@ def data(repository, query):
             if current.get("round") else None,
             "waiting": [entry(found) for found in state.get("waiting") or []],
             "recent": [entry(found) for found in reversed(state.get("recent") or [])],
-            "ungated": state.get("ungated") or []}
+            "ungated": state.get("ungated") or [], "flow": flow(state, gates, time.time())}
 
 
 def summary(repository):

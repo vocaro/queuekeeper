@@ -260,6 +260,30 @@ class Panels(Fixture):
                          (failed, "failed", "its gate failed", "round-gate.log"))
         self.assertNotIn(str(self.base), json.dumps(found))
 
+    def test_the_flow_map_groups_entries_by_branch_prefix_and_puts_each_gate_on_its_mac(self):
+        now = 1_800_000_000.0
+        waiting = [{"id": "a", "branch": "claude/one", "state": "testing"}, {"id": "b", "branch": "claude/two", "state": "queued"},
+                   {"id": "c", "branch": "codex/x", "state": "queued"}, {"id": "d", "branch": "plain", "state": "queued"},
+                   {"id": "e", "branch": "ann/x"}, {"id": "f", "branch": "bob/x"}, {"id": "g", "branch": "cy/x"}]
+        recent = [{"id": "old", "branch": "codex/y", "state": "failed", "settled": now - queue.NEWS - 1},
+                  {"id": "new", "branch": "zed/y", "state": "conflict", "subject": "Z", "settled": now - 60},
+                  {"id": "landed", "branch": "claude/z", "state": "landed", "settled": now - 10}]
+        state = {"waiting": waiting, "recent": recent, "round": {"entries": ["c"]}}
+        gates = [("batch", {"mac": "this Mac"}), ("stacked", {"mac": "the second Mac (build)"}), ("older half", {})]
+        self.assertEqual(queue.flow(state, gates, now)["macs"], [])  # before the farm's first reading
+        self.read_farm()
+        found = queue.flow(state, gates, now)
+        self.assertEqual(found["agents"], [
+            {"name": "claude", "waiting": 1, "testing": 1}, {"name": "ann", "waiting": 1, "testing": 0},
+            {"name": "bob", "waiting": 1, "testing": 0}, {"name": "codex", "waiting": 0, "testing": 1},
+            {"name": "2 more", "waiting": 2, "testing": 0, "more": True}])
+        self.assertEqual(found["macs"], [
+            {"name": "this Mac (desk)", "role": "here", "state": "observed", "used": 2, "most": 7, "gates": ["batch"]},
+            {"name": "second Mac (build)", "role": "second", "state": "unknown", "used": 0, "most": 0, "gates": ["stacked"]}])
+        self.assertEqual(found["back"], {"agent": "zed", "id": "new", "subject": "Z", "state": "conflict", "settled": now - 60})
+        self.assertEqual([queue.agent(branch) for branch in ("claude/a/b", "main", "/lead", None)], ["claude", "other", "other", "other"])
+        self.assertEqual(queue.data(self.one, {})["flow"]["agents"], [])
+
     def test_queue_includes_the_overview_and_history_includes_settled_changes(self):
         identifier = self.settle("human-readable", why="gate failed")
         found = queue.data(self.one, {})

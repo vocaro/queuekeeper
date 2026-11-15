@@ -90,6 +90,9 @@ PANELS = {
                        "log": ROUND + "-gate.log"},
                   ]},
         "waiting": WAITING, "recent": RECENT, "ungated": [],
+        "flow": {"agents": [{"name": "agent", "waiting": 1, "testing": 1}], "back": None,
+                 "macs": [{"name": "This Mac", "role": "here", "state": "observed", "used": 1, "most": 4, "gates": []},
+                          {"name": "studio.local", "role": "second", "state": "observed", "used": 2, "most": 4, "gates": ["batch"]}]},
     },
     "farm": {
         "readAt": ago(4), "error": None,

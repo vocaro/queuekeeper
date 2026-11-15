@@ -1,13 +1,15 @@
 :root {
   --bg: #f6f7f9; --card: #ffffff; --soft: #eff1f5; --text: #141821; --muted: #5f6877; --line: #dde1e8;
   --accent: #1f6fc2; --accent-bg: #e6f0fa; --good: #1a7f37; --good-bg: #e2f5e6; --warn: #8a5a00; --warn-bg: #fbf0d6;
-  --bad: #b3261e; --bad-bg: #fbe9e7; --mark: #d99a1c; --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --bad: #b3261e; --bad-bg: #fbe9e7; --mark: #d99a1c;
+  --p1: #7a5af5; --p2: #0e9384; --p3: #d4570b; --p4: #c11574; --p5: #4e5ba6; --mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0b0e15; --card: #121722; --soft: #1d2433; --text: #e9ecf2; --muted: #9aa3b5; --line: #2a3244;
     --accent: #7db7f2; --accent-bg: #17304d; --good: #7dea8a; --good-bg: #163a23; --warn: #f0c36a; --warn-bg: #3f3212;
     --bad: #f2a199; --bad-bg: #47201d; --mark: #e0a73a;
+    --p1: #a99bf8; --p2: #2ed3b7; --p3: #f7a35c; --p4: #f670c7; --p5: #8098f9;
   }
 }
 * { box-sizing: border-box; }
@@ -47,6 +49,34 @@ h3.label { margin-top: 12px; }
 .spark .line { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .spark .area { fill: currentColor; fill-opacity: 0.16; stroke: none; }
 .spark rect { fill: currentColor; fill-opacity: 0.5; } .spark rect.now { fill-opacity: 1; }
+/* The Queue tab's flow map. Agents take one of five hues by name, as the --p tokens give them. */
+.flow-map { overflow-x: auto; }
+.flow-map svg { display: block; width: 100%; min-width: 720px; height: auto; }
+.flow-map text { fill: var(--text); font-size: 12px; }
+.flow-map text.head { fill: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 0.07em; }
+.flow-map text.name { font-weight: 600; } .flow-map text.sub { fill: var(--muted); font-size: 11px; }
+.flow-map text.big { font-size: 28px; font-weight: 600; } .flow-map text.big.small { font-size: 20px; }
+.flow-map text.danger { fill: var(--bad); } .flow-map text.warning { fill: var(--warn); } .flow-map text.good { fill: var(--good); }
+.flow-map .node { fill: var(--soft); stroke: var(--line); }
+.flow-map .node.running { stroke: var(--accent); stroke-width: 1.5; }
+.flow-map .node.waiting { stroke: var(--mark); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.flow-map .node.idle { fill: none; stroke-dasharray: 5 4; }
+.flow-map .node.back { fill: var(--bad-bg); stroke: var(--bad); stroke-dasharray: 4 3; }
+.flow-map .node.held { stroke: var(--bad); stroke-width: 1.5; }
+.flow-map .node.main { fill: var(--good-bg); stroke: var(--good); }
+.flow-map a:hover .node, .flow-map a:focus-visible .node { stroke: var(--accent); stroke-width: 2; }
+.flow-map a:focus { outline: none; }
+.flow-map .cell { fill: none; stroke: var(--muted); stroke-dasharray: 2 2; } .flow-map .cell.held { fill: var(--accent); stroke: none; }
+.flow-map .edge { fill: none; stroke: var(--line); stroke-width: 1.75; }
+.flow-map .edge.live { stroke: var(--accent); stroke-opacity: 0.6; stroke-width: 2.25; }
+.flow-map .edge.land { stroke: var(--good); stroke-opacity: 0.7; stroke-dasharray: 5 4; }
+.flow-map .edge.back { stroke: var(--bad); stroke-opacity: 0.8; stroke-dasharray: 5 4; }
+.flow-map .moving { fill: var(--accent); }
+.flow-map .agent { fill: var(--muted); } .flow-map .agent.danger { fill: var(--bad); }
+.flow-map .p1 { color: var(--p1); } .flow-map .p2 { color: var(--p2); } .flow-map .p3 { color: var(--p3); }
+.flow-map .p4 { color: var(--p4); } .flow-map .p5 { color: var(--p5); }
+.flow-map .agent[class*=" p"], .flow-map .moving[class*=" p"] { fill: currentColor; }
+.flow-map .edge.submit.live[class*=" p"] { stroke: currentColor; }
 .rows { margin: 0; padding: 0; list-style: none; }
 .rows > li { display: grid; gap: 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); }
 .rows > li:first-child { border-top: 0; }
@@ -117,4 +147,5 @@ pre.log { margin: 0; background: var(--soft); border-radius: 8px; padding: 10px 
 }
 @media (prefers-reduced-motion: reduce) {
   .hero h1 .dot.active { animation: none; }
+  .flow-map .moving { display: none; }
 }
