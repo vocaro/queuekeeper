@@ -63,7 +63,10 @@ status and quotes the log's last error line in its summary and under `beforeTest
 stays 2. A command that never started, as when the system cannot start it or `python3` is given a
 file the checkout does not hold, exits 127 with `outcome` `not-started` and why under `notStarted`,
 and the queue blames no commit for it ([#108](https://github.com/vocaro/queuekeeper/issues/108);
-[maintenance](maintenance.md#the-merge-queue)).
+[maintenance](maintenance.md#the-merge-queue)). A `qk run` whose Queuekeeper could not start, because
+its plugins or one of the project's extensions did not load, exits 70 before it reaches the lane and
+writes no receipt, and the queue blames no commit for that either
+([#158](https://github.com/vocaro/queuekeeper/issues/158)).
 
 A run that failed or ended unmeasured, and whose log counts no test and names none, ends its summary
 with what its command last said, under `the last of its output:`: the log's last 5 lines that are not

@@ -123,6 +123,15 @@ BEFORE_TESTS = 4
 # not-started, and its notStarted say so too, which is what the merge queue reads, since a lane's own command may exit
 # 127 (vocaro/queuekeeper#108).
 NOT_STARTED = 127
+# The exit status of any qk command when Queuekeeper itself could not start: composing its checkout's plugins or
+# loading one of the project's extensions raised, before the command was read, so no lane's command ran (cli.main):
+# sysexits' EX_SOFTWARE. On 2026-11-15 the adapter three projects load as an extension moved to a commit that refused
+# the older Queuekeeper their queue workers ran, every lane ended in that traceback with exit 1, and the queue sent at
+# least nine entries back as failing "on this commit" (vocaro/queuekeeper#158). The line that begins TOOL_SAID says
+# why. A lane's own command may exit 70 too, so the merge queue also reads that the run left no receipt of the lane
+# (merge_queue.Worker.tool_unstarted).
+TOOL_NOT_STARTED = 70
+TOOL_SAID = "queuekeeper: could not start: "
 
 # A test the host left unmeasured skips (XCTest, unittest) or cancels itself (Swift Testing) with a
 # reason that begins "Unmeasured:", and swift test and xcodebuild still exit 0. unittest prints the

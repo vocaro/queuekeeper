@@ -14,6 +14,7 @@ Exit codes separate the cases an agent must treat differently:
 | 2 | Usage or configuration error |
 | 3 | Unmeasured |
 | 4 | Failed before any test started |
+| 70 | Queuekeeper itself could not start: its plugins or one of the project's extensions did not load, so nothing ran |
 | 75 | Busy, held, or the wait reached its limit. From `qk queue status --idle`, the queue is not idle |
 | 78 | A host is misconfigured |
 | 127 | A lane's command could not start |
@@ -249,6 +250,13 @@ which fixes the cause and runs `qk queue resume` itself. A hold is for the owner
 an agent cannot fix the cause, such as a refused SSH key. With the
 [notify feature](visibility.md#the-notify-feature) on, the owner is told of such a hold when it
 happens.
+
+A lane in which Queuekeeper itself could not start holds the queue at once, for a session, with every
+entry waiting and none sent back: `qk run` exited 70 and left no receipt of the lane, so no commit
+was tested. The reason quotes the error, names the Mac, and says to bring Queuekeeper and the folders
+the project's extensions load from to commits that work together
+([Maintenance](../guides/maintenance.md#the-merge-queue), *A lane Queuekeeper could not start for
+blames nobody*).
 
 ## Documentation changes
 

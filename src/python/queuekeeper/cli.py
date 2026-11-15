@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 
 from . import __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling
@@ -771,8 +772,11 @@ def main(argv=None):
     try:
         # The project's extensions first: they add commands, and what they add to a command's environment, such as
         # the host-local path XcodeGen expands before generating a project (#373), is read once they are loaded.
-        compose_checkout()
-        load_extensions(argv)
+        try:
+            compose_checkout()
+            load_extensions(argv)
+        except Exception as error:  # noqa: BLE001
+            return could_not_start(error)
         with patch_environment(extensions.command_environment()):
             status = perform(argv, report)
     except Exception as error:
@@ -780,6 +784,24 @@ def main(argv=None):
         raise
     report.finish(status)
     return status
+
+
+def could_not_start(error):
+    """Say that Queuekeeper could not start, after error's traceback, and return TOOL_NOT_STARTED, which the command
+    then exits with. Composing this checkout's plugins or loading one of the project's extensions raised error, before
+    any command was read: no lane ran and no commit was tested. That is a fault of the set this process was put
+    together from, this Queuekeeper and the folders the project's extensions load from, which need not be the
+    project's commit: on 2026-11-15 a sibling checkout's adapter refused the older Queuekeeper a queue worker ran,
+    each lane ended in the traceback alone with exit 1, as a failed test does, and the queue sent the entries back
+    (vocaro/queuekeeper#158). The status and the line tell the two apart."""
+    traceback.print_exception(error)
+    why = " ".join(f"{type(error).__name__}: {error}".split())
+    print(f"{lane_results.TOOL_SAID}{why}", file=sys.stderr)
+    print("queuekeeper: that is Queuekeeper or one of the project's extensions failing to load, before the command "
+          f"ran, so nothing ran and this says nothing of the project's commits (exit {lane_results.TOOL_NOT_STARTED}): "
+          f"Queuekeeper is {TOOLKIT_ROOT}, and the extensions load from the folders the project's queuekeeper.json "
+          "names; bring them to commits that work together", file=sys.stderr, flush=True)
+    return lane_results.TOOL_NOT_STARTED
 
 
 def hooks_path(root, config):

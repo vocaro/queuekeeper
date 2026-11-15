@@ -2830,6 +2830,7 @@ class Worker:
         self.alone = False  # whether this round's batch is one entry an option of qk land put on its own (choose)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
         self.failed_load = None  # load_words for that lane, or None (gate)
+        self.tooling = None  # why Queuekeeper itself could not start for that lane, or None (tool_unstarted)
         self.group_failed = []  # the lanes of the last group lane that did not pass (read_group)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
         self.added = None  # (entry, why) of the entry that adds the tests the last rerun passed alone, for blame (rerun)
@@ -3359,6 +3360,7 @@ class Worker:
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
         self.failed_dispatch = None
+        self.tooling = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
         for lane in lanes:
@@ -3384,6 +3386,8 @@ class Worker:
                     self.gate_ended(lane, round_name, status_, log)
                     if not status_: continue
                     self.failed_lane = lane
+                    # The check is Queuekeeper's own command, so its exit is Queuekeeper's and leaves no receipt.
+                    if status_ == lane_results.TOOL_NOT_STARTED: self.tooling = self.tool_said(log, False)
                     return status_, log
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
@@ -3458,6 +3462,7 @@ class Worker:
             self.gate_ended(lane, round_name, status_, log, ended - started)
             if status_:
                 self.failed_lane = lane
+                self.tooling = self.tool_unstarted(lane, began, status_, ran, log)
                 if status_ not in NO_VERDICT:
                     self.failed_load = loads.finish(self.ran_on)
                     if remote_failure:
@@ -3563,11 +3568,52 @@ class Worker:
         it where the project has no such lane (implicit_command): by the project's launcher, else by the toolkit."""
         return implicit_command(self.checkout, lane, self.toolkit_root())
 
+    def tool_unstarted(self, lane, began, status, ran, log):
+        """Why Queuekeeper itself could not start for lane, which began at began and exited status, or None. It
+        exited TOOL_NOT_STARTED, as cli.main does when composing its checkout or loading a project's extension raises
+        before any command is read, and the run left no receipt of the lane, which qk run writes for every lane whose
+        command it reaches: here, none in the lane's folder since began; on the second Mac, in ran, its dispatch's
+        folder, the work stage's exit with no receipt come back (offload_host returns one only when the run wrote it).
+        A lane whose own command exits 70 leaves its receipt, and stays a failure. Such a run tested no commit: on
+        2026-11-15 an adapter that three projects load from a shared sibling checkout refused the older Queuekeeper
+        their workers ran, and each lane's traceback sent an entry back (vocaro/queuekeeper#158)."""
+        if status != lane_results.TOOL_NOT_STARTED: return None
+        if ran is not None:
+            try: there = json.loads((ran / "source.json").read_text()).get("result")
+            except (OSError, ValueError, AttributeError): return None
+            if not isinstance(there, dict) or there.get("stage") != "work" or there.get("exitStatus") != status \
+                    or "receipt" in there:
+                return None
+        else:
+            with contextlib.suppress(OSError):
+                if (self.checkout / ".build/queuekeeper" / lane / "source.json").stat().st_mtime >= began: return None
+        return self.tool_said(log, ran is not None)
+
+    def tool_said(self, log, there):
+        """A hold's words for a lane that Queuekeeper could not start for, there on the second Mac, which the hold
+        names (mac), or on this Mac, where no receipt says so: the last line of log in which it says why
+        (lane_results.TOOL_SAID), cut as an unmeasured test's line is."""
+        try: said = [line for line in log.read_text(errors="replace").splitlines() if lane_results.TOOL_SAID in line]
+        except OSError: said = []
+        why = shortened(said[-1].partition(lane_results.TOOL_SAID)[2].strip()) if said else ""
+        return (f"Queuekeeper itself did not start {'there' if there else 'on this Mac'}, before "
+                f"the lane's command, with exit {lane_results.TOOL_NOT_STARTED}: " + (why or "its log says why"))
+
+    def start_fix(self):
+        """What a session does about the lane the last gate could not start (unstarted), in a hold's reason."""
+        if self.tooling:
+            return ("bring Queuekeeper and the folders the project's extensions load from to commits that work "
+                    "together on that Mac, as `qk queue resume` does for the worker's own Queuekeeper by starting one "
+                    "from the current checkout, or remove the entry whose commits changed what the project loads")
+        return "make the lane's command start, or remove the entry whose commits took away what it runs"
+
     def unstarted(self, result):
         """Why the lane at which the last gate stopped with result could not start, or None: qk run exited
         NOT_STARTED and its receipt since the lane began says not-started, with why under notStarted
         (lane_report.not_started). The dispatch's receipt holds the lane's own from the second Mac, as for
-        receipt_error. A lane's own command that exits 127 leaves no such receipt, and stays a failure."""
+        receipt_error. A lane's own command that exits 127 leaves no such receipt, and stays a failure. Or Queuekeeper
+        itself could not start for the lane (tool_unstarted, vocaro/queuekeeper#158)."""
+        if self.tooling and result == lane_results.TOOL_NOT_STARTED: return self.tooling
         if result != lane_results.NOT_STARTED or not self.lane_now: return None
         lane, began = self.lane_now[0], self.lane_now[1]
         ran = remote.dispatch(self.checkout, lane, began)[0]
@@ -4520,12 +4566,11 @@ class Worker:
             # Its command never ran, so it says nothing of the commits, and running it again would not start it
             # either: no entry is sent back or bisected, and a session makes the lane start (vocaro/queuekeeper#108).
             queue.mark(applied, QUEUED)
-            lane = runner.lane_now[0]
+            lane = runner.failed_lane
             self.say(f"{lane} could not start{runner.ran_where}: {unstarted}; no commit is blamed")
             queue.hold(worded(SESSION, f"{lane} could not start{runner.ran_where}: {unstarted}. Its command never ran, "
-                                       "so this says nothing of the batch's commits and none is sent back: make the "
-                                       "lane's command start, or remove the entry whose commits took away what it "
-                                       f"runs; see {log}"))
+                                       "so this says nothing of the batch's commits and none is sent back: "
+                                       f"{runner.start_fix()}; see {log}"))
             return NO_VERDICT_OUTCOME
         self.no_verdicts = self.locked_screens = 0
         if result:
@@ -5128,7 +5173,7 @@ class Beside(Worker):
         unstarted = self.unstarted(result)
         if unstarted:
             # Never ran, as no verdict did: the older half meets the same and holds (Worker.older, #108).
-            self.say(f"{self.lane_now[0]} could not start{self.ran_where}: {unstarted}; no commit is blamed: queued "
+            self.say(f"{self.failed_lane} could not start{self.ran_where}: {unstarted}; no commit is blamed: queued "
                      "again, behind the older half")
             self.queue.mark(self.newer, QUEUED)
             self.outcome = QUEUED

@@ -557,6 +557,28 @@ sent the entry back as failing "on this commit on top of origin/main", as apple-
 landing was when its checkout had no `scripts/qk` ([#108](https://github.com/vocaro/queuekeeper/issues/108)).
 A lane group's members are not told apart this way yet.
 
+**A lane Queuekeeper could not start for blames nobody.** Every `qk` command first composes its
+checkout's plugins and loads the project's extensions, some from folders beside the project that
+other projects share. When that raises, the command prints the traceback, then a line beginning
+`queuekeeper: could not start:` with the error, and exits 70 (`EX_SOFTWARE`) before it reads its
+arguments: no lane ran, and no commit was tested. The worker holds the queue at once for a session,
+as for a lane whose command could not start, with every entry waiting and none sent back or bisected.
+It reads more than the status, since a lane's own command may exit 70: the run must also have left no
+receipt of the lane, which `qk run` writes for every lane whose command it reaches. On this Mac that
+is no `source.json` in the lane's folder since the lane began; on the second Mac, the dispatch's
+work stage exited 70 and returned no receipt. The hold's reason quotes the error and names the Mac.
+The session brings Queuekeeper and the folders the extensions load from to commits that work
+together on that Mac, or removes the entry whose commits changed what the project loads, and resumes;
+`qk queue resume` starts a worker from the current checkout, which is often the whole repair. On
+2026-11-15, between 00:29 and 00:54, the shared vocaro-engineering checkout moved to a commit whose
+adapter refused the older Queuekeeper that EPUBLib's and BreezEPUB's workers ran. Every lane ended in
+that traceback with exit 1, as a failed test does, and the queues bisected their batches and sent at
+least nine entries back as failing "on this commit on top of origin/main"
+([#158](https://github.com/vocaro/queuekeeper/issues/158)). A lane run by a Queuekeeper from before
+this change still exits 1 there, and is still read as a failure. The worker does not test whether
+`origin/main` alone starts, so an entry whose own commits break an extension holds the queue too, until
+a session removes it.
+
 **A run with no verdict blames nobody.** Exit 3 (unmeasured), 69 (a worker that lost Local Network
 access, on which it exits instead of counting the run), 75 (no admission) and 78 (a misconfigured host) say nothing
 about the commits. The worker runs the lanes again, and holds the

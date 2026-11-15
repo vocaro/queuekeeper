@@ -89,7 +89,6 @@ class Landing(Fixture):
         self.assertEqual(worker.placed("gate", 0),
                          " on this Mac (the second Mac is loaded (load 719.0, at or above its HEAVY_LOAD_LIMIT=7.5))")
         self.assertEqual(worker.placed("gate", time.time() + 60), "")
-        worker.ran_on = "build-host"
         self.assertEqual(worker.placed("gate", 0), " on build-host")
         worker.ran_on = None
         receipt.write_text("{")
@@ -4288,6 +4287,127 @@ class UnprovisionedWhereTheGateRuns(Fixture):
         self.assertIn("3 required inputs missing", (checkout / ".build/queuekeeper/provision/run.log").read_text())
         self.assertNotIn("fail on this commit", held)
         self.assertNotIn("a shared host's configuration", held)
+
+
+class QueuekeeperThatCannotStart(Fixture):
+    """vocaro/queuekeeper#158: a lane in which Queuekeeper itself cannot start, as when a folder beside the project
+    that one of its extensions loads from moves to a commit this Queuekeeper cannot load, tested no commit: the queue
+    holds for a session with every entry waiting. On 2026-11-15 each such lane was a traceback with exit 1, and the
+    queue bisected and sent back at least nine entries."""
+
+    def setUp(self):
+        super().setUp()
+        # An extension in a folder beside the project, which every lane's qk loads as it is now, whatever the commit.
+        self.adapter = self.base / "adapter"
+        self.adapter.mkdir()
+        (self.adapter / "fixture_adapter.py").write_text(
+            "from pathlib import Path\n"
+            "if (Path(__file__).parent / 'moved').exists():\n"
+            "    raise RuntimeError('Queuekeeper at /worker   predates standalone plugin composition')\n"
+            "def register(): pass\n")
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["extensions"] = [{"module": "fixture_adapter", "path": str(self.adapter)}]
+        self.publish(config, "Load an extension from a folder beside the project")
+
+    def qk(self, *words):
+        return subprocess.run([sys.executable, "scripts/qk", *words], cwd=self.repo, capture_output=True, text=True)
+
+    def test_a_command_whose_extension_does_not_load_exits_70_and_says_so(self):
+        (self.adapter / "moved").touch()
+        ran = self.qk("run", "--here", "gate")
+        self.assertEqual(ran.returncode, mq.lane_results.TOOL_NOT_STARTED, ran.stderr)
+        self.assertIn("Traceback (most recent call last):", ran.stderr)
+        self.assertIn("queuekeeper: could not start: RuntimeError: Queuekeeper at /worker predates standalone plugin "
+                      "composition\n", ran.stderr)
+        self.assertIn("says nothing of the project's commits (exit 70)", ran.stderr)
+        self.assertEqual(self.gates(), 0)
+        self.assertFalse((self.repo / ".build/queuekeeper/gate/source.json").exists())
+
+    def test_the_queue_holds_and_blames_no_commit_and_the_entries_land_after_resume(self):
+        (self.adapter / "moved").touch()
+        self.commit("first", "first", content="a labeled point\n")
+        self.commit("second", "second", content="a labeled line\n")
+        ids = self.add("first", "second")
+        with patch("builtins.print"): self.work()
+        self.assertEqual(self.gates(), 0)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["queued", "queued"])
+        held = mq.Queue(self.repo).held()
+        self.assertIn("for a session, not the owner: spelling could not start: Queuekeeper itself did not start on "
+                      "this Mac, before the lane's command, with exit 70: RuntimeError: Queuekeeper at /worker "
+                      "predates standalone plugin composition. Its command never ran", held)
+        self.assertIn("says nothing of the batch's commits and none is sent back", held)
+        self.assertIn("bring Queuekeeper and the folders the project's extensions load from to commits that work "
+                      "together", held)
+        self.assertIn("qk queue resume", held)
+        self.assertNotIn("fail on this commit", held)
+        # The cause gone, a resume lands them: nothing was sent back to be added again.
+        (self.adapter / "moved").unlink()
+        mq.Queue(self.repo).hold_file.unlink()
+        with patch("builtins.print"): self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+        self.assertLessEqual({"first", "second"}, self.main_files())
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_lane_whose_own_command_exits_70_still_sends_the_commit_back(self):
+        # Negative control: the command ran, and qk run wrote the lane's receipt, so the status is the command's own.
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "-c", "import sys; sys.exit(70)"]}
+        self.publish(config, "Change the gate")
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with patch("builtins.print"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertIn("the queue's lanes fail on this commit", self.state(identifier)["why"])
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_failing_lane_with_the_extension_loaded_still_sends_the_commit_back(self):
+        self.commit("bad", "bad")
+        [identifier] = self.add("bad")
+        with patch("builtins.print"): self.work()
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertIn("the queue's lanes fail on this commit", self.state(identifier)["why"])
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_only_a_run_that_left_no_receipt_of_the_lane_is_queuekeepers_own(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.checkout = self.base / "checkout"
+        log = self.base / "round-gate.log"
+        log.write_text("Traceback (most recent call last):\nqueuekeeper: could not start: ModuleNotFoundError: No "
+                       "module named 'queuekeeper.apple'\n")
+        said = "before the lane's command, with exit 70: ModuleNotFoundError: No module named 'queuekeeper.apple'"
+        began = time.time()
+        receipt = worker.checkout / ".build/queuekeeper/gate/source.json"
+        receipt.parent.mkdir(parents=True)
+        # Here: no receipt, or one an earlier run left, and the lane's command never ran.
+        self.assertEqual(worker.tool_unstarted("gate", began, 70, None, log),
+                         f"Queuekeeper itself did not start on this Mac, {said}")
+        receipt.write_text("{}")
+        os.utime(receipt, (began - 60, began - 60))
+        self.assertIn("on this Mac", worker.tool_unstarted("gate", began, 70, None, log))
+        # A receipt written since the lane began is of a command that ran and exited 70 itself.
+        os.utime(receipt, (began + 1, began + 1))
+        self.assertIsNone(worker.tool_unstarted("gate", began, 70, None, log))
+        # Any other status is not Queuekeeper's.
+        os.utime(receipt, (began - 60, began - 60))
+        self.assertIsNone(worker.tool_unstarted("gate", began, 1, None, log))
+        # On the second Mac: the work stage's own exit, with no receipt of the lane come back.
+        ran = self.base / "dispatch"
+        ran.mkdir()
+        def there(**result): (ran / "source.json").write_text(json.dumps({"host": "build-host", "result": result}))
+        there(stage="work", exitStatus=70, stopped=False)
+        self.assertEqual(worker.tool_unstarted("gate", began, 70, ran, log),
+                         f"Queuekeeper itself did not start there, {said}")
+        there(stage="work", exitStatus=70, stopped=False, receipt={"outcome": "failed"})
+        self.assertIsNone(worker.tool_unstarted("gate", began, 70, ran, log))
+        there(stage="provision", exitStatus=70, stopped=False)
+        self.assertIsNone(worker.tool_unstarted("gate", began, 70, ran, log))
+        (ran / "source.json").unlink()
+        self.assertIsNone(worker.tool_unstarted("gate", began, 70, ran, log))
+        # The hold reads it only for that status.
+        worker.tooling = "why"
+        self.assertEqual(worker.unstarted(70), "why")
+        self.assertIsNone(worker.unstarted(1))
 
 
 class SpellingStoppedByRemoval(Fixture):
