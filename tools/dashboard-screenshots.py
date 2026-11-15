@@ -28,6 +28,7 @@ CHECKOUT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CHECKOUT / "src/python"))
 from queuekeeper.checkout import activate
 activate(Path(__file__).resolve().parents[1])
+from queuekeeper import health  # noqa: E402
 from queuekeeper_dashboard import panels, server  # noqa: E402
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -90,6 +91,16 @@ PANELS = {
                        "log": ROUND + "-gate.log"},
                   ]},
         "waiting": WAITING, "recent": RECENT, "ungated": [],
+        "health": {"verdict": "good", "level": health.OK, "label": "All good",
+                   "sentence": "Testing 1 entry and 1 waits behind it, the gate 4m in of its usual 6m; "
+                               "the last entry landed 9m ago, and both Macs have room.",
+                   "signs": [health.sign("progress", health.OK, "testing 1 entry, 1 waiting", "Testing 1, 1 waiting"),
+                             health.sign("pace", health.OK, "the last entry landed 9m ago", "Last landed 9m ago"),
+                             health.sign("macs", health.OK, "both have room", "Both have room"),
+                             health.sign("devices", health.OK, "1 of 1 connected"),
+                             health.sign("cameBack", health.OK, "none of the last 8 came back")],
+                   "forecast": {"waiting": 2, "clearsAt": ago(-540)}, "usualGateSeconds": 372, "findings": [],
+                   "exitStatus": health.HEALTHY},
         "flow": {"agents": [{"name": "agent", "waiting": 1, "testing": 1}], "back": None,
                  "macs": [{"name": "This Mac", "role": "here", "state": "observed", "used": 1, "most": 4, "gates": []},
                           {"name": "studio.local", "role": "second", "state": "observed", "used": 2, "most": 4, "gates": ["batch"]}]},

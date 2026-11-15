@@ -290,6 +290,13 @@ class Panels(Fixture):
         found = queue.data(self.one, {})
         self.assertEqual(found["overview"]["counts"]["cameBack"], 1)
         self.assertEqual(history.data(self.one, {})["recent"][0]["id"], identifier)
+        # The queue's health is `qk queue health`'s verdict, and before the farm's first reading the Macs are unknown,
+        # never well (queuekeeper.health).
+        with patch.dict(farm.STATE, {"detail": {}, "devices": None}):
+            verdict = queue.data(self.one, {})["health"]
+        self.assertEqual([sign["name"] for sign in verdict["signs"]], ["progress", "pace", "macs", "devices", "cameBack"])
+        self.assertEqual(verdict["signs"][2]["level"], "unknown")
+        self.assertNotIn(verdict["verdict"], ("good", "quiet"))
 
 
     def test_the_queue_panels_line_on_home_is_what_needs_the_owner(self):

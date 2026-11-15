@@ -137,10 +137,33 @@ QK.panel("queue", {
     const activeIds = new Set((round ? round.entries : []).concat(round ? round.gates.flatMap(gate => gate.entries || []) : []));
     const active = data.waiting.filter(entry => activeIds.has(entry.id) || ["testing", "passed"].includes(entry.state));
     const pending = data.waiting.filter(entry => !active.includes(entry));
+    // Whether the queue is healthy, as `qk queue health` says it, then what it is doing, its forecast and its signs.
+    function health(found) {
+      const glyph = { ok: "✓", warning: "!", danger: "✕", unknown: "?", idle: "–" };
+      const clock = at => new Date(at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const gates = round ? round.gates.filter(one => typeof one.began === "number").map(one => one.began) : [];
+      const start = gates.length ? Math.min(...gates) : null, now = Date.now() / 1000, cast = found.forecast;
+      const share = cast && start && cast.clearsAt > start ? Math.min(100, Math.max(2, 100 * (now - start) / (cast.clearsAt - start))) : null;
+      return [
+        h("div", { class: "status" },
+          h("span", { class: "chip " + found.level }, h("span", { class: "dot" }), found.label),
+          h("span", { class: "sub wrap" }, overview.headline + ". " + overview.detail)),
+        h("p", { class: "verdict wrap" }, found.sentence),
+        cast ? h("div", { class: "forecast" },
+          h("span", { class: "sub" }, "Forecast"),
+          h("div", { class: "bar" }, share === null ? null : h("i", { class: found.level === "warning" ? "over" : null, width: Math.round(share) + "%" })),
+          h("span", { class: "sub" }, (found.level === "warning" ? "Clears around " : "Clears about ") + clock(cast.clearsAt))) : null,
+        h("div", { class: "signs" }, found.signs.map(one =>
+          h("a", { class: "sign " + one.level, href: QK.href(context.repository, one.panel), title: one.text },
+            h("span", { class: "glyph", "aria-label": one.level }, glyph[one.level]),
+            h("b", null, one.title), h("span", { class: "sub" }, one.short || one.text)))),
+      ];
+    }
     QK.fill(element,
       h("div", { class: "card hero" },
-        h("h1", null, h("span", { class: "dot " + overview.level }), overview.headline),
-        h("p", { class: "wrap" }, overview.detail),
+        data.health ? health(data.health) : [
+          h("h1", null, h("span", { class: "dot " + overview.level }), overview.headline),
+          h("p", { class: "wrap" }, overview.detail)],
         QK.overview(overview.counts, overview.trend)),
       overview.lines.length ? h("div", { class: "card" }, h("ul", { class: "rows lines" }, overview.lines.map(line =>
         h("li", null, h("a", { class: "row", href: QK.href(context.repository, line.panel === "queue" && line.title === "Came back" ? "history" : line.panel) },

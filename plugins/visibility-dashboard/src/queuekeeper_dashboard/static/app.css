@@ -1,14 +1,14 @@
 :root {
   --bg: #f6f7f9; --card: #ffffff; --soft: #eff1f5; --text: #141821; --muted: #5f6877; --line: #dde1e8;
   --accent: #1f6fc2; --accent-bg: #e6f0fa; --good: #1a7f37; --good-bg: #e2f5e6; --warn: #8a5a00; --warn-bg: #fbf0d6;
-  --bad: #b3261e; --bad-bg: #fbe9e7; --mark: #d99a1c;
+  --bad: #b3261e; --bad-bg: #fbe9e7; --mark: #d99a1c; --note: #6b4fbb; --note-bg: #f1edfb;
   --p1: #7a5af5; --p2: #0e9384; --p3: #d4570b; --p4: #c11574; --p5: #4e5ba6; --mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0b0e15; --card: #121722; --soft: #1d2433; --text: #e9ecf2; --muted: #9aa3b5; --line: #2a3244;
     --accent: #7db7f2; --accent-bg: #17304d; --good: #7dea8a; --good-bg: #163a23; --warn: #f0c36a; --warn-bg: #3f3212;
-    --bad: #f2a199; --bad-bg: #47201d; --mark: #e0a73a;
+    --bad: #f2a199; --bad-bg: #47201d; --mark: #e0a73a; --note: #c4b2f5; --note-bg: #272040;
     --p1: #a99bf8; --p2: #2ed3b7; --p3: #f7a35c; --p4: #f670c7; --p5: #8098f9;
   }
 }
@@ -38,6 +38,27 @@ a { color: var(--accent); }
 /* The hero's dot pulses while the queue is at work, so a glance tells moving from idle. */
 .hero h1 .dot.active { animation: beacon 2s ease-out infinite; }
 @keyframes beacon { 0% { box-shadow: 0 0 0 0 var(--good); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
+/* The queue's health (qk queue health): a chip with the verdict, a sentence, a forecast and five signs. */
+.hero .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 7px; font-size: var(--text-small); font-weight: 600; padding: 2px 10px 2px 8px; border-radius: 999px; background: var(--soft); color: var(--muted); }
+.chip .dot { width: 9px; height: 9px; background: currentColor; }
+.chip.ok { background: var(--good-bg); color: var(--good); } .chip.warning { background: var(--warn-bg); color: var(--warn); }
+.chip.danger { background: var(--bad-bg); color: var(--bad); } .chip.unknown { background: var(--note-bg); color: var(--note); }
+.chip.ok .dot { animation: beacon 2s ease-out infinite; }
+.hero p.verdict { margin: 12px 0 0; color: var(--text); font-size: 1.25rem; line-height: 1.4; font-weight: 500; max-width: 62ch; }
+.forecast { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.forecast .bar { margin: 0; }
+.forecast .bar i { background: var(--accent); } .forecast .bar i.over { background: var(--mark); }
+.signs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 8px; margin-top: 14px; }
+.sign { display: grid; grid-template-columns: auto 1fr; gap: 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--soft); color: inherit; text-decoration: none; min-width: 0; }
+.sign:hover { box-shadow: inset 0 0 0 1px var(--line); }
+.sign .glyph { grid-row: span 2; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; margin-top: 2px; background: var(--card); color: var(--muted); }
+.sign b { font-size: var(--text-small); font-weight: 600; }
+.sign .sub { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.sign.ok .glyph { background: var(--good-bg); color: var(--good); }
+.sign.warning .glyph { background: var(--warn-bg); color: var(--warn); } .sign.warning { box-shadow: inset 0 0 0 1px var(--mark); }
+.sign.danger .glyph { background: var(--bad-bg); color: var(--bad); } .sign.danger { box-shadow: inset 0 0 0 1px var(--bad); }
+.sign.unknown .glyph { background: var(--note-bg); color: var(--note); } .sign.unknown { box-shadow: inset 0 0 0 1px var(--note); }
 .numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 16px; }
 .number { background: var(--soft); border-radius: 8px; padding: 12px 12px 8px; display: flex; flex-direction: column; min-width: 0; }
 .number b { display: block; font-size: var(--text-number); font-weight: 600; line-height: 1.2; }

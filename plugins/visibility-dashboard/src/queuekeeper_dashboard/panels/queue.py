@@ -3,7 +3,10 @@ import json
 from pathlib import Path
 import re
 import stat
+import threading
 import time
+
+from queuekeeper import health, lane_wait, merge_queue, remote
 
 TITLE, ORDER = "Queue", 10
 ENTRY = ("id", "state", "subject", "note", "branch", "submitted", "settled", "landedAs", "why", "front", "noGate")
@@ -106,6 +109,42 @@ def flow(state, gates, now):
                      "state": back.get("state"), "settled": back.get("settled")} if back else None}
 
 
+DOCTORED = 60.0  # seconds doctor's findings serve the verdict before they are read again, in a thread of their own
+DOCTOR, DOCTOR_LOCK = {}, threading.Lock()
+
+
+def findings(repository):
+    """doctor's findings for repository's queue (merge_queue.diagnose), as last read; None before the first reading.
+    Reading them reads git and the gate logs, so it runs in a thread, at most every DOCTORED seconds."""
+    def read():
+        try: found = merge_queue.diagnose(repository.root)[0]
+        except Exception: found = None  # noqa: BLE001 - the verdict then goes without them
+        with DOCTOR_LOCK: DOCTOR[repository.root] = {"findings": found, "at": time.time(), "busy": False}
+    with DOCTOR_LOCK:
+        kept = DOCTOR.setdefault(repository.root, {"findings": None, "at": 0.0, "busy": False})
+        if not kept["busy"] and time.time() - kept["at"] > DOCTORED:
+            kept["busy"] = True
+            threading.Thread(target=read, daemon=True).start()
+        return kept["findings"]
+
+
+def health_of(repository, state):
+    """The queue's health (queuekeeper.health), judged from the Farm panel's last readings of the Macs and devices,
+    which it keeps fresh, and doctor's last findings: the same verdict as `qk queue health`, without asking a Mac."""
+    from . import available, load
+    readings = record = None
+    if "farm" in available():
+        farm = load("farm")
+        at = farm.current()[1]
+        with farm.LOCK: detail, record = dict(farm.STATE.get("detail") or {}), farm.STATE.get("devices")
+        if detail:
+            readings = [{"name": lane_wait.HERE, "reading": detail.get("here"), "readAt": at}]
+            host = remote.configured()
+            if host:
+                readings.append({"name": lane_wait.second_mac(host), "reading": detail.get("second"), "readAt": at})
+    return health.assess(state, repository.events(), readings=readings, record=record, findings=findings(repository))
+
+
 def data(repository, query):
     from . import load
     state = repository.snapshot()
@@ -113,7 +152,7 @@ def data(repository, query):
     order = {"batch": 0, "older half": 1, "newer half": 2, "stacked": 3}
     gates = sorted((current.get("gates") or {}).items(), key=lambda item: (order.get(item[0], 9), item[0]))
     return {**({"detail": detail(repository, query, state)} if query.get("entry") or query.get("gate") else {}),
-            "overview": load("home").data(repository, query), "worker": bool(state.get("worker")), "held": state.get("held"),
+            "overview": load("home").data(repository, query), "health": health_of(repository, state), "worker": bool(state.get("worker")), "held": state.get("held"),
             "round": {"name": current.get("round"), "base": current.get("base"), "entries": current.get("entries") or [],
                       "bisect": current.get("bisect"), "gates": [gate(role, found) for role, found in gates]}
             if current.get("round") else None,

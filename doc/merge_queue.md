@@ -191,6 +191,22 @@ since that takes the owner's password; `qk doctor` gives the same warning, and t
 it on that Mac. `qk queue placement` shows whether each build Mac could start a
 gate now, without running one.
 
+`qk queue health` says in one sentence whether the queue is healthy, and when the entries
+waiting should land. It judges five signs:
+
+- **Progress**: each running gate against the median of the gate's last 20 passing runs, and
+  whether its log is still growing.
+- **Pace**: how long since an entry last landed.
+- **Macs**: whether each Mac answers now and has the memory to work.
+- **Devices**: whether a device a gate waits for is connected.
+- **Came back**: how many of the last six entries came back.
+
+It also counts what `qk queue doctor` finds. A sign whose reading is missing, failed or more than
+90 seconds old is unknown, never healthy. When nothing shows a problem but a sign is unknown,
+the verdict is that health can't be determined, and why. It exits 0 when the queue is healthy or
+quiet, 1 when it needs attention and 3 when it can't tell. The dashboard's Queue tab shows the
+same verdict.
+
 `qk queue events` prints the queue's journal, one line for each change of its state. See
 [Visibility](visibility.md).
 

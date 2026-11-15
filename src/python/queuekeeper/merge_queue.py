@@ -5723,7 +5723,12 @@ def add_arguments(parser):
                                       "such as gates that ran nothing, and say what each means and what heals it; it "
                                       "changes nothing: 0 healthy, 1 with findings")
     doctoring.add_argument("--json", action="store_true")
-    placing = operations.add_parser("placement", help="probe current host capacity for a gate lane without queuing it")
+    healthy = operations.add_parser("health", help="say in one sentence whether the queue is healthy, by its progress, "
+                                    "its pace, its Macs, its devices and what came back, and when the entries waiting "
+                                    "should land; a sign it cannot read is unknown, never healthy: 0 healthy or quiet, "
+                                    "1 needs attention, 3 cannot tell")
+    healthy.add_argument("--json", action="store_true")
+    placing =operations.add_parser("placement", help="probe current host capacity for a gate lane without queuing it")
     placing.add_argument("lane", nargs="?", help="lane on origin/main (default: the first configured gate lane)")
     placing.add_argument("--json", action="store_true")
     following = operations.add_parser("wait", help="follow an entry to its result, or several, such as the entries an "
@@ -5797,6 +5802,9 @@ def main(root, args):
         return 0
     if args.operation == "status": return status(root, args.json, idle=args.idle)
     if args.operation == "doctor": return doctor(root, args.json)
+    if args.operation == "health":
+        from . import health
+        return health.main(root, args.json)
     if args.operation == "placement": return placement(root, args.lane, args.json)
     if args.operation == "wait":
         return wait(root, args.id[0], args.limit) if len(args.id) == 1 else wait_for(root, args.id, args.limit)

@@ -26,7 +26,7 @@ Exit codes separate the cases an agent must treat differently:
   with no test counted or named also quotes the last lines of its command's output.
 - **Refusals** say what did not run and the command to run next.
 - **JSON** is available from `land`, `queue add`, `queue wait`, `queue result`, `queue status`,
-  `queue logs`, `queue doctor`, `queue placement`, `queue events`, `admissions now` and `doctor`.
+  `queue logs`, `queue doctor`, `queue health`, `queue placement`, `queue events`, `admissions now` and `doctor`.
 - **Nothing prompts.** Commands are meant to run in the background and be followed to their result.
 - **`qk queue status --idle` answers by exit status** whether the queue is idle, for a script that
   must not end a running gate, such as one that removes the queue's login agent
