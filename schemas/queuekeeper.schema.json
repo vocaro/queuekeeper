@@ -108,7 +108,8 @@
                 "stall",
                 "unity",
                 "chips",
-                "arguments"
+                "arguments",
+                "idioms"
               ]
             }
           },
@@ -274,6 +275,11 @@
           "wholeHost": {
             "description": "A heavy lane that is a Mac's work, such as a gate that runs the project's suites side by side: it takes every guaranteed slot of the Mac it runs on, so a second such lane never runs beside it there, and qk run sends it to the Mac that has them all free, while a lighter heavy lane still shares. A lane group that runs it needs wholeHost too, or an exclusive resource, which holds the host already (guides/shared-host.md, Which Mac runs a lane)",
             "type": "boolean"
+          },
+          "idioms": {
+            "description": "Why the lane runs its whole selection on an iPhone and an iPad simulator: that every class it selects depends on the idiom, and where the project classifies them. Without it, qk doctor warns of a lane whose command names both with --device, outside release.lanes (guides/lanes.md, One selection on two idioms)",
+            "type": "string",
+            "minLength": 1
           },
           "devices": {
             "description": "The device-record entries, such as iPhone, that a lane's script uses when its command is not qk device-pass, whose --device options say so: the lane waits for admission only until the last start that can finish within the window the session holds them for (guides/devices.md, The device pass). It needs an admitted lane",

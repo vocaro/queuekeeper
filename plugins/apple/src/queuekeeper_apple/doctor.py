@@ -71,8 +71,41 @@ def default_simulators(config):
             "Reserved simulator pool)"]
 
 
+TEST_DIMENSIONS = "apple-engineering's guides/app-testing.md, Test dimensions and the snapshot layer"
+
+
+def idioms(command):
+    """The idioms of the simulator types a command names with --device: iPhone, iPad or both. A device pass's
+    --device names an entry of the device record, a physical device, so it has none here."""
+    if "device-pass" in command: return set()
+    named = [word.split("=", 1)[1] if word.startswith("--device=") else command[index + 1]
+             for index, word in enumerate(command)
+             if word.startswith("--device=") or (word == "--device" and index + 1 < len(command))]
+    return {idiom for name in named for idiom in ("iPhone", "iPad") if name.startswith(idiom)}
+
+
+def idiom_warnings(config):
+    """A warning of the lanes whose one command names an iPhone and an iPad simulator type, so that it runs one
+    selection on both: a test whose result depends on no idiom then runs twice (vocaro/queuekeeper#105). Only the
+    lane's own words are read. A project's script that picks its devices itself is not seen, and one lane for each
+    idiom is the project's split, not this. A lane of release.lanes, or of a group there, runs every class on
+    every simulator as the control for platform divergence, and a lane whose "idioms" says why its whole
+    selection depends on the idiom has said so."""
+    lanes = config.get("lanes", {})
+    release = {member for name in config.get("release", {}).get("lanes", [])
+               for member in [name, *lanes.get(name, {}).get("parallel", [])]}
+    found = sorted(name for name, lane in lanes.items() if "command" in lane and name not in release
+                   and "idioms" not in lane and len(idioms(lane["command"])) > 1)
+    if not found: return []
+    return [f"{len(found)} lane(s) run one selection on an iPhone and an iPad simulator, so each test whose result "
+            f"does not depend on the idiom runs twice: {', '.join(found)}; run those tests once, on the Mac where "
+            "the code allows it, and on each simulator only the classes that depend on its idiom, or say in the "
+            "lane's \"idioms\" why its whole selection depends on the idiom; a lane in release.lanes, the control "
+            f"for platform divergence, is not counted ({TEST_DIMENSIONS})"]
+
+
 def simulator_warnings(root, config):
-    return default_simulators(config)
+    return default_simulators(config) + idiom_warnings(config)
 
 
 def required_commands(config):

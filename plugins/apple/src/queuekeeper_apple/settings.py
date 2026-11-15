@@ -88,6 +88,14 @@ class DeviceMinutes(extensions.LaneKey):
             raise ValueError(f"{name}.deviceRunMinutes needs an admitted device lane")
 
 
+class Idioms(extensions.LaneKey):
+    """A lane's "idioms": why it runs its whole selection on an iPhone and an iPad simulator, which `qk doctor`
+    warns of otherwise (doctor.idiom_warnings). It changes nothing in the lane's run."""
+    def check(self, name, lane):
+        if not isinstance(lane["idioms"], str) or not lane["idioms"].strip():
+            raise ValueError(f"{name}.idioms must say why the lane's whole selection depends on the idiom")
+
+
 def simulator_pool(value):
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError("simulatorPool must be a nonempty name, such as the project's")
@@ -95,4 +103,4 @@ def simulator_pool(value):
 
 def register():
     extensions.CONFIG_KEYS.update(app=app, simulatorPool=simulator_pool)
-    extensions.LANE_KEYS.update(devices=DeviceKeys(), deviceRunMinutes=DeviceMinutes())
+    extensions.LANE_KEYS.update(devices=DeviceKeys(), deviceRunMinutes=DeviceMinutes(), idioms=Idioms())
