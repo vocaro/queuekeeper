@@ -3796,17 +3796,50 @@ def running_from(checkout, seconds, listed=listing, apart=()):
     return found, None
 
 
-def defer_devices(kit, mac, command=()):
+# The status with which the device setup command says that the record itself refuses (Devices.remote_setup).
+SETUP_REFUSED = 2
+
+
+def missing_module(command, sources):
+    """The module a `-m MODULE` command names when none of sources holds it, or None."""
+    if len(command) < 2 or command[0] != "-m": return None
+    parts = command[1].split(".")
+    for source in sources:
+        base = Path(source).joinpath(*parts)
+        if base.with_name(base.name + ".py").is_file() or (base / "__main__.py").is_file(): return None
+    return command[1]
+
+
+def defer_devices(kit, mac, command=(), toolkit=None):
     """Make this Mac's device record defer physical devices to mac's, the sending Mac's.
 
     A paired iPhone or iPad is reachable from both Macs, so it is reserved in one record only;
     this one then refuses to reserve it. A record that defers them to another Mac, or holds one,
-    is a configuration problem for the owner, so the work does not start."""
+    is a configuration problem for the owner, so the work does not start.
+
+    The command is the sending Mac's, and runs in the toolkit it sent (toolkit, the plan's), another version
+    when a checkout that is behind sends origin/main (remote.followed). A toolkit without the command's module,
+    or a command that fails otherwise than by the record's refusal, is no finding about the record, and the
+    refusal says so: a sender one landing before the plugins left the core ran `-m queuekeeper.apple.devices`
+    in a toolkit that held queuekeeper_apple.devices, and its refusal sent the owner to a record that nothing
+    had read (vocaro/queuekeeper#155)."""
     if not command: return
     manifest = kit / "queuekeeper-workspace.json"
     sources = [kit / "src/python"]
     if manifest.is_file():
         sources.extend(kit / item["source"] for item in json.loads(manifest.read_text()).values())
+    spelled = shlex.join(["python3", *command])
+    absent = missing_module(command, sources)
+    if absent:
+        sent = f" at {toolkit['commit'][:12]}" if toolkit else ""
+        if toolkit and toolkit.get("checkoutHead"):
+            sent += f", origin/main's, from a checkout at {toolkit['checkoutHead'][:12]}"
+        raise Refusal(f"the toolkit sent{sent} has no module {absent}, which the sending Mac's device setup runs "
+                      f"(`{spelled}`): the sending Mac's Queuekeeper and the toolkit it sent are different versions, "
+                      "and no device record was read or changed",
+                      "bring the sending Mac's Queuekeeper checkout to the toolkit it sends, which it follows once "
+                      "nothing runs from it (guides/maintenance.md, The shared checkout follows each toolkit "
+                      "landing), and send the work again")
     try:
         deferred = subprocess.run([sys.executable, *command], capture_output=True,
                                   text=True, env={**os.environ, "PYTHONPATH": os.pathsep.join(map(str, sources)), **NO_BYTECODE},
@@ -3815,6 +3848,11 @@ def defer_devices(kit, mac, command=()):
         deferred = subprocess.CompletedProcess([], 1, "", "it did not finish in 60s")
     if deferred.returncode:
         problem = deferred.stderr.strip().splitlines()[-1:] or [f"exit {deferred.returncode}"]
+        if deferred.returncode != SETUP_REFUSED:
+            raise Refusal(f"its device setup (`{spelled}`) failed with status {deferred.returncode}, which is not "
+                          f"its device record's refusal: {problem[0]}",
+                          "repair what that error names in the toolkit sent or on the second Mac; nothing here says "
+                          "that its device record is misconfigured")
         raise Refusal(f"its device record cannot defer physical devices to {mac}: {problem[0]}",
                       "decide which Mac's record holds physical devices and resolve that in the second Mac's record "
                       "(guides/shared-host.md, Physical devices and the second Mac)")
@@ -4094,7 +4132,7 @@ def main(plan):
         environment = {**os.environ, "QUEUEKEEPER_ROOT": str(kit), **NO_BYTECODE}
         if "requestAge" in plan:
             environment["QUEUEKEEPER_ADMISSION_REQUEST_STARTED"] = str(result["requestStarted"])
-        if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"], plan.get("deviceSetup", []))
+        if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"], plan.get("deviceSetup", []), toolkit)
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
         if plan.get("lease"): environment["QUEUEKEEPER_DEVICE_LEASE"] = json.dumps(plan["lease"])
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]
