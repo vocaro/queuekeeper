@@ -627,8 +627,8 @@ def admit(root, args, config=None, *, device_window=None):
                     if provisioned: return provisioned
                 # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
                 with extensions.around_run([command], directory):
-                    status = processes.supervise(command, cwd=directory, env=variables, on_stop=admission.interrupted,
-                                                 timeout=args.time_limit,
+                    status = processes.supervise(here_command(command), cwd=directory, env=variables,
+                                                 on_stop=admission.interrupted, timeout=args.time_limit,
                                                  kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
                                                  else processes.KILL_AFTER)
                     status = alerts.judged(status) if alerts is not None else status
@@ -673,6 +673,22 @@ def runner_command(root, words):
     return ["python3", str(TOOLKIT_ROOT / "bin/qk"), "--project", os.path.relpath(root), *words]
 
 
+# The command of the runner that admitted_run is running again, while admit has it: the one command whose python3
+# this Mac replaces (here_command).
+RUN_AGAIN = None
+
+
+def here_command(command):
+    """command as this Mac runs it. A runner's command to run it again (runner_command) names python3 for the second
+    Mac, whose PATH finds a supported one. On this Mac that name can find an older one: on 2026-11-14 Python 3.14,
+    started by its path, ran `scripts/qk unittest`, whose admitted child was Xcode's Python 3.9 and exited before it
+    collected a test, so the run was unmeasured (vocaro/queuekeeper#152). Here that command runs under the
+    interpreter that runs this process, which has started Queuekeeper. Every other command, such as one the caller
+    wrote after `qk admit --`, runs as written, and so does what goes to the second Mac."""
+    if RUN_AGAIN is not None and command == RUN_AGAIN and sys.executable: return [sys.executable, *command[1:]]
+    return command
+
+
 def admitted_runner(root, argv, first):
     """Run the runner argv names, from first, under a heavy-work admission, and return its status. In a project it
     runs as `qk admit -- COMMAND` runs any command: on whichever Mac has spare capacity for it, the second Mac
@@ -697,7 +713,11 @@ def admitted_runner(root, argv, first):
 
 def admitted_run(root, argv, first):
     words = argv[first:]
-    if (root / CONFIG_FILE).is_file(): return main([*argv[:first], "admit", "--", *runner_command(root, words)])
+    if (root / CONFIG_FILE).is_file():
+        global RUN_AGAIN
+        previous, RUN_AGAIN = RUN_AGAIN, runner_command(root, words)
+        try: return main([*argv[:first], "admit", "--", *RUN_AGAIN])
+        finally: RUN_AGAIN = previous
     label = " ".join(["qk", *words])
     try:
         with resources.Admission(label): return main(argv)

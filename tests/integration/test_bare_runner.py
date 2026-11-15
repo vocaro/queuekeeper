@@ -141,6 +141,20 @@ class CommandSent(Folder):
         main.assert_called_once_with(["--project", str(self.root), "admit", "--", "python3",
                                       str(cli.TOOLKIT_ROOT / "bin/qk"), "--project", ".", "unittest", "-s", "tests"])
 
+    def test_only_the_runner_run_again_changes_its_python3_on_this_mac(self):
+        self.project()
+        again = cli.runner_command(self.root, ["unittest", "-s", "tests"])
+        self.assertEqual(cli.here_command(again), again)
+        def main(argv):
+            command = argv[argv.index("--") + 1:]
+            self.assertEqual(command, again)
+            self.assertEqual(cli.here_command(command), [sys.executable, *again[1:]])
+            self.assertEqual(cli.here_command(["python3", "build.py"]), ["python3", "build.py"])
+            return 7
+        with patch.object(cli, "main", main):
+            self.assertEqual(cli.admitted_runner(self.root, ["unittest", "-s", "tests"], 0), 7)
+        self.assertEqual(cli.here_command(again), again)
+
 
 class Runs(Folder):
     def test_a_bare_unittest_in_a_project_runs_inside_an_admission(self):
@@ -148,6 +162,34 @@ class Runs(Folder):
         self.suite()
         status, said = self.main("--project", str(self.root), "unittest", "-s", "tests")
         self.assertEqual(status, 0, said)
+
+    def runs_under_this_python(self, *arguments):
+        """Run the bare runner in the project while the first python3 on PATH is too old for Queuekeeper, as Xcode's
+        Python 3.9 was on 2026-11-14 (vocaro/queuekeeper#152): a stand-in that runs nothing and exits 2, as the
+        launcher does under such an interpreter. The second Mac is offered the command that names python3, and this
+        Mac runs it under this interpreter: the suite's one test runs, is counted once and passes."""
+        self.project()
+        self.suite()
+        tools = self.root / "older"
+        tools.mkdir()
+        host_isolation.executable(tools / "python3", "#!/bin/sh\necho 'the older python3 ran' >&2\nexit 2\n")
+        os.environ["PATH"] = f"{tools}{os.pathsep}{os.environ['PATH']}"
+        with patch.object(cli.remote, "first_command", wraps=cli.remote.first_command) as offered:
+            status, said = self.main(*arguments, "unittest", "-s", "tests")
+        self.assertEqual(status, 0, said)
+        self.assertNotIn("the older python3 ran", said)
+        self.assertRegex(said, r"(?m)^queuekeeper unittest: 1 tests ")
+        self.assertEqual(cli.merge_queue.UNITTEST_SUMMARY.findall(said), ["OK"], said)
+        self.assertEqual(offered.call_args.args[2][0], "python3")
+
+    def test_a_bare_unittest_runs_under_the_python_that_started_it_whatever_python3_the_path_finds(self):
+        self.runs_under_this_python("--project", str(self.root))
+
+    def test_a_launchers_bare_unittest_runs_under_the_python_that_started_it(self):
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/qk").write_text((cli.TOOLKIT_ROOT / "scripts/qk").read_text())
+        os.environ["QUEUEKEEPER_ROOT"] = str(cli.TOOLKIT_ROOT)
+        self.runs_under_this_python()
 
     def test_a_bare_unittest_in_a_folder_with_no_project_runs_inside_an_admission(self):
         self.suite()
