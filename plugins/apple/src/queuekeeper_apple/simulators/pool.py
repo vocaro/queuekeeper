@@ -1460,9 +1460,13 @@ def main(argv, project=None):
             pool.log_hold("release", lease.key, entry, after=None, ended=outcome, form="udid")
         elif args.action == "prune":
             wanted = {str(uuid.UUID(udid)).upper() for udid in args.udids} or None
+            listed = lambda: {entry["udid"].upper() for entries in pool.listing().get("devices", {}).values()
+                              for entry in entries}
+            unknown = (wanted or set()) - listed()
             pruned = pool.prune(udids=wanted)
             print("\n".join(pruned) if pruned else "Nothing was pruned")
-            return 1 if wanted and len(pruned) != len(wanted) else 0
+            # A kind's template follows its last member, so the names pruned may outnumber the UDIDs named.
+            return 1 if wanted and (unknown or wanted & listed()) else 0
         return 0
     except Stopped as stop:
         print(f"queuekeeper simulator-pool: stopped by signal {stop.number}", file=sys.stderr)

@@ -835,7 +835,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(status, lane_results.UNMEASURED)
         self.assertIn("did not finish booting", error)
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
-        # The lowest member is never pruned, even when asked for by UDID.
+        # A named member that stays, here the lowest of a kind just used, is status 1.
         self.assertEqual(command("prune", udid.strip())[0], 1)
 
 
@@ -1920,6 +1920,27 @@ class PoolTests(unittest.TestCase):
         self.assertEqual((entry["state"], entry["pruned"]["udid"]), ("released", source))
         self.assertIn("its kind has no member left and it is unused since", entry["pruned"]["why"])
         self.assertEqual(pool.templates(), [])
+
+    def test_the_command_succeeds_when_a_template_follows_the_member_it_was_asked_to_prune(self):
+        # `qk disk` names the member alone and reads the status: the template pruned after it is no failure.
+        pool = self.make("me", warm=Warm())
+        member = self.simctl.add("Project Duo 1", days=40)
+        pool.release(pool.take(DUO, RUNTIME, purpose="Tests"), outcome="done")
+        template = "Project Duo template (iOS-27-1)"
+        source = devices.Record(self.path).entry(template)["device"]
+        for udid in (member, source): self.simctl.devices[udid]["lastUsedAt"] = (NOW - timedelta(days=8)).isoformat()
+        value = json.loads(self.path.read_text())
+        for entry in value["devices"].values(): entry["releasedAt"] = (NOW - timedelta(days=8)).isoformat()
+        self.path.write_text(json.dumps(value))
+        def command(*arguments):
+            out = StringIO()
+            with mock.patch.object(simulator_pool, "simctl", self.simctl), redirect_stdout(out), redirect_stderr(StringIO()):
+                return simulator_pool.main(["--pool", "Project", "--owner", "me", "prune", *arguments]), out.getvalue()
+        # A UDID simctl does not list was never pruned.
+        self.assertEqual(command(str(uuid.uuid4()).upper())[0], 1)
+        self.assertEqual(self.simctl.deleted(), [])
+        self.assertEqual(command(member), (0, f"Project Duo 1\n{template}\n"))
+        self.assertEqual(self.simctl.deleted(), [member, source])
 
 
 if __name__ == "__main__":
