@@ -1264,7 +1264,7 @@ def perform(argv, report):
             if config.get("lanes") and "gate" not in config["lanes"] and not config.get("queue", {}).get("lanes") \
                     and config.get("integration", "direct-main") == "direct-main":
                 warnings.append("no lane is named gate, which qk land runs: name the lane holding "
-                                "what a commit must pass before it lands gate (the toolkit's guides/adoption.md, Lane names)")
+                                "what a commit must pass before it lands gate (the toolkit's doc/guides/adoption.md, Lane names)")
             # A project whose spelling check rests on the legacy spelling lane, which a later release removes (#69).
             if legacy_spelling_warning(config): warnings.append(legacy_spelling_warning(config))
             # A project still on queue.docsOnly or queue.carryOver, which queue.unread replaces.
@@ -1544,7 +1544,7 @@ def perform(argv, report):
                             if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)
             except processes.TimedOut as error:
                 # The lane's timeout is its backstop, so a run a busy host slowed past it is
-                # unmeasured (the toolkit's guides/measurement.md). Its log is incomplete and counts nothing.
+                # unmeasured (the toolkit's doc/guides/measurement.md). Its log is incomplete and counts nothing.
                 print(f"queuekeeper: unmeasured: {error}", file=sys.stderr)
                 report.explain(error, complete=False)
                 return lane_results.UNMEASURED

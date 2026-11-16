@@ -32,7 +32,7 @@ bill and time to a verdict.
 The repository's current operating policy keeps tests on the owner's Macs. A cloud pilot
 requires an explicit policy decision before sending private source or test results to a
 provider. The Actions rows are comparison points under that policy.
-[Shared resource rules](https://github.com/vocaro/vocaro-engineering/blob/main/agents/core.md#shared-resources)
+[Shared resource rules](https://github.com/vocaro/vocaro-engineering/blob/main/doc/agents/core.md#shared-resources)
 
 ## Measure the queue impact
 

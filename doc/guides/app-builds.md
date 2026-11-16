@@ -102,7 +102,7 @@ python3 scripts/qk app run --ipad
 `--ipad` and `--iphone` install the device build on that paired device and launch it, ending a
 copy already running there. The build is made the same way as the Mac's, and a device build
 that is current is used as it is. The install and launch run as a device pass under the
-device's reservation ([device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md), [shared host](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md)):
+device's reservation ([device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md), [shared host](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md)):
 
 - Either device is taken in turn, first come first served, or the session's own reservation is
   used and stays held afterward. A second `qk app run` for the same device waits behind the

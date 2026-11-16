@@ -3852,7 +3852,7 @@ class Worker:
 
     def carry(self, config, batch, base, head):
         """(new base, new head) with the batch on origin/main, when main moved past base only by files the
-        lanes do not read and the batch does not touch, else None: the toolkit's guides/maintenance.md,
+        lanes do not read and the batch does not touch, else None: the toolkit's doc/guides/maintenance.md,
         Concurrent Git integration. The patch must be the one that passed, and the documents and the project's
         carry-over checks must pass on the rebased tree."""
         new_base = text(self.checkout, "rev-parse", MAIN)

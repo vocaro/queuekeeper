@@ -6,7 +6,7 @@ the package; this project's exemptions are PROJECT, below, in place of queuekeep
 It prints each finding as PATH:LINE: message and exits 0 when clean, 1 on a finding or a failed
 control, and 2 when nothing was checked.
 
-British spellings in a project's text, identifiers included (the toolkit's agents/core.md, Writing).
+British spellings in a project's text, identifiers included (the toolkit's doc/agents/core.md, Writing).
 
 The words arrive one at a time and are invisible in review, and later sessions copy the spelling
 they read, so they are caught mechanically. The checker began as mpm's tree-wide gate.
@@ -482,7 +482,7 @@ def check(root, project, paths=(), out=print, commands=()):
                "on purpose is marked `spelling: keep` with its reason (doc/guides/maintenance.md, Spelling check)")
     if found:
         out(f"check_spelling: FAIL — {found} British spelling(s) in {len(files)} text file(s) and "
-            f"{len(names)} file name(s). Spell them the American way (the toolkit's agents/core.md, Writing)."
+            f"{len(names)} file name(s). Spell them the American way (the toolkit's doc/agents/core.md, Writing)."
             + (f" Also {renamed}." if old else ""))
         return 1
     if old:

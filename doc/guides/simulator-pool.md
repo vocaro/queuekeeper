@@ -105,7 +105,7 @@ shuts down a member or warmed template left booted for 2 hours that no live run,
 accounts for, on both Macs, without asking the owner, and also runs before work is sent to the second Mac, before heavy work runs on the
 Mac it was started on, and in `qk doctor`; to keep one
 running, reserve it or boot a simulator outside the pool
-([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#stale-pool-simulators)).
+([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#stale-pool-simulators)).
 
 ### Keeping a member's state
 
@@ -157,7 +157,7 @@ pristine data or created and booted for the first time (`queuekeeper_apple.simul
 The member pattern `POOL LABEL N` never matches a template, so no lane takes, tests on or prunes
 one, and `simulator-pool check` refuses its UDID. A reap may shut one down, under the same
 conditions as a member, by the owner's decision of 2026-11-04
-([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#stale-pool-simulators)); pruning deletes one only when its
+([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#stale-pool-simulators)); pruning deletes one only when its
 runtime is no longer installed, or its kind has no member left and is [unused for 7 days](#pruning).
 
 - When a session takes or creates a member and its kind has no current template, it makes one under
@@ -255,7 +255,7 @@ runtime is no longer installed, or its kind has no member left and is [unused fo
   clone failed and stored nothing, and every member while simctl cannot list the runtime's builds.
 - A warm-up killed outright leaves its template booted and held by a process that is gone. Reap shuts
   it down once that reservation's expected release has passed and the template has run 2 hours, and
-  then releases its entry ([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#stale-pool-simulators)). Once that entry is released, the template has
+  then releases its entry ([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#stale-pool-simulators)). Once that entry is released, the template has
   no record of a finished warm-up, so the next take or creation of the kind replaces it.
 - A clone has a UDID of its own, as a created member has, so the simulator tool's first use of it
   asks the owner, as for any new member ([simulator lifecycle](https://github.com/vocaro/apple-engineering/blob/main/guides/simulator-testing.md#simulator-lifecycle)); a reset

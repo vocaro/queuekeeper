@@ -3,7 +3,7 @@
 How Queuekeeper runs tests side by side: lanes in a group, `qk unittest` processes, `qk simulator-tests`
 simulators and `qk xctest` shards, with the limits that bound each run. What to run where, and how to
 write tests that can share a host, is in the toolkit's
-[parallel tests](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md) guide.
+[parallel tests](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/parallel-tests.md) guide.
 
 ## Observe a quiet lane
 
@@ -129,7 +129,7 @@ A lane whose `parallel` names other lanes runs them at once under its own single
   group away and finds no results ([MathMLLayout](https://github.com/vocaro/MathMLLayout)
   `9520125`).
 - `qk run --serial GROUP` runs the lanes one after another, on this Mac: the reference a
-  failure seen only side by side is checked against ([parallel-only failures](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#a-failure-seen-only-side-by-side)).
+  failure seen only side by side is checked against ([parallel-only failures](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/parallel-tests.md#a-failure-seen-only-side-by-side)).
   `qk remote run --serial GROUP` runs them one after another on the second Mac, under its
   admission, for a group that runs there. The serial reference is no pass of the group's:
   `qk remote passed` counts only its lanes side by side
@@ -137,7 +137,7 @@ A lane whose `parallel` names other lanes runs them at once under its own single
 
 A group is for lanes one admission can bound. A release checkpoint's lanes are not one: each is
 heavy by itself, so `eng checkpoint` runs them one after another, each under its own admission
-([checkpoints](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#checkpoints)).
+([checkpoints](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/releasing.md#checkpoints)).
 
 Lanes that share a build directory cannot run side by side: two `swift test` runs in one
 `.build` wait on its lock, and two xcodebuild runs need separate `-derivedDataPath`s. A gate
@@ -165,7 +165,7 @@ more than 64 MiB keeps it only in its dispatch. `qk remote passed LANE` names th
 are and how many files they hold. A gate on the second Mac whose command writes nothing there, such
 as a `qk unittest` lane, says that its command wrote none, since the second Mac sends back all it
 writes there (#38). `qk disk` reclaims these folders by their rule, and never the receipts
-([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#reclaiming-disk-space)).
+([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#reclaiming-disk-space)).
 
 Per-test times come back that way. `qk simulator-tests` keeps, for each test run, a shard or a
 device, `simulator-tests/KIND.log` and `KIND.json` in its lane's `results/`: the log's lines that
@@ -265,9 +265,9 @@ python3 scripts/qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
   run on; a first boot can stall while other simulators boot.
 - Two simulators testing at once can hold the host's memory pressure at warning
   (`kern.memorystatus_vm_pressure_level` 2) for the whole run, where one at a time does not
-  ([measured](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#measuring-a-speedup)). While it is, admission takes no slot beyond the guaranteed
+  ([measured](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/parallel-tests.md#measuring-a-speedup)). While it is, admission takes no slot beyond the guaranteed
   ones, and a ceiling the pressure spoils is unmeasured
-  ([unmeasured ceilings](https://github.com/vocaro/vocaro-engineering/blob/main/guides/measurement.md#host-pressure-and-unmeasured-ceilings)), so keep memory
+  ([unmeasured ceilings](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/measurement.md#host-pressure-and-unmeasured-ceilings)), so keep memory
   ceilings out of a run beside them. `--test-timeout` (2 h by default) is a backstop for
   a hung run, which it leaves unmeasured, and `--test-allowance` fails a single hung test
   ([bound every run](#bound-every-run)). A device that ran no test fails.
@@ -329,7 +329,7 @@ Testing test, which every device must count.
 | unittest | `python3 scripts/qk unittest -s tests -j N` | `python3 -m unittest discover -s tests` |
 
 A wrapper that invokes the same selector on several devices or in several scenarios needs
-[invocation identities in its aggregate results](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#repeated-test-invocations),
+[invocation identities in its aggregate results](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/evidence.md#repeated-test-invocations),
 including when it runs those invocations one after another.
 
 `qk unittest` discovers the suite as unittest does and runs each module in its own process, N
@@ -471,7 +471,7 @@ A project configures the run with options, not a script of its own:
 - `--skip-build` runs the last build.
 
 A process that fails, or runs other than the tests it was given, fails the run. A test that skips
-with a reason beginning `Unmeasured:` ([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#honest-outcome-states))
+with a reason beginning `Unmeasured:` ([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/evidence.md#honest-outcome-states))
 leaves an otherwise passing run unmeasured: it exits 3 and lists them last. A filter that selects
 nothing runs nothing and exits 5. `tests/apple/fixtures/XCTestShards` is its positive control: two
 passing classes, a skip, a Swift Testing test and a Swift Testing suite of two, which
@@ -517,7 +517,7 @@ have.
 
 A timeout stops a hang; it does not stop a gate from growing. The gate also has a budget,
 `budgetMinutes`, from its measured time, which `qk land` and `qk doctor` warn past
-([keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#keeping-the-split)). The toolkit's is 20 minutes, the owner's
+([keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/releasing.md#keeping-the-split)). The toolkit's is 20 minutes, the owner's
 target for a gate with the host to itself (owner's decision, 2026-11-11). It was 15, about twice the
 8.1 min median of six passing queue runs; set to 5 as a control, `qk doctor` warned and named the
 slowest parts (2026-11-04, `e97577a`,

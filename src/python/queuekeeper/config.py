@@ -548,7 +548,7 @@ def landing_lanes(lanes, queue):
 
 def release(declared, lanes=None, queue=None):
     """The release gate's settings: lanes, the release checks each a lane of its own, which eng release
-    requires a pass of at the release commit, and maxCommits, the checkpoint's limit (the toolkit's guides/releasing.md,
+    requires a pass of at the release commit, and maxCommits, the checkpoint's limit (the toolkit's doc/guides/releasing.md,
     Two gates and Checkpoints). A name in lanes that is no lane is qk doctor's warning, not an error.
     A release lane that a landing also runs is an error: a release check runs once, on the release
     commit, and no change waits for one to land."""
@@ -566,15 +566,15 @@ def release(declared, lanes=None, queue=None):
         if name in landing:
             raise ValueError(f"release.lanes names {name}, which a landing runs too: {landing[name]}. A release "
                              "check runs once, on the release commit, so take it out of the landing lanes or out of "
-                             "release.lanes (the toolkit's guides/releasing.md, Two gates)")
+                             "release.lanes (the toolkit's doc/guides/releasing.md, Two gates)")
 
 
 def budget(name, lane):
     """budgetMinutes, the gate's time budget, from its measured time, past which qk land and qk doctor warn
-    (the toolkit's guides/releasing.md, Keeping the split). Only the gate lane has one."""
+    (the toolkit's doc/guides/releasing.md, Keeping the split). Only the gate lane has one."""
     if not isinstance(lane, dict) or "budgetMinutes" not in lane: return
     if name != "gate":
-        raise ValueError(f"{name}.budgetMinutes: only the gate lane has a time budget (the toolkit's guides/releasing.md, "
+        raise ValueError(f"{name}.budgetMinutes: only the gate lane has a time budget (the toolkit's doc/guides/releasing.md, "
                          "Keeping the split)")
     if type(lane["budgetMinutes"]) is not int or lane["budgetMinutes"] <= 0:
         raise ValueError("gate.budgetMinutes must be a positive integer")

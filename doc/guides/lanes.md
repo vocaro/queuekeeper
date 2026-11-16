@@ -64,7 +64,7 @@ names exists, so that adding, deleting or renaming a test fails the gate. BreezE
 unit suite, leaves `exactTests` out and keeps a floor.
 
 A lane is unmeasured, exit 3, when its command exits 3, when its command exits 0 but its log
-reports a test unmeasured ([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#honest-outcome-states)), or when its
+reports a test unmeasured ([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/evidence.md#honest-outcome-states)), or when its
 `timeout` stops it. Its receipt then records `"outcome": "unmeasured"`, with the log's lines for
 those tests under `unmeasured`, or the timeout under `error`. A command that exits 3 itself, such as a
 gate whose own timing check voided itself under load, says what it could not measure in a line of its log
@@ -74,7 +74,7 @@ test unmeasured, the merge queue quotes the last such line in its worker log, it
 status` ([maintenance](maintenance.md#the-merge-queue), [#30](https://github.com/vocaro/queuekeeper/issues/30)).
 A line of any other prefix is not read. A lane's timeout is a wall-clock
 backstop that a busy host can reach
-([core-wait time](https://github.com/vocaro/vocaro-engineering/blob/main/guides/measurement.md#cpu-scheduling-and-core-wait-time)), and the log it cuts short
+([core-wait time](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/measurement.md#cpu-scheduling-and-core-wait-time)), and the log it cuts short
 counts nothing. That holds when its cleanup cannot confirm that every process it used has ended:
 the run keeps its admission reservation for recovery, but exits 3, not 2. A run that exits 3 is counted too, but a shortfall only prints, because the
 unmeasured part may not have run at all. A run with arguments replaces the lane's last log and
@@ -83,7 +83,7 @@ receipt like any other run.
 A run that ends records its verdict, the status `qk run` returns, as `outcome`: `passed` for 0
 only, else `failed` or `unmeasured`. A zero exit that ran too few tests is `failed`, with the
 shortfall under `error`. `eng release` counts this checkout's gate receipt only when it says
-`passed` ([releasing](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#tagging-and-publishing)). A failed lane whose log shows that no
+`passed` ([releasing](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/releasing.md#tagging-and-publishing)). A failed lane whose log shows that no
 test started, such as one whose project could not be generated, exits 4 rather than its command's
 status and quotes the log's last error line in its summary and under `beforeTests`; it is still
 `failed` (`lane_report.before_tests`, vocaro-engineering#393). A command's own status 2, a refused usage,
@@ -263,7 +263,7 @@ budget and add to it; open one only if there is none. A reading the proposal alr
 be repeated, unless it changes the picture, such as a much higher median or fewer runs left out for
 load ([#96](https://github.com/vocaro/queuekeeper/issues/96), 2026-11-13). What a project does when its
 gate is over budget is otherwise its owner's policy; the toolkit's is in
-[keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/guides/releasing.md#keeping-the-split).
+[keeping the split](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/releasing.md#keeping-the-split).
 
 ## Scroll bars in a receipt
 

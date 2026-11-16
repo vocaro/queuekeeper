@@ -275,7 +275,7 @@
             }
           },
           "budgetMinutes": {
-            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, qk land and qk doctor warn and name its slowest parts (the toolkit's guides/releasing.md, Keeping the split). Only the gate lane takes it",
+            "description": "The gate lane's time budget in minutes, from its measured time. When the median wall time of its recent passing runs in the merge queue exceeds it, qk land and qk doctor warn and name its slowest parts (the toolkit's doc/guides/releasing.md, Keeping the split). Only the gate lane takes it",
             "type": "integer",
             "minimum": 1
           },
@@ -739,7 +739,7 @@
       }
     },
     "release": {
-      "description": "The release gate (the toolkit's guides/releasing.md, Two gates and Checkpoints)",
+      "description": "The release gate (the toolkit's doc/guides/releasing.md, Two gates and Checkpoints)",
       "type": "object",
       "additionalProperties": false,
       "properties": {

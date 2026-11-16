@@ -55,7 +55,7 @@ ML whose compute units include the GPU takes it too ([model admission](#model-ad
 lane says so with `"model": true` beside
 `"resource": "heavy"`. Add `--exclusive` only for work that needs the host to itself: a
 whole-machine or wall-clock measurement, a model run that is timed or compared with a baseline
-among them ([long-running measurements](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#long-running-measurements)). Only the timed part of a
+among them ([long-running measurements](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#long-running-measurements)). Only the timed part of a
 run is exclusive: build, install and set up first under `qk admit --here`, beside other sessions'
 work, then admit the timed run alone with `qk admit --here --exclusive`, as a separate command, such
 as `xcodebuild build-for-testing` and then `test-without-building`. Both take `--here`: each
@@ -96,7 +96,7 @@ quiet say below (vocaro/queuekeeper#121).
 its output on the terminal. Like a heavy lane, `qk admit` first refreshes the operating policy,
 printing it to standard error, and records the command's receipt in
 `.build/queuekeeper/admit/source.json`. It needs no `PYTHONPATH` and works from a session
-worktree ([locating the toolkit](https://github.com/vocaro/vocaro-engineering/blob/main/guides/adoption.md#locating-the-toolkit-from-a-worktree)). A toolkit
+worktree ([locating the toolkit](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/adoption.md#locating-the-toolkit-from-a-worktree)). A toolkit
 clone older than `admit` reaches the same queue through the resource CLI:
 
 ```sh
@@ -120,14 +120,14 @@ session with a fixed wall-clock budget expired when a second suite took the core
 gate that means "the host was busy" teaches people to rerun rather than read a failure. The
 defect was the test's, not the host's. A gate's limits tolerate a busy host: a time limit leaves
 out the seconds the work waited for a core
-([core-wait time](https://github.com/vocaro/vocaro-engineering/blob/main/guides/measurement.md#cpu-scheduling-and-core-wait-time)), and a ceiling that memory
+([core-wait time](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/measurement.md#cpu-scheduling-and-core-wait-time)), and a ceiling that memory
 pressure spoiled is unmeasured, not failed
-([unmeasured ceilings](https://github.com/vocaro/vocaro-engineering/blob/main/guides/measurement.md#host-pressure-and-unmeasured-ceilings)). Such a gate is
+([unmeasured ceilings](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/measurement.md#host-pressure-and-unmeasured-ceilings)). Such a gate is
 heavy work like any other; one whose tests still assume a quiet host stays exclusive until they
 are fixed. A test that a busy host decided reports itself unmeasured, and its lane exits 3
-([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md#honest-outcome-states)). Admission counts a gate as one job
+([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/evidence.md#honest-outcome-states)). Admission counts a gate as one job
 however many workers it starts, so bound its build and test parallelism
-([parallel tests](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#bound-what-runs-at-once)).
+([parallel tests](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/parallel-tests.md#bound-what-runs-at-once)).
 
 `--jobs` does not bound every thread a build or test starts. A debug `swift test --jobs 2` is
 bounded: its compiler frontends are build-system tasks, and samples every 2 s found no more than
@@ -479,7 +479,7 @@ share to fall below HEAVY_QUIET_LIMIT, and tells the command what it read in the
 A generative-model run takes one heavy slot and the host's model lock, an `flock` on `model` in
 the slot directory: both at once under the coordination lock, or neither. Two model runs exclude
 each other while builds and tests take the other slots: one model workload per machine is a
-limit of the hardware ([long-running measurements](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#long-running-measurements)), and exclusive
+limit of the hardware ([long-running measurements](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#long-running-measurements)), and exclusive
 admission of the whole host would hold every build and test back for the length of a run that
 only the model needs to wait for. A model request waits behind a queued exclusive request, as a
 heavy one does; while another run holds the model, it waits with the reason that the on-device
@@ -501,7 +501,7 @@ Core ML whose compute units include the GPU (`.all`, `.cpuAndGPU`) takes the mod
 Core ML pinned off the GPU (`.cpuAndNeuralEngine`, `.cpuOnly`) does not need it. A Core ML
 embedder on all compute units shared the GPU path with on-device generation and returned
 silently wrong vectors beside it; pinned off the GPU it returned correct ones
-([embedding correctness](https://github.com/vocaro/vocaro-engineering/blob/main/knowledge/ml/embedding-correctness.md)). A model run that is timed or
+([embedding correctness](https://github.com/vocaro/vocaro-engineering/blob/main/doc/knowledge/ml/embedding-correctness.md)). A model run that is timed or
 compared with a baseline stays exclusive, because it measures the CPU as well. Not measured:
 whether heavy work beside on-device generation slows it or changes its output. During
 generation `TGOnDeviceInferenceProviderService` and `modelmanagerd` burn CPU, and builds beside
@@ -521,7 +521,7 @@ were taken and given back.
 The log is `~/Library/Application Support/queuekeeper/admissions.jsonl`, in the account's
 durable state, because an audit looks back weeks and files in the slot directory are the
 temporary-file cleaner's after three idle days
-([scratch and result directories](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#scratch-and-result-directories)). A HEAVY_SLOT_DIR namespace
+([scratch and result directories](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#scratch-and-result-directories)). A HEAVY_SLOT_DIR namespace
 keeps its own log beside its slots. A line that would take the log past 8 MiB first makes it
 `admissions.1.jsonl`, replacing the previous generation, so the two together stay within 16 MiB;
 at two lines of 200 to 550 bytes, each holds 8,000 to 20,000 admissions. Each Mac keeps its own
@@ -732,7 +732,7 @@ and then an exclusive timed run of what was built, so `qk run` sets `QUEUEKEEPER
 lane's name in its command's environment, and each `qk admit` under it stays on that Mac, its
 receipt's `hereBecause` saying `a part of the self lane LANE, …`.
 A foreground lane, which takes the screen, goes to the second Mac and only there, where queuekeeper holds
-the second Mac's foreground for it ([second Mac foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md)). Simulator
+the second Mac's foreground for it ([second Mac foreground](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md)). Simulator
 lanes and background Mac UI lanes go to the second Mac like the rest, and a lane's first run there is its
 check (the owner's decision, 2026-10-28): counts that differ from this Mac's are a defect to fix,
 not a reason to keep the lane here. A lane group runs its lanes under its one admission on one
@@ -823,7 +823,7 @@ wakes a locked screen's display and keeps it on, and what is unmeasured, is date
 27.2 (26B123), locked for those measurements, EPUBLib's Mac suite and whole gate passed on the
 second Mac (2026-10-28 and 10-29), while the accessibility API (`AXUIElement`) vended no offscreen
 window behind the lock, as on this Mac on 27.0. A run whose mechanism a lock or a sleeping display
-stops is unmeasured, never passed ([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/agents/core.md#shared-resources)).
+stops is unmeasured, never passed ([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/doc/agents/core.md#shared-resources)).
 
 A lane whose tests need an unlocked console screen, such as one that reads its own tree through the
 accessibility API, says `"unlockedScreen": true`; a group that runs such a lane says so too. queuekeeper
@@ -1070,7 +1070,7 @@ physical device ([physical devices and the second Mac](#physical-devices-and-the
 A toolkit checkout with changes keeps no lane here: its working tree goes as a snapshot too.
 
 A second Mac that answers but is misconfigured stops the lane instead, for the owner's decision
-([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/agents/core.md#shared-resources)): when it refuses the login, as for a key
+([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/doc/agents/core.md#shared-resources)): when it refuses the login, as for a key
 it does not accept or a host key that changed, its login shell fails, it cannot receive the
 commit or run the toolkit, it refuses the lane for any reason but being busy, as when its Xcode
 at this Mac's developer directory differs or every checkout holds changes a run left, or it fails
@@ -1521,7 +1521,7 @@ naming the changed and untracked files, as `qk run` does for a run here on such 
 ([vocaro-engineering#197](https://github.com/vocaro/vocaro-engineering/issues/197)).
 `qk remote run --serial GROUP` runs a group's lanes one after another there, under
 the second Mac's admission: the group's serial reference
-([parallel-only failures](https://github.com/vocaro/vocaro-engineering/blob/main/guides/parallel-tests.md#a-failure-seen-only-side-by-side)). Its receipt says
+([parallel-only failures](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/parallel-tests.md#a-failure-seen-only-side-by-side)). Its receipt says
 `serial` and, like a snapshot's, stays in `.build/queuekeeper/remote/GROUP/`: it is no pass of the
 group's, whose lanes run side by side.
 
@@ -1950,7 +1950,7 @@ toolkit's `python3 scripts/qk remote run gate`.
 
 Private GitHub release assets need the authenticated API as well as Git source access.
 Declare their packages in `githubArtifacts`; admitted builds use the shared
-[artifact preparation](https://github.com/vocaro/vocaro-engineering/blob/main/guides/public-access.md#private-binary-artifacts-and-build-credentials), whose
+[artifact preparation](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/public-access.md#private-binary-artifacts-and-build-credentials), whose
 credential lookup reads this same run-scoped Git helper. Do not put a token into a package
 manifest, asset URL or committed configuration.
 
@@ -2144,7 +2144,7 @@ caches their builds fill, the lane results Queuekeeper keeps by commit in their 
 builds. It never surveys the home directory or the rest of the volume. It prints each item's size, the reason
 for its status and the exact command that would remove it. What agent sessions leave is the toolkit's
 `eng disk` to list and remove, by the same rules of proof: linked worktrees, scratch builds and results under
-`/private/tmp`, kept failure records and evidence archives ([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#reclaiming-disk-space)).
+`/private/tmp`, kept failure records and evidence archives ([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#reclaiming-disk-space)).
 Run both when the volume runs short.
 A **candidate** is proven unowned by the rules below, and `--delete` removes it without asking
 (the owner's decision, 2026-11-05). An **owner** item shows no sign of a session using it, but
@@ -2225,7 +2225,7 @@ the candidates, with their commands: exactly what `--delete` removes.
   store would otherwise grow by that with every gated commit
   ([#218](https://github.com/vocaro/vocaro-engineering/issues/218)). An open issue or evidence
   that cites a commit's times does not keep them: evidence copies what it cites
-  ([evidence](https://github.com/vocaro/vocaro-engineering/blob/main/guides/evidence.md)). A repository with results past the rule is a candidate, sized by
+  ([evidence](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/evidence.md)). A repository with results past the rule is a candidate, sized by
   them, whose command is `qk remote prune-results CHECKOUT` (`--dry-run` lists them); one with
   none past it, or whose store a process uses, is kept.
 
@@ -2309,7 +2309,7 @@ call's disk I/O count left out a buffered 4 MiB that the process never flushed i
 The search itself only reports. A search that fails says why, and the work is sent all the same.
 Tell the owner what it lists, with its PIDs and their writes: whether to stop a process is the
 owner's decision, as is any other change to a shared host
-([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/agents/core.md#shared-resources)). The exceptions are a process that an
+([shared resources](https://github.com/vocaro/vocaro-engineering/blob/main/doc/agents/core.md#shared-resources)). The exceptions are a process that an
 ended run provably launched, and a stale pool simulator, both below.
 
 ### Leftovers an ended run launched
@@ -2914,10 +2914,10 @@ tries it again and then holds. No commit is sent back as failed for it.
 
 ## Attended Mac sessions
 
-Mac VoiceOver and foreground UI default to the [second Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md),
+Mac VoiceOver and foreground UI default to the [second Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md),
 which queuekeeper reserves for each run without asking the owner, not to this Mac. These rules
 are a method for a session on this Mac's foreground within a period the owner approved
-beforehand ([this Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#this-macs-foreground)); they grant
+beforehand ([this Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md#this-macs-foreground)); they grant
 nothing by themselves. The drivers' check below is the same on both Macs.
 
 Agree the window with the owner first, then reserve the foreground for it before taking it.
@@ -2946,7 +2946,7 @@ named by `--owner` or `QUEUEKEEPER_DEVICE_OWNER` holds the entry, the entry is n
 uncertain, and, on this Mac, its expected release has not passed. `qk run --here` checks a lane marked
 `"foreground": true` the same way, and `qk admit --foreground` a command; on the second Mac queuekeeper
 holds the entry for the run itself and names it in `QUEUEKEEPER_DEVICE_OWNER`
-([running foreground work](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#running-foreground-work)), and a run there may
+([running foreground work](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md#running-foreground-work)), and a run there may
 outlast its expected release. An uncertain entry needs attended recovery, with one exception there:
 when a session's own VoiceOver restoration could not be verified, and nothing else is uncertain, the
 run's own runner may set VoiceOver back to the original queuekeeper recorded in the entry
@@ -3030,7 +3030,7 @@ Supervise the process group you own. The toolkit's `processes.supervise`, which 
   at the first sample that sees it, when a group or session is first seen without the command
   or used again, and the command's confirmed end. When the admitting process is killed before it
   settles its entry, `qk admissions recover` runs this census against the record.
-- A push keeper ([checkout provisioning and publication](https://github.com/vocaro/vocaro-engineering/blob/main/guides/shared-host.md#checkout-provisioning-and-publication))
+- A push keeper ([checkout provisioning and publication](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#checkout-provisioning-and-publication))
   supervises its own commands and applies the same census to a command that fails on its own,
   with a positive status and no stop. When the census finds nothing, the keeper releases its
   heavy-work admission but keeps the checkout's transaction lock, its owner record showing

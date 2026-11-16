@@ -3,7 +3,7 @@
 How Queuekeeper takes a Mac's foreground for a lane that needs its screen, such as Mac VoiceOver or Mac
 XCUITest: setting the second Mac up for it, running and waiting, and the guards that clear crash alerts and
 Notification Center windows. Its limits, what counts as evidence and how to batch sessions are in the
-toolkit's [second Mac foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md) guide.
+toolkit's [second Mac foreground](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md) guide.
 
 ## Setting up the second Mac's foreground
 
@@ -14,7 +14,7 @@ settings of the owner's Mac that the hosted workflow once made on each disposabl
 are the owner's to change, once; Queuekeeper and its runs change none of them. `qk remote foreground`
 lists each one missing with its fix, and which run holds the foreground. Every foreground run
 checks them first and, while one is missing, stops before it takes anything: a
-[configuration problem](https://github.com/vocaro/vocaro-engineering/blob/main/agents/core.md#shared-resources) for the owner, exit 78 from the
+[configuration problem](https://github.com/vocaro/vocaro-engineering/blob/main/doc/agents/core.md#shared-resources) for the owner, exit 78 from the
 command.
 
 ```sh
@@ -170,7 +170,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   same. It never falls back to this Mac: a second Mac that is not configured, cannot be reached
   or is not ready stops the lane, with what the owner can change.
 - A stop is not the end of the work. When the second Mac cannot be reached, ask the owner for a
-  window on [this Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#this-macs-foreground), saying what would run and for how
+  window on [this Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md#this-macs-foreground), saying what would run and for how
   long, rather than ending the turn on the stop; Queuekeeper's message names the command for the window.
   A misconfigured or unready second Mac stays the owner's to fix unless the owner offers one.
 - `qk remote admit --foreground -- COMMAND` runs one command under the second Mac's foreground
@@ -390,7 +390,7 @@ either Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocar
   on that Mac, whatever it is, puts the value back, unless the run that kept it still runs. Queuekeeper changes the
   setting nowhere else. A value the owner set to `none` already is left alone. The setting hides the alert
   only: macOS still writes the crash report (`.ips`), which a run collects as before
-  ([outcomes](https://github.com/vocaro/vocaro-engineering/blob/main/guides/second-mac-foreground.md#outcomes-and-results)).
+  ([outcomes](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md#outcomes-and-results)).
 - **Cleared, never answered.** Before the run starts, and again 2 s after each look ends while it runs, Queuekeeper reads
   the windows of the processes that raise system alerts through System Events, which needs the accessibility
   grant the second Mac already has for commands started over SSH. The 2 s (`WATCH`) is the wait between looks,

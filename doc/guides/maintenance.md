@@ -892,7 +892,7 @@ admission behind another project's whole-host gate
 be used, when it must be bypassed, each for a reason it can state, such as a broken queue or a fix
 that cannot wait for it, or with the owner's approval. A fix that cannot wait for the gate lands
 with `qk land --front --no-gate --why TEXT` instead, as above. A record or a document lands
-by the queue like anything else. A hand push follows [push only onto the `main` you tested](https://github.com/vocaro/vocaro-engineering/blob/main/guides/maintenance.md#concurrent-git-integration)
+by the queue like anything else. A hand push follows [push only onto the `main` you tested](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/maintenance.md#concurrent-git-integration)
 and is reported to the owner with its reason. No check enforces this.
 
 **Paths no code lane reads.** One setting on `main`, `queue.unread`, says which paths no code lane
@@ -1362,7 +1362,7 @@ a missing anchor` or `cites no heading or bold lead-in of`, and the fix is the c
 heading that a rename lost. Text after the comma that begins in lower case, names another
 document, or holds braces, brackets, operators or a call before it closes is a list, prose or
 code, not a citation. A citation of another repository's document, marked by the possessive before
-its path as in "the toolkit's guides/releasing.md, Keeping the split", is not read, since this
+its path as in "the toolkit's doc/guides/releasing.md, Keeping the split", is not read, since this
 checkout cannot resolve it.
 
 It is each project's choice because the projects' records and code quote guides their checkouts
