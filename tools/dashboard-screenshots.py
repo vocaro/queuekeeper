@@ -92,14 +92,14 @@ PANELS = {
                   ]},
         "waiting": WAITING, "recent": RECENT, "ungated": [],
         "health": {"verdict": "good", "level": health.OK, "label": "All good",
-                   "sentence": "Testing 1 entry and 1 waits behind it, the gate 4m in of its usual 6m; "
-                               "the last entry landed 9m ago, and both Macs have room.",
+                   "sentence": "Testing 1 entry and 1 waits behind it, the gate about as long as its usual 4m; "
+                               "the last entry landed 9m ago, and This Mac has room.",
                    "signs": [health.sign("progress", health.OK, "testing 1 entry, 1 waiting", "Testing 1, 1 waiting"),
                              health.sign("pace", health.OK, "the last entry landed 9m ago", "Last landed 9m ago"),
-                             health.sign("macs", health.OK, "both have room", "Both have room"),
+                             health.sign("macs", health.OK, "This Mac has room"),
                              health.sign("devices", health.OK, "1 of 1 connected"),
                              health.sign("cameBack", health.OK, "none of the last 8 came back")],
-                   "forecast": {"waiting": 2, "clearsAt": ago(-540)}, "usualGateSeconds": 372, "findings": [],
+                   "forecast": {"waiting": 2, "clearsAt": ago(-540)}, "usualGateSeconds": 250, "findings": [],
                    "exitStatus": health.HEALTHY},
         "flow": {"agents": [{"name": "agent", "waiting": 1, "testing": 1}], "back": None,
                  "macs": [{"name": "This Mac", "role": "here", "state": "observed", "used": 1, "most": 4, "gates": []},
@@ -149,7 +149,8 @@ gate: 212 of 340 tests passed, 0 failed
 PANELS["queue"]["overview"] = PANELS.pop("home")
 PANELS["history"]["recent"] = PANELS["queue"]["recent"]
 PANELS["farm"]["deviceRecord"] = {"devices": [
-    {"name": "iPhone", "state": "held", "owner": "release-tests", "purpose": "Release checks",
+    {"name": "iPhone", "kind": "iphone", "model": "iPhone 17 Pro", "state": "held", "owner": "release-tests",
+     "purpose": "Release checks",
      "releaseBy": None, "waiting": 0, "connection": "connected", "transport": "localNetwork"}],
     "deferredTo": None, "error": None, "connectionError": None, "checkedAt": ago(4)}
 
