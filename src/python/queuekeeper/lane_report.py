@@ -83,6 +83,10 @@ SUMMARY_HEAD = re.compile(r"^(?:qk|eng) run (\S+): ((?:" + "|".join(VERDICTS) + 
 SUMMARY_TESTS = re.compile(r"^  tests: (?:(\d+) passed, (\d+) failed\b)?")
 SUMMARY_FAILED = re.compile(r"^  failed: (.+?)(?: at (\S[^\n]*:\d+))?$")
 SUMMARY_MORE = re.compile(r"^  \.\.\. and (\d+) more$")
+# The counts a summary's tests line states (said_tests), which the record of a failed gate reads back (summary_counts,
+# vocaro/queuekeeper#193).
+SUMMARY_COUNTS = re.compile(r"^(?:(\d+) passed, (\d+) failed|(\d+) ran, and the log does not say how many of them "
+                            r"failed), (\d+) skipped, (\d+) unmeasured\b")
 # Seconds between readings of the load of the Mac a lane runs on, which its receipt keeps (RunLoad), as a gate's are
 # read for its send-back (merge_queue.BUSY_SAMPLE).
 LOAD_SAMPLE = 60
@@ -268,6 +272,30 @@ def summary(text, lane):
         elif failed: found["names"].append(failed.groups())
         elif more: found["more"] = int(more.group(1))
     return found
+
+
+def run_summary(text, name=None):
+    """The summary of the run that wrote text, a log (summary): of the lane that name, the log's file name, ends with
+    as `-LANE.log`, as a queue round's gate log is named, when the log holds that lane's summary, else of the lane whose
+    summary comes last. None when the log holds none. A group's gate log holds its lanes' own output, and only the
+    group's summary counts and names the failed tests of every lane in it (vocaro/queuekeeper#193)."""
+    lanes = [head.group(1) for head in SUMMARY_HEAD.finditer(text)]
+    if not lanes: return None
+    named = [lane for lane in lanes if name and name.endswith(f"-{lane}.log")]
+    return summary(text, max(named, key=len) if named else lanes[-1])
+
+
+def summary_counts(found):
+    """The counts a summary (summary) states, as counts gives a log's, or None when it states none."""
+    match = SUMMARY_COUNTS.match((found or {}).get("tests") or "")
+    if match is None: return None
+    passed, failed, ran, skipped, unmeasured = match.groups()
+    if ran is None:
+        passed, failed = int(passed), int(failed)
+        ran = passed + failed
+    else:
+        ran = int(ran)
+    return {"passed": passed, "failed": failed, "skipped": int(skipped), "unmeasured": int(unmeasured), "ran": ran}
 
 
 def readings_over(found, of):

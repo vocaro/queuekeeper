@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
-from queuekeeper import cli, config as configuration, landing_proofs, merge_queue as mq, offload_host
+from queuekeeper import agent_results, cli, config as configuration, landing_proofs, merge_queue as mq, offload_host
 # What qk land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
 SPELLED_BEFORE_QUEUED = mq.preflight_before_queued
 import host_isolation
@@ -10358,6 +10358,55 @@ class FailedGateEvidence(Fixture):
         self.assertEqual(waited.count(first), 1)
         self.assertNotIn("fixture only", waited)
         self.assertNotIn("passing member fixture", waited)
+
+    def test_a_group_gate_that_fails_only_in_a_simulator_lane_is_named_and_counted_by_its_summary(self):
+        # vocaro/queuekeeper#193: BreezEPUB's gate, a group, failed only in smoke-ipad, while its qk unittest lanes
+        # passed. The record counted the qk unittest lanes' 250 tests alone, named no failed test, and its message
+        # said qk unittest's verdict was OK.
+        dispatch = self.base / ".dispatches/gate/group"
+        members = dispatch / "lanes"
+        members.mkdir(parents=True)
+        test = "ReadingPositionAcceptanceTests/testContinuousScrollRestoresAfterClosingAndRelaunching()"
+        place = "/p/BreezEPUBUITests/ReadingPositionAcceptanceTests.swift:127"
+        unittests = ("queuekeeper unittest: 250 tests (0 skipped) in 4 processes, 2 at a time, 1.0s: OK\n"
+                     "Ran 250 tests in 1.000s\n\nOK\n")
+        output = (f"{unittests}FAIL smoke-ipad (262s, status 1): {members / 'smoke-ipad.log'}\n"
+                  f"iPad-Pro-11-inch-M5-12GB-smoke: failed 60.195s {test}\n"
+                  "iPad-Pro-11-inch-M5-12GB-smoke: 1 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured "
+                  "(xcodebuild status 65)\n")
+        report = (f"{output}qk run gate: failed (exit 1), on fake-mac\n"
+                  "  tests: 300 passed, 1 failed, 0 skipped, 0 unmeasured; no test counts from docs\n"
+                  "  lanes: 2 passed, 1 failed (smoke-ipad), 0 unmeasured\n"
+                  f"  failed: {test} at {place}\n  receipt: {dispatch / 'source.json'}\n")
+        config = self.config()
+        lanes = config["lanes"]
+        lanes["docs"] = lanes["tests"] = lanes["smoke-ipad"] = lanes["gate"]
+        lanes["gate"] = {"parallel": ["docs", "tests", "smoke-ipad"], "resource": "heavy"}
+        self.publish(config)
+        for name, status in (("docs", 0), ("tests", 0), ("smoke-ipad", 1)):
+            (members / f"{name}.log").write_text(unittests if name == "tests" else "")
+            (members / f"{name}.json").write_text(json.dumps({"status": status}))
+        (dispatch / "run.log").write_text(output)
+        run_command = mq.processes.run
+
+        def run_gate(command, **options):
+            if command[:3] == ["python3", "scripts/qk", "run"] and command[-1] == "gate":
+                options["log_path"].write_text(report)
+                return 1
+            return run_command(command, **options)
+
+        def remote_gate(root, lane, began):
+            return (dispatch, "fake-mac") if lane == "gate" else (None, None)
+
+        with patch.object(mq.processes, "run", run_gate):
+            entry = self.failed(patch.object(mq.remote, "dispatch", side_effect=remote_gate))
+        self.assertIn(f"gate's lane smoke-ipad did not pass. {test} at {place} failed.", entry["why"])
+        self.assertNotIn("qk unittest's verdict", entry["why"])
+        found = agent_results.lookup(mq.Queue(self.repo), entry["id"])
+        self.assertEqual(found["tests"], {"passed": 300, "failed": 1, "skipped": 0, "unmeasured": 0, "ran": 301})
+        self.assertEqual(found["failure"]["tests"], [{"name": test, "location": place}])
+        self.assertEqual(found["failure"]["moreTests"], 0)
+        self.assertIn("smoke-ipad", found["failure"]["message"])
 
     def test_a_failed_remote_gate_reports_swift_testing_assertions_in_the_wait(self):
         self.assert_swift_failure_evidence(grouped=False)

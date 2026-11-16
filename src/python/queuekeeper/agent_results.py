@@ -87,7 +87,7 @@ def entry_result(queue, entry):
     pending = state in WAITING
     held = recovery.read_hold(queue.hold_file, queue.held()) if pending else None
     artifacts, gates = entry_artifacts(queue, entry)
-    texts, truncated = [], False
+    texts, summaries, truncated = [], [], False
     # A log longer than LOG_BYTES is read only at its end, and logTruncated says so. The cursor-based
     # logs command reads the complete file.
     diagnostic_logs = [item for item in artifacts if item["kind"] == "run-log"]
@@ -101,12 +101,22 @@ def entry_result(queue, entry):
         text, clipped = diagnostic_excerpt(item["path"])
         texts.append((text, clipped))
         truncated |= clipped
-    # Prefer the exact dispatch's complete test output to the queue's potentially repeated summary.
+        ended = lane_report.run_summary(text, Path(item["path"]).name)
+        if ended is not None: summaries.append(ended)
+    # The summary qk run ends with counts every lane of a group, whose log also holds its qk unittest lane's own
+    # output, which counts only that lane's tests (vocaro/queuekeeper#193); it is whole at a log's end. Without one,
+    # the exact dispatch's complete test output is preferred to the queue's potentially repeated summary.
     # Only a log read whole is counted: the end of a log counts part of a run (vocaro/queuekeeper#163).
-    counts = next((found for text, clipped in texts
-                   if not clipped and (found := lane_report.counts(text)) is not None), None)
-    failures = {}
-    for text, _ in texts:
+    counts = next((found for ended in summaries if (found := lane_report.summary_counts(ended)) is not None), None) \
+        or next((found for text, clipped in texts
+                 if not clipped and (found := lane_report.counts(text)) is not None), None)
+    failures, unnamed = {}, 0
+    for ended in summaries:
+        for name, place in ended["names"]:
+            if name not in failures or place: failures[name] = place
+        unnamed = max(unnamed, ended["more"])
+    # A summary names each failed test once, as its lanes' logs, which can name one in two ways, may not.
+    for text, _ in [] if failures else texts:
         for name, place in lane_report.failing(text):
             if name not in failures or place: failures[name] = place
     failure = None
@@ -114,7 +124,7 @@ def entry_result(queue, entry):
         failure = {"category": "conflict" if state == "conflict" else "gate-failed",
                    "message": entry.get("why"), "tests": [
                        {"name": name, "location": place} for name, place in list(failures.items())[:SHOWN]],
-                   "moreTests": max(0, len(failures) - SHOWN), "testsTruncated": truncated,
+                   "moreTests": max(0, len(failures) - SHOWN) + unnamed, "testsTruncated": truncated,
                    "excerpt": ((entry.get("failedDispatch") or {}).get("excerpt") or [])[:SHOWN]}
     return {"schemaVersion": VERSION, "project": str(queue.root),
             "id": entry["id"], "commit": entry.get("tip"),

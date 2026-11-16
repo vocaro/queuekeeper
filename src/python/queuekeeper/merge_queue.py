@@ -4314,12 +4314,24 @@ class Worker:
         said = Path(log).read_text(errors="replace")
         tests, why = failed_tests(said)
         unknown = "so whether this entry changes their files is unknown"
-        ended = lane_report.summary(said, self.failed_lane) if UNITTEST_SUMMARY.search(said) is None else None
-        if ended is not None: return self.summary_words(entry, ended)
+        lanes = config.get("lanes", {})
+        settings = lanes.get(self.failed_lane)
+        group = isinstance(settings, dict) and "parallel" in settings
+        member = unittest_member(lanes, self.failed_lane)
+        ended = lane_report.summary(said, self.failed_lane)
+        # A group's log holds its qk unittest lane's own output, which says nothing of its other lanes: unless that
+        # lane alone failed and named its tests, the group's summary names the failed tests of each of its lanes
+        # (vocaro/queuekeeper#193).
+        alone = member is not None and tests is not None and set(self.group_failed) <= {member}
+        if ended is not None and (UNITTEST_SUMMARY.search(said) is None or (group and not alone)):
+            words = self.summary_words(entry, ended)
+            if not group or not self.group_failed: return words
+            failed = self.group_failed
+            return f"{self.failed_lane}'s lane{'' if len(failed) == 1 else 's'} {', '.join(failed)} did not pass. {words}"
         if tests is None: return f"Which tests failed could not be determined ({why}), {unknown}"
         more = len(tests) - REJECTION_SHOWN
         named = ", ".join(tests[:REJECTION_SHOWN]) + (f" and {more} more" if more > 0 else "")
-        command = rerun_command(config.get("lanes", {}).get(self.failed_lane, {}).get("command"))
+        command = rerun_command(lanes.get(member or self.failed_lane, {}).get("command"))
         if command is None: return f"{named} failed, but {self.failed_lane} is no qk unittest suite to find them in, {unknown}"
         if not entry.get("commits"): return f"{named} failed, but this entry records no commits, {unknown}"
         changed, top = self.changed_by(entry), self.suite_top(command)

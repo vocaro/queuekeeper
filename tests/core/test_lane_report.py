@@ -584,6 +584,26 @@ class Summary(unittest.TestCase):
                                           ("tests.test_x.X.test_c", "/project/tests/test_x.py:20")], "more": 0})
         self.assertIsNone(lane_report.summary("\n".join(lines), "gate"))
 
+    def test_a_summarys_counts_and_the_runs_own_summary_read_back(self):
+        # vocaro/queuekeeper#193: the record of a group's gate reads the group's counts from its summary, not from the
+        # qk unittest output of one of its lanes that the log also holds.
+        self.configure(lane=self.printing(UNITTEST_FAILED, 1))
+        lines = self.qk("lane")[1]
+        text = "\n".join(lines + ["Ran 250 tests in 1.000s", "", "OK"])
+        said = lane_report.run_summary(text, "20261115-160322-252a891e-lane.log")
+        self.assertEqual(said, lane_report.run_summary(text))
+        self.assertEqual(lane_report.summary_counts(said),
+                         {"passed": 3, "failed": 2, "skipped": 1, "unmeasured": 0, "ran": 5})
+        self.assertEqual(lane_report.summary_counts({"tests": "7 ran, and the log does not say how many of them "
+                                                              "failed, 1 skipped, 2 unmeasured"}),
+                         {"passed": None, "failed": None, "skipped": 1, "unmeasured": 2, "ran": 7})
+        self.assertIsNone(lane_report.summary_counts({"tests": "no test counts in its log"}))
+        self.assertIsNone(lane_report.run_summary("Ran 250 tests in 1.000s\n\nOK\n"))
+        # Of two summaries, the one of the lane the log's file is named for.
+        other = text + "\nqk run other: passed, on this Mac\n  tests: 1 passed, 0 failed, 0 skipped, 0 unmeasured\n"
+        self.assertEqual(lane_report.run_summary(other, "round-lane.log")["failed"], 2)
+        self.assertEqual(lane_report.run_summary(other)["failed"], 0)
+
     def test_a_summary_that_names_no_test_or_ran_none_reads_back_with_no_names(self):
         self.configure(lane=self.printing("the build broke", 65))
         said = lane_report.summary("\n".join(self.qk("lane")[1]), "lane")
