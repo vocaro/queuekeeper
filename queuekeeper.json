@@ -12,15 +12,12 @@
       "minimumTests": 40,
       "timeout": 2400,
       "budgetMinutes": 15
+    },
+    "spelling": {
+      "command": ["python3", "scripts/check_spelling.py"],
+      "timeout": 300
     }
   },
-  "spelling": {
-    "skip": {
-      "LICENSE": "the Apache License 2.0, retained verbatim",
-      "tests/core/test_spelling.py": "plants British spellings as the check's negative controls"
-    },
-    "exemptPhrases": {
-      "was cancelled after": "Swift Testing's own line for a canceled test, which Queuekeeper reads in lane logs"
-    }
-  }
+  "queue": {"preflight": ["spelling"]},
+  "testLanes": {"selects": {"spelling": []}}
 }

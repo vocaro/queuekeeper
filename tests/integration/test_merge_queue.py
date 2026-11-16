@@ -6055,9 +6055,13 @@ class ToolkitsOwnWorker(Fixture):
         super().setUp()
         shutil.copytree(ROOT / "src/python", self.repo / "src/python", ignore=shutil.ignore_patterns("__pycache__"))
         # Its own toolkit, as the toolkit's queuekeeper.json names it, with the toolkit's spelling exemptions, which
-        # its Python needs to pass the spelling check the queue runs before the gate.
+        # its Python needs to pass the spelling check the queue runs before the gate. The toolkit keeps them in its
+        # preflight lane's script, scripts/check_spelling.py, rather than in queuekeeper.json (#69).
         config = json.loads((self.repo / "queuekeeper.json").read_text())
-        spelling = configuration.load(ROOT).get("spelling", {})
+        script = importlib.util.spec_from_file_location("toolkit_check_spelling", ROOT / "scripts/check_spelling.py")
+        check_spelling = importlib.util.module_from_spec(script)
+        script.loader.exec_module(check_spelling)
+        spelling = check_spelling.PROJECT
         spelling = {**spelling, "exemptPhrases": {
             **spelling.get("exemptPhrases", {}), **config["spelling"]["exemptPhrases"]}}
         (self.repo / "queuekeeper.json").write_text(json.dumps(

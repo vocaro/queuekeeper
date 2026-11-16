@@ -1271,6 +1271,13 @@ spelling check of its own as a preflight lane instead
 ([Preflight lanes](../doc/merge_queue.md#preflight-lanes),
 [#69](https://github.com/vocaro/queuekeeper/issues/69)).
 
+Queuekeeper's own repository already does: its `spelling` lane, the one entry of its
+`queue.preflight`, runs `python3 scripts/check_spelling.py [PATHS]`, a standalone copy of this check
+that imports nothing from the package, so it outlives the built-in one. This project's exemptions
+are that script's `PROJECT`, in place of queuekeeper.json's `spelling`, and it reads the subcommand
+names from `python3 scripts/qk -h`. Until the built-in check is removed, a change to its rules is
+made in both. The rest of this section describes both.
+
 `python3 scripts/qk spelling [PATHS]` finds British spellings anywhere in a project's text,
 identifiers included, and in its file and directory names, and exits 1 on any. With no paths it
 reads every tracked file, which is what a push carries; named paths also read untracked files

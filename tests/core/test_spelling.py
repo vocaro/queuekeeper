@@ -503,20 +503,6 @@ class OldCommandTests(Project):
         self.assertIn("a.md:1: the command's old name 'queuekeeper frobnicate' -> qk frobnicate", output)
 
 
-class RepositoryTests(unittest.TestCase):
-    def test_this_repository_is_spelled_the_american_way(self):
-        root = Path(__file__).resolve().parents[2]
-        lines = []
-        self.assertEqual(spelling.check(root, config.load(root), out=lines.append), 0, "\n".join(lines))
-
-    def test_this_repository_calls_the_command_by_its_new_name(self):
-        root = Path(__file__).resolve().parents[2]
-        # The launcher, as the spelling lane runs it: the subcommand names are its parser's, the extensions' included.
-        ran = subprocess.run([sys.executable, str(root / "scripts/qk"), "spelling"], capture_output=True, text=True,
-                             cwd=root, timeout=host_isolation.stretched(60))
-        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
-        self.assertIn("the command's old name precedes none of", ran.stdout)
-
 
 if __name__ == "__main__":
     unittest.main()
