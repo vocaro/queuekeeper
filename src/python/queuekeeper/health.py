@@ -23,8 +23,9 @@ GATES = 20         # the passing gate runs whose median is the usual gate time, 
 MEDIAN_RUNS = 5    # fewer passing runs than this give no usual time
 SLOW = 1.5         # a gate past this many times its usual time is slow
 WAIT_LONG = 600    # seconds a gate or round may wait for a Mac, an unlocked screen or admission before it is slow
-SILENT = 900       # seconds a running gate's log may stay unchanged before the gate is stuck; a remote gate's log
-                   # gets a heartbeat every 300 seconds
+SILENT = 900       # seconds a running gate may show no movement before it is stuck: its log unchanged, which a
+                   # remote gate's heartbeat changes every 300 seconds, and its run here not moved, which a
+                   # `qk unittest` says in its own folder (run_progress.moved) while the log stays as it was
 STARTING = 300     # seconds the worker may take between rounds while entries wait
 STALE = 90         # seconds after which a Mac's reading no longer says how it is now
 CAME_BACK = 6      # the settled entries the came-back sign counts over
@@ -73,8 +74,9 @@ def worst(found):
 
 
 def progress(state, journal, usual, now, modified):
-    """Whether the round's work is moving: each running gate against the usual gate time and by its log's growth, each
-    wait by how long it has lasted, and, between rounds, how long the worker has taken to start the next."""
+    """Whether the round's work is moving: each running gate against the usual gate time and by when it last moved,
+    the later of its log's growth and its run's own progress (the gate's moved, GateWatch's), each wait by how long
+    it has lasted, and, between rounds, how long the worker has taken to start the next."""
     if state.get("held"): return sign("progress", DANGER, "the queue is held")
     waiting, current = state.get("waiting") or [], state.get("round") or {}
     if waiting and not state.get("worker"): return sign("progress", DANGER, "no worker is running")
@@ -113,6 +115,8 @@ def progress(state, journal, usual, now, modified):
         if changed is None:
             found.append((UNKNOWN, f"the {lane} gate's log cannot be read"))
             continue
+        moved = gate.get("moved")
+        if isinstance(moved, (int, float)) and math.isfinite(moved): changed = max(changed, min(moved, now))
         if now - changed >= SILENT:
             found.append((DANGER, f"the {lane} gate on {mac} has written nothing for {span(now - changed)}",
                           f"Silent for {span(now - changed)}"))

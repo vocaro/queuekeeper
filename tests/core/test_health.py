@@ -91,6 +91,19 @@ class Verdict(unittest.TestCase):
         self.assertIn("has written nothing for 16m", found["sentence"])
         self.assertIn("What could not be checked: no Mac's reading was made", found["sentence"])
 
+    def test_a_gate_whose_log_is_unchanged_while_its_run_moves_is_not_stuck(self):
+        # `qk unittest` says its progress in its own folder, and the gate's log stays as it was until it ends.
+        silent = NOW - health.SILENT - 60
+        found = assess(state({"began": NOW - 800, "moved": NOW - 5}), log_changed=silent)
+        self.assertEqual((found["verdict"], levels(found)["progress"]), ("good", "ok"))
+        # Silence is since the later of the two, and a time that is no number, or is after now, moves nothing.
+        found = assess(state({"began": NOW - 2400, "moved": NOW - health.SILENT - 240}), log_changed=NOW - 3000)
+        self.assertEqual(found["verdict"], "stuck")
+        self.assertIn("has written nothing for 19m", found["sentence"])
+        for moved in (None, "now", float("nan")):
+            self.assertEqual(assess(state({"began": NOW - 800, "moved": moved}), log_changed=silent)["verdict"], "stuck")
+        self.assertEqual(assess(state({"began": NOW - 800, "moved": NOW + 9e9}), log_changed=silent)["verdict"], "good")
+
     def test_a_gate_past_its_usual_time_is_slow_with_a_later_forecast(self):
         found = assess(state({"began": NOW - 2 * USUAL}))
         self.assertEqual((found["verdict"], found["label"], levels(found)["progress"]), ("slow", "Slower than usual", "warning"))

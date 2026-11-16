@@ -9597,6 +9597,15 @@ class RoundAccount(Fixture):
         with patch.object(mq.remote, "dispatched", return_value=None): watch.look()
         return queue.round_state()["gates"]["batch"]
 
+    def test_a_gate_record_says_when_the_lanes_run_in_its_checkout_last_moved(self):
+        # `qk unittest` keeps its progress in its own folder, and qk queue health reads the gate's moved from here.
+        queue, watch = self.watch()
+        self.assertIsNone(self.gate_after_look(queue, watch)["moved"])
+        from queuekeeper import run_progress
+        folder = run_progress.new_folder(watch.checkout)
+        run_progress.Tracker(folder, ["qk", "unittest", "-s", "tests"]).started("test_a")
+        self.assertAlmostEqual(self.gate_after_look(queue, watch)["moved"], time.time(), delta=30)
+
     def test_a_gate_record_follows_the_lanes_wait_record(self):
         queue, watch = self.watch()
         mq.lane_wait.waiting(mq.lane_wait.UNREACHABLE, "ssh: connect to host build-host port 22: No route to host",

@@ -103,6 +103,27 @@ def running(folder):
     return False
 
 
+def moved(base, since=None):
+    """When the runs still running under base's RUNS last moved, the latest of them, or None when none is running:
+    a run's STATE says when a process of its last started or finished, and its OUTPUT when it last printed. A run
+    that started before since is another's."""
+    latest = None
+    try: folders = [folder for folder in (Path(base) / RUNS).iterdir() if folder.is_dir()]
+    except OSError: return None
+    for folder in folders:
+        if not running(folder): continue
+        head, inner = read(folder / RECORD) or read(folder / STATE) or {}, read(folder / STATE) or {}
+        begun = head.get("started")
+        if since is not None and not (isinstance(begun, (int, float)) and begun >= since): continue
+        starts = inner.get("running")
+        times = [inner.get("updated"), *(starts.values() if isinstance(starts, dict) else ())]
+        try: times.append((folder / OUTPUT).stat().st_mtime)
+        except OSError: pass
+        times = [at for at in times if isinstance(at, (int, float))]
+        if times: latest = max(latest or 0, *times)
+    return latest
+
+
 def started_record(command):
     return {"pid": os.getpid(), "host": socket.gethostname(), "command": command, "cwd": os.getcwd(),
             "started": time.time(), "ended": None, "status": None}

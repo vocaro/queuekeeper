@@ -62,6 +62,27 @@ class Tracking(Folder):
         self.assertIn("with status 1", said)
         self.assertNotIn("running: ", said)
 
+    def test_the_runs_still_running_say_when_they_last_moved(self):
+        self.assertIsNone(run_progress.moved(self.root))
+        before = time.time()
+        folder = run_progress.new_folder()
+        tracker = run_progress.Tracker(folder, ["qk", "unittest", "-s", "tests"])
+        tracker.planned(2, 4, 2)
+        tracker.started("test_a")
+        self.assertGreaterEqual(run_progress.moved(self.root, before), before)
+        # A process that finished moved it, and so did what an admitted runner printed.
+        state = json.loads((folder / run_progress.STATE).read_text())
+        state.update(updated=before - 500, running={"test_a": before - 600})
+        run_progress.write(folder / run_progress.STATE, state)
+        self.assertEqual(run_progress.moved(self.root), before - 500)
+        (folder / run_progress.OUTPUT).write_text("a line\n")
+        os.utime(folder / run_progress.OUTPUT, (before - 100, before - 100))
+        self.assertEqual(run_progress.moved(self.root), before - 100)
+        # A run that started before the gate did is another's, and one that ended moves no more.
+        self.assertIsNone(run_progress.moved(self.root, time.time() + 60))
+        tracker.end(0)
+        self.assertIsNone(run_progress.moved(self.root, before))
+
     def test_a_process_a_stop_kept_from_starting_is_not_counted(self):
         tracker = run_progress.Tracker(run_progress.new_folder(), ["qk", "unittest"])
         tracker.planned(1, 1, 1)
