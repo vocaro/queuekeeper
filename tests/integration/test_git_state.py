@@ -1,4 +1,5 @@
 """What git_state reads of a checkout, against throwaway repositories."""
+import io
 import os
 from pathlib import Path
 import shutil
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import git_state, offload_host, remote
+from queuekeeper import cli, git_state, offload_host, remote
 
 
 class Fixture(unittest.TestCase):
@@ -115,6 +116,49 @@ class BehindTests(Fixture):
         self.git(alone, "commit", "-q", "--allow-empty", "-m", "Only")
         self.assertIsNone(git_state.behind(alone))
         self.assertEqual(git_state.last_landed(alone), "unknown")
+
+
+class OffMainTests(Fixture):
+    """What qk says when the Queuekeeper it loaded is a main checkout off main (vocaro/queuekeeper#184)."""
+
+    def test_a_checkout_on_main_says_nothing_even_with_commits_of_its_own(self):
+        self.assertIsNone(git_state.off_main(self.checkout))
+        self.commit("Mine")
+        self.assertIsNone(git_state.off_main(self.checkout))
+
+    def test_a_checkout_on_a_work_branch_names_the_branch_and_its_commit(self):
+        # As the shared checkout was on 2026-11-15, for 45 minutes.
+        self.git(self.checkout, "switch", "-q", "-c", "unread-paths")
+        work = self.commit("Work in progress")
+        said = git_state.off_main(self.checkout)
+        self.assertIn(f"Queuekeeper loads from {self.checkout}, on branch unread-paths at {work[:12]}, not main", said)
+        self.assertIn("linked worktree", said)
+
+    def test_a_detached_head_says_so_only_at_a_commit_main_lacks(self):
+        first = self.git(self.checkout, "rev-parse", "HEAD")
+        self.git(self.checkout, "switch", "-q", "--detach", first)
+        self.assertIsNone(git_state.off_main(self.checkout))
+        lacking = self.commit("Not on main")
+        self.assertIn(f"detached at {lacking[:12]}, a commit main lacks", git_state.off_main(self.checkout))
+        # One that origin/main holds, though this checkout's main is behind it, is landed code.
+        self.git(self.checkout, "push", "-q", "origin", "HEAD:main")
+        self.assertIsNone(git_state.off_main(self.checkout))
+
+    def test_a_linked_worktree_on_a_branch_and_a_folder_without_git_say_nothing(self):
+        # A session's worktree and each queue worker's copy are linked worktrees, never the shared checkout.
+        linked = self.root / "linked"
+        self.git(self.checkout, "worktree", "add", "-q", "-b", "work", str(linked))
+        self.assertIsNone(git_state.off_main(linked))
+        self.assertIsNone(git_state.off_main(self.root / "nowhere"))
+
+    def test_every_qk_command_says_it_first_on_standard_error(self):
+        self.git(self.checkout, "switch", "-q", "-c", "work")
+        with patch.object(cli, "TOOLKIT_ROOT", self.checkout), \
+                patch.object(sys, "stderr", io.StringIO()) as error, patch.object(sys, "stdout", io.StringIO()), \
+                self.assertRaises(SystemExit):
+            cli.main(["--project", str(self.checkout), "--version"])
+        self.assertTrue(error.getvalue().startswith(f"queuekeeper: Queuekeeper loads from {self.checkout}, on branch "
+                                                    "work at "), error.getvalue())
 
 
 class WorktreeTests(Fixture):

@@ -826,6 +826,9 @@ def admitted_run(root, argv, first):
 
 
 def main(argv=None):
+    # A shared checkout left on a work branch runs that branch's code for every project's qk (#184).
+    off_main = git_state.off_main(TOOLKIT_ROOT)
+    if off_main: print(f"queuekeeper: {off_main}", file=sys.stderr, flush=True)
     report = lane_report.Report()
     try:
         # The project's extensions first: they add commands, and what they add to a command's environment, such as
@@ -1253,7 +1256,8 @@ def perform(argv, report):
             required = {"git", "python3"}
             for needed in extensions.REQUIRED_COMMANDS: required |= set(needed(config))
             missing = sorted(name for name in required if not shutil.which(name))
-            warnings = []
+            # The Queuekeeper this ran, when it is a main checkout off main (#184).
+            warnings = [off_main] if (off_main := git_state.off_main(TOOLKIT_ROOT)) else []
             unbounded = sorted(name for name, lane in config.get("lanes", {}).items()
                                if "command" in lane and "timeout" not in lane
                                and name not in config.get("queue", {}).get("preflight", []))

@@ -1182,6 +1182,15 @@ send the tree as it is now". A project's gate was lost this way on 2026-11-12. M
 linked worktree and land them through Queuekeeper's own queue, which moves the main checkout only
 when nothing runs from it.
 
+Never switch the main checkout to another branch either: every project's launcher loads Queuekeeper
+from it, so each `qk` run by hand would run that branch's code. While the Queuekeeper a `qk` loaded is a
+main checkout on a branch other than `main`, or detached at a commit neither `main` nor `origin/main`
+holds, every command says so first on standard error, `queuekeeper: Queuekeeper loads from PATH, on
+branch NAME at COMMIT, not main, ...`, and `qk doctor` lists the same among its warnings. A linked
+worktree, such as a session's or a queue worker's copy, says nothing. On 2026-11-15 a session left the
+checkout on its work branch for 45 minutes, unnoticed
+([#184](https://github.com/vocaro/queuekeeper/issues/184)).
+
 ### Copies in each project
 
 Two files in every project are copies: `scripts/qk`, from this repository, and, in the owner's

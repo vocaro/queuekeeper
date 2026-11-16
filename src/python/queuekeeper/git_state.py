@@ -1,4 +1,4 @@
-"""What Git says of a checkout: how far it is behind origin/main, and its worktrees."""
+"""What Git says of a checkout: how far it is behind origin/main, whether it is off main, and its worktrees."""
 import os
 from pathlib import Path
 import subprocess
@@ -35,6 +35,32 @@ def behind(toolkit):
 
 def last_landed(toolkit):
     return git(toolkit, "log", "-1", "--format=%s", UPSTREAM) or "unknown"
+
+
+def off_main(toolkit):
+    """What to say when toolkit, the Queuekeeper this process loaded, is a main checkout whose HEAD is not on main:
+    on another branch, or detached at a commit that neither main nor origin/main holds; otherwise None.
+
+    Every project's launcher loads Queuekeeper from the shared checkout, ~/Development/queuekeeper, so while it is on
+    a work branch any qk run by hand in any project runs that branch's code. On 2026-11-15 a session left it on its
+    work branch for 45 minutes, and nothing said so (vocaro/queuekeeper#184). A linked worktree, which a session's
+    own checkout and each queue worker's copy are, is never the shared checkout and says nothing. HEAD is read from
+    its file, so a checkout on main, every run's case, costs no Git process."""
+    try:
+        head = (Path(toolkit) / ".git/HEAD").read_text().strip()
+    except OSError:  # no repository, or a linked worktree, whose .git is a file
+        return None
+    if head == "ref: refs/heads/main": return None
+    if head.startswith("ref: refs/heads/"):
+        commit = git(toolkit, "rev-parse", "--short=12", "HEAD") or "no commit yet"
+        where = f"on branch {head.removeprefix('ref: refs/heads/')} at {commit}"
+    else:
+        if any(git(toolkit, "merge-base", "--is-ancestor", head, ref) is not None
+               for ref in ("refs/heads/main", UPSTREAM)): return None
+        where = f"detached at {head[:12]}, a commit main lacks"
+    return (f"Queuekeeper loads from {toolkit}, {where}, not main, so this runs code main may not hold. Every "
+            "project's launcher loads Queuekeeper from the shared checkout: put it back on main and work on "
+            "Queuekeeper in a linked worktree (vocaro/queuekeeper#184)")
 
 
 def worktrees(checkout):

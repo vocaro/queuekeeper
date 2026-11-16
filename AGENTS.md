@@ -3,6 +3,8 @@
 Read [the agent interface](doc/agent_interface.md) for exit codes, verification, landing and recovery.
 Queuekeeper requires macOS and Python 3.14 or newer; its Python package has no runtime dependencies.
 Use this checkout's launcher, `python3 scripts/qk`, to operate on this repository.
+Edit Queuekeeper only in a linked worktree; never switch branches or leave edits in the shared checkout,
+`~/Development/queuekeeper`, which every project's launcher runs from. `qk` and `qk doctor` say when it is off `main`.
 
 ## Verify through admission
 
