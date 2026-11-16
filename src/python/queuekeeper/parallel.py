@@ -25,7 +25,7 @@ import threading
 import time
 import unittest
 
-from . import lane_results, processes, run_progress, shims
+from . import lane_results, processes, resources, run_progress, shims
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
@@ -52,7 +52,15 @@ REASON_WIDTH = 300
 
 
 def outcome(status):
-    return "PASS" if status == 0 else "UNMEASURED" if status == lane_results.UNMEASURED else "FAIL"
+    return "PASS" if status == 0 else "UNMEASURED" if status == lane_results.UNMEASURED else \
+        "NOT RUN" if status == resources.BUSY else "FAIL"
+
+
+def verdict_of(status):
+    """A lane's outcome as its receipt records it: a lane that exited resources.BUSY was not run, for a reason of its
+    host's such as a locked screen, and says nothing of the commits (vocaro/queuekeeper#200)."""
+    return "passed" if status == 0 else "unmeasured" if status == lane_results.UNMEASURED else \
+        "not run" if status == resources.BUSY else "failed"
 
 
 def lane_timeout(lane, arguments=()):
@@ -61,8 +69,11 @@ def lane_timeout(lane, arguments=()):
 
 
 def combined(statuses):
-    """1 when any status failed, else UNMEASURED when any was unmeasured, else 0."""
-    if any(status not in (0, lane_results.UNMEASURED) for status in statuses): return 1
+    """1 when any status failed, else resources.BUSY when any was not run for its host's reason, such as a locked
+    screen, else UNMEASURED when any was unmeasured, else 0. A lane that was not run says nothing of the commits, so
+    the group gives no verdict rather than failing them (vocaro/queuekeeper#200)."""
+    if any(status not in (0, lane_results.UNMEASURED, resources.BUSY) for status in statuses): return 1
+    if resources.BUSY in statuses: return resources.BUSY
     return lane_results.UNMEASURED if lane_results.UNMEASURED in statuses else 0
 
 
@@ -156,8 +167,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             raise
         else:
             detail = None
-        verdict = "passed" if status == 0 else "unmeasured" if status == lane_results.UNMEASURED else "failed"
-        seconds = conclude(name, lane, log, began, status, verdict, detail)
+        seconds = conclude(name, lane, log, began, status, verdict_of(status), detail)
         lines = [f"{outcome(status)} {name} ({seconds}s, status {status}): {log}"]
         if detail: lines.append(f"    {detail}")
         if outcome(status) != "PASS":

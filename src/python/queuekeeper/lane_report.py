@@ -489,7 +489,7 @@ class Report:
         known = isinstance(status, int) and error is None
         if not known: verdict = "stopped" if error is not None else "not run"
         elif status == lane_results.UNMEASURED: verdict = "unmeasured"
-        elif directory is None: verdict = "not run"
+        elif directory is None or status == resources.BUSY: verdict = "not run"
         else: verdict = "passed" if status == 0 else "failed"
         ending = f" (exit {status})" if isinstance(status, int) and status else ""
         # One line when nothing ran: the refusal or reason queuekeeper printed just before it says the rest.

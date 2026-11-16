@@ -112,6 +112,9 @@ SETTLE_POLL = 15
 SETTLE_REPORT = 600
 # queuekeeper's reading of a Mac's screen in a lane's log (cli.screen_reading, offload_host.screen_line).
 SCREEN_LINE = re.compile(r"^queuekeeper: (screen: .*)$", re.MULTILINE)
+# The line in which a lane says it was not run on a Mac, and why, such as a locked screen, as qk run writes it before
+# exiting 75; indented where a group quotes its member's log (parallel.lanes).
+NOT_RUN_LINE = re.compile(r"^[ \t]*queuekeeper: (\S+ not run on .+)$", re.MULTILINE)
 # The most of an unmeasured test's line a hold's reason quotes.
 UNMEASURED_SHOWN = 300
 # Times main may move past a passed batch, in carried-over steps, before the batch is gated again.
@@ -5060,8 +5063,8 @@ class Worker:
     def no_verdict_cause(self, result, log):
         """Why the gate that exited result gave no verdict, for a hold's reason: the lane's limit it reached, the
         tests its log reports unmeasured, else the error its receipt records (#288), else the last line in which its log
-        gives the project's own reason (lane_results.unmeasured_reasons, vocaro/queuekeeper#30), no admission, or a
-        shared host's configuration."""
+        gives the project's own reason (lane_results.unmeasured_reasons, vocaro/queuekeeper#30), the reason a lane that
+        was not run gave, such as a locked screen, else no admission, or a shared host's configuration."""
         if self.timed_out: return f"unmeasured: {self.timed_out}"
         if result == lane_results.UNMEASURED:
             try: said = log.read_text(errors="replace") if log else ""
@@ -5079,7 +5082,13 @@ class Worker:
             screens = SCREEN_LINE.findall(said)
             return (f"unmeasured: {len(found)} test{'' if len(found) == 1 else 's'}, the first {first}"
                     + (f"; the last reading {screens[-1].strip()}" if screens else ""))
-        if result == resources.BUSY: return "no admission: the host stayed at capacity"
+        if result == resources.BUSY:
+            # The lane's own reason, such as a locked screen, when it gave one: a group gives none of its own when a
+            # member was not run (vocaro/queuekeeper#200).
+            try: said = log.read_text(errors="replace") if log else ""
+            except OSError: said = ""
+            refused = NOT_RUN_LINE.findall(said)
+            return f"not run: {shortened(refused[-1].strip())}" if refused else "no admission: the host stayed at capacity"
         # A Mac whose provision lane failed before the lane says which Mac and where that lane's log is, this Mac
         # as much as the second (vocaro/queuekeeper#19).
         try: said = log.read_text(errors="replace") if log else ""

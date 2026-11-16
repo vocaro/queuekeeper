@@ -887,7 +887,11 @@ class LaneGroupTests(unittest.TestCase):
                  "unmeasured": say(unmeasured), "short": say("Ran 1 test", minimumTests=2),
                  # Fixed: the slow lane's 1 s timeout is the behavior under test; the others have none.
                  "slow": {"command": [sys.executable, "-c", "import time; time.sleep(60)"], "timeout": 1}}
+        lanes["notrun"] = say("queuekeeper: notrun not run on this Mac: its screen is locked", resources.BUSY)
+        # A lane not run for its Mac's reason, exit 75, says nothing of the commits: the group is not run, and no
+        # failure, rather than failed (vocaro/queuekeeper#200). The short lane's case stays last, read after the loop.
         cases = {("pass",): 0, ("pass", "unmeasured"): 3, ("pass", "slow"): 3, ("pass", "unmeasured", "fail"): 1,
+                 ("pass", "notrun"): 75, ("pass", "notrun", "unmeasured"): 75, ("pass", "notrun", "fail"): 1,
                  ("pass", "short"): 1}
         for members, expected in cases.items():
             with self.subTest(members):
@@ -897,11 +901,17 @@ class LaneGroupTests(unittest.TestCase):
                 receipt = json.loads((self.root / ".build/queuekeeper/group/source.json").read_text())
                 # Every lane runs to its own end, whatever the others did.
                 self.assertEqual(sorted(receipt["lanes"]), sorted(members))
-                self.assertEqual(receipt["outcome"], {0: "passed", 1: "failed", 3: "unmeasured"}[expected])
+                self.assertEqual(receipt["outcome"], {0: "passed", 1: "failed", 3: "unmeasured", 75: "not-run"}[expected])
                 for member in members:
                     own = json.loads((self.root / f".build/queuekeeper/group/lanes/{member}.json").read_text())
                     self.assertEqual(own["outcome"], {"pass": "passed", "fail": "failed", "short": "failed",
-                                                      "unmeasured": "unmeasured", "slow": "unmeasured"}[member])
+                                                      "unmeasured": "unmeasured", "slow": "unmeasured",
+                                                      "notrun": "not run"}[member])
+                if expected == 75:
+                    self.assertIn("NOT RUN notrun (", output)
+                    self.assertIn("qk run group: not run (exit 75)", output)
+                    self.assertRegex(output, r"lanes: 1 passed, 0 failed, [01] unmeasured( \(unmeasured\))?, 1 not run \(notrun\)")
+                    self.assertIn("queuekeeper: notrun not run on this Mac: its screen is locked", output)
         self.assertIn("Expected at least 2 executed tests; observed 1", output)
         self.assertIn("FAIL short", output)
         # A lane too short for its minimum, and one its timeout ended, say why beside their counts.

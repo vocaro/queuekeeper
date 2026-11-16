@@ -164,7 +164,8 @@ def conclude(directory, receipt, status, **fields):
     status: passed only for 0, so a zero exit that ran too few tests is failed, and not-started for a command that never
     started (not_started)."""
     outcome = "passed" if status == 0 else "unmeasured" if status == lane_results.UNMEASURED else \
-        "not-started" if receipt.get("notStarted") else "build-failed" if compile_failed(receipt) else "failed"
+        "not-started" if receipt.get("notStarted") else "build-failed" if compile_failed(receipt) else \
+        "not-run" if status == BUSY else "failed"
     receipt.update(outcome=outcome, **fields)
     (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
 

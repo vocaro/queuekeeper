@@ -1922,6 +1922,12 @@ class NoVerdict(Fixture):
                        "what provisioning needs\n")
         self.assertEqual(worker.no_verdict_cause(78, log), unprovisioned)
         self.assertEqual(worker.no_verdict_cause(75, log), "no admission: the host stayed at capacity")
+        # A group's member not run for a locked screen gives its reason, quoted in the group's log (#200).
+        refusal = ("mac-test-suites not run on this Mac (studio): the lane needs an unlocked screen, and this Mac's is "
+                   "locked; release the outer admission before waiting for an unlocked screen and retry")
+        log.write_text(f"RUN mac-suites\nNOT RUN mac-suites (2s, status 75): /x/mac-suites.log\n    queuekeeper: "
+                       f"screen: locked on this Mac\n    queuekeeper: {refusal}\nqk run gate: not run (exit 75), on this Mac\n")
+        self.assertEqual(worker.no_verdict_cause(75, log), f"not run: {refusal}")
         worker.timed_out = "gate reached its limit: after 7200 s"
         self.assertEqual(worker.no_verdict_cause(3, log), "unmeasured: gate reached its limit: after 7200 s")
 

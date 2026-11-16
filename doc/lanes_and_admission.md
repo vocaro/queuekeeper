@@ -34,7 +34,11 @@ statement of what it needs from the machine:
 - **Arguments.** `qk run LANE -- ARGUMENTS` appends the arguments to the lane's command, to run
   some of its tests. A lane whose command selects its own tests says `"arguments": false`, and such
   a run is then refused at once, with exit status 2, before anything is staged or sent to another Mac.
-- **Groups.** A lane group runs its members side by side under one admission.
+- **Groups.** A lane group runs its members side by side under one admission. A member that fails
+  fails the group. Otherwise a member not run for its Mac's reason, such as a locked screen (exit 75),
+  leaves the group not run with exit 75, and an unmeasured one leaves it unmeasured: the merge queue
+  reads either as no verdict, not as a failure of the commits
+  ([#200](https://github.com/vocaro/queuekeeper/issues/200)).
 - **Budgets.** `budgetMinutes` warns when the median of the gate's own work, from its admission to its
   end, drifts past the target, and names the slowest parts, the median wait for admission and the median
   landing latency beside it.
