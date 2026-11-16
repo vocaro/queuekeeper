@@ -245,6 +245,8 @@ def main(argv):
             mac, found = add(args.ssh, args.name, join=remote.join, here=offload_host.hardware_id())
             print(f"Added {line(mac)}")
             if found.get("moved"): print(f"Moved {found['from']} there to {found['to']}, with its checkouts")
+            if found.get("linked"):
+                print(f"Linked {found['linked']} there to it, for build state that still names the old path")
             for problem in found.get("unrepaired", []): print(f"A checkout there was not repaired: {problem}")
             if found.get("left"): print(f"Not moved there: {found['left']}")
             print(f"Next, give it the tools the lanes need: `qk remote setup --host {mac['name']}`")

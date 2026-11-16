@@ -766,7 +766,9 @@ asks it for its hardware UUID and its local host name. The Mac is called by that
 what tells one Mac from another, so this Mac, and a Mac the farm already has under another name or
 destination, are refused. A Mac that kept its repositories and checkouts in
 `~/Development/build-host` has that directory moved to `~/Development/queuekeeper-farm` as it is
-added, with its checkouts repaired where they now are, unless a run holds one of them or the new
+added, with its checkouts repaired where they now are and the old path left as a link to the new
+one, since a build's own state, such as Xcode's record of a package's binary artifacts, still names
+it; a Mac moved before that link was made is given it when it is added again. The move does not happen when a run holds one of them or the new
 directory exists already, which `add` says. Then follow [the setup](#setting-up-another-mac)
 for it, with `--host NAME`.
 
@@ -801,7 +803,7 @@ the first Mac that takes work now, or the one `--host` names.
 #### Check gate placement without running a gate
 
 Run `python3 scripts/qk queue placement` from the project. It reads the first gate lane on
-`origin/main`, lists the build Macs in their configured order, and checks each host's current
+`origin/main`, lists the farm's Macs in their order, and checks each host's current
 capacity over SSH. Give a lane name to inspect a different lane, or add `--json` to save the
 timestamped readings. This command leaves queue entries, workers, and admissions alone.
 

@@ -2506,7 +2506,7 @@ class FarmMacSettle(Fixture):
     def macs(self, there, here):
         """Another Mac whose capacity reads there and this Mac's here, each a reading or a function of nothing."""
         read = lambda found: found() if callable(found) else found
-        with patch.object(mq.remote, "configured", return_value=self.HOST), \
+        with farm_fixture.only(self.HOST), \
                 patch.object(mq.remote, "capacity_there", side_effect=lambda host: read(there)), \
                 patch.object(mq.offload_host, "capacity", side_effect=lambda **_: read(here)):
             yield
@@ -2579,7 +2579,7 @@ class FarmMacSettle(Fixture):
         self.assertEqual(len(asked), 2)
         self.assertEqual(self.pressure.call_count, 2)
         log = said.getvalue()
-        self.assertIn("the lanes run next on whichever Mac admits gate first, since neither has spare capacity", log)
+        self.assertIn("the lanes run next on whichever Mac admits gate first, since none has spare capacity", log)
         self.assertIn(f"{self.HOST} and this Mac settled after", log)
 
     def test_the_target_is_read_at_each_look_as_slots_come_and_go(self):
@@ -6893,7 +6893,7 @@ class LostLocalNetwork(Fixture):
     def test_a_worker_that_lost_the_local_network_exits_holding_nothing_before_a_gate(self):
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with patch.object(mq.remote, "configured", return_value="fake-mac"), \
+        with farm_fixture.only("fake-mac"), \
                 patch.object(mq.remote, "local_network_lost", return_value=self.LOST), \
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
@@ -6904,7 +6904,7 @@ class LostLocalNetwork(Fixture):
                       said.getvalue())
         self.assertFalse(mq.Queue(self.repo).working())
         # The next worker, a live session's, lands it.
-        with patch.object(mq.remote, "configured", return_value="fake-mac"), \
+        with farm_fixture.only("fake-mac"), \
                 patch.object(mq.remote, "local_network_lost", return_value=None), patch("builtins.print"):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -6919,7 +6919,7 @@ class LostLocalNetwork(Fixture):
             if command[:3] != ["python3", "scripts/qk", "run"]: return real(command, *arguments, **options)
             ran.append(options["env"])
             return status
-        with patch.object(mq.remote, "configured", return_value="fake-mac"), \
+        with farm_fixture.only("fake-mac"), \
                 patch.object(mq.remote, "local_network_lost", side_effect=lambda: self.LOST if ran else None), \
                 patch.object(mq.processes, "run", lane):
             yield ran
@@ -6940,7 +6940,7 @@ class LostLocalNetwork(Fixture):
         self.assertNotIn("of at most", said.getvalue())
         self.assertFalse(mq.Queue(self.repo).working())
         # The next worker, a live session's, lands it.
-        with patch.object(mq.remote, "configured", return_value="fake-mac"), \
+        with farm_fixture.only("fake-mac"), \
                 patch.object(mq.remote, "local_network_lost", return_value=None), patch("builtins.print"):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")

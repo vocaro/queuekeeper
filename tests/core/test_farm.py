@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,7 +37,7 @@ class FarmCase(unittest.TestCase):
 
 class RegistryTests(FarmCase):
     def test_no_file_is_a_farm_with_no_mac(self):
-        self.assertEqual((farm.read(), farm.destinations(), remote.configured(), remote.gate_hosts()), ([], (), None, None))
+        self.assertEqual((farm.read(), farm.destinations(), remote.configured()), ([], (), None))
 
     def test_a_mac_is_added_under_its_own_name_or_the_one_given_and_tried_in_the_order_added(self):
         first, second = self.add("studio.local"), self.add("mini.local", "render-box")
@@ -44,7 +45,7 @@ class RegistryTests(FarmCase):
                          ("Studio", "AAAA-1", "studio.local", farm.ACTIVE))
         self.assertEqual(second["name"], "render-box")
         self.assertEqual(farm.destinations(), ("studio.local", "mini.local"))
-        self.assertEqual((remote.configured(), remote.gate_hosts()), ("studio.local", ("studio.local", "mini.local")))
+        self.assertEqual((remote.configured(), farm.destinations()), ("studio.local", ("studio.local", "mini.local")))
         # A name reaches its Mac whatever its case; an SSH destination the farm does not name is itself.
         self.assertEqual(farm.destination("RENDER-BOX"), "mini.local")
         self.assertEqual(farm.destination("elsewhere.local"), "elsewhere.local")
@@ -83,7 +84,7 @@ class RegistryTests(FarmCase):
     def test_a_paused_mac_takes_no_work_until_it_is_resumed(self):
         self.add("studio.local"), self.add("mini.local")
         self.assertEqual(farm.pause("Studio", "its disk is being replaced")["pausedBecause"], "its disk is being replaced")
-        self.assertEqual((remote.configured(), remote.gate_hosts()), ("mini.local", None))
+        self.assertEqual((remote.configured(), farm.destinations()), ("mini.local", ("mini.local",)))
         self.assertIn("paused (its disk is being replaced)", farm.line(farm.find("studio")))
         # Named, it is still reached, as setup and a check of it need.
         self.assertEqual(remote.chosen("Studio"), "studio.local")
@@ -137,12 +138,13 @@ class CommandTests(FarmCase):
     def test_the_owner_adds_lists_renames_pauses_resumes_and_removes_a_mac(self):
         self.assertEqual(self.qk(), (0, "The farm has no Mac beside this one: add one with `qk farm add DESTINATION`\n", ""))
         self.macs["studio.local"] = {**STUDIO, "moved": True, "from": "/Users/o/Development/build-host",
-                                     "to": "/Users/o/Development/queuekeeper-farm"}
+                                     "to": "/Users/o/Development/queuekeeper-farm", "linked": "/Users/o/Development/build-host"}
         status, output, error = self.qk("add", "studio.local")
         self.assertEqual((status, error), (0, ""))
         self.assertEqual(output.splitlines(), [
             "Added Studio  active  ssh studio.local",
             "Moved /Users/o/Development/build-host there to /Users/o/Development/queuekeeper-farm, with its checkouts",
+            "Linked /Users/o/Development/build-host there to it, for build state that still names the old path",
             "Next, give it the tools the lanes need: `qk remote setup --host Studio`"])
         self.assertEqual(self.qk("add", "mini.local", "--name", "render")[0], 0)
         self.assertEqual(self.qk("rename", "render", "Render-Box"), (0, "render is now Render-Box\n", ""))
@@ -225,8 +227,11 @@ class AdoptRootTests(unittest.TestCase):
     def test_the_directory_moves_whole_and_its_checkouts_work_where_they_now_are(self):
         commit = self.warm()
         found = offload_host.adopt_root(remote.ROOT, home=self.home)
-        self.assertEqual(found, {"moved": True, "from": str(self.old), "to": str(self.new)})
-        self.assertFalse(self.old.exists())
+        self.assertEqual(found, {"moved": True, "from": str(self.old), "to": str(self.new), "linked": str(self.old)})
+        # The old path stays as a link, for build state that recorded it, such as Xcode's of a package's artifacts.
+        self.assertTrue(self.old.is_symlink())
+        self.assertEqual(self.old.resolve(), self.new)
+        self.assertEqual((self.old / "checkouts/source/0/source/file.txt").read_text(), "warm\n")
         self.assertEqual((self.new / "git-credentials").read_text(), "token\n")
         checkout = self.new / "checkouts/source/0/source"
         self.assertEqual(self.git("-C", str(checkout), "rev-parse", "HEAD"), commit)
@@ -236,6 +241,14 @@ class AdoptRootTests(unittest.TestCase):
         self.assertNotIn("prunable", listed)
         # Asked again, as a Mac added again is, there is nothing left to move.
         self.assertEqual(offload_host.adopt_root(remote.ROOT, home=self.home), {"moved": False})
+        # A Mac moved before the link was made is given it when it is added again, and one with no checkouts is not.
+        self.old.unlink()
+        self.assertEqual(offload_host.adopt_root(remote.ROOT, home=self.home), {"moved": False, "linked": str(self.old)})
+        self.assertEqual(self.old.resolve(), self.new)
+        self.old.unlink()
+        shutil.rmtree(self.new / "checkouts")
+        self.assertEqual(offload_host.adopt_root(remote.ROOT, home=self.home), {"moved": False})
+        self.assertFalse(self.old.is_symlink())
 
     def test_nothing_moves_onto_a_directory_that_exists_or_from_under_a_run(self):
         self.warm()

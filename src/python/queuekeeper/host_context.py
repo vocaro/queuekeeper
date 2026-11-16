@@ -77,12 +77,12 @@ def session(flags=READ, environment=None):
             "consoleAccess": bool(flags & CONSOLE), "sshVariables": variables}
 
 
-def farm_mac():
-    """This Mac's view of another Mac, without connecting: the SSH destination the canonical
-    resolver names here (remote.configured), what `ssh -G` resolves it to, and the Mac this
+def farm_mac(destination=None):
+    """This Mac's view of one of the farm's Macs, without connecting: its SSH destination, the one given or else
+    the first that takes work now (remote.configured), what `ssh -G` resolves it to, and the Mac this
     Mac's device record defers physical devices to, which every qk remote run sets on the second
     Mac's record and so marks this Mac as that Mac's second Mac."""
-    destination = remote.configured()
+    destination = destination or remote.configured()
     hostname = (remote.ssh_settings(destination).get("hostname") or destination) if destination else None
     record = offload_host.device_record()
     return {"destination": destination, "hostname": hostname, "deferredTo": record.get("deferredTo")}

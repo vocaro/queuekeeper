@@ -579,13 +579,6 @@ def configured():
     return next(iter(farm.destinations()), None)
 
 
-def gate_hosts():
-    """The SSH destinations of the farm's Macs that take work now, in order, for queue gates; or None while the farm
-    has at most one, which the ordinary offer serves."""
-    hosts = farm.destinations()
-    return hosts if len(hosts) > 1 else None
-
-
 def chosen(host=None):
     """The SSH destination a command acts on: the farm's Mac that host names, or host itself, a destination; without
     one, the first Mac that takes work now. No Mac at all is refused."""
@@ -1348,7 +1341,7 @@ def ran_where(receipt):
     """Where a kept receipt's run ran, as eng release and `qk remote passed` say it."""
     if receipt.get("ranOn") == HERE:
         return f"on this Mac ({receipt.get('mac') or 'unnamed'}), in {receipt.get('checkout') or 'a worktree'}"
-    return f"on another Mac, {describe(receipt['result']['host'])}"
+    return f"on {receipt.get('farmMac') or receipt.get('host') or 'another Mac'}, {describe(receipt['result']['host'])}"
 
 
 def uncounted(root, lane):
@@ -1407,15 +1400,17 @@ def brought_back(root, sent, status, products=True):
     `qk admit` chose that Mac for the command, while `qk remote admit` was sent there on purpose."""
     ran = sent.get("ran")
     if not ran: return status
+    # The Mac it ran on, by its name in the farm.
+    where = ran.get("mac") or "another Mac"
     if products:
-        print(f"queuekeeper: the command ran on another Mac, so its build products and other files Git ignores "
+        print(f"queuekeeper: the command ran on {where}, so its build products and other files Git ignores "
               f"stayed in {ran.get('checkout') or 'its checkout there'}; `qk admit --here` runs it on this Mac and "
               "keeps them here", file=sys.stderr, flush=True)
     changes = ran.get("changes")
     # The command did not run there, as when another Mac declined it, or its provision lane failed.
     if changes is None: return status
     if changes.get("error"):
-        print(f"queuekeeper: what the command changed in the checkout could not be gathered on another Mac, so it stays "
+        print(f"queuekeeper: what the command changed in the checkout could not be gathered on {where}, so it stays "
               f"in {ran.get('checkout')} there: {changes['error']}", file=sys.stderr, flush=True)
         return UNAPPLIED
     files = changes.get("files") or []
@@ -1423,10 +1418,10 @@ def brought_back(root, sent, status, products=True):
     patch = Path(ran["results"]) / CHANGES
     named = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
     if not ran.get("returned") or not patch.is_file():
-        print(f"queuekeeper: the command changed {named} on another Mac, and the patch did not come back; that "
+        print(f"queuekeeper: the command changed {named} on {where}, and the patch did not come back; that "
               f"Mac's copy is {ran.get('checkout')}/.build/queuekeeper/admit/{CHANGES}", file=sys.stderr, flush=True)
         return UNAPPLIED
-    return apply_changes(root, sent["commit"], patch, named, "on another Mac", Path(ran["results"]).name, status)
+    return apply_changes(root, sent["commit"], patch, named, f"on {where}", Path(ran["results"]).name, status)
 
 
 def apply_changes(root, sent_commit, patch, named, where, name, status):
@@ -1991,7 +1986,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             sent.update(commit=commit, head=head, project=project, kit=kit, developer=developer, local=local,
                         preparation=preparation)
     if processes.requested() is not None:
-        raise processes.Interrupted(processes.requested(), "before another Mac started the run")
+        raise processes.Interrupted(processes.requested(), f"before {called(host)} started the run")
 
     results = base / name
     # Results are staged, so a refusal leaves the previous run's whole.
@@ -2128,7 +2123,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                                    "waitSeconds": wait}
     own = file_results(base, name, dispatch, staging, receipt)
     if sent is not None:
-        sent["ran"] = {"results": str(own), "checkout": result.get("checkout"), "changes": result.get("changes"),
+        sent["ran"] = {"mac": farm.named(host), "results": str(own), "checkout": result.get("checkout"), "changes": result.get("changes"),
                        "returned": CHANGES in returned}
     # A snapshot's result stays here: no branch holds it, so it is no commit's pass. Nor is a group's
     # serial reference: the group's pass is its lanes' side by side.
@@ -2167,8 +2162,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             print(f"remote: no log came back for {', '.join(member for member in members if member not in came)}",
                   file=sys.stderr, flush=True)
     if (remote.get("macOS"), remote.get("build")) != (local.get("macOS"), local.get("build")):
-        print(f"remote: another Mac runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
-              f"{local.get('macOS')} ({local.get('build')}): the result qualifies another Mac's platform",
+        print(f"remote: {called(host)} runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
+              f"{local.get('macOS')} ({local.get('build')}): the result qualifies that Mac's platform",
               file=sys.stderr, flush=True)
     if result.get("stage") == "provision" and status and not result["stopped"]:
         raise Misconfigured(f"{host} {UNPROVISIONED}: the provision lane exited {status} in "
@@ -2209,7 +2204,7 @@ def checkout_request(args):
 EXCLUSIVE_PARK_SECONDS = 900
 
 
-def exclusive_offers(name, offer, park, park_after=None, clock=time.monotonic, sleep=time.sleep):
+def exclusive_offers(name, offer, park, park_after=None, clock=time.monotonic, sleep=time.sleep, where="another Mac"):
     """offer()'s status once another Mac starts the exclusive work at once, or park()'s, its status after
     waiting in another Mac's queue, once EXCLUSIVE_PARK_SECONDS of offers it declined have passed.
 
@@ -2231,24 +2226,24 @@ def exclusive_offers(name, offer, park, park_after=None, clock=time.monotonic, s
             left = deadline - clock()
             if left <= 0: break
             if str(busy) != said:
-                print(f"queuekeeper: {name} waits to start on another Mac with every slot free, asked again every "
+                print(f"queuekeeper: {name} waits to start on {where} with every slot free, asked again every "
                       f"{OVERFLOW_WAIT_MAX}s or sooner, holding no place in its queue for {int(left)}s more: {busy}",
                       file=sys.stderr, flush=True)
                 said = str(busy)
             sleep(min(window, left))
             window = min(2 * window, OVERFLOW_WAIT_MAX)
-    print(f"queuekeeper: {name} takes its place in another Mac's queue after {EXCLUSIVE_PARK_SECONDS if park_after is None else park_after:g}s "
+    print(f"queuekeeper: {name} takes its place in {where}'s queue after {EXCLUSIVE_PARK_SECONDS if park_after is None else park_after:g}s "
           "of offers it declined, and its slots drain toward it", file=sys.stderr, flush=True)
     return park()
 
 
-def not_run_if_busy(name, send):
+def not_run_if_busy(name, send, where="another Mac"):
     """send()'s status, or BUSY, after saying so, when a named slot's wait ran out: nothing ran, as with
     cli.admitted_here, and Busy raised would be queuekeeper's own error, exit 2."""
     try:
         return send()
     except Busy as busy:
-        print(f"queuekeeper: {name} not run on another Mac: {busy}", file=sys.stderr, flush=True)
+        print(f"queuekeeper: {name} not run on {where}: {busy}", file=sys.stderr, flush=True)
         return BUSY
 
 
@@ -2305,7 +2300,7 @@ def main(root, config, args):
                                lease=held, serial=args.serial, sent=sent, slot=slot, slot_wait=slot_wait)
         if slot is not None:
             sending = send
-            send = lambda: not_run_if_busy(args.lane, sending)
+            send = lambda: not_run_if_busy(args.lane, sending, called(host))
         with processes.forwarding_signals():
             return extensions.DEVICES.carrying(held, root, host, work, args.lane, lambda: offering_here(
                 f"qk run --here {args.lane}", send) if lane.get("foreground") else send())
@@ -2338,10 +2333,10 @@ def main(root, config, args):
         free = ["admit", *kind, "--if-free", "--", *command]
         send = lambda: exclusive_offers("the command", lambda: brought_back(root, sent, execute(
             root, config, host, free, decline=True, lease=held, sent=sent, slot=slot, slot_wait=slot_wait,
-            changes=True), products=False), parked)
+            changes=True), products=False), parked, where=called(host))
     if slot is not None:
         sending = send
-        send = lambda: not_run_if_busy("the command", sending)
+        send = lambda: not_run_if_busy("the command", sending, called(host))
     with processes.forwarding_signals():
         return extensions.DEVICES.carrying(held, root, host, work, "admit", lambda: offering_here(
             "qk admit --foreground -- COMMAND", send) if args.foreground else send())
@@ -2483,7 +2478,7 @@ def crash_dialog_report(found, entry):
     return lines
 
 
-def install_script(formulae):
+def install_script(formulae, where="that Mac"):
     """Find Homebrew, put it first on the login shell's PATH in ~/.zprofile, and install formulae.
 
     Installing Homebrew itself needs another Mac's password, which only the owner types, so another
@@ -2495,7 +2490,7 @@ for candidate in {candidates}; do
     if [ -z "$brew" ] && [ -x "$candidate" ]; then brew=$candidate; fi
 done
 if [ -z "$brew" ]; then
-    echo "setup: Homebrew is not installed on another Mac. Its installer asks for another Mac's password, so install it there yourself (https://brew.sh), then run qk remote setup again." >&2
+    echo "setup: Homebrew is not installed on {where}. Its installer asks for that Mac's password, so install it there yourself (https://brew.sh), then run qk remote setup again." >&2
     exit {NO_HOMEBREW}
 fi
 # Homebrew's bin must come before /usr/bin, or the system's python3 3.9 shadows Homebrew's, as it
@@ -2573,7 +2568,7 @@ def setup(host, formulae, modules, check, runtimes=False, root=None):
     wanted = list(dict.fromkeys([*SETUP_FORMULAE, *formulae]))
     if not check:
         # Line by line through this process, so a long brew install shows as it goes.
-        with subprocess.Popen([*SSH, *moved(host), host, login(install_script(wanted))], env=environment(), text=True,
+        with subprocess.Popen([*SSH, *moved(host), host, login(install_script(wanted, called(host)))], env=environment(), text=True,
                               errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as running:
             for line in running.stdout: print(line, end="", flush=True)
         installed = running.returncode
@@ -3636,38 +3631,35 @@ def limit_words(reading, key, value, mac):
     return resources.limit_words(key, value, *limit_from(reading, key), mac)
 
 
-def retry_macs(host, lanes, lane, screen=False):
-    """([each Mac, another Mac as host and this Mac as None], why them, to follow "next on") that a run of lanes'
-    lane, about to start, could use, by each Mac's capacity now as Offer.attempt reads it: the merge queue's settle wait
-    before a retry reads these (vocaro-engineering#253). The Mac cannot be known for certain beforehand, since it is
-    chosen as the run starts: another Mac when it has spare capacity for the lane, this Mac when only it has, and
-    whichever admits the lane first when neither has, so then both could take it. Even another Mac's spare capacity
-    is only its reading, and it can still decline the offer: then this Mac takes the run. screen says the lane needs an
-    unlocked screen, for this run if not by its configuration."""
+def retry_macs(hosts, lanes, lane, screen=False):
+    """([each Mac, one of the farm's by its SSH destination and this Mac as None], why them, to follow "next on")
+    that a run of lanes' lane, about to start, could use, by each Mac's capacity now as Offer.attempt reads it: the
+    merge queue's settle wait before a retry reads these (vocaro-engineering#253). hosts are the farm's Macs the lane
+    may go to, in order. The Mac cannot be known for certain beforehand, since it is chosen as the run starts: the
+    first of the farm's Macs with spare capacity for the lane, this Mac when only it has, and whichever admits the
+    lane first when none has, so then each could take it. Even a Mac's spare capacity is only its reading, and it can
+    still decline the offer: then another takes the run. screen says the lane needs an unlocked screen, for this run
+    if not by its configuration."""
     settings = lanes[lane]
     needs = bool(settings.get("wholeHost")), settings.get("resource") == "exclusive", screen or unlocked_screen(lanes, lane)
-    if isinstance(host, tuple):
-        busy = []
-        for candidate in host:
-            try: reason = spare(capacity_there(candidate), candidate, *needs, extra=True)
-            except Unavailable: continue
-            if reason is None:
-                return [candidate], f"{candidate}, the first build Mac with spare capacity for {lane}"
-            busy.append(candidate)
-        reading = offload_host.capacity()
-        if not busy or (not reading.get("error") and spare(reading, HERE, *needs) is None):
-            return [None], f"this Mac, since no build Mac reports spare capacity for {lane}"
-        return [*busy, None], f"whichever Mac admits {lane} first, since none reports spare capacity"
-    try: there = spare(capacity_there(host), farm.named(host), *needs)
-    except Unavailable as away:
-        return [None], f"this Mac, since {host}'s capacity cannot be read: {getattr(away, 'problem', away)}"
-    if there is None: return [host], f"{host}, which has spare capacity for {lane} and is asked first"
+    hosts = (hosts,) if isinstance(hosts, str) else tuple(hosts)
+    full, said = [], []
+    for host in hosts:
+        name = farm.named(host)
+        try: reason = spare(capacity_there(host), name, *needs, extra=len(hosts) > 1)
+        except Unavailable as away:
+            said.append(f"{name}'s capacity cannot be read: {getattr(away, 'problem', away)}")
+            continue
+        if reason is None: return [host], f"{name}, which has spare capacity for {lane} and is asked first"
+        full.append(host)
+        said.append(reason)
+    if not full: return [None], f"this Mac, since {'; '.join(said) or NO_MAC}"
     reading = offload_host.capacity()
     here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
             else spare(reading, HERE, *needs))
-    if here is None: return [None], f"this Mac, the one with spare capacity for {lane}: {there}"
-    return [host, None], (f"whichever Mac admits {lane} first, since neither has spare capacity for it ({there}; {here}), "
-                          "so both must settle")
+    if here is None: return [None], f"this Mac, the one with spare capacity for {lane}: {'; '.join(said)}"
+    return [*full, None], (f"whichever Mac admits {lane} first, since none has spare capacity for it "
+                           f"({'; '.join(said)}; {here}), so each must settle")
 
 
 def pressure_there(host):

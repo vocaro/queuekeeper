@@ -15,6 +15,7 @@ from queuekeeper import cli, lane_results, offload_host, remote
 from queuekeeper_mac_desktop import keychain
 from queuekeeper import host_context
 import host_isolation
+from test_support import farm as farm_fixture
 from host_isolation import stretched
 
 # Invented Mac names: the workstation that sends work, another Mac, and a third Mac neither knows.
@@ -288,6 +289,31 @@ class RecoverTests(unittest.TestCase):
 
     def present(self, mac, path=LOGIN):
         return {"mac": mac, "home": HOME, "path": path, "exists": True, "keychains": [path]}
+
+    def test_among_several_macs_the_target_is_the_one_of_that_name_in_the_farm_or_that_gives_it_when_asked(self):
+        lines, asked = [], []
+        names = {"build-host": SECOND, "rented": THIRD}
+
+        def ask(destination, request):
+            asked.append(destination)
+            return self.present(names[destination])
+        def recover(target):
+            lines.clear(), asked.clear()
+            with farm_fixture.only("build-host", farm_fixture.mac("rented", "Loft")), \
+                    patch.object(host_context, "this_mac", return_value=WORKSTATION), \
+                    patch.object(host_context, "farm_mac", side_effect=lambda destination=None: view(destination, f"{destination}.local")), \
+                    patch.object(host_context, "session", return_value=GUI), patch.object(remote, "reachable"):
+                return keychain.recover(keychain.DEFAULT, target, None, lines.append, ask)
+        # By the name it gives of itself: each Mac is asked, in the farm's order, until one is it.
+        self.assertEqual((recover(THIRD), asked), (0, ["build-host", "rented"]))
+        self.assertIn(f"Target: {THIRD}", "\n".join(lines))
+        self.assertIn("ssh -t rented", "\n".join(lines))
+        # By its name in the farm, whatever its case: that Mac alone is asked.
+        self.assertEqual((recover("loft"), asked), (0, ["rented"]))
+        self.assertIn(f"Target: {THIRD}", "\n".join(lines))
+        # With no target, the first; and a name no Mac has is refused after each was asked.
+        self.assertEqual((recover(None), asked), (0, ["build-host"]))
+        self.assertEqual((recover("nowhere"), asked), (2, ["build-host", "rented"]))
 
     def test_from_the_workstation_it_checks_the_farm_mac_s_keychain_and_prints_both_commands(self):
         status, said, asked, checked, read_here = self.recover(

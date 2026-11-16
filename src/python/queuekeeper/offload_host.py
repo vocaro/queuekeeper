@@ -497,11 +497,18 @@ def adopt_root(root, earlier=EARLIER_ROOT, home=None):
     """Move the directory this Mac kept its repositories and checkouts in, earlier under its home, to root, so that
     its warm checkouts stay, and return what became of it: {"moved": True} with the worktrees repaired, {"moved":
     False} when there is nothing to move, and with "left", why earlier stays where it is. Each checkout is a worktree
-    of a bare repository, and each records the other's path, so Git repairs both after the move; a build cache that
-    holds the old path is the build's to renew. Nothing moves while a run there holds a checkout."""
+    of a bare repository, and each records the other's path, so Git repairs both after the move. A build's own
+    state holds the old path too, as Xcode's record of a package's binary artifacts does, and nothing repairs that:
+    every BreezEPUB build on a moved Mac failed for a framework it looked for under the old path (2026-11-16). So
+    the old path stays as a link to the new one, "linked" in what is returned, and a Mac moved before the link was
+    made is given it when it is added again. Nothing moves while a run there holds a checkout."""
     home = Path.home() if home is None else Path(home)
     old, new = home / earlier, home / root
-    if old == new or old.is_symlink() or not old.is_dir(): return {"moved": False}
+    if old == new or old.is_symlink(): return {"moved": False}
+    if not old.is_dir():
+        # Moved already, by a toolkit that left no link: its checkouts' build state still names the old path.
+        if not old.exists() and (new / "checkouts").is_dir() and link(old, new): return {"moved": False, "linked": str(old)}
+        return {"moved": False}
     if new.exists(): return {"moved": False, "left": f"{old} stays, since {new} exists already: merge or remove it"}
     running = [pid for pid, start in dispatchers(old / "checkouts")
                if start is None or alive({"pid": pid, "start": start})]
@@ -521,7 +528,18 @@ def adopt_root(root, earlier=EARLIER_ROOT, home=None):
             if checkouts: git("--git-dir", str(repository), "worktree", "repair", *checkouts)
         except (OSError, RuntimeError) as error:
             unrepaired.append(f"{repository.name}: {error}")
-    return {"moved": True, "from": str(old), "to": str(new), **({"unrepaired": unrepaired} if unrepaired else {})}
+    return {"moved": True, "from": str(old), "to": str(new), **({"linked": str(old)} if link(old, new) else {}),
+            **({"unrepaired": unrepaired} if unrepaired else {})}
+
+
+def link(old, new):
+    """Make old a link to new, relative when they share a folder, and say whether it is one now."""
+    try:
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.symlink_to(new.name if old.parent == new.parent else new, target_is_directory=True)
+    except OSError:
+        return False
+    return True
 
 
 def join(request):

@@ -308,6 +308,20 @@ class SimulatorTests(Fixture):
         for key in ("beta", "unused"):
             self.assertEqual(items[key].status, disk.CANDIDATE, items[key].reason)
             self.assertIn("build-host holds a copy no simulator uses there", items[key].reason)
+        # Each of the farm's Macs is weighed, by its name in the farm: a copy any of them counts as used keeps the build.
+        def across(**readings):
+            host = self.host(simulators=listing, runtimes=images, offload_host="build-host",
+                             offload_hosts=tuple(readings), remote_runtimes_by=readings)
+            return {item.path.split(" ")[0]: item for item in disk.inventory(host, disk.Sizes(measure=False), ["runtime"])}
+        none, used = {"images": []}, {"images": [copy("24A5423a", ["A"])]}
+        several = across(**{"build-host": none, "rented": none})
+        self.assertEqual(several["beta"].status, disk.CANDIDATE, several["beta"].reason)
+        self.assertIn("build-host holds no copy", several["beta"].reason)
+        self.assertIn("rented holds no copy", several["beta"].reason)
+        several = across(**{"build-host": none, "rented": used})
+        self.assertEqual(several["beta"].status, disk.KEPT)
+        self.assertIn("rented holds a copy, which the 1 simulators on its identifier there count as used", several["beta"].reason)
+        self.assertEqual(across(**{"build-host": none, "rented": {"error": "asleep"}})["beta"].status, disk.KEPT)
         items = found({"images": [copy("24A5423a", ["A", "B"]), copy("24A100", None)]})
         self.assertEqual(items["beta"].status, disk.KEPT)
         self.assertIn("superseded by 24A434", items["beta"].reason)

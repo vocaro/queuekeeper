@@ -11,7 +11,7 @@ import plistlib
 import re
 import subprocess
 
-from queuekeeper import disk
+from queuekeeper import disk, farm
 from queuekeeper.config import TOOLKIT_ROOT
 from queuekeeper.disk import (
     CANDIDATE,
@@ -242,25 +242,30 @@ def across(host, item, build):
     (vocaro-engineering#123): `qk remote setup --runtimes` deletes a runtime only one Mac lists from that Mac
     when no simulator on its identifier uses it there, and copies it to another Mac otherwise. So a build
     removed here while another Mac's copy counts as used would only be copied back."""
-    if not host.offload_host or item.status != CANDIDATE: return item
-    there, second = host.remote_runtimes or {"error": "not read"}, host.offload_host
+    macs = host.offload_hosts or tuple(filter(None, [host.offload_host]))
+    if not macs or item.status != CANDIDATE: return item
     def kept(why): return Item(item.category, item.path, KEPT, f"{item.reason}; but {why}", item.size, None, item.idle)
-    if "error" in there:
-        return kept(f"{second}'s runtimes could not be read ({there['error']}), so whether `qk remote setup "
-                    "--runtimes` would copy it back is unknown")
-    copies = [image for image in there["images"] if isinstance(image, dict) and image.get("build") == build]
-    if not copies:
-        item.reason += f"; {second} holds no copy, so removing it here also leaves the Macs alike"
-    elif any(image.get("users") is None for image in copies):
-        return kept(f"{second} holds a copy whose simulators could not be listed, so whether `qk remote setup "
-                    "--runtimes` would copy it back is unknown")
-    elif any(image["users"] for image in copies):
-        users = max(len(image["users"]) for image in copies)
-        return kept(f"{second} holds a copy, which the {users} simulators on its identifier there count as used, so "
-                    f"`qk remote setup --runtimes` would copy it back here; it can go once {second}'s copy can")
-    else:
-        item.reason += (f"; {second} holds a copy no simulator uses there, which `qk remote setup --runtimes` then "
-                        "deletes, leaving the Macs alike")
+    # Each of the farm's Macs in turn: one whose copy counts as used, or cannot be judged, keeps the build here.
+    for mac in macs:
+        there = (host.remote_runtimes_by or {}).get(mac) or (host.remote_runtimes if mac == host.offload_host else None) \
+            or {"error": "not read"}
+        second = farm.named(mac)
+        if "error" in there:
+            return kept(f"{second}'s runtimes could not be read ({there['error']}), so whether `qk remote setup "
+                        "--runtimes` would copy it back is unknown")
+        copies = [image for image in there["images"] if isinstance(image, dict) and image.get("build") == build]
+        if not copies:
+            item.reason += f"; {second} holds no copy, so removing it here also leaves the Macs alike"
+        elif any(image.get("users") is None for image in copies):
+            return kept(f"{second} holds a copy whose simulators could not be listed, so whether `qk remote setup "
+                        "--runtimes` would copy it back is unknown")
+        elif any(image["users"] for image in copies):
+            users = max(len(image["users"]) for image in copies)
+            return kept(f"{second} holds a copy, which the {users} simulators on its identifier there count as used, so "
+                        f"`qk remote setup --runtimes` would copy it back here; it can go once {second}'s copy can")
+        else:
+            item.reason += (f"; {second} holds a copy no simulator uses there, which `qk remote setup --runtimes` then "
+                            "deletes, leaving the Macs alike")
     return item
 
 
@@ -488,6 +493,8 @@ class Host(disk.Host):
     # Another Mac's runtime images as `qk remote setup --runtimes` reads them (remote.runtime_images), or
     # {"error": why} when they cannot be read; None without another Mac.
     remote_runtimes: dict = None
+    # The same for each of the farm's Macs that take work now, by its SSH destination.
+    remote_runtimes_by: dict = None
 
     @classmethod
     def current(cls, min_idle, development=None, run=subprocess.run):
@@ -497,7 +504,9 @@ class Host(disk.Host):
         host.default_devices, host.device_directory, host.records = default_devices(devices), devices, device_records()
         host.pools = pools(host.development, run)
         host.matches, host.pinned = _json(run, "runtime", "match", "list", "-j"), pinned_builds()
-        host.remote_runtimes = runtimes_there(host.offload_host)
+        host.remote_runtimes_by = {mac: runtimes_there(mac) for mac in host.offload_hosts}
+        host.remote_runtimes = host.remote_runtimes_by.get(host.offload_host) if host.offload_hosts \
+            else runtimes_there(host.offload_host)
         return host
 
 

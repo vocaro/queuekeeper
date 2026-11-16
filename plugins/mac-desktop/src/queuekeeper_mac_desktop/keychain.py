@@ -33,7 +33,7 @@ import subprocess
 import sys
 import tempfile
 
-from queuekeeper import extensions, lane_results, host_context, offload_host, remote
+from queuekeeper import farm, extensions, lane_results, host_context, offload_host, remote
 
 DEFAULT = "~/Library/Keychains/login.keychain-db"
 # Seconds each of the check's commands, and the question to another Mac, may take.
@@ -112,20 +112,30 @@ def find(path, target, ask, out):
     """This Mac, its view of another Mac, where the target is and the keychain file there, said in
     the This Mac, Target and Keychain lines: here, the view, the location and the file's information,
     the last two None after it said why it refused. ask, given a destination and a request, asks another
-    Mac, as remote.ask does."""
+    Mac, as remote.ask does. The target is found among the farm's Macs that take work now: the one of that name
+    in the farm, else the one that gives that name of itself when asked, each asked in the farm's order; with no
+    target, the first."""
     ask = ask or (lambda destination, request: remote.ask(destination, request, ASK_TIMEOUT))
-    here, view, session = host_context.this_mac(), host_context.farm_mac(), host_context.session()
-    there = unreached = info = None
-    if view["destination"] and target != here \
-            and not host_context.names_mac(view["hostname"], here):
-        try:
-            remote.reachable(view["destination"])
-            info = ask(view["destination"], {"keychain": path})
-        except remote.Unavailable as error:
-            unreached = str(error)
-        else:
-            there = info.get("mac") if isinstance(info, dict) else None
-            if there is None: unreached = f"it answered {info!r}, which names no Mac"
+    here, session = host_context.this_mac(), host_context.session()
+    try: macs = farm.active()
+    except ValueError: macs = []
+    named = next((mac["ssh"] for mac in macs if target and mac["name"].lower() == target.lower()), None)
+    for destination in [named] if named else [mac["ssh"] for mac in macs] or [None]:
+        view = host_context.farm_mac(destination)
+        there = unreached = info = None
+        if view["destination"] and target != here \
+                and not host_context.names_mac(view["hostname"], here):
+            try:
+                remote.reachable(view["destination"])
+                info = ask(view["destination"], {"keychain": path})
+            except remote.Unavailable as error:
+                unreached = str(error)
+            else:
+                there = info.get("mac") if isinstance(info, dict) else None
+                if there is None: unreached = f"it answered {info!r}, which names no Mac"
+        # A name in the farm is the Mac's own name from here on, as the Mac gives it.
+        if named and there: target = there
+        if target is None or target == here or there == target: break
     location = host_context.locate(here, view, target, there, unreached)
     out(f"This Mac: {here}, in a session of kind {session['kind']}")
     if location.refusal:
@@ -376,7 +386,7 @@ def add_arguments(parser):
         "keychain file is there, and print the commands that unlock it, to copy into your own Terminal: each runs "
         "only on the Mac it names. It unlocks nothing and reads no password")
     recover_parser.add_argument("--target", metavar="MAC", help="the Mac whose keychain the work needs, by its "
-        "LocalHostName (default: another Mac, as qk remote reaches it from this Mac)")
+        "name in `qk farm list` or its LocalHostName (default: the farm's first Mac that takes work now)")
     recover_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")
     keep_parser = operations.add_parser("keep-unlocked", help="once, on another Mac: ask for its login password "
         "at its own prompt in this Terminal, keep it there, readable only by its account, for every qk remote run to "

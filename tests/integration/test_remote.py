@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper.checkout import source_paths
-from queuekeeper import budgets, cli, config, lane_report, lane_results, merge_queue, offload_host, processes, remote, resources
+from queuekeeper import budgets, cli, config, farm, lane_report, lane_results, merge_queue, offload_host, processes, remote, resources
 from queuekeeper_apple import device_notifications, devices, disk as apple_disk, doctor as apple_doctor, leases
 from queuekeeper import disk as disk_module, extensions
 from queuekeeper import waiting
@@ -1147,7 +1147,7 @@ class RemoteTests(unittest.TestCase):
                 status, output, error = self.qk("remote", "admit", *options, "--", *writes, name, str(code))
                 self.assertEqual(status, code, output + error)
                 self.assertEqual((self.project / "evidence" / name).read_text(), "probed\n")
-                self.assertIn(f"queuekeeper: applied here what the command changed on another Mac: evidence/{name}",
+                self.assertIn(f"queuekeeper: applied here what the command changed on fake: evidence/{name}",
                               error)
                 result = self.slot_receipt("admit")["result"]
                 self.assertEqual(result["changes"], {"files": [f"evidence/{name}"]})
@@ -1755,7 +1755,7 @@ class RemoteTests(unittest.TestCase):
         self.quick_exclusive_offers(0)
         with self.exclusive_dispatch() as (log, dispatcher):
             with self.busy_mac(kind=None):
-                self.until_said(log, "takes its place in another Mac's queue", dispatcher)
+                self.until_said(log, "takes its place in fake's queue", dispatcher)
                 queue = Path(os.environ["FAKE_SLOTS"]) / resources.QUEUE
                 deadline = time.monotonic() + stretched(60)
                 while time.monotonic() < deadline and not any(
@@ -1974,7 +1974,7 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.qk("remote", "run", "check", "--checkout-slot", "1", "--checkout-wait", "1")
         self.assertEqual(status, resources.BUSY, output + error)
         said = " ".join(error.split())
-        self.assertIn("queuekeeper: check not run on another Mac: fake did not take it: checkout slot 1 of example did not "
+        self.assertIn("queuekeeper: check not run on fake: fake did not take it: checkout slot 1 of example did not "
                       "come free in 1s, held by PID 4242", said)
         self.assertFalse(self.checkout(0).exists())
         self.assertFalse(self.checkout(1).exists())
@@ -1982,7 +1982,7 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.qk("remote", "admit", "--foreground", "--checkout-slot", "1", "--checkout-wait",
                                          "0", "--", sys.executable, "-c", "pass")
         self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn("queuekeeper: the command not run on another Mac:", error)
+        self.assertIn("queuekeeper: the command not run on fake:", error)
         self.assertFalse(self.record_there.exists())
         # The negative control: with no option the same held slot is passed over for a free one, at once.
         status, output, error = self.qk("remote", "run", "check")
@@ -5341,7 +5341,7 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual((self.project / "pkg/README.md").read_text(), "a package, formatted\n")
                 self.assertEqual((self.project / "pkg/generated.bin").read_bytes(), bytes(range(256)))
                 self.assertFalse((self.project / "gone.txt").exists())
-                self.assertIn("queuekeeper: applied here what the command changed on another Mac: ", error)
+                self.assertIn("queuekeeper: applied here what the command changed on fake: ", error)
                 # The index here is the session's: the changes are in the working tree alone.
                 self.assertEqual(git(self.project, "diff", "--cached", "--name-only"), "")
                 # Ignored products stayed there, and the checkout there is clean for the next run, at slot 0 again.
@@ -6384,7 +6384,7 @@ class RemoteSetupTests(unittest.TestCase):
     def test_a_farm_mac_without_homebrew_is_left_unchanged_and_the_owner_told_to_install_it(self):
         status, output, error = self.qk("numpy")
         self.assertEqual(status, 1)
-        self.assertIn("Homebrew is not installed on another Mac", output)
+        self.assertIn("Homebrew is not installed on fake", output)
         self.assertIn("https://brew.sh", output)
         self.assertFalse((self.home / ".zprofile").exists())
         self.assertNotIn("ready", output)
@@ -8611,16 +8611,16 @@ class ToolkitUpdateTests(unittest.TestCase):
 
 
 class GateHostPoolTests(unittest.TestCase):
-    def test_the_pool_is_the_farm_s_macs_that_take_work_once_there_are_two(self):
+    def test_the_macs_work_is_offered_to_are_the_farm_s_that_take_work_now(self):
         with farm_fixture.only():
-            self.assertEqual((remote.configured(), remote.gate_hosts()), (None, None))
+            self.assertEqual((remote.configured(), farm.destinations()), (None, ()))
         with farm_fixture.only("studio"):
-            self.assertEqual((remote.configured(), remote.gate_hosts()), ("studio", None))
+            self.assertEqual((remote.configured(), farm.destinations()), ("studio", ("studio",)))
         with farm_fixture.only("studio", farm_fixture.mac("mini", state="paused"), "rented"):
-            self.assertEqual((remote.configured(), remote.gate_hosts()), ("studio", ("studio", "rented")))
+            self.assertEqual((remote.configured(), farm.destinations()), ("studio", ("studio", "rented")))
         # A paused first Mac leaves the next the one a plain offer goes to.
         with farm_fixture.only(farm_fixture.mac("studio", state="paused"), "mini"):
-            self.assertEqual((remote.configured(), remote.gate_hosts()), ("mini", None))
+            self.assertEqual((remote.configured(), farm.destinations()), ("mini", ("mini",)))
 
     def test_the_pool_can_use_an_extra_slot_when_admission_limits_allow_it(self):
         capacity = {"slots": 1, "slotsMax": 2, "busy": [0], "cpuBusy": 10, "busyLimit": 70,
@@ -8749,6 +8749,36 @@ class FanOutTests(unittest.TestCase):
             self.assertEqual(remote.waiting_host(("mini", "studio", "rented")), "studio")
         with patch.object(remote, "reachable", side_effect=away):
             self.assertEqual(remote.waiting_host(("mini", "studio"), heavy), "mini")
+
+    def test_a_retry_names_the_first_mac_with_room_and_else_this_mac_or_each_that_might_take_it(self):
+        lanes = {"gate": {"command": ["true"], "resource": "heavy", "wholeHost": True}}
+        busy, away = {**self.FREE, "busy": [0]}, remote.Unreachable("mini is asleep", "wake it")
+        def read(readings): return lambda host: (_ for _ in ()).throw(readings[host]) if isinstance(readings[host], Exception) else readings[host]
+        with farm_fixture.only(farm_fixture.mac("studio.local", "studio"), "mini", "rented"):
+            hosts = ("studio.local", "mini", "rented")
+            with patch.object(remote, "capacity_there", side_effect=read({"studio.local": busy, "mini": away, "rented": self.FREE})), \
+                    patch.object(remote.offload_host, "capacity") as here:
+                self.assertEqual(remote.retry_macs(hosts, lanes, "gate"),
+                                 (["rented"], "rented, which has spare capacity for gate and is asked first"))
+                here.assert_not_called()
+            loaded = read({"studio.local": busy, "mini": away, "rented": busy})
+            with patch.object(remote, "capacity_there", side_effect=loaded), \
+                    patch.object(remote.offload_host, "capacity", return_value=self.FREE):
+                macs, why = remote.retry_macs(hosts, lanes, "gate")
+                self.assertEqual(macs, [None])
+                self.assertIn("this Mac, the one with spare capacity for gate: a whole-host lane needs every guaranteed "
+                              "slot of studio (HEAVY_SLOTS=3) free", why)
+                self.assertIn("mini's capacity cannot be read: mini is asleep", why)
+            with patch.object(remote, "capacity_there", side_effect=loaded), \
+                    patch.object(remote.offload_host, "capacity", return_value=busy):
+                macs, why = remote.retry_macs(hosts, lanes, "gate")
+                self.assertEqual(macs, ["studio.local", "rented", None])
+                self.assertIn("whichever Mac admits gate first, since none has spare capacity for it", why)
+                self.assertTrue(why.endswith("so each must settle"), why)
+            # One Mac, given as it was before the farm could have more.
+            with patch.object(remote, "capacity_there", side_effect=away):
+                self.assertEqual(remote.retry_macs("mini", lanes, "gate"),
+                                 ([None], "this Mac, since mini's capacity cannot be read: mini is asleep"))
 
     def test_macs_that_are_all_away_are_one_unreachable_farm(self):
         def away(host): raise remote.Unreachable(f"{host} cannot be reached", "wake it")

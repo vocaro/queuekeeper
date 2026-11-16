@@ -230,7 +230,8 @@ class Host:
     min_idle: float
     processes: list
     temp_roots: list = field(default_factory=list)
-    offload_host: str = None  # another Mac, when this Mac sends work to one
+    offload_host: str = None  # the first of the farm's Macs, when this Mac sends work to one
+    offload_hosts: tuple = ()  # the farm's Macs that take work now, by their SSH destinations, in order
     run: object = subprocess.run
 
     @classmethod
@@ -240,7 +241,8 @@ class Host:
         user_temp = run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True).stdout.strip()
         if user_temp: temp.append((Path(os.path.realpath(user_temp)), 2))
         return cls(home=home, development=Path(development or home / "Development"), now=time.time(),
-                   min_idle=min_idle, processes=census(run), temp_roots=temp, offload_host=farm_mac(), run=run)
+                   min_idle=min_idle, processes=census(run), temp_roots=temp, offload_host=farm_mac(), offload_hosts=farm_macs(),
+                   run=run)
 
 
 # What an extension adds to the inventory (extend): the functions that list its items, those that name the
@@ -397,6 +399,13 @@ def prune_pins(out=print):
     out(f"{len(gone)} pinned checkout{'s' if len(gone) != 1 else ''} pruned, unused for {offload_host.PIN_DAYS} days, "
         f"in {offload_host.pins_root()}")
     return 0
+
+
+def farm_macs():
+    """The SSH destinations of the farm's Macs this Mac offloads to now, in order."""
+    from . import farm
+    try: return farm.destinations()
+    except ValueError: return ()
 
 
 def farm_mac():

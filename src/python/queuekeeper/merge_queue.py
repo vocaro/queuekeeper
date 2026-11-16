@@ -2445,8 +2445,9 @@ def placement(root, name=None, as_json=False):
     checked = []
     candidates = hosts + ((None,) if local or not foreground else ())
     for host in candidates:
-        mac = host or "this Mac"
-        row = {"host": mac, "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        mac = lane_wait.farm_mac(host) if host else "this Mac"
+        row = {"host": mac, **({"ssh": host} if host else {}),
+               "checkedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         checked.append(row)
         try:
             reading = remote.capacity_there(host, diagnostic=True) if host else offload_host.capacity(diagnostic=True)
@@ -2470,7 +2471,8 @@ def placement(root, name=None, as_json=False):
         print(json.dumps(report, indent=2))
     else:
         print(f"{name} at {base[:12]} (whole host: {whole_host}, exclusive: {exclusive}, unlocked screen: {screen})")
-        print(f"build Macs: {', '.join(hosts) or 'none'}" + (f"; local only: {local}" if local else ""))
+        print(f"the farm's Macs: {', '.join(map(lane_wait.farm_mac, hosts)) or 'none'}"
+              + (f"; local only: {local}" if local else ""))
         for row in checked:
             slots = ""
             if "busySlots" in row:
@@ -2919,13 +2921,14 @@ class Worker:
         change while the lane waits for admission, so each look reads capacity anew."""
         lanes, lane = config.get("lanes", {}), runner.lane_now[0] if runner.lane_now else None
         if lane not in lanes: return [runner.ran_on], None
-        try: host = remote.gate_hosts() or remote.configured()
-        except ValueError: host = None
-        if host is None: return [runner.ran_on], None
+        try: hosts = farm.destinations()
+        except ValueError: hosts = ()
+        if not hosts: return [runner.ran_on], None
         if stays(lanes, lane): return [None], f"this Mac, since {lane} runs only there"
-        if isinstance(host, tuple) and lanes[lane].get("foreground"):
-            return [runner.ran_on], f"where {lane} ran on the designated foreground Mac"
-        return remote.retry_macs(host, lanes, lane, lane in self.unlocked)
+        # A foreground lane goes only to a Mac marked for it, where it waits for the screen, never by capacity.
+        if lanes[lane].get("foreground"):
+            return [runner.ran_on], f"where {lane} ran on a Mac that foreground lanes may take the screen of"
+        return remote.retry_macs(hosts, lanes, lane, lane in self.unlocked)
 
     def settle(self, what, host=None, macs=None):
         """None once the host has spare capacity by admission's test (resources.pressure), so that the retry of
@@ -4923,12 +4926,13 @@ class Worker:
         paths = set().union(*(self.own_paths(entry) for entry in fresh))
         lanes = lanes_of(config, paths)
         excluded = None
-        hosts = remote.gate_hosts()
-        # A foreground lane uses the designated foreground Mac, outside pooled placement.
-        if hosts is not None and any(config.get("lanes", {}).get(lane, {}).get("foreground") for lane in lanes): return
+        hosts = farm.destinations()
+        # A foreground lane goes to a Mac marked for it, outside this placement, once the farm has Macs to choose among.
+        if len(hosts) > 1 and any(config.get("lanes", {}).get(lane, {}).get("foreground") for lane in lanes): return
         if mac == HERE_MAC:
             where = BESIDE
-        elif hosts is None:
+        elif len(hosts) <= 1:
+            # The primary runs on the farm's one other Mac, so the stacked gate runs here.
             where = HERE
         else:
             excluded = next((host for host in hosts if mac == lane_wait.farm_mac(host)), None)
@@ -5278,7 +5282,7 @@ class Worker:
         local network, as it does once the Claude session that started the worker ends: every gate would then go to
         this Mac, another Mac seeming away to this process alone, as from 13:48 to 16:28 on 2026-11-07
         (vocaro-engineering#282). A worker started by the next live session reaches it."""
-        if remote.gate_hosts() is None and remote.configured() is None: return
+        if not farm.destinations(): return
         lost = remote.local_network_lost()
         if lost: raise NoLocalNetwork(lost)
 
@@ -5456,8 +5460,7 @@ class Stack:
         self.worker.queue.mark(applied, TESTING)
         self.worker.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} that arrived during the gate, "
                         f"at {self.tip[:12]}, stacked on {self.base[:12]}, "
-                        + ("on another Mac if it can start them now" if remote.gate_hosts() is not None
-                           else "on this Mac" if self.where == HERE else "on another Mac if it can start them now"))
+                        + ("on this Mac" if self.where == HERE else "on another Mac if it can start them now"))
         def gate():
             try:
                 self.box["result"] = self.runner.gate(self.lanes, self.name, where=self.where, cancel=self.cancel)
