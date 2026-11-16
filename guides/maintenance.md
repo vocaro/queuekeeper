@@ -55,11 +55,12 @@ batch until `main` has any, so that the commit naming them can land
 ([A project's first landing](#a-projects-first-landing)). Until a project gives `queue.preflight`,
 its preflight lane is its `spelling` lane, and a project with no `spelling`
 lane gets the toolkit's, which a later release removes
-([#69](https://github.com/vocaro/queuekeeper/issues/69)): `qk run spelling` runs `python3 scripts/qk spelling` as a lane like any
-other, admitted and placed as every lane is, before anything else, so that a British spelling fails in
+([#69](https://github.com/vocaro/queuekeeper/issues/69)): the worker runs `python3 scripts/qk spelling` as a lane, unadmitted
+in its own checkout (*The short checks run without admission*, below), before anything else, so that a British spelling fails in
 about a minute instead of after a full gate and a bisect, in every project without each declaring the
 same lane. A project needs no launcher for it, nor for the round's `qk run`: where the checkout has
-no `scripts/qk`, the worker runs `qk run` with the toolkit's own `bin/qk`, and `qk run` runs the
+no `scripts/qk`, the worker runs the check and `qk run` with the toolkit's own `bin/qk`, and a
+`qk run spelling`, which a check that did not end in time goes through, runs the
 check with the toolkit that runs it, on whichever Mac that is, where the second Mac's is the toolkit
 sent with the lane. On 2026-11-13 apple-engineering's first landing failed in this lane, as `python3`
 could not open the `scripts/qk` that getting started never asked it for
@@ -938,17 +939,26 @@ batch. By default, existing and newly initialized repositories use this path for
 The worker runs the preflight lanes, followed by the project's `docs` lane or the toolkit's
 implicit `docs` lane (`python3 scripts/qk docs check`, or `qk docs check` by the toolkit's own
 `bin/qk` in a project with no launcher). This includes this toolkit's guides and
-knowledge articles. The preflight lanes and `qk docs check` run in the worker's checkout
-without admission, so that seconds of checks never wait behind a whole-host gate or busy slots
-(vocaro-engineering#394): a preflight lane as its own command, and the docs check implicit, or a
+knowledge articles.
+Code, configuration, agent instructions, non-Markdown data, and documents under source or test
+folders retain the code gate. A batch that changes nothing runs every code lane, and so does an
+entry whose own commits change a document and code.
+
+**The short checks run without admission.** In every round, whatever its batch changes, the
+preflight lanes and `qk docs check` run in the worker's checkout
+without admission, so that seconds of checks never wait behind a whole-host gate or busy slots:
+a preflight lane as its own command, and the docs check implicit, or a
 project lane named `docs` whose command is exactly the toolkit's. Each has `DOCS_CHECK_LIMIT`, 60 s, about 45 times the slowest
 measured run (0.2–1.3 s on this Mac at a load of 15–44, 2026-11-11). One that reaches it runs
 again through `qk run`, admitted, so a slow check is never a failure and never runs long
 outside admission. Any other docs lane, such as a project script, runs through ordinary lane
-admission, since queuekeeper cannot know its cost. Either way the lanes leave their logs.
-Code, configuration, agent instructions, non-Markdown data, and documents under source or test
-folders retain the code gate. A batch that changes nothing runs every code lane, and so does an
-entry whose own commits change a document and code.
+admission, since queuekeeper cannot know its cost, and so does a lane `queue.lanes` names, the
+gate, provision and every other lane. Either way the lanes leave their logs. An entry that
+leaves the queue stops an unadmitted check as it stops an admitted lane. This began with
+docs-only batches (vocaro-engineering#394) and holds for a batch that changes code, a bisect's
+halves, a stacked gate and a `--no-gate` landing since vocaro/queuekeeper#169: on 2026-11-15 one
+Queuekeeper round waited 34 min 33 s for admission to check spelling and 8 min 3 s to check
+docs, about 2 s of work, before its gate began.
 
 **A batch of documents and code runs the docs lanes too** (vocaro/queuekeeper#122). When the paths
 a batch changes include an unread path, by `main`'s settings as above, beside any other, the

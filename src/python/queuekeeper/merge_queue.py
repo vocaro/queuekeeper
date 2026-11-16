@@ -193,8 +193,9 @@ STACK_ADMISSION_DECLINED = "queue: no Mac admitted the last lane of this stacked
 # beside the gate in a checkout of its own with this suffix (Worker.docs_beside), and the code batch's pass carries over
 # the documents main gained (Worker.carry). It goes ahead of an older entry only when the two change no path in common.
 DOCS_SUFFIX = "-docs"
-# The seconds a preflight lane or `qk docs check` may run unadmitted, in the worker's checkout, as a docs-only batch's
-# lane (Worker.quick, vocaro-engineering#394). The spelling and docs checks took 0.2-1.3 s on this Mac at a load of
+# The seconds a preflight lane or `qk docs check` may run unadmitted, in the worker's checkout, as a batch's lane
+# (Worker.quick): a docs-only batch's since vocaro-engineering#394, and a code batch's since vocaro/queuekeeper#169,
+# whose round of 2026-11-15 waited 34 min 33 s for admission to check spelling and 8 min 3 s to check docs. The spelling and docs checks took 0.2-1.3 s on this Mac at a load of
 # 15-44 on 2026-11-11; one that reaches this limit runs again admitted, as any lane, so a slow check is never a failure.
 DOCS_CHECK_LIMIT = 60
 # The seconds Queuekeeper may take to start in the worker's checkout, loading the project's extensions and running no
@@ -654,9 +655,12 @@ def without_docs(batch, config, changed_by):
     return kept
 
 
-def quick_lanes(config):
-    """The lanes a docs-only batch runs unadmitted first (Worker.quick): its preflight lanes and the docs check."""
-    return {*preflighted(config), DOCS}
+def quick_lanes(config, code=False):
+    """The lanes a batch runs unadmitted first (Worker.quick): its preflight lanes and the docs check. For a batch that
+    changes code, less the lanes main names as its gate (`queue.lanes`, or gate), which always take admission
+    (vocaro/queuekeeper#169)."""
+    quick = {*preflighted(config), DOCS}
+    return quick - set(config.get("queue", {}).get("lanes") or [budgets.GATE]) if code else quick
 
 
 def offerable(config, lanes):
@@ -2837,6 +2841,7 @@ class Worker:
         self.refusals = {}
         self.blamed = False  # whether the last failed batch older settled sent back one entry by blame
         self.lane_now = None  # (lane, began, where) of the lane the gate runs or ran last (gate)
+        self.checks = ()  # the lanes the gate runs unadmitted first, by the round's batch (quick_lanes, gate)
         self.stacked = None  # a Stack whose batch below landed, which the next round adopts as its own (after_stack)
         self.pending = None  # the Stack started on this round's batch while it gates (watched)
         self.jumped = {}  # by docs entry of a round of docs entries, the older entries it went ahead of (docs_ahead)
@@ -3414,7 +3419,7 @@ class Worker:
                         mac=self.ran_where.removeprefix(" on ") or None,
                         seconds=None if seconds is None else round(seconds))
 
-    def gate(self, lanes, round_name, where=(), cancel=None, quick=()):
+    def gate(self, lanes, round_name, where=(), cancel=None, quick=None):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time, its own work and its wait for admission apart (budgets.timed), and the
@@ -3426,13 +3431,14 @@ class Worker:
         those entries (Removal, vocaro-engineering#247). A lane that still waits to start is stopped in the same way for
         an entry qk land --front --no-gate put first (first_ungated), and the gate returns WITHDRAWN with self.ahead
         naming it (vocaro/queuekeeper#26). lane_now is (the lane running, when it began, where), by which a gate
-        stacked on this one goes to another Mac (Worker.admitted_mac). quick, for a docs-only batch's lanes, names the
-        lanes run unadmitted first (quick_lanes, Worker.quick)."""
+        stacked on this one goes to another Mac (Worker.admitted_mac). quick names the lanes run unadmitted first
+        (quick_lanes, Worker.quick): self.checks, which the round sets for its batch, unless given."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
         self.failed_dispatch = None
         self.tooling = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
+        if quick is None: quick = self.checks
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
         for lane in lanes:
             if removal.look() and removal.gone:
@@ -3452,7 +3458,10 @@ class Worker:
             self.queue.emit("gate.began", lane=lane, round=round_name, role=self.role, head=self.head(),
                             entries=list(self.gating))
             if lane in quick:
-                status_ = self.quick(lane, log)
+                # In the round's account while it runs, as any lane is, with no wait to read (GateWatch).
+                watch = GateWatch(self, lane, time.time(), log)
+                try: status_ = self.quick(lane, log, removal)
+                finally: watch.finish()
                 if status_ is not None:
                     self.gate_ended(lane, round_name, status_, log)
                     if not status_: continue
@@ -3558,13 +3567,15 @@ class Worker:
                     if self.measured: self.measured.update(results=said, log=str(log))
         return 0, log
 
-    def quick(self, lane, log):
-        """The status of lane, one of a docs-only batch's quick lanes (quick_lanes), run in this checkout without
-        admission, so that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394): a
+    def quick(self, lane, log, cancel=None):
+        """The status of lane, one of a batch's quick lanes (quick_lanes), run in this checkout without
+        admission, so that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394 for a
+        docs-only batch, vocaro/queuekeeper#169 for one that changes code): a
         preflight lane as its command, which must be one command (NOT_PREFLIGHT), or `qk docs check`, the project's own
         docs lane only when it runs exactly that. None for any other lane, or one that did not end within
         DOCS_CHECK_LIMIT, which qk run then runs admitted as before. With no lane of that name, the toolkit's check
-        runs as qk run would run it (implicit)."""
+        runs as qk run would run it (implicit). A set cancel stops it as it stops any lane (gate): None then too, and
+        the admitted run that follows stops at once and says why."""
         try: checkout = load(self.checkout)
         except (OSError, ValueError): return None
         # Main's preflight lanes, as gate's quick says, that the batch's own configuration lists too.
@@ -3579,15 +3590,16 @@ class Worker:
         else: command = configured.get("command")
         if not (isinstance(command, list) and command): return None
         try:
-            status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT,
+            status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT, cancel=cancel,
                                     env={**self.environment, PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
+        except processes.Canceled: return None
         except processes.TimedOut as error:
             self.say(f"{lane}: did not end unadmitted within {DOCS_CHECK_LIMIT}s ({error}): running it admitted")
             return None
         except OSError as error:
             self.say(f"{lane}: could not run unadmitted ({error}): running it admitted")
             return None
-        self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as a docs-only batch's check")
+        self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as a check that takes seconds")
         return status_
 
     def read_group(self, lane, folder, log, *, include_swift=False):
@@ -4456,6 +4468,9 @@ class Worker:
             self.say(f"the batch changes documents beside code: running {', '.join(also)} as well as the gate, for "
                      "what only the docs lanes check")
         self.role = "older half" if beside else "batch"
+        # The preflight lanes and the docs check run unadmitted first, whatever the batch changes (#169).
+        self.checks = quick_lanes(config, code=not docs)
+        if beside: beside.checks = self.checks
         self.begun(round_name, head, base, applied, beside)
         # A bisect's gates, and the gate of an entry qk land --front put on its own, stack nothing, but docs entries
         # still land beside them (docs_beside, #394).
@@ -4466,8 +4481,7 @@ class Worker:
             result, log = self.watched(self, config, lanes, base, head, applied,
                                        lambda: self.gate(lanes, round_name), stacks=False)
         elif self.alone or docs or ungated:
-            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes, round_name,
-                                    quick=quick_lanes(config) if docs else ())
+            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes, round_name)
         else:
             self.lane_now = None
             result, log = self.watched(self, config, lanes, base, head, applied,
@@ -4868,6 +4882,7 @@ class Worker:
         other = Beside(self, self.queue.checkout if runner.checkout != self.queue.checkout else None, "stacked",
                        settles=False)
         if excluded is not None: other.environment = {**other.environment, remote.QUEUE_GATE_EXCLUDE: excluded}
+        other.checks = quick_lanes(config, code=True)
         stacked = Stack(self, other, fresh, head, lanes, where, below=applied, paths=paths)
         if not stop.is_set() and stacked.begin(): self.pending = stacked
 

@@ -70,9 +70,12 @@ project names them, in order, in `queue.preflight` on `main`:
   Mac that ran it, without admission, and refuses the entry, with nothing queued, on the first
   finding. A finding `origin/main` gives too is not the entry's, so the entry is queued, and so is
   one whose lane could not run: the round judges both.
-- **The worker runs them first** in every round, before `provision` and the gate, admitted and
-  placed as any lane. An entry landing with `--no-gate` runs only them, and a documentation batch
-  runs them, unadmitted while they end within a minute, ahead of its documentation lanes.
+- **The worker runs them first** in every round, before `provision` and the gate, in its own
+  checkout without admission, so that seconds of checking never wait behind a gate that holds the
+  Mac. One that does not end within a minute runs again admitted and placed as any lane, and so
+  does `qk docs check` where a batch runs it. An entry landing with `--no-gate` runs only them,
+  and a documentation batch runs them ahead of its documentation lanes. The gate and every other
+  lane always take admission.
 - **`qk preflight` runs them here, now**, on the working tree, uncommitted changes included,
   without admission, so that an agent can check before it commits. `qk preflight LANE` runs one.
   It exits 0 when each passed, 1 when one found something, and 3 when none did but one could not

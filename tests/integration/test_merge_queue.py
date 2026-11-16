@@ -3764,7 +3764,7 @@ class DefaultDocsOnly(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.state(identifier)["docsOnly"], ["spelling", "docs"])
         for lane in ("spelling", "docs"):
-            self.assertIn(f"{lane} exited 0 in the queue's checkout, unadmitted, as a docs-only batch's check",
+            self.assertIn(f"{lane} exited 0 in the queue's checkout, unadmitted, as a check that takes seconds",
                           said.getvalue())
 
     def test_a_docs_check_that_reaches_its_limit_runs_admitted(self):
@@ -3781,6 +3781,98 @@ class DefaultDocsOnly(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertIn(f"spelling: did not end unadmitted within {mq.DOCS_CHECK_LIMIT}s", said.getvalue())
         self.assertIn("spelling exited 0 on this Mac", said.getvalue())
+
+    def test_a_code_batch_checks_spelling_and_docs_while_every_slot_is_held(self):
+        """vocaro/queuekeeper#169: a batch that changes code runs its spelling and docs checks unadmitted too, so they
+        end while a whole-host lane holds this Mac, and only its gate waits. The old worker ran them through qk run's
+        admission: on 2026-11-15 a round waited 34 min 33 s to check spelling. Here the holder lets go only once both
+        have ended, or after PATIENCE, which fails the test."""
+        from queuekeeper import resources
+        environment = {"HEAVY_SLOT_DIR": str(self.base / "slots"), "HEAVY_SLOTS": "2", "HEAVY_SLOTS_MAX": "3",
+                       "HEAVY_SETTLE_SECONDS": "0"}
+        ended = "{} exited 0 in the queue's checkout, unadmitted, as a check that takes seconds"
+        held, release, said, lock = threading.Event(), threading.Event(), [], threading.Lock()
+        checked = threading.Event()
+        def hold():
+            with contextlib.redirect_stderr(io.StringIO()), resources.Admission("gate", whole_host=True, timeout=0):
+                held.set()
+                release.wait(stretched(120))
+        def say(_, words):
+            with lock: said.append(words)
+            # Before the gate asks for admission, so the holder is still there when both checks have ended.
+            if words == ended.format("docs"):
+                checked.set()
+                release.set()
+        self.commit("tool.py", "tool", "print('a tool')\n")
+        run(self.repo, "git", "checkout", "-q", "tool")
+        (self.repo / "guides").mkdir()
+        (self.repo / "guides/guide.md").write_text("# Guide\n")
+        run(self.repo, "git", "add", "guides/guide.md")
+        run(self.repo, "git", "commit", "-qm", "Add a guide beside the tool")
+        [identifier] = self.add("tool")
+        with patch.dict(os.environ, environment):
+            holder = threading.Thread(target=hold, name="whole-host lane", daemon=True)
+            holder.start()
+            self.assertTrue(held.wait(stretched(30)))
+            os.environ.pop(resources.TOKEN, None)  # the worker is no work nested in the holder's admission
+            watchdog = threading.Timer(stretched(60), release.set)  # the old worker: let its spelling lane go
+            watchdog.start()
+            try:
+                with patch.object(mq.Worker, "say", say), patch.object(mq.Worker, "stack"), \
+                        patch.object(mq.Worker, "docs_beside"):
+                    self.assertEqual(self.work(), 0)
+            finally:
+                watchdog.cancel()
+                release.set()
+                holder.join()
+        self.assertTrue(checked.is_set(), said)
+        self.assertEqual(said.index(ended.format("spelling")) + 2, said.index(ended.format("docs")), said)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn("docsOnly", self.state(identifier))
+        self.assertEqual(self.gates(), 1)
+        # Only the gate went through qk run, which says where it ran.
+        self.assertEqual([words.split()[0] for words in said if " exited 0 on this Mac" in words], ["gate"], said)
+
+    def test_a_code_batchs_check_that_reaches_its_limit_runs_admitted(self):
+        """The control: a code batch's check that does not end within DOCS_CHECK_LIMIT runs again through qk run."""
+        self.commit("tool.py", "tool", "print('a tool')\n")
+        [identifier] = self.add("tool")
+        real, started = mq.processes.run, []
+        def slow(command, **options):
+            started.append(list(command))
+            if command == configuration.IMPLICIT_SPELLING:
+                self.assertEqual(options["timeout"], mq.DOCS_CHECK_LIMIT)
+                raise mq.processes.TimedOut("the fixture's slow check")
+            return real(command, **options)
+        said = io.StringIO()
+        with patch.object(mq.processes, "run", slow), contextlib.redirect_stdout(said): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(started[:3], [configuration.IMPLICIT_SPELLING, ["python3", "scripts/qk", "run", "spelling"],
+                                       ["python3", "scripts/qk", "run", "gate"]])
+        self.assertIn(f"spelling: did not end unadmitted within {mq.DOCS_CHECK_LIMIT}s", said.getvalue())
+        self.assertIn("spelling exited 0 on this Mac", said.getvalue())
+        self.assertEqual(self.gates(), 1)
+
+    def test_the_gate_lane_is_never_a_code_batchs_unadmitted_check(self):
+        """A lane main names as its gate takes admission, though it is a preflight lane or the docs check too."""
+        config = self.config()
+        self.assertEqual(mq.quick_lanes(config, code=True), {"spelling", "docs"})
+        config["queue"]["lanes"] = ["docs", "gate"]
+        self.assertEqual(mq.quick_lanes(config, code=True), {"spelling"})
+        self.assertEqual(mq.quick_lanes(config), {"spelling", "docs"})
+        config["queue"]["preflight"], config["queue"]["lanes"] = ["gate"], None
+        self.assertEqual(mq.quick_lanes(config, code=True), {"docs"})
+
+    def test_a_removed_entry_stops_an_unadmitted_check_which_says_nothing_of_its_limit(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.checkout = self.repo
+        cancel, said = threading.Event(), []
+        cancel.set()
+        with patch.object(mq.Worker, "say", lambda _, words: said.append(words)), \
+                patch.object(mq, "preflighted", return_value=["spelling"]), \
+                patch.object(mq.Worker, "implicit", return_value=[sys.executable, "-c", "import time; time.sleep(600)"]):
+            self.assertIsNone(worker.quick("spelling", self.base / "spelling.log", cancel))
+        self.assertEqual(said, [])
 
     def test_a_project_docs_lane_of_its_own_is_admitted(self):
         """A docs lane whose command is not the toolkit's has a cost queuekeeper cannot know, so it runs admitted."""
@@ -3864,8 +3956,9 @@ class DefaultDocsOnly(Fixture):
 
 
 class ImplicitSpelling(Fixture):
-    """The toolkit's spelling check, which the queue runs before the gate in a project with no spelling lane, through
-    qk run, as any lane, unless main's queue.spelling is false; a project's own spelling lane runs in its place."""
+    """The toolkit's spelling check, which the queue runs before the gate in a project with no spelling lane, unadmitted
+    and, when it does not end in time, through qk run, as any lane (vocaro/queuekeeper#169), unless main's
+    queue.spelling is false; a project's own spelling lane runs in its place."""
     RUN = ["python3", "scripts/qk", "run", "spelling"]
 
     def rounds(self):
@@ -3883,13 +3976,23 @@ class ImplicitSpelling(Fixture):
             return spelling if spelling is not None and list(command) == self.RUN else real(command, **options)
         with patch.object(mq.processes, "run", recorded): yield started
 
-    def test_the_toolkits_check_is_a_lane_eng_run_admits_and_places(self):
+    def test_a_code_batch_runs_the_toolkits_check_unadmitted_and_the_gate_through_qk_run(self):
         self.commit("fix", "fix", content="a labeled point\n")
         [identifier] = self.add("fix")
         with self.lanes_run() as started: said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(started[:2], [configuration.IMPLICIT_SPELLING, ["python3", "scripts/qk", "run", "gate"]])
+        self.assertNotIn(self.RUN, started)
+        self.assertIn("spelling exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
+
+    def test_a_check_that_does_not_end_in_time_is_a_lane_qk_run_admits_and_places(self):
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with patch.object(mq.Worker, "quick", return_value=None), self.lanes_run() as started: said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(started[:2], [self.RUN, ["python3", "scripts/qk", "run", "gate"]])
         self.assertNotIn(configuration.IMPLICIT_SPELLING, started)
+        self.assertTrue(any("runs the toolkit's: python3 scripts/qk spelling" in words for words in said), said)
         # The round says where it ran, as it does of a lane, from the receipt qk run wrote once it was admitted.
         self.assertTrue(any(words.startswith("spelling exited 0 on this Mac (") for words in said), said)
 
@@ -3899,7 +4002,8 @@ class ImplicitSpelling(Fixture):
             mq.add(self.repo, "fix", no_gate=True, why="an emergency")
         with self.lanes_run() as started: self.rounds()
         self.assertIn("fix", self.main_files())
-        self.assertIn(self.RUN, started)
+        self.assertIn(configuration.IMPLICIT_SPELLING, started)
+        self.assertNotIn(self.RUN, started)
         self.assertEqual(self.gates(), 0)
 
     def test_a_docs_only_batch_runs_it_as_a_lane_before_its_own(self):
@@ -3932,7 +4036,9 @@ class ImplicitSpelling(Fixture):
             with self.subTest(status=status):
                 self.commit(f"fix{status}", f"fix{status}", content=BRITISH)
                 [identifier] = self.add(f"fix{status}", checked=False)
-                with self.lanes_run(spelling=status) as started, patch("builtins.print"): self.rounds()
+                # The admitted run, which alone can say so: the check did not end unadmitted in time.
+                with patch.object(mq.Worker, "quick", return_value=None), self.lanes_run(spelling=status) as started, \
+                        patch("builtins.print"): self.rounds()
                 self.assertEqual(self.state(identifier)["state"], "queued")
                 self.assertEqual(self.gates(), 0)
                 self.assertNotIn(f"fix{status}", self.main_files())
@@ -3948,7 +4054,7 @@ class ImplicitSpelling(Fixture):
         said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.gates(), 1)
-        self.assertTrue(any("runs the toolkit's: python3 scripts/qk spelling" in words for words in said), said)
+        self.assertIn("spelling exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
         logs = sorted(path.name for path in mq.Queue(self.repo).logs.glob("*.log"))
         self.assertTrue(any(name.endswith("-spelling.log") for name in logs), logs)
 
@@ -3959,8 +4065,8 @@ class ImplicitSpelling(Fixture):
         self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertEqual(self.gates(), 0)
         self.assertNotIn("fix", self.main_files())
-        self.assertIn(self.RUN, started)
-        self.assertNotIn(configuration.IMPLICIT_SPELLING, started)
+        self.assertIn(configuration.IMPLICIT_SPELLING, started)
+        self.assertNotIn(self.RUN, started)
 
     def test_turned_off_the_gate_alone_decides(self):
         config = json.loads((self.repo / "queuekeeper.json").read_text())
@@ -4000,7 +4106,7 @@ class ImplicitSpelling(Fixture):
         said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertFalse(own.exists())
-        self.assertTrue(any("runs the toolkit's" in words for words in said), said)
+        self.assertIn("spelling exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
 
     def unlaunched(self):
         """Take the launcher out of main, as a project that followed getting started has none, and return how the
@@ -4016,13 +4122,12 @@ class ImplicitSpelling(Fixture):
         [identifier] = self.add("fix")
         with self.lanes_run() as started: said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
-        # The lanes still go through qk run, admitted and placed, now the toolkit's own.
-        self.assertEqual([(command[:2], command[2], command[-2:]) for command in started[:2]],
-                         [(qk, "--project", ["run", "spelling"]), (qk, "--project", ["run", "gate"])])
-        told = next(words for words in said if words.startswith("spelling: the project has no spelling lane"))
-        self.assertIn(f"runs the toolkit's: {shlex.join(qk)} --project ", told)
-        self.assertTrue(told.endswith(" spelling"), told)
-        self.assertTrue(any(words.startswith("spelling exited 0 on this Mac (") for words in said), said)
+        # The check runs unadmitted and the gate still goes through qk run, admitted and placed, both by the
+        # toolkit's own qk.
+        self.assertEqual([(command[:2], command[2]) for command in started[:2]], [(qk, "--project")] * 2)
+        self.assertEqual((started[0][-1], started[1][-2:]), ("spelling", ["run", "gate"]))
+        self.assertNotIn("run", started[0])
+        self.assertIn("spelling exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
 
     def test_with_no_launcher_a_british_spelling_still_fails_before_the_gate(self):
         # The check runs and finds it: a finding, not a lane that could not start.
@@ -4042,7 +4147,7 @@ class ImplicitSpelling(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.state(identifier)["docsOnly"], ["spelling", "docs"])
         for lane in ("spelling", "docs"):
-            self.assertIn(f"{lane} exited 0 in the queue's checkout, unadmitted, as a docs-only batch's check", said)
+            self.assertIn(f"{lane} exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
 
     def test_queue_spelling_can_only_turn_it_off(self):
         config = json.loads((self.repo / "queuekeeper.json").read_text())
@@ -4709,6 +4814,10 @@ else:
         config["lanes"]["spelling"] = {"command": command, "timeout": int(stretched(45))}
         self.publish(config, "Make spelling wait in a chosen batch")
         self.guard = mq.resources.guard_path(os.environ)
+        # The admitted run, as of a check that did not end unadmitted in time (Worker.quick, vocaro/queuekeeper#169).
+        unadmitted = patch.object(mq.Worker, "quick", return_value=None)
+        unadmitted.start()
+        self.addCleanup(unadmitted.stop)
 
     def remove_during_spelling(self, testing, queued_branch=None):
         look, removed, polls = mq.Removal.look, [], 0
@@ -5124,7 +5233,7 @@ class AheadOfTheQueue(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual((self.gates(), self.light()), (0, 0))
         self.assertEqual(self.state(identifier)["ungated"]["lanes"], ["spelling"])
-        self.assertTrue(any("runs the toolkit's: python3 scripts/qk spelling" in words for words in said), said)
+        self.assertIn("spelling exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
 
     def test_a_project_without_a_spelling_lane_that_turned_the_toolkits_off_runs_no_lane(self):
         config = json.loads(json.dumps(self.configured))
