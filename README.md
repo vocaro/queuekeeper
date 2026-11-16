@@ -124,14 +124,14 @@ qk serve --open
 entries up next. New arrivals tested on top of the current batch are labeled **Testing ahead**.
 
 <p align="center">
-  <img src="assets/dashboard-home.png" alt="The dashboard's Queue home view with daily totals, one active test round, an entry in progress and an entry up next." width="100%">
+  <img src="assets/dashboard-home.png" alt="The dashboard's Queue home view: a one-sentence health verdict with a forecast and five signs, daily totals, the flow from agents to main, one active test round, an entry in progress and an entry up next." width="100%">
 </p>
 
 **Farm** shows each Mac's slots, its load, and the work running and waiting on it, for every
 project. It also shows iOS device connections and reservations.
 
 <p align="center">
-  <img src="assets/dashboard-farm.png" alt="The dashboard's Farm tab: two Macs, each with its slots in use, its CPU and memory, running and waiting work, plus an iPhone connection and reservation." width="100%">
+  <img src="assets/dashboard-farm.png" alt="The dashboard's Farm tab: two Macs, each drawn as a laptop or desktop with a badge for its state, its slots in use, its CPU and memory, running and waiting work, plus an iPhone connection and reservation." width="100%">
 </p>
 
 **History** holds recent changes and events; **Logs** holds debug output. See
