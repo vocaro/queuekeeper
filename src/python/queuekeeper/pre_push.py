@@ -1,13 +1,13 @@
 """`qk pre-push`: a pre-push hook that runs the lanes the project's configuration names for what a push changes.
 
-A project's pre-push hook is then one line, and holds no second copy of what its lanes and queue.docsOnly say:
+A project's pre-push hook is then one line, and holds no second copy of what its lanes and queue.unread say:
 
     #!/bin/sh
     exec python3 scripts/qk pre-push "$@"
 
 Git gives the hook the remote's name and URL, and on standard input a line per ref pushed. The paths the push
-changes pick the lanes, as they do for a landing: a push that changes only the paths of queue.docsOnly, or only
-conventional Markdown in a project without it, runs the docs lanes, and any other runs queue.lanes, or gate. The
+changes pick the lanes, as they do for a landing: a push that changes only paths no code lane reads, by
+queue.unread and its Markdown defaults, runs the docs lanes, and any other runs queue.lanes, or gate. The
 lanes run with `qk run` in this checkout, so they are admitted and placed as always.
 
 A push that changes no path runs nothing and says so: its files are ones the remote already has, as when a merge

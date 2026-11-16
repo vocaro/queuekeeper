@@ -277,7 +277,7 @@ entry makes the whole entry ride the code gate:
 
 - **Documentation is Markdown in the usual places**: the root `README.md`, `CONTRIBUTING.md` and
   `CHANGELOG.md`, and `.md` or `.markdown` files under `doc/`, `docs/`, `guides/` and `knowledge/`.
-  A project can name its own paths with `queue.docsOnly` on `main`.
+  A project can name its own paths with `queue.unread` on `main`.
 - **Everything else is code to the queue**: source, tests, configuration, agent instructions such
   as `AGENTS.md`, a stylesheet, a script, and an image or diagram a document shows. A README
   change committed with the screenshot it adds rides the code gate, and runs the documentation

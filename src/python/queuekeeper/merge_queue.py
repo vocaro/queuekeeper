@@ -56,10 +56,10 @@ import urllib.request
 from . import budgets, disk, extensions, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
 from . import events, pre_push, recovery
-from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
+from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, SPELLING, TOOLKIT_ROOT, admission, implicit_command, implicit_spelling, \
-    lane_to_run, legacy_spelling_warning, load, parse, preflight, project_checkout, siblings_in, stays, toolkit_command, \
-    unlocked_screen
+    lane_to_run, legacy_carried, legacy_spelling_warning, legacy_unread_warning, load, names_path, parse, preflight, project_checkout, \
+    siblings_in, stays, toolkit_command, unlocked_screen, unread, unread_declared, unread_lanes
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -522,7 +522,7 @@ def has_config(root, commit):
 # paths that skip the gate, the toolkit's spelling check turned off, and the preflight lanes, which can be none. A batch
 # whose lanes the queue runs, because main names none yet, gives none of them (#10); spelling joined them by the owner's
 # decision of 2026-11-13, and preflight replaces it (vocaro/queuekeeper#69).
-MAIN_ONLY = ("hookCoveredBy", "docsOnly", "spelling", "preflight")
+MAIN_ONLY = ("hookCoveredBy", "unread", "docsOnly", "carryOver", "spelling", "preflight")
 
 
 def as_batch(config):
@@ -583,9 +583,7 @@ def keep_both(base, ours, theirs):
     return b"".join(kept)
 
 
-def named(path, key):
-    """Whether a queue setting's key names path: a directory ending in /, or the file itself."""
-    return path.startswith(key) if key.endswith("/") else path == key
+named = names_path
 
 
 def no_verdict_runs(config):
@@ -615,32 +613,20 @@ def ahead(front, no_gate, why):
 
 
 def docs_lanes(config, changed):
-    """The docs-only checks, from main's explicit declaration or conventional Markdown defaults.
-
-    An explicit declaration replaces the defaults. False disables this path. Both sides of a rename
-    arrive in changed, so moving a source or fixture into documentation still runs the code gate.
-    """
-    queue = config.get("queue", {})
-    declared = queue.get("docsOnly")
-    if not changed or declared is False: return None
-    if declared is None:
-        if not all(path in DOCS_FILES or (path.startswith(DOCS_FOLDERS) and path.endswith((".md", ".markdown")))
-                   for path in changed): return None
-        lanes = [DOCS]
-    else:
-        if not all(any(named(path, key) for key in declared["paths"])
-                   and not any(named(path, key) for key in declared.get("exclude", {})) for path in changed): return None
-        lanes = declared["lanes"]
+    """The lanes a batch that changes only the paths changed runs in place of the gate: its preflight lanes, then main's
+    queue.unread.lanes, when no code lane reads any of them (config.unread), else None. Both sides of a rename arrive
+    in changed, so moving a source or fixture into documentation still runs the code gate."""
+    lanes = unread_lanes(config)
+    if not changed or lanes is None or not all(unread(config, path) for path in changed): return None
     return [name for name in preflighted(config) if name not in lanes] + lanes
 
 
-def docs_first(entries, config, changed_by, blocked=(), carried=None, gating=()):
+def docs_first(entries, config, changed_by, blocked=(), gating=()):
     """The entries, oldest first, that land on the docs lanes ahead of the rest (vocaro-engineering#394): each one
     queued, put first by no option of qk land, whose own commits change only docs paths (docs_lanes), no path that an
     older entry staying in line changes, nor one of blocked, the paths of a batch gating now; and none of the entries it
     waits for (its waitsFor, from a run of its docs lanes that failed ahead of them) still in entries or in gating, the
-    identifiers of that batch. carried, when
-    given, must take each of its paths, as a passed batch's carry-over does (carried_over). An entry left in line holds
+    identifiers of that batch. An entry left in line holds
     back every later entry that changes one of its paths, so that two entries that change a path in common keep their
     order, and integration and conflict detection stay what they were."""
     held, taken = set(blocked), []
@@ -649,7 +635,7 @@ def docs_first(entries, config, changed_by, blocked=(), carried=None, gating=())
         paths = changed_by(entry)
         if entry["state"] == QUEUED and not (entry.get("front") or entry.get("noGate")) \
                 and not present & set(entry.get("waitsFor", ())) and not paths & held \
-                and docs_lanes(config, sorted(paths)) and (carried is None or all(map(carried, paths))):
+                and docs_lanes(config, sorted(paths)):
             taken.append(entry)
         else: held |= paths
     return taken
@@ -686,16 +672,11 @@ def offerable(config, lanes):
 
 
 def carried_over(path, config, batch_files):
-    """Whether main changing path leaves a passed batch's result standing: a path the project lists
-    in queue.carryOver as read by none of its queue lanes, or a Markdown document, and in either
-    case one the batch does not touch."""
-    if path in batch_files: return False
-    queue = config.get("queue", {})
-    declared = queue.get("docsOnly")
-    # A declared code input cannot keep an older gate result, even if a carry-over list also names it.
-    if isinstance(declared, dict) and any(named(path, key) for key in declared.get("exclude", {})): return False
-    listed = queue.get("carryOver", {})
-    return (declared is not False and path.endswith(".md")) or any(named(path, key) for key in listed)
+    """Whether main changing path leaves a passed batch's result standing: a path no code lane reads, by main's
+    queue.unread (config.unread), and one the batch does not touch. It is the same reading that lets a batch of such
+    paths skip the gate, so a docs entry that lands beside a gate (Worker.docs_beside) never stops its pass carrying
+    over."""
+    return path not in batch_files and (unread(config, path) or legacy_carried(config, path))
 
 
 def carry_checks(config, moved, base, docs_check=IMPLICIT_DOCS):
@@ -911,6 +892,8 @@ def preflight_before_queued(root, queue, tip, config):
     round, about 40 minutes on EPUBLib on 2026-11-07 (vocaro-engineering#283). It is a hint, as check is: the worker
     still runs the lanes on the batch. A lane that cannot be run, or that fails otherwise, queues the entry for the
     round to judge, and so does a failure origin/main gives too, which is not the entry's to fix."""
+    unread_warned = legacy_unread_warning(config)
+    if unread_warned: print(f"queue: {unread_warned}", file=sys.stderr)
     names = preflighted(config)
     if not names: return
     warned = legacy_spelling_warning(config)
@@ -1888,7 +1871,9 @@ def rides(config, changed):
     changed = sorted(changed)
     docs = docs_lanes(config, changed)
     if docs: return f"is documentation only: lands on {spoken(docs)}, not the code gate"
-    if config.get("queue", {}).get("docsOnly") is False: why = "main's queue.docsOnly is false, so every entry does"
+    queue = config.get("queue", {})
+    if unread_declared(queue) is False:
+        why = f"main's queue.{'unread' if 'unread' in queue else 'docsOnly'} is false, so every entry does"
     elif not changed: why = "its commits change no file"
     else: why = f"{next(path for path in changed if not docs_lanes(config, [path]))} is not documentation"
     also = [lane for lane in lanes_of(config, changed) if lane not in lanes_of(config)]
@@ -4456,7 +4441,8 @@ class Worker:
         changed = [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base, head).splitlines()
                    if path]
         docs = None if ungated else docs_lanes(config, changed)
-        if docs: self.say(f"every path the batch changes is in main's queue.docsOnly: running only {', '.join(docs)}, "
+        if docs: self.say(f"no code lane reads any path the batch changes, by main's queue.unread: running only "
+                          f"{', '.join(docs)}, "
                           "which is no gate of the pushed commit")
         round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}"
         beside = self.beside(waiting, batch, base, config, docs, ungated, changed)
@@ -4545,10 +4531,10 @@ class Worker:
 
     def docs_beside(self, config, applied):
         """Land the docs-only entries waiting behind applied, the batch gating now, beside its gate, on the docs lanes
-        in a checkout of their own (DOCS_SUFFIX): each one that docs_first takes with applied's paths blocked and
-        whose every path a passed batch carries over (carried_over), so that applied's pass then carries over what
-        they add to main (Worker.carry). None goes while an entry put first by qk land, or a batch that passed, waits
-        to go first. One whose docs lanes fail waits in line for applied and the older entries (waitsFor). None goes
+        in a checkout of their own (DOCS_SUFFIX): each one that docs_first takes with applied's paths blocked, whose
+        paths, unread by main's queue.unread and none of applied's, a passed batch carries over (carried_over), so
+        that applied's pass then carries over what they add to main (Worker.carry). None goes while an entry put first
+        by qk land, or a batch that passed, waits to go first. One whose docs lanes fail waits in line for applied and the older entries (waitsFor). None goes
         beside a project's first landing, since the docs lanes are main's and main has no configuration yet."""
         if not has_config(self.queue.main_checkout, MAIN): return
         waiting = self.queue.waiting()
@@ -4557,8 +4543,7 @@ class Worker:
         rest = [entry for entry in waiting if entry["id"] not in ids]
         if any(entry.get("front") or entry.get("noGate") or entry["state"] == PASSED for entry in rest): return
         gating = set().union(*(self.own_paths(entry) for entry in applied))
-        docs = docs_first(rest, config, self.own_paths, blocked=gating,
-                          carried=lambda path: carried_over(path, config, gating), gating=ids)
+        docs = docs_first(rest, config, self.own_paths, blocked=gating, gating=ids)
         if not docs: return
         runner = Beside(self, self.queue.home / f"{self.queue.main_checkout.name}{DOCS_SUFFIX}",
                         "docs beside the gate")

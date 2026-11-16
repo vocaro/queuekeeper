@@ -393,6 +393,10 @@ IMPLICIT_WORDS = {SPELLING: [SPELLING], DOCS: ["docs", "check"]}
 # Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates.
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/", "guides/", "knowledge/")
+# The older settings that queue.unread replaces: docsOnly, the paths a batch could change and skip the gate, and
+# carryOver, the paths main could change under a passed result. Both said a path no code lane reads, in two lists that
+# could disagree; a release accepts them, read as queue.unread (unread_declared), and the next refuses them.
+UNREAD_LEGACY = ("docsOnly", "carryOver")
 # Seconds a preflight lane may run before qk land queues an entry, and its timeout when its lane gives none
 # (vocaro-engineering#283, vocaro/queuekeeper#69). A preflight lane is a cheap check, never a build.
 PREFLIGHT_LIMIT = 300
@@ -404,6 +408,78 @@ PROJECT_CHECKOUT_VARIABLE = "QUEUEKEEPER_PROJECT_CHECKOUT"
 # The lane keys a preflight lane cannot have: it is one command, run before the queue takes an entry, in a scratch
 # worktree on the Mac that ran qk land, with no admission.
 NOT_PREFLIGHT = ("parallel", "foreground", "unlockedScreen", "wholeHost", "model", "compileFirst")
+
+
+def conventional_doc(path):
+    """Whether path is conventional prose, which queue.unread takes unless its defaults are false."""
+    return path in DOCS_FILES or (path.startswith(DOCS_FOLDERS) and path.endswith((".md", ".markdown")))
+
+
+def names_path(path, key):
+    """Whether a queue setting's key names path: a directory ending in /, or the file itself."""
+    return path.startswith(key) if key.endswith("/") else path == key
+
+
+def unread_declared(queue):
+    """queue.unread as the queue reads it: False, or an object of paths, exclude, lanes and defaults. A project still on
+    the older queue.docsOnly and queue.carryOver has them read as one: carryOver's paths join docsOnly's, and an
+    explicit docsOnly, which replaced the Markdown defaults, keeps them off. docsOnly false gives False, and beside a
+    carryOver, which has no exact reading as queue.unread, its paths still carry over (legacy_carried) until the
+    owner chooses one."""
+    if "unread" in queue: return queue["unread"]
+    docs, carried = queue.get("docsOnly"), queue.get("carryOver") or {}
+    if docs is False: return False
+    if docs is None: return {"paths": dict(carried)} if carried else {}
+    return {"paths": {**docs["paths"], **carried}, "exclude": dict(docs.get("exclude", {})),
+            "lanes": list(docs["lanes"]), "defaults": False}
+
+
+def legacy_carried(config, path):
+    """Whether path carries over only by the older queue.docsOnly false beside a queue.carryOver that names it: every
+    batch gates, yet those paths still leave a passed result standing, as they did before queue.unread. One list
+    cannot say both, so this reading lasts only as long as the older settings do (legacy_unread_warning)."""
+    queue = config.get("queue", {})
+    return "unread" not in queue and queue.get("docsOnly") is False \
+        and any(names_path(path, key) for key in queue.get("carryOver") or {})
+
+
+def unread(config, path):
+    """Whether no code lane reads path, by main's queue.unread (unread_declared): a batch that changes only such paths
+    runs the docs lanes in place of the gate, and main changing one the batch does not leaves a passed result standing.
+    exclude wins over the Markdown defaults and paths."""
+    declared = unread_declared(config.get("queue", {}))
+    if declared is False: return False
+    if any(names_path(path, key) for key in declared.get("exclude", {})): return False
+    if declared.get("defaults", True) and conventional_doc(path): return True
+    return any(names_path(path, key) for key in declared.get("paths", {}))
+
+
+def unread_lanes(config):
+    """The lanes a batch of unread paths runs in place of the gate, without the preflight lanes; None when main's
+    queue.unread is false, so that every batch gates."""
+    declared = unread_declared(config.get("queue", {}))
+    return None if declared is False else list(declared.get("lanes", [DOCS]))
+
+
+def legacy_unread_warning(config):
+    """qk doctor's and qk land's warning for a project that still gives queue.docsOnly or queue.carryOver, which a later
+    release refuses, with the queue.unread that reads the same, or the choice to make where none does; else None."""
+    queue = config.get("queue", {})
+    given = [key for key in UNREAD_LEGACY if key in queue]
+    if not given: return None
+    declared = unread_declared(queue)
+    if isinstance(declared, dict) and not declared: return None
+    said = " and ".join(f"queue.{key}" for key in given)
+    went = f"{said} {'go' if len(given) > 1 else 'goes'} in a later release"
+    if declared is False and queue.get("carryOver"):
+        paths = json.dumps(queue["carryOver"], sort_keys=True)
+        return (f"{went}, and queue.unread, which replaces them, cannot say both that every batch gates and that "
+                f"{', '.join(sorted(queue['carryOver']))} carr{'ies' if len(queue['carryOver']) == 1 else 'y'} over: "
+                f"give \"queue\": {{\"unread\": false}} to carry nothing over, or {{\"unread\": {{\"paths\": {paths}, "
+                "\"defaults\": false}} to let those paths also skip the gate (guides/maintenance.md, The merge queue)")
+    return (f"{went}: give \"queue\": {{\"unread\": {json.dumps(declared, sort_keys=True)}}} in place of {said}, "
+            "which the queue already reads it as. Markdown outside doc/, docs/, guides/ and knowledge/ no longer "
+            "carries over unless paths names it (guides/maintenance.md, The merge queue)")
 
 
 def preflight(config):
@@ -455,9 +531,8 @@ def landing_lanes(lanes, queue):
     found = {name: "the merge queue runs it before the gate" for name in [*first, PROVISION] if name in lanes}
     found.update({name: "the merge queue runs it as " + ("one of queue.lanes" if queue.get("lanes") else "the gate")
                   for name in named})
-    found.update({name: "a docs-only batch runs it, by the default or queue.docsOnly.lanes"
-                  for name in (queue.get("docsOnly") or {}).get("lanes",
-                      [DOCS] if "docsOnly" not in queue else []) if name not in found})
+    found.update({name: "a docs-only batch runs it, by the default or queue.unread.lanes"
+                  for name in unread_lanes({"queue": queue}) or [] if name not in found})
     waiting = list(found)
     while waiting:
         name = waiting.pop()
@@ -509,11 +584,26 @@ def merge_queue(queue, lanes):
     which of the lanes cover the pre-push hook, each with what of the hook it runs, the paths a
     docs-only batch changes, each with why no code lane reads it, with the lanes it runs instead, and how
     many runs in a row may give no verdict before the queue holds, and spelling, false for a project whose queue
-    runs no spelling check of the toolkit's in place of a spelling lane (guides/maintenance.md, The merge queue)."""
+    runs no spelling check of the toolkit's in place of a spelling lane (guides/maintenance.md, The merge queue).
+    unread, the paths no code lane reads, replaces docsOnly and carryOver, which it cannot stand beside."""
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
-                                                    "noVerdictRuns", "spelling", "followLandings", "preflight"}:
-        raise ValueError("queue supports only lanes, carryOver, carryOverChecks, hookCoveredBy, docsOnly, noVerdictRuns, "
-                         "spelling, followLandings and preflight")
+                                                    "unread", "noVerdictRuns", "spelling", "followLandings",
+                                                    "preflight"}:
+        raise ValueError("queue supports only lanes, unread, carryOverChecks, hookCoveredBy, noVerdictRuns, spelling, "
+                         "followLandings and preflight, and the older docsOnly and carryOver")
+    if "unread" in queue:
+        given = [key for key in UNREAD_LEGACY if key in queue]
+        if given:
+            raise ValueError(f"queue.unread and queue.{' and queue.'.join(given)} cannot both be given: queue.unread "
+                             f"replaces {' and '.join(given)}, so move {'its' if len(given) == 1 else 'their'} paths "
+                             "into queue.unread.paths (guides/maintenance.md, The merge queue)")
+        if queue["unread"] is not False and not unread_object(queue["unread"], lanes):
+            raise ValueError("queue.unread is false to gate every batch and carry nothing over, or an object of "
+                             "optional paths, mapping each path, a directory ending in /, to why no code lane "
+                             "reads it; "
+                             "exclude, the paths among them or the Markdown defaults that code does read, each with "
+                             "why; lanes, the distinct configured lanes a batch of unread paths runs instead, never "
+                             "gate; and defaults, false to drop the Markdown defaults")
     if "preflight" in queue: preflight_lanes(queue, lanes)
     if "followLandings" in queue and queue["followLandings"] is not True:
         raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
@@ -570,6 +660,19 @@ def preflight_lanes(queue, lanes):
             raise ValueError(f"queue.preflight names {name}, which is not one command that qk land can run before it "
                              f"queues an entry, unadmitted, in a scratch worktree: "
                              f"{'it has ' + ', '.join(keys) if keys else 'it is a self lane'}")
+
+
+def unread_object(declared, lanes):
+    """Whether declared is a valid queue.unread object (merge_queue)."""
+    if not isinstance(declared, dict) or set(declared) - {"paths", "exclude", "lanes", "defaults"}: return False
+    def reasons(value): return isinstance(value, dict) and all(
+        isinstance(key, str) and key.strip() and isinstance(why, str) and why.strip() for key, why in value.items())
+    if not reasons(declared.get("paths", {})) or not reasons(declared.get("exclude", {})): return False
+    if "defaults" in declared and type(declared["defaults"]) is not bool: return False
+    if declared.get("defaults") is False and not declared.get("paths"): return False
+    named = declared.get("lanes", [DOCS])
+    return isinstance(named, list) and named and len(set(map(str, named))) == len(named) \
+        and all((name in lanes or name == DOCS) and name != "gate" for name in named)
 
 
 def docs_only(declared, lanes):

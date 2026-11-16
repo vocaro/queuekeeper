@@ -82,7 +82,7 @@ Two defaults to know about:
   spellings and text that calls the `qk` command by its old name, the package's, before a
   subcommand, and which a later release removes.
 - **Documentation.** A change that touches only Markdown documents skips the gate and runs the
-  documentation lanes instead. Set `"queue": {"docsOnly": false}` to gate every change.
+  documentation lanes instead. Set `"queue": {"unread": false}` to gate every change.
 
 [Lanes and admission](lanes_and_admission.md) describes the other lane settings.
 

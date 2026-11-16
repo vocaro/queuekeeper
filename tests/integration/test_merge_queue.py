@@ -3177,7 +3177,7 @@ class CarryOverChecks(Fixture):
         self.name_checks(self.check(paths=["records/"]))
         self.commit("a", "a")
         self.add("a")
-        with self.during_gate("other.md"): self.work()
+        with self.during_gate("doc/other.md"): self.work()
         self.assertEqual(self.runs(), [])
         self.assertEqual(self.gates(), 1)
 
@@ -3189,10 +3189,10 @@ class CarryOverChecks(Fixture):
         self.assertEqual(len(self.runs()), 1)
 
     def test_paths_name_a_file(self):
-        self.name_checks(self.check(paths=["guide.md"]))
+        self.name_checks(self.check(paths=["doc/guide.md"]))
         self.commit("a", "a")
         self.add("a")
-        with self.during_gate("guide.md"): self.work()
+        with self.during_gate("doc/guide.md"): self.work()
         self.assertEqual(len(self.runs()), 1)
 
     def test_a_check_that_cannot_start_gates_again(self):
@@ -3274,7 +3274,7 @@ class DocsOnly(Fixture):
         self.assertEqual((self.gates(), self.docs_runs()), (0, 1))
         self.assertEqual([self.state(i)["docsOnly"] for i in ids], [["spelling", "docs"]] * 3)
         self.assertLessEqual({"doc", "README.md"}, self.main_files())
-        self.assertTrue(any("queue.docsOnly: running only spelling, docs" in words for words in said), said)
+        self.assertTrue(any("by main's queue.unread: running only spelling, docs" in words for words in said), said)
         self.assertIn("docs lanes only (spelling, docs): no gate of that commit", mq.describe(self.state(ids[0])))
 
     def landed_order(self, *ids):
@@ -3557,12 +3557,12 @@ class DocsFirst(unittest.TestCase):
         # Nor does it go beside the gate of the entry it waits for.
         self.assertEqual(self.first("guide", fields=fields, gating={"code"}), [])
 
-    def test_a_gating_batch_blocks_its_paths_and_a_carry_must_take_every_path(self):
+    def test_a_gating_batch_blocks_its_paths_and_an_unread_path_of_any_kind_goes_beside_it(self):
         self.assertEqual(self.first("guide", "readme", blocked={"README.md"}), ["guide"])
-        config = {"queue": {"docsOnly": {"paths": {"doc/": "prose and papers"}, "lanes": ["docs"]}}}
-        self.assertEqual(self.first("pdf", "guide", config=config), ["pdf", "guide"])
-        carried = lambda path: mq.carried_over(path, config, set())
-        self.assertEqual(self.first("pdf", "guide", config=config, carried=carried), ["guide"])
+        # A paper under a declared unread folder both skips the gate and carries over, so it goes beside a gate too.
+        config = {"queue": {"unread": {"paths": {"doc/": "prose and papers"}}}}
+        self.assertEqual(self.first("pdf", "guide", config=config, blocked={"src/a.py"}), ["pdf", "guide"])
+        self.assertTrue(mq.carried_over("doc/paper.pdf", config, {"src/a.py"}))
 
     def test_a_code_batch_leaves_out_its_docs_entries_up_to_code_that_changes_their_paths(self):
         changed_by = lambda entry: self.PATHS[entry["id"]]
@@ -3596,16 +3596,113 @@ class Riding(unittest.TestCase):
 
 
 class DocsCarryPolicy(unittest.TestCase):
-    def test_known_inputs_override_carry_permissions_and_false_keeps_explicit_permissions(self):
+    def test_known_inputs_override_carry_permissions_and_false_carries_nothing(self):
         excluded = {"queue": {"docsOnly": {"paths": {"docs/": "prose unless excluded"}, "lanes": ["docs"],
                                             "exclude": {"docs/": "code reads these inputs"}},
                               "carryOver": {"docs/": "an older declaration"}}}
         self.assertFalse(mq.carried_over("docs/input.md", excluded, []))
-        self.assertTrue(mq.carried_over("README.md", excluded, []))
+        # An explicit docsOnly replaced the Markdown defaults, and its reading as queue.unread keeps them off.
+        self.assertFalse(mq.carried_over("README.md", excluded, []))
+        self.assertFalse(mq.carried_over("README.md", {"queue": {"unread": False}}, []))
+        # The older docsOnly false beside a carryOver gates every batch yet carries those paths over, as it did.
         disabled = {"queue": {"docsOnly": False, "carryOver": {"records/": "not read by code"}}}
         self.assertFalse(mq.carried_over("README.md", disabled, []))
         self.assertTrue(mq.carried_over("records/input.json", disabled, []))
-        self.assertFalse(mq.carried_over("records/input.json", disabled, ["records/input.json"]))
+        self.assertIsNone(mq.docs_lanes(disabled, ["records/input.json"]))
+        listed = {"queue": {"unread": {"paths": {"records/": "not read by code"}}}}
+        self.assertTrue(mq.carried_over("README.md", listed, []))
+        self.assertTrue(mq.carried_over("records/input.json", listed, []))
+        self.assertFalse(mq.carried_over("records/input.json", listed, ["records/input.json"]))
+
+
+class Unread(unittest.TestCase):
+    """queue.unread, the one list of paths no code lane reads, which both a docs-only batch and a carry-over read, and
+    its reading of the older queue.docsOnly and queue.carryOver."""
+    LANES = {"gate": {"command": ["true"]}, "notes": {"command": ["true"]}}
+
+    def parsed(self, queue):
+        return configuration.parse(json.dumps({"schemaVersion": 1, "name": "demo", "lanes": self.LANES, "queue": queue}))
+
+    def test_the_defaults_paths_exclude_and_false(self):
+        cases = [({}, "README.md", True), ({}, "doc/a.md", True), ({}, "doc/a.markdown", True),
+                 ({}, "AGENTS.md", False), ({}, "src/NOTES.md", False), ({}, "doc/a.png", False),
+                 ({"unread": {"paths": {"records/": "why"}}}, "records/a.json", True),
+                 ({"unread": {"paths": {"records/": "why"}}}, "README.md", True),
+                 ({"unread": {"paths": {"records/": "why"}, "defaults": False}}, "README.md", False),
+                 ({"unread": {"exclude": {"doc/input.md": "a test reads it"}}}, "doc/input.md", False),
+                 ({"unread": {"paths": {"doc/": "why"}, "exclude": {"doc/x/": "why"}}}, "doc/x/a.png", False),
+                 ({"unread": False}, "README.md", False)]
+        for queue, path, expected in cases:
+            with self.subTest(queue=queue, path=path):
+                self.assertIs(configuration.unread({"queue": queue}, path), expected)
+
+    def test_one_reading_decides_both_a_gate_skip_and_a_carry_over(self):
+        for queue in ({}, {"unread": {"paths": {"records/": "why"}}}, {"unread": False},
+                      {"docsOnly": {"paths": {"doc/": "why"}, "lanes": ["docs"]}, "carryOver": {"records/": "why"}},
+                      {"carryOver": {"records/": "why"}}):
+            config = {"queue": queue}
+            for path in ("README.md", "AGENTS.md", "doc/a.md", "doc/a.png", "records/a.json", "src/a.py"):
+                with self.subTest(queue=queue, path=path):
+                    self.assertEqual(mq.docs_lanes(config, [path]) is not None, mq.carried_over(path, config, set()))
+
+    def test_the_older_settings_are_read_as_unread(self):
+        self.assertEqual(configuration.unread_declared({}), {})
+        self.assertEqual(configuration.unread_declared({"carryOver": {"records/": "why"}}), {"paths": {"records/": "why"}})
+        self.assertEqual(configuration.unread_declared({"docsOnly": {"paths": {"doc/": "a"}, "lanes": ["notes"],
+                                                       "exclude": {"doc/x.md": "b"}},
+                                          "carryOver": {"records/": "c"}}),
+                         {"paths": {"doc/": "a", "records/": "c"}, "exclude": {"doc/x.md": "b"}, "lanes": ["notes"],
+                          "defaults": False})
+        self.assertIs(configuration.unread_declared({"docsOnly": False}), False)
+        # A batch of only carryOver paths runs the docs lanes in place of the gate.
+        self.assertEqual(mq.docs_lanes({"queue": {"carryOver": {"records/": "why"}}}, ["records/a.json"]),
+                         ["spelling", "docs"])
+
+    def test_the_lanes_a_batch_of_unread_paths_runs(self):
+        config = {"lanes": self.LANES, "queue": {"unread": {"lanes": ["notes"]}}}
+        self.assertEqual(mq.docs_lanes(config, ["doc/a.md"]), ["spelling", "notes"])
+        self.assertIsNone(mq.docs_lanes(config, ["doc/a.md", "src/a.py"]))
+        self.assertIsNone(mq.docs_lanes({"queue": {"unread": False}}, ["doc/a.md"]))
+
+    def test_the_configuration_is_checked(self):
+        for declared in (False, {}, {"paths": {"records/": "why"}}, {"lanes": ["notes"]}, {"defaults": True},
+                         {"paths": {"doc/": "why"}, "exclude": {"doc/x.md": "why"}, "defaults": False}):
+            with self.subTest(declared=declared):
+                self.assertEqual(self.parsed({"unread": declared})["queue"]["unread"], declared)
+        for bad in (True, [], {"other": 1}, {"paths": {"doc/": ""}}, {"paths": ["doc/"]}, {"exclude": {" ": "why"}},
+                    {"lanes": []}, {"lanes": ["gate"]}, {"lanes": ["absent"]}, {"lanes": ["notes", "notes"]},
+                    {"defaults": "no"}, {"defaults": False}):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "queue.unread"):
+                self.parsed({"unread": bad})
+        for beside in ({"docsOnly": False}, {"carryOver": {"records/": "why"}}):
+            with self.subTest(beside=beside), self.assertRaisesRegex(ValueError, "cannot both be given"):
+                self.parsed({"unread": {}, **beside})
+        self.parsed({"docsOnly": False, "carryOver": {"records/": "why"}})
+        # The older settings alone still load.
+        self.parsed({"docsOnly": False})
+        self.parsed({"carryOver": {"records/": "why"}})
+
+    def test_only_main_gives_it(self):
+        self.assertTrue({"unread", "docsOnly", "carryOver"} <= set(mq.MAIN_ONLY))
+        batch = mq.as_batch({"queue": {"unread": {"paths": {"src/": "a branch's claim"}}, "carryOver": {"src/": "x"}}})
+        self.assertEqual(batch["queue"], {})
+
+    def test_doctor_and_land_warn_of_the_older_settings_with_what_to_give(self):
+        self.assertIsNone(configuration.legacy_unread_warning({"queue": {}}))
+        self.assertIsNone(configuration.legacy_unread_warning({"queue": {"unread": {"paths": {"records/": "why"}}}}))
+        warned = configuration.legacy_unread_warning({"queue": {"carryOver": {"records/": "why"}}})
+        self.assertIn('queue.carryOver goes in a later release', warned)
+        self.assertIn('{"unread": {"paths": {"records/": "why"}}}', warned)
+        self.assertIn('"unread": false', configuration.legacy_unread_warning({"queue": {"docsOnly": False}}))
+        both = configuration.legacy_unread_warning({"queue": {"docsOnly": False, "carryOver": {"records/": "why"}}})
+        self.assertIn("cannot say both that every batch gates and that records/ carries over", both)
+
+    def test_the_schema_knows_the_setting(self):
+        schema = json.loads((ROOT / "schemas/queuekeeper.schema.json").read_text())
+        queue = schema["properties"]["queue"]["properties"]
+        self.assertEqual(set(queue["unread"]["properties"]), {"paths", "exclude", "lanes", "defaults"})
+        self.assertEqual(queue["unread"]["properties"]["lanes"]["items"]["not"], {"const": "gate"})
+        self.assertTrue(queue["docsOnly"]["deprecated"] and queue["carryOver"]["deprecated"])
 
 
 class DefaultDocsOnly(Fixture):

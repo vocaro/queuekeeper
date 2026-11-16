@@ -16,7 +16,7 @@ import traceback
 from . import pins, __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
-    source_identity, lane_devices, legacy_spelling_warning, project_checkout, \
+    source_identity, lane_devices, legacy_spelling_warning, legacy_unread_warning, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
@@ -1266,6 +1266,8 @@ def perform(argv, report):
                                 "what a commit must pass before it lands gate (the toolkit's guides/adoption.md, Lane names)")
             # A project whose spelling check rests on the legacy spelling lane, which a later release removes (#69).
             if legacy_spelling_warning(config): warnings.append(legacy_spelling_warning(config))
+            # A project still on queue.docsOnly or queue.carryOver, which queue.unread replaces.
+            if legacy_unread_warning(config): warnings.append(legacy_unread_warning(config))
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
             warnings += split_warnings(root, config)

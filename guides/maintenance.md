@@ -771,7 +771,7 @@ exec python3 scripts/qk pre-push "$@"
 ```
 
 `qk pre-push` reads what Git gives a hook and finds the paths the push changes. A push that changes
-only the paths of `queue.docsOnly`, or only conventional Markdown in a project without it, runs the
+only paths no code lane reads, by `queue.unread` and its Markdown defaults, runs the
 docs lanes. Any other push runs `queue.lanes`, or `gate`, after those docs lanes when it changes
 such a path beside others. So the hook holds no second copy of what
 the configuration says. A push that changes no path runs nothing and says so: its files are ones the
@@ -894,19 +894,47 @@ with `qk land --front --no-gate --why TEXT` instead, as above. A record or a doc
 by the queue like anything else. A hand push follows [push only onto the `main` you tested](https://github.com/vocaro/vocaro-engineering/blob/main/guides/maintenance.md#concurrent-git-integration)
 and is reported to the owner with its reason. No check enforces this.
 
-**Main moving under a passed batch.** The queue takes a hand push as it comes. If `main` moved only by Markdown documents the batch
-does not touch, or by paths in `queue.carryOver`, each with why no queue lane reads it, the worker
-checks that the batch's patch is unchanged on the new `main`, runs `qk docs check` when a document
-moved, then the project's `queue.carryOverChecks`, and pushes. A carried-over result is no gate of the pushed commit: `eng release` will not
-take it. A path in `queue.docsOnly.exclude` always gates again: it is a known code input.
-`queue.docsOnly: false` disables automatic Markdown carry-over too, while explicit
-`queue.carryOver` permissions still apply unless excluded. Any other move gates again, with no blame. List in `queue.carryOver` only
-records no queue lane reads, and check first: studywright's gate compiles sources under
-`measurements/audits`, and BreezEPUB's script tests read parts of `evidence/`.
+**Paths no code lane reads.** One setting on `main`, `queue.unread`, says which paths no code lane
+reads, and the queue asks it two questions: whether a batch may skip the gate, because every path it
+changes is unread, and whether a passed result stands when `main` moves, because every path `main`
+gained is unread and untouched by the batch. One list answers both, so a document never skips the
+gate yet fails to carry over, or the reverse. The conventional Markdown defaults below count unless
+`defaults` is false:
 
-**A docs-only batch runs the docs lanes.** By default, existing and newly initialized
-repositories use this path for root `README.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`, and
-Markdown files (`.md` or `.markdown`) under `doc/`, `docs/`, `guides/`, and `knowledge/`.
+```json
+"unread": {"paths": {"doc/guide/": "read by no code lane; qk docs check reads it",
+                     "records/": "landing records; no lane reads them"},
+           "exclude": {"doc/guide/input.md": "a code test reads this fixture"},
+           "lanes": ["docs"]}
+```
+
+Every key is optional. `paths` adds to the defaults, each a file or a directory ending in `/`, with
+why no code lane reads it. `exclude` names paths among them that code does read, and wins over both.
+`lanes`, by default `["docs"]`, is what a batch of unread paths runs in place of the gate, never
+`gate`. `defaults: false` drops the Markdown defaults. `"unread": false` gates every batch and
+carries nothing over. List a path only when no lane reads it, and check first: studywright's gate
+compiles sources under `measurements/audits`, and BreezEPUB's script tests read parts of
+`evidence/`. A path left out costs a gate run; a path wrongly listed lands untested.
+
+`queue.unread` replaces `queue.docsOnly` and `queue.carryOver`, which said the same thing in two
+lists that could disagree. A release reads them as `queue.unread`: `carryOver`'s paths join
+`docsOnly.paths`, and an explicit `docsOnly` keeps the defaults off, as it replaced them. `qk doctor`
+and `qk land` warn of them and print the `queue.unread` to give in their place; the next release
+refuses them. Neither may stand beside `queue.unread`. `docsOnly: false` beside a `carryOver` has
+no exact reading: until it goes, every batch gates and the `carryOver` paths still carry over, and the
+warning asks the owner to choose `"unread": false` or those paths as `unread.paths`. Two things change on reading: Markdown outside the defaults, such
+as a root `AGENTS.md`, no longer carries over unless `paths` names it, and a batch of only
+`carryOver` paths runs the docs lanes rather than the gate.
+
+**Main moving under a passed batch.** The queue takes a hand push as it comes. If `main` moved only
+by unread paths the batch does not touch, the worker checks that the batch's patch is unchanged on
+the new `main`, runs `qk docs check` when a document moved, then the project's
+`queue.carryOverChecks`, and pushes. A carried-over result is no gate of the pushed commit: `eng
+release` will not take it. Any other move gates again, with no blame.
+
+**A docs-only batch runs the docs lanes.** A batch whose every path is unread is a docs-only
+batch. By default, existing and newly initialized repositories use this path for root
+`README.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`, and Markdown files (`.md` or `.markdown`) under `doc/`, `docs/`, `guides/`, and `knowledge/`.
 The worker runs the preflight lanes, followed by the project's `docs` lane or the toolkit's
 implicit `docs` lane (`python3 scripts/qk docs check`, or `qk docs check` by the toolkit's own
 `bin/qk` in a project with no launcher). This includes this toolkit's guides and
@@ -923,7 +951,7 @@ folders retain the code gate. A batch that changes nothing runs every code lane,
 entry whose own commits change a document and code.
 
 **A batch of documents and code runs the docs lanes too** (vocaro/queuekeeper#122). When the paths
-a batch changes include a docs-only path, by `main`'s settings as above, beside any other, the
+a batch changes include an unread path, by `main`'s settings as above, beside any other, the
 worker runs the docs lanes that a docs-only batch would run for those documents as well as the
 gate: after the preflight lanes and provision, ahead of `queue.lanes` or `gate`, so that a cheap failure
 sends the batch back before the gate starts. A docs lane that `queue.lanes` already names, itself
@@ -931,9 +959,9 @@ or as a member of a group, runs once. Both halves of a bisect run the docs lanes
 changes a document, and a gate stacked on a batch chooses its own lanes by its own entries' paths.
 `qk pre-push` does the same, with the docs lanes first. A project need not copy its docs checks
 into its gate. On 2026-11-12 a vocaro/mpm commit that changed tooling and `AGENTS.md`, one of its
-`queue.docsOnly` paths, took that file past the 32 KiB its docs lane allows. Its gate ran three
+docs-only paths, took that file past the 32 KiB its docs lane allows. Its gate ran three
 times, never held that check, and the commit landed; the next docs-only batch would have failed
-on a file it did not change. `queue.docsOnly: false` turns this off with the rest of docs-only
+on a file it did not change. `queue.unread: false` turns this off with the rest of docs-only
 handling.
 
 **A docs-only entry never rides a code gate** (owner's rule of 2026-11-11,
@@ -944,8 +972,8 @@ change, by `main`'s settings as above, and keeps docs-only entries out of code b
   docs lanes; the code entries gate in the next round, without them.
 - While a code batch gates, a bisect's half or an entry put first among them, a docs-only entry
   that waits lands beside the gate, in a checkout of its own beside the worker's (suffix
-  `-docs`), looked for every `STACK_POLL`. Only entries whose every path a carry-over takes go
-  there; when the code batch passes, its result carries over
+  `-docs`), looked for every `STACK_POLL`. Only entries that change none of the gating batch's
+  paths go there; their paths are unread, so when the code batch passes, its result carries over
   the documents `main` gained (*Main moving under a passed batch*), and so does a gate stacked on
   it. A docs-only entry is never stacked on a code gate.
 - A docs-only entry goes ahead of an older entry only when the two change no path in common, and
@@ -957,21 +985,10 @@ change, by `main`'s settings as above, and keeps docs-only entries out of code b
   needs the file an older entry adds. It is not sent back: it records them as `waitsFor` and goes
   back in line behind them, then lands, or fails and is sent back, on top of them.
 
-A project may replace the defaults on `main` with exact paths and validators:
-
-```json
-"docsOnly": {"paths": {"doc/guide/": "read by no code lane; qk docs check reads it",
-                       "README.md": "read by no code lane; qk docs check reads it"},
-             "exclude": {"doc/guide/input.md": "a code test reads this fixture"},
-             "lanes": ["docs"]}
-```
-
-An explicit declaration replaces the default paths and lanes; it does not extend them.
-Directories end in `/`. `exclude` is optional and takes precedence over `paths`. A project whose
-code or tests consume a conventional documentation path must exclude it in its declaration or
-set `queue.docsOnly` to `false` to keep every landing gated. Name any project-specific
-documentation validators as docs lanes. Only `main`'s settings count, so a branch cannot widen
-its own docs classification. Both a moved file's old and new paths must qualify: a move across
+A project whose code or tests consume a conventional documentation path must name it in
+`queue.unread.exclude`, or set `queue.unread` to `false` to keep every landing gated. Name any
+project-specific documentation validators in `queue.unread.lanes`. Only `main`'s settings
+count, so a branch cannot widen its own docs classification. Both a moved file's old and new paths must qualify: a move across
 the code/documentation boundary runs the code gate.
 
 Several docs-only entries land as one batch after their docs checks pass. The pre-push code
@@ -1126,8 +1143,9 @@ it would once they are on `main`.
 
 This trusts the entry with its own gate only where `main` has no gate for it to loosen. Four settings
 loosen what the queue checks rather than say what it runs, and only `main` gives them, even then:
-`queue.hookCoveredBy`, which skips the pre-push hook, `queue.docsOnly`, which skips the gate for
-the paths it names, `queue.spelling: false`, which turns off the toolkit's spelling check (the
+`queue.hookCoveredBy`, which skips the pre-push hook, `queue.unread`, which skips the gate for
+the paths it names and lets a passed result carry over them, with the older `queue.docsOnly` and
+`queue.carryOver` it replaces, `queue.spelling: false`, which turns off the toolkit's spelling check (the
 owner's decision, 2026-11-13, [#10](https://github.com/vocaro/queuekeeper/issues/10)), and
 `queue.preflight`, which can name fewer checks or none
 ([#69](https://github.com/vocaro/queuekeeper/issues/69)). A project that
