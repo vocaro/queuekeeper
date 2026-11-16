@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
+from test_support import farm as farm_fixture
 from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
 from queuekeeper_dashboard import admission_ids, panels, registry, repository, server
 from queuekeeper_dashboard.panels import farm, history, home, logs, queue
@@ -378,7 +379,7 @@ class Panels(Fixture):
         with patch.object(farm.offload_host, "pressure", return_value=pressure), \
                 patch.object(farm.offload_host, "host_health", return_value=healthy), \
                 patch.object(farm.offload_host, "screen", return_value={"state": "unlocked"}), \
-                patch.object(farm.remote, "configured", return_value="build"), \
+                farm_fixture.only("build"), \
                 patch.object(farm.remote, "reading_there",
                              return_value=({**pressure, "cpuBusy": 80.0, "health": swapping}, 80.0)) as there, \
                 patch.object(farm.remote, "screen_there", return_value={"state": "locked"}):
@@ -391,8 +392,13 @@ class Panels(Fixture):
             self.assertIn("`sudo killall fseventsd` on build", found["second"]["health"])
             with patch.object(farm.remote, "screen_there", side_effect=farm.remote.Unavailable("build is asleep")):
                 self.assertEqual(READ_DETAIL()["second"]["error"], "build is asleep")
-            with patch.object(farm.remote, "configured", return_value=None):
+            with farm_fixture.only():
                 self.assertEqual(list(READ_DETAIL()), ["here"])
+            # Several Macs are each read, by their names in the farm, and a paused one is not.
+            with farm_fixture.only(farm_fixture.mac("studio.local", "studio"), "mini",
+                                   farm_fixture.mac("loaned", state="paused")):
+                self.assertEqual(list(READ_DETAIL()), ["here", "studio", "mini"])
+                there.assert_called_with("mini", health=True)
 
     def test_a_load_that_cannot_be_read_leaves_the_slots_and_the_last_load_shown(self):
         self.read_farm()

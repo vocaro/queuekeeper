@@ -305,14 +305,15 @@ def changed_at(path):
 def gather(root):
     """Read what assess judges, now: the queue, its journal, doctor's findings, each Mac's pressure (the second Mac's
     over SSH) and the devices."""
-    from . import events, extensions, lane_wait, merge_queue, offload_host, remote
+    from . import events, extensions, farm, lane_wait, merge_queue, offload_host, remote
     state = merge_queue.snapshot(root)
     journal = events.read(Path(root) / ".git" / "queuekeeper-queue")
     try: findings = merge_queue.diagnose(root)[0]
     except Exception: findings = []  # noqa: BLE001 - doctor's own checks never fail the verdict
     readings = [{"name": lane_wait.HERE, "reading": offload_host.pressure(), "readAt": time.time()}]
-    host = remote.configured()
-    if host:
+    try: hosts = farm.destinations()
+    except ValueError: hosts = ()
+    for host in hosts:
         try: answered = remote.reading_there(host)[0]
         except Exception as error:  # noqa: BLE001 - unknown, never well
             answered = {"error": str(getattr(error, "problem", None) or error)}

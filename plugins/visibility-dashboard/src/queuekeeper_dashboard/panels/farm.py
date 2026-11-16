@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 
-from queuekeeper import extensions, host_health, offload_host, remote, resources
+from queuekeeper import extensions, farm, host_health, offload_host, remote, resources
 from .. import admission_ids
 
 TITLE, ORDER = "Farm", 20
@@ -51,14 +51,15 @@ def hardware_of(found):
 
 
 def read_detail():
-    """{role: load_of(...)} for this Mac, `here`, and the second Mac when one is configured, `second`. A Mac that
-    cannot be asked has its reason as its error."""
+    """{role: load_of(...)} for this Mac, `here`, and each of the farm's Macs that take work now, by the role
+    `qk admissions now` gives it (resources.farm_role). A Mac that cannot be asked has its reason as its error."""
     found = {"here": load_of({**offload_host.pressure(), "health": offload_host.host_health()}, offload_host.screen())}
-    host = remote.configured()
-    if host:
-        try: found["second"] = load_of(remote.reading_there(host, health=True)[0], remote.screen_there(host), host)
+    macs = farm.active()
+    for mac in macs:
+        host, role = mac["ssh"], resources.farm_role(mac, len(macs))
+        try: found[role] = load_of(remote.reading_there(host, health=True)[0], remote.screen_there(host), host)
         except Exception as error:  # noqa: BLE001
-            found["second"] = {**load_of({}, {}), "error": str(getattr(error, "problem", None) or error)}
+            found[role] = {**load_of({}, {}), "error": str(getattr(error, "problem", None) or error)}
     return found
 
 

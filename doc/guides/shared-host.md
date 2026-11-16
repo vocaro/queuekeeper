@@ -644,7 +644,11 @@ python3 scripts/qk admissions <(ssh build-host \
 
 ### Who holds and who waits
 
-`python3 scripts/qk admissions now` shows admission as it stands on this Mac and the second Mac:
+`python3 scripts/qk admissions now` shows admission as it stands on this Mac and on each of the
+farm's Macs that take work now, all asked at once. In `--json`, each of the farm's Macs carries
+`mac`, its name in the farm, `id`, its hardware UUID, and `ssh`, its SSH destination; its `role` is
+its name in the farm once the farm has several Macs, `second` while it has one, and this Mac's is
+`here`. It shows
 each holder's slots, kind and hold time, and each waiter's wait and the reason it prints itself,
 with where each one's work comes from: its repository, branch, worktree, agent session and Mac
 (`resources.work_origin`), the sender's for work the second Mac runs for this one. It changes nothing. A Mac it cannot read in 10 seconds is unknown, never idle, and this Mac's reading
@@ -1132,7 +1136,9 @@ status. A run whose connection is lost before it ends brings none back and is un
 stay in the second Mac's checkout until a later run there replaces them.
 
 Every run's receipt says where it ran. `ranOn` is `this Mac` or `second Mac`, which a receipt
-written before 2026-10-28 gives as `build host`, and `mac` names the Mac. On this Mac,
+written before 2026-10-28 gives as `build host`, and `mac` names the Mac. A run on one of the
+farm's Macs also keeps `host`, its SSH destination, `farmMac`, its name in the farm, and `macId`,
+its hardware UUID, which stays the Mac's own when the owner renames it. On this Mac,
 `hereBecause` says why the run ran here: the lane's own reason, `--here` or `qk admit --here`,
 `--serial`, nested work, a self lane's part, foreground work, no second Mac configured, the second Mac having no spare capacity (its CPU, a whole-host
 lane or exclusive work running there, or its guaranteed slots all busy), the second Mac being busy
@@ -1245,8 +1251,10 @@ runtime that no simulator but Xcode's defaults uses and copying any other to the
 ([setting up the second Mac](#setting-up-the-second-mac)), with its progress on standard error, then
 compares again. The difference is an error only when that fails. Doctor also shuts down the
 [stale pool simulators](#stale-pool-simulators) on both Macs, as `qk simulator-pool reap` does, on
-the second Mac only when it answered, and lists each stop under `offload`, `reaped`
-([vocaro-engineering#127](https://github.com/vocaro/vocaro-engineering/issues/127)). Under `offload` in the report,
+the second Mac only when it answered, and lists each stop under `farm`, `reaped`
+([vocaro-engineering#127](https://github.com/vocaro/vocaro-engineering/issues/127)). The report's `farm` is a list
+with one comparison for each of the farm's Macs that take work now, in the farm's order, each with
+the Mac's `host` and its `name` in the farm; a farm with no such Mac has one comparison, with none. In each,
 `unchecked` names what was not compared: the second Mac, and why, when it cannot be reached, its
 Xcodes and runtimes when it did not report them, and the whole comparison when no second Mac is
 configured. `leftovers` lists the
@@ -2269,7 +2277,7 @@ cannot see a child that moved to a session of its own and was orphaned between t
 ([process supervision](#process-supervision)). So the second Mac is searched for such processes
 before work is sent there: `qk remote`, and `qk run` for a lane it sends there, print what the
 search finds in the connection that prepares the second Mac's repositories, before anything is
-pushed, and `qk doctor` lists it under `offload`, `leftovers`. A process is listed when it is
+pushed, and `qk doctor` lists it under `farm`, `leftovers`, for each Mac. A process is listed when it is
 the account's, runs from a checkout there (`~/Development/queuekeeper-farm/checkouts`), the
 temporary directory (`$TMPDIR`) or a simulator's device directory, and no live run accounts for
 it:

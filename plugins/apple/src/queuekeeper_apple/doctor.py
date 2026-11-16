@@ -18,7 +18,7 @@ def fix_hosts(root, hosts):
     deletedDefaults. Its progress goes to standard error, so that standard output stays the report."""
     if hosts.pop("runtimesDiffer", False):
         with contextlib.redirect_stdout(sys.stderr): remote.match_runtimes(hosts["host"], check=False)
-        hosts = remote.compare_hosts()
+        hosts = remote.compare_hosts(hosts["host"])
         hosts.pop("runtimesDiffer", None)
     # The second Mac only when it answered the comparison: one away is no error, and is not waited for.
     # A diagnostic stops no leftover process: it lists those reap would stop (vocaro-engineering#353).

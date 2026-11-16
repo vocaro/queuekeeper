@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import cli, offload_host, remote, resources
 from queuekeeper_apple import devices
 import host_isolation
+from test_support import farm as farm_fixture
 from test_support.devices import run_printed
 from queuekeeper_apple.simulators import pool as simulator_pool
 
@@ -1044,7 +1045,7 @@ class ReapCommandTests(unittest.TestCase):
             output = StringIO()
             with patch.object(offload_host, "reap", return_value=here or self.EMPTY) as local, \
                     patch.object(remote, "reap_there", return_value=there or self.EMPTY) as far, \
-                    patch.object(remote, "configured", return_value=host), \
+                    farm_fixture.only(*filter(None, [host])), \
                     patch("queuekeeper_apple.disk.pools", return_value=frozenset({"Pagepour"})), redirect_stdout(output):
                 status = simulator_pool.main(["reap", *arguments], project)
         return status, output.getvalue(), local, far
@@ -1067,7 +1068,7 @@ class ReapCommandTests(unittest.TestCase):
         far.assert_not_called()
         self.assertEqual(status, 0)
         with tempfile.TemporaryDirectory() as project, patch.object(offload_host, "reap", return_value=self.EMPTY) as local, \
-                patch.object(remote, "configured", return_value=None), redirect_stdout(StringIO()):
+                farm_fixture.only(), redirect_stdout(StringIO()):
             simulator_pool.main(["--pool", "Solo", "reap"], project)
         local.assert_called_once_with(remote.ROOT, pools=["Solo"], dry_run=False, scan=False)
 

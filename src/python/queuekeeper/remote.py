@@ -2113,6 +2113,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     # commit is what ran there: HEAD, or a snapshot of the working tree on it. ranOn and mac say where, as
     # a run on this Mac's receipt does, so that the share of each Mac's work can be counted.
     receipt = {"ranOn": "second Mac", "mac": (result.get("host") or {}).get("name"), "host": host,
+               **farm_mac(host),
                "commit": commit, "head": head, "snapshot": commit != head,
                **toolkit_identity(kit, commit), "lane": lane, "arguments": list(arguments),
                "expect": expect, "work": work, "local": local, "result": result, "dispatched": started,
@@ -2364,6 +2365,16 @@ def foreground_lane(root, config, lane, arguments, expect):
     with processes.forwarding_signals():
         return offering_here(f"qk run --here {lane}",
                              lambda: execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect))
+
+
+def farm_mac(host):
+    """What a record keeps of the farm's Mac at host beside its SSH destination: its name in the farm (farmMac) and
+    its hardware UUID (macId), which stays the Mac's own when the owner renames it; nothing for a destination the
+    farm does not have."""
+    with contextlib.suppress(ValueError):
+        for mac in farm.read():
+            if mac["ssh"] == host: return {"farmMac": mac["name"], **({"macId": mac["id"]} if mac.get("id") else {})}
+    return {}
 
 
 def eligible(macs):
@@ -4085,8 +4096,9 @@ def python_crash_notes(hosts):
     return notes
 
 
-def compare_hosts():
-    """What `qk doctor` reports of the second Mac: this Mac's and the second Mac's default Xcodes
+def compare_hosts(host=None):
+    """What `qk doctor` reports of one of the farm's Macs, the one at host, else the first that takes work now, as
+    the second Mac: this Mac's and the second Mac's default Xcodes
     (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
     and the simulator runtimes it lists. A difference is an error, and what could not be compared is
     named in unchecked. A second Mac that cannot be reached, as when this Mac is away from its
@@ -4097,8 +4109,8 @@ def compare_hosts():
     each connection waiting are an error too, as are device records that do not keep physical
     devices in this Mac's alone. Differing runtimes also set runtimesDiffer, which `qk doctor` evens
     out (match_runtimes) before it compares again."""
-    host = configured()
-    report = {"host": host, "errors": [], "unchecked": [],
+    host = host or configured()
+    report = {"host": host, "name": farm.named(host) if host else None, "errors": [], "unchecked": [],
               "pythonCrashes": {"local": offload_host.python_crash_reports()}}
     if host is None:
         report["unchecked"].append(f"{NO_MAC}, so this Mac was compared with none")

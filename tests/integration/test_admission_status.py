@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 import host_isolation
+from test_support import farm as farm_fixture
 from host_isolation import stretched
 
 from queuekeeper import config, offload_host, processes, remote, resources
@@ -653,7 +654,7 @@ class CommandTests(unittest.TestCase):
         def unreachable(host, budget):
             self.assertLessEqual(budget, remote.ADMISSIONS_BUDGET)
             raise remote.Unreachable(f"{host} did not answer in {budget:g}s", "wake it")
-        found = resources.admissions_now(read_here=self.reading, read_there=unreachable, configured=lambda: "build-host")
+        found = resources.admissions_now(read_here=self.reading, read_there=unreachable, macs=lambda: [farm_fixture.mac("build-host")])
         here, there = found["hosts"]
         self.assertEqual((here["state"], here["holders"]), ("observed", []))
         self.assertEqual((there["state"], there["holders"], there["waiters"]), ("unknown", None, None))
@@ -668,10 +669,24 @@ class CommandTests(unittest.TestCase):
     def test_no_second_mac_configured_is_no_failure_and_here_reads_this_mac_alone(self):
         asked = []
         found = resources.admissions_now(read_here=self.reading, read_there=lambda *_: asked.append(1),
-                                         configured=lambda: None)
+                                         macs=lambda: [])
         self.assertEqual(found["hosts"][1]["state"], "notConfigured")
         with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "QUEUEKEEPER_GATE_LOCK_FILE": ""}):
             self.assertEqual(resources.now_main(["--json"], out=lambda text: None, read=lambda here_only: found), 0)
+        # Several Macs are each read, in the farm's order, by their names in the farm; one away is unknown beside them.
+        def read(host, budget):
+            if host == "mini": raise remote.Unreachable("mini did not answer", "wake it")
+            return self.reading()
+        macs = [farm_fixture.mac("studio.local", "studio"), farm_fixture.mac("mini"), farm_fixture.mac("rented")]
+        several = resources.admissions_now(read_here=self.reading, read_there=read, macs=lambda: macs)["hosts"]
+        self.assertEqual([(one["role"], one["name"], one["state"]) for one in several],
+                         [("here", several[0]["name"], "observed"), ("studio", "studio (studio.local)", "observed"),
+                          ("mini", "mini", "unknown"), ("rented", "rented", "observed")])
+        self.assertEqual([(one["mac"], one["ssh"], one["id"]) for one in several[1:]],
+                         [(mac["name"], mac["ssh"], mac["id"]) for mac in macs])
+        # One Mac keeps the role and name it had before the farm could have more.
+        one = resources.admissions_now(read_here=self.reading, read_there=read, macs=lambda: macs[:1])["hosts"][1]
+        self.assertEqual((one["role"], one["name"], one["mac"]), ("second", "second Mac (studio.local)", "studio"))
         only = resources.admissions_now(here_only=True, read_here=self.reading, read_there=lambda *_: asked.append(1))
         self.assertEqual((len(only["hosts"]), asked), (1, []))
         # A reading this Mac cannot take is unknown, never idle.

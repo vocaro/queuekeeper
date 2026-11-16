@@ -7,17 +7,17 @@ read the keychain that holds the session, so the second Mac's is not asked. A si
 warned of. A run on a Mac that is not signed in ends unmeasured, by its log (licensing.never_started)."""
 import shlex
 
-from queuekeeper import extensions, remote
+from queuekeeper import extensions, farm, remote
 from . import editor, settings, unity_cli
 
 # Without a graphics device Unity never loads compute shaders, and a project that has them fails to open.
 NO_GRAPHICS = "-nographics"
 
 
-def second_mac():
-    """The second Mac this Mac sends work to, or None."""
-    try: return remote.configured()
-    except ValueError: return None
+def farm_macs():
+    """The SSH destinations of the farm's Macs this Mac sends work to now."""
+    try: return farm.destinations()
+    except ValueError: return ()
 
 
 def installed_there(host, binary):
@@ -48,8 +48,8 @@ def warnings(root, config):
     if unity_cli.signed_in() is False:
         found.append("Unity Hub is not signed in on this Mac, so an editor started here has no license and its run "
                      "ends unmeasured: sign in with Unity Hub, or `unity auth login`")
-    host = second_mac()
-    if host and installed_there(host, pinned) is False:
+    for host in farm_macs():
+        if installed_there(host, pinned) is not False: continue
         found.append(f"Unity {want}, which {project.name} pins, is not installed on {host} ({editor.HUB / want}): a "
                      "run sent there takes its newest editor, or none")
     return found

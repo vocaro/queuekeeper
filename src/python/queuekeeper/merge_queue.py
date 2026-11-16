@@ -53,7 +53,7 @@ import time
 import unicodedata
 import urllib.request
 
-from . import budgets, disk, extensions, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, pins, processes, remote, \
+from . import budgets, disk, extensions, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
 from . import events, pre_push, recovery
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
@@ -2287,14 +2287,15 @@ def health_of(host):
 
 
 def memory_findings(read=None):
-    """(findings, notes): a finding for each Mac, this one and the second Mac when one is configured, that is short of
+    """(findings, notes): a finding for each Mac, this one and each of the farm's that take work now, that is short of
     memory (host_health.assessed), naming its largest processes and how the owner frees them; a note for a Mac whose
     reading could not be made. On 2026-11-15 the second Mac's fseventsd held 34 of its 64 GB and swap was full, and a
     gate timed out there with no test failed. It changes nothing: stopping a process takes the owner's password."""
     read = read or health_of
     findings, notes = [], []
-    host = remote.configured()
-    for mac, asked in ((lane_wait.HERE, None), *(((lane_wait.second_mac(host), host),) if host else ())):
+    try: hosts = farm.destinations()
+    except ValueError: hosts = ()
+    for mac, asked in ((lane_wait.HERE, None), *((lane_wait.second_mac(host), host) for host in hosts)):
         try: reading = read(asked)
         except Exception: reading = None  # noqa: BLE001 - a reading never fails the doctor
         if reading is None:
@@ -2424,9 +2425,8 @@ def placement(root, name=None, as_json=False):
     foreground = bool(lane.get("foreground"))
     model = bool(lane.get("model"))
     whole_host, exclusive, screen = bool(lane.get("wholeHost")), lane.get("resource") == "exclusive", unlocked_screen(lanes, name)
-    pool = remote.gate_hosts() if not local and not foreground else None
-    default = remote.configured() if not local and pool is None else None
-    hosts = pool or ((default,) if default else ())
+    # The Macs the lane may go to: none for one that stays here, those marked for a foreground lane, else all.
+    hosts = () if local else farm.foreground() if foreground else farm.destinations()
     checked = []
     candidates = hosts + ((None,) if local or not foreground else ())
     for host in candidates:

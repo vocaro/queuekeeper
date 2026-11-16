@@ -896,7 +896,7 @@ class Placement(Fixture):
         blocker = {"state": "queued", "kind": "exclusive", "pid": 12, "identity": "admission-12", "processStart": "start"}
         queued = {**free, "busy": [1], "queuedExclusive": "PID 12", "blockers": [blocker]}
         busy = {**free, "busy": [1]}
-        with patch.object(mq.remote, "gate_hosts", return_value=("build-host", "gate-03", "gate-04")), \
+        with farm_fixture.only("build-host", "gate-03", "gate-04"), \
                 patch.object(mq.remote, "capacity_there", side_effect=[
                     queued, busy, mq.remote.Unreachable("gate-04 is offline", "wake it")
                 ]) as probe, patch.object(offload_host, "capacity", return_value=free) as here, \

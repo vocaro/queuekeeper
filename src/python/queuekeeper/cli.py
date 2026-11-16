@@ -1277,23 +1277,27 @@ def perform(argv, report):
             warnings += lane_wait.admission_warnings(root)
             # What a push by hand from this checkout runs, put right where it can be (git_hooks).
             warnings += git_hooks.check(root, config.get("gitHooks"))
-            # A difference between the two Macs is an error; a second Mac that cannot be reached is unchecked.
-            hosts = fix_hosts(root, remote.compare_hosts())
+            # Each of the farm's Macs that take work now is compared with this Mac, in the farm's order: a difference
+            # is an error, and a Mac that cannot be reached is unchecked. A farm with none compares this Mac with none.
+            compared = [fix_hosts(root, remote.compare_hosts(host)) for host in farm.destinations()] \
+                or [fix_hosts(root, remote.compare_hosts())]
             for check in extensions.DOCTOR: warnings += check(root, config)
-            # Each Mac short of memory, with what holds it (host_health); the second Mac's rides on its survey.
-            warnings += host_health.warnings((hosts.get("local") or {}).get("hostHealth") or offload_host.host_health(),
-                                             "this Mac")
-            if "remote" in hosts and "hostHealth" not in hosts["remote"]:
-                hosts.setdefault("unchecked", []).append(f"whether {hosts['host']} is short of memory, which its "
-                                                         "toolkit checkout did not report before it was updated")
-            elif "remote" in hosts: warnings += host_health.warnings(hosts["remote"]["hostHealth"], hosts["host"])
+            # Each Mac short of memory, with what holds it (host_health); another Mac's rides on its survey.
+            warnings += host_health.warnings((compared[0].get("local") or {}).get("hostHealth")
+                                             or offload_host.host_health(), "this Mac")
+            for hosts in compared:
+                if "remote" in hosts and "hostHealth" not in hosts["remote"]:
+                    hosts.setdefault("unchecked", []).append(f"whether {hosts['host']} is short of memory, which its "
+                                                             "toolkit checkout did not report before it was updated")
+                elif "remote" in hosts: warnings += host_health.warnings(hosts["remote"]["hostHealth"], hosts["host"])
             test_lanes = lane_coverage.report(root, config)  # a warning at most, and never a failure (#289)
             warnings += lane_coverage.doctor_warnings(test_lanes)
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "extensions": list(extensions.LOADED),
-                "missingCommands": missing, "warnings": warnings, "notes": remote.python_crash_notes(hosts),
-                "testLanes": test_lanes, "offload": hosts}, indent=2))
-            return int(bool(missing or hosts["errors"]))
+                "missingCommands": missing, "warnings": warnings,
+                "notes": list(dict.fromkeys(note for hosts in compared for note in remote.python_crash_notes(hosts))),
+                "testLanes": test_lanes, "farm": compared}, indent=2))
+            return int(bool(missing or any(hosts["errors"] for hosts in compared)))
         elif args.action == "pre-push": return pre_push.main(root, config, args.remote)
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)

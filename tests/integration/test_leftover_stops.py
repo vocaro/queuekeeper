@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import offload_host, remote
 from queuekeeper_apple.simulators import pool as simulator_pool
 import host_isolation
+from test_support import farm as farm_fixture
 
 RUN, LEFTOVER, OTHER_RUN, SHELL, CHILD = 105000, 108000, 105500, 109000, 108100
 
@@ -254,7 +255,7 @@ class RequestTests(Fixture):
             sent.append(request)
             return subprocess.CompletedProcess([], 0, json.dumps(offload_host.answer(request)) + "\n", "")
 
-        with patch.object(remote, "configured", return_value="build-host"), patch.object(remote, "ssh", answered), \
+        with farm_fixture.only("build-host"), patch.object(remote, "ssh", answered), \
                 patch.object(offload_host, "reap", return_value={"stopped": [], "problem": None}), \
                 patch.object(offload_host, "leftovers", side_effect=lambda root, listed=None, written=None:
                              real_census(root, self.listed, written or (lambda pid: None))), \

@@ -6125,7 +6125,7 @@ class AdmissionsThereTests(unittest.TestCase):
     def test_this_macs_reading_stands_when_the_second_mac_is_unreachable(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HEAVY_SLOT_DIR": directory}), \
                 patch.object(remote.subprocess, "run", side_effect=subprocess.TimeoutExpired("ssh", 7)):
-            found = resources.admissions_now(configured=lambda: "build-host")
+            found = resources.admissions_now(macs=lambda: [farm_fixture.mac("build-host")])
         here, there = found["hosts"]
         self.assertEqual((here["role"], here["state"], here["waiters"]), ("here", "observed", []))
         self.assertEqual((there["name"], there["state"], there["holders"], there["waiters"]),
@@ -6561,7 +6561,9 @@ class SecondMacDoctorTests(unittest.TestCase):
         self.assertEqual(report["project"], "Example")
         # Its section was buildHost until vocaro-engineering#58, and no script reads the report.
         self.assertNotIn("buildHost", report)
-        return status, report["offload"]
+        # One comparison for each of the farm's Macs: these tests have one, or none.
+        self.assertEqual(len(report["farm"]), 1)
+        return status, report["farm"][0]
 
     def test_doctors_update_of_the_second_macs_toolkit_checkout_reaches_it_and_fetches(self):
         _origin, seed, checkout = toolkit_clone(Path(self.temp.name) / "kit-origin", self.home)

@@ -1289,8 +1289,9 @@ def reap_reports(pool, project, *, dry_run, here, stop_leftovers=True):
         pools = sorted({*disk.pools(Path.home() / "Development"), *filter(None, [configured(project or Path.cwd())])})
     request = {"pools": pools, "dry_run": dry_run, "scan": not pool}
     reports = [(remote.HERE, offload_host.reap(remote.ROOT, **request))]
-    host = None if here else remote.configured()
-    if host: reports.append((host, remote.reap_there(host, request, stop_leftovers)))
+    from queuekeeper import farm
+    for host in () if here else farm.destinations():
+        reports.append((host, remote.reap_there(host, request, stop_leftovers)))
     return reports
 
 

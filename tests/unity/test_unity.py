@@ -526,7 +526,7 @@ class DoctorTests(Folder):
         self.config = {"unity": {"project": "lab"}, "lanes": {"gate": {"command": ["qk", "unity", "test"]}}}
         self.enterContext(patch.object(editor, "HUB", self.folder / "hub"))
         self.there = True
-        self.enterContext(patch.object(doctor, "second_mac", lambda: "studio"))
+        self.enterContext(patch.object(doctor, "farm_macs", lambda: ("studio",)))
         self.enterContext(patch.object(doctor, "installed_there", lambda host, binary: self.there))
         self.signed_in = True
         self.enterContext(patch.object(unity_cli, "signed_in", lambda: self.signed_in))

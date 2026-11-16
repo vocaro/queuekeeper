@@ -1,5 +1,6 @@
 """A Mac short of memory is named in qk doctor, with what holds it and what the owner can do (host_health)."""
 import host_isolation  # noqa: F401 -- first, as every test module
+from test_support import farm as farm_fixture
 import contextlib
 import math
 from io import StringIO
@@ -157,7 +158,7 @@ class Doctor(unittest.TestCase):
         hosts = {"host": "build", "errors": [], "unchecked": [], "pythonCrashes": {}, "remote": {}}
         shown = self.doctor(hosts, reading())
         self.assertFalse([w for w in shown["warnings"] if "short of memory" in w])
-        self.assertTrue(any("whether build is short of memory" in item for item in shown["offload"]["unchecked"]))
+        self.assertTrue(any("whether build is short of memory" in item for item in shown["farm"][0]["unchecked"]))
 
 
 
@@ -167,7 +168,7 @@ class QueueDoctor(unittest.TestCase):
         def read(host):
             asked.append(host)
             return SWAPPING if host == "build" else reading()
-        with patch.object(remote, "configured", return_value="build"):
+        with farm_fixture.only("build"):
             findings, notes = merge_queue.memory_findings(read)
         self.assertEqual(asked, [None, "build"])
         self.assertEqual(notes, [])
@@ -176,11 +177,36 @@ class QueueDoctor(unittest.TestCase):
         self.assertIn("swap is 31.7 GB of 32.0 GB used", found["diagnosis"])
         self.assertIn("`sudo killall fseventsd` on the second Mac (build), which is safe", found["remedy"])
         self.assertEqual([one["pid"] for one in found["largest"]], [312, 901, 77])
-        with patch.object(remote, "configured", return_value="build"):
+        with farm_fixture.only("build"):
             findings, notes = merge_queue.memory_findings(lambda host: None if host else reading())
         self.assertEqual(findings, [])
         self.assertEqual(notes, ["whether the second Mac (build) is short of memory is unknown, as its processes "
                                  "could not be read there"])
+        # Every Mac of the farm that takes work now is read, in the farm's order.
+        asked.clear()
+        with farm_fixture.only("build", farm_fixture.mac("loaned", state="paused"), "mini"):
+            findings, notes = merge_queue.memory_findings(read)
+        self.assertEqual((asked, [found["mac"] for found in findings]), ([None, "build", "mini"], ["the second Mac (build)"]))
+
+    def test_doctor_compares_each_of_the_farm_s_macs_and_fails_when_any_differs(self):
+        reports = {"build": {"host": "build", "errors": [], "unchecked": [], "pythonCrashes": {},
+                             "remote": {"hostHealth": reading()}},
+                   "mini": {"host": "mini", "errors": ["the default Xcodes differ"], "unchecked": [],
+                            "pythonCrashes": {}, "remote": {"hostHealth": SWAPPING}}}
+        with tempfile.TemporaryDirectory() as directory, farm_fixture.only("build", "mini"), \
+                patch.object(remote, "compare_hosts", side_effect=lambda host=None: reports[host]) as compared, \
+                patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
+                patch.object(cli, "source_identity", return_value={}), \
+                patch.object(offload_host, "host_health", return_value=reading()), \
+                contextlib.redirect_stdout(StringIO()) as output:
+            Path(directory, "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                "integration": "direct-main", "lanes": {"gate": {"command": ["true"], "timeout": 60}}}))
+            status = cli.main(["--project", directory, "doctor"])
+        shown = json.loads(output.getvalue())
+        self.assertEqual(([call.args for call in compared.call_args_list], status), ([("build",), ("mini",)], 1))
+        self.assertEqual([one["host"] for one in shown["farm"]], ["build", "mini"])
+        self.assertNotIn("offload", shown)
+        self.assertTrue(any(warning.startswith("mini is short of memory") for warning in shown["warnings"]))
 
     def test_a_second_mac_without_the_reading_is_unknown_and_one_away_is_too(self):
         with patch.object(remote, "reading_there", return_value=({"load": 1.0}, 10.0)) as there:

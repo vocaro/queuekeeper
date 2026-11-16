@@ -2022,13 +2022,14 @@ def capacity_lines(readings):
 
 
 def usage(here, there, since, until, out=print):
-    """Print the usage report: here and there are each (name, short name, capacity reading or why unavailable,
-    admission log entries or why unavailable), this Mac's first."""
+    """Print the usage report: here, and each of there, the farm's other Macs in order (or the one of them), is
+    (name, short name, capacity reading or why unavailable, admission log entries or why unavailable)."""
     shown = lambda moment: moment.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    others = there if isinstance(there, list) else [there]
     out("Capacity now:")
-    for line in capacity_lines([here[:3], there[:3]]): out(line)
+    for line in capacity_lines([here[:3], *(other[:3] for other in others)]): out(line)
     out(f"Admitted heavy jobs from {shown(since)} to {shown(until)} (time at N heavy jobs at once):")
-    for name, _short, _reading, entries in [here, there]:
+    for name, _short, _reading, entries in [here, *others]:
         if isinstance(entries, str): out(f"  {name}: log unavailable: {entries}")
         else:
             for line in window_lines(name, entries, since, until): out(line)
@@ -2056,51 +2057,77 @@ def usage_main(argv=None, out=print):
     since = args.since or until - timedelta(seconds=USAGE_WINDOW)
     if since >= until: parser.error("--since must come before --until")
     here = (f"this Mac ({offload_host.mac_name()})", "this Mac", offload_host.capacity(), read_log()[0])
-    try: host = remote.configured()
-    except ValueError as error: host, why = None, str(error)
+    from queuekeeper import farm
+    try: macs = farm.active()
+    except ValueError as error: macs, why = [], str(error)
     else: why = "no second Mac is configured"
-    if host is None: there = ("second Mac", "the second Mac", why, why)
-    else:
+    if not macs: return usage(here, ("second Mac", "the second Mac", why, why), since, until, out)
+    there = []
+    for index, mac in enumerate(macs):
+        host = mac["ssh"]
         try: reading = remote.capacity_there(host)
         except (remote.Unreachable, remote.Unavailable, remote.Misconfigured) as error: reading = str(error)
-        if args.there: entries = read_log(args.there)[0]
+        # A copy of a log is the first Mac's, the one the farm had when it had one.
+        if args.there and index == 0: entries = read_log(args.there)[0]
         else:
             try: entries = remote.admission_log_there(host, since - timedelta(seconds=UNENDED_SECONDS))
             except (remote.Unreachable, remote.Unavailable, remote.Misconfigured) as error: entries = str(error)
-        there = (f"second Mac ({host})", host, reading, entries)
+        there.append((farm_mac_name(mac, len(macs)), host if len(macs) == 1 else mac["name"], reading, entries))
     return usage(here, there, since, until, out)
 
 
+def farm_mac_name(mac, count):
+    """What a report calls one of the farm's Macs: by its name in the farm and its SSH destination once the farm
+    has several to tell apart, and as the second Mac while it has one."""
+    if count == 1: return f"second Mac ({mac['ssh']})"
+    return mac["name"] if mac["name"] == mac["ssh"] else f"{mac['name']} ({mac['ssh']})"
+
+
 def unknown_host(name, role, why, state="unknown"):
-    """A host `qk admissions now` could not read: unknown, never idle; or notConfigured, a second Mac there is not."""
+    """A host `qk admissions now` could not read: unknown, never idle; or notConfigured, a farm with no other Mac."""
     return {"name": name, "role": role, "state": state, "reasons": [why], "observedAt": None, "limits": None,
             "slots": None, "model": None, "holders": None, "unattributed": None, "waiters": None, "reclaimed": None}
 
 
-def admissions_now(here_only=False, read_here=None, read_there=None, configured=None):
+def farm_role(mac, count):
+    """The key a report gives one of the farm's Macs among its hosts: its name in the farm, and `second` while the
+    farm has one Mac, as before it could have more. This Mac's is `here`."""
+    return "second" if count == 1 else mac["name"]
+
+
+def admissions_now(here_only=False, read_here=None, read_there=None, macs=None):
     """{"schemaVersion": 1, "hosts": [...]}: this Mac's reading (offload_host.admissions_now) and, unless here_only,
-    the second Mac's, asked once over ssh within remote.ADMISSIONS_BUDGET seconds. A Mac that cannot be read is
-    unknown with why, and this Mac's reading stands beside it."""
-    from queuekeeper import offload_host, remote
+    that of each of the farm's Macs that take work now (macs(), farm.active), in the farm's order, all asked at once
+    over ssh, each within remote.ADMISSIONS_BUDGET seconds. Each of them carries its name in the farm (mac), its
+    hardware UUID (id) and its SSH destination (ssh), and its role is its key among the hosts (farm_role). A Mac
+    that cannot be read is unknown with why, and this Mac's reading stands beside it."""
+    from queuekeeper import farm, offload_host, remote
     read_here = read_here or offload_host.admissions_now
     read_there = read_there or remote.admissions_there
-    configured = configured or remote.configured
     try: here = {"name": f"this Mac ({offload_host.mac_name()})", "role": "here", **read_here()}
     except Exception as error:  # noqa: BLE001 - a reading that fails is unknown, never idle
         here = unknown_host("this Mac", "here", f"its reading failed: {type(error).__name__}: {error}")
     hosts = [here]
-    if not here_only:
-        started = time.monotonic()
-        try: host = configured()
-        except ValueError as error: hosts.append(unknown_host("second Mac", "second", str(error)))
-        else:
-            if host is None:
-                hosts.append(unknown_host("second Mac", "second", "no second Mac is configured", "notConfigured"))
-            else:
-                budget = max(1.0, remote.ADMISSIONS_BUDGET - (time.monotonic() - started))
-                try: hosts.append({"name": f"second Mac ({host})", "role": "second", **read_there(host, budget)})
-                except remote.Unavailable as error: hosts.append(unknown_host(f"second Mac ({host})", "second", str(error)))
-    return {"schemaVersion": 1, "hosts": hosts}
+    if here_only: return {"schemaVersion": 1, "hosts": hosts}
+    try: found = (macs or farm.active)()
+    except ValueError as error: return {"schemaVersion": 1, "hosts": [*hosts, unknown_host("second Mac", "second", str(error))]}
+    if not found:
+        hosts.append(unknown_host("second Mac", "second", "no second Mac is configured", "notConfigured"))
+        return {"schemaVersion": 1, "hosts": hosts}
+    def ask(mac):
+        name, role = farm_mac_name(mac, len(found)), farm_role(mac, len(found))
+        try: reading = {"name": name, "role": role, **read_there(mac["ssh"], remote.ADMISSIONS_BUDGET)}
+        except remote.Unavailable as error: reading = unknown_host(name, role, str(error))
+        except Exception as error:  # noqa: BLE001 - a reading that fails is unknown, never idle
+            reading = unknown_host(name, role, f"its reading failed: {type(error).__name__}: {error}")
+        return {**reading, "mac": mac["name"], "id": mac.get("id"), "ssh": mac["ssh"]}
+    readings = [None] * len(found)
+    def one(index): readings[index] = ask(found[index])
+    threads = [threading.Thread(target=one, args=(index,), daemon=True) for index in range(1, len(found))]
+    for thread in threads: thread.start()
+    one(0)
+    for thread in threads: thread.join()
+    return {"schemaVersion": 1, "hosts": hosts + readings}
 
 
 def progress_lines(holder):

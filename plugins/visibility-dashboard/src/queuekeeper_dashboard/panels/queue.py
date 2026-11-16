@@ -79,7 +79,8 @@ def macs():
     if "farm" not in available(): return []
     farm = load("farm")
     reading = farm.current()[0]
-    return [{"name": found.get("name"), "role": found.get("role"), "state": found.get("state"),
+    return [{"name": found.get("name"), "role": found.get("role"), **({"ssh": found["ssh"]} if found.get("ssh") else {}),
+             "state": found.get("state"),
              **{key: shown["slots"][key] for key in ("used", "most")}}
             for found in (reading or {}).get("hosts", []) if found.get("state") != "notConfigured"
             for shown in (farm.host(found),)]
@@ -100,8 +101,10 @@ def flow(state, gates, now):
         agents.append({"name": f"{len(rest)} more", "waiting": sum(one["waiting"] for one in rest),
                        "testing": sum(one["testing"] for one in rest), "more": True})
     plain = lambda name: re.sub(r"^the ", "", str(name or "")).split(" (", 1)[0]
-    farm = [{**mac, "gates": [role for role, found in gates if found.get("mac") and plain(found["mac"]) == plain(mac["name"])]}
-            for mac in macs()]
+    # A gate's Mac is this Mac, or the farm's Mac its record names by its SSH destination (lane_wait.second_mac).
+    on = lambda found, mac: (lane_wait.host_of(found["mac"]) == mac["ssh"] if mac.get("ssh") and lane_wait.host_of(found["mac"])
+                             else plain(found["mac"]) == plain(mac["name"]))
+    farm = [{**mac, "gates": [role for role, found in gates if found.get("mac") and on(found, mac)]} for mac in macs()]
     back = next((found for found in reversed(state.get("recent") or []) if found.get("state") in ("failed", "conflict")
                  and now - (found.get("settled") or 0) < NEWS), None)
     return {"agents": agents, "macs": farm,
@@ -139,9 +142,11 @@ def health_of(repository, state):
         with farm.LOCK: detail, record = dict(farm.STATE.get("detail") or {}), farm.STATE.get("devices")
         if detail:
             readings = [{"name": lane_wait.HERE, "reading": detail.get("here"), "readAt": at}]
-            host = remote.configured()
-            if host:
-                readings.append({"name": lane_wait.second_mac(host), "reading": detail.get("second"), "readAt": at})
+            from queuekeeper import farm as macs_of, resources
+            macs = macs_of.active()
+            for mac in macs:
+                readings.append({"name": lane_wait.second_mac(mac["ssh"]),
+                                 "reading": detail.get(resources.farm_role(mac, len(macs))), "readAt": at})
     return health.assess(state, repository.events(), readings=readings, record=record, findings=findings(repository))
 
 
