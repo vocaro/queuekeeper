@@ -606,6 +606,15 @@ else its log's last `screen:` line. The worker logs that reading, and runs that 
 whose screen reads unlocked, waiting while neither does. A run that waits out the overflow that way
 exits 75, which counts, as does any run that gives no verdict without a lock.
 
+A run that ran out of disk space holds the queue at once, with every entry waiting and none sent back
+([#162](https://github.com/vocaro/queuekeeper/issues/162)): `qk run` stops a command that the disk runs short
+under and ends any lane that a full disk failed as unmeasured, exit 3, with a line that begins
+`queuekeeper: out of disk space:` (*Free disk space* in [the shared host guide](shared-host.md#free-disk-space)).
+Another run would fill the same disk, so the worker does not retry it; the hold is for a session, which frees
+space with `qk disk --delete`, or by removing what `qk disk` lists, and resumes the queue. A lane that waited
+for free space before it started and exited 75 counts toward `queue.noVerdictRuns` as any run without
+admission does, and the hold then says it waited for disk space.
+
 The uncounted runs have a cap of their own, so that a lane whose screen locks during every run does not
 retry without end (the owner's decision, 2026-11-09, the same issue). `LOCKED_SCREEN_RUNS`, 5, a number that
 is his judgment and not a measurement, is how many runs in a row may read unlocked at their start, by

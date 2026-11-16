@@ -132,6 +132,14 @@ NOT_STARTED = 127
 # (merge_queue.Worker.tool_unstarted).
 TOOL_NOT_STARTED = 70
 TOOL_SAID = "queuekeeper: could not start: "
+# The line qk run prints, on standard error, when a lane's run ran out of disk space: its command was stopped, a
+# write of queuekeeper's own found the disk full, or it failed with the disk short of QUEUEKEEPER_RUN_FREE_GB. The run
+# is unmeasured, the host's fault and not the commits' (vocaro/queuekeeper#162), and the merge queue holds on it at once
+# rather than retry into a full disk (merge_queue.Worker.out_of_space).
+OUT_OF_SPACE = "queuekeeper: out of disk space: "
+# What a lane's refusal says when it waited for free disk space before admission and none came (cli.space_wait), which
+# its `not run on` line carries into the merge queue's hold (merge_queue.Worker.no_verdict_cause).
+SHORT_OF_SPACE = "is short of disk space"
 
 # A test the host left unmeasured skips (XCTest, unittest) or cancels itself (Swift Testing) with a
 # reason that begins "Unmeasured:", and swift test and xcodebuild still exit 0. unittest prints the

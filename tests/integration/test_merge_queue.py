@@ -1378,6 +1378,42 @@ class NoVerdict(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 1)
 
+    def test_a_lane_that_ran_out_of_disk_space_holds_at_once_and_blames_nobody(self):
+        """vocaro/queuekeeper#162: a run again would fill the same disk, so the first such run holds, for a session to
+        free space; the entry waits and is not sent back. Under a real qk run, the lane says what qk run says."""
+        self.status.write_text("3")
+        Path(f"{self.status}.screen").write_text(f"{mq.lane_results.OUT_OF_SPACE}gate on this Mac (Fixture-Mac): the "
+                                                 "volume of /System/Volumes/Data has 1.0 GiB free")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        held = mq.Queue(self.repo).held()
+        self.assertTrue(held.startswith("for a session, not the owner: a lane ran out of disk space"), held)
+        self.assertIn("gate on this Mac (Fixture-Mac): the volume of /System/Volumes/Data has 1.0 GiB free", held)
+        self.assertIn("no entry is sent back", held)
+        self.assertIn("qk disk --delete", held)
+        # Space freed and the queue resumed, the entry lands.
+        self.status.unlink()
+        Path(f"{self.status}.screen").unlink()
+        with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_a_lane_that_waited_for_disk_space_says_so_in_its_no_verdict(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        log = self.base / "gate.log"
+        log.write_text("queuekeeper: gate waits: this Mac (studio) is short of disk space: the volume of / has 7.0 GiB "
+                       "free\nqueuekeeper: gate not run on this Mac (studio): this Mac (studio) is short of disk space: "
+                       "the volume of / has 7.0 GiB free\n")
+        self.assertEqual(worker.no_verdict_cause(75, log),
+                         "not run: gate not run on this Mac (studio): this Mac (studio) is short of disk space: the volume "
+                         "of / has 7.0 GiB free")
+        # An unmeasured run that did not run out of space holds as before.
+        self.assertIsNone(worker.out_of_space(3, log))
+        self.assertIsNone(worker.out_of_space(75, log))
+
     def test_only_an_unmeasured_heavy_lane_that_shares_its_mac_is_pointed_at_exclusive_admission(self):
         """vocaro/queuekeeper#28: admission looks only at a run's start, so heavy work admitted beside a heavy lane
         afterwards can void a timing in it. A lane that holds its Mac, a self lane, which admits its own parts, a run

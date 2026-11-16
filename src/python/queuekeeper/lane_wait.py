@@ -23,13 +23,14 @@ WAITS = ".waits"
 HERE = "this Mac"
 SCHEMA = 1
 
-ADMISSION, SCREEN, FOREGROUND = "admission", "screen", "foreground"
+ADMISSION, SCREEN, FOREGROUND, SPACE = "admission", "screen", "foreground", "space"
 # Why a lane waits for this Mac instead of another Mac; said beside the admission wait that follows it.
 UNREACHABLE, ALONE, OVERFLOW = "unreachable", "alone", "overflow"
 OFFERS = (UNREACHABLE, ALONE, OVERFLOW)
 # What `qk queue status` says after "waiting: ". Each wait's words live here and nowhere in the queue.
 WORDS = {ADMISSION: "admission on {mac}: {reason}",
          SCREEN: "an unlocked screen: {reason}",
+         SPACE: "free disk space: {reason}",
          FOREGROUND: "another Mac's foreground, {reason}",
          UNREACHABLE: "another Mac cannot be reached{probes}, and is asked again within a minute: {reason}",
          ALONE: "this Mac alone, as another Mac cannot take it: {reason}",

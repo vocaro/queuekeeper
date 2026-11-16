@@ -2268,6 +2268,28 @@ separately because other activity on the volume can affect the net change across
 Run the inventory again after `eng disk` removes worktrees, because DerivedData whose workspace went
 with them becomes a candidate.
 
+### Free disk space
+
+A run that fills the disk part way through is lost, and it can hold the queue and the whole host
+while it hangs: on 2026-11-14 an EPUBLib gate ran out of space and then sat idle for about 90 minutes
+([#162](https://github.com/vocaro/queuekeeper/issues/162)). Two floors, each in GiB of free space on the
+data volume and on the volume of the checkout, keep that from happening:
+
+- `QUEUEKEEPER_START_FREE_GB` (30): a whole-host or exclusive lane, or one that builds first
+  (`"compileFirst"`), waits for this much before it asks for admission, as a lane that needs an unlocked
+  screen waits for one, holding no slot. It says so on standard error and in its wait record, which
+  `qk queue status` shows as `waiting: free disk space: ...`, and the line names the volume, what it has
+  free and the floor. A wait that outlasts the lane's admission wait exits 75 and runs nothing.
+- `QUEUEKEEPER_RUN_FREE_GB` (2): a command run in an admission is read every 10 seconds, and once the
+  free space falls below this floor, or a write of its admission's own finds the disk full, it is
+  stopped as a timeout stops it. A lane whose command failed with the disk below the floor, or whose
+  log, receipt or record could not be written for want of space, ends the same way. Each such lane is
+  unmeasured, exit 3, and prints a line that begins `queuekeeper: out of disk space:`, on which the
+  merge queue holds at once (*A run with no verdict blames nobody* in [maintenance](maintenance.md)).
+
+Each is an environment variable, set for a process and what it starts; 0 turns its floor off. Free
+space with `qk disk --delete` and the toolkit's `eng disk`, above.
+
 ### Processes left over from runs
 
 Those fills began the evening `qk remote` work started on the build host, came every six to

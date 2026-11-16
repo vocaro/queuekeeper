@@ -152,6 +152,10 @@ resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # this process too, for a test that clears the environment. A test of the settle sets its own.
 os.environ["HEAVY_QUIET_SECONDS"] = "0"
 resources.QUIET_SECONDS = 0
+# Nor does any lane or admitted command a test runs wait for, or stop for, this Mac's free disk space
+# (vocaro/queuekeeper#162): the suite runs on whatever this Mac has free, which says nothing of the code it tests. A test
+# of either floor sets its own.
+os.environ["QUEUEKEEPER_START_FREE_GB"] = os.environ["QUEUEKEEPER_RUN_FREE_GB"] = "0"
 os.environ["QUEUEKEEPER_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
 os.environ['QUEUEKEEPER_DEVICE_LOG_WATCH'] = "off"
 os.environ['QUEUEKEEPER_QUIT_OPENED_APPS'] = "off"
@@ -198,7 +202,8 @@ cli.fix_hosts = unfixed
 
 # What this module sets in the environment, which every process a test starts carries when it inherits that environment.
 ISOLATION = {name: os.environ[name] for name in (
-    "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS",
+    "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS", "QUEUEKEEPER_START_FREE_GB",
+    "QUEUEKEEPER_RUN_FREE_GB",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
     "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD)}
 

@@ -3650,6 +3650,15 @@ class Worker:
         except OSError as error:
             self.say(f"{lane}: could not run unadmitted ({error}): running it admitted")
             return None
+        short = None
+        if status_:
+            # A check that failed on a full disk says nothing of the batch: qk run, admitted, judges it as the host's
+            # (vocaro/queuekeeper#162).
+            from . import disk
+            with contextlib.suppress(ValueError): short = disk.short_of_space(disk.RUN_FREE, (disk.DATA_VOLUME, str(self.checkout)))
+        if short:
+            self.say(f"{lane}: exited {status_} unadmitted with the disk short of space ({short}): running it admitted")
+            return None
         self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as a check that takes seconds")
         return status_
 
@@ -4708,6 +4717,17 @@ class Worker:
             # worker's own answer decides, so that a lane that merely exits with this status cannot end worker after
             # worker.
             if result == remote.LOST_ACCESS: self.connected()
+            full = runner.out_of_space(result, log)
+            if full:
+                # A run again would fill the same disk, so the queue holds at once for a session to free space, and
+                # the batch's commits are not blamed: on 2026-11-14 a gate that ran out of space hung for about 90
+                # minutes, and on 2026-11-15 one whose log could not be written was sent back (vocaro/queuekeeper#162).
+                self.no_verdicts = self.locked_screens = 0
+                queue.hold(worded(SESSION, f"a lane ran out of disk space{runner.ran_where}: {full}. That is the "
+                                           "host's, not the batch's, and no entry is sent back: free space with "
+                                           "`python3 scripts/qk disk --delete`, or by removing what `python3 "
+                                           f"scripts/qk disk` lists, then resume the queue; see {log}"))
+                return NO_VERDICT_OUTCOME
             locked = runner.screen_locked(result, log)
             if locked:
                 # The owner's decision of 2026-11-08 (vocaro-engineering#293): a run a locked screen voided does not
@@ -5131,6 +5151,17 @@ class Worker:
         return (f". {lane} takes one shared slot of heavy-work admission, which other heavy work can join after it "
                 "starts: if a timing in it needs a quiet Mac, run that part alone under `qk admit --here --exclusive` "
                 "from a `self` lane, as doc/guides/shared-host.md, Heavy-work admission, says")
+
+    def out_of_space(self, result, log):
+        """Why the lane at which the last gate stopped with result, which gave no verdict, ran out of disk space, from
+        the last line of its log that says so (lane_results.OUT_OF_SPACE), or None when it did not: an unmeasured run
+        whose command the full disk stopped or failed, or whose log could not be written (vocaro/queuekeeper#162)."""
+        if result != lane_results.UNMEASURED: return None
+        try: said = log.read_text(errors="replace") if log else ""
+        except OSError: return None
+        found = [line.partition(lane_results.OUT_OF_SPACE)[2] for line in said.splitlines()
+                 if lane_results.OUT_OF_SPACE in line]
+        return shortened(found[-1]) if found else None
 
     def receipt_error(self):
         """The error this run's receipt records for the lane the last gate stopped at, on one line, or None when no

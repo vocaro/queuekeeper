@@ -70,6 +70,62 @@ class Process:
     args: str = ""
 
 
+# The free space, in GiB, below which work that fills the disk does not start (START_FREE) and a command running in
+# an admission is stopped as unmeasured (RUN_FREE): each its environment variable and its default. On 2026-11-14 an
+# EPUBLib gate ran out of space part way through and then hung for about 90 minutes, holding the queue and the whole
+# host, with nothing checking free space before it started (vocaro/queuekeeper#162). Builds and result bundles take
+# tens of GiB, so a whole-host, exclusive or building lane waits for START_FREE before admission; RUN_FREE is what a
+# command needs to go on writing at all.
+START_FREE = ("QUEUEKEEPER_START_FREE_GB", 30.0)
+RUN_FREE = ("QUEUEKEEPER_RUN_FREE_GB", 2.0)
+GIB = 1024 ** 3
+
+
+def volume_usage(path=DATA_VOLUME):
+    """(total, used, free) bytes of the volume that holds path, or None when it cannot be read."""
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return usage.total, usage.used, usage.free
+
+
+def free_floor(setting):
+    """A free-space floor in force, (GiB, its variable, where it comes from), from its environment variable or its
+    default. A value that is no number at or above 0 raises ValueError naming the variable."""
+    variable, default = setting
+    raw = os.environ.get(variable)
+    if raw is None: return default, variable, "the default"
+    try:
+        value = float(raw)
+    except ValueError:
+        value = -1.0
+    if not value >= 0:
+        raise ValueError(f"{variable}={raw} is not a number of GiB at or above 0")
+    return value, variable, "set in the environment"
+
+
+def short_of_space(setting, paths=(DATA_VOLUME,)):
+    """Why the volumes that hold paths have less free space than setting's floor (free_floor), in words that name
+    the volume, what it has free and the floor, or None when each has enough. A volume whose usage cannot be read
+    is never short: a missing reading stops no work."""
+    floor, variable, whence = free_floor(setting)
+    seen = set()
+    for path in paths:
+        try:
+            device = os.stat(path).st_dev
+        except OSError:
+            continue
+        if device in seen: continue
+        seen.add(device)
+        found = volume_usage(path)
+        if found is None or found[2] >= floor * GIB: continue
+        return (f"the volume of {path} has {human(found[2])} free, below {variable}={floor:g} GiB ({whence}); "
+                "`python3 scripts/qk disk --delete` removes what nobody owns, and `python3 scripts/qk disk` lists "
+                "what takes the space")
+    return None
+
+
 def account_home():
     """The account's home from the password database, so a private HOME joins the same view."""
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -568,11 +624,7 @@ def execute(args, run=subprocess.run, out=print):
             prime_items(host, sizes)
         return host, sizes, inventory(host, sizes, categories)
     host, sizes, items = collect()
-    try:
-        usage = shutil.disk_usage(DATA_VOLUME)
-        volume = (usage.total, usage.used, usage.free)
-    except OSError:
-        volume = None
+    volume = volume_usage(DATA_VOLUME)
     if args.dry_run: items = [item for item in items if item.status == CANDIDATE]
     if args.json:
         out(json.dumps({"volume": volume, "items": [asdict(item) for item in items]}, indent=2))

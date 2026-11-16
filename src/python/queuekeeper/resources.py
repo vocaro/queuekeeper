@@ -68,6 +68,7 @@ import argparse
 from collections import Counter
 import contextlib
 import contextvars
+import errno
 from datetime import datetime, timedelta, timezone
 import fcntl
 import functools
@@ -959,6 +960,9 @@ class Admission:
         # whether a line failed to reach it, which ends recording. Lane groups supervise in threads.
         self.process_record = record_path(self.guard, self.identity)
         self.unrecorded, self.recording = False, threading.Lock()
+        # Why a write of this admission found the disk full (errno ENOSPC), once one has: what supervision then stops
+        # its commands for (short_of_space, vocaro/queuekeeper#162).
+        self.out_of_space = None
         self.descriptors = []
         # The model lock's descriptor while admission holds it.
         self.held_model = None
@@ -1591,10 +1595,25 @@ class Admission:
                     os.close(fd)
             except Exception as error:
                 self.unrecorded = True
+                if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+                    self.out_of_space = f"writing the admission's process record failed: {error}"
                 with contextlib.suppress(OSError): self.process_record.unlink(missing_ok=True)
                 with contextlib.suppress(Exception):
                     print(f"heavy: the process record was not written, so recovering this entry needs a check by "
                           f"hand: {error}", file=sys.stderr, flush=True)
+
+    def short_of_space(self, cwd=None):
+        """Why a command this admission runs in cwd cannot go on for want of disk space, or None: a write of the
+        admission found the disk full, or the data volume or cwd's has less free space than QUEUEKEEPER_RUN_FREE_GB
+        (disk.RUN_FREE). processes.supervise asks it every SPACE_POLL seconds and stops the command once it says why,
+        which the run reports as unmeasured, the host's fault (vocaro/queuekeeper#162). A floor that cannot be read,
+        like a volume, stops nothing."""
+        if self.out_of_space: return self.out_of_space
+        from . import disk
+        try:
+            return disk.short_of_space(disk.RUN_FREE, (disk.DATA_VOLUME, *([cwd] if cwd else [])))
+        except ValueError:
+            return None
 
     def _settle(self, release):
         """Remove this job's entry, or mark it uncertain. The caller holds the coordination lock.

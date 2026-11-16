@@ -1,6 +1,7 @@
 """Queuekeeper's command: a merge queue and build farm for one developer's agents, on that developer's own Macs."""
 import argparse
 import contextlib
+import errno
 import fcntl
 import json
 import os
@@ -94,15 +95,50 @@ def record(directory, receipt, work):
         result = work()
         receipt["exitStatus"] = result
     except BaseException as error:
-        # A timeout is a wall-clock backstop that a busy host can reach, not a verdict on the work.
+        # A timeout is a wall-clock backstop that a busy host can reach, not a verdict on the work, and nor is a disk
+        # that ran out of space (vocaro/queuekeeper#162).
+        full = enospc(error)
         receipt["outcome"] = "unmeasured" if isinstance(error, processes.TimedOut) or getattr(error, "timed_out", False) \
-            else "failed-or-interrupted"
+            or full else "failed-or-interrupted"
         receipt["error"] = str(error)
+        if full: receipt["outOfSpace"] = str(error)
         raise
     finally:
         receipt["load"] = load.finish()
         (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return result
+
+
+def enospc(error):
+    """Whether error, or an error it was raised from, says the disk is full: processes.OutOfSpace, or an OSError
+    with errno ENOSPC, such as a lane's log that could not be written (vocaro/queuekeeper#162)."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, processes.OutOfSpace) or (isinstance(error, OSError) and error.errno == errno.ENOSPC):
+            return True
+        error = error.__cause__ or error.__context__
+    return False
+
+
+def out_of_space(lane, why):
+    """Say that lane's run ran out of disk space, why, and that it is unmeasured, the host's fault and not the
+    commits' (lane_results.OUT_OF_SPACE), and return UNMEASURED, which the lane then exits with."""
+    print(f"{lane_results.OUT_OF_SPACE}{lane} on {this_mac()}: {' '.join(str(why).split())}", file=sys.stderr)
+    print(f"queuekeeper: unmeasured: {lane} ran out of disk space on {this_mac()}, which says nothing of the commits it "
+          "ran; `python3 scripts/qk disk` lists what takes the space and `python3 scripts/qk disk --delete` removes "
+          "what nobody owns", file=sys.stderr, flush=True)
+    return lane_results.UNMEASURED
+
+
+def failed_short(status, admission, tree):
+    """Why a run that ended with status, a failure, failed for want of disk space, or None: a write of its admission
+    found the disk full, or the disk is short of QUEUEKEEPER_RUN_FREE_GB now that it has ended. A command that fails
+    on a full disk before supervision stops it is the host's fault too (vocaro/queuekeeper#162)."""
+    if status in (0, lane_results.UNMEASURED, USAGE) or status in merge_queue.NO_VERDICT: return None
+    if admission is not None: return admission.short_of_space(str(tree))
+    try: return disk.short_of_space(disk.RUN_FREE, (disk.DATA_VOLUME, str(tree)))
+    except ValueError: return None
 
 
 def compile_failed(receipt):
@@ -331,8 +367,41 @@ def screen_wait(name, seconds, said):
         time.sleep(min(SCREEN_POLL, left))
 
 
+# Seconds between readings of free disk space while a lane that fills the disk waits for it, and between the lines
+# that say it still waits.
+SPACE_POLL, SPACE_SAID = 30, 300
+
+
+def fills_disk(lane, resource):
+    """Whether a lane fills the disk, and so starts only with QUEUEKEEPER_START_FREE_GB free (space_wait): a
+    whole-host or exclusive lane, which holds the Mac, or one that builds first ("compileFirst")."""
+    return bool(lane.get("wholeHost")) or resource == "exclusive" or "compileFirst" in lane
+
+
+def space_wait(name, seconds, paths):
+    """None once the volumes that hold paths have QUEUEKEEPER_START_FREE_GB free (disk.START_FREE), within seconds,
+    for a lane that fills the disk; otherwise why not, after the wait. It waits as for an unlocked screen
+    (screen_wait), holding no slot, and says so on standard error and in the lane's wait record: on 2026-11-14 a gate
+    that started with too little space ran out part way through and hung for about 90 minutes (vocaro/queuekeeper#162).
+    A floor that is no number raises ValueError."""
+    deadline, said = time.monotonic() + max(seconds, 0), None
+    while True:
+        short = disk.short_of_space(disk.START_FREE, paths)
+        if short is None:
+            if said is not None: print(f"queuekeeper: {name} has the disk space it waited for", file=sys.stderr, flush=True)
+            return None
+        refused = f"{this_mac()} {lane_results.SHORT_OF_SPACE}: {short}"
+        lane_wait.waiting(lane_wait.SPACE, refused)
+        if said is None or time.monotonic() - said >= SPACE_SAID:
+            print(f"queuekeeper: {name} waits: {refused}", file=sys.stderr, flush=True)
+            said = time.monotonic()
+        left = deadline - time.monotonic()
+        if left <= 0: return refused
+        time.sleep(min(SPACE_POLL, left))
+
+
 def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False,
-                  screen=False, placement=None):
+                  screen=False, placement=None, space=None):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
     instead: its status on another Mac when another Mac took it after all, MISCONFIGURED, or
     BUSY when no admission came, after saying so. Work another Mac did not take (offered), declined
@@ -341,7 +410,9 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     seconds, or at most FREE_WAIT with once. A whole-host lane takes every guaranteed slot,
     and every request keeps one place across local waits and its age across remote offers (resources.Place). A
     lane that needs an unlocked screen (screen) is admitted only while this Mac's screen reads unlocked, and waits
-    for it as for a slot (screen_wait). Its admission line says placement (admission_placement)."""
+    for it as for a slot (screen_wait). A lane that fills the disk (space, the paths whose volumes it writes) is
+    admitted only once they have the free space it needs, and waits for it the same way (space_wait). Its admission
+    line says placement (admission_placement)."""
     refused, said = [], []
     place = resources.Place()
     if offered is not None: place.started = getattr(offered, "started", place.started)
@@ -349,6 +420,13 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     if offered is not None: offered.place = place
 
     def admit(seconds):
+        if space:
+            began = time.monotonic()
+            short = space_wait(name, seconds, space)
+            if short is not None:
+                refused.append(short)
+                return None
+            seconds = max(seconds - (time.monotonic() - began), 0)
         if screen:
             began = time.monotonic()
             locked = screen_wait(name, seconds, said)
@@ -1552,7 +1630,9 @@ def perform(argv, report):
                                                       resource == "exclusive", lane.get("model", False),
                                                       lane.get("wholeHost", False),
                                                       needs and not os.environ.get(resources.TOKEN),
-                                                      admission_placement(offered, reason))
+                                                      admission_placement(offered, reason),
+                                                      (disk.DATA_VOLUME, str(root)) if fills_disk(lane, resource)
+                                                      and not os.environ.get(resources.TOKEN) else None)
                             if isinstance(admission, int): return extensions.DEVICES.not_admitted(args.lane, waiting, admission)
                             tree = admitted_tree(stack, root, args.lane, offered, receipt)
                             if isinstance(tree, int): return tree
@@ -1587,11 +1667,19 @@ def perform(argv, report):
             except processes.TimedOut as error:
                 # The lane's timeout is its backstop, so a run a busy host slowed past it is
                 # unmeasured (the toolkit's doc/guides/measurement.md). Its log is incomplete and counts nothing.
+                if isinstance(error, processes.OutOfSpace):
+                    report.explain(error, complete=False)
+                    return out_of_space(args.lane, error)
                 print(f"queuekeeper: unmeasured: {error}", file=sys.stderr)
                 report.explain(error, complete=False)
                 return lane_results.UNMEASURED
             # A group's lanes were each judged by their own logs.
             if "parallel" in lane:
+                short = failed_short(result, admission, tree)
+                if short is not None:
+                    receipt["outOfSpace"] = short
+                    concluded(lane_results.UNMEASURED)
+                    return out_of_space(args.lane, short)
                 if reads_screen and result == lane_results.UNMEASURED: unmeasured_screen(args.lane, receipt)
                 concluded(result)
                 return result
@@ -1607,6 +1695,11 @@ def perform(argv, report):
             except ValueError as error:
                 concluded(2, error=str(error))
                 raise
+            short = failed_short(status, admission, tree)
+            if short is not None:
+                receipt["outOfSpace"] = short
+                concluded(lane_results.UNMEASURED, unmeasured=[f"out of disk space: {short}"])
+                return out_of_space(args.lane, short)
             if status == lane_results.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)
             # A failure whose log shows no test started, such as a project that could not be generated, exits apart
@@ -1628,6 +1721,12 @@ def perform(argv, report):
         return lane_results.UNMEASURED
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"queuekeeper: {error}", file=sys.stderr)
+        # A lane that could not write its log, its receipt or its record ran out of disk space: the host's fault, not
+        # the commits' (vocaro/queuekeeper#162). On 2026-11-15 a spelling lane whose log could not be written was sent
+        # back to its session as a failure of its own.
+        if args.action == "run" and enospc(error):
+            report.explain(error, complete=False)
+            return out_of_space(args.lane, error)
         # A timeout whose cleanup could not confirm every process ended keeps its reservation, and is still a
         # backstop a busy host reached, not a verdict on the commit (processes.Unconfirmed).
         if isinstance(error, processes.Unconfirmed) and error.timed_out:
