@@ -169,6 +169,31 @@ def conclude(directory, receipt, status, **fields):
     (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
+def expect_mismatch(error, log, asked, repeats=None):
+    """error, a count that differs from --expect's, with how it differs and the rule that --expect counts executed
+    tests, skipped and canceled ones excluded, so that a count can be corrected from one run's output. On 2026-11-15
+    three of ten EPUBLib subagents counted a filter's skipping tests in their --expect, and each run ended unmeasured
+    or failed with no word of which count --expect meant, so each was run again (vocaro/queuekeeper#181). asked is the
+    N given, and repeats the runs of a series, whose log adds up all of its runs."""
+    executed = lane_results.executed_tests(log) or 0
+    skipped = lane_results.skipped_tests(log)
+    expected = asked * repeats if repeats else asked
+    over = f" over {repeats} runs" if repeats else ""
+    each = " each run's" if repeats else ""
+    difference = executed - expected
+    words = f"{error}. --expect {asked} counts{each} executed tests, not skipped or canceled ones: {executed} executed{over}"
+    if skipped: words += f" and {skipped} skipped, {executed + skipped} selected"
+    words += f", {abs(difference)} {'more' if difference > 0 else 'fewer'} executed than the {expected} expected"
+    per_run = executed // repeats if repeats else executed
+    if executed and (not repeats or executed % repeats == 0):
+        if skipped and executed + skipped == expected:
+            words += (f". The {skipped} skipped did not run, so the run is unmeasured: if they are meant to skip here, "
+                      f"--expect {per_run} counts the tests that ran")
+        else:
+            words += f". If these are the tests meant, --expect {per_run} is their count"
+    return words
+
+
 def judge(lane, result, log, extra=(), expect=None):
     """A lane's status and unmeasured tests from its command's status and its log. A completed run
     that executed too few tests raises ValueError, as does one that executed any count but its minimumTests when the
@@ -178,6 +203,7 @@ def judge(lane, result, log, extra=(), expect=None):
     not_run = []
     repeats = lane_results.repeats_asked(extra)
     # --expect counts one run's tests, and a series' log adds up all of its runs.
+    asked = expect
     expect = expect * repeats if repeats and expect else expect
     if repeats is not None and measured and lane_results.series_reported(log) != repeats:
         # The command ignored --repeat, or stopped before its series ended: however it ended, the series did not happen.
@@ -194,11 +220,13 @@ def judge(lane, result, log, extra=(), expect=None):
         except lane_results.NotRun as error:
             # Such as a corpus test canceled for a variable this lane's command does not set on its Mac
             # (vocaro-engineering#285). The lines give each test's reason: the cause an unmeasured run records.
+            if expect: error = expect_mismatch(error, log, asked, repeats)
             not_run = [str(error), *lane_results.canceled_tests(log)]
             print("queuekeeper: unmeasured:", *not_run, sep="\n", file=sys.stderr)
         except ValueError as error:
             # An unmeasured part may not have run at all, so the run stays unmeasured. A test the
             # host left unmeasured ran nothing, so it can also be what leaves a run short.
+            if expect: error = ValueError(expect_mismatch(error, log, asked, repeats))
             if exact:
                 # The figure to set, for a count that changed because the lane's tests did.
                 observed = lane_results.executed_tests(log) or 0
@@ -973,8 +1001,9 @@ def perform(argv, report):
         "it now, the farm's other Macs first, and on this Mac while another Mac has none or cannot be reached, unless "
         "the lane says why it stays on this Mac: qk run LANE [-- ARGUMENTS], which appends the arguments, such as "
         "a test filter, to the lane's command")
-    run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests: N selected with "
-        "some skipped or canceled is unmeasured, exit 3, and any other count fails; without it, a run with arguments needs at least one in place of the lane's minimumTests, which a whole run must reach, or equal where the lane says \"exactTests\": true")
+    run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests, skipped and "
+        "canceled ones excluded: N selected with some skipped or canceled is unmeasured, exit 3, any other count fails, "
+        "and either says the counts executed and skipped; without it, a run with arguments needs at least one in place of the lane's minimumTests, which a whole run must reach, or equal where the lane says \"exactTests\": true")
     where = run.add_mutually_exclusive_group()
     where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on another Mac: "
         "for a build whose products the session uses here, or, with the owner's decision, while another Mac is "
@@ -1126,7 +1155,8 @@ def perform(argv, report):
                             "named checkout slot); by default the free checkout nearest the commit")
         choice.add_argument("--checkout-wait", type=float, metavar="SECONDS", help="with --checkout-slot, how long to "
                             f"wait for it (default {offload_host.CLAIM_TIMEOUT}); then exit {BUSY} without running")
-    remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")
+    remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests, skipped and "
+        "canceled ones excluded")
     remote_run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on "
         "another Mac under its admission: the serial reference of a group that runs there, which counts for no commit")
     remote_run.add_argument(SIBLING, action="append", default=[], metavar="NAME=WHERE", help="as qk run's; the "

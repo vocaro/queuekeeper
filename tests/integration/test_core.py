@@ -515,6 +515,45 @@ class ConfigurationTests(unittest.TestCase):
                 with self.subTest(arguments), self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
                     cli.main(["--project", directory, *arguments])
 
+    def test_an_expect_mismatch_says_the_counts_executed_and_skipped_and_that_skipped_tests_do_not_count(self):
+        """On 2026-11-15 three of ten EPUBLib subagents counted a filter's skipping tests in --expect: 675 asked for 673
+        executed and 2 skipped. Each run ended unmeasured or failed, and was run again without the output saying which
+        count --expect meant (vocaro/queuekeeper#181)."""
+        with tempfile.TemporaryDirectory() as directory:
+            # unittest's lines for one test per argument, those named skip skipped.
+            count = [sys.executable, "-c", "import sys; n = len(sys.argv) - 1; s = sys.argv.count('skip'); "
+                     "print('Ran', n, 'tests'); print(f'OK (skipped={s})' if s else 'OK')"]
+            series = [sys.executable, "-c", "print('Repeat series: asked 2 repeats of X (2 runs); runs: 2 passed'); "
+                      "print('Ran 6 tests'); print('OK')"]
+            (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                "test": {"command": count, "minimumTests": 1}, "series": {"command": series, "minimumTests": 1}}}))
+            rule = "counts executed tests, not skipped or canceled ones"
+            cases = [(["--expect", "3", "test", "--", "a", "b", "skip"], lane_results.UNMEASURED,
+                      [f"--expect 3 {rule}: 2 executed and 1 skipped, 3 selected, 1 fewer executed than the 3 expected. "
+                       "The 1 skipped did not run, so the run is unmeasured: if they are meant to skip here, --expect 2 "
+                       "counts the tests that ran"]),
+                     (["--expect", "4", "test", "--", "a", "b", "skip"], 2,
+                      [f"--expect 4 {rule}: 2 executed and 1 skipped, 3 selected, 2 fewer executed than the 4 expected. "
+                       "If these are the tests meant, --expect 2 is their count"]),
+                     (["--expect", "1", "test", "--", "a", "b"], 2,
+                      [f"--expect 1 {rule}: 2 executed, 1 more executed than the 1 expected. If these are the tests "
+                       "meant, --expect 2 is their count"]),
+                     (["--expect", "1", "test", "--", "skip"], lane_results.UNMEASURED,
+                      [f"--expect 1 {rule}: 0 executed and 1 skipped, 1 selected, 1 fewer executed than the 1 expected"]),
+                     (["--repeat", "2", "--expect", "4", "series"], 2,
+                      [f"--expect 4 counts each run's executed tests, not skipped or canceled ones: 6 executed over 2 "
+                       "runs, 2 fewer executed than the 8 expected. If these are the tests meant, --expect 3 is their "
+                       "count"])]
+            for arguments, code, said in cases:
+                with self.subTest(arguments), patch.object(cli, "source_identity", return_value={}), \
+                        contextlib.redirect_stderr(StringIO()) as error:
+                    self.assertEqual(cli.main(["--project", directory, "run", "--here", *arguments]), code, error.getvalue())
+                    for words in said: self.assertIn(words, error.getvalue())
+                    lane = "series" if "series" in arguments else "test"
+                    recorded = json.loads((Path(directory) / ".build/queuekeeper" / lane / "source.json").read_text())
+                    cause = recorded["unmeasured"][0] if code == lane_results.UNMEASURED else recorded["error"]
+                    self.assertIn(said[0], cause)
+
     def test_a_lane_that_says_its_count_is_exact_fails_when_it_runs_more_tests_than_its_minimum(self):
         """BreezEPUB's navigation-keys had a minimumTests of 1 and ran 5, so four of its tests could have stopped
         running with nothing said, and a test another landing added left seven lanes' floors short

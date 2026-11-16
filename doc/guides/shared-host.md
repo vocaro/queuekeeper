@@ -19,8 +19,10 @@ That includes a project's preflight lanes, and the merge queue's legacy spelling
 `light` once ran unadmitted where it started, and loads now as `heavy`, so a project may drop it
 or the whole `resource` key. Arguments after `--`,
 as in `qk run test -- --filter SUITE`, are appended to the lane's command. `--expect N` requires
-exactly N executed tests: a run that selected those N and left some skipped or canceled exits 3,
-unmeasured, and any other count fails. A session's environment does not travel to another Mac,
+exactly N executed tests, skipped and canceled ones excluded: a run that selected those N and left
+some skipped or canceled exits 3, unmeasured, and any other count fails. Either says the counts
+executed and skipped and the N that counts the tests that ran
+([the agent interface](../agent_interface.md#verifying), vocaro/queuekeeper#181). A session's environment does not travel to another Mac,
 so a test that needs a variable, such as a corpus path, runs there only in a lane whose command
 sets it, as a gate's script does
 ([vocaro-engineering#285](https://github.com/vocaro/vocaro-engineering/issues/285)). Run any other

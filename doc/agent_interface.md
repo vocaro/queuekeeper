@@ -159,6 +159,21 @@ it read of the Mac (vocaro/queuekeeper#121)
 ([Ask admission, not the load average](guides/shared-host.md#ask-admission-not-the-load-average),
 vocaro/queuekeeper#134).
 
+A filtered lane run can say how many tests it must run, `qk run --expect N LANE -- FILTER`. N
+counts executed tests, and skipped or canceled ones are excluded: count only the tests that run on
+that Mac, leaving out any that skip there, such as corpus tests whose corpora the lane does not
+set. A run whose executed and skipped tests together make N is unmeasured, exit 3, since the
+skipped ones measured nothing; any other count fails, exit 2. Either says the counts executed and
+skipped, how far they are from N, and the N that counts what ran:
+
+```text
+queuekeeper: unmeasured:
+Expected exactly 675 executed tests; observed 673 (2 skipped, which do not count). --expect 675 counts executed tests, not skipped or canceled ones: 673 executed and 2 skipped, 675 selected, 2 fewer executed than the 675 expected. The 2 skipped did not run, so the run is unmeasured: if they are meant to skip here, --expect 673 counts the tests that ran
+```
+
+On 2026-11-15 three of ten EPUBLib subagents counted a filter's skipping tests in their N, and
+each run had to be repeated or reported unmeasured (vocaro/queuekeeper#181).
+
 ## Long runs
 
 A long run's progress has to stay readable while it runs, so that an agent or the owner can say

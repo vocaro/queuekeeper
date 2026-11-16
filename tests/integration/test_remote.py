@@ -3574,7 +3574,9 @@ class RemoteTests(unittest.TestCase):
                 self.assertFalse((self.project / ".build/queuekeeper" / lane).exists())
                 if code == lane_results.UNMEASURED:
                     cause = receipt["result"]["receipt"]["unmeasured"]
-                    self.assertEqual(cause[0], "Expected exactly 2 executed tests; observed 0 (2 skipped, which do not count)")
+                    self.assertEqual(cause[0], "Expected exactly 2 executed tests; observed 0 (2 skipped, which do not "
+                                     "count). --expect 2 counts executed tests, not skipped or canceled ones: 0 "
+                                     "executed and 2 skipped, 2 selected, 2 fewer executed than the 2 expected")
                     self.assertIn("Set FAKE_CORPUS for the admitted corpus.", cause[1])
 
     def test_every_lane_is_admitted_and_offered_to_the_farm_mac_first_light_ones_included(self):
