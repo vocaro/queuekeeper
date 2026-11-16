@@ -2351,13 +2351,14 @@ def foreground_lane(root, config, lane, arguments, expect):
     holds it for the run (foreground.slot). It never falls back to this Mac, the owner's workstation, whose
     foreground needs the owner's window first and then `qk run --here`: a second Mac that is not configured or
     cannot be reached stops the lane."""
-    host = configured()
-    if host is None:
+    hosts = farm.foreground()
+    if not hosts:
         raise ValueError(f"{lane} takes a Mac's screen, and {NO_MAC}. This Mac's foreground needs a "
                          "window the owner agrees first (doc/guides/shared-host.md, Attended Mac sessions), then "
                          f"`qk run --here {lane}`")
-    print(f"queuekeeper: {lane} takes a Mac's screen, so it runs on the second Mac, under its foreground", file=sys.stderr,
-          flush=True)
+    host = waiting_host(hosts)
+    print(f"queuekeeper: {lane} takes a Mac's screen, so it runs on {called(host)}, under its foreground",
+          file=sys.stderr, flush=True)
     work = ["run", "--here", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     with processes.forwarding_signals():
@@ -2365,12 +2366,44 @@ def foreground_lane(root, config, lane, arguments, expect):
                              lambda: execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect))
 
 
-def there_lane(root, config, lane, arguments, expect, why):
-    """Run a lane that must run on the second Mac there, as `qk remote run` does, where it waits for its
-    admission. It never falls back to this Mac: a second Mac that cannot be reached stops the lane."""
-    host = configured()
-    if host is None: raise ValueError(f"{lane} runs only on the second Mac ({why}), and none is configured")
-    print(f"queuekeeper: {lane} runs only on the second Mac ({why})", file=sys.stderr, flush=True)
+def eligible(macs):
+    """The SSH destinations among macs, the Macs that may run a lane (extensions.placement), in the farm's order."""
+    return tuple(host for host in farm.destinations() if host in macs)
+
+
+def called(host):
+    """What a message calls the farm's Mac at host: its name, once the farm has several Macs to tell apart."""
+    try: several = len(farm.read()) > 1
+    except ValueError: several = False
+    return farm.named(host) if several else "the second Mac"
+
+
+def waiting_host(hosts, lane=None):
+    """The one of hosts, Macs of the farm, that work which runs on no other Mac goes to and waits on: the first with
+    spare capacity for lane, a lane's settings, when there are several and one has; else the first that can be
+    reached; else the first, whose failure says why."""
+    if len(hosts) == 1: return hosts[0]
+    reached = None
+    for host in hosts:
+        try:
+            reachable(host)
+            reached = reached or host
+            if lane is None or spare(capacity_there(host), farm.named(host), bool(lane.get("wholeHost")),
+                                     lane.get("resource") == "exclusive") is None: return host
+        except Unavailable:
+            continue
+    return reached or hosts[0]
+
+
+def there_lane(root, config, lane, arguments, expect, why, hosts=None):
+    """Run a lane that must run on another Mac of the farm there, as `qk remote run` does, where it waits for its
+    admission: on one of hosts, the Macs that may run it, else the farm's first (waiting_host). It never falls back
+    to this Mac: a Mac that cannot be reached stops the lane."""
+    hosts = tuple(filter(None, [configured()])) if hosts is None else hosts
+    if not hosts: raise ValueError(f"{lane} runs only on another Mac of the farm ({why}), and {NO_MAC}")
+    host = waiting_host(hosts, config.get("lanes", {}).get(lane, {}))
+    print(f"queuekeeper: {lane} runs only on {' or '.join(dict.fromkeys(map(called, hosts)))} ({why})", file=sys.stderr,
+          flush=True)
     work = ["run", "--here", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     with processes.forwarding_signals():
@@ -2878,7 +2911,7 @@ def bring_runtimes(host, developer, check):
     return 1
 
 
-def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False, exclude=None):
+def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False, exclude=None, hosts=None):
     """Offer a lane to the second Mac to start now, once (Offer.make), and return the Offer.
 
     With fallback, the offer first reads both Macs' capacity for the lane (Offer.attempt): a whole-host
@@ -2890,7 +2923,8 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     commits to send. With queue_gate, for a queue worker's own `qk run` of a gate's lane, a process that lost Local
     Network access ends with LOST_ACCESS rather than the work running on this Mac (Offer.lost_access).
     Every Mac of the farm that takes work now is asked, in the farm's order (Offer.attempt); a queue gate leaves out
-    exclude, the Mac the active batch runs on, when stacking.
+    exclude, the Mac the active batch runs on, when stacking. hosts, when given, are the only Macs that may run the
+    lane (eligible), in the farm's order.
     """
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
@@ -2903,7 +2937,7 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
         whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
         screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate, fallback=fallback,
-        exclude=exclude if queue_gate else None)
+        exclude=exclude if queue_gate else None, hosts=hosts)
     offered.make(fallback)
     return offered
 

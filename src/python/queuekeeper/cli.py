@@ -1362,12 +1362,15 @@ def perform(argv, report):
             # Or why it runs only on the second Mac, as a key an extension added says. It waits there for its
             # admission and never falls back to this Mac, where its result would not be the one asked for.
             placed = extensions.placement(config["lanes"], args.lane) if reason is None else None
-            if placed and placed[0] == extensions.THERE:
+            # The farm's Macs that may run it, when a key says only some may: it is offered to no other.
+            only = remote.eligible(placed[0]) if placed else None
+            if placed and extensions.HERE not in placed[0]:
                 if args.here or args.serial or os.environ.get(resources.TOKEN):
-                    raise ValueError(f"{args.lane} runs only on the second Mac ({placed[1]}), so it cannot run here"
+                    raise ValueError(f"{args.lane} runs only on another Mac of the farm ({placed[1]}), so it cannot run here"
                                      + (" with --here" if args.here else ""))
-                if unsent: raise ValueError(f"{args.lane} not run: it runs only on the second Mac ({placed[1]}), and {unsent}")
-                return remote.there_lane(root, config, args.lane, extra, args.expect, placed[1])
+                if unsent:
+                    raise ValueError(f"{args.lane} not run: it runs only on another Mac of the farm ({placed[1]}), and {unsent}")
+                return remote.there_lane(root, config, args.lane, extra, args.expect, placed[1], hosts=only)
             # Keep the queue's placement scope at the outer lane.
             queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
             exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
@@ -1380,7 +1383,7 @@ def perform(argv, report):
                 if args.serial: raise ValueError("--serial runs a lane group here, and --offload-only never does")
                 # The caller runs the lane under its own admission when the second Mac declines it.
                 return remote.first(root, config, args.lane, extra, args.expect, fallback=False,
-                                    queue_gate=queue_gate, exclude=exclude).status
+                                    queue_gate=queue_gate, exclude=exclude, hosts=only).status
             # Nested work runs inside the admission it inherits, here. The serial reference runs here too.
             inherited = bool(os.environ.get(resources.TOKEN))
             reason = reason or ("--here" if args.here else "--serial runs the serial reference here" if args.serial
@@ -1393,7 +1396,7 @@ def perform(argv, report):
                 # Whichever Mac has spare capacity for the lane, the second Mac first, and while neither has,
                 # whichever admits the lane first (remote.first, admitted_here).
                 offered = remote.first(root, config, args.lane, extra, args.expect, queue_gate=queue_gate,
-                                       exclude=exclude)
+                                       exclude=exclude, hosts=only)
                 if not isinstance(offered.status, str): return offered.status
                 reason = offered.status
             # Every lane is admitted, a light one as heavy work, except a self lane, whose script admits its parts.

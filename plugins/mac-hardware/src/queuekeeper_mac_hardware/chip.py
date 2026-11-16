@@ -3,11 +3,11 @@ GPU both, so it is what a result that differs by GPU differs by."""
 import re
 import subprocess
 
-from queuekeeper import remote
+from queuekeeper import farm, remote
 
 READ = ["sysctl", "-n", "machdep.cpu.brand_string"]
 NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
-# The second Mac's chip by its SSH name, read once a process: a Mac's chip does not change.
+# Each of the farm's Macs' chip by its SSH destination, read once a process: a Mac's chip does not change.
 THERE = {}
 
 
@@ -23,14 +23,14 @@ def here():
     return slug(ran.stdout) or None if ran.returncode == 0 else None
 
 
-def second_mac():
-    """The second Mac this Mac sends work to, or None."""
-    try: return remote.configured()
-    except ValueError: return None
+def others():
+    """The SSH destinations of the farm's Macs that take work now, in the farm's order."""
+    try: return farm.destinations()
+    except ValueError: return ()
 
 
 def there(host):
-    """The chip of the second Mac host, or None when it could not be asked."""
+    """The chip of the farm's Mac at host, or None when it could not be asked."""
     if host not in THERE:
         try: ran = remote.ssh(host, " ".join(READ), capture_output=True, text=True, timeout=30)
         except Exception: return None  # noqa: BLE001 -- a Mac that cannot be reached has an unread chip

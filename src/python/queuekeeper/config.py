@@ -809,7 +809,7 @@ def stays(lanes, name):
         if lanes[member].get("here"): return f"its lane {member} says: {lanes[member]['here']}"
     # A key an extension added may keep the lane here too, such as the chips its results are valid on.
     placed = hooks.placement(lanes, name)
-    return placed[1] if placed and placed[0] == hooks.HERE else None
+    return placed[1] if placed and placed[0] == {hooks.HERE} else None
 
 
 def model(name, lane):

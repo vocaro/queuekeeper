@@ -8682,6 +8682,22 @@ class FanOutTests(unittest.TestCase):
                                          "every guaranteed slot of studio is busy (HEAVY_SLOTS=3)")
         self.assertEqual(offered.busy, offered.status)
 
+    def test_work_that_runs_on_no_other_mac_waits_on_the_first_with_room_else_the_first_reached(self):
+        away = remote.Unreachable("mini cannot be reached", "wake it")
+        full = {**self.FREE, "busy": [0, 1, 2]}
+        reach = lambda host: (_ for _ in ()).throw(away) if host == "mini" else None
+        heavy = {"command": ["true"], "resource": "heavy"}
+        with patch.object(remote, "reachable", side_effect=reach), \
+                patch.object(remote, "capacity_there", side_effect=lambda host: full if host == "studio" else self.FREE):
+            # One Mac is asked nothing: the work goes there, and its failure says why if it cannot.
+            self.assertEqual(remote.waiting_host(("mini",), heavy), "mini")
+            self.assertEqual(remote.waiting_host(("mini", "studio", "rented"), heavy), "rented")
+            self.assertEqual(remote.waiting_host(("mini", "studio"), heavy), "studio")
+            # A foreground lane, whose wait is for the screen, takes the first Mac reached.
+            self.assertEqual(remote.waiting_host(("mini", "studio", "rented")), "studio")
+        with patch.object(remote, "reachable", side_effect=away):
+            self.assertEqual(remote.waiting_host(("mini", "studio"), heavy), "mini")
+
     def test_macs_that_are_all_away_are_one_unreachable_farm(self):
         def away(host): raise remote.Unreachable(f"{host} cannot be reached", "wake it")
         offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0)

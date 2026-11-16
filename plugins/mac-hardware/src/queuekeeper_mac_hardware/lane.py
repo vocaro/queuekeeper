@@ -2,11 +2,11 @@
 
     "gate": {"command": ["./check.sh", "--gates"], "resource": "exclusive", "chips": ["apple-m5-max"]}
 
-The lane runs only on a Mac whose chip it lists. When both Macs have one it is placed as any lane is. When one
-has, it runs there and waits for that Mac while it is busy; it never runs on the other. When neither has, it is
-refused, and `qk doctor` says so beforehand. `qk host chip` prints a Mac's chip as a lane names
+The lane runs only on a Mac whose chip it lists. When every Mac has one it is placed as any lane is. When some
+have, it is placed among those, and waits for them while they are busy; it never runs on another. When none has, it
+is refused, and `qk doctor` says so beforehand. `qk host chip` prints a Mac's chip as a lane names
 it."""
-from queuekeeper import extensions
+from queuekeeper import extensions, farm
 from queuekeeper.config import unadmitted
 from . import chip
 
@@ -14,16 +14,17 @@ KEY = "chips"
 
 
 def reading():
-    """(this Mac's chip, the second Mac's SSH name or None, its chip or None)."""
-    host = chip.second_mac()
-    return chip.here(), host, chip.there(host) if host else None
+    """(this Mac's chip, {the SSH destination of each of the farm's Macs that take work now: its chip or None}), the
+    farm's Macs in their order."""
+    return chip.here(), {host: chip.there(host) for host in chip.others()}
 
 
-def named(mine, host, theirs):
-    """The words that say what each Mac has."""
-    here = f"this Mac has {mine or 'a chip that could not be read'}"
-    if not host: return f"{here}, and there is no second Mac"
-    return f"{here}, and {host} has {theirs or 'a chip that could not be read'}"
+def named(mine, theirs):
+    """The words that say what each Mac has, the farm's by their names."""
+    unread = "a chip that could not be read"
+    here = f"this Mac has {mine or unread}"
+    if not theirs: return f"{here}, and the farm has no other Mac"
+    return ", and ".join([here, *(f"{farm.named(host)} has {found or unread}" for host, found in theirs.items())])
 
 
 class Chips(extensions.LaneKey):
@@ -39,12 +40,12 @@ class Chips(extensions.LaneKey):
 
     def placement(self, lane):
         wanted = lane[KEY]
-        mine, host, theirs = reading()
-        if mine in wanted and theirs in wanted: return None
-        listed = f"its chips are {', '.join(wanted)}; {named(mine, host, theirs)}"
-        if mine in wanted: return extensions.HERE, listed
-        if theirs in wanted: return extensions.THERE, listed
-        raise ValueError(f"no Mac has a chip the lane lists: {listed}")
+        mine, theirs = reading()
+        macs = {host for host, found in theirs.items() if found in wanted} | ({extensions.HERE} if mine in wanted else set())
+        if len(macs) == len(theirs) + 1: return None
+        listed = f"its chips are {', '.join(wanted)}; {named(mine, theirs)}"
+        if not macs: raise ValueError(f"no Mac has a chip the lane lists: {listed}")
+        return macs, listed
 
 
 def warnings(root, config):
@@ -62,10 +63,11 @@ def arguments(parser):
 
 
 def read(args, out=print):
-    """Print this Mac's chip and the second Mac's, as a lane names them; exit 2 when this Mac's cannot be read."""
-    mine, host, theirs = reading()
+    """Print this Mac's chip and each of the farm's Macs', as a lane names them; exit 2 when this Mac's cannot be
+    read."""
+    mine, theirs = reading()
     out(f"this Mac: {mine or 'could not be read'}")
-    if host: out(f"{host}: {theirs or 'could not be read'}")
+    for host, found in theirs.items(): out(f"{farm.named(host)}: {found or 'could not be read'}")
     return 0 if mine else 2
 
 
@@ -74,5 +76,5 @@ def register():
     if not isinstance(extensions.LANE_KEYS.get(KEY), Chips): extensions.LANE_KEYS[KEY] = Chips()
     if warnings not in extensions.DOCTOR: extensions.DOCTOR.append(warnings)
     extensions.HOST_READS["chip"] = (
-        "print this Mac's chip and the second Mac's, as a lane's \"chips\" names them, such as apple-m5-max",
+        "print this Mac's chip and each of the farm's Macs', as a lane's \"chips\" names them, such as apple-m5-max",
         arguments, read)

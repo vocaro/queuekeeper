@@ -207,8 +207,9 @@ class LaneKey:
         return command
 
     def placement(self, lane):
-        """(HERE, why) for a lane that must run on this Mac, (THERE, why) for one that must run on the second Mac,
-        or None for one either may run. ValueError says that neither Mac can run it."""
+        """(the Macs that may run the lane, why) for a lane only some Macs may run, or None for one any may run. The
+        Macs are a set of HERE, for this Mac, and the SSH destinations of the farm's Macs that take work now.
+        ValueError says that no Mac can run it."""
         return None
 
 
@@ -223,23 +224,28 @@ def lane_command(lane, command):
     return command
 
 
-# Where a key an extension added says its lane must run (LaneKey.placement): on this Mac, or only on the second Mac.
-HERE, THERE = "here", "there"
+# This Mac, among the Macs a key an extension added says may run its lane (LaneKey.placement); the farm's other Macs
+# are there by their SSH destinations.
+HERE = "here"
 
 
 def placement(lanes, name):
-    """(HERE or THERE, why) when a key an extension added says the lane name, or a lane of its group, must run on
-    one Mac, else None. A group runs its lanes on one Mac, so lanes of it that must run apart are refused."""
-    found = {}
+    """(the Macs that may run it, why) when a key an extension added says only some Macs may run the lane name, or
+    a lane of its group, else None: a set of HERE and the SSH destinations of the farm's Macs. A group runs its
+    lanes on one Mac, so the Macs are those every lane of it may run on, and lanes that share none are refused."""
+    macs, said = None, []
     for member in [name, *lanes[name].get("parallel", [])]:
         for key, added in LANE_KEYS.items():
             if key not in lanes[member]: continue
             try: placed = added.placement(lanes[member])
             except ValueError as error: raise ValueError(f"{member}.{key}: {error}") from None
-            if placed: found.setdefault(placed[0], f"{member}.{key}: {placed[1]}")
-    if len(found) > 1:
-        raise ValueError(f"{name} runs its lanes on one Mac, and they must run apart ({found[HERE]}; {found[THERE]})")
-    return next(iter(found.items()), None)
+            if not placed: continue
+            macs = frozenset(placed[0]) if macs is None else macs & frozenset(placed[0])
+            said.append(f"{member}.{key}: {placed[1]}")
+    if macs is None: return None
+    if not macs:
+        raise ValueError(f"{name} runs its lanes on one Mac, and they must run apart ({'; '.join(said)})")
+    return macs, "; ".join(said)
 
 
 def reads_screen(lane):

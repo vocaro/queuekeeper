@@ -21,16 +21,18 @@ A lane without `chips` is placed as before, on whichever Mac has room.
 
 | The lane's chips match | What happens |
 |---|---|
-| Both Macs | The lane is placed as any other |
+| Every Mac of the farm, this one included | The lane is placed as any other |
+| This Mac and some of the farm's other Macs | It is offered to those Macs alone, in the farm's order, and runs here when none of them has room |
 | Only this Mac | It runs here, as a lane that says `here` does, and waits here while this Mac is busy |
-| Only the second Mac | It is sent there and waits there for its admission. It never runs here, and `--here` is refused |
-| Neither Mac | The run is refused, naming each Mac's chip. `qk doctor` warns of it beforehand |
+| Only other Macs of the farm | It is sent to the first of them with room, else the first that can be reached, and waits there for its admission. It never runs here, and `--here` is refused |
+| No Mac | The run is refused, naming each Mac's chip. `qk doctor` warns of it beforehand |
 
-A lane group runs on one Mac, so it goes where its restricted lane must. A group whose lanes must
-run on different Macs is refused.
+A lane group runs on one Mac, so it goes where every lane of it may run. A group whose lanes share
+no Mac is refused.
 
-If the second Mac cannot be reached, its chip is unread. A lane that matches this Mac then runs
-here, and a lane that matches only the second Mac cannot run until it is back.
+If one of the farm's Macs cannot be reached, its chip is unread and the lane is not placed on it. A
+lane that matches this Mac then runs here or on another Mac that matches, and a lane that matches
+only the unreachable Mac cannot run until it is back.
 
 ## Naming a chip
 

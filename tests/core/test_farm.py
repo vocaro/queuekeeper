@@ -156,6 +156,30 @@ class CommandTests(FarmCase):
         self.assertIn(f"Removed Studio. Its checkouts stay on it, under ~/{remote.ROOT}", output)
         self.assertEqual(self.qk("list")[1], "Render-Box  active  ssh mini.local\n")
 
+    def test_foreground_lanes_go_to_the_macs_the_owner_marks_and_else_to_the_first_that_takes_work(self):
+        self.macs["studio.local"], self.macs["mini.local"] = STUDIO, MINI
+        self.assertEqual(farm.foreground(), ())
+        self.qk("add", "studio.local")
+        self.qk("add", "mini.local")
+        # None marked: the first that takes work now, as when the farm had one Mac.
+        self.assertEqual(farm.foreground(), ("studio.local",))
+        self.qk("pause", "Studio")
+        self.assertEqual(farm.foreground(), ("mini.local",))
+        self.qk("resume", "Studio")
+        status, output, error = self.qk("foreground", "mini")
+        self.assertEqual((status, error), (0, ""))
+        self.assertEqual(output.splitlines(), [f"{MINI['name']}  active  ssh mini.local  foreground",
+                                               f"Foreground lanes now go to: {MINI['name']}"])
+        self.assertEqual(farm.foreground(), ("mini.local",))
+        self.qk("foreground", "studio")
+        self.assertEqual(farm.foreground(), ("studio.local", "mini.local"))
+        # A marked Mac that is paused takes none, and the mark comes off with --off.
+        self.qk("pause", "studio")
+        self.assertEqual(farm.foreground(), ("mini.local",))
+        self.qk("resume", "studio")
+        self.assertIn("Foreground lanes now go to: Studio\n", self.qk("foreground", "mini", "--off")[1])
+        self.assertEqual(farm.foreground(), ("studio.local",))
+
     def test_a_refusal_says_why_and_changes_nothing(self):
         status, output, error = self.qk("add", "away.local")
         self.assertEqual((status, output), (2, ""))

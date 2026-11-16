@@ -11,6 +11,7 @@ import host_isolation  # first, as every test module
 
 from queuekeeper import cli; from queuekeeper import config; from queuekeeper import extensions; import queuekeeper_mac_hardware as mac_hardware; from queuekeeper import remote
 from queuekeeper_mac_hardware import chip, lane
+from test_support import farm as farm_fixture
 
 mac_hardware.register()
 
@@ -23,8 +24,10 @@ class Macs(unittest.TestCase):
     def setUp(self):
         self.macs(M5, "studio", M1)
 
-    def macs(self, mine, host, theirs):
-        self.enterContext(patch.object(lane, "reading", lambda: (mine, host, theirs)))
+    def macs(self, mine, host, theirs, **more):
+        """This Mac's chip, and the chip of the farm's Mac at host, and of each of more, a Mac's destination."""
+        found = {**({host: theirs} if host else {}), **more}
+        self.enterContext(patch.object(lane, "reading", lambda: (mine, found)))
 
     def lanes(self, chips, **more):
         return {"gate": {"command": ["./check.sh"], "resource": "exclusive", "chips": chips, **more}}
@@ -71,20 +74,37 @@ class PlacementTests(Macs):
 
     def test_a_lane_only_this_mac_s_chip_suits_stays_here_as_one_that_says_here(self):
         where, why = self.placed([M5])
-        self.assertEqual(where, extensions.HERE)
+        self.assertEqual(where, {extensions.HERE})
         self.assertIn("this Mac has apple-m5-max, and studio has apple-m1-max", why)
         self.assertIn("gate.chips: its chips are apple-m5-max", config.stays(self.lanes([M5]), "gate"))
 
     def test_a_lane_only_the_second_mac_s_chip_suits_runs_only_there(self):
-        self.assertEqual(self.placed([M1])[0], extensions.THERE)
+        self.assertEqual(self.placed([M1])[0], {"studio"})
         self.assertIsNone(config.stays(self.lanes([M1]), "gate"))
+
+    def test_a_lane_some_of_the_farm_s_macs_suit_is_placed_among_those_alone(self):
+        self.macs(M5, "studio", M1, mini=M5, rented=M1, away=None)
+        # Every Mac that has a listed chip, and none whose chip is another's or unread.
+        self.assertEqual(self.placed([M1])[0], {"studio", "rented"})
+        where, why = self.placed([M5])
+        self.assertEqual(where, {extensions.HERE, "mini"})
+        self.assertIn("this Mac has apple-m5-max, and studio has apple-m1-max, and mini has apple-m5-max, and rented "
+                      "has apple-m1-max, and away has a chip that could not be read", why)
+        # This Mac may run it, so it does not stay here alone, and is offered to mini and no other.
+        self.assertIsNone(config.stays(self.lanes([M5]), "gate"))
+        with farm_fixture.only("studio", "mini", "rented", "away"):
+            self.assertEqual(remote.eligible(where), ("mini",))
+            self.assertEqual(remote.eligible(self.placed([M1])[0]), ("studio", "rented"))
+        # Chips that every Mac but the unread one has leave that one out.
+        self.assertEqual(self.placed([M5, M1])[0], {extensions.HERE, "studio", "mini", "rented"})
 
     def test_a_lane_stays_here_when_the_second_mac_s_chip_cannot_be_read_or_there_is_none(self):
         self.macs(M5, "studio", None)
-        self.assertEqual(self.placed([M5])[0], extensions.HERE)
+        self.assertEqual(self.placed([M5])[0], {extensions.HERE})
         self.assertIn("studio has a chip that could not be read", self.placed([M5])[1])
         self.macs(M5, None, None)
-        self.assertIn("there is no second Mac", self.placed([M5])[1])
+        self.assertIsNone(self.placed([M5]))
+        with self.assertRaisesRegex(ValueError, "the farm has no other Mac"): self.placed([M1])
 
     def test_a_lane_no_mac_s_chip_suits_is_refused_naming_what_each_has(self):
         with self.assertRaisesRegex(ValueError, "gate.chips: no Mac has a chip the lane lists: its chips are "
@@ -95,7 +115,7 @@ class PlacementTests(Macs):
         lanes = {"all": {"parallel": ["fast", "gpu"]}, "fast": {"command": ["true"], "resource": "heavy"},
                  "gpu": {"command": ["true"], "resource": "heavy", "chips": [M1]}}
         where, why = extensions.placement(lanes, "all")
-        self.assertEqual(where, extensions.THERE)
+        self.assertEqual(where, {"studio"})
         self.assertIn("gpu.chips", why)
         lanes["fast"]["chips"] = [M5]
         self.assertIn("fast.chips", extensions.placement(lanes, "fast")[1])
@@ -160,7 +180,7 @@ class RunTests(Macs):
             self.sent.append((host, work))
             return 0
         self.enterContext(patch.object(remote, "execute", execute))
-        self.enterContext(patch.object(remote, "configured", lambda: "studio"))
+        farm_fixture.use(self, "studio")
 
     def run_lane(self, *arguments):
         error = io.StringIO()
@@ -178,6 +198,17 @@ class RunTests(Macs):
         self.assertEqual(self.sent, [])
         self.assertNotEqual(status, 0)
         self.assertIn("so it cannot run here with --here", error)
+
+    def test_with_several_macs_that_suit_it_waits_on_the_first_with_spare_capacity_and_names_them(self):
+        farm_fixture.use(self, "studio", "mini", "rented")
+        self.macs(M5, "studio", M1, mini=M5, rented=M1)
+        free = {"slots": 3, "slotsMax": 6, "busy": [], "busyLimit": 75}
+        readings = {"studio": {**free, "busy": [0, 1, 2, 3, 4, 5]}, "rented": free}
+        with patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=lambda host, **options: readings[host]):
+            status, error = self.run_lane()
+        self.assertEqual((status, self.sent), (0, [("rented", ["run", "--here", "gate"])]))
+        self.assertIn("gate runs only on studio or rented (gate.chips: its chips are apple-m1-max", error)
 
 
 if __name__ == "__main__":

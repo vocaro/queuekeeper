@@ -21,6 +21,7 @@ from queuekeeper_apple import devices
 from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import foreground, opened_apps
 import host_isolation
+from test_support import farm as farm_fixture
 from host_isolation import stretched
 from test_support.devices import run_printed
 from queuekeeper_apple.voiceover import state as voiceover_state
@@ -847,7 +848,7 @@ class RoutingTests(unittest.TestCase):
                                                                    "lanes": self.lanes}))
         away = remote.Unreachable("build-host cannot be reached: ssh: connect to host mac.local port 22: Host is down",
                                   "wake build-host and connect it to the network")
-        with patch.object(remote, "configured", return_value="build-host"), \
+        with farm_fixture.only("build-host"), \
                 patch.object(remote, "execute", side_effect=away):
             ran = {"lane": self.qk("run", "voiceover-mac"), "remote lane": self.qk("remote", "run", "voiceover-mac"),
                    "admit": self.qk("remote", "admit", "--foreground", "--", "true")}
@@ -870,7 +871,7 @@ class RoutingTests(unittest.TestCase):
 
     def test_a_misconfigured_second_mac_offers_no_window_here(self):
         stop = remote.Misconfigured("build-host could not run the toolkit", "give it a python3")
-        with patch.object(remote, "configured", return_value="build-host"), \
+        with farm_fixture.only("build-host"), \
                 patch.object(remote, "execute", side_effect=stop):
             status, error = self.qk("remote", "admit", "--foreground", "--", "true")
         self.assertEqual(status, 2)

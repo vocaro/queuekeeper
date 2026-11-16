@@ -69,6 +69,15 @@ def destinations():
     return tuple(mac["ssh"] for mac in active())
 
 
+def foreground():
+    """The SSH destinations of the Macs a foreground lane, which takes a Mac's screen, may go to, in order: the Macs
+    that take work now and that the owner marked for it (`qk farm foreground NAME`), or, while none is marked, the
+    first that takes work now."""
+    found = active()
+    marked = tuple(mac["ssh"] for mac in found if mac.get("foreground"))
+    return marked or tuple(mac["ssh"] for mac in found[:1])
+
+
 def find(name, macs=None):
     """The Mac of that name, whatever its case."""
     macs = read() if macs is None else macs
@@ -170,6 +179,15 @@ def resume(name):
     return mac
 
 
+def mark_foreground(name, on=True):
+    """Mark the Mac as one whose screen a foreground lane may take, or with on False as one it may not."""
+    with changing() as macs:
+        mac = find(name, macs)
+        mac.pop("foreground", None)
+        if on: mac["foreground"] = True
+    return mac
+
+
 def remove(name, *, running=lambda ssh: []):
     """Take the Mac out of the farm for good: nothing is offered to it and nothing reports it from then on. What
     earlier runs recorded of it stays. running(ssh) names the runs this Mac still has there, and while it names
@@ -186,11 +204,12 @@ def remove(name, *, running=lambda ssh: []):
 
 def line(mac):
     state = mac["state"] + (f" ({mac['pausedBecause']})" if mac.get("pausedBecause") else "")
-    return f"{mac['name']}  {state}  ssh {mac['ssh']}"
+    return f"{mac['name']}  {state}  ssh {mac['ssh']}" + ("  foreground" if mac.get("foreground") else "")
 
 
 def main(argv):
-    """`qk farm`: list the farm's Macs, add one, rename, pause, resume or remove one. It reads no project."""
+    """`qk farm`: list the farm's Macs, add one, rename, pause, resume or remove one, or mark one for foreground
+    lanes. It reads no project."""
     parser = argparse.ArgumentParser(prog="qk farm", description="the Macs beside this one that take work")
     operations = parser.add_subparsers(dest="operation")
     listing = operations.add_parser("list", help="the farm's Macs, in the order work is offered to them")
@@ -206,6 +225,9 @@ def main(argv):
     pausing.add_argument("--reason")
     operations.add_parser("resume", help="offer a paused Mac work again").add_argument("name")
     operations.add_parser("remove", help="take a Mac out of the farm for good").add_argument("name")
+    marking = operations.add_parser("foreground", help="let foreground lanes take a Mac's screen, or with --off not")
+    marking.add_argument("name")
+    marking.add_argument("--off", action="store_true")
     args = parser.parse_args(argv)
     # Reaching a Mac is remote's, which reads the farm: imported here, where a command needs it.
     from . import remote
@@ -233,6 +255,10 @@ def main(argv):
             print(f"Paused {line(pause(args.name, args.reason))}")
         elif args.operation == "resume":
             print(f"Resumed {line(resume(args.name))}")
+        elif args.operation == "foreground":
+            mac = mark_foreground(args.name, not args.off)
+            taken = ", ".join(named(ssh) for ssh in foreground()) or "no Mac"
+            print(f"{line(mac)}\nForeground lanes now go to: {taken}")
         elif args.operation == "remove":
             mac = remove(args.name, running=remote.running_on)
             print(f"Removed {mac['name']}. Its checkouts stay on it, under ~/{remote.ROOT}, until they are deleted there")

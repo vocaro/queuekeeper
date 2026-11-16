@@ -752,6 +752,7 @@ python3 scripts/qk farm rename NAME NEW
 python3 scripts/qk farm pause NAME [--reason WHY]      # offer it no work until it is resumed
 python3 scripts/qk farm resume NAME
 python3 scripts/qk farm remove NAME                    # take it out of the farm for good
+python3 scripts/qk farm foreground NAME [--off]        # let foreground lanes take its screen, or not
 ```
 
 `add` reaches the Mac at DESTINATION, a host name, `USER@HOST` or an alias of `~/.ssh/config`, and
@@ -783,8 +784,14 @@ admits it first, the first Mac reached asked first, with the list read again whi
 misconfigured host stops the offer with its diagnosis, and an interrupted connection to a run
 that may have started yields no verdict.
 
-Foreground lanes and commands that act on one Mac, such as `qk remote setup`, use the first Mac
-that takes work now, or the one `--host` names.
+A lane that only some Macs may run, such as one whose `chips` list some Macs' chips, is offered
+to those Macs alone, in the list's order.
+
+A foreground lane takes a Mac's screen, so it goes only to a Mac the owner marked for it with
+`qk farm foreground NAME`: the first marked Mac that takes work now and can be reached, where it
+waits for the foreground. While no Mac is marked, it goes to
+the first Mac that takes work now. Commands that act on one Mac, such as `qk remote setup`, use
+the first Mac that takes work now, or the one `--host` names.
 
 #### Check gate placement without running a gate
 
