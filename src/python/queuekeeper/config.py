@@ -53,22 +53,55 @@ def extensions_of(root, base=None):
 
 
 def sibling_folders(root):
-    """The folders beside the project at root that its extensions load from: NAME for each folder "../NAME/...".
-    A run pins each at a commit (pins), and the second Mac is not sent them: it takes that commit from its own
-    checkout of each (offload_host.place_siblings)."""
-    try: return siblings_of(json.loads((Path(root) / FILE).read_text()).get("extensions", []))
-    except (OSError, ValueError, AttributeError): return []
+    """The folders beside the project at root that a run of it loads from, by name (sibling_variables)."""
+    return list(sibling_variables(root))
 
 
-def siblings_of(declared):
-    """sibling_folders for a configuration's extensions as it declares them, such as main's, which the merge queue
-    reads from the commit. A ValueError says they are not a list of extensions."""
-    names = []
-    for entry in extensions(declared):
+def sibling_variables(root):
+    """The folders beside the project at root that a run of it loads from, {NAME: VARIABLE or None}: those its
+    queuekeeper.json declares (siblings_in), and those each of them declares in turn under "siblings" in its own
+    queuekeeper.json, as that folder's checkout beside the project stands. A run pins each at a commit (pins), which
+    reads a pinned folder's own list at that commit, and the second Mac is not sent them: it takes that commit from
+    its own checkout of each (offload_host.place_siblings)."""
+    try: found = siblings_in(json.loads((Path(root) / FILE).read_text()))
+    except (OSError, ValueError, AttributeError): return {}
+    waiting = list(found)
+    while waiting:
+        for name, variable in further_siblings(pins.clone(root, waiting.pop(0))).items():
+            if name not in found: waiting.append(name)
+            if not found.get(name): found[name] = variable
+    return found
+
+
+def siblings_in(configuration):
+    """The folders beside a project that its configuration declares, {NAME: VARIABLE or None}, as the merge queue
+    reads them from main's commit: NAME for each extension folder "../NAME/...", and each NAME of "siblings", a folder
+    the project's own code loads from, found by the environment variable VARIABLE, which a run that pins the folder
+    sets to its checkout of it (pins.exported). A ValueError says what is wrong with either."""
+    found = {}
+    for entry in extensions(configuration.get("extensions", [])):
         parts = Path(entry.get("path") or "").parts if isinstance(entry, dict) else ()
-        if len(parts) > 1 and parts[0] == ".." and parts[1] not in ("..", ".") and parts[1] not in names:
-            names.append(parts[1])
-    return names
+        if len(parts) > 1 and parts[0] == ".." and parts[1] not in ("..", "."): found.setdefault(parts[1], None)
+    found.update(siblings(configuration.get("siblings", {})))
+    return found
+
+
+def siblings(declared):
+    """A configuration's "siblings", checked: {NAME: VARIABLE}, a folder's name beside the project and the
+    environment variable its code finds that folder by."""
+    if not isinstance(declared, dict) or not all(
+            isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name) and isinstance(variable, str)
+            and re.fullmatch(r"[A-Z_][A-Z0-9_]*", variable) for name, variable in declared.items()):
+        raise ValueError('siblings is {FOLDER: VARIABLE}: a folder beside the project that its code loads from, and '
+                         "the environment variable it finds the folder by")
+    return dict(declared)
+
+
+def further_siblings(folder):
+    """What the checkout at folder, itself a folder beside a project, declares under "siblings" in its own
+    queuekeeper.json: the folders its code loads from when a project loads it. None where it has no such list."""
+    try: return siblings(json.loads((Path(folder) / FILE).read_text()).get("siblings", {}))
+    except (OSError, ValueError, AttributeError): return {}
 
 
 def load(root):
@@ -102,13 +135,14 @@ def parse(source):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository", "spelling",
-               "queue", "release", "testLanes", "gitHooks", "docs"}
+               "queue", "release", "testLanes", "gitHooks", "docs", "siblings"}
     if set(value) - allowed - set(EXTENSION_CONFIG_KEYS):
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(EXTENSION_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:
         raise ValueError("Project name must be a nonempty string")
     declared = extensions(value.get("extensions", list(EXTENSIONS)))
     if "extensions" in value: value["extensions"] = declared
+    siblings(value.get("siblings", {}))
     # The extensions shipped here that the project switches on add keys to its lanes, so they are loaded before the
     # lanes are checked, whichever command reads the configuration. One in a folder of the project's is the
     # command's to load (cli.perform), which knows the folder.

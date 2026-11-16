@@ -1616,6 +1616,14 @@ Queuekeeper was held still for a run. A landing in a shared folder during a chec
 later lanes, whose nested `qk` commands then loaded an adapter that no longer matched the Queuekeeper they
 ran (vocaro-engineering#497).
 
+**Folders such a folder loads from.** A folder's own `queuekeeper.json` may list, under `siblings`, further
+folders beside it that its code loads from, each with the environment variable the code finds it by:
+`"siblings": {"apple-engineering": "APPLE_ENGINEERING_ROOT"}`. A run that pins the folder reads that list at
+the commit it pinned, pins each folder listed by the same rules, and sets the variable to its checkout of it
+in every command of the run, on either Mac. A project's own `queuekeeper.json` may list `siblings` for its
+own code in the same way. A listed folder that a Mac has no checkout of is left out there, and the code
+does without it or says so itself.
+
 **Which commit.** The folder's `origin/main`, as this Mac's checkout of the folder names it. The merge
 queue's worker fetches it at the start of each round; `qk run` takes it as it is, with no fetch. The
 checkout's own `HEAD`, branch and uncommitted changes are never read, so a session's edit there changes

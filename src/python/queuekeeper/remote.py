@@ -67,7 +67,7 @@ import uuid
 import zlib
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, processes, resources, git_state
-from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, unlocked_screen
+from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, sibling_variables, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 
 # The SSH destinations tried in turn when neither --host nor QUEUEKEEPER_OFFLOAD_HOST names one: aliases the
@@ -1918,7 +1918,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
             # The folders beside the project its extensions load from, each at the commit this run pinned, which the
             # second Mac takes from its own checkout of the folder (pins.dispatched, offload_host.place_siblings).
-            "siblings": pins.dispatched(root, sibling_folders(root)),
+            "siblings": pins.dispatched(root, sibling_variables(root)),
             "decline": decline, "busy": BUSY,
             "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",

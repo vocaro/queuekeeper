@@ -3779,7 +3779,8 @@ def place_siblings(slot, siblings, environment=None, home=None):
     A folder sent with no commit, which the sending Mac could not pin, is a link to this Mac's own
     ~/Development/NAME as it stands, and is in no pin set.
 
-    Returns the run's pin set here, for QUEUEKEEPER_SIBLINGS: {NAME: {"commit", "root"}}. A folder this Mac has no
+    Returns the run's pin set here, for QUEUEKEEPER_SIBLINGS: {NAME: {"commit", "root"}}, with the "variable" the
+    sending Mac names for a folder that code finds by one. A folder this Mac has no
     checkout of, or a commit it holds none of and cannot fetch, is said and given an "error" in place of a checkout,
     and qk then ends before any lane as Queuekeeper that could not start, saying it (pins.verify)."""
     pins = {}
@@ -3811,7 +3812,8 @@ def place_siblings(slot, siblings, environment=None, home=None):
             elif link.exists(): shutil.rmtree(link)
             link.symlink_to(checkout, target_is_directory=True)
             say(f"{link} is {name} at {commit[:12]}, {checkout}")
-        pins[name] = {"commit": commit, "root": str(checkout)}
+        pins[name] = {"commit": commit, "root": str(checkout),
+                      **({"variable": sibling["variable"]} if sibling.get("variable") else {})}
     return pins
 
 

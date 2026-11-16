@@ -255,6 +255,94 @@ class MakeTests(Fixture):
             with self.assertRaisesRegex(ValueError, why): pins.chosen(self.project, ["kit"], wrong)
 
 
+class FurtherFolderTests(Fixture):
+    """A folder the pinned one declares in its own queuekeeper.json, found by an environment variable: the toolkit
+    loads apple-engineering and AXVerify so, for a project that lists neither."""
+
+    def setUp(self):
+        super().setUp()
+        self.more = self.home / "Development/more"
+        git(self.home, "init", "-q", "--bare", "-b", "main", str(self.home / "more.git"))
+        git(self.home, "clone", "-q", str(self.home / "more.git"), str(self.more))
+        self.first = self.land_more("first")
+        (self.kit / "queuekeeper.json").write_text(json.dumps({
+            "schemaVersion": 1, "name": "kit", "siblings": {"more": "MORE_ROOT", "absent": "ABSENT_ROOT"}}))
+        self.declares = self.publish("declares")
+        configuration = json.loads((self.project / "queuekeeper.json").read_text())
+        configuration["lanes"]["asks"] = {"command": [
+            "python3", "-c", "import os; print('more-is', os.environ.get('MORE_ROOT'), os.environ.get('ABSENT_ROOT'))"]}
+        (self.project / "queuekeeper.json").write_text(json.dumps(configuration))
+        git(self.project, "commit", "-qam", "a lane that asks")
+
+    def land_more(self, value):
+        (self.more / "value.txt").write_text(value)
+        (self.more / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "more",
+                                                               "siblings": {"kit": "KIT_ROOT"}}))
+        git(self.more, "add", ".")
+        git(self.more, "commit", "-qm", value)
+        git(self.more, "push", "-q", "origin", "HEAD:main")
+        git(self.more, "fetch", "-q", "origin")
+        return git(self.more, "rev-parse", "HEAD")
+
+    def test_what_a_pinned_folder_declares_is_pinned_too_and_its_variable_names_the_checkout(self):
+        self.assertEqual(config.sibling_variables(self.project), {"kit": "KIT_ROOT", "more": "MORE_ROOT",
+                                                                 "absent": "ABSENT_ROOT"})
+        said = []
+        made = pins.make(self.project, config.sibling_variables(self.project), say=said.append)
+        root = self.store / "more" / self.first
+        # The two name each other, which ends; the one this Mac has nothing of is said and left out.
+        self.assertEqual(made, {"kit": {"commit": self.declares, "root": str(self.store / "kit" / self.declares),
+                                        "variable": "KIT_ROOT"},
+                                "more": {"commit": self.first, "root": str(root), "variable": "MORE_ROOT"}})
+        self.assertIn(f"no absent: this Mac has no {self.home / 'Development/absent'}", said)
+        self.assertEqual(pins.exported(made), {"KIT_ROOT": made["kit"]["root"], "MORE_ROOT": str(root)})
+        self.assertEqual(pins.exported({"more": {**made["more"], "error": "no such commit"}}), {})
+        with patch.dict(os.environ, {pins.VARIABLE: pins.encoded(made)}):
+            sent = pins.dispatched(self.project, config.sibling_variables(self.project))
+        self.assertEqual(sent, [{"name": "kit", "commit": self.declares, "variable": "KIT_ROOT"},
+                                {"name": "more", "commit": self.first, "variable": "MORE_ROOT"},
+                                {"name": "absent", "variable": "ABSENT_ROOT"}])
+        slot = self.home / "build-host/checkouts/Example/0"
+        (slot / "Example").mkdir(parents=True)
+        with patch.object(offload_host, "say", lambda text: None):
+            placed = offload_host.place_siblings(slot, sent, home=self.home)
+        self.assertEqual(placed["more"], {"commit": self.first, "variable": "MORE_ROOT",
+                                          "root": str(self.home / offload_host.PINS / "more" / self.first)})
+        self.assertNotIn("absent", placed)
+
+    def test_the_list_is_read_at_the_commit_pinned_not_as_the_checkout_stands(self):
+        # A session's edit of the shared checkout's list, which no run reads.
+        (self.kit / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "kit"}))
+        made = pins.make(self.project, ["kit"])
+        self.assertEqual(made["more"]["variable"], "MORE_ROOT")
+        chosen = pins.chosen(self.project, ["kit"], [f"kit={self.one}"])
+        self.assertEqual(list(pins.make(self.project, ["kit"], chosen)), ["kit"])  # which declared none
+
+    def test_a_lane_finds_the_folder_by_its_variable_at_the_commit_the_run_began_with(self):
+        ran = self.qk("run", "--here", "asks")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        root = self.store / "more" / self.first
+        self.assertIn(f"queuekeeper: this run loads more at {self.first[:12]}, its origin/main, from {root}\n", ran.stderr)
+        log = (self.project / ".build/queuekeeper/asks/run.log").read_text()
+        self.assertIn(f"more-is {root} None\n", log)
+        receipt = json.loads((self.project / ".build/queuekeeper/asks/source.json").read_text())
+        self.assertEqual(receipt["siblings"]["more"], {"commit": self.first, "root": str(root), "variable": "MORE_ROOT"})
+        # A command that inherits the set, as a later lane of a checkpoint does, after a landing in the folder.
+        self.land_more("second")
+        held = {pins.VARIABLE: pins.encoded(pins.make(self.project, ["kit"]) | {"more": receipt["siblings"]["more"]})}
+        again = self.qk("run", "--here", "asks", **held)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn(f"more-is {root} None\n", (self.project / ".build/queuekeeper/asks/run.log").read_text())
+        self.assertEqual((root / "value.txt").read_text(), "first")
+
+    def test_siblings_that_names_no_folder_and_variable_is_refused(self):
+        for wrong in (["more"], {"more": "more_root"}, {"../more": "MORE_ROOT"}, {"more": None}):
+            with self.subTest(siblings=wrong), self.assertRaisesRegex(ValueError, "siblings is {FOLDER: VARIABLE}"):
+                config.parse(json.dumps({"schemaVersion": 1, "name": "fixture", "siblings": wrong}))
+        self.assertEqual(config.parse(json.dumps({"schemaVersion": 1, "name": "fixture",
+                                                  "siblings": {"more": "MORE_ROOT"}}))["siblings"], {"more": "MORE_ROOT"})
+
+
 class HeldTests(Fixture):
     def test_extensions_load_from_the_pinned_root_and_a_set_that_is_not_what_it_says_is_refused(self):
         live = [("fixture_kit", str(self.kit / "src/python"))]

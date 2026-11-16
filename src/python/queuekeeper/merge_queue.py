@@ -58,7 +58,7 @@ from . import budgets, disk, extensions, host_health, lane_results, landing_proo
 from . import events, pre_push, recovery
 from .config import DOCS, DOCS_FILES, DOCS_FOLDERS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, SPELLING, TOOLKIT_ROOT, admission, implicit_command, implicit_spelling, \
-    lane_to_run, legacy_spelling_warning, load, parse, preflight, project_checkout, siblings_of, stays, toolkit_command, \
+    lane_to_run, legacy_spelling_warning, load, parse, preflight, project_checkout, siblings_in, stays, toolkit_command, \
     unlocked_screen
 
 MAIN = "refs/remotes/origin/main"
@@ -3043,13 +3043,12 @@ class Worker:
         could not start for (vocaro/queuekeeper#158)."""
         queue = self.queue
         self.environment = {key: value for key, value in self.environment.items() if key != pins.VARIABLE}
-        try: names = siblings_of(json.loads(config_source(queue.main_checkout, MAIN)).get("extensions", []))
+        try: names = siblings_in(json.loads(config_source(queue.main_checkout, MAIN)))
         except (ValueError, AttributeError): return  # main's configuration is unreadable, which the round says itself
         if not names: return
-        for name in names:
-            clone = pins.clone(queue.main_checkout, name)
+        def fetch(clone):
             if git(clone, "remote", "get-url", "origin").returncode == 0: reach(clone, *FETCH, say=self.say, check=True)
-        try: made = pins.make(queue.main_checkout, names)
+        try: made = pins.make(queue.main_checkout, names, fetch=fetch)
         except pins.Unpinned as error:
             raise Hold(SESSION, f"a folder the project's extensions load from could not be pinned for the round: {error}")
         if not made: return

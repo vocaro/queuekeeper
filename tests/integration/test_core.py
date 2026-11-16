@@ -78,6 +78,7 @@ class ConfigurationTests(unittest.TestCase):
                 "extensions": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
             # The folders beside the project that its extensions load from, which the second Mac links (sibling_folders).
             self.assertEqual(config.sibling_folders(root), ["kit"])
+            self.assertEqual(config.sibling_variables(root), {"kit": None})
             self.assertEqual(config.sibling_folders(root / "none"), [])
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
             self.assertEqual(config.extensions_of(root), [])

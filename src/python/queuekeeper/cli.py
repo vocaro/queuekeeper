@@ -17,7 +17,7 @@ from . import pins, __version__, budgets, checkout, disk, docs, extensions, git_
     parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_spelling_warning, project_checkout, \
-    self_lane_warnings, sibling_folders, stays, unadmitted, unlocked_screen
+    self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -824,6 +824,8 @@ def main(argv=None):
             compose_checkout()
             refused = pin_run(argv)
             if refused is not None: return refused
+            # Before the extensions load: one loaded from its pinned folder finds further folders by these.
+            os.environ.update(pins.exported(pins.held()))
             load_extensions(argv)
         except Exception as error:  # noqa: BLE001
             return could_not_start(error)
@@ -904,8 +906,8 @@ def pin_run(argv):
               "folder's commit where the run starts", file=sys.stderr, flush=True)
         return USAGE
     root = Path(given[1] if first == 2 else given[0].split("=", 1)[1] if first == 1 else ".").resolve()
-    names = sibling_folders(root)
-    try: choices = pins.chosen(root, names, asked)
+    names = sibling_variables(root)
+    try: choices = pins.chosen(root, list(names), asked)
     except ValueError as error:
         print(f"queuekeeper: {error}", file=sys.stderr, flush=True)
         return USAGE
