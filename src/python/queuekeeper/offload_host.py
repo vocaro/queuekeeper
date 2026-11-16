@@ -479,6 +479,57 @@ def mac_name():
     return output(["scutil", "--get", "LocalHostName"]) or os.uname().nodename
 
 
+# The variable that names a Mac's hardware UUID in place of the IORegistry's, for a test whose Macs are one machine.
+HARDWARE_VARIABLE = "QUEUEKEEPER_HARDWARE_UUID"
+HARDWARE = re.compile(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"')
+# Where a Mac's repositories and checkouts were until the farm had more Macs than one, relative to its home.
+EARLIER_ROOT = "Development/build-host"
+
+
+def hardware_id():
+    """This Mac's hardware UUID, which stays when its name or address changes, or None when it cannot be read."""
+    if os.environ.get(HARDWARE_VARIABLE): return os.environ[HARDWARE_VARIABLE]
+    found = HARDWARE.search(output(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]) or "")
+    return found.group(1).upper() if found else None
+
+
+def adopt_root(root, earlier=EARLIER_ROOT, home=None):
+    """Move the directory this Mac kept its repositories and checkouts in, earlier under its home, to root, so that
+    its warm checkouts stay, and return what became of it: {"moved": True} with the worktrees repaired, {"moved":
+    False} when there is nothing to move, and with "left", why earlier stays where it is. Each checkout is a worktree
+    of a bare repository, and each records the other's path, so Git repairs both after the move; a build cache that
+    holds the old path is the build's to renew. Nothing moves while a run there holds a checkout."""
+    home = Path.home() if home is None else Path(home)
+    old, new = home / earlier, home / root
+    if old == new or old.is_symlink() or not old.is_dir(): return {"moved": False}
+    if new.exists(): return {"moved": False, "left": f"{old} stays, since {new} exists already: merge or remove it"}
+    running = [pid for pid, start in dispatchers(old / "checkouts")
+               if start is None or alive({"pid": pid, "start": start})]
+    if running:
+        return {"moved": False, "left": f"{old} stays while a run holds a checkout in it (process "
+                                        f"{', '.join(map(str, running))}): add the Mac again once it has ended"}
+    try:
+        new.parent.mkdir(parents=True, exist_ok=True)
+        old.rename(new)
+    except OSError as error:
+        return {"moved": False, "left": f"{old} could not be moved to {new}: {error}"}
+    unrepaired = []
+    for repository in sorted((new / "repositories").glob("*.git")):
+        checkouts = [str(path) for path in sorted((new / "checkouts").glob("*/*/*")) if (path / ".git").is_file()
+                     and f"/{repository.name}/" in (path / ".git").read_text(errors="replace")]
+        try:
+            if checkouts: git("--git-dir", str(repository), "worktree", "repair", *checkouts)
+        except (OSError, RuntimeError) as error:
+            unrepaired.append(f"{repository.name}: {error}")
+    return {"moved": True, "from": str(old), "to": str(new), **({"unrepaired": unrepaired} if unrepaired else {})}
+
+
+def join(request):
+    """What `qk farm add` asks of a Mac it adds: its hardware UUID and its own name, and its earlier directory moved
+    to request["root"] (adopt_root)."""
+    return {"id": hardware_id(), "name": mac_name(), **adopt_root(request["root"])}
+
+
 SCREEN_GUIDE = "apple-engineering's guides/background-mac-testing.md, Checking a Mac's screen"
 SCREEN_KEYS = ("CGSSessionScreenIsLocked", "IOConsoleLocked")
 # A recorded `ioreg -n Root -d1 -a` to read in place of the IORegistry, for tests, which never lock a real screen.
@@ -3423,6 +3474,7 @@ def answer(request):
     `qk remote setup`, `qk remote foreground`, `devices recover` and `qk keychain recover`. A census before a dispatch can
     also name repositories to advertise, and then says what each advertises and which Git does so."""
     if "toolchain" in request: return toolchain(request["toolchain"])
+    if "join" in request: return join(request["join"])
     if "keychain" in request: return keychain(request["keychain"])
     if "foreground" in request: return foreground()
     # The Farm tab asks for health beside pressure; the merge queue, which reads pressure between runs, does not.
@@ -3913,7 +3965,7 @@ def update_toolkit(request, home=None, seconds=UPDATE_SECONDS, listed=listing):
     environment = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION}
     environment.update(GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=environment.get("GIT_SSH_COMMAND") or
                        "ssh -o BatchMode=yes -o ConnectTimeout=10")
-    root = home / request.get("root", "Development/build-host")
+    root = home / request.get("root", "Development/queuekeeper-farm")
     if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")
 
     def run(*arguments, limit=None):
@@ -4477,7 +4529,7 @@ if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if "reattach" in request: sys.exit(reattach(request["reattach"]))
-    if {"toolchain", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
+    if {"toolchain", "join", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
             "pressure", "capacity", "admissionLog", "admissionsNow", "screen", "toolkitCheckout"} & request.keys():
         print(json.dumps(answer(request)))
     else:

@@ -40,7 +40,7 @@ def setUpModule():
     # never reaches the owner's; test_remote's doctor tests reach a fake one. It also checks the
     # account's agent skill links: these tests install no agent host, and test_skills installs some.
     nowhere = str(Path(tempfile.gettempdir()) / f"no-agent-host-{uuid.uuid4()}")
-    environment = patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none", "CLAUDE_CONFIG_DIR": nowhere,
+    environment = patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": nowhere,
                                           "CODEX_HOME": nowhere})
     environment.start()
     unittest.addModuleCleanup(environment.stop)

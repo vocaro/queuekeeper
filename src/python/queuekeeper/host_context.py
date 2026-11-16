@@ -79,16 +79,13 @@ def session(flags=READ, environment=None):
 
 def second_mac():
     """This Mac's view of the second Mac, without connecting: the SSH destination the canonical
-    resolver names here (remote.configured), what `ssh -G` resolves it to, whether that destination
-    is one of the toolkit's aliases that this Mac's ~/.ssh/config leaves undefined, and the Mac this
+    resolver names here (remote.configured), what `ssh -G` resolves it to, and the Mac this
     Mac's device record defers physical devices to, which every qk remote run sets on the second
     Mac's record and so marks this Mac as that Mac's second Mac."""
     destination = remote.configured()
     hostname = (remote.ssh_settings(destination).get("hostname") or destination) if destination else None
     record = offload_host.device_record()
-    return {"destination": destination, "hostname": hostname,
-            "undefinedAlias": bool(destination in remote.ALIASES and hostname == destination),
-            "deferredTo": record.get("deferredTo")}
+    return {"destination": destination, "hostname": hostname, "deferredTo": record.get("deferredTo")}
 
 
 def names_mac(hostname, mac):
@@ -114,12 +111,6 @@ def locate(here, view, target=None, there=None, unreached=None):
     destination, deferred = view.get("destination"), view.get("deferredTo")
     if target is not None and target == here:
         return Location("here", here, note=f"{here} is this Mac, as you named it")
-    if destination and view.get("undefinedAlias"):
-        return Location(refusal=(
-            f"{destination} names no Mac here: `ssh -G {destination}` gives it back unchanged, so this Mac's "
-            f"~/.ssh/config does not define it, and an alias resolves only on the Mac whose ~/.ssh/config defines "
-            f"it. If this Mac, {here}, is the one whose keychain the work needs, you are already on it: run this "
-            f"again with --target {here}. Otherwise run it on the Mac that sends work to the second Mac"))
     if destination and names_mac(view.get("hostname"), here):
         return Location("here", here, note=f"{destination} resolves to this Mac")
     if destination:
@@ -146,7 +137,7 @@ def locate(here, view, target=None, there=None, unreached=None):
         return Location(refusal=f"{target} is neither this Mac, {here}, nor {deferred}, the Mac that sends work here: "
                                 f"run this on {target} itself, in a shell there")
     return Location(refusal=(
-        f"this Mac, {here}, names no second Mac ({remote.HOST_VARIABLE} is unset or none, and its ~/.ssh/config "
-        f"defines neither {' nor '.join(remote.ALIASES)}), and its device record does not mark it as one. Run this "
+        f"this Mac, {here}, sends work to no Mac ({remote.NO_MAC}), and its device record does not mark it as a "
+        f"Mac that takes another's. Run this "
         f"on the Mac that sends work to the second Mac, or, if this Mac is the one the work needs, with --target "
         f"{here}"))

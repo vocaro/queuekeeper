@@ -68,22 +68,14 @@ import zlib
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, processes, resources, git_state
 from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, sibling_variables, unlocked_screen
+from . import farm
 from .resources import BUSY, FREE_WAIT
 
-# The SSH destinations tried in turn when neither --host nor QUEUEKEEPER_OFFLOAD_HOST names one: aliases the
-# owner defines in ~/.ssh/config, so no machine's name is written here. build-host, which the owner
-# defined first, stays the default; second-mac serves once it is the one defined (guides/shared-host.md,
-# Earlier names).
-DEFAULT_HOST = "build-host"
-ALIASES = (DEFAULT_HOST, "second-mac")
-# The variable that names the second Mac's SSH destination, or none for this Mac only, and the name it
-# had until vocaro-engineering#58, which queuekeeper refuses (named_host).
-HOST_VARIABLE, OLD_HOST_VARIABLE = "QUEUEKEEPER_OFFLOAD_HOST", "VOCARO_BUILD_HOST"
-GATE_HOSTS = "QUEUEKEEPER_GATE_HOSTS"
-GATE_HOSTS_FILE = "gate-hosts"
-# The second Mac's directory for repositories and checkouts, relative to its home. It keeps the build
-# host's name: another would leave every warm checkout there behind.
-ROOT = "Development/build-host"
+# What says there is no Mac to send work to.
+NO_MAC = "the farm has no Mac that takes work now (add one with `qk farm add DESTINATION`, or resume one)"
+# A farm Mac's directory for repositories and checkouts, relative to its home. `qk farm add` moves there what a
+# Mac kept under its earlier name (offload_host.adopt_root).
+ROOT = "Development/queuekeeper-farm"
 # Persistent checkouts per project on the second Mac; more wait for one to come free.
 CHECKOUTS = 4
 # Where each dispatch's own results stay, unique to it, under .build/queuekeeper/remote/DISPATCHES/NAME/,
@@ -109,8 +101,7 @@ SLEEP_NOTED = 5
 NO_ANSWER = re.compile(r"^ssh: connect to host \S+ port \d+: Operation timed out$")
 NO_BANNER = "Connection timed out during banner exchange"
 TIMED_OUT = re.compile(r"^Connection to \S+ port \d+ timed out$")
-# The refs that carry a commit into the second Mac's repositories. They keep the build host's name, as
-# ROOT does: those repositories hold refs under it, which another name would orphan.
+# The refs that carry a commit into a farm Mac's repositories.
 REF = "refs/queuekeeper/hosts/"
 # Seconds a push of one commit to the second Mac may take before queuekeeper stops it. A push there once ran
 # for over 50 minutes before it failed (vocaro-engineering#67); one that sends only what the second
@@ -228,7 +219,7 @@ MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 # How messages name this Mac beside the second Mac.
 HERE = "this Mac"
 # Where a runtime image copied from the other Mac is staged until simctl adds it: on the second Mac
-# under ~/Development/build-host, and here among the toolkit's durable state, never in /private/tmp,
+# under ~/Development/queuekeeper-farm, and here among the toolkit's durable state, never in /private/tmp,
 # which a reboot empties. Both are relative to the Mac's home.
 RUNTIME_STAGING = f"{ROOT}/runtimes"
 LOCAL_RUNTIME_STAGING = "Library/Application Support/queuekeeper/runtimes"
@@ -583,64 +574,46 @@ def no_toolkit(host, status, detail):
 
 
 def configured():
-    """The second Mac that `qk run` and `qk admit` send work to, or None for this Mac only.
-
-    QUEUEKEEPER_OFFLOAD_HOST names it, and `none` turns it off (named_host). Otherwise it is the ssh alias
-    that ~/.ssh/config defines (alias).
-    """
-    host = named_host()
-    if host is not None:
-        return None if host.strip().lower() in {"", "none", "off"} else host
-    return alias()
+    """The Mac that `qk run` and `qk admit` send work to, as its SSH destination, or None for this Mac only: the
+    first of the farm's Macs that takes work now (farm.destinations)."""
+    return next(iter(farm.destinations()), None)
 
 
 def gate_hosts():
-    """Ordered SSH aliases for queue gates, or None to use the ordinary single remote."""
-    host = named_host()
-    if host is not None and host.strip().lower() in {"", "none", "off"}: return None
-    path = offload_host.admission_directory() / GATE_HOSTS_FILE
-    try:
-        value = path.read_text(encoding="utf-8")
-        source = str(path)
-    except FileNotFoundError:
-        value = os.environ.get(GATE_HOSTS)
-        if value is None: return None
-        source = GATE_HOSTS
-    except UnicodeError as error:
-        raise ValueError(f"{path} must be UTF-8 text") from error
-    hosts = tuple(part.strip() for part in value.split(","))
-    if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", alias) or alias.lower() in {"none", "off"}
-           for alias in hosts) or len(hosts) != len(set(hosts)):
-        raise ValueError(f"{source} needs a comma-separated list of distinct SSH aliases")
-    return hosts
+    """The SSH destinations of the farm's Macs that take work now, in order, for queue gates; or None while the farm
+    has at most one, which the ordinary offer serves."""
+    hosts = farm.destinations()
+    return hosts if len(hosts) > 1 else None
 
 
-def named_host():
-    """What QUEUEKEEPER_OFFLOAD_HOST names, or None when it is unset.
-
-    VOCARO_BUILD_HOST, its name until vocaro-engineering#58, is refused when it is set at all, beside the
-    new name too: it may say none, to keep work on this Mac, and ignoring it would let that work go to the
-    second Mac. Only what reads the new name refuses it, before it chooses a Mac or reaches the second
-    Mac, so a command that does neither, or names its destination with --host, runs as it did."""
-    if OLD_HOST_VARIABLE in os.environ:
-        raise ValueError(f"{OLD_HOST_VARIABLE} was {HOST_VARIABLE}'s name until vocaro-engineering#58, and is no "
-                         f"longer read: unset it, and set {HOST_VARIABLE} instead, to the same value (none keeps work "
-                         "on this Mac). queuekeeper chooses no Mac while it is set, since ignoring it could send work to the "
-                         "second Mac that it was meant to keep here (guides/shared-host.md, Earlier names)")
-    return os.environ.get(HOST_VARIABLE)
+def chosen(host=None):
+    """The SSH destination a command acts on: the farm's Mac that host names, or host itself, a destination; without
+    one, the first Mac that takes work now. No Mac at all is refused."""
+    found = farm.destination(host) if host else configured()
+    if found is None: raise ValueError(f"no Mac to reach: {NO_MAC}")
+    return found
 
 
-def alias():
-    """The first alias of ALIASES that ~/.ssh/config defines, or None: `ssh -G` resolves an undefined
-    alias to its own name."""
-    for name in ALIASES:
+def join(host):
+    """What the Mac at the SSH destination host says of itself as it joins the farm, its earlier directory moved to
+    ROOT (offload_host.join). One that cannot be reached, or cannot run the toolkit, raises as ask does."""
+    return ask(host, {"join": {"root": ROOT}}, timeout=CENSUS_TIMEOUT)
+
+
+def running_on(host):
+    """The journaled runs this Mac sent to host whose dispatcher here still runs, by journal, as far as this Mac's
+    records say."""
+    found = []
+    try: paths = sorted(dispatch_records().glob("*.json"))
+    except OSError: return found
+    for path in paths:
         try:
-            resolved = subprocess.run(["ssh", "-G", name], capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.SubprocessError):
-            return None
-        names = [line.split(None, 1)[1] for line in resolved.stdout.splitlines() if line.startswith("hostname ")]
-        if resolved.returncode == 0 and names and names[0] != name: return name
-    return None
+            record = json.loads(path.read_text())
+            if record["host"] == host and not dispatcher_dead(record["pid"], record["start"]):
+                found.append(str(record["journal"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return found
 
 
 def environment():
@@ -2308,7 +2281,7 @@ def main(root, config, args):
         if receipt.get("keptResults"):
             print(f"Its results are kept in {store(root) / receipt['commit'] / receipt['keptResults']}")
         return 0
-    host = args.host or named_host() or alias() or DEFAULT_HOST
+    host = chosen(args.host)
     if args.operation == "setup":
         return setup(host, args.formulae, args.imports or [], args.check, args.runtimes, root=root)
     if args.operation == "foreground": return foreground_report(host)
@@ -2380,8 +2353,7 @@ def foreground_lane(root, config, lane, arguments, expect):
     cannot be reached stops the lane."""
     host = configured()
     if host is None:
-        raise ValueError(f"{lane} takes a Mac's screen, and no second Mac is configured ({HOST_VARIABLE}, or the ssh "
-                         f"alias {' or '.join(ALIASES)} in ~/.ssh/config) to run it on. This Mac's foreground needs a "
+        raise ValueError(f"{lane} takes a Mac's screen, and {NO_MAC}. This Mac's foreground needs a "
                          "window the owner agrees first (guides/shared-host.md, Attended Mac sessions), then "
                          f"`qk run --here {lane}`")
     print(f"queuekeeper: {lane} takes a Mac's screen, so it runs on the second Mac, under its foreground", file=sys.stderr,
@@ -3195,8 +3167,7 @@ class Offer:
                 self.status = "no other build Mac is eligible" if fallback else BUSY
                 return self.status
             if not fallback:
-                print(f"queuekeeper: {self.name} not run: no second Mac is configured ({HOST_VARIABLE}, or the ssh alias "
-                      f"{' or '.join(ALIASES)} in ~/.ssh/config)", file=sys.stderr, flush=True)
+                print(f"queuekeeper: {self.name} not run: {NO_MAC}", file=sys.stderr, flush=True)
             self.status = "no second Mac is configured" if fallback else BUSY
             return self.status
         try:
@@ -4058,8 +4029,7 @@ def compare_hosts():
     report = {"host": host, "errors": [], "unchecked": [],
               "pythonCrashes": {"local": offload_host.python_crash_reports()}}
     if host is None:
-        report["unchecked"].append(f"no second Mac is configured ({HOST_VARIABLE}, or the ssh alias "
-                                   f"{' or '.join(ALIASES)} in ~/.ssh/config), so this Mac was compared with none")
+        report["unchecked"].append(f"{NO_MAC}, so this Mac was compared with none")
         return report
     # Measured first, so that it also says why a second Mac that cannot be reached is not.
     reached = report["connection"] = connection(host)

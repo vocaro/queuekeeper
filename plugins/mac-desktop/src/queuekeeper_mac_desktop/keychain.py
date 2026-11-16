@@ -116,7 +116,7 @@ def find(path, target, ask, out):
     ask = ask or (lambda destination, request: remote.ask(destination, request, ASK_TIMEOUT))
     here, view, session = host_context.this_mac(), host_context.second_mac(), host_context.session()
     there = unreached = info = None
-    if view["destination"] and not view["undefinedAlias"] and target != here \
+    if view["destination"] and target != here \
             and not host_context.names_mac(view["hostname"], here):
         try:
             remote.reachable(view["destination"])

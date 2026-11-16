@@ -30,6 +30,7 @@ SPELLED_BEFORE_QUEUED = mq.preflight_before_queued
 import host_isolation
 from host_isolation import stretched
 
+from test_support import farm as farm_fixture
 from test_support.queue import (BRITISH, LANE, GIT_ALONE, Fixture, Replaced, accepting_lane_key,
                                 local_toolkit, never_exec, run)
 
@@ -2785,9 +2786,9 @@ class SecondMacReading(unittest.TestCase):
         self.assertEqual(mq.remote.dispatched(root, "gate", since), "fake-mac")
         # One lost, with no receipt, ran on the configured second Mac.
         dispatch("20270115T080200Z-4", None)
-        with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "configured-mac"}):
+        with farm_fixture.only("configured-mac"):
             self.assertEqual(mq.remote.dispatched(root, "gate", since), "configured-mac")
-        with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"}):
+        with farm_fixture.only():
             self.assertIsNone(mq.remote.dispatched(root, "gate", since))
         self.assertIsNone(mq.remote.dispatched(root, "other-lane", since))
 
@@ -8729,9 +8730,7 @@ class PooledStack(Fixture):
             (mq.lane_wait.second_mac("gate-03"), ("--if-free",), "gate-03"),
         ]:
             record = {"mac": mac, "kind": None, "pid": os.getpid(), "admitted": False}
-            with self.subTest(mac=mac), patch.dict(os.environ, {
-                mq.remote.HOST_VARIABLE: "build-host", mq.remote.GATE_HOSTS: "build-host,gate-03,gate-04"
-            }), patch.object(worker.queue, "waiting", return_value=waiting), \
+            with self.subTest(mac=mac), farm_fixture.only("build-host", "gate-03", "gate-04"), patch.object(worker.queue, "waiting", return_value=waiting), \
                     patch.object(mq.lane_wait, "current", return_value=record), \
                     patch.object(mq, "Stack") as stack:
                 worker.stack(worker, config, ["gate"], "head", [], threading.Event(), set())

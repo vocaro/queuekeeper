@@ -702,8 +702,8 @@ and has more memory and disk; its screen stays the owner's, which is a separate 
 ([attended Mac sessions](#attended-mac-sessions)). queuekeeper, not the session, chooses the Mac;
 configuration calls sending work there offloading it. The second Mac runs work under its own heavy-work
 admission: each host's queue sees that host's load, so the second Mac is no private slot pool.
-`qk remote` reaches it by the SSH alias `build-host`, or `second-mac`; `--host` or
-`QUEUEKEEPER_OFFLOAD_HOST` names another destination. Until 2026-10-28 the second Mac was the build
+`qk remote` reaches the first Mac of [the farm](#the-farms-macs) that takes work now; `--host`
+names another, by its farm name or an SSH destination. Until 2026-10-28 the second Mac was the build
 host. Records made until then, measurements among them, keep that name, and queuekeeper refuses the
 configuration's earlier names ([earlier names](#earlier-names)).
 
@@ -739,33 +739,51 @@ not a reason to keep the lane here. A lane group runs its lanes under its one ad
 Mac, so a group stays here when it, or one of its lanes, says `here`. `"buildHost"`, which once
 marked a lane for the second Mac, is refused, true or false ([earlier names](#earlier-names)).
 
-#### Build Macs for merge queue gates
+#### The farm's Macs
 
-To add Macs, give each a distinct SSH alias and follow [the build host setup](#setting-up-the-second-mac).
-On the Mac that starts the queue workers, put the existing build Mac and the new ones in
-`~/Library/Application Support/queuekeeper/gate-hosts`, in the order the queue should try
-them. The file holds a comma-separated list of aliases.
+The owner lists the Macs that take work, on the Mac that sends it, with `qk farm`. The list is
+`~/Library/Application Support/queuekeeper/farm.json`; nothing else names a Mac, neither an SSH
+alias queuekeeper looks for nor a variable.
 
-```text
-build-host,gate-03,gate-04
+```sh
+python3 scripts/qk farm add DESTINATION [--name NAME]  # reach the Mac over SSH and add it, last in the order
+python3 scripts/qk farm list [--json]                  # the Macs, in the order work is offered to them
+python3 scripts/qk farm rename NAME NEW
+python3 scripts/qk farm pause NAME [--reason WHY]      # offer it no work until it is resumed
+python3 scripts/qk farm resume NAME
+python3 scripts/qk farm remove NAME                    # take it out of the farm for good
 ```
 
-Workers started from Terminal, Codex, or the signed LaunchAgent read the same file for that account.
-When the file is missing, an existing `QUEUEKEEPER_GATE_HOSTS` export still works. With neither setting,
-the queue uses this Mac and the existing offload host. An explicit `HEAVY_SLOT_DIR` namespace reads
-its own `gate-hosts` file from that directory.
+`add` reaches the Mac at DESTINATION, a host name, `USER@HOST` or an alias of `~/.ssh/config`, and
+asks it for its hardware UUID and its local host name. The Mac is called by that name unless
+`--name` gives another, and `rename` changes it later; the hardware UUID, which the list keeps, is
+what tells one Mac from another, so this Mac, and a Mac the farm already has under another name or
+destination, are refused. A Mac that kept its repositories and checkouts in
+`~/Development/build-host` has that directory moved to `~/Development/queuekeeper-farm` as it is
+added, with its checkouts repaired where they now are, unless a run holds one of them or the new
+directory exists already, which `add` says. Then follow [the setup](#setting-up-the-second-mac)
+for it, with `--host NAME`.
 
-The queue includes this Mac as the local fallback automatically. Each alias must identify a different physical Mac.
+A paused Mac stays in the list and is offered nothing; what runs there runs on. A removed Mac is
+gone from the list, so nothing is offered to it and nothing reports it, while what earlier runs
+recorded of it stays. `remove` refuses while a run this Mac sent there still has its dispatcher
+here, and says to pause the Mac meanwhile. Its checkouts stay on it until they are deleted there.
+
+Workers started from Terminal, Codex, or the signed LaunchAgent read the same file for that account.
+An explicit `HEAVY_SLOT_DIR` namespace reads its own `farm.json` from that directory. A farm with
+no Mac that takes work keeps every lane on this Mac.
+
+With two Macs or more that take work, merge queue gates are offered to each in the list's order.
+The queue includes this Mac as the local fallback automatically.
 For each eligible lane, the queue tries the first listed Mac with capacity. If that Mac is
 unreachable or declines before the work starts, the queue tries the next alias. When all decline,
 the ordinary gate can take local admission and rechecks the build Macs while waiting. A
 misconfigured host stops the offer with its diagnosis, and an interrupted connection to a run
 that may have started yields no verdict.
 
-The list applies to merge queue gates. Foreground lanes use the designated foreground Mac, and
-standalone `qk run` and commands that act on one remote, such as `qk remote setup`, use the
-ordinary offload host or their explicit host. `QUEUEKEEPER_OFFLOAD_HOST=none` disables offloading,
-including the queue list.
+The whole list serves merge queue gates. Foreground lanes, a standalone `qk run` and commands
+that act on one Mac, such as `qk remote setup`, use the first Mac that takes work now, or the one
+`--host` names.
 
 #### Check gate placement without running a gate
 
@@ -1082,9 +1100,8 @@ entry back. One that got no admission or ended unmeasured ends the lane with its
 Mac was sent run no second one. Before this, a bare `qk run gate` passed or failed by the Mac it
 landed on ([vocaro/queuekeeper#19](https://github.com/vocaro/queuekeeper/issues/19)).
 `qk run --serial GROUP`, a group's serial reference, runs here too, and nested work runs inside
-the admission it inherits, here. `qk run` looks for the second Mac only when
-`QUEUEKEEPER_OFFLOAD_HOST` names one or `~/.ssh/config` defines the alias `build-host` or
-`second-mac`, which `ssh -G` reports; `QUEUEKEEPER_OFFLOAD_HOST=none` keeps every lane here. A
+the admission it inherits, here. `qk run` offers a lane to the second Mac only when [the farm](#the-farms-macs) has a Mac
+that takes work now; with none, every lane stays here. A
 lane's results come back to `.build/queuekeeper/remote/LANE/` when it ran on the second Mac and
 stay in `.build/queuekeeper/LANE/` when it ran here. One run at a time holds that directory: a run
 that starts here while another run of the lane from the same checkout is still running here keeps
@@ -1330,7 +1347,7 @@ toolkit's `origin/main`, not the commit checked out. A queue's gate uses a clean
 
 `qk remote` takes no slot here. It pushes the commit, and the toolkit commit that runs it, by git
 over SSH and without hooks to bare repositories under
-`~/Development/build-host` on the second Mac, so nothing reaches GitHub. The connection that
+`~/Development/queuekeeper-farm` on the second Mac, so nothing reaches GitHub. The connection that
 prepares them first lists the processes earlier runs left running there
 ([processes left over from runs](#processes-left-over-from-runs)). There `offload_host.py`,
 sent along and run by the host's own Python, takes one of four persistent checkouts of the
@@ -1364,7 +1381,7 @@ checkout is in use: cleaning them, not waiting, is what frees them. It once said
 checkout was in use, while two of build-host's four EPUBLib checkouts sat changed by a run and it
 turned down 300 offers in a night (2026-11-12;
 [vocaro/queuekeeper#44](https://github.com/vocaro/queuekeeper/issues/44)). Once it is read, remove it with
-`git --git-dir ~/Development/build-host/repositories/NAME.git worktree remove --force PATH`.
+`git --git-dir ~/Development/queuekeeper-farm/repositories/NAME.git worktree remove --force PATH`.
 
 #### A named checkout slot
 
@@ -1749,14 +1766,14 @@ Limits:
 - **Time.** All of the update's steps share one 40 s deadline, the fetch at most 25 s of it. Each git
   step runs in a process group of its own, which the deadline kills.
 - **No prompts.** Git cannot prompt: `GIT_TERMINAL_PROMPT=0`, and ssh runs in BatchMode. The fetch
-  uses `~/Development/build-host/git-credentials`, as runs do, when that file exists.
-- **Concurrency.** A lock under `~/Development/build-host` lets one connection update at a time. Any
+  uses `~/Development/queuekeeper-farm/git-credentials`, as runs do, when that file exists.
+- **Concurrency.** A lock under `~/Development/queuekeeper-farm` lets one connection update at a time. Any
   other connection skips the update while it is held.
 - **Failures.** Whatever goes wrong becomes the answer's reason, so the update never ends or fails
   the connection that prepares a dispatch.
 
 `tests/host_isolation.py` replaces `cli.fix_hosts`, so no doctor test updates the real second Mac,
-and a test that dispatches uses a fake second Mac or `QUEUEKEEPER_OFFLOAD_HOST=none`.
+and a test's farm is its own namespace's, with no Mac unless the test writes a fake one into it.
 
 ### Setting up the second Mac
 
@@ -1771,14 +1788,17 @@ The owner prepares the second Mac once:
 
 1. Turn on Remote Login (System Settings, General, Sharing) and add this Mac's public key to the
    second Mac's `~/.ssh/authorized_keys`.
-2. Name it in this Mac's `~/.ssh/config`, so that `ssh build-host true` succeeds without a
-   prompt. queuekeeper takes the alias `second-mac` as well, in place of `build-host` or on the same
-   `Host` line beside it, and tries `build-host` first ([earlier names](#earlier-names)):
+2. Name it in this Mac's `~/.ssh/config`, under any alias, so that `ssh ALIAS true` succeeds
+   without a prompt, and add it to the farm by that alias ([the farm's Macs](#the-farms-macs)):
 
    ```
-   Host build-host
+   Host ALIAS
        HostName NAME.local
        AddressFamily inet
+   ```
+
+   ```sh
+   python3 scripts/qk farm add ALIAS
    ```
 
    `AddressFamily inet` keeps ssh to IPv4. The build host's `.local` name resolved first to an
@@ -1874,7 +1894,7 @@ The owner prepares the second Mac once:
    copy is the runtime's own disk image, as `xcrun simctl runtime list -j` names it (for a
    cryptex, the one disk image of its listed size in its asset's `Restore` folder), so a beta
    build Apple no longer serves comes across exactly. It goes over the second Mac's SSH
-   connection, never GitHub, into `~/Development/build-host/runtimes` on the second Mac or
+   connection, never GitHub, into `~/Development/queuekeeper-farm/runtimes` on the second Mac or
    `~/Library/Application Support/queuekeeper/runtimes` on this Mac, outside
    `/private/tmp`, which a reboot empties. Only an image of exactly its listed size is added,
    with `xcrun simctl runtime add --move`, which leaves no second copy. A copy that fails or is
@@ -1900,12 +1920,12 @@ The owner prepares the second Mac once:
    and those dependencies (on all of the owner's repositories, if the owner prefers not to
    update it as dependencies change), and write it on the second Mac, readable only by its
    owner, as one line `https://USER:TOKEN@github.com` in
-   `~/Development/build-host/git-credentials`. In zsh, without leaving the token in the shell's
+   `~/Development/queuekeeper-farm/git-credentials`. In zsh, without leaving the token in the shell's
    history:
 
    ```
    read -rs "token?Token: "; echo
-   (umask 077; printf 'https://USER:%s@github.com\n' "$token" > ~/Development/build-host/git-credentials)
+   (umask 077; printf 'https://USER:%s@github.com\n' "$token" > ~/Development/queuekeeper-farm/git-credentials)
    unset token
    ```
 
@@ -1954,15 +1974,14 @@ python3 scripts/qk remote admit -- python3 scripts/qk keychain check [--keychain
 
 - names this Mac, by the LocalHostName that receipts record, and the kind of session it runs in;
 - finds the target, by default the second Mac, through the resolver `qk remote` uses
-  (`QUEUEKEEPER_OFFLOAD_HOST`, else the alias `~/.ssh/config` defines), and asks it for its name and
+  (the first Mac of the farm that takes work now), and asks it for its name and
   the keychain file over the same bounded SSH connection `qk doctor` makes, which never asks for
-  a password. On the second Mac, where neither names a destination, its device record, which
+  a password. On the second Mac, whose own farm has no Mac, its device record, which
   every `qk remote` run makes defer physical devices to the sending Mac, marks it as the target,
   so the owner there gets the local command and no alias. `--target MAC` names this Mac or the
   second Mac by its LocalHostName;
 - refuses, saying what to do instead, when the target is neither this Mac nor the second Mac,
-  when the destination is `build-host` or `second-mac` and `ssh -G` gives it back unchanged, an
-  alias this Mac's `~/.ssh/config` does not define, when this Mac names no second Mac and is not
+  when this Mac sends work to no Mac and is not
   one, and when the second Mac cannot be reached;
 - checks that the keychain file is on the target under its exact name. `--keychain` takes a path
   or a file name in `~/Library/Keychains`, which it never completes, so `login.keychain-d` is
@@ -2041,11 +2060,11 @@ on the second Mac. It establishes the Mac and the target as `recover` does and r
 directly there:
 
 - refuses, having asked for nothing, on any Mac but the one the sending Mac reached, without a
-  terminal to ask at, or before `qk remote` has made its root, `~/Development/build-host`;
+  terminal to ask at, or before `qk remote` has made its root, `~/Development/queuekeeper-farm`;
 - asks for the login password at the second Mac's own prompt, which shows nothing typed, and
   tries it with `SecKeychainUnlock` on `~/Library/Keychains/login.keychain-db`, three times at most;
   a password that does not unlock it is not kept;
-- keeps the one that does in `~/Development/build-host/keychain-password`, written whole and
+- keeps the one that does in `~/Development/queuekeeper-farm/keychain-password`, written whole and
   readable and writable only by the owner's account, beside `git-credentials`;
 - sets that keychain to lock neither after a time nor on sleep (`security set-keychain-settings`
   with no options), so that the owner's own sessions there keep it unlocked too, and prints its
@@ -2088,14 +2107,6 @@ shell that still uses one meant something by it, and ignoring it would move that
   rebases onto main.
 - `qk run --build-host-only`: refused, beside any other flag too; use `--offload-only`.
 - `devices recover --build-host-unchecked REASON`: refused; use `--offload-unchecked REASON`.
-- `VOCARO_BUILD_HOST`, set to anything, even beside `QUEUEKEEPER_OFFLOAD_HOST`: refused; set
-  `QUEUEKEEPER_OFFLOAD_HOST` instead, to the same value. Ignored, it could send work to the second Mac
-  that it was meant to keep here, so queuekeeper refuses it wherever it reads `QUEUEKEEPER_OFFLOAD_HOST`: before
-  `qk run` or `qk admit` chooses a Mac, in `qk remote run`, `admit` or `setup`
-  without `--host`, and in `qk doctor`. A command that neither chooses a Mac nor reaches the second Mac, such as a `self`
-  lane, a lane that says `here`, `qk run --here` or `qk spelling`, never read it and runs as
-  before, so the second Mac's own `qk run --here` does not stop for it. Every other lane, a
-  light one included, chooses a Mac, and is refused while it is set.
 
 Nothing reads the other renamed words, so nothing refuses them: a receipt's `ranOn`, now
 `second Mac`, and a device record's recovery, which records its check of the second Mac as
@@ -2103,19 +2114,17 @@ Nothing reads the other renamed words, so nothing refuses them: a receipt's `ran
 data already on disk, and such a receipt still counts: `qk remote passed` and `eng release` read
 the second Mac's receipts by commit, whatever their `ranOn`.
 
-These keep the build host's name:
+Since the farm has had a list of its own ([the farm's Macs](#the-farms-macs)), queuekeeper no
+longer reads what named the one second Mac, and does not refuse it either: the variables
+`QUEUEKEEPER_OFFLOAD_HOST`, `VOCARO_BUILD_HOST` and `QUEUEKEEPER_GATE_HOSTS`, the `gate-hosts`
+file, and the SSH aliases `build-host` and `second-mac`, which are now aliases like any other. A
+Mac those named takes work again once `qk farm add` has added it, and until then every lane runs
+on this Mac. `~/Development/build-host` on such a Mac, which held its bare repositories, its warm
+checkouts, the runtime staging and `git-credentials`, is moved to `~/Development/queuekeeper-farm`
+as the Mac is added.
 
-- The SSH alias `build-host`, which the owner defines in `~/.ssh/config`, stays the default, since
-  the toolkit cannot change that file. queuekeeper also takes `second-mac`, as `Host second-mac` in place
-  of `Host build-host` or both on one line, and without `--host` or `QUEUEKEEPER_OFFLOAD_HOST` uses the
-  first of the two that `ssh -G` resolves.
-- `~/Development/build-host` on the second Mac, which holds its bare repositories, its warm
-  checkouts, the runtime staging and `git-credentials`: another name would make every checkout
-  cold and leave the token behind.
-- `refs/queuekeeper/hosts/`, under which a push carries a commit into those repositories: another
-  prefix would orphan the refs already there, such as one a lost run left.
-- Records made before the rename, measurements, logs and receipts among them, and the guides'
-  dated observations, which keep their words.
+Records made before a rename, measurements, logs and receipts among them, and the guides' dated
+observations, keep their words.
 
 ## Reclaiming disk space
 
@@ -2252,7 +2261,7 @@ cannot see a child that moved to a session of its own and was orphaned between t
 before work is sent there: `qk remote`, and `qk run` for a lane it sends there, print what the
 search finds in the connection that prepares the second Mac's repositories, before anything is
 pushed, and `qk doctor` lists it under `offload`, `leftovers`. A process is listed when it is
-the account's, runs from a checkout there (`~/Development/build-host/checkouts`), the
+the account's, runs from a checkout there (`~/Development/queuekeeper-farm/checkouts`), the
 temporary directory (`$TMPDIR`) or a simulator's device directory, and no live run accounts for
 it:
 

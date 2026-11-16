@@ -368,7 +368,7 @@ as before, when:
 
 Under #231 the rerun-alone check runs on each failed half, so the failure that splits a half is a
 real one, and a half whose real failure blames one entry sends it back instead of splitting (below).
-With [a build Mac list](shared-host.md#build-macs-for-merge-queue-gates), the newer half uses the
+With [two farm Macs or more](shared-host.md#the-farms-macs), the newer half uses the
 first listed Mac that can start it. The older half runs on this Mac.
 
 **Entries that arrive during a gate gate on top of it.** While a batch gates, the worker checks every
@@ -393,7 +393,7 @@ canceling its lanes and queuing its entries again:
 - the queue holds; or
 - the worker stops or moves to a newer toolkit.
 
-With [a build Mac list](shared-host.md#build-macs-for-merge-queue-gates), the stack can run on any
+With [two farm Macs or more](shared-host.md#the-farms-macs), the stack can run on any
 build Mac besides the one running the primary's final lane. When that lane runs remotely, the stack
 can also run on this Mac. A gate that uses the foreground waits its turn.
 
@@ -1211,8 +1211,7 @@ app="$HOME/Applications/Queuekeeper.app"
 ```
 
 For each queue, run the following from its main checkout using the Python installation and
-`PATH` its worker should use after login. The generated file also keeps `QUEUEKEEPER_OFFLOAD_HOST` if
-set. Use the account's normal Git and SSH configuration for credentials.
+`PATH` its worker should use after login. Use the account's normal Git and SSH configuration for credentials.
 
 ```sh
 draft="$(mktemp)"

@@ -126,7 +126,7 @@ class Fixture(unittest.TestCase):
         guard = patch.object(mq, "execute", never_exec)
         guard.start()
         self.addCleanup(guard.stop)
-        patcher = patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none", **GIT_ALONE,
+        patcher = patch.dict(os.environ, {**GIT_ALONE,
                                           "QUEUEKEEPER_ROOT": str(local_toolkit()[0])})
         patcher.start()
         self.addCleanup(patcher.stop)

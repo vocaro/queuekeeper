@@ -41,8 +41,8 @@ FAKE_SSH = '#!/bin/sh\nprintf "ssh\\n" >> "$FAKE_LOG"\nfor a in "$@"; do printf 
            'for last in "$@"; do :; done\nFAKE_MAC="$FAKE_REMOTE_MAC" exec /bin/sh -c "$last"\n'
 
 
-def view(destination=None, hostname=None, undefined=False, deferred=None):
-    return {"destination": destination, "hostname": hostname, "undefinedAlias": undefined, "deferredTo": deferred}
+def view(destination=None, hostname=None, deferred=None):
+    return {"destination": destination, "hostname": hostname, "deferredTo": deferred}
 
 
 WORKSTATION_VIEW = view("build-host", f"{SECOND}.local")
@@ -90,14 +90,11 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(host_context.audit_flags())
             self.assertEqual(host_context.session(environment={})["kind"], "unknown")
 
-    def test_the_second_mac_is_the_canonical_resolver_s_and_an_undefined_alias_is_named(self):
+    def test_the_second_mac_is_the_canonical_resolver_s(self):
         cases = [
             # The workstation: the alias its ~/.ssh/config defines resolves to the second Mac's name.
             ("build-host", {"hostname": f"{SECOND}.local"}, {}, view("build-host", f"{SECOND}.local")),
-            # A shell on the second Mac that names the workstation's alias: ssh -G gives it back unchanged.
-            ("build-host", {"hostname": "build-host"}, {"deferredTo": WORKSTATION},
-             view("build-host", "build-host", True, WORKSTATION)),
-            # A destination that is a host name of its own is no undefined alias.
+            # A destination that is a host name of its own.
             ("mac.example", {"hostname": "mac.example"}, {}, view("mac.example", "mac.example")),
             (None, {}, {"deferredTo": WORKSTATION}, view(deferred=WORKSTATION)),
         ]
@@ -128,17 +125,15 @@ class LocateTests(unittest.TestCase):
         self.assertEqual(host_context.locate(SECOND, view("build-host", f"{SECOND.upper()}.local")).where, "here")
         self.assertEqual(host_context.locate(SECOND, WORKSTATION_VIEW, there=SECOND).where, "here")
 
-    def test_a_wrong_host_or_an_alias_this_mac_does_not_define_is_refused_with_what_to_do(self):
+    def test_a_wrong_host_is_refused_with_what_to_do(self):
         cases = [
-            # The owner's shell is on the second Mac and names the workstation's alias.
-            (SECOND, view("build-host", "build-host", True, WORKSTATION), None, None, ["ssh -G build-host", f"--target {SECOND}"]),
             # On the second Mac, asked for the workstation's keychain: no alias here reaches it.
             (SECOND, SECOND_VIEW, WORKSTATION, None, [f"run this on {WORKSTATION}", "does not resolve here"]),
             (SECOND, SECOND_VIEW, THIRD, None, [f"run this on {THIRD}"]),
             # On the workstation, asked for a Mac that is neither it nor the second Mac.
             (WORKSTATION, WORKSTATION_VIEW, THIRD, SECOND, [f"{THIRD} is neither this Mac", f"run this on {THIRD}"]),
             # A Mac that names no second Mac and is none.
-            (THIRD, view(), None, None, ["names no second Mac", f"--target {THIRD}"]),
+            (THIRD, view(), None, None, ["sends work to no Mac", f"--target {THIRD}"]),
         ]
         for here, seen, target, there, said in cases:
             with self.subTest(here=here, target=target):
@@ -318,9 +313,8 @@ class RecoverTests(unittest.TestCase):
         self.assertNotIn("build-host", said)
         self.assertIn(f"from {WORKSTATION}, as qk remote runs work on {SECOND}", said)
 
-    def test_a_wrong_host_or_an_alias_this_mac_does_not_define_is_refused_before_anything_is_asked(self):
-        for here, seen, target in [(SECOND, view("build-host", "build-host", True, WORKSTATION), None),
-                                   (SECOND, SECOND_VIEW, WORKSTATION), (THIRD, view(), None)]:
+    def test_a_wrong_host_is_refused_before_anything_is_asked(self):
+        for here, seen, target in [(SECOND, SECOND_VIEW, WORKSTATION), (THIRD, view(), None)]:
             with self.subTest(here=here, target=target):
                 status, said, asked, checked, read_here = self.recover(here, seen, target, local=self.present(here))
                 self.assertEqual((status, asked, checked, read_here), (2, [], 0, 0))
@@ -684,11 +678,10 @@ class KeepUnlockedTests(unittest.TestCase):
         self.assertEqual((status, commands, requests), (0, [], [{"root": remote.ROOT, "mac": SECOND}]), said)
         self.assertIn(f"from {WORKSTATION}, as qk remote runs work on {SECOND}", said)
 
-    def test_a_wrong_host_or_an_alias_this_mac_does_not_define_is_refused_before_anything_is_asked(self):
+    def test_a_wrong_host_is_refused_before_anything_is_asked(self):
         # The last: an alias that reaches the workstation itself, which is no second Mac.
         present = {"mac": WORKSTATION, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
-        for here, seen in [(SECOND, view("build-host", "build-host", True, WORKSTATION)), (THIRD, view()),
-                           (WORKSTATION, view("build-host", f"{WORKSTATION}.local"))]:
+        for here, seen in [(THIRD, view()), (WORKSTATION, view("build-host", f"{WORKSTATION}.local"))]:
             with self.subTest(here):
                 status, said, commands, requests = self.from_mac(here, seen, local=present)
                 self.assertEqual((status, commands, requests), (2, [], []))

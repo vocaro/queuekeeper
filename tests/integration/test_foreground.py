@@ -37,13 +37,6 @@ class Later(datetime):
 SECOND = "Trevors-MacBook-Pro-715"
 
 
-def setUpModule():
-    # No test reaches the owner's second Mac, its device record or this host's admission.
-    environment = patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"})
-    environment.start()
-    unittest.addModuleCleanup(environment.stop)
-
-
 class SlotTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -844,7 +837,7 @@ class RoutingTests(unittest.TestCase):
         # With no second Mac to send it to, it stops and says how this Mac's foreground is used instead.
         status, error = self.qk("run", "voiceover-mac")
         self.assertEqual(status, 2)
-        self.assertIn("no second Mac is configured", error)
+        self.assertIn("the farm has no Mac that takes work now", error)
         self.assertIn("window the owner agrees first", error)
         self.assertFalse(self.during.exists())
 
@@ -855,7 +848,6 @@ class RoutingTests(unittest.TestCase):
         away = remote.Unreachable("build-host cannot be reached: ssh: connect to host mac.local port 22: Host is down",
                                   "wake build-host and connect it to the network")
         with patch.object(remote, "configured", return_value="build-host"), \
-                patch.object(remote, "named_host", return_value="build-host"), \
                 patch.object(remote, "execute", side_effect=away):
             ran = {"lane": self.qk("run", "voiceover-mac"), "remote lane": self.qk("remote", "run", "voiceover-mac"),
                    "admit": self.qk("remote", "admit", "--foreground", "--", "true")}
@@ -879,7 +871,6 @@ class RoutingTests(unittest.TestCase):
     def test_a_misconfigured_second_mac_offers_no_window_here(self):
         stop = remote.Misconfigured("build-host could not run the toolkit", "give it a python3")
         with patch.object(remote, "configured", return_value="build-host"), \
-                patch.object(remote, "named_host", return_value="build-host"), \
                 patch.object(remote, "execute", side_effect=stop):
             status, error = self.qk("remote", "admit", "--foreground", "--", "true")
         self.assertEqual(status, 2)

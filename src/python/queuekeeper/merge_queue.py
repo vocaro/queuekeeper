@@ -1586,7 +1586,7 @@ class Queue:
                                  capture_output=True, text=True, timeout=10)
         if checked.returncode: raise ValueError(f"the queue launcher needs an Apple signing identity: {checked.stderr.strip()}")
         toolkit = Path(text(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
-        variables = {key: os.environ[key] for key in ("PATH", "QUEUEKEEPER_OFFLOAD_HOST") if key in os.environ}
+        variables = {key: os.environ[key] for key in ("PATH",) if key in os.environ}
         log = str(self.directory / "worker.log")
         return {
             "Label": self.launcher_label(),

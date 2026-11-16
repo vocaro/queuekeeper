@@ -35,6 +35,7 @@ from queuekeeper import disk as disk_module, extensions
 from queuekeeper import waiting
 import host_isolation
 from host_isolation import stretched
+from test_support import farm as farm_fixture
 
 # Each test in a process of its own under `qk unittest`'s default module split: most are in RemoteTests, and
 # whole, the module's real queuekeeper runs against a fake second Mac took 450 s on a quiet host, bounding the toolkit's
@@ -594,7 +595,7 @@ class RemoteTests(unittest.TestCase):
             "FAKE_PORT": str(self.listener.getsockname()[1]),
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home),
             "FAKE_SHELL": str(tools / "login-shell"), "HEAVY_SLOT_DIR": str(base / "slots"),
-            "QUEUEKEEPER_GATE_LOCK_FILE": str(base / "gate"), "HEAVY_POLL_SECONDS": "0.01", "QUEUEKEEPER_OFFLOAD_HOST": "fake",
+            "QUEUEKEEPER_GATE_LOCK_FILE": str(base / "gate"), "HEAVY_POLL_SECONDS": "0.01",
             # Both Macs have spare capacity by their CPU whatever this Mac's real reading, so that queuekeeper's choice of a
             # Mac is the test's to set: FAKE_BUSY_LIMIT loads the second Mac, HEAVY_BUSY_LIMIT this Mac (#168, #200).
             "HEAVY_BUSY_LIMIT": "1000",
@@ -606,6 +607,8 @@ class RemoteTests(unittest.TestCase):
             "FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-unlocked.plist")})
         (base / "second-mac-tmp").mkdir()
         self.environment.start()
+        # The farm of this test's namespace has one Mac, the fake one.
+        farm_fixture.write("fake")
         # Python writes bytecode, as it does for a session that sets no PYTHONDONTWRITEBYTECODE and in
         # the second Mac's login shell, which never has this Mac's environment.
         os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
@@ -614,8 +617,6 @@ class RemoteTests(unittest.TestCase):
             os.environ.pop(name, None)
         os.environ.pop("QUEUEKEEPER_RESOURCE_TOKEN", None)
         os.environ.pop("DEVELOPER_DIR", None)
-        # QUEUEKEEPER_OFFLOAD_HOST's old name, which queuekeeper refuses, is set only where a test sets it.
-        os.environ.pop(remote.OLD_HOST_VARIABLE, None)
         os.environ.pop("FAKE_BUSY_LIMIT", None)
         # A run on the real second Mac hands its git the credential file through these.
         for key in [key for key in os.environ if key.startswith("GIT_CONFIG_") and key != "GIT_CONFIG_GLOBAL"]:
@@ -2973,7 +2974,7 @@ class RemoteTests(unittest.TestCase):
                       (self.project / ".build/queuekeeper/remote/gate/run.log").read_text())
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
         self.assertEqual(self.qk("remote", "passed", "gate")[0], 0)
-        # The new names run without a refusal: QUEUEKEEPER_OFFLOAD_HOST, and a lane with no buildHost.
+        # A lane with no buildHost runs without a refusal.
         self.assertNotIn("vocaro-engineering#58", error)
 
     def test_every_heavy_lane_goes_to_the_second_mac_unless_it_says_why_and_each_receipt_says_where_it_ran(self):
@@ -4533,10 +4534,7 @@ exec {shlex.quote(real)} "$@"
             if host == "away": raise away
             return reach(host)
 
-        directory = offload_host.admission_directory()
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / remote.GATE_HOSTS_FILE).write_text("away, fake\n")
-        with patch.dict(os.environ, {remote.QUEUE_GATE: "1"}), \
+        with farm_fixture.only("away", "fake"), patch.dict(os.environ, {remote.QUEUE_GATE: "1"}), \
                 patch.object(remote, "reachable", side_effect=reachable) as asked:
             status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, 0, output + error)
@@ -4556,10 +4554,10 @@ exec {shlex.quote(real)} "$@"
         self.assertIn("it waits behind exclusive work holding the host", error)
         self.assertFalse((self.checkout(0) / offload_host.DECLINED_NOTE).exists() and
                          git(self.checkout(0), "status", "--porcelain", "--", offload_host.DECLINED_NOTE))
-        with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"}):
+        with farm_fixture.only():
             status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn("queuekeeper: gate not run: no second Mac is configured", error)
+        self.assertIn("queuekeeper: gate not run: the farm has no Mac that takes work now", error)
         # An offline second Mac declines too, and the caller runs the lane here itself.
         with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
             status, output, error = self.run_here("--offload-only", "gate")
@@ -4615,80 +4613,6 @@ exec {shlex.quote(real)} "$@"
                          "second Mac")
         self.assertNotIn("vocaro-engineering#58", error)
 
-    def test_the_old_name_of_the_offload_variable_is_refused_before_eng_chooses_a_mac(self):
-        refused = ("VOCARO_BUILD_HOST was QUEUEKEEPER_OFFLOAD_HOST's name until vocaro-engineering#58, and is no longer "
-                   "read: unset it, and set QUEUEKEEPER_OFFLOAD_HOST instead, to the same value (none keeps work on this "
-                   "Mac). queuekeeper chooses no Mac while it is set, since ignoring it could send work to the second Mac "
-                   "that it was meant to keep here (guides/shared-host.md, Earlier names)")
-        receipt = lambda place: json.loads((self.project / ".build/queuekeeper" / place / "source.json").read_text())
-        # The positive control: the new name alone names the second Mac, or none, without a word.
-        for new, found in [("fake", "fake"), ("none", None)]:
-            with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": new}), contextlib.redirect_stderr(StringIO()) as said:
-                self.assertEqual(remote.configured(), found)
-            self.assertEqual(said.getvalue(), "")
-        probe = self.probe()
-        # Set at all, alone or beside the new name, either way they point, the old name is refused wherever
-        # queuekeeper would read the new one: before it chooses a Mac for a lane or a command, in qk remote without
-        # --host, and in qk doctor. Nothing runs on either Mac.
-        for new, old in [(None, "fake"), (None, "none"), (None, ""), ("fake", "none"), ("none", "fake"), ("fake", "fake")]:
-            with self.subTest(new=new, old=old), patch.dict(os.environ, {"VOCARO_BUILD_HOST": old}):
-                if new is None: os.environ.pop("QUEUEKEEPER_OFFLOAD_HOST")
-                else: os.environ["QUEUEKEEPER_OFFLOAD_HOST"] = new
-                with self.assertRaises(ValueError) as raised: remote.configured()
-                self.assertEqual(str(raised.exception), refused)
-                for arguments in (["gate"], ["--offload-only", "gate"], ["--if-free", "gate"], ["pair"]):
-                    status, output, error = self.run_here(*arguments)
-                    self.assertEqual((status, error), (2, f"queuekeeper: {refused}\nqk run {arguments[-1]}: not run (exit 2); no "
-                                                          "tests ran\n"), output + error)
-                # Plain qk admit chooses a Mac now too (the owner's decision, 2026-11-07), and --verify with it.
-                for options in (["--verify"], []):
-                    status, output, error = self.admit_in(self.project, *options, "--", *probe)
-                    self.assertEqual((status, error), (2, f"queuekeeper: {refused}\n"), output + error)
-                for arguments in (["remote", "run", "check"], ["remote", "admit", "--", *probe], ["doctor"]):
-                    status, output, error = self.qk(*arguments)
-                    self.assertEqual((status, output, error), (2, "", f"queuekeeper: {refused}\n"), arguments)
-                for place in ["gate", "pair", "check", "admit", "remote/gate", "remote/pair", "remote/check",
-                              "remote/admit"]:
-                    self.assertFalse((self.project / ".build/queuekeeper" / place).exists(), place)
-                self.assertFalse(self.ran.exists())
-                self.assertFalse((self.home / remote.ROOT).exists())
-        # A command that neither chooses a Mac nor reaches the second Mac never read it, and runs as before:
-        # a self lane, a lane that says here, --here, and qk admit --here, all here; and qk remote
-        # given --host, there.
-        with patch.dict(os.environ, {"VOCARO_BUILD_HOST": "none"}):
-            for arguments, status, place in [(["own"], 0, "own"), (["build"], 0, "build"), (["--here", "gate"], 0, "gate")]:
-                result = self.run_here(*arguments)
-                self.assertEqual(result[0], status, result)
-                self.assertEqual(receipt(place)["ranOn"], "this Mac")
-                self.assertNotIn("vocaro-engineering#58", result[2])
-            status, output, error = self.admit_in(self.project, "--here", "--", *probe)
-            self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
-            status, output, error = self.qk("remote", "run", "--host", "fake", "check")
-            self.assertEqual(status, 0, output + error)
-            self.assertEqual((receipt("remote/check")["ranOn"], receipt("remote/check")["host"]), ("second Mac", "fake"))
-            self.assertNotIn("vocaro-engineering#58", error)
-
-    def test_without_the_variable_the_second_mac_is_the_alias_that_ssh_config_defines(self):
-        del os.environ["QUEUEKEEPER_OFFLOAD_HOST"]
-        # build-host, the default, comes first; second-mac serves once it is the one defined.
-        for defined, found in [("build-host second-mac", "build-host"), ("second-mac", "second-mac"),
-                               ("build-host", "build-host"), ("", None)]:
-            with self.subTest(defined), patch.dict(os.environ, {"FAKE_ALIASES": defined}):
-                self.assertEqual(remote.configured(), found)
-        with patch.dict(os.environ, {"FAKE_ALIASES": "second-mac"}):
-            status, output, error = self.run_here("gate")
-            self.assertEqual(status, 0, output + error)
-            receipt = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
-            self.assertEqual((receipt["ranOn"], receipt["host"]), ("second Mac", "second-mac"))
-            # qk remote names it too when no --host is given.
-            self.assertEqual(self.qk("remote", "run", "check")[0], 0)
-            self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/check/source.json").read_text())
-                             ["host"], "second-mac")
-        # With neither alias defined, qk remote tries the default.
-        self.assertEqual(self.qk("remote", "run", "check")[0], 0)
-        self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/check/source.json").read_text())["host"],
-                         "build-host")
-
     def test_a_lane_stays_here_when_asked_or_when_it_says_why_or_without_a_second_mac(self):
         # Uncommitted work would go as a snapshot, so none of these stays here for want of a commit.
         (self.project / "notes.txt").write_text("uncommitted\n")
@@ -4697,10 +4621,9 @@ exec {shlex.quote(real)} "$@"
             with self.subTest(arguments):
                 self.assertEqual(self.run_here(*arguments)[0], 0)
         self.assertEqual((receipt()["ranOn"], receipt()["hereBecause"]), ("this Mac", "--here"))
-        for setting in [{"QUEUEKEEPER_OFFLOAD_HOST": "none"}, {}]:
-            with self.subTest(setting), patch.dict(os.environ, setting):
-                # Without QUEUEKEEPER_OFFLOAD_HOST, `ssh -G` names no alias of the second Mac.
-                if not setting: del os.environ["QUEUEKEEPER_OFFLOAD_HOST"]
+        # A farm with no Mac, and one whose only Mac is paused, send nothing.
+        for macs in [(), (farm_fixture.mac("fake", state="paused"),)]:
+            with self.subTest(macs), farm_fixture.only(*macs):
                 self.assertEqual(self.run_here("gate")[0], 0)
                 self.assertEqual(receipt()["hereBecause"], "no second Mac is configured")
         self.assertFalse((self.home / remote.ROOT).exists())
@@ -6584,10 +6507,11 @@ class SecondMacDoctorTests(unittest.TestCase):
         self.environment = patch.dict(os.environ, {
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(home),
             "FAKE_SHELL": str(tools / "login-shell"), "FAKE_XCODES": str(self.xcodes), "FAKE_MAC": "here",
-            "QUEUEKEEPER_OFFLOAD_HOST": "fake", "FAKE_SLOTS": str(base / "second-mac-slots"),
+            "FAKE_SLOTS": str(base / "second-mac-slots"),
             "FAKE_GATE": str(base / "second-mac-gate"), "FAKE_TMPDIR": str(base / "second-mac-tmp"),
             devices.OVERRIDE: str(self.record_here.path), "FAKE_DEVICE_RECORD": str(self.record_there.path)})
         self.environment.start()
+        farm_fixture.use(self, "fake")
         os.environ.pop("DEVELOPER_DIR", None)
         # Both Macs select the same Xcode 27.1, with the same runtimes.
         self.release = self.xcode("Xcode.app", here=(RELEASE, RUNTIMES), there=(RELEASE, RUNTIMES))
@@ -6770,10 +6694,10 @@ class SecondMacDoctorTests(unittest.TestCase):
         self.assertIn("ssh reached fake but could not log in: someone@fake: Permission denied", found["errors"][0])
         self.assertIn("fake's default Xcode, its Xcode at this Mac's developer directory and its simulator runtimes",
                       found["unchecked"][0])
-        with patch.dict(os.environ, {"QUEUEKEEPER_OFFLOAD_HOST": "none"}):
+        with farm_fixture.only():
             status, found = self.doctor()
         self.assertEqual((status, found["host"], found["errors"]), (0, None, []), found)
-        self.assertIn("no second Mac is configured", found["unchecked"][0])
+        self.assertIn("the farm has no Mac that takes work now", found["unchecked"][0])
 
     def test_first_addresses_that_keep_each_connection_waiting_are_an_error(self):
         # As until 2026-10-27: the .local name resolved first to a link-local IPv6 address that never
@@ -7582,8 +7506,9 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.environment = patch.dict(os.environ, {
             "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "FAKE_HOME": str(self.home), "HOME": str(self.local),
             "FAKE_SHELL": str(tools / "login-shell"), "FAKE_RUNTIMES": str(self.runtimes), "FAKE_MAC": "here",
-            "FAKE_DEVELOPER": str(self.developer), "QUEUEKEEPER_OFFLOAD_HOST": "fake"})
+            "FAKE_DEVELOPER": str(self.developer)})
         self.environment.start()
+        farm_fixture.use(self, "fake")
         for name in ("DEVELOPER_DIR", "FAKE_CUT", "FAKE_ADD_FAIL"): os.environ.pop(name, None)
         # The real volumes' free space decides nothing here; the space test sets its own margin.
         self.patches = [patch.object(remote, "developer_directory", return_value=str(self.developer)),
@@ -8634,33 +8559,16 @@ class ToolkitUpdateTests(unittest.TestCase):
 
 
 class GateHostPoolTests(unittest.TestCase):
-    def test_workers_read_the_account_file_without_a_shell_export(self):
-        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder + "/other"}), \
-                patch.object(offload_host.pwd, "getpwuid") as account:
-            for key in ("HEAVY_SLOT_DIR", remote.HOST_VARIABLE, remote.GATE_HOSTS):
-                os.environ.pop(key, None)
-            account.return_value.pw_dir = folder
-            path = Path(folder) / offload_host.ADMISSION_STATE / remote.GATE_HOSTS_FILE
-            self.assertIsNone(remote.gate_hosts())
-            path.parent.mkdir(parents=True)
-            path.write_text("build-host, gate-03, gate-04\n")
-            self.assertEqual(remote.gate_hosts(), ("build-host", "gate-03", "gate-04"))
-            with patch.dict(os.environ, {remote.GATE_HOSTS: "old-export"}):
-                self.assertEqual(remote.gate_hosts(), ("build-host", "gate-03", "gate-04"))
-                path.unlink()
-                self.assertEqual(remote.gate_hosts(), ("old-export",))
-
-    def test_a_present_invalid_file_is_reported_by_path(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
-            "HEAVY_SLOT_DIR": directory, remote.HOST_VARIABLE: "build-host", remote.GATE_HOSTS: "old-export"
-        }):
-            path = Path(directory) / remote.GATE_HOSTS_FILE
-            for invalid in (b"", b"build-host,build-host", b"\xff"):
-                with self.subTest(invalid=invalid):
-                    path.write_bytes(invalid)
-                    with self.assertRaisesRegex(ValueError, re.escape(str(path))): remote.gate_hosts()
-            with patch.dict(os.environ, {remote.HOST_VARIABLE: "none"}):
-                self.assertIsNone(remote.gate_hosts())
+    def test_the_pool_is_the_farm_s_macs_that_take_work_once_there_are_two(self):
+        with farm_fixture.only():
+            self.assertEqual((remote.configured(), remote.gate_hosts()), (None, None))
+        with farm_fixture.only("studio"):
+            self.assertEqual((remote.configured(), remote.gate_hosts()), ("studio", None))
+        with farm_fixture.only("studio", farm_fixture.mac("mini", state="paused"), "rented"):
+            self.assertEqual((remote.configured(), remote.gate_hosts()), ("studio", ("studio", "rented")))
+        # A paused first Mac leaves the next the one a plain offer goes to.
+        with farm_fixture.only(farm_fixture.mac("studio", state="paused"), "mini"):
+            self.assertEqual((remote.configured(), remote.gate_hosts()), ("mini", None))
 
     def test_the_pool_can_use_an_extra_slot_when_admission_limits_allow_it(self):
         capacity = {"slots": 1, "slotsMax": 2, "busy": [0], "cpuBusy": 10, "busyLimit": 70,
@@ -8671,18 +8579,6 @@ class GateHostPoolTests(unittest.TestCase):
         for changed in ({"busy": [0, 1]}, {"cpuBusy": 80}, {"sinceAdmission": 2}, {"memory": 2}):
             with self.subTest(changed=changed):
                 self.assertIsNotNone(remote.spare({**capacity, **changed}, "gate-03", extra=True))
-
-    def test_the_pool_is_opt_in_and_requires_distinct_ssh_aliases(self):
-        with patch.dict(os.environ, {remote.HOST_VARIABLE: "build-host"}):
-            self.assertIsNone(remote.gate_hosts())
-            for value in ("", "build-host,", "build-host,build-host", "-bad", "build-host,none"):
-                with self.subTest(value=value), patch.dict(os.environ, {remote.GATE_HOSTS: value}):
-                    with self.assertRaisesRegex(ValueError, remote.GATE_HOSTS): remote.gate_hosts()
-            with patch.dict(os.environ, {remote.GATE_HOSTS: "build-host, gate-03, gate-04"}):
-                self.assertEqual(remote.gate_hosts(), ("build-host", "gate-03", "gate-04"))
-                self.assertEqual(remote.configured(), "build-host")
-                with patch.dict(os.environ, {remote.HOST_VARIABLE: "none"}):
-                    self.assertIsNone(remote.gate_hosts())
 
     def test_a_later_mac_takes_the_gate_and_preparation_stays_with_its_mac(self):
         attempts = []
@@ -8713,8 +8609,7 @@ class GateHostPoolTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__), patch.object(remote, "reachable") as reachable, \
                     patch.object(remote, "capacity_there", return_value=free), \
                     patch.object(remote, "execute", side_effect=error), \
-                    patch.dict(os.environ, {remote.HOST_VARIABLE: "build-host", remote.GATE_HOSTS: "gate-03,gate-04"}), \
-                    contextlib.redirect_stderr(StringIO()):
+                    farm_fixture.only("gate-03", "gate-04"), contextlib.redirect_stderr(StringIO()):
                 if isinstance(error, remote.Lost):
                     with self.assertRaises(remote.Lost):
                         remote.first(".", {}, "gate", [], None, queue_gate=True, exclude="gate-03")
@@ -8851,8 +8746,8 @@ class OfferAgainTests(unittest.TestCase):
 class EarlierNameTests(unittest.TestCase):
     def test_the_source_names_each_old_name_only_where_it_refuses_it(self):
         # vocaro-engineering#58 removed these, and nothing reads one as it did: every line of the toolkit's
-        # source that names one is part of its refusal. The names that stay, such as the alias build-host,
-        # the directory Development/build-host and refs/queuekeeper/hosts/, are not among them.
+        # source that names one is part of its refusal. The directory Development/build-host, which `qk farm
+        # add` moves, is not among them.
         old = re.compile(r"buildHost|BUILD_HOST|OLD_HOST_VARIABLE|build_host|build-host-only|build-host-unchecked")
         named = {}
         for path in sorted(path for source in source_paths(config.TOOLKIT_ROOT) for path in source.rglob("*.py")):
@@ -8864,12 +8759,6 @@ class EarlierNameTests(unittest.TestCase):
                 'marked = [name for name, lane in lanes.items() if isinstance(lane, dict) and "buildHost" in lane]',
                 'raise ValueError(f"queuekeeper.json gives {named} \\"buildHost\\", which vocaro-engineering#58 '
                 'removed: every heavy "'],
-            "remote.py": [
-                'HOST_VARIABLE, OLD_HOST_VARIABLE = "QUEUEKEEPER_OFFLOAD_HOST", "VOCARO_BUILD_HOST"',
-                "VOCARO_BUILD_HOST, its name until vocaro-engineering#58, is refused when it is set at all, beside the",
-                "if OLD_HOST_VARIABLE in os.environ:",
-                'raise ValueError(f"{OLD_HOST_VARIABLE} was {HOST_VARIABLE}\'s name until vocaro-engineering#58, and '
-                'is no "'],
             "cli.py": [
                 'run.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)',
                 "if args.build_host_only:",

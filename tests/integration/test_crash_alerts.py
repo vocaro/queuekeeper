@@ -640,7 +640,7 @@ class LaneTests(HostTest):
         with patch.object(remote, "execute", side_effect=lambda root, config, host, work, **options:
                           sent.append(work) or 0), \
                 patch.object(remote, "offering_here", side_effect=lambda here, send: send()):
-            self.assertEqual(self.qk("remote", "admit", "--foreground", "--app", "EPUBLib", "--app", "EPUBLibUITests",
+            self.assertEqual(self.qk("remote", "admit", "--host", "studio", "--foreground", "--app", "EPUBLib", "--app", "EPUBLibUITests",
                                       "--", "true")[0], 0)
         self.assertEqual(sent, [["admit", "--foreground", "--app", "EPUBLib", "--app", "EPUBLibUITests", "--", "true"]])
 

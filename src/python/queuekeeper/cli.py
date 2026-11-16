@@ -13,7 +13,7 @@ import sys
 import time
 import traceback
 
-from . import pins, __version__, budgets, checkout, disk, docs, extensions, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+from . import pins, __version__, budgets, checkout, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_spelling_warning, legacy_unread_warning, project_checkout, \
@@ -388,10 +388,7 @@ def host_screen(args):
     second Mac is read over SSH by the same code, so either Mac's answer is read, never assumed."""
     if args.host and not args.remote: raise ValueError("--host names the second Mac that --remote reads")
     if args.remote:
-        host = args.host or remote.configured()
-        if host is None:
-            raise ValueError(f"no second Mac is configured ({remote.HOST_VARIABLE}, or the ssh alias "
-                             f"{' or '.join(remote.ALIASES)} in ~/.ssh/config)")
+        host = remote.chosen(args.host)
         try:
             found = remote.screen_there(host)
         except remote.Unavailable as error:
@@ -1111,9 +1108,8 @@ def perform(argv, report):
         "one Mac has is deleted there when no simulator but Xcode's defaults uses it, and otherwise its disk image "
         "is copied over SSH to the Mac that lacks it; it exits 0 only when both list the same")
     for choice in (remote_run, remote_admit, remote_setup, remote_foreground):
-        choice.add_argument("--host", help=f"the second Mac's SSH destination (default: {remote.HOST_VARIABLE}, "
-                            f"else the ~/.ssh/config alias {' or '.join(remote.ALIASES)} that is defined, else "
-                            f"{remote.DEFAULT_HOST})")
+        choice.add_argument("--host", help="the farm's Mac to reach, by its name in `qk farm list`, or an SSH "
+                            "destination (default: the first Mac of the farm that takes work now)")
     for choice in (remote_run, remote_admit):
         choice.add_argument("--device", action="append", metavar="KEY", help="a physical device the run uses, "
                             "reserved in this Mac's device record and held, with no run active, by the session "
@@ -1175,6 +1171,8 @@ def perform(argv, report):
         "was checked")
     spell.add_argument("paths", nargs="*", help="files or directories; untracked files under them are read too")
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
+    commands.add_parser("farm", help="the Macs beside this one that take work: list, add DESTINATION [--name NAME], "
+                        "rename NAME NEW, pause NAME, resume NAME, remove NAME")
     commands.add_parser("visibility", help="turn the features that show the queue to its owner on and off: "
                         "status, enable FEATURE, disable FEATURE")
     hosts = commands.add_parser("host", help="read a Mac's state as queuekeeper reads it")
@@ -1182,7 +1180,8 @@ def perform(argv, report):
     screen = reads.add_parser("screen", help="say whether a Mac's console screen is locked, from both keys the "
         "IORegistry holds and the console user, and exit 0 unlocked, 1 locked or 2 unknown")
     screen.add_argument("--remote", action="store_true", help="read the second Mac's screen over SSH")
-    screen.add_argument("--host", help="the second Mac's SSH name, when not the configured one")
+    screen.add_argument("--host", help="the farm's Mac to read, by its name in `qk farm list`, or an SSH "
+                        "destination, when not the first that takes work now")
     screen.add_argument("--json", action="store_true", help="print the reading as JSON")
     for name, (described, add_arguments, _) in extensions.HOST_READS.items():
         add_arguments(reads.add_parser(name, help=described))
@@ -1199,6 +1198,8 @@ def perform(argv, report):
     if argv[first:first + 1] == ["progress"]: return run_progress.main(argv[first + 1:], project)
     if argv[first:first + 1] and argv[first] in extensions.COMMANDS:
         return extensions.COMMANDS[argv[first]][1](argv[first + 1:], project)
+    # The farm's Macs are the owner's and this Mac's, and no project's.
+    if argv[first:first + 1] == ["farm"]: return farm.main(argv[first + 1:])
     # The switch is the owner's and this Mac's, and reads no project.
     if argv[first:first + 1] == ["visibility"]: return visibility.main(argv[first + 1:])
     # Recovery, like the admission log, covers the whole host and reads no project.

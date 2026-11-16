@@ -4,7 +4,7 @@ A rented Apple Silicon Mac with SSH can serve as an overflow host for the merge 
 queue already sends the exact batch and toolkit commits, asks the destination to admit the
 lane, and collects its verdict and results. A persistent Mac can keep build products and
 simulator templates warm across runs. The worker still owns the push to `main`.
-[Build Mac configuration](shared-host.md#build-macs-for-merge-queue-gates)
+[The farm's Macs](shared-host.md#the-farms-macs)
 
 For a first dedicated-host comparison, the 32 GB Scaleway M4 costs €6.96 for its minimum
 24-hour lease. NoMac offers shorter metered sessions when overflow is intermittent. Compare both

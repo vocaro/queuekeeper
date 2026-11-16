@@ -205,8 +205,8 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   `.build/queuekeeper/LANE/results`, leaves a group's files on the second Mac: read the variable.
 - `qk remote admit` sets no `QUEUEKEEPER_RESULTS_DIR` and brings no files back, and what its command
   writes inside the checkout is gone by the next look (2026-11-05). Write what you need outside
-  the checkout, such as `~/Development/build-host/NAME/`, and copy it with
-  `scp 'build-host:Development/build-host/NAME/*' DEST`, or make the work a lane.
+  the checkout, such as `~/Development/queuekeeper-farm/NAME/`, and copy it with
+  `scp 'HOST:Development/queuekeeper-farm/NAME/*' DEST`, or make the work a lane.
 
 ## Waiting for the foreground
 

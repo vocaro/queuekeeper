@@ -3,6 +3,27 @@
 The build farm is the Mac you work on plus any other Mac you can reach over SSH. Queuekeeper decides
 which one runs each lane.
 
+## Adding and removing Macs
+
+The farm's Macs are the ones you add, on the Mac you work on. Nothing else names one: Queuekeeper
+looks for no SSH alias and reads no variable.
+
+```sh
+qk farm add DESTINATION [--name NAME]   # reach the Mac over SSH and add it, last in the order
+qk farm list                            # the Macs, in the order work is offered to them
+qk farm rename NAME NEW
+qk farm pause NAME [--reason WHY]       # offer it no work until `qk farm resume NAME`
+qk farm remove NAME                     # take it out for good
+```
+
+- **Names.** A Mac is called by its own local host name unless you give another, and you can rename
+  it later. Records keep its hardware identifier, so a renamed Mac's history stays its own.
+- **Pausing.** A paused Mac stays listed and is offered nothing. What already runs there finishes.
+- **Removing.** A removed Mac is no longer offered work or reported anywhere. Removal is refused
+  while work this Mac sent is still running there. Its checkouts stay on it until you delete them.
+- **One Mac, once.** Adding is refused for the Mac you are on and for a Mac the farm already has
+  under another name or address.
+
 ## Which Mac runs a lane
 
 A lane is offered first to another Mac and runs on the starting Mac when the other has no room. When

@@ -241,7 +241,6 @@ class HostIsolationTests(unittest.TestCase):
         self.assertEqual({name: environment[name] for name in ("PATH", "HOME", "HEAVY_SLOT_DIR")},
                          {"PATH": "/bin", "HOME": "/h", "HEAVY_SLOT_DIR": "/mine"})
         self.assertEqual(environment["QUEUEKEEPER_GATE_LOCK_FILE"], host_isolation.GATE)
-        self.assertEqual(environment["QUEUEKEEPER_OFFLOAD_HOST"], "none")
         self.assertEqual(host_isolation.reduced()["HEAVY_SLOT_DIR"], os.environ["HEAVY_SLOT_DIR"])
         # Each variable it carries is the one this process runs with.
         self.assertEqual({name: os.environ.get(name) for name in host_isolation.ISOLATION}, host_isolation.ISOLATION)
@@ -291,16 +290,16 @@ class HostIsolationTests(unittest.TestCase):
         token = '{"schemaVersion": 1, "locks": []}'
         source = str(Path(resources.__file__).resolve().parents[1])
         record = host_isolation.remote.lane_wait.VARIABLE
-        environment = {**os.environ, resources.TOKEN: token, "QUEUEKEEPER_OFFLOAD_HOST": "build-host", record: "gate.json"}
+        environment = {**os.environ, resources.TOKEN: token, "HEAVY_SLOT_DIR": "/the/host's", record: "gate.json"}
         seen = {}
         for mode, imports in (("isolated", "import host_isolation; "), ("control", "")):
             code = (f"import os, sys; sys.path.insert(0, sys.argv[1]); {imports}"
-                    "print(os.environ.get(sys.argv[2]), os.environ.get('QUEUEKEEPER_OFFLOAD_HOST'), os.environ.get(sys.argv[3]))")
+                    "print(os.environ.get(sys.argv[2]), os.environ.get('HEAVY_SLOT_DIR') == \"/the/host's\", os.environ.get(sys.argv[3]))")
             result = subprocess.run([sys.executable, "-c", code, source, resources.TOKEN, record], env=environment, cwd=TESTS,
                                     capture_output=True, text=True, timeout=stretched(60))
             self.assertEqual(result.returncode, 0, result.stderr)
             seen[mode] = result.stdout.strip()
-        self.assertEqual(seen, {"isolated": "None none None", "control": f"{token} build-host gate.json"})
+        self.assertEqual(seen, {"isolated": "None False None", "control": f"{token} True gate.json"})
 
     def test_a_run_outside_any_admission_and_outside_qk_unittest_is_told_so_once_and_runs_on(self):
         # On 2026-11-13 a bare `python3 -m unittest` took no slot while the host's were all held (#36). The warning

@@ -13,9 +13,9 @@ vocaro-engineering#200), so its tests run inside the gate's admission, and a tes
 otherwise reuse the host's admission rather than take one in its own namespace, and an exclusive one
 would be refused inside it.
 
-Every lane is admitted and offered to the second Mac first, so QUEUEKEEPER_OFFLOAD_HOST is set to none: no lane a
-test runs, in this process or a child, reaches the real second Mac through the ssh alias. A test of the
-second Mac names its fake one, or clears the variable to read the alias, itself.
+Every lane is admitted and offered to the farm's Macs first, and the farm is the namespace's own (queuekeeper.farm),
+so it has no Mac: no lane a test runs, in this process or a child, reaches a real Mac of the owner's farm. A test of
+a farm Mac writes its fake one into its farm (test_support.farm).
 
 `qk doctor` also fixes both Macs itself: it evens out their runtimes, deleting or copying them, and
 shuts down stale pool simulators (cli.fix_hosts). Most doctor tests compare this Mac with the real
@@ -116,11 +116,11 @@ atexit.register(lambda owner=os.getpid(): os.getpid() == owner and shutil.rmtree
 GATE = str(ROOT / "gate")
 os.environ.update(HEAVY_SLOT_DIR=str(ROOT / "slots"), QUEUEKEEPER_GATE_LOCK_FILE=GATE)
 os.environ.pop(resources.TOKEN, None)
-os.environ["QUEUEKEEPER_OFFLOAD_HOST"] = "none"
-os.environ.pop(remote.GATE_HOSTS, None)
 # A suite the second Mac runs for a dispatch, as the toolkit's gate is, inherits the dispatch's variables, which make every
 # receipt a test writes say it ran there; a test of a dispatch sets them itself.
 for variable in (remote.DISPATCHER, "QUEUEKEEPER_DEVICE_LEASE"): os.environ.pop(variable, None)
+# Nor does a Mac a test adds to its farm take a hardware UUID the suite was handed for its own (farm.add).
+os.environ.pop(offload_host.HARDWARE_VARIABLE, None)
 # The gate is a lane, so its suite inherits the name of the gate's own wait record: a lane a test runs would report its
 # waits there, into what `qk queue status` says of the gate, and never into its project's record (vocaro-engineering#335).
 os.environ.pop(remote.lane_wait.VARIABLE, None)
@@ -198,7 +198,7 @@ cli.fix_hosts = unfixed
 
 # What this module sets in the environment, which every process a test starts carries when it inherits that environment.
 ISOLATION = {name: os.environ[name] for name in (
-    "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "QUEUEKEEPER_OFFLOAD_HOST", "HEAVY_QUIET_SECONDS",
+    "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
     "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD)}
 

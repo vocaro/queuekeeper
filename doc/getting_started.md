@@ -99,13 +99,12 @@ Do this once you have landed changes on one Mac.
 
 1. On the second Mac, turn on Remote Login and add the first Mac's public key to
    `~/.ssh/authorized_keys`.
-2. On the first Mac, name the second in `~/.ssh/config`, so that `ssh build-host true` succeeds
-   without a prompt:
+2. On the first Mac, add it to the farm by any SSH destination that reaches it without a prompt,
+   a host name or an alias of `~/.ssh/config`. Queuekeeper calls it by its own name unless you
+   give another with `--name`:
 
-   ```
-   Host build-host
-       HostName NAME.local
-       AddressFamily inet
+   ```sh
+   qk farm add NAME.local
    ```
 
 3. Install the tools the second Mac needs, then check both Macs:
@@ -114,6 +113,9 @@ Do this once you have landed changes on one Mac.
    qk remote setup
    qk doctor
    ```
+
+Add more Macs the same way. `qk farm list` shows them in the order work is offered to them, and
+[the build farm](build_farm.md#adding-and-removing-macs) covers renaming, pausing and removing one.
 
 From then on, lanes are offered to the second Mac first and run on the first Mac when the second
 has no room. [The build farm](build_farm.md) explains how the choice is made and how the code gets
