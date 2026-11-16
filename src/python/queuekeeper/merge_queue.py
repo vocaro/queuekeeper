@@ -158,6 +158,8 @@ SHOWN_USERS = 5
 TOOLKIT_VARIABLE = "QUEUEKEEPER_ROOT"
 # What carries a worker's bisect progress to the worker that replaces it on a newer toolkit (Worker.move_to).
 PROGRESS_VARIABLE = "QUEUEKEEPER_QUEUE_PROGRESS"
+# The worker's lock, as a descriptor the worker that replaces it inherits (Worker.move_to, kept_lock).
+LOCK_VARIABLE = "QUEUEKEEPER_QUEUE_LOCK"
 # The file in the queue's directory that names the toolkit commit a worker moved to (Worker.move_to) until the
 # worker started from it finishes a round (Worker.arrived): one that died or held first is not moved to again.
 MOVED = "moved"
@@ -1550,14 +1552,25 @@ class Queue:
         return was
 
     @contextlib.contextmanager
-    def worker(self):
-        """The repository's one worker, or None while another process is it."""
-        with (self.directory / "worker.lock").open("w") as lock:
+    def worker(self, kept=None):
+        """The repository's one worker, or None while another process is it. kept is the lock as a descriptor the
+        worker this process replaces left open for it (Worker.move_to), which is then this worker's: the lock was
+        never free between the two. While the lock is held, lock is its file."""
+        path, lock = self.directory / "worker.lock", None
+        if kept is not None:
+            try:
+                os.set_inheritable(kept, False)
+                if os.path.samestat(os.fstat(kept), os.stat(path)): lock = os.fdopen(kept, "w")
+                else: os.close(kept)
+            except OSError: lock = None  # no descriptor of this process: the lock is taken as by any worker
+        with (lock or path.open("w")) as lock:
             try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 yield False
                 return
-            yield True
+            self.lock = lock
+            try: yield True
+            finally: self.lock = None
 
     def working(self):
         with self.worker() as free: return not free
@@ -2776,6 +2789,14 @@ def carried():
     return progress if isinstance(progress, dict) else None
 
 
+def kept_lock():
+    """The worker's lock that the worker this one replaces left open for it, as its descriptor (Worker.move_to),
+    taken out of the environment so that no lane inherits the name, or None."""
+    kept = os.environ.pop(LOCK_VARIABLE, None)
+    try: return int(kept) if kept else None
+    except ValueError: return None
+
+
 class Removal:
     """The cancel a gate's lanes run with (processes.run): set once cancel is, or once one of the entries ids that the
     gate tests has left the queue, as `qk queue remove` or a branch added again takes it out, which it looks for at
@@ -3125,17 +3146,29 @@ class Worker:
         EPUBLib's worker, from a checkout older than vocaro-engineering#168, landed a commit whose gate lane set
         `wholeHost`, a key the copy accepted, and then held the queue on it, as its own config module refused it,
         until a person resumed it (vocaro-engineering#173). Nothing of a round is in flight here: it runs before
-        the round's entries are touched, so every entry's state is on disk, and the new process takes the worker's
-        lock as this one's closes with the exec. One that returns is a failed exec, which holds."""
+        the round's entries are touched, so every entry's state is on disk, and the new process inherits the worker's
+        lock, which is never free between the two. One that returns is a failed exec, which holds."""
         self.say(f"moving to the toolkit at {head[:12]}, origin/main, from {self.code[:12]}, which this worker was "
                  "started from: the next worker is started from the copy")
         self.drop_stacked("the worker moves to a newer toolkit")
         sys.stdout.flush()
         (self.queue.directory / MOVED).write_text(json.dumps({"from": self.code, "to": head, "at": time.time()}) + "\n")
-        try: execute(self.queue.command(copy), {**environment(), PROGRESS_VARIABLE: json.dumps(self.progress())})
+        # The lock goes with the exec, as a copy of its descriptor that the new process inherits (kept_lock). Closed
+        # with the exec and taken again by the new process, it was free for the seconds Python takes to start, and a
+        # session's `qk land --wait` that looked then started a worker from the shared checkout, which took it: the
+        # moved worker found it taken and exited without a word, and the other read the move as one that had
+        # stopped (EPUBLib's and Pagepour's, 2026-11-15 21:54, vocaro/queuekeeper#158).
+        lock = getattr(self.queue, "lock", None)
+        kept = os.dup(lock.fileno()) if lock is not None else None
+        if kept is not None: os.set_inheritable(kept, True)
+        variables = {**environment(), PROGRESS_VARIABLE: json.dumps(self.progress()),
+                     **({LOCK_VARIABLE: str(kept)} if kept is not None else {})}
+        try: execute(self.queue.command(copy), variables)
         except OSError:
+            if kept is not None: os.close(kept)
             self.unmoved()
             raise
+        if kept is not None: os.close(kept)
         self.unmoved()
         raise RuntimeError(f"the worker could not start itself again from {copy}")
 
@@ -5648,9 +5681,10 @@ def run(root, *, if_waiting=False):
     # Its gate lanes inherit its signal dispositions, which must not depend on whether `qk land` ran as `&`.
     processes.default_background_signals()
     queue = Queue(root)
-    progress, tries = carried(), 0
+    progress, tries, lock = carried(), 0, kept_lock()
     while True:
-        with queue.worker() as free:
+        with queue.worker(lock) as free:
+            lock = None
             if not free: return 0
             if if_waiting and (queue.held() or not queue.waiting()): return 0
             # A gate its worker's crash left running holds a slot and admission this worker needs.

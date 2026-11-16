@@ -5721,6 +5721,7 @@ class ToolkitCopy(Fixture):
                 mq.TOOLKIT_ROOT = self.copy
                 mq.load = self.code_of(self.copy).load
                 os.environ[mq.PROGRESS_VARIABLE] = moved.env[mq.PROGRESS_VARIABLE]
+                os.environ[mq.LOCK_VARIABLE] = moved.env[mq.LOCK_VARIABLE]
 
     def code_of(self, checkout):
         """A toolkit checkout's config module, loaded apart from this process's, as one of the queuekeeper package,
@@ -5763,6 +5764,32 @@ class ToolkitCopy(Fixture):
                       "started from: the next worker is started from the copy", said.getvalue())
         self.assertEqual(json.loads(self.moves[0].env[mq.PROGRESS_VARIABLE]), {"limit": None, "suspects": 0, "no_verdicts": 0})
         self.assertNotIn(mq.PROGRESS_VARIABLE, os.environ)
+
+    def test_the_lock_is_never_free_between_the_worker_and_the_one_that_replaces_it(self):
+        """A session that looked for a worker while the moved one's Python started found none, started its own from
+        the shared checkout, and that one took the lock: the moved worker exited without a word, and the other read
+        the move as one that had stopped (EPUBLib's and Pagepour's, 2026-11-15, vocaro/queuekeeper#158)."""
+        self.advance_origin("landed")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        queue = mq.Queue(self.repo)
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(Replaced) as moved: mq.run(self.repo)
+            kept = int(moved.exception.env[mq.LOCK_VARIABLE])
+            self.assertTrue(os.get_inheritable(kept))
+            # Between the two: another session finds a worker, and one it starts all the same is no worker.
+            self.assertTrue(queue.working())
+            self.assertEqual(mq.run(self.repo), 0)
+            self.assertEqual(self.state(identifier)["state"], "queued")
+            # The one that replaces it is the worker, by the lock it inherits, and lands the entry.
+            mq.TOOLKIT_ROOT = self.copy
+            mq.load = self.code_of(self.copy).load
+            os.environ.update({name: moved.exception.env[name] for name in (mq.PROGRESS_VARIABLE, mq.LOCK_VARIABLE)})
+            self.assertEqual(mq.run(self.repo), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn(mq.LOCK_VARIABLE, os.environ)
+        self.assertFalse(queue.working())
+        with self.assertRaises(OSError): os.fstat(kept)
 
     def test_a_worker_started_from_the_copy_stays(self):
         """The negative control: the toolkit at origin is the code the worker runs, so it does not move."""
@@ -6093,10 +6120,13 @@ class ToolkitsOwnWorker(Fixture):
             except Replaced as moved:
                 self.moves.append(moved)
                 self.assertEqual(moved.command, mq.Queue(self.repo).command(self.copy))
-                if not self.follow: return None
+                if not self.follow:
+                    os.close(int(moved.env[mq.LOCK_VARIABLE]))  # as the process's end closes the lock it inherited
+                    return None
                 mq.TOOLKIT_ROOT = self.copy
                 mq.load = self.code_of(self.copy).load
                 os.environ[mq.PROGRESS_VARIABLE] = moved.env[mq.PROGRESS_VARIABLE]
+                os.environ[mq.LOCK_VARIABLE] = moved.env[mq.LOCK_VARIABLE]
 
     def code_of(self, checkout):
         """A toolkit checkout's config module, loaded apart from this process's, as one of the queuekeeper package,

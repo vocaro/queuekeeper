@@ -139,12 +139,12 @@ os.environ.pop('QUEUEKEEPER_KEYCHAIN_UNLOCKED', None)
 # Nor does a test read what a dispatch, an admission, a device pass or the merge queue tells the command it starts, which
 # the suite inherits whenever it is that command (vocaro/queuekeeper#46): the sending Mac's origin and arrival, which
 # every admission a test takes would report as its own; the file where a declined offer's reason goes; what exclusive
-# admission read of the Mac; the device a device pass lends; the queue's placement scope, bisect progress and push; the
+# admission read of the Mac; the device a device pass lends; the queue's placement scope, bisect progress, worker lock and push; the
 # progress folder an admitted runner names to the run it admits (vocaro/queuekeeper#22). A test of any of them sets it
 # itself.
 for variable in (resources.ORIGIN, resources.REQUEST_STARTED, offload_host.DECLINED, *resources.HOST_READING,
                  'QUEUEKEEPER_DEVICE_KEY', 'QUEUEKEEPER_DEVICE_UDID', remote.QUEUE_GATE, remote.QUEUE_GATE_EXCLUDE,
-                 "QUEUEKEEPER_QUEUE_PROGRESS", pre_push.QUEUE_VARIABLE, run_progress.VARIABLE):
+                 "QUEUEKEEPER_QUEUE_PROGRESS", "QUEUEKEEPER_QUEUE_LOCK", pre_push.QUEUE_VARIABLE, run_progress.VARIABLE):
     os.environ.pop(variable, None)
 resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # Nor does exclusive work a test admits wait for this Mac to settle (vocaro/queuekeeper#121): the suite runs inside the
