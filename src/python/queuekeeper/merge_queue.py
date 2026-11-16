@@ -1645,11 +1645,23 @@ class Queue:
 
 def repository(root, named):
     """The repository `qk land --repo` names: a path, or the name of a project beside this one's
-    main checkout, as a session fixing a dependency names it."""
+    main checkout, as a session fixing a dependency names it. The queue reads a project's configuration from
+    origin/main, so a checkout whose working tree lags behind the commit that added queuekeeper.json is a
+    project too (#188); a checkout with it in neither is named as a checkout, not as a wrong name."""
     candidates = [Path(named).expanduser(), Queue(root).main_checkout.parent / named]
+    checkouts = []
     for path in candidates:
-        if (path / "queuekeeper.json").is_file() and git(path, "rev-parse", "--git-dir").returncode == 0:
-            return path.resolve()
+        top = git(path, "rev-parse", "--path-format=absolute", "--show-toplevel")
+        if top.returncode: continue
+        if (path / "queuekeeper.json").is_file(): return path.resolve()
+        # A directory inside a checkout is not that checkout, whose origin/main would be another project's.
+        if Path(top.stdout.strip()).resolve() != path.resolve(): continue
+        if has_config(path, MAIN): return path.resolve()
+        checkouts.append(path.resolve())
+    if checkouts:
+        raise ValueError(f"--repo {named}: {checkouts[0]} is a Git checkout, but neither its working tree nor its "
+                         "origin/main, as last fetched there, has a queuekeeper.json: fetch it if the project "
+                         "has adopted Queuekeeper since, or give another checkout's path")
     raise ValueError(f"--repo {named} names no project: give a checkout's path, or the name of a project beside "
                      f"{Queue(root).main_checkout}")
 

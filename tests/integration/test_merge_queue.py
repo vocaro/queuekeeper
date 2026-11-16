@@ -5456,6 +5456,23 @@ class LaggingCheckout(Fixture):
         self.assertIn("fix", self.main_files())
         self.assertEqual(self.gates(), 1)
 
+    def test_a_checkout_behind_the_commit_that_added_its_configuration_is_still_the_project(self):
+        """--repo names the project when only origin/main holds queuekeeper.json, the main checkout being on a
+        commit from before it, as StudyWright's was (#188)."""
+        worktree = self.base / "session"
+        run(self.repo, "git", "worktree", "add", "-q", "-b", "fix", str(worktree), "origin/main")
+        (worktree / "fix").write_text("x")
+        run(worktree, "git", "add", "fix")
+        run(worktree, "git", "commit", "-qm", "Add fix")
+        run(self.repo, "git", "checkout", "-q", "--orphan", "before")
+        run(self.repo, "git", "rm", "-rqf", ".")
+        run(self.repo, "git", "commit", "-q", "--allow-empty", "-m", "Before Queuekeeper")
+        self.assertFalse((self.repo / "queuekeeper.json").exists())
+        self.assertEqual(mq.repository(self.repo, str(self.repo)), self.repo.resolve())
+        done = self.land_from_another_project()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("fix", self.main_files())
+
     def test_a_checkout_too_old_for_this_toolkit_stops_no_worker(self):
         """The worker's --project is the main checkout, whose configuration must not even be checked."""
         worktree = self.session({"schemaVersion": 1, "name": "fixture", "hostedRepositories": []})
@@ -7533,7 +7550,14 @@ class Refusals(Fixture):
         shutil.copy(ROOT / "scripts/qk", other / "scripts/qk")
         (other / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "dependent"}))
         run(other, "git", "init", "-q")
-        for words, said in ((["land", "--repo", "project"], "you name"), (["land", "--repo", "absent", "x"], "names no project")):
+        # A checkout neither of whose working tree and origin/main holds a configuration is said to be one (#188).
+        plain = self.base / "plain"
+        plain.mkdir()
+        run(plain, "git", "init", "-q")
+        (plain / "inside").mkdir()
+        for words, said in ((["land", "--repo", "project"], "you name"), (["land", "--repo", "absent", "x"], "names no project"),
+                            (["land", "--repo", "plain", "x"], "plain is a Git checkout, but neither its working tree nor its origin/main"),
+                            (["land", "--repo", str(plain / "inside"), "x"], "names no project")):
             done = subprocess.run(["python3", "scripts/qk", *words], cwd=other, capture_output=True, text=True)
             self.assertNotEqual(done.returncode, 0)
             self.assertIn(said, done.stderr)
