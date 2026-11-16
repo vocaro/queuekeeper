@@ -8510,16 +8510,26 @@ class ToolkitUpdateTests(unittest.TestCase):
         hang.write_text(f"#!/bin/sh\necho $$ > {shlex.quote(str(marker))}\nexec sleep 300\n")
         host_isolation.executable(hang)
         git(self.checkout, "remote", "set-url", "origin", "ssh://example.invalid/kit.git")
-        began = time.monotonic()
-        with patch.dict(os.environ, {"GIT_SSH_COMMAND": str(hang)}):
-            found = offload_host.update_toolkit({"path": offload_host.TOOLKIT_CHECKOUT}, home=self.home, seconds=2)
-        # The 2 s deadline is the behavior under test; its ceiling stretches with load.
-        self.assertLess(time.monotonic() - began, stretched(15))
-        self.assertEqual(found["state"], "failed", found)
-        self.assertIn("did not finish in", found["reason"])
-        self.assertEqual(self.head(), self.start)
+        # The deadline is the behavior under test, and each is held to it, its ceiling stretching with load. Under
+        # load the update's earlier git steps and git's own start can use all of 2 s before the fetch starts the
+        # stand-in, which then has nothing to show stopped (vocaro/queuekeeper#182); so a deadline that ended
+        # before it started is tried again, doubled.
+        for seconds in (2, 4, 8, 16):
+            marker.unlink(missing_ok=True)
+            began = time.monotonic()
+            with patch.dict(os.environ, {"GIT_SSH_COMMAND": str(hang)}):
+                found = offload_host.update_toolkit({"path": offload_host.TOOLKIT_CHECKOUT}, home=self.home,
+                                                    seconds=seconds)
+            self.assertLess(time.monotonic() - began, seconds + stretched(13))
+            self.assertEqual(found["state"], "failed", found)
+            self.assertEqual(self.head(), self.start)
+            # Its pid, once written whole: a stand-in stopped between making the file and writing it shows nothing.
+            written = marker.read_text().strip() if marker.exists() else ""
+            if written: break
+        self.assertTrue(written, f"the fetch never started its ssh in {seconds} s: {found}")
+        self.assertIn("`git fetch` did not finish in", found["reason"])
         # What git started for the fetch was stopped with it.
-        pid = int(marker.read_text())
+        pid = int(written)
         deadline = time.monotonic() + stretched(5)
         while time.monotonic() < deadline:
             try: os.kill(pid, 0)
