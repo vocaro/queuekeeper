@@ -16,7 +16,7 @@ Replace the example with the relevant module, class or test. Run the configured 
 `python3 scripts/qk run gate`. Every test or build must take admission, even a single test:
 use `python3 scripts/qk admit -- COMMAND` for other build commands. Do not run bare
 `python3 -m unittest`, `swift test` or `xcodebuild`. Use `--unadmitted` only when testing a runner
-itself, as described in [the admission guide](guides/shared-host.md#heavy-work-admission).
+itself, as described in [the admission guide](doc/guides/shared-host.md#heavy-work-admission).
 
 ## Land and recover
 
@@ -47,6 +47,6 @@ and involve the owner when the hold says it requires the owner.
 - `src/python/queuekeeper/visibility/`: optional visibility features.
 - `plugins/`: separately packaged platform and visibility plugins; `queuekeeper-workspace.json` declares checkout composition.
 - `tests/`: component suites, `integration/`, architecture checks, and `test_support/` fixtures. Follow neighboring tests' `host_isolation` setup.
-- `doc/`: user documentation; `guides/`: operational detail and design decisions.
+- `doc/`: user documentation; `doc/guides/`: operational detail and design decisions.
 
-See [maintenance](guides/maintenance.md) for queue operation and spelling rules.
+See [maintenance](doc/guides/maintenance.md) for queue operation and spelling rules.

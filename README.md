@@ -107,7 +107,7 @@ can check their own project's queue with `qk queue status`.
 
 Run `qk disk` for a read-only inventory of Queuekeeper-managed build caches, test results and
 simulator resources, including safe cleanup candidates; see
-[Reclaiming disk space](guides/shared-host.md#reclaiming-disk-space).
+[Reclaiming disk space](doc/guides/shared-host.md#reclaiming-disk-space).
 
 ## Dashboard
 
@@ -207,17 +207,17 @@ its results are valid on. A lane whose output differs by GPU lists its chips, su
 
 The guides hold the detail, with the measurements and decisions behind each rule:
 
-- [Maintenance](guides/maintenance.md): operating the merge queue, and the legacy spelling check
-- [Shared host](guides/shared-host.md): admission, the second Mac, disk cleanup, device reservations
+- [Maintenance](doc/guides/maintenance.md): operating the merge queue, and the legacy spelling check
+- [Shared host](doc/guides/shared-host.md): admission, the second Mac, disk cleanup, device reservations
   and process supervision
-- [Lanes](guides/lanes.md): receipts, how tests are counted, compiling first, tests no lane runs,
+- [Lanes](doc/guides/lanes.md): receipts, how tests are counted, compiling first, tests no lane runs,
   the gate's time budget
-- [Parallel tests](guides/parallel-tests.md): lane groups, `qk unittest`, `qk simulator-tests` and
+- [Parallel tests](doc/guides/parallel-tests.md): lane groups, `qk unittest`, `qk simulator-tests` and
   `qk xctest`
-- [Simulator pool](guides/simulator-pool.md), [physical devices](guides/devices.md) and
-  [kept app builds](guides/app-builds.md), for the Apple plugin
-- [Foreground runs](guides/foreground.md): taking a Mac's screen for a lane
-- [Cloud gate runners](guides/cloud-gate-runners.md): renting a Mac for the queue
+- [Simulator pool](doc/guides/simulator-pool.md), [physical devices](doc/guides/devices.md) and
+  [kept app builds](doc/guides/app-builds.md), for the Apple plugin
+- [Foreground runs](doc/guides/foreground.md): taking a Mac's screen for a lane
+- [Cloud gate runners](doc/guides/cloud-gate-runners.md): renting a Mac for the queue
 
 ## License
 

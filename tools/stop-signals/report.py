@@ -1,7 +1,7 @@
 """Read what siglog.py and watch.py recorded: each probe's timeline and what ended each process.
 
 usage: report.py DIR
-Reads every NAME.log in DIR with the NAME.watch beside it, as guides/shared-host.md, Probing stop signals
+Reads every NAME.log in DIR with the NAME.watch beside it, as doc/guides/shared-host.md, Probing stop signals
 starts them. Times are seconds from the first signal any probe in DIR logged, or from the first start
 when none logged one. siglog.py logs SIGTERM, SIGINT and SIGHUP and keeps running; any other signal,
 SIGKILL among them, ends it without a line, so a process the watcher saw go without an "exiting" line

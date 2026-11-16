@@ -12,7 +12,7 @@ clear before the run leaves the run unmeasured with nothing run; one met during 
 run unmeasured too, never failed. One it cleared during a run that then fails leaves it unmeasured when the alert
 stood longer than one look and was for a process other than the app under test; a crash of the app under test,
 or of a process queuekeeper cannot name, stays a failure (owner's decision, 2026-11-07, vocaro-engineering#226). The
-receipt keeps each cleared alert's process, start and how long it stood (guides/foreground.md,
+receipt keeps each cleared alert's process, start and how long it stood (doc/guides/foreground.md,
 Crash-report alerts).
 """
 import contextlib
@@ -69,7 +69,7 @@ ONE_LOOK = WATCH
 OWNERS = re.compile(r"password|passcode|keychain|permission|allow|access|authenticat|touch id|administrator",
                     re.IGNORECASE)
 PROMPTS = ("SecurityAgent", "coreautha", "universalAccessAuthWarn")
-GUIDE = "guides/foreground.md"
+GUIDE = "doc/guides/foreground.md"
 # What the toolkit reads and changes on the Mac, through these alone, so that tests replace them (host_isolation).
 run = offload_host.output
 clock = time.time

@@ -47,7 +47,7 @@ def warnings(root, config):
                      "does not say \"unlockedScreen\", so queuekeeper may place it on a Mac whose screen is locked, where a "
                      "test that reports a lock as unmeasured gives no verdict: if its tests need an unlocked "
                      f"screen, it needs \"unlockedScreen\": true{also} and if they measure behind a lock, say "
-                     "\"unlockedScreen\": false (guides/shared-host.md, Which Mac runs a lane)")
+                     "\"unlockedScreen\": false (doc/guides/shared-host.md, Which Mac runs a lane)")
     return found
 
 

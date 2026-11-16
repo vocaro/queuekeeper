@@ -8,9 +8,9 @@ Each device is a member of the pool, `POOL LABEL N`: a free one of its kind is r
 host's device record and reset from its kind's warmed template (erased with --erase, or when no settled
 template can be copied), or, with --keep-state, kept as earlier runs left it, or, when none is
 free, the next is cloned from that template, or created, and kept in the pool, after members idle
-past the pruning rule's limits are pruned (guides/simulator-pool.md, Reserved simulator pool).
+past the pruning rule's limits are pruned (doc/guides/simulator-pool.md, Reserved simulator pool).
 With --app-accessibility each member's app processes get UIKit's and SwiftUI's own accessibility, for tests
-hosted in an app that read system views (guides/simulator-pool.md, App accessibility). With --voiceover each
+hosted in an app that read system views (doc/guides/simulator-pool.md, App accessibility). With --voiceover each
 member's VoiceOver sound cues are switched off and its volume held at 0 before its tests, for a probe that
 switches VoiceOver on, and its volume is watched while they run (AXVerify's guides/voiceover-simulator.md, Muted speech
 capture). With --xcodegen SPEC
@@ -19,7 +19,7 @@ build is one `xcodebuild build-for-testing` for the first device's destination; 
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log, result
 bundle and derived data folder, removed when its tests end. Each device's outcome stands apart: a boot that reached its limit leaves that
 device unmeasured, and the run fails when any device failed, and is otherwise unmeasured when
-any device was. guides/parallel-tests.md says how to bound it. A build that fails on a module older
+any device was. doc/guides/parallel-tests.md says how to bound it. A build that fails on a module older
 than a header it was built from clears that module cache and builds once more, and says so.
 
 One run at a time builds into a derived data folder and writes a logs folder: a later run that
@@ -142,9 +142,9 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
     fresh = parser.add_mutually_exclusive_group()
     fresh.add_argument("--keep-state", action="store_true", help="take each member without resetting or erasing it, "
                        "for tests that need no fresh installation: it keeps what earlier runs installed and skips "
-                       "the first boot's migration (guides/simulator-pool.md, Reserved simulator pool)")
+                       "the first boot's migration (doc/guides/simulator-pool.md, Reserved simulator pool)")
     fresh.add_argument("--erase", action="store_true", help="erase each member in place of the reset from its "
-                       "kind's warmed template, for tests that want pristine data (guides/simulator-pool.md, "
+                       "kind's warmed template, for tests that want pristine data (doc/guides/simulator-pool.md, "
                        "Warmed templates)")
     fresh.add_argument("--template", action="store_true", help="with --repeat: every run must get a copy of its "
                        "kind's warmed template; a run the pool could only erase is left unmeasured")
@@ -157,7 +157,7 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
     parser.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
                         "accessibility on in each member's app processes once it has booted, for tests hosted in an "
                         "app that read system views; a device whose setting does not read on fails "
-                        "(guides/simulator-pool.md, App accessibility)")
+                        "(doc/guides/simulator-pool.md, App accessibility)")
     parser.add_argument("--voiceover", action="store_true", help="for tests that switch VoiceOver on, such as a "
                         "speech probe's: switch each member's VoiceOver sound cues off and hold its volume at 0 before "
                         "its tests, read it each second while they run, switch off a VoiceOver they left on, and print "

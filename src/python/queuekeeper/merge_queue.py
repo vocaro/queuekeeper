@@ -12,7 +12,7 @@ rest at once instead of bisecting (Worker.blame). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
 until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
 owner (a run a locked screen voided is not counted, and its lane runs next only on a Mac whose screen reads
-unlocked, until LOCKED_SCREEN_RUNS such runs in a row hold the queue for a session, vocaro-engineering#293), with every commit still waiting (guides/maintenance.md, The merge queue). A batch whose lanes
+unlocked, until LOCKED_SCREEN_RUNS such runs in a row hold the queue for a session, vocaro-engineering#293), with every commit still waiting (doc/guides/maintenance.md, The merge queue). A batch whose lanes
 passed is recorded as passed before its push, so a hold the push meets keeps that verdict, and
 `qk queue resume` pushes the commit that passed instead of gating it again. Each round the worker moves to
 the toolkit at origin/main, starting itself again from its copy, so that it judges main with the toolkit the
@@ -341,7 +341,7 @@ def environment():
 
 def git(directory, *arguments, hooks=True, check=False, timeout=GIT_TIMEOUT):
     """Git in directory. Without hooks, for what the worker does in its own checkout: a project's
-    checkout hook may open an editor on the owner's screen (guides/maintenance.md)."""
+    checkout hook may open an editor on the owner's screen (doc/guides/maintenance.md)."""
     command = ["git", *([] if hooks else ["-c", "core.hooksPath=/dev/null"]), "-C", str(directory), *arguments]
     done = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=environment(),
                           timeout=timeout)
@@ -481,7 +481,7 @@ def lanes_of(config, changed=()):
     named = config.get("queue", {}).get("lanes") or (["gate"] if "gate" in lanes else None)
     if not named:
         raise ValueError(f"{config.get('name')} has no gate lane, so the queue has nothing to run: name the lane "
-                         "holding what a commit must pass before it lands gate (guides/maintenance.md, "
+                         "holding what a commit must pass before it lands gate (doc/guides/maintenance.md, "
                          "The merge queue)")
     first = [name for name in [*preflighted(config), PROVISION] if spelled(config, name) and name not in named]
     return first + [lane for lane in docs_also(config, changed, named) if lane not in first] + named
@@ -606,7 +606,7 @@ def ahead(front, no_gate, why):
     landing records everywhere it says it skipped the gate; --front takes one too, but needs none."""
     if no_gate and not (why and why.strip()):
         raise ValueError("--no-gate needs a written reason: `qk land --no-gate --why TEXT`, which the entry, the log, "
-                         "the landed commit's trailer and `qk queue status` record (guides/maintenance.md, Landing "
+                         "the landed commit's trailer and `qk queue status` record (doc/guides/maintenance.md, Landing "
                          "ahead of the queue)")
     if why and not (front or no_gate): raise ValueError("--why is the reason for --front or --no-gate")
     flags = {name: True for name, wanted in (("front", front), ("noGate", no_gate)) if wanted}
@@ -837,7 +837,7 @@ def checked_before_running(root, tip, config):
     own = refused_alone(root, tip, config)
     if own:
         raise Refused(f"{tip[:12]} is not queued: qk unittest would refuse every gate holding it before running "
-                      "anything:\n  " + "\n  ".join(own) + "\nFix that and land it again (guides/maintenance.md, The "
+                      "anything:\n  " + "\n  ".join(own) + "\nFix that and land it again (doc/guides/maintenance.md, The "
                       "merge queue, Checked before it is queued)")
 
 
@@ -853,7 +853,7 @@ def claims_before_queued(root, base, tip):
                   + "\n  ".join(f"{commit[:12]} line {number} closes {named}: {line.strip()}"
                                 for commit, number, line, named in found)
                   + f'\nFor an issue that stays open, write "Refs {issue}" or "leaves {issue} open"; to close it, write '
-                    f'"Closes {issue}." on its own line. Reword the commit and land it again (guides/maintenance.md, '
+                    f'"Closes {issue}." on its own line. Reword the commit and land it again (doc/guides/maintenance.md, '
                     "The merge queue, Checked before it is queued)")
 
 
@@ -942,7 +942,7 @@ def preflight_lane_before_queued(root, queue, tip, replayed, base, name):
               f"round runs the {name} lane", file=sys.stderr)
     else:
         raise Refused(f"{tip[:12]} is not queued: {ran} fails on it replayed onto origin/main at {base[:12]}:\n  "
-                      + "\n  ".join(printed[-PREFLIGHT_SHOWN:]) + "\nFix that and land it again (guides/maintenance.md, "
+                      + "\n  ".join(printed[-PREFLIGHT_SHOWN:]) + "\nFix that and land it again (doc/guides/maintenance.md, "
                       "The merge queue, Checked before it is queued)")
 
 
@@ -1339,7 +1339,7 @@ def stuck(gate, at=None):
     if not isinstance(since, (int, float)) or not gate.get("stranded") or (at or time.time()) - since < STUCK_SECONDS:
         return None
     return (f"stuck: the gate has waited {ago(since, at)} for admission held up by dead or uncertain guard entries that "
-            "admission has not recovered; `python3 scripts/qk admissions recover` lists them (guides/shared-host.md, "
+            "admission has not recovered; `python3 scripts/qk admissions recover` lists them (doc/guides/shared-host.md, "
             "Lock reclamation)")
 
 
@@ -2999,7 +2999,7 @@ class Worker:
 
     def toolkit(self):
         """Run this round's lanes on the toolkit at origin/main, in a copy no session edits: a shared
-        checkout that lags, or holds a session's changes, says nothing of the commits (guides/maintenance.md,
+        checkout that lags, or holds a session's changes, says nothing of the commits (doc/guides/maintenance.md,
         The merge queue). Each worker has its own, so that moving it changes no other project's running
         gate. The toolkit's own queue tests its batch, and an explicit QUEUEKEEPER_ROOT stands.
         A copy that cannot be made or moved holds the queue, as a fetch of the project that keeps failing does.
@@ -5082,7 +5082,7 @@ class Worker:
         takes one slot of heavy-work admission and does not hold its Mac: admission looks only at the moment a run
         starts, so heavy work admitted or started beside it afterwards can void a timing in it, as mpm's gate's was
         on 2026-11-12 (vocaro/queuekeeper#28). The way to keep it off a timed part is exclusive admission of that
-        part alone (guides/shared-host.md, Heavy-work admission). Empty for any other run, or a lane that reached its
+        part alone (doc/guides/shared-host.md, Heavy-work admission). Empty for any other run, or a lane that reached its
         limit."""
         if result != lane_results.UNMEASURED or self.timed_out or not self.lane_now: return ""
         lane = self.lane_now[0]
@@ -5093,7 +5093,7 @@ class Worker:
             return ""
         return (f". {lane} takes one shared slot of heavy-work admission, which other heavy work can join after it "
                 "starts: if a timing in it needs a quiet Mac, run that part alone under `qk admit --here --exclusive` "
-                "from a `self` lane, as guides/shared-host.md, Heavy-work admission, says")
+                "from a `self` lane, as doc/guides/shared-host.md, Heavy-work admission, says")
 
     def receipt_error(self):
         """The error this run's receipt records for the lane the last gate stopped at, on one line, or None when no
@@ -5661,7 +5661,7 @@ def refusal(tip, found, base, root):
     if found["hunks"]:
         words += f"; its lines in conflict: {', '.join(found['hunks'])}"
     words += (". An entry ahead that comes back may let it apply: `qk queue status` says, and `qk land` again "
-              "checks again (guides/maintenance.md, The merge queue)")
+              "checks again (doc/guides/maintenance.md, The merge queue)")
     if found["touching"]:
         many = len(found["touching"]) > 1
         words += (f". To be told when {'they leave' if many else 'it leaves'} the queue, run as a background command: "
@@ -5808,7 +5808,7 @@ def land_arguments(parser):
 
 
 def options(parser):
-    """qk land's emergency options, in every repository, which `qk queue add` takes too (guides/maintenance.md,
+    """qk land's emergency options, in every repository, which `qk queue add` takes too (doc/guides/maintenance.md,
     Landing ahead of the queue)."""
     parser.add_argument("--front", action="store_true", help="for an emergency, such as an important fix stuck behind "
                         "queued changes: test it next, ahead of everything waiting, as a batch of its own, once a gate "

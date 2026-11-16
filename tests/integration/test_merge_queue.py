@@ -3382,7 +3382,7 @@ class DocsOnly(Fixture):
                          ["spelling", "gate"])
         # The defaults: conventional Markdown beside code runs the docs lane, the toolkit's where there is none.
         self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}, ["README.md", "AGENTS.md"]), ["spelling", "docs", "gate"])
-        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}, "queue": {"spelling": False}}, ["guides/a.md", "x"]),
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}, "queue": {"spelling": False}}, ["docs/a.md", "x"]),
                          ["docs", "gate"])
 
     def test_a_docs_entry_that_changes_a_path_an_older_entry_changes_waits_for_it(self):
@@ -3578,7 +3578,7 @@ class Riding(unittest.TestCase):
 
     def test_the_first_path_that_is_not_documentation_is_named(self):
         config = {"lanes": {"gate": {}}}
-        self.assertEqual(mq.rides(config, {"README.md", "guides/a.md"}),
+        self.assertEqual(mq.rides(config, {"README.md", "doc/a.md"}),
                          "is documentation only: lands on the spelling and docs lanes, not the code gate")
         self.assertEqual(mq.rides(config, {"README.md", "static/app.css", "shot.png"}),
                          "rides the code gate: shot.png is not documentation; the docs lane runs too, ahead of it, "
@@ -3710,7 +3710,7 @@ class DefaultDocsOnly(Fixture):
     def test_conventional_markdown_uses_implicit_docs_and_skips_code_and_hook(self):
         self.ran = self.base / "hook-runs"
         PrePushHooks.hook(self, "exit 1")
-        self.commit("guides/guide.md", "guide", "# Guide\n")
+        self.commit("doc/guide.md", "guide", "# Guide\n")
         [identifier] = self.add("guide")
         self.assertEqual(self.work(), 0)
         state = self.state(identifier)
@@ -3748,7 +3748,7 @@ class DefaultDocsOnly(Fixture):
             with contextlib.redirect_stderr(io.StringIO()), resources.Admission("gate", whole_host=True, timeout=0):
                 held.set()
                 if not release.wait(stretched(60)): released_early.append(True)
-        self.commit("guides/guide.md", "guide", "# Guide\n")
+        self.commit("doc/guide.md", "guide", "# Guide\n")
         [identifier] = self.add("guide")
         with patch.dict(os.environ, environment):
             holder = threading.Thread(target=hold, name="whole-host lane", daemon=True)
@@ -3770,7 +3770,7 @@ class DefaultDocsOnly(Fixture):
 
     def test_a_docs_check_that_reaches_its_limit_runs_admitted(self):
         """The control: a check that does not end within DOCS_CHECK_LIMIT runs again through qk run, admitted."""
-        self.commit("guides/guide.md", "guide", "# Guide\n")
+        self.commit("doc/guide.md", "guide", "# Guide\n")
         [identifier] = self.add("guide")
         real = mq.processes.run
         def slow(command, **options):
@@ -3806,9 +3806,9 @@ class DefaultDocsOnly(Fixture):
                 release.set()
         self.commit("tool.py", "tool", "print('a tool')\n")
         run(self.repo, "git", "checkout", "-q", "tool")
-        (self.repo / "guides").mkdir()
-        (self.repo / "guides/guide.md").write_text("# Guide\n")
-        run(self.repo, "git", "add", "guides/guide.md")
+        (self.repo / "doc").mkdir(exist_ok=True)
+        (self.repo / "doc/guide.md").write_text("# Guide\n")
+        run(self.repo, "git", "add", "doc/guide.md")
         run(self.repo, "git", "commit", "-qm", "Add a guide beside the tool")
         [identifier] = self.add("tool")
         with patch.dict(os.environ, environment):
@@ -3932,15 +3932,47 @@ class DefaultDocsOnly(Fixture):
     def test_default_classification_keeps_code_configuration_and_fixtures_gated(self):
         config = self.config()
         for path in ("README.md", "CONTRIBUTING.md", "CHANGELOG.md", "doc/guide.md", "docs/guide.md",
-                     "guides/guide.md", "knowledge/apple/topic.md", "guides/topic.markdown"):
+                     "doc/apple/topic.md", "docs/topic.markdown"):
             with self.subTest(path=path):
                 self.assertEqual(mq.docs_lanes(config, [path]), ["spelling", "docs"])
                 self.assertIsNone(mq.docs_lanes(config, [path, "src/code.py"]))
-        for path in ("queuekeeper.json", "guides/config.json", "guides/code.py", "tests/input.md", "src/input.md",
+        # guides/ and knowledge/ are no default: a project that keeps documents there names them in
+        # queue.unread.paths, which adds to the defaults (vocaro/queuekeeper#106).
+        for path in ("queuekeeper.json", "doc/config.json", "docs/code.py", "tests/input.md", "src/input.md",
+                     "guides/guide.md", "guides/topic.markdown", "knowledge/apple/topic.md",
                      "AGENTS.md", "agents/core.md", ".github/workflows/check.yml", "README.md.orig"):
             with self.subTest(path=path): self.assertIsNone(mq.docs_lanes(config, [path]))
+        # One reading answers both questions, so main changing such a guide gates a passed batch again, where a
+        # default document carries over; a project that names the folder gets both back, beside the defaults.
+        self.assertTrue(mq.carried_over("doc/guide.md", config, set()))
+        named = {**config, "queue": {**config.get("queue", {}), "unread": {"paths": {"guides/": "prose"}}}}
+        for path in ("guides/guide.md", "knowledge/apple/topic.md"):
+            with self.subTest(carried=path): self.assertFalse(mq.carried_over(path, config, set()))
+        self.assertEqual(mq.docs_lanes(named, ["guides/guide.md", "doc/guide.md"]), ["spelling", "docs"])
+        self.assertTrue(mq.carried_over("guides/guide.md", named, set()))
+        self.assertIsNone(mq.docs_lanes(named, ["knowledge/apple/topic.md"]))
         self.assertIsNone(mq.docs_lanes(config, []))
         self.assertEqual(configuration.lane_to_run(config, "docs", self.repo)["command"], configuration.IMPLICIT_DOCS)
+
+    def test_queuekeepers_own_guides_are_unread_by_the_default(self):
+        """Queuekeeper keeps its guides under doc/guides/, so the default takes them, and only their Markdown, with no
+        queue.unread of its own, nor the older docsOnly or carryOver; nothing is left at guides/, which is no default
+        folder (vocaro/queuekeeper#106)."""
+        own = configuration.load(ROOT)
+        self.assertEqual(configuration.DOCS_FOLDERS, ("doc/", "docs/"))
+        self.assertFalse({"unread", *configuration.UNREAD_LEGACY} & set(own.get("queue", {})))
+        self.assertEqual(run(ROOT, "git", "ls-files", "--", "guides"), "")
+        for path in ("doc/guides/maintenance.md", "doc/guides/shared-host.md", "doc/merge_queue.md", "README.md"):
+            with self.subTest(path=path):
+                self.assertTrue((ROOT / path).is_file())
+                self.assertEqual(mq.docs_lanes(own, [path]), ["spelling", "docs"])
+                self.assertIsNone(mq.docs_lanes(own, [path, "src/python/queuekeeper/config.py"]))
+                self.assertTrue(mq.carried_over(path, own, set()))
+        old = "guides" + "/maintenance.md"   # the guide's path before the move, which no default takes
+        for path in ("AGENTS.md", "queuekeeper.json", "tests/core/test_docs.py", old, "doc/guides/diagram.png"):
+            with self.subTest(path=path):
+                self.assertIsNone(mq.docs_lanes(own, [path]))
+                self.assertFalse(mq.carried_over(path, own, set()))
 
     def test_a_default_docs_file_moved_into_source_keeps_code_gate(self):
         self.commit("README.md", "guide", "# Guide\n")
@@ -4142,7 +4174,7 @@ class ImplicitSpelling(Fixture):
 
     def test_with_no_launcher_a_docs_only_batch_runs_the_toolkits_checks(self):
         self.unlaunched()
-        self.commit("guides/guide.md", "guide", "# Guide\n")
+        self.commit("doc/guide.md", "guide", "# Guide\n")
         [identifier] = self.add("guide")
         said = self.rounds()
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -5468,7 +5500,7 @@ class Changelogs(Fixture):
                          [["spelling", "docs"]] * 3)
         self.assertIsNone(mq.Queue(self.repo).held())
         # The first went in as it was; each settled one adds its very line beside other neighbors, which
-        # Closeout's landed.sh proves resolved, so its branch goes unasked (#164, guides/maintenance.md).
+        # Closeout's landed.sh proves resolved, so its branch goes unasked (#164, doc/guides/maintenance.md).
         contained = lambda branch: mq.landing_proofs.contained(lambda *words: mq.git(self.repo, *words), "origin/main", branch)
         self.assertNotIn(contained("b0"), (None, mq.landing_proofs.RESOLVED))
         self.assertEqual([contained("b1"), contained("b2")], [mq.landing_proofs.RESOLVED] * 2)
@@ -9865,7 +9897,7 @@ class RoundAccount(Fixture):
         said = mq.stuck({"waitingSince": late, "stranded": True}, at)
         self.assertEqual(said, "stuck: the gate has waited 16m00s for admission held up by dead or uncertain guard "
                                "entries that admission has not recovered; `python3 scripts/qk admissions recover` lists "
-                               "them (guides/shared-host.md, Lock reclamation)")
+                               "them (doc/guides/shared-host.md, Lock reclamation)")
         # Negative controls: before the threshold; a wait on no stranded entry; a gate with no wait recorded.
         self.assertIsNone(mq.stuck({"waitingSince": early, "stranded": True}, at))
         self.assertIsNone(mq.stuck({"waitingSince": late, "stranded": False}, at))

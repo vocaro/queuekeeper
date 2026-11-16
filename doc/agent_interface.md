@@ -145,7 +145,7 @@ from the top of the checkout cannot import the setup beside it in `tests/`, whic
 Nothing is small enough to run directly. One test or one class goes through `qk unittest` as the
 whole suite does, and its cost is the wait for a slot, which every lane takes however short. Only
 a test of a runner itself runs with `--unadmitted`, written after the runner's name
-([Heavy-work admission](../guides/shared-host.md#heavy-work-admission)). Run outside any admission
+([Heavy-work admission](guides/shared-host.md#heavy-work-admission)). Run outside any admission
 and outside `qk unittest`, this repository's tests say so once on standard error and run on
 (vocaro/queuekeeper#36).
 
@@ -156,7 +156,7 @@ the second Mac in 925 s. Admission waits for a slot and chooses the Mac, so a se
 `uptime`, `sysctl vm.loadavg` or `top`, and asks `qk admissions now` when it needs to know why its
 work has not started. Exclusive work settles before its command starts and tells the command what
 it read of the Mac (vocaro/queuekeeper#121)
-([Ask admission, not the load average](../guides/shared-host.md#ask-admission-not-the-load-average),
+([Ask admission, not the load average](guides/shared-host.md#ask-admission-not-the-load-average),
 vocaro/queuekeeper#134).
 
 ## Long runs
@@ -258,14 +258,14 @@ happens.
 A run loads each folder beside the project that its extensions load from at one commit, the folder's
 `origin/main`, pinned when the run starts, and not as the shared checkout stands. To test a change to
 such a folder before it lands, run `qk run --sibling FOLDER=WHERE LANE` with a commit or your worktree's
-path ([Extension folders beside a project](../guides/shared-host.md#extension-folders-beside-a-project)).
+path ([Extension folders beside a project](guides/shared-host.md#extension-folders-beside-a-project)).
 The merge queue takes no such choice: land the folder's change first.
 
 A lane in which Queuekeeper itself could not start holds the queue at once, for a session, with every
 entry waiting and none sent back: `qk run` exited 70 and left no receipt of the lane, so no commit
 was tested. The reason quotes the error, names the Mac, and says to bring Queuekeeper and the folders
 the project's extensions load from to commits that work together
-([Maintenance](../guides/maintenance.md#the-merge-queue), *A lane Queuekeeper could not start for
+([Maintenance](guides/maintenance.md#the-merge-queue), *A lane Queuekeeper could not start for
 blames nobody*). An entry whose own commits stop Queuekeeper from starting is not held for: the
 worker finds that Queuekeeper starts without the batch, and sends the entry back as for a failed lane.
 
@@ -276,8 +276,8 @@ and the documentation lanes, in seconds, beside a code gate that is running. One
 entry makes the whole entry ride the code gate:
 
 - **Documentation is Markdown in the usual places**: the root `README.md`, `CONTRIBUTING.md` and
-  `CHANGELOG.md`, and `.md` or `.markdown` files under `doc/`, `docs/`, `guides/` and `knowledge/`.
-  A project can name its own paths with `queue.unread` on `main`.
+  `CHANGELOG.md`, and `.md` or `.markdown` files under `doc/` and `docs/`. A project names any
+  other paths, such as a `guides/` folder at its root, with `queue.unread` on `main`.
 - **Everything else is code to the queue**: source, tests, configuration, agent instructions such
   as `AGENTS.md`, a stylesheet, a script, and an image or diagram a document shows. A README
   change committed with the screenshot it adds rides the code gate, and runs the documentation
@@ -301,7 +301,7 @@ entry makes the whole entry ride the code gate:
   `qk queue status` records the entry as a documentation landing with the lanes it ran.
 
 [While a gate runs](merge_queue.md#while-a-gate-runs) says how such an entry lands beside a gate,
-and [Maintenance](../guides/maintenance.md#the-merge-queue) has the rule in full, under *A docs-only
+and [Maintenance](guides/maintenance.md#the-merge-queue) has the rule in full, under *A docs-only
 batch runs the docs lanes*.
 
 See also [The merge queue](merge_queue.md).

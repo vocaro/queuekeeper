@@ -47,7 +47,7 @@ python3 scripts/qk unittest --unadmitted -s tests test_core.ConfigurationTests
 A command that is not Queuekeeper's, such as a bare `python3 -m unittest` or `swift test`, still takes
 no slot unless it is run with `qk admit`. The toolkit's own tests, run that way outside any admission,
 say so once on standard error from `tests/host_isolation.py`, and run on
-([Verifying](../doc/agent_interface.md#verifying), vocaro/queuekeeper#36).
+([Verifying](../agent_interface.md#verifying), vocaro/queuekeeper#36).
 
 Add `--model` for a generative-model run: on-device generation on this Mac or in a simulator,
 which uses the host Mac's model, and other local generative models such as MLX on the GPU. Core
@@ -1334,7 +1334,7 @@ chooses the Mac. A checkout that is clean, on `main` and only behind its `origin
 fetched, sends `origin/main`'s commit instead of its HEAD, and the dispatch says so in one line
 (`sending the toolkit at origin/main's COMMIT, not the shared checkout's HEAD OLD, which is clean,
 on main and N commits behind it`). The shared checkout waits behind while a process runs from it
-([guides/maintenance.md](maintenance.md), The shared checkout follows each toolkit landing), and
+([doc/guides/maintenance.md](maintenance.md), The shared checkout follows each toolkit landing), and
 a project change that needed a just-landed toolkit API failed on every run sent from this Mac
 until it followed. Such a run there executes landed code that a run here does not yet read, which
 replaces #104's rule that a dispatch sends what a run here would read (owner's decision,
@@ -1357,7 +1357,7 @@ project, checks the commit out detached with the toolkit beside it, and runs `qk
 the one it was sent from. The work it runs knows it runs there for this Mac, whose name
 `QUEUEKEEPER_DISPATCHED_FROM` gives, and its receipts say so. A script or test that must know whether
 it runs on the second Mac asks only whether that variable is set
-([asking whether a command runs on the other Mac](../doc/build_farm.md#asking-whether-a-command-runs-on-the-other-mac)),
+([asking whether a command runs on the other Mac](../build_farm.md#asking-whether-a-command-runs-on-the-other-mac)),
 never for a host name or a user ID, which macOS and setup can change, nor for a field of the device
 record: a project's script that compared the second Mac's `.local` name refused on every Mac once
 macOS renamed it, and nobody noticed (vocaro/queuekeeper#93). A checkout keeps its ignored inputs and
@@ -1743,7 +1743,7 @@ The update runs in two places:
 
 offload_host fast-forwards the checkout to `origin/main`, without hooks, under the same conditions as
 this Mac's shared checkout follows a landing
-([guides/maintenance.md](maintenance.md), The shared checkout follows each toolkit landing):
+([doc/guides/maintenance.md](maintenance.md), The shared checkout follows each toolkit landing):
 
 - it is on `main`;
 - it has no changed, staged or untracked path (ignored files stay);
@@ -2796,7 +2796,7 @@ python3 scripts/qk remote run --device iPhone LANE -- ARGUMENTS
   defers physical devices: it checks the devices the command names against the lease, bounds the
   command by END as here, and leaves the recording to the dispatch.
 - The dispatch watches each leased device's log from this Mac while it lasts, and sends a run a
-  notification banner reached once more (guides/devices.md, Notifications during a run).
+  notification banner reached once more (doc/guides/devices.md, Notifications during a run).
   A `devices run` in the work watches from the second Mac as well, and reruns on its own.
 - The device stays reserved after the run. Preflight, restoration and the release are the
   session's, from this Mac, which reaches the device too.
@@ -2839,7 +2839,7 @@ The warning is advisory. The existing reservation bound still stops the run in t
 
 ## Unity editors
 
-A project that lists the [Unity plugin](../plugins/unity/src/queuekeeper_unity/README.md) runs its editor
+A project that lists the [Unity plugin](../../plugins/unity/src/queuekeeper_unity/README.md) runs its editor
 unattended. This section says what several sessions on one Mac share, and what the plugin does
 about it.
 
@@ -3480,7 +3480,7 @@ entry was removed by hand.
 ### Probing stop signals
 
 The stops above were measured with `siglog.py` and `watch.py`, kept with the scripts that start
-and read them in [`tools/stop-signals`](../tools/stop-signals), standard library only.
+and read them in [`tools/stop-signals`](../../tools/stop-signals), standard library only.
 
 - `siglog.py LOG child SECONDS` logs each SIGTERM, SIGINT and SIGHUP it receives and runs on, and
   starts a child that leads a session of its own and does the same. Each writes `exiting` after

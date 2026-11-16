@@ -85,7 +85,7 @@ def acquire(record, key, owner, *, purpose, minutes, wait, said):
     if value.get(devices.DEFERRED):
         raise Misplaced(f"this Mac's device record defers physical devices to {value[devices.DEFERRED]}, so the pass "
                         "runs there: give the lane \"here\" with the reason, a physical device, so that qk run keeps "
-                        "it on the Mac whose record holds them (guides/devices.md, The device pass)")
+                        "it on the Mac whose record holds them (doc/guides/devices.md, The device pass)")
     entry = value["devices"].get(key)
     if entry is not None and devices.condition(entry) == "held" and entry.get("ownerChatID") == owner:
         said(f"device-pass: {key}: {owner} holds it already, so the pass uses that reservation and leaves it held")
@@ -207,7 +207,7 @@ def run(keys, command, *, owner=None, purpose="release device pass", minutes=MIN
 
 def main(argv, project=None):
     parser = argparse.ArgumentParser(prog="qk device-pass", description="Run a release's device pass: COMMAND "
-        "once on each physical device named, in turn, under its reservation (guides/devices.md, The device pass)")
+        "once on each physical device named, in turn, under its reservation (doc/guides/devices.md, The device pass)")
     parser.add_argument("--device", action="append", required=True, metavar="KEY", choices=sorted(devices.PAIRED),
                         help="a paired device's entry; repeat for each, in the order to run them")
     parser.add_argument("--owner", default=devices.default_owner(), help=f"the session (default: {devices.OWNER}, "

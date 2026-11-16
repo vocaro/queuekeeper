@@ -8,7 +8,7 @@ puts back what was there before, as foreground runs do with the Mac's crash-repo
 Nothing documented sets a device's Focus from the Mac. Xcode 27's `devicectl` (651.32) sets appearance, audio,
 biometrics, StandBy and VoiceOver, and reads no Focus; its `notification` commands post Darwin notifications, not
 user ones. The notification-settings configuration profile payload needs a supervised device, which the owner's
-are not. So the owner keeps two shortcuts on each device, made once by hand (guides/devices.md,
+are not. So the owner keeps two shortcuts on each device, made once by hand (doc/guides/devices.md,
 Notifications during a run), and queuekeeper runs them by opening Shortcuts with a `shortcuts://run-shortcut` URL through
 `devicectl device process launch --payload-url`: SILENCE turns Do Not Disturb on when no Focus is on and leaves a
 marker, and RESTORE turns it off only when that marker is there, so it puts back what was there before and does
@@ -42,7 +42,7 @@ RESTORE = "Vocaro Restore Notifications"
 # Seconds devicectl has to open Shortcuts, and the wait for devicectl itself beyond that. A Wi-Fi launch
 # can take a minute on a busy host (apple-engineering's guides/device-testing.md, devicectl states and timeouts).
 TIMEOUT = 120
-GUIDE = "guides/devices.md, Notifications during a run"
+GUIDE = "doc/guides/devices.md, Notifications during a run"
 
 
 def url(name):

@@ -11,7 +11,7 @@ from .simulators import pool as simulator_pool
 
 class Lease(devices.BoundedRun):
     """Physical devices a run on the second Mac uses, each reserved in this Mac's record by the session
-    that sends the run (guides/shared-host.md, Physical devices and the second Mac): a bounded run
+    that sends the run (doc/guides/shared-host.md, Physical devices and the second Mac): a bounded run
     whose command runs there.
 
     The dispatch marks each entry's run active with its own process, whose end, by a stop, its death

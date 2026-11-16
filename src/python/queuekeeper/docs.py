@@ -22,7 +22,7 @@ LINE_LINK = re.compile(r"(.+):(\d+)")
 BOLD_LEAD = re.compile(r" {0,3}(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+)?\*\*(.+?)\*\*")
 VENDORED = {"licenses", "ThirdParty", "Vendor"}
 # A citation of a document by its path, from the checkout's root or the citing file's folder, and a
-# section title or an anchor: guides/shared-host.md, Heavy-work admission or guides/lanes.md#every-test-has-a-lane.
+# section title or an anchor: doc/guides/shared-host.md, Heavy-work admission or doc/guides/lanes.md#every-test-has-a-lane.
 CITED = re.compile(r"(?<![\w./\\-])((?:[\w.-]+/)*[\w-][\w.-]*\.(?:md|markdown))(?:(#[\w-]+)|,[ \t]*)")
 # Another repository's document, as in the toolkit's guides/releasing.md: the words before its path.
 OTHER_REPOSITORY = re.compile(r"[\w-]+'s\s*$")
@@ -215,7 +215,7 @@ def citing(root, path):
 
 def cited(root, files):
     """Each citation in files of a Markdown document by its path and a section title, as in
-    (guides/shared-host.md, Heavy-work admission), or by its path and an anchor, that names no document
+    (doc/guides/shared-host.md, Heavy-work admission), or by its path and an anchor, that names no document
     in this checkout, or no heading or bold lead-in of it (vocaro/queuekeeper#114). The path is from
     the checkout's root or the citing file's folder. A title may wrap across lines of a comment or of
     adjacent string literals, and it may run on past the section's name. A citation of another

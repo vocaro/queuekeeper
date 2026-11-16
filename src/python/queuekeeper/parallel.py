@@ -1,5 +1,5 @@
 """Independent work side by side: a lane group's lanes, and a unittest suite's modules in processes
-of their own. guides/parallel-tests.md says when each is safe and how to bound it.
+of their own. doc/guides/parallel-tests.md says when each is safe and how to bound it.
 
 A lane group runs inside the one admission its own lane took, as nested work does, so its lanes
 take no slot of their own. Each lane writes its own log and receipt and keeps its own outcome; the
@@ -29,7 +29,7 @@ from . import lane_results, processes, run_progress, shims
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
-# Processes `qk unittest` runs at a time unless --jobs says otherwise (guides/parallel-tests.md).
+# Processes `qk unittest` runs at a time unless --jobs says otherwise (doc/guides/parallel-tests.md).
 DEFAULT_JOBS = 4
 # unittest's own exit status for a run that found no tests (Python 3.12 and later).
 NO_TESTS = 5
@@ -39,7 +39,7 @@ NO_TESTS = 5
 # 817 s at one-minute load averages of 100 to 280 on this Mac (2026-10-31).
 PROCESS_LIMIT = 1800
 # The variable that gives a lane's command the absolute path of its results/ directory, which `qk run` empties
-# before each run and brings back from the second Mac (guides/parallel-tests.md, A lane's results).
+# before each run and brings back from the second Mac (doc/guides/parallel-tests.md, A lane's results).
 RESULTS_VARIABLE = "QUEUEKEEPER_RESULTS_DIR"
 # Set in each test process qk unittest starts, so that a suite's shared setup can tell that run from a bare `python3 -m
 # unittest`, which takes no slot (tests/host_isolation.py, vocaro/queuekeeper#36).

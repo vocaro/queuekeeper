@@ -14,10 +14,10 @@ with erase erases the member as before, and one with keep_state reserves and boo
 or erasing it. Pruning deletes a member
 unused and released for an hour, the lowest-numbered of its kind only on request and once the whole kind
 is unused for 7 days, and a template whose runtime is no longer installed or whose kind has no member left
-and is as long unused, and records each deletion (guides/simulator-pool.md, Reserved simulator pool). Nothing
+and is as long unused, and records each deletion (doc/guides/simulator-pool.md, Reserved simulator pool). Nothing
 else here deletes or renames a simulator, except a template whose runtime moved, which is replaced.
 Reaping shuts down a member, or a template, left booted past its time, such as by a killed warm-up
-(offload_host.reap; guides/shared-host.md, Stale pool simulators).
+(offload_host.reap; doc/guides/shared-host.md, Stale pool simulators).
 Checking a UDID refuses any device outside the pool, such as one of Xcode's default devices, which a
 script that picks a device by name finds instead of a member (vocaro-engineering#91); checking it
 as held also refuses a member that the caller holds no live reservation of (vocaro-engineering#122).
@@ -100,7 +100,7 @@ BOOT_ERROR_SHOWN = 2000
 # process with no assistive technology running, so that an in-process test hosted in an app reads their
 # views (AccessibilitySnapshot.readsSystemViews). Apple documents no such key: verified on the iOS 27.2
 # simulator, runtime build 24B8117, and checked again by the OS-drift procedure (vocaro-engineering#181;
-# guides/simulator-pool.md, App accessibility).
+# doc/guides/simulator-pool.md, App accessibility).
 APP_ACCESSIBILITY_DOMAIN, APP_ACCESSIBILITY_KEY = "com.apple.Accessibility", "ApplicationAccessibilityEnabled"
 
 
@@ -529,7 +529,7 @@ class Pool:
             if any(template.udid == udid for template in templates(self.name, listing)) else "a device"
         raise RuntimeError(f"{entry.get('name')} ({udid}) is {kind} outside the {self.name} simulator pool: take a "
                            "member with `qk simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID "
-                           "(guides/simulator-pool.md, Reserved simulator pool)")
+                           "(doc/guides/simulator-pool.md, Reserved simulator pool)")
 
     def check_held(self, udid, listing=None, defaults=None):
         """The member this UDID names, when this owner holds a live reservation of it: its record entry,
@@ -557,7 +557,7 @@ class Pool:
         raise device_record.Refused(f"{member.name} ({member.udid}) is a {self.name} pool member that {self.owner} "
                                     f"holds no reservation of; {why}. Take one with `qk simulator-pool take "
                                     "--device TYPE --runtime RUNTIME` and pass the UDID it prints "
-                                    "(guides/simulator-pool.md, Reserved simulator pool)")
+                                    "(doc/guides/simulator-pool.md, Reserved simulator pool)")
 
     def state(self, udid):
         """A fresh observation of this exact device, or None when simctl no longer lists it."""
@@ -1334,7 +1334,7 @@ def main(argv, project=None):
                        "template, for a lane that wants pristine data")
     take.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
                       "accessibility on in the member's app processes, for tests hosted in an app that read system "
-                      "views (guides/simulator-pool.md, App accessibility); a setting that does not read on fails "
+                      "views (doc/guides/simulator-pool.md, App accessibility); a setting that does not read on fails "
                       "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {lane_results.UNMEASURED}")
@@ -1358,7 +1358,7 @@ def main(argv, project=None):
                                 "whose runtime is no longer installed or whose kind has no member left")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members or templates")
     reap = action("reap", help="shut down members and warmed templates left booted for 2 hours that "
-                               "nothing accounts for, on this Mac and the second Mac (guides/shared-host.md, Stale "
+                               "nothing accounts for, on this Mac and the second Mac (doc/guides/shared-host.md, Stale "
                                "pool simulators)")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
     reap.add_argument("--here", action="store_true", help="only this Mac")

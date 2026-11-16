@@ -240,7 +240,7 @@ class DeviceRecordTests(unittest.TestCase):
 
     def test_recovery_refuses_the_old_name_of_offload_unchecked_with_the_new_one_and_hides_it_from_help(self):
         refused = ("devices: --build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, and "
-                   "is no longer read: use --offload-unchecked (guides/shared-host.md, Earlier names)\n")
+                   "is no longer read: use --offload-unchecked (doc/guides/shared-host.md, Earlier names)\n")
         entry = self.reserve(device=PHONE)
         entry = self.record.update("iPhone", owner="session-a", revision=entry["revision"], uncertain=True,
                                    run={"host": "build-host", "startedAt": devices.now()})

@@ -2,7 +2,7 @@
 
 usage: watch.py LOG OUT SECONDS
 Watches each logged process and the parent of each "child", which is the command's shell.
-How to run it beside siglog.py, and read both: guides/shared-host.md, Probing stop signals.
+How to run it beside siglog.py, and read both: doc/guides/shared-host.md, Probing stop signals.
 """
 import os
 import sys

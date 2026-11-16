@@ -7,7 +7,7 @@ a slot: it waits while another run holds the second Mac's mac-foreground entry, 
 which records no approval, runs the work with
 QUEUEKEEPER_DEVICE_OWNER naming the reservation, so that drivers' `devices check` passes, and releases it.
 This Mac is the owner's workstation. Its foreground needs a window the owner agreed beforehand, which
-the session reserves itself (guides/shared-host.md, Attended Mac sessions), and queuekeeper never sends
+the session reserves itself (doc/guides/shared-host.md, Attended Mac sessions), and queuekeeper never sends
 foreground work to it.
 
 A Mac's device record that defers physical devices to another Mac's is the second Mac's: every run
@@ -28,7 +28,7 @@ POLL = 10
 # Seconds a run is expected to hold the foreground when its lane names no timeout. A deadline releases
 # nothing: the run releases the entry when its work ends, however long that takes.
 EXPECTED = 3 * 3600
-GUIDE = "guides/foreground.md"
+GUIDE = "doc/guides/foreground.md"
 # Seconds a waiter keeps looking once the holder's expected release falls after its own deadline, in case the holder
 # releases early, before it ends with nothing run (vocaro/queuekeeper#95). A holder already ending its run
 # releases within about this long: its command has up to processes.FOREGROUND_KILL_AFTER, 120 s, between SIGTERM and
@@ -94,7 +94,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     if not second_mac(record):
         raise reservations.Refused("queuekeeper takes the foreground only on the second Mac; this Mac's needs a window the owner "
                               "agreed beforehand, which the session reserves as mac-foreground itself "
-                              "(guides/shared-host.md, Attended Mac sessions)")
+                              "(doc/guides/shared-host.md, Attended Mac sessions)")
     found = (ready or problems)()
     if found: raise refusal(found)
     owner = f"queuekeeper {os.getpid()} on {offload_host.mac_name()}"

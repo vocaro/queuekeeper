@@ -553,7 +553,7 @@ def named(words, known=(), root=None, *, commits=()):
 
 class BoundedRun:
     """One command on physical devices the session holds, stopped before their reservations end and
-    never releasing them (guides/shared-host.md, Bounded device runs).
+    never releasing them (doc/guides/shared-host.md, Bounded device runs).
 
     Here the reservations come from this Mac's record: the session holds each with no run active,
     at revision when one is given. Each entry records the run: active,
@@ -796,7 +796,7 @@ def watched(run, key, command, extra, cwd=None, env=None, kept=None):
 
 def no_tests(text):
     """Why a run whose output is text measured nothing though it may exit 0: it reports a test count, and every
-    test it counts skipped or none ran (lane_results.counted, guides/parallel-tests.md). None when it ran a test or
+    test it counts skipped or none ran (lane_results.counted, doc/guides/parallel-tests.md). None when it ran a test or
     reports no count, as a command that runs no tests does."""
     found = counted(text)
     if found is None or found[0] > found[1]:
@@ -1190,7 +1190,7 @@ def main(argv=None):
         elif args.action == "recover":
             if args.build_host_unchecked is not None:
                 raise ValueError("--build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, "
-                                 "and is no longer read: use --offload-unchecked (guides/shared-host.md, Earlier names)")
+                                 "and is no longer read: use --offload-unchecked (doc/guides/shared-host.md, Earlier names)")
             if args.host: return recover_there(args)
             entry = record.entry(args.key) or {}
             # Only once recovery would go ahead: never while its run's process still runs.

@@ -48,7 +48,7 @@ commit of its own, and land that in the dependent's queue.
 
 **A round.** The worker fetches, takes everything waiting, oldest first, cherry-picks each entry
 onto `origin/main` in its own checkout, `~/Development/queuekeeper-workers/NAME/NAME`, and runs the project's queue lanes through
-`qk run`: its preflight lanes, `queue.preflight` ([Preflight lanes](../doc/merge_queue.md#preflight-lanes)), and its
+`qk run`: its preflight lanes, `queue.preflight` ([Preflight lanes](../merge_queue.md#preflight-lanes)), and its
 `provision` lane when it has one, and then its `gate` lane, or
 `queue.lanes` in queuekeeper.json for a project that needs others, read from `main`, or from the
 batch until `main` has any, so that the commit naming them can land
@@ -145,7 +145,7 @@ started it ends, so it could no longer reach the second Mac. Before each round, 
 worker checks for this and, if so, exits, holding nothing, with its entries back in the queue. A gate that finds it
 during a round, by the exit 69 of a lane's `qk run`, which then ran nothing on this Mac, does the same. Its log then
 says `exits, holding nothing, since this worker cannot reach the second Mac`. The next `qk land`, `qk queue wait` or
-`qk queue resume` starts another worker (guides/shared-host.md, Local Network access;
+`qk queue resume` starts another worker (doc/guides/shared-host.md, Local Network access;
 vocaro-engineering#282, #300).
 
 **The shared checkout follows each toolkit landing.** After each push, the toolkit's own worker
@@ -910,7 +910,9 @@ gate yet fails to carry over, or the reverse. The conventional Markdown defaults
 ```
 
 Every key is optional. `paths` adds to the defaults, each a file or a directory ending in `/`, with
-why no code lane reads it. `exclude` names paths among them that code does read, and wins over both.
+why no code lane reads it. A directory there takes every file in it, not only its Markdown as the
+defaults do, so a file of another kind in it, such as an image a document shows, needs an
+`exclude` entry or a place outside it. `exclude` names paths among them that code does read, and wins over both.
 `lanes`, by default `["docs"]`, is what a batch of unread paths runs in place of the gate, never
 `gate`. `defaults: false` drops the Markdown defaults. `"unread": false` gates every batch and
 carries nothing over. List a path only when no lane reads it, and check first: studywright's gate
@@ -935,11 +937,15 @@ release` will not take it. Any other move gates again, with no blame.
 
 **A docs-only batch runs the docs lanes.** A batch whose every path is unread is a docs-only
 batch. By default, existing and newly initialized repositories use this path for root
-`README.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`, and Markdown files (`.md` or `.markdown`) under `doc/`, `docs/`, `guides/`, and `knowledge/`.
+`README.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`, and Markdown files (`.md` or `.markdown`)
+under `doc/` and `docs/`. `guides/` and `knowledge/` are no standard documentation folders and no
+default (vocaro/queuekeeper#106): a project that keeps documents there names them in
+`queue.unread.paths`, which adds to the defaults, or a change to them takes the code gate and
+gates a passed batch again.
 The worker runs the preflight lanes, followed by the project's `docs` lane or the toolkit's
 implicit `docs` lane (`python3 scripts/qk docs check`, or `qk docs check` by the toolkit's own
-`bin/qk` in a project with no launcher). This includes this toolkit's guides and
-knowledge articles.
+`bin/qk` in a project with no launcher). Queuekeeper's own guides are under `doc/guides/`, so
+the default takes them and its `queuekeeper.json` names no path.
 Code, configuration, agent instructions, non-Markdown data, and documents under source or test
 folders retain the code gate. A batch that changes nothing runs every code lane, and so does an
 entry whose own commits change a document and code.
@@ -1044,7 +1050,7 @@ and exits when nothing waits. A queue set up with the [signed launcher](#signed-
 also checks for waiting work at login and every two minutes. After a reboot, `qk queue wait`
 can start a worker, and `qk queue resume` can clear a hold and start one. After taking
 the queue lock, a worker checks for dispatchers proven gone and requests a stop for each run
-their records identify, including a crashed worker's gate (guides/shared-host.md, How a run
+their records identify, including a crashed worker's gate (doc/guides/shared-host.md, How a run
 reaches the second Mac).
 Whatever a dead worker left testing was never pushed, so the next worker tests it again. A batch
 whose lanes passed is recorded `passed`, with the commit that passed and its base, before its push;
@@ -1073,7 +1079,7 @@ verdict stays its receipt's. A gate held up by a dead or uncertain guard
 entry that admission has not recovered, for 15 minutes (`STUCK_SECONDS`), is shown as
 `stuck:`, with `python3 scripts/qk admissions recover` to list the entries, and the worker's log
 says so once; on 2026-11-07 BreezEPUB's gate waited 86 minutes behind three dead entries while
-status said only "waiting" (vocaro-engineering#315; guides/shared-host.md, Lock reclamation). The
+status said only "waiting" (vocaro-engineering#315; doc/guides/shared-host.md, Lock reclamation). The
 queue's own doctor acting on it is vocaro-engineering#290. `--json` has the same under `round`,
 each gate's `waitingSince` and any `stuck` among them. On 2026-11-07,
 with 3 entries testing and 6 queued, that took a dozen commands: a bisect of a spelling failure,
@@ -1267,7 +1273,7 @@ no longer has the fields the script makes up, which is when to change the script
 
 This check is Queuekeeper's legacy spelling lane, which a later release removes: a project lists a
 spelling check of its own as a preflight lane instead
-([Preflight lanes](../doc/merge_queue.md#preflight-lanes),
+([Preflight lanes](../merge_queue.md#preflight-lanes),
 [#69](https://github.com/vocaro/queuekeeper/issues/69)).
 
 Queuekeeper's own repository already does: its `spelling` lane, the one entry of its
@@ -1341,8 +1347,8 @@ reads the Markdown at the root and under `doc/`, `docs/`, `guides/`, `knowledge/
 
 **Citations, for a project that turns them on.** With `"docs": {"citations": true}` in
 queuekeeper.json, the check also reads citations of a document by its path and a section title,
-as in `(guides/shared-host.md, Heavy-work admission)`, and by its path and an anchor, as in
-`guides/shared-host.md#probing-stop-signals` (vocaro/queuekeeper#114). Queuekeeper turns it on; a
+as in `(doc/guides/shared-host.md, Heavy-work admission)`, and by its path and an anchor, as in
+`doc/guides/shared-host.md#probing-stop-signals` (vocaro/queuekeeper#114). Queuekeeper turns it on; a
 project without the key gets the Markdown checks alone. Code comments, messages and schema
 descriptions cite the guides that way, so with no paths it reads every tracked Markdown file,
 source file, script (an extensionless file that starts `#!`) and `*.schema.json`, and with paths
@@ -1369,7 +1375,7 @@ name; a project fixes those before it turns the check on.
 
 When guide sections moved here from the toolkit (vocaro/vocaro-engineering#403), citations of
 them went stale with nothing reporting it, and a one-off script found them. On 2026-11-13 this
-check found two more in Queuekeeper: one in `guides/shared-host.md` that named Reserved simulator
+check found two more in Queuekeeper: one in `doc/guides/shared-host.md` that named Reserved simulator
 pool in `simulator-testing.md`, a guide not in this checkout, for a section now in
 `simulator-pool.md`, and one in `qk run --help` that named `A run with no verdict`, a bold lead-in
 cut short. The whole check of this checkout, 239 tracked files, took 0.8 s that day, well inside

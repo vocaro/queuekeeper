@@ -30,7 +30,7 @@ statement of what it needs from the machine:
   selects nothing fails. Counts are read from unittest, pytest, XCTest and Swift Testing output.
   A lane that picks its tests by name can say `"exactTests": true`, and a whole run must then execute
   exactly its `minimumTests`, so that a test added to or dropped from the lane fails it
-  ([test counts](../guides/lanes.md#receipts-and-test-counts)).
+  ([test counts](guides/lanes.md#receipts-and-test-counts)).
 - **Arguments.** `qk run LANE -- ARGUMENTS` appends the arguments to the lane's command, to run
   some of its tests. A lane whose command selects its own tests says `"arguments": false`, and such
   a run is then refused at once, with exit status 2, before anything is staged or sent to another Mac.

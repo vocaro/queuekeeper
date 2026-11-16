@@ -1,4 +1,4 @@
-"""The stop-signal probes in tools/stop-signals (guides/shared-host.md#probing-stop-signals)."""
+"""The stop-signal probes in tools/stop-signals (doc/guides/shared-host.md#probing-stop-signals)."""
 import os
 from pathlib import Path
 import signal

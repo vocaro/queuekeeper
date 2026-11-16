@@ -161,5 +161,5 @@ failed. `closed` and `run` otherwise exit with their command's own status.
 - **Whether a batch run with a graphics device works over SSH** on the second Mac, or needs an
   unlocked screen, is not tested.
 
-The shared-host guide's [Unity editors](../../../../guides/shared-host.md#unity-editors) section
+The shared-host guide's [Unity editors](../../../../doc/guides/shared-host.md#unity-editors) section
 says what two sessions share on one Mac and what they do not.

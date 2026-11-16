@@ -104,10 +104,10 @@ def register():
         "device-pass": ("a release's physical-device pass, as a release lane's command: run COMMAND once on each paired "
                         "device named, in turn, under its reservation, taking the iPad in turn and using an iPhone the "
                         "session reserved within the owner's window: qk device-pass --device iPad --device "
-                        "iPhone -- COMMAND; -h for the rest (guides/devices.md, The device pass)", device_pass.main),
+                        "iPhone -- COMMAND; -h for the rest (doc/guides/devices.md, The device pass)", device_pass.main),
         "devices": ("read or change this Mac's device record, which reserves its physical devices, simulator pool "
                     "members and foreground: qk devices status|show|reserve|update|take|release|recover|run; "
-                    "-h for the rest (guides/shared-host.md, Device reservations)",
+                    "-h for the rest (doc/guides/shared-host.md, Device reservations)",
                     lambda arguments, project: devices.main(arguments)),
         "simulator-pool": ("list, take, release, prune, reap or check members of the project's simulator pool under "
                            "device-record reservations: qk simulator-pool list|take|release|prune|reap|check; "
@@ -123,7 +123,7 @@ def register():
         "app": ("run the last good build of the project's app: qk app run opens the newest kept Mac build, and "
                 "qk app run --iphone or --ipad installs and launches the device build on that paired device, "
                 "building origin/main first when the kept build is older; qk app keep builds and keeps one, as "
-                "the merge queue does after each gated landing; qk app status lists them (guides/app-builds.md)",
+                "the merge queue does after each gated landing; qk app status lists them (doc/guides/app-builds.md)",
                 app_builds.add_arguments, app_builds.execute, True),
     })
     if keep_app not in extensions.AFTER_LANDING: extensions.AFTER_LANDING.append(keep_app)

@@ -20,7 +20,7 @@ signing identity is there and whether signing with it succeeded, each separately
 unlocked keychain and a listed identity do not show that the key can be used. It runs nothing
 that could show a dialog: only in a session without graphic access, as an SSH login is, does it
 run `security` or `codesign` at all, with no input, each within its time limit. A check that could
-not be made is unmeasured, never passed (guides/shared-host.md, Keychains on the right Mac).
+not be made is unmeasured, never passed (doc/guides/shared-host.md, Keychains on the right Mac).
 """
 import difflib
 import json
@@ -322,7 +322,7 @@ def execute(args, out=print):
 def unlock_for_run(root, unlock=None):
     """Unlock the login keychain in this run's own SSH session, when the owner has kept its password
     in root (keep_unlocked): an unlock in another session, the owner's desktop or an earlier SSH login,
-    does not reach this one (guides/shared-host.md, Keychains on the right Mac). The path it unlocked,
+    does not reach this one (doc/guides/shared-host.md, Keychains on the right Mac). The path it unlocked,
     or None when no password is kept. A kept password that does not unlock it is the owner's to fix,
     and the run does not start: work that signs would fail later, and less plainly."""
     kept = root / offload_host.KEYCHAIN_PASSWORD
@@ -330,7 +330,7 @@ def unlock_for_run(root, unlock=None):
     path = Path.home() / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
     fix = (f"on the Mac that sends work here, run `python3 scripts/qk keychain keep-unlocked` and type this Mac's "
            f"login password at its prompt, or delete {kept} to send work without the unlock "
-           "(guides/shared-host.md, Keychains on the right Mac)")
+           "(doc/guides/shared-host.md, Keychains on the right Mac)")
     if not path.is_file(): raise offload_host.Refusal(f"{kept} holds the password of {path}, which is not there", fix)
     try:
         password = kept.read_bytes()

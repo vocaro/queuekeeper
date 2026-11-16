@@ -9,7 +9,7 @@ concurrently itself; with --split-swift-testing their suites are packed into the
 classes are, each shard's in a `swift test --no-parallel` process of its own that runs one test at a
 time, as xctest does. Several packages build one after another and share one pool of processes.
 A project passes what its run needs as options: a scratch path, a configuration, other swift
-options. guides/parallel-tests.md says when this is safe and how to bound it.
+options. doc/guides/parallel-tests.md says when this is safe and how to bound it.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor

@@ -255,7 +255,7 @@ class ProcessTests(unittest.TestCase):
 
     def own_tree(self, *pinned):
         """A processes.snapshot of this test's own process tree and of the PIDs each of pinned lists, a file of PIDs:
-        a listing of every process on the Mac is slow at a gate's start (guides/parallel-tests.md). The pinned ones
+        a listing of every process on the Mac is slow at a gate's start (doc/guides/parallel-tests.md). The pinned ones
         are the run's descendants that its root's end leaves to launchd, outside this tree."""
         def listing():
             children = {}

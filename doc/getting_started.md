@@ -63,7 +63,7 @@ one lane, `gate`, which is the command every change must pass:
 - `timeout` is in seconds. A lane that reaches it ends as unmeasured, not failed.
 - The queue reads its settings from `main`, so a branch cannot loosen its own gate. Only the commit
   that adds `queuekeeper.json` is gated by its own, since `main` has none yet
-  ([A project's first landing](../guides/maintenance.md#a-projects-first-landing)).
+  ([A project's first landing](guides/maintenance.md#a-projects-first-landing)).
 
 Then run:
 

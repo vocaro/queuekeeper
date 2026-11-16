@@ -296,7 +296,7 @@ def signing_hint(log):
     except OSError:
         return ""
     return (". A target signs manually, so no profile was made for it: sign it automatically, with "
-            "CODE_SIGN_STYLE Automatic in the project or its project.yml (guides/app-builds.md, Signing)")
+            "CODE_SIGN_STYLE Automatic in the project or its project.yml (doc/guides/app-builds.md, Signing)")
 
 
 def product(app, platform, derived):
@@ -596,7 +596,7 @@ def execute(root, args, config=None):
     if args.operation == "device": return install_and_launch(args.udid, args.app, args.bundle)
     config = config if config is not None else load(root)
     if "app" not in config:
-        say("queuekeeper.json configures no app" + (behind_main(root) or ": add `app` (guides/app-builds.md)"))
+        say("queuekeeper.json configures no app" + (behind_main(root) or ": add `app` (doc/guides/app-builds.md)"))
         return 2
     store = Store(config["name"])
     try:

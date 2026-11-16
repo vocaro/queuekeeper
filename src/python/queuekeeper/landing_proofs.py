@@ -159,7 +159,7 @@ def resolutions(git, base, tip, pending):
     around them in paths. Each landed commit stands for one pending commit. None when any is not.
 
     This is the merge queue's rebase of an entry past one ahead of it, settled by keeping both sides
-    (two changelog entries, say; guides/maintenance.md): the branch's line then lands beside other
+    (two changelog entries, say; doc/guides/maintenance.md): the branch's line then lands beside other
     neighbors, so its patch is not the branch's. Comparing each commit with its own landed copy, and
     not with base's tree, keeps it landed when later work in base rewrites a line it added."""
     if not pending: return None

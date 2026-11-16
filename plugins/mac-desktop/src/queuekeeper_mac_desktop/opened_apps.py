@@ -25,7 +25,7 @@ import time
 
 from queuekeeper import offload_host
 
-GUIDE = "guides/foreground.md"
+GUIDE = "doc/guides/foreground.md"
 SECTION = "Apps a run opened"
 # "off" reads no running apps, so that nothing is quit: the test suite sets it for every run it makes, in its own
 # process and its children, so that no test quits an app on the Mac that runs it.

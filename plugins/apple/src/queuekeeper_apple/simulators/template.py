@@ -1,6 +1,6 @@
 """A pool's warmed template: one simulator per kind (device type and runtime) that has booted once, heard
 VoiceOver speak and used the system's voices twice with a reboot between, from which the pool clones new
-members and resets taken ones (guides/simulator-pool.md, Warmed templates).
+members and resets taken ones (doc/guides/simulator-pool.md, Warmed templates).
 
 A new simulator's first boot migrates its data, and VoiceOver's first start on it waits for its voice
 database, which took 40 to 60 s on a quiet Mac and minutes on a loaded one. The first request for the

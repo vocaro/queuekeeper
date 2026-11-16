@@ -479,7 +479,7 @@ def check(root, project, paths=(), out=print, commands=()):
             out(f"{f}:{line}: the command's old name '{OLD_COMMAND} {name}' -> {COMMAND} {name}")
             old += 1
     renamed = (f"{old} use(s) of the command's old name: the command is {COMMAND}, and a line that keeps the old name "
-               "on purpose is marked `spelling: keep` with its reason (guides/maintenance.md, Spelling check)")
+               "on purpose is marked `spelling: keep` with its reason (doc/guides/maintenance.md, Spelling check)")
     if found:
         out(f"check_spelling: FAIL — {found} British spelling(s) in {len(files)} text file(s) and "
             f"{len(names)} file name(s). Spell them the American way (the toolkit's agents/core.md, Writing)."
