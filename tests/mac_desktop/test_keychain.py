@@ -17,7 +17,7 @@ from queuekeeper import host_context
 import host_isolation
 from host_isolation import stretched
 
-# Invented Mac names: the workstation that sends work, the second Mac, and a third Mac neither knows.
+# Invented Mac names: the workstation that sends work, another Mac, and a third Mac neither knows.
 WORKSTATION, SECOND, THIRD = "workstation-mac", "second-mac-host", "third-mac"
 HOME = "/Users/someone"
 LOGIN = f"{HOME}/Library/Keychains/login.keychain-db"
@@ -90,9 +90,9 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(host_context.audit_flags())
             self.assertEqual(host_context.session(environment={})["kind"], "unknown")
 
-    def test_the_second_mac_is_the_canonical_resolver_s(self):
+    def test_the_farm_mac_is_the_canonical_resolver_s(self):
         cases = [
-            # The workstation: the alias its ~/.ssh/config defines resolves to the second Mac's name.
+            # The workstation: the alias its ~/.ssh/config defines resolves to another Mac's name.
             ("build-host", {"hostname": f"{SECOND}.local"}, {}, view("build-host", f"{SECOND}.local")),
             # A destination that is a host name of its own.
             ("mac.example", {"hostname": "mac.example"}, {}, view("mac.example", "mac.example")),
@@ -103,20 +103,20 @@ class SessionTests(unittest.TestCase):
                     patch.object(remote, "configured", return_value=destination), \
                     patch.object(remote, "ssh_settings", return_value=settings), \
                     patch.object(offload_host, "device_record", return_value=record):
-                self.assertEqual(host_context.second_mac(), expected)
+                self.assertEqual(host_context.farm_mac(), expected)
 
 
 class LocateTests(unittest.TestCase):
-    def test_from_the_workstation_the_target_is_the_second_mac_its_alias_reaches(self):
+    def test_from_the_workstation_the_target_is_the_farm_mac_its_alias_reaches(self):
         found = host_context.locate(WORKSTATION, WORKSTATION_VIEW, there=SECOND)
-        self.assertEqual((found.where, found.mac, found.destination, found.refusal), ("second Mac", SECOND, "build-host", None))
+        self.assertEqual((found.where, found.mac, found.destination, found.refusal), ("farm Mac", SECOND, "build-host", None))
         named = host_context.locate(WORKSTATION, WORKSTATION_VIEW, SECOND, there=SECOND)
-        self.assertEqual((named.where, named.mac), ("second Mac", SECOND))
+        self.assertEqual((named.where, named.mac), ("farm Mac", SECOND))
         # The workstation's own keychain is the target only when the owner names this Mac.
         own = host_context.locate(WORKSTATION, WORKSTATION_VIEW, WORKSTATION)
         self.assertEqual((own.where, own.mac, own.destination), ("here", WORKSTATION, None))
 
-    def test_on_the_second_mac_without_the_alias_the_target_is_here(self):
+    def test_on_the_farm_mac_without_the_alias_the_target_is_here(self):
         found = host_context.locate(SECOND, SECOND_VIEW)
         self.assertEqual((found.where, found.mac, found.refusal), ("here", SECOND, None))
         self.assertIn("already on the target", found.note)
@@ -127,12 +127,12 @@ class LocateTests(unittest.TestCase):
 
     def test_a_wrong_host_is_refused_with_what_to_do(self):
         cases = [
-            # On the second Mac, asked for the workstation's keychain: no alias here reaches it.
+            # On another Mac, asked for the workstation's keychain: no alias here reaches it.
             (SECOND, SECOND_VIEW, WORKSTATION, None, [f"run this on {WORKSTATION}", "does not resolve here"]),
             (SECOND, SECOND_VIEW, THIRD, None, [f"run this on {THIRD}"]),
-            # On the workstation, asked for a Mac that is neither it nor the second Mac.
+            # On the workstation, asked for a Mac that is neither it nor another Mac.
             (WORKSTATION, WORKSTATION_VIEW, THIRD, SECOND, [f"{THIRD} is neither this Mac", f"run this on {THIRD}"]),
-            # A Mac that names no second Mac and is none.
+            # A Mac that names no other Mac and is none.
             (THIRD, view(), None, None, ["sends work to no Mac", f"--target {THIRD}"]),
         ]
         for here, seen, target, there, said in cases:
@@ -140,10 +140,10 @@ class LocateTests(unittest.TestCase):
                 found = host_context.locate(here, seen, target, there)
                 self.assertIsNone(found.where)
                 for words in said: self.assertIn(words, found.refusal)
-        # A Mac that names no second Mac may still be the target when the owner names it.
+        # A Mac that names no other Mac may still be the target when the owner names it.
         self.assertEqual(host_context.locate(THIRD, view(), THIRD).where, "here")
 
-    def test_a_second_mac_that_could_not_be_reached_is_refused_with_why(self):
+    def test_a_farm_mac_that_could_not_be_reached_is_refused_with_why(self):
         found = host_context.locate(WORKSTATION, WORKSTATION_VIEW, unreached="build-host cannot be reached: timed out")
         self.assertIsNone(found.where)
         self.assertIn("timed out", found.refusal)
@@ -172,7 +172,7 @@ class KeychainFileTests(unittest.TestCase):
                 with self.subTest(misspelled):
                     self.assertFalse(offload_host.keychain(misspelled)["exists"])
 
-    def test_the_second_mac_answers_the_question_with_its_own_python(self):
+    def test_the_farm_mac_answers_the_question_with_its_own_python(self):
         # As remote.ask sends it: offload_host.py's source run by python3, the request as its argument.
         found = subprocess.run([sys.executable, "-c", Path(offload_host.__file__).read_text(),
                                 json.dumps({"keychain": keychain.DEFAULT})], capture_output=True, text=True,
@@ -202,8 +202,8 @@ class CommandTests(unittest.TestCase):
         return found, self.log.read_text().splitlines()
 
     def commands(self, here, where, path=LOGIN):
-        location = host_context.locate(here, WORKSTATION_VIEW if where == "second Mac" else SECOND_VIEW,
-                                       there=SECOND if where == "second Mac" else None)
+        location = host_context.locate(here, WORKSTATION_VIEW if where == "farm Mac" else SECOND_VIEW,
+                                       there=SECOND if where == "farm Mac" else None)
         return dict(keychain.unlock_commands(here, location, path))
 
     def test_the_stand_ins_see_the_unguarded_commands_reach_the_wrong_mac(self):
@@ -229,13 +229,13 @@ class CommandTests(unittest.TestCase):
                 self.assertIn(f"This is {WORKSTATION}, not {SECOND}.", found.stderr)
 
     def test_the_alias_command_runs_only_on_the_mac_that_defines_the_alias(self):
-        commands = self.commands(WORKSTATION, "second Mac")
+        commands = self.commands(WORKSTATION, "farm Mac")
         self.assertEqual(list(commands), [WORKSTATION, SECOND])
         found, called = self.run_on(WORKSTATION, commands[WORKSTATION], remote_mac=SECOND)
         self.assertEqual(found.returncode, 0, found.stderr)
         self.assertEqual(called[:3], ["ssh", "-t", "build-host"])
         self.assertEqual(called[4:], ["security", "unlock-keychain", LOGIN])
-        # Pasted into a shell already on the second Mac, it reaches for no alias and says what to use.
+        # Pasted into a shell already on another Mac, it reaches for no alias and says what to use.
         found, called = self.run_on(SECOND, commands[WORKSTATION])
         self.assertNotEqual(found.returncode, 0)
         self.assertEqual(called, [])
@@ -247,20 +247,20 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(called[:3], ["ssh", "-t", "build-host"])
         self.assertNotIn("security", called)
         self.assertIn(f"This is {THIRD}, not {SECOND}.", found.stderr)
-        # The second Mac's own command, run there, is the local one.
+        # Another Mac's own command, run there, is the local one.
         found, called = self.run_on(SECOND, commands[SECOND])
         self.assertEqual(called, ["security", "unlock-keychain", LOGIN])
 
     def test_a_path_that_needs_quoting_reaches_security_exactly(self):
         odd = f"{HOME}/Library/Keychains/it's a keychain $HOME.keychain-db"
-        for here, where in [(SECOND, "here"), (WORKSTATION, "second Mac")]:
+        for here, where in [(SECOND, "here"), (WORKSTATION, "farm Mac")]:
             with self.subTest(where):
                 found, called = self.run_on(here, self.commands(here, where, odd)[here], remote_mac=SECOND)
                 self.assertEqual(found.returncode, 0, found.stderr)
                 self.assertEqual(called[-2:], ["unlock-keychain", odd])
 
     def test_no_command_gives_security_a_password(self):
-        for here, where in [(SECOND, "here"), (WORKSTATION, "second Mac")]:
+        for here, where in [(SECOND, "here"), (WORKSTATION, "farm Mac")]:
             for command in self.commands(here, where).values():
                 words = shlex.split(command)
                 self.assertNotIn("-p", words)
@@ -277,7 +277,7 @@ class RecoverTests(unittest.TestCase):
             asked.append((destination, request))
             return answer
         with patch.object(host_context, "this_mac", return_value=here), \
-                patch.object(host_context, "second_mac", return_value=seen), \
+                patch.object(host_context, "farm_mac", return_value=seen), \
                 patch.object(host_context, "session", return_value=session), \
                 patch.object(remote, "reachable", side_effect=reachable) as checked, \
                 patch.object(offload_host, "keychain", return_value=local) as read_here, \
@@ -289,7 +289,7 @@ class RecoverTests(unittest.TestCase):
     def present(self, mac, path=LOGIN):
         return {"mac": mac, "home": HOME, "path": path, "exists": True, "keychains": [path]}
 
-    def test_from_the_workstation_it_checks_the_second_mac_s_keychain_and_prints_both_commands(self):
+    def test_from_the_workstation_it_checks_the_farm_mac_s_keychain_and_prints_both_commands(self):
         status, said, asked, checked, read_here = self.recover(
             WORKSTATION, WORKSTATION_VIEW, answer=self.present(SECOND), identity=NAME)
         self.assertEqual(status, 0, said)
@@ -302,7 +302,7 @@ class RecoverTests(unittest.TestCase):
                       "never an qk remote run", "`python3 scripts/qk keychain keep-unlocked`"]:
             self.assertIn(words, said)
 
-    def test_on_the_second_mac_it_gives_the_local_command_and_never_the_alias(self):
+    def test_on_the_farm_mac_it_gives_the_local_command_and_never_the_alias(self):
         status, said, asked, checked, read_here = self.recover(SECOND, SECOND_VIEW, local=self.present(SECOND),
                                                                session=SSH)
         self.assertEqual(status, 0, said)
@@ -340,7 +340,7 @@ class RecoverTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("It has no keychain files", said)
 
-    def test_a_second_mac_that_cannot_be_reached_is_refused_with_why(self):
+    def test_a_farm_mac_that_cannot_be_reached_is_refused_with_why(self):
         offline = remote.Unreachable("build-host cannot be reached: ssh: Could not resolve hostname", "wake it")
         status, said, asked, *_ = self.recover(WORKSTATION, WORKSTATION_VIEW, reachable=offline)
         self.assertEqual((status, asked), (2, []))
@@ -475,7 +475,7 @@ class Unlocks:
 
 
 class KeepUnlockedTests(unittest.TestCase):
-    """The second Mac's login keychain, which the owner keeps unlocked for qk remote's runs: each run
+    """Another Mac's login keychain, which the owner keeps unlocked for qk remote's runs: each run
     unlocks it in its own session with the password keep-unlocked kept."""
 
     def setUp(self):
@@ -535,7 +535,7 @@ class KeepUnlockedTests(unittest.TestCase):
         self.assertIn(f"{self.login}, which is not there", str(refused.exception))
         self.assertEqual(unlock.calls, [])
 
-    def test_only_a_run_sent_to_the_second_mac_unlocks_and_what_it_starts_does_not_unlock_again(self):
+    def test_only_a_run_sent_to_the_farm_mac_unlocks_and_what_it_starts_does_not_unlock_again(self):
         self.kept.write_bytes(b"the right one")
         unlock = Unlocks()
         with patch.object(offload_host, "security_unlock", unlock), contextlib.redirect_stderr(StringIO()) as said:
@@ -647,19 +647,19 @@ class KeepUnlockedTests(unittest.TestCase):
             requests.append(request)
             return interacted
         with patch.object(host_context, "this_mac", return_value=here), \
-                patch.object(host_context, "second_mac", return_value=seen), \
+                patch.object(host_context, "farm_mac", return_value=seen), \
                 patch.object(host_context, "session", return_value=GUI), \
                 patch.object(remote, "reachable"), \
                 patch.object(offload_host, "keychain", return_value=local):
             status = keychain.keep_unlocked(NAME, lines.append, lambda destination, request: answer, interact, keep)
         return status, "\n".join(lines), commands, requests
 
-    def test_from_the_workstation_it_asks_at_the_second_mac_s_own_prompt_through_the_alias(self):
+    def test_from_the_workstation_it_asks_at_the_farm_mac_s_own_prompt_through_the_alias(self):
         present = {"mac": SECOND, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
         status, said, commands, requests = self.from_mac(WORKSTATION, WORKSTATION_VIEW, answer=present)
         self.assertEqual((status, requests, len(commands)), (0, [], 1), said)
         command = commands[0]
-        # A terminal for the second Mac's prompt, the alias, and the second Mac's login shell, as a run has.
+        # A terminal for another Mac's prompt, the alias, and another Mac's login shell, as a run has.
         self.assertEqual((command[:2], command[-2]), (["ssh", "-t"], "build-host"))
         self.assertIn("BatchMode=yes", command)
         script = shlex.split(shlex.split(command[-1])[-1])
@@ -667,19 +667,19 @@ class KeepUnlockedTests(unittest.TestCase):
         self.assertEqual(json.loads(script[-1]), {"keepUnlocked": {"root": remote.ROOT, "mac": SECOND}})
         self.assertIn(shlex.join(["python3", "scripts/qk", "remote", "admit", "--", "python3", "scripts/qk", "keychain",
                                   "check", "--keychain", LOGIN, "--identity", NAME]), said)
-        # When the second Mac's half did not keep it, nothing more is said.
+        # When another Mac's half did not keep it, nothing more is said.
         status, said, *_ = self.from_mac(WORKSTATION, WORKSTATION_VIEW, answer=present, interacted=1)
         self.assertEqual(status, 1)
         self.assertNotIn("check", said)
 
-    def test_on_the_second_mac_it_runs_here_and_never_through_an_alias(self):
+    def test_on_the_farm_mac_it_runs_here_and_never_through_an_alias(self):
         present = {"mac": SECOND, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
         status, said, commands, requests = self.from_mac(SECOND, SECOND_VIEW, local=present)
         self.assertEqual((status, commands, requests), (0, [], [{"root": remote.ROOT, "mac": SECOND}]), said)
         self.assertIn(f"from {WORKSTATION}, as qk remote runs work on {SECOND}", said)
 
     def test_a_wrong_host_is_refused_before_anything_is_asked(self):
-        # The last: an alias that reaches the workstation itself, which is no second Mac.
+        # The last: an alias that reaches the workstation itself, which is no other Mac.
         present = {"mac": WORKSTATION, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
         for here, seen in [(THIRD, view()), (WORKSTATION, view("build-host", f"{WORKSTATION}.local"))]:
             with self.subTest(here):

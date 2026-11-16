@@ -43,14 +43,14 @@ slots, CPU busy share and memory pressure. The agent does not.
 
 ## How the code gets there
 
-The exact commit, or a snapshot commit of the working tree, is pushed over SSH straight to the other
-Mac. Nothing goes through the Git host. The other Mac keeps four checkouts per project and reuses
+The exact commit, or a snapshot commit of the working tree, is pushed over SSH straight to another
+Mac. Nothing goes through the Git host. Another Mac keeps four checkouts per project and reuses
 the one closest to the new commit, so builds stay warm. A one-line change sent 282 bytes in one
 measurement.
 
-Environment variables do not travel to the other Mac, so lane settings must be arguments.
+Environment variables do not travel to another Mac, so lane settings must be arguments.
 
-## Asking whether a command runs on the other Mac
+## Asking whether a command runs on another Mac
 
 A command that Queuekeeper sent to another Mac, a lane's or `qk admit`'s alike, finds
 `QUEUEKEEPER_DISPATCHED_FROM` in its environment, holding the name of the Mac that sent it. A
@@ -68,7 +68,7 @@ the network claims, and a check written for the old name then refuses every Mac 
 why. Do not compare the variable's value either: it is the sending Mac's name, which changes the
 same way.
 
-The variable describes the run, not the Mac. A command started by hand in a shell on the other
+The variable describes the run, not the Mac. A command started by hand in a shell on another
 Mac was sent by nobody and does not have it.
 
 ## A dropped connection
@@ -86,7 +86,7 @@ cannot unlock a screen.
 ## macOS Local Network privacy
 
 macOS can silently deny local-network access to a background process whose parent has exited.
-Queuekeeper detects this instead of reporting the other Mac as down, and includes a small signed
+Queuekeeper detects this instead of reporting another Mac as down, and includes a small signed
 launcher that avoids it.
 
 See also [Lanes and admission](lanes_and_admission.md) and the

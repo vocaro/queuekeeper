@@ -1,14 +1,14 @@
 # Recorded screen states
 
-`ioreg -n Root -d1 -a` from both Macs on 2026-11-05, both unlocked, with the large
+`ioreg -n Root -d1 -a` from the Macs on 2026-11-05, both unlocked, with the large
 `IOKitDiagnostics` and `IORegistryEntryChildren` entries removed:
 
 - `this-mac-unlocked.plist`: Trevors-MacBook-Pro-715, one login session, on the console.
 - `second-mac-unlocked.plist`: Medias-MacBook-Pro-5, `trevorharmon` on the console and
   `mediaserver` not.
 
-The others are those recordings with only the lock keys changed, as the locks measured on the
-second Mac set them (apple-engineering's guides/background-mac-testing.md, Lock screen and display sleep), since a
+The others are those recordings with only the lock keys changed, as the locks measured on another
+Mac set them (apple-engineering's guides/background-mac-testing.md, Lock screen and display sleep), since a
 test never locks a real screen (vocaro-engineering#185):
 
 - `*-locked-idle.plist`: a lock from idle time, as on 2026-10-28: the console session's

@@ -39,7 +39,7 @@ NO_TESTS = 5
 # 817 s at one-minute load averages of 100 to 280 on this Mac (2026-10-31).
 PROCESS_LIMIT = 1800
 # The variable that gives a lane's command the absolute path of its results/ directory, which `qk run` empties
-# before each run and brings back from the second Mac (doc/guides/parallel-tests.md, A lane's results).
+# before each run and brings back from another Mac (doc/guides/parallel-tests.md, A lane's results).
 RESULTS_VARIABLE = "QUEUEKEEPER_RESULTS_DIR"
 # Set in each test process qk unittest starts, so that a suite's shared setup can tell that run from a bare `python3 -m
 # unittest`, which takes no slot (tests/host_isolation.py, vocaro/queuekeeper#36).
@@ -77,7 +77,7 @@ def hand_up(results, lane, environment=None):
     """Copy a nested lane's results/ into results/LANE/ of the lane it runs inside, which RESULTS_VARIABLE
     names in environment (os.environ), and return that folder, or None when there is nothing to copy or
     no lane outside it. A gate whose script runs `qk run --here suites` then brings the suites' lanes'
-    results, such as each iOS shard's per-test lines, back with its own dispatch from the second Mac and
+    results, such as each iOS shard's per-test lines, back with its own dispatch from another Mac and
     keeps them by commit with its receipt (vocaro-engineering#218)."""
     outer = (os.environ if environment is None else environment).get(RESULTS_VARIABLE)
     if not outer: return None
@@ -99,7 +99,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
     its receipt at directory/NAME.json, and return the combined status. judge(lane, status, log) is
     a lane's status from its command's and its log, raising ValueError for a run that executed too
     few tests. With results_directory, the group's results/, each lane's command finds results/NAME/ in
-    RESULTS_VARIABLE, so that what it writes there comes back with the group's from the second Mac.
+    RESULTS_VARIABLE, so that what it writes there comes back with the group's from another Mac.
 
     Every lane runs to its own end, however the others end. A stop reaches every running lane and
     starts none of the rest; once all have ended the stop is raised, or the uncertainty of a lane
@@ -489,7 +489,7 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
     members for a run that selects tests, else None. progress, a run_progress.Tracker, records each process as it
     starts and ends, in whatever order they end."""
     expected = {name: len(tests) for name, tests in found.items()}
-    # Counted for the reader of an admitted run's output, whose progress folder on the second Mac it cannot read.
+    # Counted for the reader of an admitted run's output, whose progress folder on another Mac it cannot read.
     print(f"{run_progress.PREFIX}{len(tests)} tests in {len(found)} processes, {args.jobs} at a time",
           flush=True)
     if progress is not None:

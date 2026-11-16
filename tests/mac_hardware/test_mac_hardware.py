@@ -1,5 +1,5 @@
 """The Mac hardware extension: a lane's "chips", the chips its results are valid on, and where they put the lane.
-No test reads this Mac's chip or reaches the second Mac: both readings are stand-ins."""
+No test reads this Mac's chip or reaches another Mac: both readings are stand-ins."""
 import contextlib
 import io
 import json
@@ -19,7 +19,7 @@ M5, M1 = "apple-m5-max", "apple-m1-max"
 
 
 class Macs(unittest.TestCase):
-    """This Mac has an M5 Max and the second Mac, studio, an M1 Max, unless a test says otherwise."""
+    """This Mac has an M5 Max and another Mac, studio, an M1 Max, unless a test says otherwise."""
 
     def setUp(self):
         self.macs(M5, "studio", M1)
@@ -50,7 +50,7 @@ class ChipTests(unittest.TestCase):
         with patch.object(subprocess, "run", side_effect=OSError("no sysctl")):
             self.assertIsNone(chip.here())
 
-    def test_the_second_mac_s_chip_is_asked_once_and_unread_when_it_cannot_be_reached(self):
+    def test_the_farm_mac_s_chip_is_asked_once_and_unread_when_it_cannot_be_reached(self):
         asked = []
         def ssh(host, script, **options):
             asked.append((host, script))
@@ -78,7 +78,7 @@ class PlacementTests(Macs):
         self.assertIn("this Mac has apple-m5-max, and studio has apple-m1-max", why)
         self.assertIn("gate.chips: its chips are apple-m5-max", config.stays(self.lanes([M5]), "gate"))
 
-    def test_a_lane_only_the_second_mac_s_chip_suits_runs_only_there(self):
+    def test_a_lane_only_the_farm_mac_s_chip_suits_runs_only_there(self):
         self.assertEqual(self.placed([M1])[0], {"studio"})
         self.assertIsNone(config.stays(self.lanes([M1]), "gate"))
 
@@ -98,7 +98,7 @@ class PlacementTests(Macs):
         # Chips that every Mac but the unread one has leave that one out.
         self.assertEqual(self.placed([M5, M1])[0], {extensions.HERE, "studio", "mini", "rented"})
 
-    def test_a_lane_stays_here_when_the_second_mac_s_chip_cannot_be_read_or_there_is_none(self):
+    def test_a_lane_stays_here_when_the_farm_mac_s_chip_cannot_be_read_or_there_is_none(self):
         self.macs(M5, "studio", None)
         self.assertEqual(self.placed([M5])[0], {extensions.HERE})
         self.assertIn("studio has a chip that could not be read", self.placed([M5])[1])
@@ -165,7 +165,7 @@ class ConfigTests(Macs):
 
 
 class RunTests(Macs):
-    """`qk run` of a lane that runs only on the second Mac."""
+    """`qk run` of a lane that runs only on another Mac."""
 
     def setUp(self):
         super().setUp()
@@ -188,7 +188,7 @@ class RunTests(Macs):
             status = cli.main(["--project", str(self.root), "run", *arguments, "gate"])
         return status, error.getvalue()
 
-    def test_it_is_sent_to_the_second_mac_to_wait_there_and_never_offered_as_free(self):
+    def test_it_is_sent_to_the_farm_mac_to_wait_there_and_never_offered_as_free(self):
         status, error = self.run_lane()
         self.assertEqual((status, self.sent), (0, [("studio", ["run", "--here", "gate"])]))
         self.assertIn("gate runs only on studio (gate.chips: its chips are apple-m1-max", error)

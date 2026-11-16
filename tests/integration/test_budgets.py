@@ -277,7 +277,7 @@ class AdmittedSpan(unittest.TestCase):
         self.assertEqual(admission.at, written)
         mq.lane_wait.remove(self.record)
         self.assertEqual(admission.finish(), written)
-        # Sent to the second Mac and not yet admitted there, it has not been admitted.
+        # Sent to another Mac and not yet admitted there, it has not been admitted.
         relayed = mq.Admission(self.checkout, "gate", time.time() - 1)
         mq.lane_wait.sent("build-host")
         relayed.look()
@@ -317,9 +317,9 @@ class AdmittedSpan(unittest.TestCase):
             self.assertEqual(busy_of.call_count, 2)
 
 
-    def test_a_gate_sent_to_the_second_mac_is_read_there_while_it_runs(self):
+    def test_a_gate_sent_to_the_farm_mac_is_read_there_while_it_runs(self):
         """vocaro/queuekeeper#132: the dispatch's record is filed only when it ends, so while the gate ran there it named
-        no Mac, and each reading was this Mac's. The wait record names the second Mac from the moment the lane is sent."""
+        no Mac, and each reading was this Mac's. The wait record names another Mac from the moment the lane is sent."""
         began = time.time() - 1
         with patch.object(mq, "busy_of", side_effect=lambda host: (60.0, 90.0, host or "this Mac")) as busy_of:
             sampler = mq.BusySampler(self.checkout, "gate", began, argparse.Namespace(at=began)).start()
@@ -492,12 +492,12 @@ class Landing(Fixture):
         def dispatched(root, name, since):
             asked.append(name)
             return "fake-mac" if name == "gate" else real(root, name, since)
-        # While it runs, the lane's wait record names the Mac, as the second Mac's relayed record does
+        # While it runs, the lane's wait record names the Mac, as another Mac's relayed record does
         # (vocaro/queuekeeper#132): its dispatch's record is filed only at its end.
         current = mq.lane_wait.current
         def relayed(path, since=None):
             record = current(path, since)
-            if record and Path(path).stem == "gate": record = {**record, "mac": mq.lane_wait.second_mac("fake-mac")}
+            if record and Path(path).stem == "gate": record = {**record, "mac": mq.lane_wait.farm_mac("fake-mac")}
             return record
         self.commit("a", "a")
         [identifier] = self.add("a")

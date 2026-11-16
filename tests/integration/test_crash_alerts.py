@@ -294,7 +294,7 @@ class WatchTests(HostTest):
     """Looks after a failed one, and the window list's glance before System Events (#225)."""
 
     def test_a_failed_first_look_still_starts_the_watcher_which_clears_a_later_alert(self):
-        # The first listing fails, as a slow System Events call did on the second Mac on 2026-11-07.
+        # The first listing fails, as a slow System Events call did on another Mac on 2026-11-07.
         self.host = Host("basic", readable=1)
         with self.guarded(watch=0.02) as run:
             self.host.alerts.append(CRASH)
@@ -665,7 +665,7 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("crash-report", self.report({"value": "none", "record": {"before": "basic"}, "alerts": []},
                                                      held))
         self.assertIn("cannot be read", self.report({"value": "basic", "record": None, "alerts": None}))
-        # A second Mac whose toolkit predates them says nothing of them.
+        # Another Mac whose toolkit predates them says nothing of them.
         self.assertNotIn("alert", self.report(None))
 
 

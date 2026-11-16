@@ -3,8 +3,8 @@
 One worker per repository takes everything waiting, cherry-picks it onto origin/main in a checkout
 of its own, runs the project's queue lanes there once, and pushes on a pass. When the lanes fail on
 a batch it halves the batch until it finds the commit to send back, landing the rest, with each bisect's two halves
-gated at once, the newer on the second Mac when it can start them (Beside), and the entries that arrive during a
-gate gated stacked on its tip on the other Mac, landing once it has (Stack, vocaro-engineering#241); first, when the lane is
+gated at once, the newer on another Mac when it can start them (Beside), and the entries that arrive during a
+gate gated stacked on its tip on another Mac, landing once it has (Stack, vocaro-engineering#241); first, when the lane is
 qk unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
 of the files they import lands, with the flakes recorded (vocaro-engineering#231), and a batch whose real failures
 all point at one entry, by a path their output names or a file they import, sends that entry back and gates the
@@ -82,7 +82,7 @@ NO_VERDICT_OUTCOME = "no verdict"
 # shared host's configuration, which stops for the owner, and a worker that lost Local Network access (Worker.older).
 NO_VERDICT = {lane_results.UNMEASURED, resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
 # Of those, the exits of a lane that did not run: no Mac admitted it, a shared host's configuration stopped it, or this
-# worker can no longer reach the second Mac.
+# worker can no longer reach another Mac.
 UNRUN = {resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
 # Whom a hold is for, in its reason's first words (worded): the owner only for a cause nobody else can fix, a
 # misconfigured shared host, a refused push or credentials; a session for every other, and the session that deals
@@ -94,7 +94,7 @@ OWNER, SESSION, CLEARS = "owner", "session", "clears"
 LANE_LIMIT = 3 * processes.DEFAULT_LIMIT
 # How many runs in a row may give no verdict before the queue holds, unless main's queue.noVerdictRuns says
 # otherwise: a busy host clears, so each run after the first waits for it to settle. On 2026-11-04, 8 of 12 of
-# EPUBLib's gates on the second Mac gave none, as the simulators' voices were not ready in time (EPUBLib#946),
+# EPUBLib's gates on another Mac gave none, as the simulators' voices were not ready in time (EPUBLib#946),
 # and with one retry each pair held the queue until a person resumed it. A third run costs at most one gate and
 # one settle wait more, and still holds the queue for a cause that does not clear.
 NO_VERDICT_RUNS = 3
@@ -176,13 +176,13 @@ OPTIONS = {"front": "--front", "noGate": "--no-gate"}
 # The trailer an ungated landing adds to its tip, so that main's history says so (Worker.mark_ungated).
 UNGATED = "Landed-without-gate"
 # While a bisect goes on, the newer half of its suspects gates beside the older half, at once, in a second checkout:
-# the older half on this Mac, the newer on the second Mac when it can start them now, which never runs them here
-# (owner's decision of 2026-11-07, vocaro-engineering#241). A second Mac that declines leaves the newer half waiting,
+# the older half on this Mac, the newer on another Mac when it can start them now, which never runs them here
+# (owner's decision of 2026-11-07, vocaro-engineering#241). Another Mac that declines leaves the newer half waiting,
 # as before. The second checkout sits beside the worker's, with this suffix (Beside).
 HERE = ("--here",)
 BESIDE = ("--offload-only",)
 BESIDE_SUFFIX = "-beside"
-# While a batch gates, the entries that arrive behind it gate stacked on its tip, on the other Mac, in the checkout
+# While a batch gates, the entries that arrive behind it gate stacked on its tip, on another Mac, in the checkout
 # its gate does not use; the batch's push makes that tip origin/main, so the stacked gate's pass lands, and its
 # failure or no landing throws the stacked gate away (owner's decision of 2026-11-07, vocaro-engineering#241). The
 # worker looks for them this often (Worker.watched).
@@ -205,7 +205,7 @@ DOCS_CHECK_LIMIT = 60
 # vocaro/queuekeeper#158). A start that reaches this limit says nothing, and the queue holds as it would unasked.
 START_LIMIT = 60
 # What a gate's lanes return when `qk queue remove` took an entry it tests out of the queue, which stopped them by the
-# cancel a thrown-away stacked gate's lanes end with, here or on the second Mac, freeing their admission there: no
+# cancel a thrown-away stacked gate's lanes end with, here or on another Mac, freeing their admission there: no
 # verdict on anything, and what is left of the batch gates again (Worker.gate, vocaro-engineering#247). The gate looks
 # for such a removal this often, and records it on the entries it tests, for `qk queue remove` to say (stopping). A gate
 # whose lane still waits to start is stopped the same way for an entry qk land --front --no-gate put first, which then
@@ -268,12 +268,12 @@ IDLE_WAIT_SECONDS = STUCK_SECONDS
 WAIT_LIMIT = 6 * 3600
 # While nothing about an entry it follows changes, `qk land --wait` and `qk queue wait` say what it still waits for
 # this often, the gate's own heartbeat cadence (Follow). On 2026-11-12 an entry's wait printed nothing for 90 minutes,
-# behind a failed round and then in its own gate on the second Mac (vocaro/queuekeeper#41).
+# behind a failed round and then in its own gate on another Mac (vocaro/queuekeeper#41).
 HEARTBEAT = 5 * 60
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
 # The folder, beside the main checkouts and outside every repository, that holds each queue's checkouts as
-# the second Mac holds a run's (offload_host, checkouts/NAME/N/...): QUEUES/NAME/NAME and, beside it, the
+# another Mac holds a run's (offload_host, checkouts/NAME/N/...): QUEUES/NAME/NAME and, beside it, the
 # toolkit's copy, so that a project's ../vocaro-engineering finds that copy (owner's decision,
 # vocaro-engineering#104). The folders beside the main checkout it replaces, NAME-queue and NAME-queue-toolkit,
 # move there once nothing uses them.
@@ -667,7 +667,7 @@ def quick_lanes(config, code=False):
 
 def offerable(config, lanes):
     """Why one of lanes runs only on this Mac, as its configuration says (config.stays), so that a bisect's newer half
-    cannot gate on the second Mac beside the older half (Beside); None when every one can go there."""
+    cannot gate on another Mac beside the older half (Beside); None when every one can go there."""
     for lane in lanes:
         # qk run places the toolkit's spelling lane as it does any lane that says no `here`, so it holds no half back.
         if lane == SPELLING and implicit_spelling(config): continue
@@ -1164,7 +1164,7 @@ def hardening(checkout, flake, gh=None):
 
 
 def busy_of(host):
-    """(the CPU busy share in percent, the busy limit it is judged by, the Mac read) of host, the second Mac, by
+    """(the CPU busy share in percent, the busy limit it is judged by, the Mac read) of host, another Mac, by
     remote.busy_there, or with host None of this Mac, as admission reads it; None when it cannot be read."""
     if host:
         try: busy, limit = remote.busy_there(host)
@@ -1179,7 +1179,7 @@ def busy_of(host):
 class Admission:
     """When a gate lane's run was admitted, so that the gate's budget judges the lane's own work and not its wait for
     admission (vocaro/queuekeeper#112): the time its wait record (lane_wait) was written saying the run was admitted, on
-    this Mac or, as relayed, on the second Mac, by this Mac's clock. The record is read every ADMISSION_POLL seconds
+    this Mac or, as relayed, on another Mac, by this Mac's clock. The record is read every ADMISSION_POLL seconds
     until it says so; the time is the record's own, so the poll does not make it later. None until a reading sees it,
     as for a lane that ended within a poll of its admission. A measurement only: nothing a reading raises may end the
     gate."""
@@ -1230,9 +1230,9 @@ class BusySampler:
         except Exception: return None  # noqa: BLE001
 
     def host(self, record):
-        """The second Mac the lane runs on now, or None for this Mac: the Mac its wait record names, which is the second
+        """Another Mac the lane runs on now, or None for this Mac: the Mac its wait record names, which is the second
         Mac from the moment the lane is sent there (lane_wait.sent, relayed), or, when the record names none, as once
-        the run has ended and removed it, the second Mac its dispatch's record names (remote.dispatched). That record is
+        the run has ended and removed it, another Mac its dispatch's record names (remote.dispatched). That record is
         filed only when the dispatch ends, so while the lane ran there it named no Mac, and every reading was this
         Mac's (vocaro/queuekeeper#132)."""
         mac = record.get("mac") if record else None
@@ -1267,8 +1267,8 @@ class BusySampler:
 
 
 def load_of(host):
-    """(the one-minute load, the CPU busy share in percent, the busy limit it is judged by) of host, the second Mac, or
-    with host None of this Mac, each None when it cannot be read. A second Mac that cannot be reached raises
+    """(the one-minute load, the CPU busy share in percent, the busy limit it is judged by) of host, another Mac, or
+    with host None of this Mac, each None when it cannot be read. Another Mac that cannot be reached raises
     remote.Unavailable: its load is never this Mac's."""
     if host:
         answered, busy = remote.reading_there(host)
@@ -1283,7 +1283,7 @@ def load_words(lane, host, readings, waited=()):
     (vocaro-engineering#273), and plainly that it could not be read when none says. readings are those taken while the
     lane ran and waited those while it waited to start, which are said apart: the first count the lane's own work, a
     whole-host gate's nearly all of them, and only the second are of other work alone (vocaro/queuekeeper#12)."""
-    where = lane_wait.second_mac(host) if host else "this Mac"
+    where = lane_wait.farm_mac(host) if host else "this Mac"
     over = lane_report.readings_over
     def loads_of(of): return [reading[0] for reading in of if reading and reading[0] is not None]
     def shares_of(of):
@@ -1303,7 +1303,7 @@ def load_words(lane, host, readings, waited=()):
 class LoadSampler(BusySampler):
     """The load of the Mac any lane runs on, read every BUSY_SAMPLE seconds while it runs, and once at the end of one
     that failed, so that a rejection can say it (vocaro-engineering#273). Each reading names the Mac it read, this Mac
-    until the lane's dispatch names the second Mac, and whether the lane's wait record (lane_wait) said it was waiting
+    until the lane's dispatch names another Mac, and whether the lane's wait record (lane_wait) said it was waiting
     to start then; finish keeps only the readings of the Mac the lane ran on, those of its wait apart from those of
     its run (vocaro/queuekeeper#12). The Mac is the one the lane runs or waits on now, by the record (host). A
     measurement only: it decides nothing, and nothing a reading raises reaches the gate."""
@@ -1321,7 +1321,7 @@ class LoadSampler(BusySampler):
         self.look(host, bool(record and record.get("kind")))
 
     def finish(self, host):
-        """load_words for the lane, which ran on host, the second Mac, or with host None on this Mac."""
+        """load_words for the lane, which ran on host, another Mac, or with host None on this Mac."""
         self.stopped.set()
         self.thread.join(timeout=GH_TIMEOUT)
         self.look(host)
@@ -1364,11 +1364,11 @@ class GateWatch:
         from . import run_progress
         record = lane_wait.current(lane_wait.path_of(self.checkout, self.lane), self.began)
         waiting = lane_wait.words(record)
-        # A lane still waiting for this Mac has no Mac yet: the second Mac may still take it.
+        # A lane still waiting for this Mac has no Mac yet: another Mac may still take it.
         where = record.get("mac") if record and not (waiting and record.get("mac") == HERE_MAC) else None
         try: host = remote.dispatched(self.checkout, self.lane, self.began)
         except Exception: host = None  # noqa: BLE001
-        mac = lane_wait.second_mac(host) if host else where
+        mac = lane_wait.farm_mac(host) if host else where
         since, stranded = record.get("since") if waiting else None, bool(waiting and record.get("stranded"))
         held_up = stuck({"waitingSince": since, "stranded": stranded})
         if held_up and not self.said_stuck:
@@ -2279,8 +2279,8 @@ def doctor(root, as_json=False):
 
 
 def health_of(host):
-    """offload_host.host_health's reading of host, the second Mac, or with host None of this Mac; None when it cannot be
-    read, as from a second Mac that cannot be reached or whose toolkit predates the reading."""
+    """offload_host.host_health's reading of host, another Mac, or with host None of this Mac; None when it cannot be
+    read, as from another Mac that cannot be reached or whose toolkit predates the reading."""
     if not host: return offload_host.host_health()
     try: return remote.reading_there(host, health=True)[0].get("health")
     except remote.Unavailable: return None
@@ -2289,13 +2289,13 @@ def health_of(host):
 def memory_findings(read=None):
     """(findings, notes): a finding for each Mac, this one and each of the farm's that take work now, that is short of
     memory (host_health.assessed), naming its largest processes and how the owner frees them; a note for a Mac whose
-    reading could not be made. On 2026-11-15 the second Mac's fseventsd held 34 of its 64 GB and swap was full, and a
+    reading could not be made. On 2026-11-15 another Mac's fseventsd held 34 of its 64 GB and swap was full, and a
     gate timed out there with no test failed. It changes nothing: stopping a process takes the owner's password."""
     read = read or health_of
     findings, notes = [], []
     try: hosts = farm.destinations()
     except ValueError: hosts = ()
-    for mac, asked in ((lane_wait.HERE, None), *((lane_wait.second_mac(host), host) for host in hosts)):
+    for mac, asked in ((lane_wait.HERE, None), *((lane_wait.farm_mac(host), host) for host in hosts)):
         try: reading = read(asked)
         except Exception: reading = None  # noqa: BLE001 - a reading never fails the doctor
         if reading is None:
@@ -2370,7 +2370,7 @@ def idle_waits(root, at=None, busy=None, read=None):
 
 
 def holders_on(host):
-    """(the holders of admission on host, the second Mac, or with host None on this Mac, as `qk admissions now` reads
+    """(the holders of admission on host, another Mac, or with host None on this Mac, as `qk admissions now` reads
     them; None when they cannot be read, with why; and the holders admission reclaimed there lately, which hold
     nothing now, vocaro/queuekeeper#23)."""
     try: reading = remote.admissions_there(host) if host else offload_host.admissions_now()
@@ -2844,7 +2844,7 @@ class Worker:
         self.left = None  # why follow last left the shared checkout as it is, for any reason, or None
         self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
         self.failed_dispatch = None  # the last failed gate log and its dispatch evidence (gate)
-        self.ran_on = None  # the second Mac that ran the last lane the gate ran, or None (gate)
+        self.ran_on = None  # another Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.measured = None  # the passing gate run of the last round, which its landed entries record
         self.alone = False  # whether this round's batch is one entry an option of qk land put on its own (choose)
@@ -2883,8 +2883,8 @@ class Worker:
         return progress
 
     def look(self, host, said, here="the host"):
-        """(pressure, one-minute load, where it was read) of a Mac: host, the second Mac, by
-        remote.pressure_there, or with host None this Mac, which here names. A second Mac that cannot be read gives
+        """(pressure, one-minute load, where it was read) of a Mac: host, another Mac, by
+        remote.pressure_there, or with host None this Mac, which here names. Another Mac that cannot be read gives
         this Mac's reading, saying so when that starts, in said, and again once it can be read."""
         if host is not None:
             try:
@@ -2915,7 +2915,7 @@ class Worker:
     def settle(self, what, host=None, macs=None):
         """None once the host has spare capacity by admission's test (resources.pressure), so that the retry of
         what gave no verdict does not meet the load that voided it; else, past SETTLE_LIMIT, why it has none.
-        With host, the second Mac, the test reads that Mac (look). macs, instead, says at each look which Macs
+        With host, another Mac, the test reads that Mac (look). macs, instead, says at each look which Macs
         to read and why them (retry_macs), all of which must have settled. It logs what it saw, and a stop
         request ends it as one ends a lane (processes.Interrupted)."""
         start = reported = now()
@@ -3453,7 +3453,7 @@ class Worker:
                         seconds=None if seconds is None else round(seconds))
 
     def gate(self, lanes, round_name, where=(), cancel=None, quick=None):
-        """(status of the first of lanes that did not pass or 0, its log). ran_on is the second Mac that ran
+        """(status of the first of lanes that did not pass or 0, its log). ran_on is another Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time, its own work and its wait for admission apart (budgets.timed), and the
         parts its log reports in self.measured, for the gate's budget (budgets.py). where is qk run's placement option
@@ -3481,7 +3481,7 @@ class Worker:
             # Only this lane's own wait, once it runs, lets an entry go ahead of the gate (first_ungated).
             removal.ahead = None
             log = self.queue.logs / f"{round_name}-{lane}.log"
-            # A lane run here logs to its own file, and one on the second Mac to its dispatch's run.log. What an
+            # A lane run here logs to its own file, and one on another Mac to its dispatch's run.log. What an
             # earlier round left in the lane's own file is not this one's.
             lane_log = self.checkout / ".build/queuekeeper" / lane / "run.log"
             with contextlib.suppress(OSError): lane_log.unlink()
@@ -3555,7 +3555,7 @@ class Worker:
             # It ran, unless no Mac admitted it or a host's configuration stopped it: it is placed as before next.
             if status_ not in UNRUN: self.unlocked.discard(lane)
             ran, self.ran_on = remote.dispatch(self.checkout, lane, began)
-            # What the lane printed: here in its own file; on the second Mac in its dispatch's run.log, whose qk
+            # What the lane printed: here in its own file; on another Mac in its dispatch's run.log, whose qk
             # unittest summary names the failed tests that rerun reruns alone.
             printed = lane_log if ran is None else ran / "run.log"
             remote_failure = ran is not None and status_ and status_ not in NO_VERDICT
@@ -3688,7 +3688,7 @@ class Worker:
         """Why Queuekeeper itself could not start for lane, which began at began and exited status, or None. It
         exited TOOL_NOT_STARTED, as cli.main does when composing its checkout or loading a project's extension raises
         before any command is read, and the run left no receipt of the lane, which qk run writes for every lane whose
-        command it reaches: here, none in the lane's folder since began; on the second Mac, in ran, its dispatch's
+        command it reaches: here, none in the lane's folder since began; on another Mac, in ran, its dispatch's
         folder, the work stage's exit with no receipt come back (offload_host returns one only when the run wrote it).
         A lane whose own command exits 70 leaves its receipt, and stays a failure. Such a run tested no commit: on
         2026-11-15 an adapter that three projects load from a shared sibling checkout refused the older Queuekeeper
@@ -3706,7 +3706,7 @@ class Worker:
         return self.tool_said(log, ran is not None)
 
     def tool_said(self, log, there):
-        """A hold's words for a lane that Queuekeeper could not start for, there on the second Mac, which the hold
+        """A hold's words for a lane that Queuekeeper could not start for, there on another Mac, which the hold
         names (mac), or on this Mac, where no receipt says so: the last line of log in which it says why
         (lane_results.TOOL_SAID), cut as an unmeasured test's line is."""
         try: said = [line for line in log.read_text(errors="replace").splitlines() if lane_results.TOOL_SAID in line]
@@ -3735,7 +3735,7 @@ class Worker:
         that names an extension that does not load is, and the batch is bisected and an entry sent back as for any
         failed lane, where a hold would stop every project's entry behind it until a session found the one to remove
         (the owner's decision of 2026-11-15, vocaro/queuekeeper#158). Any other reading leaves the hold: it starts at
-        neither, as on 2026-11-15, when a folder beside the project had moved; or the lane ran on the second Mac and
+        neither, as on 2026-11-15, when a folder beside the project had moved; or the lane ran on another Mac and
         Queuekeeper starts here at head, so that the fault is in what that Mac holds. The checkout is at head when
         this is asked, and is left there. probed says what was found, for the hold's reason (start_fix)."""
         self.probed = ""
@@ -3765,7 +3765,7 @@ class Worker:
     def unstarted(self, result):
         """Why the lane at which the last gate stopped with result could not start, or None: qk run exited
         NOT_STARTED and its receipt since the lane began says not-started, with why under notStarted
-        (lane_report.not_started). The dispatch's receipt holds the lane's own from the second Mac, as for
+        (lane_report.not_started). The dispatch's receipt holds the lane's own from another Mac, as for
         receipt_error. A lane's own command that exits 127 leaves no such receipt, and stays a failure. Or Queuekeeper
         itself could not start for the lane (tool_unstarted, vocaro/queuekeeper#158)."""
         if self.tooling and result == lane_results.TOOL_NOT_STARTED: return self.tooling
@@ -3784,8 +3784,8 @@ class Worker:
         return None
 
     def placed(self, lane, began):
-        """Where the lane ran, for the log, which qk run chose by both Macs' capacity (vocaro-engineering#168):
-        on the second Mac, by its dispatch's record, or on this Mac, with why, by the receipt the run wrote here
+        """Where the lane ran, for the log, which qk run chose by each Mac's capacity (vocaro-engineering#168):
+        on another Mac, by its dispatch's record, or on this Mac, with why, by the receipt the run wrote here
         since began (cli.placement); nothing when neither says."""
         if self.ran_on: return f" on {self.ran_on}"
         receipt = self.checkout / ".build/queuekeeper" / lane / "source.json"
@@ -3798,10 +3798,10 @@ class Worker:
         return f" on this Mac ({said.get('hereBecause')})"
 
     def mac(self, lane, began):
-        """The Mac the lane ran on, for a hold's reason (vocaro-engineering#185): ` on the second Mac (HOST)` by its
+        """The Mac the lane ran on, for a hold's reason (vocaro-engineering#185): ` on another Mac (HOST)` by its
         dispatch's record, ` on this Mac (NAME)` by the receipt the run wrote here since began, or nothing when
         neither says."""
-        if self.ran_on: return f" on {lane_wait.second_mac(self.ran_on)}"
+        if self.ran_on: return f" on {lane_wait.farm_mac(self.ran_on)}"
         receipt = self.checkout / ".build/queuekeeper" / lane / "source.json"
         try:
             if receipt.stat().st_mtime < began: return ""
@@ -3814,7 +3814,7 @@ class Worker:
     def results_named(self, lane, ran, began):
         """The line that says where a passing lane's per-test results are, for its log and `qk land --wait`, naming
         them and copying none (vocaro-engineering#266); ran is the lane's dispatch, or None when it ran here. Results
-        the second Mac wrote came back with its dispatch, so they are on this Mac. The second Mac sends back all that
+        another Mac wrote came back with its dispatch, so they are on this Mac. Another Mac sends back all that
         the lane's command writes in its results/, so a dispatch with none is a command that wrote none there, such as
         a `qk unittest` lane's, and is said to be that, not a failure to send them (#38); a lane run here that wrote
         none says nothing, as before."""
@@ -3823,8 +3823,8 @@ class Worker:
             kept = result_files(folder)
             if not kept:
                 return (f"{lane} per-test results: none: its command wrote none in its results/ on "
-                        f"{lane_wait.second_mac(self.ran_on)}, which sends back all it writes there")
-            return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by {lane_wait.second_mac(self.ran_on)}; "
+                        f"{lane_wait.farm_mac(self.ran_on)}, which sends back all it writes there")
+            return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by {lane_wait.farm_mac(self.ran_on)}; "
                     f"queuekeeper keeps the newest {remote.DISPATCHES_KEPT} dispatches of a lane")
         folder = self.checkout / ".build/queuekeeper" / lane / "results"
         try:
@@ -4840,7 +4840,7 @@ class Worker:
     def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True):
         """gate(), the lanes of applied at head in runner's checkout, while a thread looks every STACK_POLL for
         entries that arrive behind them: docs-only entries it lands beside the gate (docs_beside), and, unless stacks
-        is false, as for a bisect's gates, the others it gates stacked on head in the other checkout, on the other Mac
+        is false, as for a bisect's gates, the others it gates stacked on head in the other checkout, on another Mac
         (stack), which after_stack keeps or throws away."""
         self.pending = None
         self.stack_retry_after = 0
@@ -4904,7 +4904,7 @@ class Worker:
         elif hosts is None:
             where = HERE
         else:
-            excluded = next((host for host in hosts if mac == lane_wait.second_mac(host)), None)
+            excluded = next((host for host in hosts if mac == lane_wait.farm_mac(host)), None)
             if excluded is None: return
             where = ("--if-free",)
         why = offerable(config, lanes) if where == BESIDE else None
@@ -5097,7 +5097,7 @@ class Worker:
 
     def receipt_error(self):
         """The error this run's receipt records for the lane the last gate stopped at, on one line, or None when no
-        receipt written since the lane began can be read or says one: the dispatch's, for a run on the second Mac,
+        receipt written since the lane began can be read or says one: the dispatch's, for a run on another Mac,
         else the one here. A dispatch's holds the lane's own receipt from that Mac, and that Mac's error, under
         result (remote.execute)."""
         if not self.lane_now: return None
@@ -5188,7 +5188,7 @@ class Worker:
     def keep(self, batch, base, head, docs, ungated=None, flakes=None):
         """Record a batch's pass before its push. A hold the push meets, a refusal or a remote out of reach, then
         leaves the batch passed rather than queued, and `qk queue resume` pushes head instead of gating the same
-        tree again (vocaro-engineering#150): EPUBLib's queue spent an hour of the second Mac doing that."""
+        tree again (vocaro-engineering#150): EPUBLib's queue spent an hour of another Mac doing that."""
         verdict = {"head": head, "base": base, "batch": [entry["id"] for entry in batch], "at": time.time()}
         if docs: verdict["docsOnly"] = docs
         if ungated: verdict["ungated"] = ungated
@@ -5241,9 +5241,9 @@ class Worker:
             with contextlib.suppress(OSError): self.queue.round_file.unlink()
 
     def connected(self):
-        """Raise NoLocalNetwork, before a round, when a second Mac is configured and macOS denies this process the
+        """Raise NoLocalNetwork, before a round, when another Mac is configured and macOS denies this process the
         local network, as it does once the Claude session that started the worker ends: every gate would then go to
-        this Mac, the second Mac seeming away to this process alone, as from 13:48 to 16:28 on 2026-11-07
+        this Mac, another Mac seeming away to this process alone, as from 13:48 to 16:28 on 2026-11-07
         (vocaro-engineering#282). A worker started by the next live session reaches it."""
         if remote.gate_hosts() is None and remote.configured() is None: return
         lost = remote.local_network_lost()
@@ -5255,7 +5255,7 @@ BISECT = "bisect"
 
 
 class Beside(Worker):
-    """A bisect's newer half, gated in a checkout beside the worker's, on the second Mac when it can start it now,
+    """A bisect's newer half, gated in a checkout beside the worker's, on another Mac when it can start it now,
     while the older half gates on this Mac (owner's decision of 2026-11-07, vocaro-engineering#241). Both halves run
     on the same origin/main. What passes beside lands while the older half bisects on; when both pass, the older lands
     first and the newer gates again on the main that made, unless its result carries over (Worker.carry)."""
@@ -5296,8 +5296,8 @@ class Beside(Worker):
         super().noted(entry, **fields)
 
     def both(self, worker, lanes, round_name):
-        """Gate the newer half here, on the second Mac (BESIDE), while worker gates the older half on this Mac
-        (HERE), and return the older half's (status, log). A second Mac that cannot start them now leaves the newer
+        """Gate the newer half here, on another Mac (BESIDE), while worker gates the older half on this Mac
+        (HERE), and return the older half's (status, log). Another Mac that cannot start them now leaves the newer
         half with no verdict (resources.BUSY), which weigh queues again."""
         box = {}
         name = f"{time.strftime('%Y%m%d-%H%M%S')}-{self.tip[:8]}"
@@ -5320,7 +5320,7 @@ class Beside(Worker):
     def weigh(self, config, base, older_landed):
         """Settle the newer half by its lanes' result: send back the one entry that failed, queue several that failed
         to bisect next (BISECT), land a pass, or, once the older half landed, land it only when its result carries
-        over, else queue it to gate again (PASSED). No verdict, the second Mac declining among them, queues it."""
+        over, else queue it to gate again (PASSED). No verdict, another Mac declining among them, queues it."""
         result, log = self.result
         if result == WITHDRAWN:
             self.say(f"{self.stopped_for() if self.ahead else ', '.join(self.withdrawn) + ' left the queue'}, which "
@@ -5402,7 +5402,7 @@ class Beside(Worker):
 
 
 class Stack:
-    """Entries that arrived while a batch gates, gated stacked on its tip, head, in runner's checkout, on the other
+    """Entries that arrived while a batch gates, gated stacked on its tip, head, in runner's checkout, on another
     Mac (where), in a thread of their own (owner's decision of 2026-11-07, vocaro-engineering#241). The batch's push
     makes head origin/main, and then the next round adopts the stacked gate as its own (Worker.adopted); any other
     outcome throws it away (drop), canceling its lanes, with its entries queued again. It settles nothing itself."""
@@ -5445,7 +5445,7 @@ class Stack:
         return self.box.get("result")
 
     def not_admitted(self):
-        """Whether the stacked gate's last lane exited busy without running on either Mac."""
+        """Whether the stacked gate's last lane exited busy without running on any Mac."""
         result = self.peek()
         return result is not None and result[0] == resources.BUSY and not self.runner.ran_where
 

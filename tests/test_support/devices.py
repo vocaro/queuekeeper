@@ -200,10 +200,10 @@ def run_printed(command):
     """What becomes of a `qk devices` command that Queuekeeper printed, run as a reader pastes it: by a shell in a
     folder that is no project, with a home whose Development/queuekeeper is this checkout, a PATH of the system's
     tools and this Python, no import path, and an empty device record of its own. A printed command runs so or not
-    at all: after the plugins left the core, `python3 -m queuekeeper_apple.devices` found no such module on either
+    at all: after the plugins left the core, `python3 -m queuekeeper_apple.devices` found no such module on any
     Mac (vocaro/queuekeeper#167).
 
-    ssh there is a stand-in for a second Mac that is this one: it runs the command it is given as sshd does, by a
+    ssh there is a stand-in for another Mac that is this one: it runs the command it is given as sshd does, by a
     shell whose PATH's first python3 is too old to start qk, as /usr/bin/python3 was on 2026-11-15, and only the
     login shell, through the home's .zprofile, finds this Python. So a command handed to ssh as it stands fails
     here as it does there."""

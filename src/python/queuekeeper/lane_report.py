@@ -14,8 +14,8 @@ The lines go to stderr with queuekeeper's other notes, after stdout is flushed, 
 joined. They begin `qk run LANE:` or are indented, and quote no line of a test's own, since a lane's log is read
 again by what runs it: the merge queue's log, lane_results.counted and failure_records read none of them as a result. A
 run that ended with no verdict of a pass, and whose log counts no test and names none, has its command's own last
-lines quoted, which are then no test's (own_output, vocaro/queuekeeper#137). The
-second Mac's own run prints none: the Mac that sent it prints the summary from what came back. The merge queue reads a
+lines quoted, which are then no test's (own_output, vocaro/queuekeeper#137). Another
+Mac's own run prints none: the Mac that sent it prints the summary from what came back. The merge queue reads a
 summary back by its own lines alone (summary), to name a failed gate's tests in a send-back (vocaro/queuekeeper#83).
 """
 import contextlib
@@ -174,7 +174,7 @@ def own_output(text, unmeasured=False):
 
 def not_started(receipt):
     """Why the lane a receipt is of could not start, on one line, or None: its outcome is not-started, with why under
-    notStarted (cli.not_started). A dispatch's receipt holds the lane's own from the second Mac under result, as
+    notStarted (cli.not_started). A dispatch's receipt holds the lane's own from another Mac under result, as
     receipt and as the result itself. The receipt says so, not the log, since a command may print or exit anything."""
     there = receipt.get("result") if isinstance(receipt, dict) else None
     for said in (there.get("receipt") if isinstance(there, dict) else None, there, receipt):
@@ -292,7 +292,7 @@ def load_figures(readings):
 class RunLoad:
     """The load of this Mac over a lane's run, for its receipt (vocaro/queuekeeper#133): the one-minute load and the
     CPU's busy share against its busy limit, read every LOAD_SAMPLE seconds while the lane runs and once at its end, as
-    a queue gate's are for its send-back (merge_queue.LoadSampler). The second Mac's own run of a lane sent there reads
+    a queue gate's are for its send-back (merge_queue.LoadSampler). Another Mac's own run of a lane sent there reads
     that Mac, and its receipt comes back with the result. A busy share needs a sample at least resources.BUSY_MINIMUM
     seconds old, so the one at the end of a shorter run spans the whole run, and none waits. A measurement only: it
     decides nothing, and nothing a reading raises reaches the lane."""
@@ -345,8 +345,8 @@ class RunLoad:
 
 
 def load_line(receipt, verdict):
-    """The summary's line for the load of the Mac a lane ran on over its run, from its receipt's load (RunLoad), the
-    second Mac's for a run there; for a run that did not pass and whose receipt keeps none, that none was kept; else
+    """The summary's line for the load of the Mac a lane ran on over its run, from its receipt's load (RunLoad), another
+    Mac's for a run there; for a run that did not pass and whose receipt keeps none, that none was kept; else
     None. A lane that failed there on 2026-11-13 left its load to be read by hand (vocaro/queuekeeper#133)."""
     load = receipt.get("load")
     readings = load.get("readings") if isinstance(load, dict) else None
@@ -361,7 +361,7 @@ def load_line(receipt, verdict):
 
 
 def lane_receipt(directory):
-    """The lane's own receipt in directory, a run's: its source.json, or for a dispatch the one the second Mac wrote,
+    """The lane's own receipt in directory, a run's: its source.json, or for a dispatch the one another Mac wrote,
     which it holds under result; {} when there is none."""
     try: receipt = json.loads((Path(directory) / "source.json").read_text())
     except (OSError, ValueError): return {}
@@ -371,8 +371,8 @@ def lane_receipt(directory):
 
 
 def stopped_there(directory):
-    """Why the second Mac's run of a dispatch in directory ended unmeasured when its timeout stopped it, as its receipt
-    says, such as `Owned command timed out after 2400s: python3; ...`, or None. The second Mac's own summary is not
+    """Why another Mac's run of a dispatch in directory ended unmeasured when its timeout stopped it, as its receipt
+    says, such as `Owned command timed out after 2400s: python3; ...`, or None. Another Mac's own summary is not
     printed, and its supervise line goes to the dispatch's output.log, so without it a log that stops mid-run read as a
     crash (vocaro/queuekeeper#37)."""
     receipt = lane_receipt(directory)

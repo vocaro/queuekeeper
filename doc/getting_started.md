@@ -93,11 +93,11 @@ branch and run `qk land --wait` in the project. It should follow the entry to it
 that the setup landed on `origin/main`. The first landing uses the gate in the setup commit;
 later landings use the settings on `main`.
 
-## Add a second Mac
+## Add another Mac
 
 Do this once you have landed changes on one Mac.
 
-1. On the second Mac, turn on Remote Login and add the first Mac's public key to
+1. On another Mac, turn on Remote Login and add the first Mac's public key to
    `~/.ssh/authorized_keys`.
 2. On the first Mac, add it to the farm by any SSH destination that reaches it without a prompt,
    a host name or an alias of `~/.ssh/config`. Queuekeeper calls it by its own name unless you
@@ -107,7 +107,7 @@ Do this once you have landed changes on one Mac.
    qk farm add NAME.local
    ```
 
-3. Install the tools the second Mac needs, then check both Macs:
+3. Install the tools another Mac needs, then check the Macs:
 
    ```sh
    qk remote setup
@@ -117,7 +117,7 @@ Do this once you have landed changes on one Mac.
 Add more Macs the same way. `qk farm list` shows them in the order work is offered to them, and
 [the build farm](build_farm.md#adding-and-removing-macs) covers renaming, pausing and removing one.
 
-From then on, lanes are offered to the second Mac first and run on the first Mac when the second
+From then on, lanes are offered to another Mac first and run on the first Mac when the second
 has no room. [The build farm](build_farm.md) explains how the choice is made and how the code gets
 there.
 

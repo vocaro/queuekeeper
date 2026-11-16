@@ -71,15 +71,15 @@ class Landing(Fixture):
                               said.getvalue())
 
     def test_the_log_says_where_each_lane_ran_as_eng_run_chose(self):
-        """The queue's lanes go where qk run sends every lane, by both Macs' capacity (vocaro-engineering#168), and
-        its log says where each ran and why: here, by the receipt's reason; on the second Mac, by its dispatch."""
+        """The queue's lanes go where qk run sends every lane, by each Mac's capacity (vocaro-engineering#168), and
+        its log says where each ran and why: here, by the receipt's reason; on another Mac, by its dispatch."""
         self.commit("a", "a")
         [identifier] = self.add("a")
         with contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertIn("gate exited 0 on this Mac (the farm has no other Mac that takes work now)", said.getvalue())
-        # A dispatch record of a run on the second Mac names it; a receipt an earlier run wrote here does not.
+        # A dispatch record of a run on another Mac names it; a receipt an earlier run wrote here does not.
         worker = mq.Worker.__new__(mq.Worker)
         worker.checkout = self.base / "checkout"
         receipt = worker.checkout / ".build/queuekeeper/gate/source.json"
@@ -1059,7 +1059,7 @@ class Doctor(UnittestGate):
             waitingSince=time.time() - mq.IDLE_WAIT_SECONDS + 60))
         with never[0], never[1]: self.assertEqual(self.doctor()[2]["findings"], [])
 
-    def test_a_gate_waiting_for_the_second_mac_reads_its_holders_there_or_says_unknown(self):
+    def test_a_gate_waiting_for_the_farm_mac_reads_its_holders_there_or_says_unknown(self):
         self.waiting_gate(30, mac="build-host")
         from queuekeeper import remote
         self.busy_of.return_value = (10.0, 75.0, "build-host")
@@ -1255,7 +1255,7 @@ class RefusedGates(UnittestGate):
         self.commit("d", "d")
         ids = self.queued("c", "d")
         with contextlib.ExitStack() as halves:
-            # Both halves on this Mac, as BothHalves gates them, since the fixture has no second Mac; or one at a time.
+            # Both halves on this Mac, as BothHalves gates them, since the fixture has no other Mac; or one at a time.
             for name, value in ((("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None)) if beside
                                 else (("offerable", lambda config, lanes: "a test says so"),)):
                 halves.enter_context(patch.object(mq, name, value))
@@ -1523,12 +1523,12 @@ class NoVerdict(Fixture):
 
     def dispatch_receipt(self, screen_after=None, **result):
         """What remote.execute writes to a dispatch's source.json: the lane's own receipt, which holds screenAfter, sits
-        under result, as offload_host returns it from the second Mac; nothing at the top level says the screen."""
+        under result, as offload_host returns it from another Mac; nothing at the top level says the screen."""
         lane = {"outcome": "unmeasured", **({} if screen_after is None else {"screenAfter": screen_after})}
         return {"ranOn": "second Mac", "mac": "Far-Mac", "host": "far-mac", "lane": "gate",
                 "result": {"exitStatus": 3, "outcome": "unmeasured", "receipt": lane, **result}}
 
-    def second_mac_run(self):
+    def farm_mac_run(self):
         """(a worker whose last gate began a minute ago, the source.json of that gate's dispatch, the log) laid out where
         the real remote.dispatch finds them."""
         began = time.time() - 60
@@ -1538,9 +1538,9 @@ class NoVerdict(Fixture):
         worker = type("Runner", (), {"checkout": self.base, "lane_now": ("gate", began, ())})()
         return worker, ran / "source.json", self.base / "gate.log"
 
-    def test_a_second_macs_reading_under_its_dispatchs_result_decides_over_the_log(self):
-        """The lane's receipt from the second Mac is under the dispatch's result, so the last reading is there."""
-        worker, receipt, log = self.second_mac_run()
+    def test_a_farm_macs_reading_under_its_dispatchs_result_decides_over_the_log(self):
+        """The lane's receipt from another Mac is under the dispatch's result, so the last reading is there."""
+        worker, receipt, log = self.farm_mac_run()
         receipt.write_text(json.dumps(self.dispatch_receipt(self.FAR_LOCKED)))
         for said in ("no reading\n", f"{self.UNLOCKED}\n"):
             with self.subTest(log=said):
@@ -1559,7 +1559,7 @@ class NoVerdict(Fixture):
     def test_a_dispatch_receipt_without_a_usable_reading_leaves_the_local_receipt_and_the_log(self):
         """A malformed or stale dispatch receipt says nothing: the local receipt, else the log's last line, decides.
         A screenAfter at a dispatch's top level is not where one is written, and is not read."""
-        worker, receipt, log = self.second_mac_run()
+        worker, receipt, log = self.farm_mac_run()
         base = self.dispatch_receipt()
         malformed = [{**base, "result": value} for value in (None, "text", 7, [])] \
             + [{**base, "result": {"exitStatus": 3, "receipt": value}} for value in (None, "text", 7, [])] \
@@ -1603,8 +1603,8 @@ class NoVerdict(Fixture):
         self.assertIsNone(mq.Worker.screen_locked(worker, 3, log))
 
     @contextlib.contextmanager
-    def gated_on_second_mac(self, reading):
-        """Every gate reports a dispatch to the second Mac whose receipt, written once the lane has run, reads reading,
+    def gated_on_farm_mac(self, reading):
+        """Every gate reports a dispatch to another Mac whose receipt, written once the lane has run, reads reading,
         and whose run.log holds what the lane printed, while this Mac's own screen reads unlocked for qk run
         --unlocked-screen. The dispatch's results appear once each lane's qk run has ended, as remote.execute
         returns them; remote.dispatch only looks them up, as the real one does. The gate's watch and samplers look
@@ -1629,12 +1629,12 @@ class NoVerdict(Fixture):
                 patch.object(mq, "WATCH_POLL", 0.01), patch.object(mq, "BUSY_SAMPLE", 0.01):
             yield
 
-    def test_a_second_mac_run_its_receipt_reads_locked_does_not_count_and_the_next_needs_an_unlocked_mac(self):
+    def test_a_farm_mac_run_its_receipt_reads_locked_does_not_count_and_the_next_needs_an_unlocked_mac(self):
         """With no `screen:` line in the log, only the reading under the dispatch's result can say the screen was
         locked: more runs than the bound hold nothing, and each after the first goes to qk run --unlocked-screen."""
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with self.gated_on_second_mac(self.FAR_LOCKED), self.no_verdict_for(mq.NO_VERDICT_RUNS + 1), \
+        with self.gated_on_farm_mac(self.FAR_LOCKED), self.no_verdict_for(mq.NO_VERDICT_RUNS + 1), \
                 self.commands() as ran, contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         # The worker's log says which run went otherwise.
@@ -1648,13 +1648,13 @@ class NoVerdict(Fixture):
         self.assertEqual(runs[0], ["python3", "scripts/qk", "run", "gate"])
         self.assertEqual(runs[1:], [["python3", "scripts/qk", "run", "--unlocked-screen", "gate"]] * (len(runs) - 1))
 
-    def test_a_second_mac_run_its_receipt_reads_unlocked_counts_though_its_log_says_locked(self):
+    def test_a_farm_mac_run_its_receipt_reads_unlocked_counts_though_its_log_says_locked(self):
         """The negative control: the receipt's last reading wins over a log line saying locked, so the run counts."""
         Path(f"{self.status}.screen").write_text(f"{self.LOCKED}\n")
         self.status.write_text("3")
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with self.gated_on_second_mac({**self.FAR_LOCKED, "state": "unlocked"}), self.commands() as ran, \
+        with self.gated_on_farm_mac({**self.FAR_LOCKED, "state": "unlocked"}), self.commands() as ran, \
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS)
@@ -1941,7 +1941,7 @@ class NoVerdict(Fixture):
         return worker, log, receipt
 
     def dispatch_of(self, worker, said):
-        """The second Mac's dispatch of the worker's gate, whose receipt holds said, or which has none for None."""
+        """Another Mac's dispatch of the worker's gate, whose receipt holds said, or which has none for None."""
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         run = worker.checkout / f".build/queuekeeper/remote/.dispatches/gate/{stamp}-1"
         run.mkdir(parents=True)
@@ -1976,8 +1976,8 @@ class NoVerdict(Fixture):
         self.assertTrue(said.startswith("first line second x"), said)
         self.assertTrue(said.endswith("..."), said)
 
-    def test_the_cause_of_a_run_on_the_second_mac_is_in_the_receipt_that_came_back(self):
-        # As remote files it: the lane's own receipt under result, as offload_host read it on the second Mac.
+    def test_the_cause_of_a_run_on_the_farm_mac_is_in_the_receipt_that_came_back(self):
+        # As remote files it: the lane's own receipt under result, as offload_host read it on another Mac.
         worker, log, _ = self.stopped_worker()
         run = self.dispatch_of(worker, json.dumps({"host": "build-host", "result": {
             "exitStatus": 3, "receipt": {"outcome": "unmeasured", "error": self.TIMED_OUT}}}))
@@ -2008,7 +2008,7 @@ class NoVerdict(Fixture):
         receipt.mkdir()
         self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)
 
-    def test_a_run_on_the_second_mac_with_an_absent_or_malformed_receipt_gets_the_fixed_text(self):
+    def test_a_run_on_the_farm_mac_with_an_absent_or_malformed_receipt_gets_the_fixed_text(self):
         for said in (None, "{not json", "[1]", json.dumps({"host": "build-host", "result": {"exitStatus": 3}})):
             with self.subTest(said=said):
                 worker, log, _ = self.stopped_worker()
@@ -2330,7 +2330,7 @@ class HoldKinds(Fixture):
         self.assertEqual((hold.kind, str(hold)), (mq.CLEARS, "why"))
 
 
-# Files, as `qk run` does for a lane the second Mac ran, a dispatch record in the checkout's
+# Files, as `qk run` does for a lane another Mac ran, a dispatch record in the checkout's
 # .build/queuekeeper/remote/.dispatches/LANE/, named for the second it started unless the receipt names
 # one, and holding the receipt that sys.argv[1] holds, if any; then runs lane.py with the rest.
 DISPATCHING_LANE = """import json, os, pathlib, runpy, sys, time
@@ -2346,8 +2346,8 @@ runpy.run_path("lane.py", run_name="__main__")
 """
 
 
-class SecondMacSettle(Fixture):
-    """The settle wait reads the Mac the lane ran on (#140): the second Mac, faked at offload_host's answer
+class FarmMacSettle(Fixture):
+    """The settle wait reads the Mac the lane ran on (#140): another Mac, faked at offload_host's answer
     (remote.ask), when the lane's dispatch says it ran there; this Mac otherwise."""
     HOST = "fake-mac"
     LOCAL_BUSY = ("cpu", "the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%")
@@ -2370,9 +2370,9 @@ class SecondMacSettle(Fixture):
         self.receipt.write_text(json.dumps({"host": self.HOST, "ranOn": "second Mac", **receipt}))
 
     @contextlib.contextmanager
-    def second_mac(self, answers):
-        """The second Mac's answers to the pressure request, one per look, the last repeating; an exception
-        among them is raised, as remote.ask raises for a second Mac it cannot reach. Yields the requests."""
+    def farm_mac(self, answers):
+        """Another Mac's answers to the pressure request, one per look, the last repeating; an exception
+        among them is raised, as remote.ask raises for another Mac it cannot reach. Yields the requests."""
         asked = []
         def ask(host, request, timeout=None):
             asked.append((host, request))
@@ -2391,13 +2391,13 @@ class SecondMacSettle(Fixture):
             return result
         with patch.object(mq.Worker, "gate", gate): yield
 
-    def test_a_lane_the_second_mac_ran_waits_for_that_mac_not_this_one(self):
+    def test_a_lane_the_farm_mac_ran_waits_for_that_mac_not_this_one(self):
         self.status.write_text("3")
         self.ran_there()
         self.commit("a", "a")
         [identifier] = self.add("a")
         # This Mac stays busy throughout: a wait that read it would hold, not land.
-        with self.second_mac([self.THERE_BUSY, self.THERE_BUSY, self.THERE_SETTLED]) as asked, \
+        with self.farm_mac([self.THERE_BUSY, self.THERE_BUSY, self.THERE_SETTLED]) as asked, \
                 self.host([self.LOCAL_BUSY]) as (slept, said), self.passing_after_no_verdict():
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2412,13 +2412,13 @@ class SecondMacSettle(Fixture):
         self.assertIn(f"{self.HOST} settled after {2 * mq.SETTLE_POLL}s and 3 looks; one-minute load first 30, "
                       "highest 30, last 2: the lanes run again", log)
 
-    def test_a_second_mac_that_stays_busy_holds_naming_it(self):
+    def test_a_farm_mac_that_stays_busy_holds_naming_it(self):
         self.status.write_text("3")
         self.ran_there()
         self.commit("a", "a")
         [identifier] = self.add("a")
         # This Mac is settled throughout: a wait that read it would run the lanes again at once.
-        with self.second_mac([{"load": 1.0, "cpuBusy": 10.0, "busyLimit": 75.0, "memory": 2}]), self.host([None]) as (slept, said):
+        with self.farm_mac([{"load": 1.0, "cpuBusy": 10.0, "busyLimit": 75.0, "memory": 2}]), self.host([None]) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
         self.assertEqual(self.gates(), 1)
@@ -2428,11 +2428,11 @@ class SecondMacSettle(Fixture):
                       "(warning), not 1 (normal))", mq.Queue(self.repo).held())
 
     def test_a_lane_that_ran_here_reads_only_this_mac(self):
-        """Negative control: no dispatch record, so the second Mac is never asked."""
+        """Negative control: no dispatch record, so another Mac is never asked."""
         self.status.write_text("3")
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with self.second_mac([AssertionError("another Mac was asked")]) as asked, \
+        with self.farm_mac([AssertionError("another Mac was asked")]) as asked, \
                 self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2442,7 +2442,7 @@ class SecondMacSettle(Fixture):
         self.assertNotIn(self.HOST, said.getvalue())
 
     def test_a_dispatch_that_only_prepared_or_started_before_the_lane_reads_this_mac(self):
-        """Negative controls: nothing ran on the second Mac during this lane's run."""
+        """Negative controls: nothing ran on another Mac during this lane's run."""
         for case, receipt in [("prepared", {"stage": "preparation", "outcome": "failed-or-interrupted"}),
                               ("earlier", {"name": "20200101T000000Z-1"})]:
             with self.subTest(case):
@@ -2451,21 +2451,21 @@ class SecondMacSettle(Fixture):
                 self.commit(f"a-{case}", f"a-{case}")
                 [identifier] = self.add(f"a-{case}")
                 self.pressure.reset_mock()
-                with self.second_mac([AssertionError("another Mac was asked")]) as asked, \
+                with self.farm_mac([AssertionError("another Mac was asked")]) as asked, \
                         self.host([self.LOCAL_BUSY, None], then=self.status.unlink):
                     self.assertEqual(self.work(), 0)
                 self.assertEqual(self.state(identifier)["state"], "landed")
                 self.assertEqual(asked, [])
                 self.assertEqual(self.pressure.call_count, 2)
 
-    def test_a_second_mac_out_of_reach_falls_back_to_this_macs_reading_saying_so(self):
+    def test_a_farm_mac_out_of_reach_falls_back_to_this_macs_reading_saying_so(self):
         self.status.write_text("3")
         self.ran_there()
         self.commit("a", "a")
         [identifier] = self.add("a")
         lost = mq.remote.Misconfigured(f"{self.HOST} cannot be reached: ssh: Could not resolve hostname", "wake it")
         # Out of reach at both looks, while this Mac is busy and then settled; asked again at each.
-        with self.second_mac([lost]) as asked, \
+        with self.farm_mac([lost]) as asked, \
                 self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2477,13 +2477,13 @@ class SecondMacSettle(Fixture):
                       f"{self.HOST} cannot be reached", log)
         self.assertIn("the host settled after", log)
 
-    def test_a_second_mac_that_answers_again_is_read_again(self):
+    def test_a_farm_mac_that_answers_again_is_read_again(self):
         self.status.write_text("3")
         self.ran_there()
         self.commit("a", "a")
         [identifier] = self.add("a")
         lost = mq.remote.Unavailable(f"{self.HOST} did not report its load: it answered None")
-        with self.second_mac([lost, self.THERE_SETTLED]), self.host([self.LOCAL_BUSY]) as (slept, said), \
+        with self.farm_mac([lost, self.THERE_SETTLED]), self.host([self.LOCAL_BUSY]) as (slept, said), \
                 self.passing_after_no_verdict():
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2498,19 +2498,19 @@ class SecondMacSettle(Fixture):
 
     @contextlib.contextmanager
     def macs(self, there, here):
-        """A second Mac whose capacity reads there and this Mac's here, each a reading or a function of nothing."""
+        """Another Mac whose capacity reads there and this Mac's here, each a reading or a function of nothing."""
         read = lambda found: found() if callable(found) else found
         with patch.object(mq.remote, "configured", return_value=self.HOST), \
                 patch.object(mq.remote, "capacity_there", side_effect=lambda host: read(there)), \
                 patch.object(mq.offload_host, "capacity", side_effect=lambda **_: read(here)):
             yield
 
-    def test_a_loaded_second_mac_the_retry_would_use_is_waited_for_though_this_mac_voided_the_run(self):
+    def test_a_loaded_farm_mac_the_retry_would_use_is_waited_for_though_this_mac_voided_the_run(self):
         self.status.write_text("3")
         self.commit("a", "a")
         [identifier] = self.add("a")
         # The run was here, and this Mac has settled; the old wait read this Mac and retried at once.
-        with self.macs(self.FREE, self.FREE), self.second_mac([self.THERE_BUSY, self.THERE_SETTLED]) as asked, \
+        with self.macs(self.FREE, self.FREE), self.farm_mac([self.THERE_BUSY, self.THERE_SETTLED]) as asked, \
                 self.host([None]) as (slept, said), self.passing_after_no_verdict():
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2521,14 +2521,14 @@ class SecondMacSettle(Fixture):
         self.assertIn(f"the lanes run next on {self.HOST}, which has spare capacity for gate and is asked first", log)
         self.assertIn(f"the lanes run again once {self.HOST} settles", log)
 
-    def test_a_loaded_this_mac_the_retry_would_use_is_waited_for_though_the_second_mac_voided_the_run(self):
+    def test_a_loaded_this_mac_the_retry_would_use_is_waited_for_though_the_farm_mac_voided_the_run(self):
         """2026-11-07's shape: the wait settled build-host, and the retry went to this Mac."""
         self.status.write_text("3")
         self.ran_there()
         self.commit("a", "a")
         [identifier] = self.add("a")
-        # This Mac has the free slot; the second Mac voided the run, has none, and reads settled throughout.
-        with self.macs(self.FULL, self.FREE), self.second_mac([self.THERE_SETTLED]) as asked, \
+        # This Mac has the free slot; another Mac voided the run, has none, and reads settled throughout.
+        with self.macs(self.FULL, self.FREE), self.farm_mac([self.THERE_SETTLED]) as asked, \
                 self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2552,7 +2552,7 @@ class SecondMacSettle(Fixture):
                 self.commit(f"a-{name}", f"a-{name}")
                 [identifier] = self.add(f"a-{name}")
                 self.pressure.reset_mock()
-                with self.macs(there, here), self.second_mac(answers) as asked, self.host(looks) as (slept, said), \
+                with self.macs(there, here), self.farm_mac(answers) as asked, self.host(looks) as (slept, said), \
                         self.passing_after_no_verdict():
                     self.assertEqual(self.work(), 0)
                 self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2565,7 +2565,7 @@ class SecondMacSettle(Fixture):
         self.status.write_text("3")
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with self.macs(self.FULL, self.FULL), self.second_mac([self.THERE_SETTLED]) as asked, \
+        with self.macs(self.FULL, self.FULL), self.farm_mac([self.THERE_SETTLED]) as asked, \
                 self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2581,8 +2581,8 @@ class SecondMacSettle(Fixture):
         self.commit("a", "a")
         [identifier] = self.add("a")
         readings = iter([self.FREE, self.FULL])
-        # The second Mac has a slot at the first look, loaded, and none at the second, when this Mac has settled.
-        with self.macs(lambda: next(readings, self.FULL), self.FREE), self.second_mac([self.THERE_BUSY]) as asked, \
+        # Another Mac has a slot at the first look, loaded, and none at the second, when this Mac has settled.
+        with self.macs(lambda: next(readings, self.FULL), self.FREE), self.farm_mac([self.THERE_BUSY]) as asked, \
                 self.host([None], then=self.status.unlink) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2591,13 +2591,13 @@ class SecondMacSettle(Fixture):
         self.assertEqual(self.pressure.call_count, 1)
         self.assertEqual(said.getvalue().count("the lanes run next on "), 2)
 
-    def test_a_second_mac_whose_capacity_cannot_be_read_leaves_this_mac_the_retry_goes_to(self):
+    def test_a_farm_mac_whose_capacity_cannot_be_read_leaves_this_mac_the_retry_goes_to(self):
         self.status.write_text("3")
         self.ran_there()
         self.commit("a", "a")
         [identifier] = self.add("a")
         def away(): raise mq.remote.Unreachable(f"{self.HOST} cannot be reached: it is asleep", "wake it")
-        with self.macs(away, self.FREE), self.second_mac([AssertionError("another Mac was read")]) as asked, \
+        with self.macs(away, self.FREE), self.farm_mac([AssertionError("another Mac was read")]) as asked, \
                 self.host([None], then=self.status.unlink) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2612,7 +2612,7 @@ class SecondMacSettle(Fixture):
         self.publish(config)
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with self.macs(AssertionError, AssertionError), self.second_mac([AssertionError("another Mac was read")]) as asked, \
+        with self.macs(AssertionError, AssertionError), self.farm_mac([AssertionError("another Mac was read")]) as asked, \
                 self.host([self.LOCAL_BUSY, None], then=self.status.unlink) as (slept, said):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
@@ -2620,10 +2620,10 @@ class SecondMacSettle(Fixture):
         self.assertIn("the lanes run next on this Mac, since gate runs only there", said.getvalue())
 
 
-class SecondMacReading(unittest.TestCase):
+class FarmMacReading(unittest.TestCase):
     """remote.pressure_there and remote.dispatched alone, and the reading offload_host gives."""
 
-    def test_the_second_macs_reading_is_judged_by_its_own_limit(self):
+    def test_the_farm_macs_reading_is_judged_by_its_own_limit(self):
         # The load is what the queue logs; the busy share is what judges, so a high load alone refuses nothing.
         # The limit is quoted as that Mac's, and where it is set there when its reading says so, which an older
         # toolkit's does not (vocaro/queuekeeper#29).
@@ -2652,7 +2652,7 @@ class SecondMacReading(unittest.TestCase):
                 ask.assert_called_once_with("fake-mac", {"pressure": True}, timeout=mq.remote.CENSUS_TIMEOUT)
 
     def test_a_macs_capacity_is_judged_by_its_slots_its_cpu_and_what_runs_there(self):
-        """remote.spare, which qk run judges both Macs by before it chooses one (vocaro-engineering#168)."""
+        """remote.spare, which qk run judges the Macs by before it chooses one (vocaro-engineering#168)."""
         idle = {"slots": 3, "slotsMax": 5, "busy": [], "load": 2.0, "cpuBusy": 20.0, "busyLimit": 75.0, "wholeHost": [],
                 "exclusive": []}
         cases = [
@@ -2662,7 +2662,7 @@ class SecondMacReading(unittest.TestCase):
             ({**idle, "busy": [0, 1, 2, 3]}, {}, "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
             ({**idle, "busy": [3, 4]}, {}, None),
             # A free guaranteed slot is spare capacity however busy the CPU, as admission admits work into one
-            # (owner's decision, 2026-11-07): the second Mac at 93% against its 90% with two of four slots free.
+            # (owner's decision, 2026-11-07): another Mac at 93% against its 90% with two of four slots free.
             ({**idle, "cpuBusy": 75.0}, {}, None),
             ({**idle, "cpuBusy": 99.6}, {}, None),
             ({**idle, "cpuBusy": None}, {}, None),
@@ -2704,7 +2704,7 @@ class SecondMacReading(unittest.TestCase):
         self.assertEqual(mq.remote.spare({**sourced, "busy": [3]}, "build-host", exclusive=True),
                          "exclusive work needs every slot of build-host up to HEAVY_SLOTS_MAX=5 (build-host's limit, set "
                          "in /Users/x/limits.json) free, and 1 is busy")
-        # The second Mac's reading comes from offload_host, which must answer with one; an error there is its
+        # Another Mac's reading comes from offload_host, which must answer with one; an error there is its
         # owner's to fix, as a limits file admission cannot read refuses every request on that host.
         with patch.object(mq.remote, "ask", return_value=idle) as ask:
             self.assertEqual(mq.remote.capacity_there("fake-mac"), idle)
@@ -2718,7 +2718,7 @@ class SecondMacReading(unittest.TestCase):
                                                                   "resource limits: x is not JSON"):
                 mq.remote.capacity_there("fake-mac")
 
-    def test_the_second_macs_busy_share_and_limit_are_what_a_gate_records(self):
+    def test_the_farm_macs_busy_share_and_limit_are_what_a_gate_records(self):
         for answer, expected in (({"load": 2.0, "cpuBusy": 82.5, "busyLimit": 75, "memory": 1}, (82.5, 75.0)),
                                  ({"load": 2.0, "cpuBusy": None, "busyLimit": 60.0}, (None, 60.0)),
                                  ({"load": 2.0, "cpuBusy": True, "busyLimit": 75.0}, (None, 75.0))):
@@ -2743,7 +2743,7 @@ class SecondMacReading(unittest.TestCase):
         with patch.object(mq.resources, "busy_limit", side_effect=ValueError("bad limits")):
             self.assertIsNone(mq.busy_of(None))
 
-    def test_a_second_mac_without_a_reading_is_unavailable(self):
+    def test_a_farm_mac_without_a_reading_is_unavailable(self):
         for answer in [{"error": "HEAVY_BUSY_LIMIT is no number: x"}, {"load": 1.0}, {"load": 1.0, "limit": 7.5}, ["no"], None]:
             with self.subTest(answer=answer), patch.object(mq.remote, "ask", return_value=answer):
                 with self.assertRaisesRegex(mq.remote.Unavailable, "fake-mac did not report its CPU busy share"):
@@ -4355,7 +4355,7 @@ class ImplicitSpellingLane(Fixture):
     def eng_run(self, *words):
         return cli.main(["--project", str(self.repo), "run", *words])
 
-    def test_it_is_offered_to_the_second_mac_as_any_lane_is(self):
+    def test_it_is_offered_to_the_farm_mac_as_any_lane_is(self):
         with patch.object(cli.remote, "first", return_value=self.OFFERED) as first:
             self.assertEqual(self.eng_run("spelling"), 0)
         config, lane = first.call_args.args[1:3]
@@ -4395,7 +4395,7 @@ class ImplicitSpellingLane(Fixture):
         self.assertIn("No configured lane: nonesuch", said.getvalue())
 
     def test_with_no_launcher_it_runs_with_the_toolkit_on_the_mac_that_runs_it(self):
-        # On the second Mac QUEUEKEEPER_ROOT names the toolkit sent there, and qk run there makes the command
+        # On another Mac QUEUEKEEPER_ROOT names the toolkit sent there, and qk run there makes the command
         # (offload_host); a project needs no launcher for it (vocaro/queuekeeper#108).
         (self.repo / "scripts/qk").unlink()
         sent = self.base / "sent-toolkit"
@@ -4731,7 +4731,7 @@ class QueuekeeperThatCannotStart(Fixture):
         # A start that says neither, as one that reached START_LIMIT, blames no entry and claims nothing.
         self.assertFalse(asked(None))
         self.assertEqual(worker.probed, "")
-        # The lane ran on the second Mac: a batch that starts here is not why, and main is not asked.
+        # The lane ran on another Mac: a batch that starts here is not why, and main is not asked.
         worker.ran_on = "build-host"
         self.assertFalse(asked(True))
         self.assertEqual(resets, [])
@@ -4797,7 +4797,7 @@ class QueuekeeperThatCannotStart(Fixture):
         # Any other status is not Queuekeeper's.
         os.utime(receipt, (began - 60, began - 60))
         self.assertIsNone(worker.tool_unstarted("gate", began, 1, None, log))
-        # On the second Mac: the work stage's own exit, with no receipt of the lane come back.
+        # On another Mac: the work stage's own exit, with no receipt of the lane come back.
         ran = self.base / "dispatch"
         ran.mkdir()
         def there(**result): (ran / "source.json").write_text(json.dumps({"host": "build-host", "result": result}))
@@ -5717,7 +5717,7 @@ class ToolkitCopy(Fixture):
         run(self.kit, "git", "add", ".")
         run(self.kit, "git", "commit", "-qm", "Toolkit")
         run(self.kit, "git", "push", "-q", "origin", "HEAD:main")
-        # This Mac's queue folder, laid out as the second Mac's checkouts are (vocaro-engineering#104).
+        # This Mac's queue folder, laid out as another Mac's checkouts are (vocaro-engineering#104).
         self.checkout = self.base / "queuekeeper-workers/project/project"
         self.copy = self.base / "queuekeeper-workers/project/toolkit"
         variables = patch.dict(os.environ)
@@ -6922,7 +6922,7 @@ class LostLocalNetwork(Fixture):
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], "landed")
 
-    def test_a_worker_with_no_second_mac_never_asks(self):
+    def test_a_worker_with_no_farm_mac_never_asks(self):
         self.commit("a", "a")
         [identifier] = self.add("a")
         with patch.object(mq.remote, "local_network_lost", return_value=self.LOST) as asked, patch("builtins.print"):
@@ -7725,7 +7725,7 @@ class SummaryFacts(Fixture):
 
 class LoadReadings(unittest.TestCase):
     """load_of, load_words and LoadSampler alone (#273)."""
-    def test_load_of_reads_the_second_mac_there_and_this_mac_here(self):
+    def test_load_of_reads_the_farm_mac_there_and_this_mac_here(self):
         there = {"load": 12.5, "busyLimit": 75.0}
         with patch.object(mq.remote, "reading_there", return_value=(there, 40.0)) as asked:
             self.assertEqual(mq.load_of("fake-mac"), (12.5, 40.0, 75.0))
@@ -7781,7 +7781,7 @@ class LoadReadings(unittest.TestCase):
         self.assertIn("While it waited to start, before any of its own work, the load was highest 178 over 1 reading", said)
 
     def test_the_sampler_keeps_only_the_readings_of_the_mac_the_lane_ran_on(self):
-        # Before the dispatch names the second Mac, a reading is this Mac's: not the lane's.
+        # Before the dispatch names another Mac, a reading is this Mac's: not the lane's.
         readings = {None: (70.0, 99.0, 75.0), "fake-mac": (12.0, 40.0, 75.0)}
         with patch.object(mq, "load_of", side_effect=readings.get), \
                 patch.object(mq.remote, "dispatched", side_effect=[None, "fake-mac"]):
@@ -7792,7 +7792,7 @@ class LoadReadings(unittest.TestCase):
         self.assertIn("on fake-mac, the one-minute load was highest 12, last 12 over 2 readings", said)
         self.assertNotIn("70", said)
 
-    def test_the_sampler_reads_the_second_mac_its_wait_record_names_before_the_dispatch_is_filed(self):
+    def test_the_sampler_reads_the_farm_mac_its_wait_record_names_before_the_dispatch_is_filed(self):
         """vocaro/queuekeeper#132: a dispatch's record is filed only when it ends, so the lane's wait record names the
         Mac while the lane runs there, and a failed gate there keeps more than its one reading at the end."""
         readings = {None: (70.0, 99.0, 70.0), "build-host": (12.0, 40.0, 90.0)}
@@ -7908,7 +7908,7 @@ class FlakyReruns(Fixture):
         self.assertIn("flaky: test_flaky.Flaky.test_sometimes failed the gate at", mq.describe(entries[0]))
 
     @contextlib.contextmanager
-    def second_mac(self):
+    def farm_mac(self):
         """On collection, move the lane's unittest log into a fake second-Mac dispatch. The live observers
         see no dispatch, so they cannot move the log before the worker collects it (#331)."""
         dispatches = self.base / "dispatches"
@@ -7923,8 +7923,8 @@ class FlakyReruns(Fixture):
                 patch.object(mq.remote, "dispatched", return_value=None):
             yield
 
-    def test_a_failed_test_of_a_gate_the_second_mac_ran_is_rerun_alone_from_its_dispatchs_log(self):
-        # The queue's log held only what qk run printed here, with no qk unittest summary, so a second Mac's
+    def test_a_failed_test_of_a_gate_the_farm_mac_ran_is_rerun_alone_from_its_dispatchs_log(self):
+        # The queue's log held only what qk run printed here, with no qk unittest summary, so another Mac's
         # failed test was never rerun and every batch bisected.
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
@@ -7936,7 +7936,7 @@ class FlakyReruns(Fixture):
             watch.look()
             finish(watch)
 
-        with self.second_mac(), patch.object(mq.GateWatch, "finish", final_poll), \
+        with self.farm_mac(), patch.object(mq.GateWatch, "finish", final_poll), \
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         log = said.getvalue()
@@ -7974,8 +7974,8 @@ class FlakyReruns(Fixture):
         self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
 
     @contextlib.contextmanager
-    def group_on_the_second_mac(self, keep_lanes=True):
-        """A group gate the second Mac ran: once each qk run of a group has ended, as remote.execute returns it, its
+    def group_on_the_farm_mac(self, keep_lanes=True):
+        """A group gate another Mac ran: once each qk run of a group has ended, as remote.execute returns it, its
         lanes' logs and receipts are only in a dispatch's lanes/, as queuekeeper files them, and none is left in the
         worker's checkout. remote.dispatch only looks dispatches up, as the real one does. The gate's watch and
         samplers look them up while the lane runs, which a busy host makes them do once a lane outlasts WATCH_POLL:
@@ -8001,14 +8001,14 @@ class FlakyReruns(Fixture):
                 patch.object(mq, "WATCH_POLL", 0.01), patch.object(mq, "BUSY_SAMPLE", 0.01):
             yield
 
-    def test_a_flake_in_a_group_gate_the_second_mac_ran_reruns_from_its_dispatchs_lane_log(self):
+    def test_a_flake_in_a_group_gate_the_farm_mac_ran_reruns_from_its_dispatchs_lane_log(self):
         # A dispatched group's run.log is empty and its output holds qk unittest's summary only indented, in a
         # failed lane's tail; the lane's own log came back to the dispatch, not to the worker's checkout.
         self.make_gate_a_group(0)
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")
-        with self.group_on_the_second_mac(), contextlib.redirect_stdout(io.StringIO()) as said:
+        with self.group_on_the_farm_mac(), contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         log = said.getvalue()
         self.assertIn("gate exited 1 on fake-mac", log)
@@ -8024,7 +8024,7 @@ class FlakyReruns(Fixture):
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
         self.add("a", "b")
-        with self.group_on_the_second_mac(keep_lanes=False), contextlib.redirect_stdout(io.StringIO()) as said:
+        with self.group_on_the_farm_mac(keep_lanes=False), contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         self.assertIn("gate's lane other did not pass, which no rerun of a Python test can clear: bisecting", said.getvalue())
         self.assertNotIn("rerunning each alone", said.getvalue())
@@ -8034,7 +8034,7 @@ class FlakyReruns(Fixture):
         self.plan.write_text("F")
         self.commit("a", "a")
         [identifier] = self.add("a")
-        with self.group_on_the_second_mac(), contextlib.redirect_stdout(io.StringIO()) as worker:
+        with self.group_on_the_farm_mac(), contextlib.redirect_stdout(io.StringIO()) as worker:
             self.assertEqual(self.work(), 0, worker.getvalue())
         entry = self.state(identifier)
         self.assertEqual(entry["state"], mq.FAILED)
@@ -8059,7 +8059,7 @@ class FlakyReruns(Fixture):
         self.assertNotIn("rerunning each alone", log)
         self.assertEqual(self.runs_of_the_test(), 1)
 
-    def test_a_second_mac_gate_whose_dispatch_kept_no_log_bisects_and_says_why(self):
+    def test_a_farm_mac_gate_whose_dispatch_kept_no_log_bisects_and_says_why(self):
         # The negative control: a dispatch with no run.log gives the rerun nothing to read.
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
@@ -8329,20 +8329,20 @@ class FlakyReruns(Fixture):
                               "could not be read.", why)
                 self.assertNotIn("highest", why)
 
-    def test_a_rejection_of_a_gate_the_second_mac_ran_says_that_macs_load_and_never_this_macs(self):
+    def test_a_rejection_of_a_gate_the_farm_mac_ran_says_that_macs_load_and_never_this_macs(self):
         readable = lambda host: (12.0, 40.0, 75.0) if host == "fake-mac" else self.LOADED
         self.load_of.side_effect = readable
-        with self.second_mac(): why = self.rejected(("docs/a.md", "The word\n"))
+        with self.farm_mac(): why = self.rejected(("docs/a.md", "The word\n"))
         self.assertIn("While gate ran on fake-mac, the one-minute load was highest 12, last 12 over 1 "
                       "reading, and the CPU was at most 40% busy. Both count the lane's own work", why)
         self.assertNotIn("highest 70", why)
 
-    def test_a_rejection_from_a_second_mac_that_cannot_be_read_does_not_say_this_macs_load(self):
+    def test_a_rejection_from_a_farm_mac_that_cannot_be_read_does_not_say_this_macs_load(self):
         def reading(host):
             if host == "fake-mac": raise mq.remote.Unavailable("gone")
             return self.LOADED
         self.load_of.side_effect = reading
-        with self.second_mac(): why = self.rejected(("docs/a.md", "The word\n"))
+        with self.farm_mac(): why = self.rejected(("docs/a.md", "The word\n"))
         self.assertIn("While gate ran on fake-mac, the one-minute load could not be read", why)
         self.assertNotIn("highest", why)
         self.assertNotIn("this Mac", why)
@@ -8652,8 +8652,8 @@ class FlakyParts(unittest.TestCase):
 
 class BothHalves(Fixture):
     """A bisect's two halves gate at once, the newer beside the older, one on each Mac (vocaro-engineering#241).
-    Here both run on this Mac, as the fixture has no second Mac: HERE and BESIDE are no options, and every lane
-    may go to the second Mac (offerable)."""
+    Here both run on this Mac, as the fixture has no other Mac: HERE and BESIDE are no options, and every lane
+    may go to another Mac (offerable)."""
     def setUp(self):
         super().setUp()
         for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None)):
@@ -8717,8 +8717,8 @@ class BothHalves(Fixture):
         self.assertIn("passed beside the older half, which landed first", log)
         self.assertNotIn("right", self.main_files())
 
-    def test_a_second_mac_that_declines_leaves_the_bisect_as_before(self):
-        """Negative control: when the second Mac cannot start the newer half now, it waits behind the older half,
+    def test_a_farm_mac_that_declines_leaves_the_bisect_as_before(self):
+        """Negative control: when another Mac cannot start the newer half now, it waits behind the older half,
         and the bisect costs what it did, one half at a time: 5 gates in 5 rounds."""
         for name in ("a", "bad", "c", "d"): self.commit(name, name)
         ids = self.add("a", "bad", "c", "d")
@@ -8789,7 +8789,7 @@ class PooledStack(Fixture):
         config = {"lanes": {"gate": {"resource": "heavy"}}}
         for mac, where, excluded in [
             (mq.lane_wait.HERE, mq.BESIDE, None),
-            (mq.lane_wait.second_mac("gate-03"), ("--if-free",), "gate-03"),
+            (mq.lane_wait.farm_mac("gate-03"), ("--if-free",), "gate-03"),
         ]:
             record = {"mac": mac, "kind": None, "pid": os.getpid(), "admitted": False}
             with self.subTest(mac=mac), farm_fixture.only("build-host", "gate-03", "gate-04"), patch.object(worker.queue, "waiting", return_value=waiting), \
@@ -8806,7 +8806,7 @@ class PooledStack(Fixture):
 
 
 class Stacked(Fixture):
-    """Entries that arrive while a batch gates gate stacked on its tip, on the other Mac, and land once it has,
+    """Entries that arrive while a batch gates gate stacked on its tip, on another Mac, and land once it has,
     without a gate of their own; a batch that does not land throws that gate away (vocaro-engineering#241). Both
     run on this Mac here, as in BothHalves."""
     PATIENCE = 600  # seconds a step may take before the test gives up on it, which only a regression uses
@@ -9035,8 +9035,8 @@ class Stacked(Fixture):
         self.assertEqual(log.count(f"the entries behind the batch wait for it, since {why}"), 1, log)
         self.assertNotIn("that arrived during the gate", log)
 
-    def test_a_stacked_gate_the_second_mac_declines_is_thrown_away_and_the_entry_gates_after(self):
-        """Negative control: a second Mac that cannot start it gives no verdict, which is thrown away, so the entry
+    def test_a_stacked_gate_the_farm_mac_declines_is_thrown_away_and_the_entry_gates_after(self):
+        """Negative control: another Mac that cannot start it gives no verdict, which is thrown away, so the entry
         gates after the batch, as before."""
         self.commit("hold", "a"); self.commit("b", "b")
         [first] = self.add("a")
@@ -9237,7 +9237,7 @@ class RemovedWhileTesting(Fixture):
         # a is removed once the stacker has looked at c and said it conflicts with a, while a's gate still runs: a
         # condition observed, not a time guessed (vocaro-engineering#381). The stacker looks only once a's final lane
         # runs admitted (Worker.admitted_mac), and then makes its checkout and integrates c there, so the look comes
-        # as late as the Mac's load makes it: on the second Mac on 2026-11-12, 94 s after c arrived. a's gate
+        # as late as the Mac's load makes it: on another Mac on 2026-11-12, 94 s after c arrived. a's gate
         # therefore holds (hold, in LANE) until the removal stops it, rather than sleeping a fixed time the look could
         # outlast, and the wait for the look has a bound stretched by the load, which only ends a failing run, with a
         # removed either way (vocaro/queuekeeper#31). What the removal is checked for is fixed: a's gate stops within
@@ -9806,7 +9806,7 @@ class RoundAccount(Fixture):
         gate = self.gate_after_look(queue, watch)
         self.assertEqual((gate["mac"], gate["waiting"], gate["waitingSince"], gate["waitingKind"]),
                          ("this Mac", None, None, None))
-        # A lane that a dispatch sent to the second Mac runs there.
+        # A lane that a dispatch sent to another Mac runs there.
         with patch.object(mq.remote, "dispatched", return_value="build-host"): watch.look()
         self.assertEqual(queue.round_state()["gates"]["batch"]["mac"], "build-host")
         # While its run goes on, its dispatch's folder has no name yet (remote.file_results): the record says where.
@@ -9815,7 +9815,7 @@ class RoundAccount(Fixture):
         watch.finish()
         self.assertEqual(queue.round_state()["gates"], {})
 
-    def test_a_wait_on_the_second_mac_is_shown_and_names_the_mac(self):
+    def test_a_wait_on_the_farm_mac_is_shown_and_names_the_mac(self):
         """The issue's first acceptance: its wait comes back as a record, and no log line says it."""
         queue, watch = self.watch()
         mq.lane_wait.sent("build-host")
@@ -10114,7 +10114,7 @@ class GateResultsNamed(Fixture):
     DETAIL = "test_new_case passed on the iPhone"
 
     @contextlib.contextmanager
-    def second_mac(self, *results):
+    def farm_mac(self, *results):
         """The gate ran on fake-mac, by a dispatch's folder as qk run files it once the lane has ended, read by the
         real remote.dispatch, with the files results names sent back under its results/."""
         real = mq.remote.dispatch
@@ -10153,8 +10153,8 @@ class GateResultsNamed(Fixture):
         self.assertEqual(waited.splitlines()[-3:], [entry["gate"]["results"], f"gate log: {entry['gate']['log']}",
                                                     f"landed: {entry['landedAs']}"])
 
-    def test_a_passing_second_mac_gate_names_its_results_and_says_they_are_on_this_mac(self):
-        entry, log, waited, worker = self.landed(self.second_mac(f"{self.SUITE}/iPhone.log", f"{self.SUITE}/iPad.log",
+    def test_a_passing_farm_mac_gate_names_its_results_and_says_they_are_on_this_mac(self):
+        entry, log, waited, worker = self.landed(self.farm_mac(f"{self.SUITE}/iPhone.log", f"{self.SUITE}/iPad.log",
                                                                  "suites/mac-tests/unit.log"))
         line = entry["gate"]["results"]
         self.assertIn("gate per-test results: 3 files", line)
@@ -10173,12 +10173,12 @@ class GateResultsNamed(Fixture):
         self.assertTrue(Path(entry["gate"]["log"]).is_file())
         self.assertNotIn(self.DETAIL, waited)
 
-    def test_a_passing_second_mac_gate_with_no_results_says_its_command_wrote_none(self):
+    def test_a_passing_farm_mac_gate_with_no_results_says_its_command_wrote_none(self):
         # The negative control: no files came back, so the line claims none, and the entry still lands. A lane whose
         # command writes none, as Queuekeeper's own `qk unittest` gate, gets no results/ back at all, and the line
-        # says the command wrote none rather than that the second Mac failed to send them (#38), naming no folder
+        # says the command wrote none rather than that another Mac failed to send them (#38), naming no folder
         # that is not there.
-        entry, log, waited, _ = self.landed(self.second_mac())
+        entry, log, waited, _ = self.landed(self.farm_mac())
         line = entry["gate"]["results"]
         self.assertEqual(line, "gate per-test results: none: its command wrote none in its results/ on "
                                "fake-mac, which sends back all it writes there")
@@ -10396,7 +10396,7 @@ class FailedGateEvidence(Fixture):
         self.assertIn(entry["log"], waited)
 
 
-# What the module says before a test's patches: each half's placement option, and which lanes may go to the second Mac.
+# What the module says before a test's patches: each half's placement option, and which lanes may go to another Mac.
 OFFERED = (mq.HERE, mq.BESIDE)
 OFFERABLE = mq.offerable
 

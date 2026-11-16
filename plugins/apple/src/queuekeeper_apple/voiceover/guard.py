@@ -1,4 +1,4 @@
-"""What every project's Mac VoiceOver session runner shares on a Mac that keeps its state, the second Mac
+"""What every project's Mac VoiceOver session runner shares on a Mac that keeps its state, another Mac
 (doc/guides/foreground.md): a session run again when VoiceOver moved to XCTest's Automation Running
 banner, which that Mac cannot unload, and a stop that restores VoiceOver before anything else.
 
@@ -18,7 +18,7 @@ BANNER = "Automation Running"
 # A driver's exit status for a session stopped because VoiceOver named the banner: unmeasured, never passed or
 # failed, and run again.
 BANNER_STOP = 123
-# How many times a session runs while the banner stops it. On the second Mac, whose System Integrity Protection
+# How many times a session runs while the banner stops it. On another Mac, whose System Integrity Protection
 # keeps the banner loaded, the kernel ended it for its 15 MB memory limit and launchd started it again about every
 # 10 s, and VoiceOver moved to a new one in two of EPUBLib's seven sessions there, two of the three at 600 points
 # (2026-10-30). The owner keeps SIP there and has such sessions run again (owner's decision, 2026-10-30).
@@ -48,7 +48,7 @@ def check_banner(phrases, moment):
 def stop_signals(*, only_unhandled=False):
     """Within the block a stop signal raises Stopped, once: later ones are ignored, so the restoration that
     follows runs to its end. Without it a stop ends the driver at once with VoiceOver on, which a Mac that keeps
-    its state then keeps, as the second Mac did on 2026-10-30. The previous handlers come back after the block.
+    its state then keeps, as another Mac did on 2026-10-30. The previous handlers come back after the block.
     only_unhandled preserves an existing supervisor/driver handler and ignored signals; this lets an outer
     state guard wait for a supervised child to end before restoration instead of interrupting its supervisor."""
     if only_unhandled and threading.current_thread() is not threading.main_thread():

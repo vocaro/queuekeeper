@@ -27,20 +27,20 @@ HOST_COMMANDS = {"run", "admit", "remote", "land", "queue", "disk"}
 
 def fix_hosts(root, hosts):
     """What `doctor` fixes of remote.compare_hosts' report itself, the owner's no longer (the owner's decision,
-    2026-11-03): what each extension fixes (extensions.HOST_FIXES), and the second Mac's own toolkit checkout,
+    2026-11-03): what each extension fixes (extensions.HOST_FIXES), and another Mac's own toolkit checkout,
     which it fast-forwards to origin/main when it can and reports in toolkitCheckout, an error when it cannot
     (remote.update_there, vocaro-engineering#203). On the same connection it asks which folder beside the project
-    that its extensions load from the second Mac has no checkout of, each an error naming the clone that makes it,
-    which it leaves to the owner; unchecked when the second Mac is not reached (vocaro/queuekeeper#117).
-    tests/host_isolation.py replaces it, so that no test changes either Mac."""
+    that its extensions load from another Mac has no checkout of, each an error naming the clone that makes it,
+    which it leaves to the owner; unchecked when another Mac is not reached (vocaro/queuekeeper#117).
+    tests/host_isolation.py replaces it, so that no test changes any Mac."""
     for fix in extensions.HOST_FIXES: hosts = fix(root, hosts)
     siblings = sibling_folders(root)
-    # The second Mac's own toolkit checkout, which it fast-forwards to origin/main when it can; one it must
+    # Another Mac's own toolkit checkout, which it fast-forwards to origin/main when it can; one it must
     # leave as it is is an error, the owner's to decide (vocaro-engineering#203).
     if "remote" in hosts:
         found, missing = remote.update_there(hosts["host"], siblings)
         hosts["toolkitCheckout"] = found
-        # Each folder the project's extensions load from that the second Mac has no checkout of, which every lane
+        # Each folder the project's extensions load from that another Mac has no checkout of, which every lane
         # sent there would fail to load; making it is the owner's step (vocaro/queuekeeper#117).
         if siblings and missing is None:
             hosts.setdefault("unchecked", []).append(
@@ -246,10 +246,10 @@ def placement(reason):
 
 def admission_placement(offered, reason):
     """What a run's admission line says of its placement, which `qk admissions usage` counts: whether queuekeeper offered it
-    to the second Mac first (offered) and why it runs here (because), or the Mac that sent it (remote.DISPATCHER)."""
+    to another Mac first (offered) and why it runs here (because), or the Mac that sent it (remote.DISPATCHER)."""
     sender = os.environ.get(remote.DISPATCHER)
     if sender: return {"dispatchedFrom": sender}
-    # With no second Mac configured, Offer.make gives that reason before checking local eligibility.
+    # With no other Mac configured, Offer.make gives that reason before checking local eligibility.
     declined = offered is not None and (offered.host is None or offered.refused is None)
     return {"offered": declined, "because": reason}
 
@@ -305,8 +305,8 @@ def screen_wait(name, seconds, said):
 def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False,
                   screen=False, placement=None):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
-    instead: its status on the second Mac when the second Mac took it after all, MISCONFIGURED, or
-    BUSY when no admission came, after saying so. Work the second Mac did not take (offered), declined
+    instead: its status on another Mac when another Mac took it after all, MISCONFIGURED, or
+    BUSY when no admission came, after saying so. Work another Mac did not take (offered), declined
     as busy or not offered while it had no spare capacity and this Mac had, goes to whichever Mac admits
     it first, this Mac asked first (remote.overflow). Other work waits in this Mac's queue for timeout
     seconds, or at most FREE_WAIT with once. A whole-host lane takes every guaranteed slot,
@@ -366,8 +366,8 @@ def declined(reason):
 
 
 def fell_back(name, offered):
-    """Say in one line, before the run starts, that work offered to the second Mac runs on this Mac, and why, so
-    that the second Mac's lines a declined offer left above are not read as the run's (vocaro-engineering#185)."""
+    """Say in one line, before the run starts, that work offered to another Mac runs on this Mac, and why, so
+    that another Mac's lines a declined offer left above are not read as the run's (vocaro-engineering#185)."""
     above = "; another Mac's lines above are from the offer it did not take" if offered.sent else ""
     print(f"queuekeeper: {name} runs on {this_mac()}, not another Mac: {offered.status}{above}", file=sys.stderr, flush=True)
 
@@ -384,8 +384,8 @@ SCREEN_STATUS = {"unlocked": 0, "locked": 1, "unknown": 2}
 
 def host_screen(args):
     """`qk host screen [--remote]`: one line, or the reading as JSON, saying whether this Mac's or the second
-    Mac's console screen is locked (offload_host.screen), exiting 0 unlocked, 1 locked and 2 unknown. The
-    second Mac is read over SSH by the same code, so either Mac's answer is read, never assumed."""
+    Mac's console screen is locked (offload_host.screen), exiting 0 unlocked, 1 locked and 2 unknown. Another
+    Mac is read over SSH by the same code, so any Mac's answer is read, never assumed."""
     if args.host and not args.remote: raise ValueError("--host names another Mac that --remote reads")
     if args.remote:
         host = remote.chosen(args.host)
@@ -452,7 +452,7 @@ def lane_directory(stack, root, lane):
 
 
 def reap_here(root, inherited):
-    """Before heavy work runs on this Mac, the reap that runs before work is sent to the second Mac (remote.execute):
+    """Before heavy work runs on this Mac, the reap that runs before work is sent to another Mac (remote.execute):
     the stale simulators of the project's pool and of the pools its checkouts name shut down, and the pool
     reservations reap proves dead released (offload_host.reap, remote.reap_request), within REAP_SECONDS. Each stop,
     failure, release and problem goes to standard error as a dispatch says them (remote.reap_lines), and the work
@@ -470,13 +470,13 @@ def reap_here(root, inherited):
 def admitted_tree(stack, root, name, offered, receipt):
     """The checkout a lane this Mac admitted runs in, after recording in receipt the tree it reads, or 2 after
     saying why it cannot run. A run in root reads the working tree as it is once admitted, not as it was when the
-    work was offered or queued, so a lane this Mac takes after sending the second Mac a commit runs in root only
+    work was offered or queued, so a lane this Mac takes after sending another Mac a commit runs in root only
     while the tree is still that commit's (remote.moved_trees), and receipt's sent names that commit.
 
     Once the project's tree is no longer what was sent, the lane runs from what was sent, in a temporary worktree
     at that commit with the toolkit beside it that QUEUEKEEPER_ROOT names, entered in stack, as `qk admit` runs its
     command (from_sent), and receipt's sentTree says so. It used to end with exit 2 there, after its wait for a
-    slot: on 2026-11-13 a lane the second Mac declined waited 104 s here and then refused over a documentation
+    slot: on 2026-11-13 a lane another Mac declined waited 104 s here and then refused over a documentation
     edit the session made meanwhile (vocaro/queuekeeper#136).
 
     When only the toolkit's tree changed, the lane runs in root with the toolkit as sent, from a temporary worktree
@@ -509,8 +509,8 @@ def admitted_tree(stack, root, name, offered, receipt):
 def from_sent(stack, root, sent, moved, receipt, name="the command"):
     """(checkout, toolkit) of the worktrees from which `qk admit` runs its command on this Mac, or `qk run` the
     lane name, entered in stack, after recording them in receipt; or 2 after saying why not. Work this Mac takes
-    after sending the second Mac a commit runs from that commit once the tree here is no longer that commit's
-    (remote.moved_trees), in a temporary worktree at it, as the second Mac runs it, rather than from the changed
+    after sending another Mac a commit runs from that commit once the tree here is no longer that commit's
+    (remote.moved_trees), in a temporary worktree at it, as another Mac runs it, rather than from the changed
     tree or not at all: the session may go on editing meanwhile, and the result is that of what was sent
     (vocaro-engineering#276, whose command waited behind a gate here and then refused over an unrelated
     documentation edit; vocaro/queuekeeper#136, the same for a lane). The worktrees go when the work ends, however
@@ -546,7 +546,7 @@ def matching_directory(root):
 
 def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=None):
     """0 once the project's provision lane, if it has one, has run in the worktree of what was sent, as it runs in
-    the second Mac's checkout before the command; otherwise its status, after saying where its log is."""
+    another Mac's checkout before the command; otherwise its status, after saying where its log is."""
     if "provision" not in config.get("lanes", {}): return 0
     log = Path(root) / ".build/queuekeeper/admit/provision.log"
     status = processes.run([sys.executable, str(toolkit / "bin/qk"), "--project", str(checkout), "run", "--here",
@@ -559,10 +559,10 @@ def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=No
 
 
 def here_because(args, inherited):
-    """Why `qk admit` runs its command on this Mac without offering it to the second Mac, or None to offer it there
+    """Why `qk admit` runs its command on this Mac without offering it to another Mac, or None to offer it there
     first, as a lane is (the owner's decision, 2026-11-07; doc/guides/shared-host.md, Which Mac runs a lane)."""
     if args.here: return "qk admit --here"
-    # Work the second Mac runs for the Mac that sent it runs there, where it was sent.
+    # Work another Mac runs for the Mac that sent it runs there, where it was sent.
     if os.environ.get(remote.DISPATCHER): return "sent here by the Mac that dispatched it"
     # Foreground work holds the foreground of the Mac it runs on (foreground.py).
     if args.foreground: return "foreground work runs on the Mac whose foreground it holds"
@@ -574,15 +574,15 @@ def here_because(args, inherited):
 
 def provisioned_here(root, config, lane, receipt, inherited, on_stop=None, tree=None):
     """None once the project's provision lane, if it has one, has run in this checkout before lane runs on this Mac,
-    as it runs in the second Mac's checkout before a lane sent there (offload_host); otherwise the status lane ends
+    as it runs in another Mac's checkout before a lane sent there (offload_host); otherwise the status lane ends
     with, after saying why it did not run. A bare `qk run gate` that stayed here ran only the gate, so it passed or
     failed by the Mac it landed on, and a queue gate that fell back here found a checkout its provision lane had
-    prepared on the other Mac, or on none (vocaro/queuekeeper#19). It runs as `qk run --here provision`, a lane of
+    prepared on another Mac, or on none (vocaro/queuekeeper#19). It runs as `qk run --here provision`, a lane of
     its own with its own receipt and log, nested in the admission lane holds, or admitted itself before a self lane.
     Not before the provision lane itself, nor for work nested in an admission or a self lane, which the run around
     it provisioned, nor for work a dispatch sent here, which provisioned this checkout as a step of its own.
 
-    A provision lane that fails here ends lane as one that fails on the second Mac does (remote.execute): with
+    A provision lane that fails here ends lane as one that fails on another Mac does (remote.execute): with
     remote.MISCONFIGURED, this Mac's environment and no verdict on lane's commit, which the merge queue holds for
     and does not send back (the owner's decision, 2026-11-15). One that got no admission or ended unmeasured ran
     nothing to judge, and lane ends as it did.
@@ -601,7 +601,7 @@ def provisioned_here(root, config, lane, receipt, inherited, on_stop=None, tree=
         status = processes.run([sys.executable, str(toolkit / "bin/qk"), "--project", str(root), "run", "--here",
                                 "provision"], cwd=root, log_path=said, on_stop=on_stop)
     if not status:
-        # The provision lane reported into this lane's wait record, as on the second Mac (lane_wait.begin); the
+        # The provision lane reported into this lane's wait record, as on another Mac (lane_wait.begin); the
         # record is this process's again, whose start a stacked gate reads (merge_queue.Worker.admitted_mac).
         lane_wait.running()
         return None
@@ -636,7 +636,7 @@ def patch_environment(values):
 
 
 def admit(root, args, config=None, *, device_window=None):
-    # A command goes to whichever Mac has spare capacity for it, the second Mac first, as a lane does, and runs there
+    # A command goes to whichever Mac has spare capacity for it, another Mac first, as a lane does, and runs there
     # in the checkout's directory that matches the current one; what it changed in the checkout's files that Git does
     # not ignore comes back (remote.brought_back). --here, its paths and devices, nested and foreground work, and a
     # self lane's parts keep it here (doc/guides/shared-host.md, Which Mac runs a lane).
@@ -648,9 +648,9 @@ def admit(root, args, config=None, *, device_window=None):
     refused = exclusive_refusal(config, command) if args.exclusive else None
     if refused: raise ValueError(f"qk admit --exclusive refused: {refused}")
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
-    # Only a limit of its own goes to the second Mac, whose toolkit may not take the option.
+    # Only a limit of its own goes to another Mac, whose toolkit may not take the option.
     if args.time_limit != processes.DEFAULT_LIMIT: kind += ["--time-limit", f"{args.time_limit:g}"]
-    # Foreground work holds the foreground of the Mac it runs on: the second Mac's, which queuekeeper takes for it, or this
+    # Foreground work holds the foreground of the Mac it runs on: another Mac's, which queuekeeper takes for it, or this
     # Mac's, which the session holds within the owner's window. qk remote admit --foreground sends it there.
     second = args.foreground and extensions.FOREGROUND.foreground_mac()
     if args.foreground and args.verify:
@@ -665,7 +665,7 @@ def admit(root, args, config=None, *, device_window=None):
     reason = here_because(args, inherited)
     offered = None
     if reason is None:
-        # Whichever Mac has spare capacity for it, the second Mac first (remote.first_command, admitted_here).
+        # Whichever Mac has spare capacity for it, another Mac first (remote.first_command, admitted_here).
         offered = remote.first_command(root, config, command, kind)
         if not isinstance(offered.status, str): return offered.status
         reason = offered.status
@@ -680,7 +680,7 @@ def admit(root, args, config=None, *, device_window=None):
         allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
         closed = extensions.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
-        # The second Mac's foreground first, so that a command waiting for it holds no slot.
+        # Another Mac's foreground first, so that a command waiting for it holds no slot.
         waited = extensions.FOREGROUND.foreground_held(stack, "the command", " ".join(command), allowed(args.timeout),
                                                        again=shlex.join(["qk", "admit", "--foreground", "--", *command])) \
             if second else None
@@ -710,13 +710,13 @@ def admit(root, args, config=None, *, device_window=None):
                 alerts = extensions.FOREGROUND.guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
                     if args.foreground else None
                 if isinstance(alerts, int): return alerts
-                # The second Mac's Notification Center windows, under the foreground queuekeeper holds there (#204).
+                # Another Mac's Notification Center windows, under the foreground queuekeeper holds there (#204).
                 blocked = extensions.FOREGROUND.cleared_notifications(receipt) if second else None
                 if blocked is not None: return blocked
                 for prepare in extensions.PREPARE_LANE: prepare(root, config)
                 directory, variables = Path.cwd(), None
                 if tree is not None:
-                    # In the worktree's directory that matches the current one, as on the second Mac, after its
+                    # In the worktree's directory that matches the current one, as on another Mac, after its
                     # provision lane, with the toolkit beside it (remote.sent_tree).
                     checkout, toolkit = tree
                     directory = checkout / matching_directory(root)
@@ -731,7 +731,7 @@ def admit(root, args, config=None, *, device_window=None):
                                                  kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
                                                  else processes.KILL_AFTER)
                     status = alerts.judged(status) if alerts is not None else status
-                # What it changed in the worktree's files that Git does not ignore, applied here as from the second Mac.
+                # What it changed in the worktree's files that Git does not ignore, applied here as from another Mac.
                 if tree is not None: status = remote.brought_back_here(root, sent["commit"], tree[0], status)
                 return status
         try:
@@ -765,7 +765,7 @@ def bare_runner(argv, first):
 
 
 def runner_command(root, words):
-    """The command line that runs a runner's words again, in the current directory, written so that the second Mac
+    """The command line that runs a runner's words again, in the current directory, written so that another Mac
     can run it too: the project's launcher by its path from here, else the toolkit's own command with the project."""
     launcher = root / "scripts/qk"
     if launcher.is_file(): return ["python3", os.path.relpath(launcher), *words]
@@ -783,15 +783,15 @@ def here_command(command):
     started by its path, ran `scripts/qk unittest`, whose admitted child was Xcode's Python 3.9 and exited before it
     collected a test, so the run was unmeasured (vocaro/queuekeeper#152). Here that command runs under the
     interpreter that runs this process, which has started Queuekeeper. Every other command, such as one the caller
-    wrote after `qk admit --`, runs as written, and so does what goes to the second Mac."""
+    wrote after `qk admit --`, runs as written, and so does what goes to another Mac."""
     if RUN_AGAIN is not None and command == RUN_AGAIN and sys.executable: return [sys.executable, *command[1:]]
     return command
 
 
 def admitted_runner(root, argv, first):
     """Run the runner argv names, from first, under a heavy-work admission, and return its status. In a project it
-    runs as `qk admit -- COMMAND` runs any command: on whichever Mac has spare capacity for it, the second Mac
-    first. A folder with no queuekeeper.json has no second Mac to match, so the runner waits for a slot on this Mac
+    runs as `qk admit -- COMMAND` runs any command: on whichever Mac has spare capacity for it, another Mac
+    first. A folder with no queuekeeper.json has no other Mac to match, so the runner waits for a slot on this Mac
     and runs in this process; BUSY says no slot came. Its first line names the folder that keeps its progress, and
     everything it prints, whatever its standard output is, such as a pipe into `tail` (vocaro/queuekeeper#22)."""
     with run_progress.admitted(["qk", *argv[first:]]) as outcome:
@@ -899,7 +899,7 @@ def pin_run(argv):
     whatever landed in such a folder meanwhile, in its later lanes' nested qk commands (vocaro-engineering#497).
 
     A command already under a pin set keeps it and makes none: a lane of the merge queue's round, of a checkpoint, of
-    a dispatch on the second Mac, or nested in another lane. Under one, --sibling is refused, so that no lane of the
+    a dispatch on another Mac, or nested in another lane. Under one, --sibling is refused, so that no lane of the
     queue chooses what it is judged with. Any other command pins nothing and loads the folders as they stand.
     Returns None to go on, or the status to exit with, having said why; a set that cannot be made raises
     pins.Unpinned, which ends the command as one that could not start."""
@@ -929,7 +929,7 @@ def pin_run(argv):
 
 
 def unsendable(lane):
-    """Why the second Mac cannot run lane under this run's pin set, or None: a folder chosen with --sibling at a
+    """Why another Mac cannot run lane under this run's pin set, or None: a folder chosen with --sibling at a
     commit no branch of its origin holds, which that Mac could not fetch. Nothing but the commit is sent."""
     local = pins.local(pins.held())
     if not local: return None
@@ -1216,7 +1216,7 @@ def perform(argv, report):
     if args.passed is not None and (args.action, getattr(args, "operation", None)) not in {
             ("run", None), ("admit", None), ("remote", "run"), ("remote", "admit")}:
         parser.error("only run and admit take arguments after --")
-    # What the project's tooling does before each command that reaches the hosts, such as offering the second Mac
+    # What the project's tooling does before each command that reaches the hosts, such as offering another Mac
     # the evidence an offload found it unreachable for (extensions.HOST_COMMAND).
     if args.action in HOST_COMMANDS:
         for started in extensions.HOST_COMMAND: started()
@@ -1344,12 +1344,12 @@ def perform(argv, report):
             # A series' lane runs N times inside its one admission, within N times its limit (doc/guides/simulator-pool.md).
             limit = parallel.lane_timeout(lane, extra)
             lane_wait.begin(root, args.lane)
-            # A foreground lane takes a Mac's screen. The second Mac's is queuekeeper's to take for the run, below; this
+            # A foreground lane takes a Mac's screen. Another Mac's is queuekeeper's to take for the run, below; this
             # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.
-            # Otherwise it goes to the second Mac and waits there for its foreground, never falling back to this
+            # Otherwise it goes to another Mac and waits there for its foreground, never falling back to this
             # Mac (foreground.py).
             second = lane.get("foreground") and extensions.FOREGROUND.foreground_mac()
-            # What keeps the lane from the second Mac under this run's pin set, or None (--sibling).
+            # What keeps the lane from another Mac under this run's pin set, or None (--sibling).
             unsent = unsendable(args.lane)
             if lane.get("foreground") and not second:
                 if args.offload_only or not (args.here or lane.get("here")):
@@ -1361,9 +1361,9 @@ def perform(argv, report):
                 raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
                                  "pass them to one of its lanes")
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
-            # Why the lane runs only here, as its configuration says, or None: it goes to the second Mac.
+            # Why the lane runs only here, as its configuration says, or None: it goes to another Mac.
             reason = stays(config["lanes"], args.lane)
-            # Or why it runs only on the second Mac, as a key an extension added says. It waits there for its
+            # Or why it runs only on another Mac, as a key an extension added says. It waits there for its
             # admission and never falls back to this Mac, where its result would not be the one asked for.
             placed = extensions.placement(config["lanes"], args.lane) if reason is None else None
             # The farm's Macs that may run it, when a key says only some may: it is offered to no other.
@@ -1385,7 +1385,7 @@ def perform(argv, report):
                     raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --offload-only cannot offer it "
                                      "to another Mac")
                 if args.serial: raise ValueError("--serial runs a lane group here, and --offload-only never does")
-                # The caller runs the lane under its own admission when the second Mac declines it.
+                # The caller runs the lane under its own admission when another Mac declines it.
                 return remote.first(root, config, args.lane, extra, args.expect, fallback=False,
                                     queue_gate=queue_gate, exclude=exclude, hosts=only).status
             # Nested work runs inside the admission it inherits, here. The serial reference runs here too.
@@ -1397,7 +1397,7 @@ def perform(argv, report):
                 print(f"queuekeeper: {args.lane} runs on this Mac: {unsent}", file=sys.stderr, flush=True)
             offered = None
             if reason is None:
-                # Whichever Mac has spare capacity for the lane, the second Mac first, and while neither has,
+                # Whichever Mac has spare capacity for the lane, another Mac first, and while neither has,
                 # whichever admits the lane first (remote.first, admitted_here).
                 offered = remote.first(root, config, args.lane, extra, args.expect, queue_gate=queue_gate,
                                        exclude=exclude, hosts=only)
@@ -1436,7 +1436,7 @@ def perform(argv, report):
                 # A lane's output goes to its log; the Mac that sent a dispatch prints these once they are back.
                 if not os.environ.get(remote.DISPATCHER): extensions.report_results(directory / "results")
             def prepared(work):
-                # What an earlier run left in results/ is not this run's, here as on the second Mac (remote.RESULTS).
+                # What an earlier run left in results/ is not this run's, here as on another Mac (remote.RESULTS).
                 # The lane finds the directory in QUEUEKEEPER_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 report.ran_here(directory)
@@ -1504,7 +1504,7 @@ def perform(argv, report):
                             allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
                             closed = extensions.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
-                            # The second Mac's foreground first, so that a run waiting for it holds no slot.
+                            # Another Mac's foreground first, so that a run waiting for it holds no slot.
                             waited = extensions.FOREGROUND.foreground_held(stack, args.lane, lane_label(root, config, args.lane),
                                                      allowed(remote.OVERFLOW_TIMEOUT),
                                                      expected=lane.get("timeout"),

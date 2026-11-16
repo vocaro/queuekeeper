@@ -1,9 +1,9 @@
 """What `qk doctor` checks of a Unity project: that its Unity project is where it says, that the editor it
-pins is installed on this Mac and on the second Mac, that Unity Hub is signed in on this Mac, and that no lane runs
+pins is installed on this Mac and on another Mac, that Unity Hub is signed in on this Mac, and that no lane runs
 the editor without a graphics device.
 
 The sign-in is read with Unity's own command (unity_cli.signed_in), on this Mac only: over SSH the command may not
-read the keychain that holds the session, so the second Mac's is not asked. A sign-in that cannot be read is not
+read the keychain that holds the session, so another Mac's is not asked. A sign-in that cannot be read is not
 warned of. A run on a Mac that is not signed in ends unmeasured, by its log (licensing.never_started)."""
 import shlex
 

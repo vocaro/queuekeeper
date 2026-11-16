@@ -44,14 +44,14 @@ build while its earlier stages run, and the full run that follows finds the buil
 Under a lane, whose command finds its results/ in QUEUEKEEPER_RESULTS_DIR, each test run, a shard or a device,
 also keeps there, in simulator-tests/, the lines of its log that give each test's and suite's outcome and
 seconds, KIND.log, and its result bundle's summary and each class's or suite's seconds, KIND.json: they
-come back from the second Mac with the lane's dispatch, and are kept by commit beside its receipt, where
+come back from another Mac with the lane's dispatch, and are kept by commit beside its receipt, where
 the logs folder's are overwritten by the next run (vocaro-engineering#218). `qk results keep` writes the
 same two files for a script that runs xcodebuild itself (vocaro-engineering#260).
 
 With --repeat N the tests are built once and run N times, each run on a member of each device's kind taken from the
 pool afresh, by the same take, and so the same reset, as any other run: erased with --erase, a copy of the warmed
 template with --template, which leaves a run unmeasured when the pool could only erase. The options may follow the
---, so that `qk run LANE --repeat N` reaches this through the arguments a lane appends, on either Mac; --only TEST
+--, so that `qk run LANE --repeat N` reaches this through the arguments a lane appends, on any Mac; --only TEST
 then replaces the lane's own selection. Each run keeps its own outcome, test counts and one-minute load at its start
 and end, printed one line each, added up on the "Repeat series:" line and kept in series.json. Any failed run fails
 the series, and a run that did not happen is unmeasured, never passed (apple-engineering's guides/simulator-testing.md, Repeating a test
@@ -214,7 +214,7 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
 def series_options(args, parser_factory):
     """Move a series' options, from a `--repeat` among the test arguments, onto args, and leave the rest as test
     arguments. They come there from `qk run LANE --repeat N`, which appends them to the lane's command, after its --,
-    and which reach this on either Mac as a lane's other arguments do. Their reset replaces the lane's own."""
+    and which reach this on any Mac as a lane's other arguments do. Their reset replaces the lane's own."""
     if "--repeat" not in args.passed: return
     at = args.passed.index("--repeat")
     parser = parser_factory(prog="qk simulator-tests", add_help=False, allow_abbrev=False)

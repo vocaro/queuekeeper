@@ -246,7 +246,7 @@ watch = Watch
 
 class Together:
     """The watches of several devices' logs, {KEY: watch}, stopped as one for a run that uses them all, as a run
-    sent to the second Mac may (remote.Lease). Its stop says what Watch.stop does, over all of them: every
+    sent to another Mac may (remote.Lease). Its stop says what Watch.stop does, over all of them: every
     device's banners counted, the earliest device clock among their first banners, watched only when each log
     was read, and what each saw under devices."""
 

@@ -53,7 +53,7 @@ class SlotTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         os.environ.pop(devices.OWNER, None)
 
-    def second_mac(self):
+    def farm_mac(self):
         self.record.defer(SECOND)
 
     def slot(self, **options):
@@ -63,12 +63,12 @@ class SlotTests(unittest.TestCase):
         return foreground.slot("Project voiceover-mac", timeout=options.pop("timeout", stretched(5)), record=self.record,
                                poll=0.05, **options)
 
-    def test_only_the_second_mac_takes_its_foreground_and_only_once_it_is_ready(self):
+    def test_only_the_farm_mac_takes_its_foreground_and_only_once_it_is_ready(self):
         # This Mac's foreground needs the owner's window, which the session reserves itself.
         with self.assertRaisesRegex(devices.Refused, "only on another Mac"):
             with self.slot(): self.fail("ran on this Mac")
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
-        self.second_mac()
+        self.farm_mac()
         lacking = [("a command started over SSH is not trusted for accessibility", "add sshd-keygen-wrapper")]
         with self.assertRaisesRegex(devices.Refused, "the owner's .*\n- a command started over SSH is not trusted "
                                                      "for accessibility: add sshd-keygen-wrapper"):
@@ -77,7 +77,7 @@ class SlotTests(unittest.TestCase):
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
 
     def test_a_run_holds_the_foreground_without_asking_and_releases_it(self):
-        self.second_mac()
+        self.farm_mac()
         with self.slot() as owner:
             entry = self.record.entry(devices.FOREGROUND)
             self.assertEqual(os.environ[devices.OWNER], owner)
@@ -85,7 +85,7 @@ class SlotTests(unittest.TestCase):
             self.assertEqual(devices.require_foreground(owner)["ownerChatID"], owner)
             self.assertEqual(devices.condition(entry), "active")
             self.assertEqual(entry["hostProcessIdentifier"], os.getpid())
-            # The second Mac is not a workstation: its reservation records no approval (#207).
+            # Another Mac is not a workstation: its reservation records no approval (#207).
             self.assertNotIn("approval", entry)
             # A run there may outlast its expected release.
             with patch.object(devices, "datetime", Later), patch.object(reservations, "datetime", Later):
@@ -102,7 +102,7 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(self.record.entry(devices.FOREGROUND)["frontmost"], "not-ours")
 
     def test_voiceover_on_is_a_valid_baseline_after_acquiring_the_lease(self):
-        self.second_mac()
+        self.farm_mac()
         with patch.object(voiceover_state, "_toggle") as toggle:
             with self.slot(voiceover=lambda: True):
                 self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "active")
@@ -113,7 +113,7 @@ class SlotTests(unittest.TestCase):
         with self.slot(): pass
 
     def test_each_guard_holds_for_the_run_inside_the_lease_and_leaves_before_the_release(self):
-        self.second_mac()
+        self.farm_mac()
         seen = []
 
         def guard(name):
@@ -131,7 +131,7 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
 
     def test_a_guard_that_could_not_restore_keeps_the_foreground_and_one_that_did_releases_it(self):
-        self.second_mac()
+        self.farm_mac()
 
         class Failed(RuntimeError):
             def __init__(self, restored): self.restored = restored
@@ -157,7 +157,7 @@ class SlotTests(unittest.TestCase):
         self.assertIn(lane.preserved_voiceover, foreground.GUARDS)
 
     def test_initial_unknown_is_untouched_and_released_but_final_unknown_is_retained(self):
-        self.second_mac()
+        self.farm_mac()
         with self.assertRaises(voiceover_state.UnknownState):
             with self.slot(voiceover=lambda: None): self.fail("unknown baseline ran")
         self.assertEqual(self.record.entry(devices.FOREGROUND)["state"], "released")
@@ -169,9 +169,9 @@ class SlotTests(unittest.TestCase):
 
 
     def test_a_timed_out_toggle_whose_original_state_is_verified_releases_the_foreground(self):
-        # #137: a driver's Command-F5 timed out on a loaded second Mac, VoiceOver came on later, and the
+        # #137: a driver's Command-F5 timed out on a loaded Mac, VoiceOver came on later, and the
         # foreground stayed uncertain for attended recovery. Now the guard turns it off again and releases.
-        self.second_mac()
+        self.farm_mac()
         enabled, sent = [False], []
         def read(): return enabled[0]
         def timed_out():
@@ -203,7 +203,7 @@ class SlotTests(unittest.TestCase):
             self.assertFalse(failed.exception.restored)
         entry = self.record.entry(devices.FOREGROUND)
         self.assertEqual(devices.condition(entry), "uncertain")
-        # The next run names the exact recovery command, which runs as printed on the second Mac, where no import
+        # The next run names the exact recovery command, which runs as printed on another Mac, where no import
         # path names the plugins (vocaro/queuekeeper#167).
         command = ("python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover "
                    f"mac-foreground --by SESSION --revision {entry['revision']} --verified WHAT")
@@ -217,7 +217,7 @@ class SlotTests(unittest.TestCase):
     def killed_child(self, toggle):
         """A run whose child driver sent Command-F5, timed out and was killed before its own restoration: the
         parent hears only an abnormal end. The key arrives late, on the third read after the run's first."""
-        self.second_mac()
+        self.farm_mac()
         enabled, reads, sent = [False], [0], []
         def read():
             reads[0] += 1
@@ -258,7 +258,7 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "uncertain")
 
     def test_a_run_that_fails_still_releases_the_foreground(self):
-        self.second_mac()
+        self.farm_mac()
         with self.assertRaisesRegex(RuntimeError, "driver failed"):
             with self.slot():
                 raise RuntimeError("driver failed")
@@ -268,7 +268,7 @@ class SlotTests(unittest.TestCase):
     def test_a_session_that_leaves_voiceover_on_is_recovered_by_its_run_which_then_releases(self):
         # vocaro/EPUBLib#416, owner's decision 2026-11-12: a session whose own restoration could not be verified
         # leaves the lease uncertain; the run's runner sets the original back and its next session starts.
-        self.second_mac()
+        self.farm_mac()
         enabled = [False]
         def toggle(): enabled[0] = not enabled[0]
         def cannot_toggle(): raise OSError("System Events refused the key")
@@ -298,7 +298,7 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(entry["voiceOverRestoration"]["recoveredBy"], f"{owner} through process {os.getpid()}")
 
     def test_a_run_waits_while_another_holds_the_foreground_and_takes_it_once_released(self):
-        self.second_mac()
+        self.farm_mac()
         held = self.record.reserve(devices.FOREGROUND, owner="other run", revision=0, purpose="Other voiceover-mac",
                                    release_by=(time.strftime("%Y") + "-12-31T00:00:00+00:00"))
         # The holder's release comes once this run says it waits, not after a time a slow host can outlast (#119);
@@ -329,7 +329,7 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(len([line for line in self.said if "held by other run" in line]), 1)
 
     def test_a_canceled_foreground_waiter_takes_nothing_and_leaves_the_holder_intact(self):
-        self.second_mac()
+        self.farm_mac()
         held = self.record.reserve(devices.FOREGROUND, owner="other run", revision=0, purpose="Other run",
                                    release_by=(datetime.now().astimezone() + timedelta(hours=1)).isoformat())
         stopped = []
@@ -354,7 +354,7 @@ class SlotTests(unittest.TestCase):
         self.assertNotIn(devices.OWNER, os.environ)
 
     def test_a_stop_seen_as_the_foreground_comes_free_does_not_reserve_it(self):
-        self.second_mac()
+        self.farm_mac()
         # The stop arrives during the record read that reports a free foreground, before reserve.
         stopped = []
         def entry(_key):
@@ -370,7 +370,7 @@ class SlotTests(unittest.TestCase):
         preserve.assert_not_called()
 
     def test_a_run_that_waits_too_long_or_finds_an_orphan_takes_nothing(self):
-        self.second_mac()
+        self.farm_mac()
         held = self.record.reserve(devices.FOREGROUND, owner="other run", revision=0, purpose="Other voiceover-mac",
                                    release_by=(time.strftime("%Y") + "-12-31T00:00:00+00:00"))
         with self.assertRaisesRegex(TimeoutError, "held by other run for 0.2s"):
@@ -563,7 +563,7 @@ class OpenedAppsTests(unittest.TestCase):
         mail = {**self.OWNERS, "pid": 207, "bundle": "com.apple.mail.other"}
         self.listings = [[self.FINDER], [self.FINDER, self.SAFARI, built, recorded, mail]]
         # The record stops deferring to another Mac's during the run: the release finds a workstation.
-        workstation = patch.object(foreground, "second_mac", side_effect=[True, False])
+        workstation = patch.object(foreground, "farm_mac", side_effect=[True, False])
         def launch(owner):
             current = self.record.entry(devices.FOREGROUND)
             self.record.update(devices.FOREGROUND, owner=owner, revision=current["revision"],
@@ -578,7 +578,7 @@ class OpenedAppsTests(unittest.TestCase):
         self.assertEqual(entry["state"], "released")
         self.assertIn("left running Safari (com.apple.Safari, pid 201): this Mac is a workstation", entry["appsQuit"])
 
-    def test_the_second_mac_quits_installed_apps_a_workstation_leaves(self):
+    def test_the_farm_mac_quits_installed_apps_a_workstation_leaves(self):
         settled = {}
         for workstation in (False, True):
             self.asked, self.listings = [], [[self.FINDER, self.SAFARI]]
@@ -829,20 +829,20 @@ class RoutingTests(unittest.TestCase):
         with contextlib.redirect_stderr(StringIO()) as error, contextlib.redirect_stdout(StringIO()):
             return cli.main(["--project", str(self.project), *arguments]), error.getvalue()
 
-    def test_a_foreground_lane_goes_to_the_second_mac_and_never_falls_back_to_this_mac(self):
+    def test_a_foreground_lane_goes_to_the_farm_mac_and_never_falls_back_to_this_mac(self):
         sent = []
         with patch.object(remote, "foreground_lane", side_effect=lambda *a: sent.append(a) or 0):
             self.assertEqual(self.qk("run", "voiceover-mac", "--", "steps=x")[0], 0)
             self.assertEqual(self.qk("run", "--offload-only", "voiceover-mac")[0], 0)
         self.assertEqual([a[2:4] for a in sent], [("voiceover-mac", ["steps=x"]), ("voiceover-mac", [])])
-        # With no second Mac to send it to, it stops and says how this Mac's foreground is used instead.
+        # With no other Mac to send it to, it stops and says how this Mac's foreground is used instead.
         status, error = self.qk("run", "voiceover-mac")
         self.assertEqual(status, 2)
         self.assertIn("the farm has no Mac that takes work now", error)
         self.assertIn("window the owner agrees first", error)
         self.assertFalse(self.during.exists())
 
-    def test_an_unreachable_second_mac_offers_a_window_here_for_foreground_work_alone(self):
+    def test_an_unreachable_farm_mac_offers_a_window_here_for_foreground_work_alone(self):
         self.lanes["plain"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy"}
         (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                    "lanes": self.lanes}))
@@ -869,7 +869,7 @@ class RoutingTests(unittest.TestCase):
                 self.assertNotIn("window", error)
         self.assertFalse(self.during.exists())
 
-    def test_a_misconfigured_second_mac_offers_no_window_here(self):
+    def test_a_misconfigured_farm_mac_offers_no_window_here(self):
         stop = remote.Misconfigured("build-host could not run the toolkit", "give it a python3")
         with farm_fixture.only("build-host"), \
                 patch.object(remote, "execute", side_effect=stop):
@@ -908,7 +908,7 @@ class RoutingTests(unittest.TestCase):
             self.assertEqual(self.qk("run", "--here", "voiceover-mac")[0], 0)
         self.assertEqual(json.loads(self.during.read_text())["owner"], "session-a")
 
-    def test_on_the_second_mac_eng_holds_its_foreground_for_the_lane_and_for_admit(self):
+    def test_on_the_farm_mac_eng_holds_its_foreground_for_the_lane_and_for_admit(self):
         self.record.defer(SECOND)
         with patch.object(foreground, "problems", return_value=[]):
             status, error = self.qk("run", "--here", "voiceover-mac")
@@ -926,7 +926,7 @@ class RoutingTests(unittest.TestCase):
         self.assertTrue(json.loads(self.during.read_text())["entry"]["activeRun"])
         self.assertIn("--verify never sends foreground work",
                       self.qk("admit", "--foreground", "--verify", "--", "true")[1])
-        # A second Mac that is not ready stops the lane before it takes anything.
+        # Another Mac that is not ready stops the lane before it takes anything.
         self.during.unlink()
         with patch.object(foreground, "problems", return_value=[("the screen is locked", "unlock it")]):
             status, error = self.qk("run", "--here", "voiceover-mac")
@@ -967,7 +967,7 @@ class ConfigurationTests(unittest.TestCase):
         # One that gives no resource, or light, is admitted as heavy work (the owner's decision, 2026-11-07).
         for resource in ({}, {"resource": "light"}):
             self.load({"lanes": {"ui": {"command": ["true"], "foreground": True, **resource}}})
-        # The positive controls: a heavy foreground lane goes to the second Mac, and one that says why stays here.
+        # The positive controls: a heavy foreground lane goes to another Mac, and one that says why stays here.
         lanes = self.load({"lanes": {"ui": {"command": ["true"], "resource": "heavy", "foreground": True},
                                      "device": {"command": ["true"], "resource": "heavy", "foreground": True,
                                                 "here": "the paired iPhone"}}})["lanes"]

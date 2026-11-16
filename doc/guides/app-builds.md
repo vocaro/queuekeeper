@@ -12,7 +12,7 @@ The landing gate does build the app, but nothing it leaves is a build to run:
   which the next batch builds over.
 - The batch's commit may not be the one pushed: a push that meets a newer main carries the batch
   onto it.
-- A lane may run on the second Mac, so its products are not on this Mac.
+- A lane may run on another Mac, so its products are not on this Mac.
 - No gate builds for a physical device.
 
 So after the merge queue pushes a gated batch it starts `qk app keep --after-landing` in the

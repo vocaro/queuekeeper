@@ -734,7 +734,7 @@ class ProcessTests(unittest.TestCase):
         # supervise sees the owner only at its first sample once SIGKILL is due, and waits only if that
         # comes within SETTLE_WAIT: a loaded host's samples can come seconds apart, so it is stretched.
         # Each sample checks the upper bound (owner_never_settles), not a wall-clock limit: a stall
-        # that the load average did not show outlasted one on the second Mac (#314).
+        # that the load average did not show outlasted one on another Mac (#314).
         self.addCleanup(processes._stops.clear)
         kill_after = 0.5
         for how in ["stop", "linger"]:
@@ -822,7 +822,7 @@ class ProcessTests(unittest.TestCase):
                 self.assertFalse(raised.exception.timed_out)
 
     def test_a_timeout_whose_cleanup_finds_a_process_left_keeps_its_reservation_and_says_it_timed_out(self):
-        # A gate the second Mac's full swap slowed past its limit, with no test failed, was sent back as failed
+        # A gate another Mac's full swap slowed past its limit, with no test failed, was sent back as failed
         # (2026-11-15): the run is unmeasured, as a timeout is, though its reservation stays retained.
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(processes.Unconfirmed, "Timed out after") as raised:

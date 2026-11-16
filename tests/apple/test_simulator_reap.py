@@ -151,7 +151,7 @@ class ReapTests(unittest.TestCase):
         return {"holderProcess": {"pid": pid, "start": start}, "expectedReleaseBy": due, "revision": 7, **more}
 
     def assertNamed(self, report, key=NAME, hold=None):
-        """The entry stays held, and is named with why and its recover command, which on the second Mac runs
+        """The entry stays held, and is named with why and its recover command, which on another Mac runs
         there (vocaro-engineering#156)."""
         self.assertEqual([item["key"] for item in report["recoverable"]], [key], report)
         self.assertEqual(report["released"], [], report)
@@ -350,9 +350,9 @@ class ReapTests(unittest.TestCase):
         before = self.record.read_bytes()
         named = self.assertNamed(self.reap(), hold="simctl did not list its devices")
         self.assertEqual(self.record.read_bytes(), before)
-        # Each command runs as printed, where no import path names the plugins: on 2026-11-15 neither Mac found the
+        # Each command runs as printed, where no import path names the plugins: on 2026-11-15 no Mac found the
         # module the line named, and four reservations had no recovery (vocaro/queuekeeper#167). Here, its --help
-        # form; for the second Mac, the command itself, which reaches that Mac's record through its login shell,
+        # form; for another Mac, the command itself, which reaches that Mac's record through its login shell,
         # since the python3 a command given to ssh finds is too old, and is refused there for an entry it lacks.
         here, there = (printed.partition("recovers it: ")[2] for printed in named)
         ran = run_printed(f"{here} --help")
@@ -1018,7 +1018,7 @@ class ReapTests(unittest.TestCase):
         reap.assert_not_called()
         stopping.assert_not_called()
 
-    def test_the_second_mac_failing_or_not_answering_is_a_problem_in_the_report(self):
+    def test_the_farm_mac_failing_or_not_answering_is_a_problem_in_the_report(self):
         cases = [(subprocess.CompletedProcess([], 255, "", "no route to host"), "exit 255: no route to host"),
                  (subprocess.TimeoutExpired("ssh", 1), "did not answer"), (OSError("no ssh"), "no ssh")]
         for outcome, said in cases:
@@ -1027,7 +1027,7 @@ class ReapTests(unittest.TestCase):
                 self.assertIn(said, report["problem"])
                 self.assertEqual(report["stopped"], [])
 
-    def test_the_second_macs_report_comes_back(self):
+    def test_the_farm_macs_report_comes_back(self):
         answer = subprocess.CompletedProcess([], 0, json.dumps({"leftovers": [], "reap": {"stopped": [], "problem": None}}) + "\n", "")
         with patch.object(remote, "ssh", return_value=answer) as ssh:
             self.assertEqual(remote.reap_there("fake", {"pools": ["Pagepour"], "dry_run": True}),
@@ -1088,7 +1088,7 @@ class ReapCommandTests(unittest.TestCase):
 
 
 class ReapBeforeRunTests(unittest.TestCase):
-    """cli.reap_here: heavy work that runs on this Mac reaps it first, as a dispatch reaps the second Mac before it
+    """cli.reap_here: heavy work that runs on this Mac reaps it first, as a dispatch reaps another Mac before it
     sends work there (vocaro-engineering#156), over a fake offload_host.reap."""
     RELEASED = {**ReapCommandTests.EMPTY, "recoverable": [], "released": [{
         "key": NAME, "device": UDID, "owner": "session-gone", "verified": "PID 106000 gone; Shutdown", "dryRun": False}]}
@@ -1129,14 +1129,14 @@ class ReapBeforeRunTests(unittest.TestCase):
     def test_a_heavy_lane_run_here_reaps_this_mac_first_and_says_what_it_released(self):
         status, error = self.qk("run", "--here", "heavy", report=self.RELEASED)
         self.assertEqual(status, 0, error)
-        # The project's pool, as a dispatch asks of the second Mac (remote.reap_request), before the lane ran: its
+        # The project's pool, as a dispatch asks of another Mac (remote.reap_request), before the lane ran: its
         # own admission, entered before the reap, does not count as one it inherited.
         self.assertEqual(self.calls, [((remote.ROOT, {"pools": ["Example"]}), False)])
         self.assertTrue((self.project / "ran").exists())
         self.assertIn(f"queuekeeper: on {remote.HERE}, released {NAME} ({UDID}), held for owner session-gone", error)
 
     def test_a_command_eng_admit_runs_here_reaps_this_mac_first(self):
-        # --here, since plain qk admit offers the command to the second Mac first, and says so when it runs here.
+        # --here, since plain qk admit offers the command to another Mac first, and says so when it runs here.
         status, error = self.qk("admit", "--here", "--", sys.executable, "-c", "open('ran', 'a').write('ran')")
         self.assertEqual(status, 0, error)
         self.assertEqual(self.calls, [((remote.ROOT, {"pools": ["Example"]}), False)])

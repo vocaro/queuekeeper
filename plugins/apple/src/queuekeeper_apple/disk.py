@@ -221,16 +221,16 @@ def simulators(host, usage, sizes):
 
 
 def runtimes_there(second):
-    """The second Mac's runtime images, read as `qk remote setup --runtimes` reads them, each with its build and
+    """Another Mac's runtime images, read as `qk remote setup --runtimes` reads them, each with its build and
     the simulators on its runtime identifier there (users); {"error": why} when they cannot be read, and None
-    without a second Mac."""
+    without another Mac."""
     if not second: return None
     from queuekeeper import remote  # remote imports this module
     try:
         developer = remote.developer_directory()
         if developer is None: return {"error": "this Mac has no Xcode selected"}
         found = remote.runtime_images(second, second, developer)
-    except Exception as error:  # an unreachable or misconfigured second Mac, whatever it raises
+    except Exception as error:  # an unreachable or misconfigured Mac, whatever it raises
         return {"error": str(error).splitlines()[0][:200] if str(error) else type(error).__name__}
     if not isinstance(found, dict) or not isinstance(found.get("images"), list):
         return {"error": "simctl did not list its runtime images"}
@@ -238,10 +238,10 @@ def runtimes_there(second):
 
 
 def across(host, item, build):
-    """A runtime candidate as the second Mac's copy of it leaves it. The two Macs keep the same runtimes
+    """A runtime candidate as another Mac's copy of it leaves it. The Macs keep the same runtimes
     (vocaro-engineering#123): `qk remote setup --runtimes` deletes a runtime only one Mac lists from that Mac
-    when no simulator on its identifier uses it there, and copies it to the other Mac otherwise. So a build
-    removed here while the second Mac's copy counts as used would only be copied back."""
+    when no simulator on its identifier uses it there, and copies it to another Mac otherwise. So a build
+    removed here while another Mac's copy counts as used would only be copied back."""
     if not host.offload_host or item.status != CANDIDATE: return item
     there, second = host.remote_runtimes or {"error": "not read"}, host.offload_host
     def kept(why): return Item(item.category, item.path, KEPT, f"{item.reason}; but {why}", item.size, None, item.idle)
@@ -485,8 +485,8 @@ class Host(disk.Host):
     pools: frozenset = frozenset()
     matches: dict = None  # `simctl runtime match list -j`: the runtime build chosen for each SDK
     pinned: dict = field(default_factory=dict)  # runtime builds something else names, each with where
-    # The second Mac's runtime images as `qk remote setup --runtimes` reads them (remote.runtime_images), or
-    # {"error": why} when they cannot be read; None without a second Mac.
+    # Another Mac's runtime images as `qk remote setup --runtimes` reads them (remote.runtime_images), or
+    # {"error": why} when they cannot be read; None without another Mac.
     remote_runtimes: dict = None
 
     @classmethod

@@ -66,7 +66,7 @@ class MainCheckoutTests(Fixture):
         self.assertIsNone(git_state.main_checkout(self.checkout))
 
     def test_a_worktree_of_a_bare_repository_has_no_main_checkout(self):
-        # As a dispatched checkout on the second Mac is: its repository's parent holds no project.
+        # As a dispatched checkout on another Mac is: its repository's parent holds no project.
         placed = self.root / "slot/project"
         self.git(self.origin, "worktree", "add", "-q", "--detach", str(placed), "main")
         self.assertIsNone(git_state.main_checkout(placed))
@@ -86,7 +86,7 @@ class SiblingRequestTests(Fixture):
 
 
 class MissingSiblingTests(unittest.TestCase):
-    def test_doctor_asks_which_extension_folder_the_second_mac_has_no_checkout_of_and_creates_none(self):
+    def test_doctor_asks_which_extension_folder_the_farm_mac_has_no_checkout_of_and_creates_none(self):
         # What `qk doctor` asks before any dispatch (#117). A dispatch takes each folder's pinned commit from that
         # checkout (offload_host.place_siblings, tests/integration/test_pins.py).
         with tempfile.TemporaryDirectory() as directory:

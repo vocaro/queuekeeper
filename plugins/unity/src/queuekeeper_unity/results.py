@@ -1,8 +1,8 @@
 """Each test's outcome and seconds from a Unity test run, printed when its lane ends.
 
 `qk unity test` keeps Unity's results.xml, NUnit's form, in the lane's results folder under unity/. A lane's output
-goes to its log, so `qk run` prints a line per test from that file when the lane ends, here or, for a run on the
-second Mac, once its results have come back, as it does for the Apple extension's kept runs."""
+goes to its log, so `qk run` prints a line per test from that file when the lane ends, here or, for a run on another
+Mac, once its results have come back, as it does for the Apple extension's kept runs."""
 from collections import Counter
 from pathlib import Path
 import xml.etree.ElementTree as ET

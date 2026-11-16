@@ -1,13 +1,13 @@
-"""Notification Center windows over the second Mac's screen before a foreground run (vocaro-engineering#204).
+"""Notification Center windows over another Mac's screen before a foreground run (vocaro-engineering#204).
 
 A notification macOS's Notification Center presents stays in a window of its own, at Quartz window layer 23,
-over every app's windows. On the second Mac on 2026-11-05 (macOS 27.2 26B123) one stayed on the screen across
+over every app's windows. On another Mac on 2026-11-05 (macOS 27.2 26B123) one stayed on the screen across
 two exclusive foreground admissions, seven looks over 60 s among them with Finder in front, and stopped a
 BreezEPUB benchmark from launching until the owner closed it by hand (BreezEPUB#15). Crash-report alerts are
 UserNotificationCenter's and crash_alerts.py's (#118); this module is about NotificationCenter's own window.
 
 queuekeeper finds the window by the window list, which needs no permission: an on-screen window at layer 23 whose owner
-process runs NotificationCenter.app's executable. Only inside the second Mac's foreground lease, held by the run
+process runs NotificationCenter.app's executable. Only inside another Mac's foreground lease, held by the run
 QUEUEKEEPER_DEVICE_OWNER names, it closes each notification the window presents with that notification's own Close
 action through the accessibility API, the action its close button performs, and then looks at the window list
 again until the window has left the screen. It never presses a notification, which would open it, never uses
@@ -244,11 +244,11 @@ def close(pid, notification):
 
 
 def lease(owner=None, record=None):
-    """Refuse, with reservations.Refused, unless this is the second Mac and owner, by default QUEUEKEEPER_DEVICE_OWNER,
+    """Refuse, with reservations.Refused, unless this is another Mac and owner, by default QUEUEKEEPER_DEVICE_OWNER,
     holds its mac-foreground lease: queuekeeper closes the owner's notifications only on a Mac nobody works at, and only
     for the run that holds its screen."""
     record = record or reservations.Record()
-    if not foreground.second_mac(record):
+    if not foreground.farm_mac(record):
         raise reservations.Refused("queuekeeper closes Notification Center's notifications only on another Mac, under the "
                               f"foreground lease a run holds there; this Mac's are the owner's ({GUIDE}, {SECTION})")
     reservations.require_foreground(owner if owner is not None else os.environ.get(reservations.OWNER), record)
@@ -283,7 +283,7 @@ def dismiss(said=None, *, owner=None, record=None, wait=GONE):
     if not trusted():
         raise Blocked(f"{describe(found[0])} is over the screen, and this process is not trusted for accessibility "
                       "(AXIsProcessTrusted is false), so queuekeeper cannot close its notifications; the grant is the "
-                      f"owner's ({GUIDE}, Setting up the second Mac's foreground)")
+                      f"owner's ({GUIDE}, Setting up another Mac's foreground)")
     for window in found:
         for _ in range(ROUNDS):
             presented = notifications(window["pid"])
@@ -318,8 +318,8 @@ def dismiss(said=None, *, owner=None, record=None, wait=GONE):
 
 def main(argv=None):
     """`python3 -m queuekeeper_mac_desktop.notification_center list|check`: list says which Notification Center windows
-    are over this Mac's screen, exiting 0 when none is and lane_results.UNMEASURED when one is; check, under the
-    second Mac's foreground lease the caller holds, closes their notifications as a run does before it starts,
+    are over this Mac's screen, exiting 0 when none is and lane_results.UNMEASURED when one is; check, under another
+    Mac's foreground lease the caller holds, closes their notifications as a run does before it starts,
     exiting 0 once none is left, lane_results.UNMEASURED naming one it could not clear, and 1 without a lease."""
     argv = sys.argv[1:] if argv is None else argv
     if argv not in (["list"], ["check"]):

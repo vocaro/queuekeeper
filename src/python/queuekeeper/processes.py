@@ -217,7 +217,7 @@ class TimedOut(TimeoutError):
 class Unconfirmed(RuntimeError):
     """The command ended, or was ended, but not every process it was seen using is confirmed ended, so its
     reservation is retained. timed_out says whether its timeout or quiet bound ended it: such a run is unmeasured,
-    as a TimedOut one is, not failed. On 2026-11-15 a gate the second Mac's full swap slowed past its limit, with
+    as a TimedOut one is, not failed. On 2026-11-15 a gate another Mac's full swap slowed past its limit, with
     2235 tests passed and none failed, left one process its cleanup could not see end, and the queue sent the entry
     back as failed."""
 
@@ -303,7 +303,7 @@ def released(on_start, pid, environment, go, told):
 
 def logged(log, line):
     """Print line, a stop supervise makes for time, on stderr, and in log too when it is a file of the command's own
-    output, such as a lane's run.log: a log a timeout cut off then says why where it stops, on the second Mac as on
+    output, such as a lane's run.log: a log a timeout cut off then says why where it stops, on another Mac as on
     this one, where stderr goes only to the dispatch's output.log (vocaro/queuekeeper#37)."""
     print(line, file=sys.stderr, flush=True)
     if log is None or log in (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__) or not hasattr(log, "fileno"): return

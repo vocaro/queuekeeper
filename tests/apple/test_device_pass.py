@@ -280,7 +280,7 @@ class Placement(unittest.TestCase):
         heavy = {"command": command, "resource": "heavy", "timeout": 60}
         [warning] = budgets.doctor_warnings({"lanes": {"gate": gate, "device": heavy}})
         self.assertIn("device runs a device pass with no \"here\"", warning)
-        # A lane that gives no resource, or light, is admitted and goes to the second Mac first too (the owner,
+        # A lane that gives no resource, or light, is admitted and goes to another Mac first too (the owner,
         # 2026-11-07).
         for lane in ({"command": command}, {"command": command, "resource": "light"}):
             [warning] = budgets.doctor_warnings({"lanes": {"gate": gate, "device": lane}})

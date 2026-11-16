@@ -34,7 +34,7 @@ def state(gate=None, waiting=1, held=None, worker=True):
 
 
 def macs(memory="normal", second=None, read_at=NOW - 5):
-    """This Mac's reading, and the second Mac's: well, or the reading `second` gives."""
+    """This Mac's reading, and another Mac's: well, or the reading `second` gives."""
     well = {"memory": memory, "load": 3.0, "cpuBusy": 20, "busyLimit": 85, "error": None}
     return [{"name": "this Mac", "reading": well, "readAt": read_at},
             {"name": "build-host", "reading": second if second is not None else well, "readAt": read_at}]

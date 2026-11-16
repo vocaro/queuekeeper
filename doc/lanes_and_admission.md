@@ -70,7 +70,7 @@ load is never hidden. An entry whose owner has provably finished is recovered au
 
 `qk doctor` checks a project's lanes, such as a lane with no timeout or a test that no lane
 runs, and every Mac's setup. Its JSON includes `offload.pythonCrashes`: read-only notes about
-`Python-*.ips` reports written during the last 24 hours, on this Mac and each second Mac that
+`Python-*.ips` reports written during the last 24 hours, on this Mac and each other Mac that
 answers the host survey. Each report names its path, capture time, signal, parent process and
 first five frames of the crashed thread. Unreadable reports are notes too. These observations
 also appear as readable strings in `notes`. They never change the doctor's verdict and do not stop processes or remove reports.

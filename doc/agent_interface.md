@@ -138,7 +138,7 @@ admitted work waits behind load nobody can see, and it misses what `qk unittest`
 summary, the log it keeps of a failed run, the progress it keeps while it runs
 ([Long runs](#long-runs)), its processes side by side, and the suite's own setup.
 On 2026-11-13 a coordinator's `qk admit -- python3 -m unittest tests.test_merge_queue` failed at
-once on the second Mac with `ModuleNotFoundError: No module named 'host_isolation'`: a module named
+once on another Mac with `ModuleNotFoundError: No module named 'host_isolation'`: a module named
 from the top of the checkout cannot import the setup beside it in `tests/`, which
 `qk unittest -s tests` puts on the path.
 
@@ -152,7 +152,7 @@ and outside `qk unittest`, this repository's tests say so once on standard error
 Nor does a session wait for a quiet Mac before it starts. The load average on these Macs counts
 hundreds of simulator threads and stays in the hundreds under ordinary work: on 2026-11-12 a loop
 that waited for a one-minute load under 10 would never have fired, while `qk run gate` passed on
-the second Mac in 925 s. Admission waits for a slot and chooses the Mac, so a session never polls
+another Mac in 925 s. Admission waits for a slot and chooses the Mac, so a session never polls
 `uptime`, `sysctl vm.loadavg` or `top`, and asks `qk admissions now` when it needs to know why its
 work has not started. Exclusive work settles before its command starts and tells the command what
 it read of the Mac (vocaro/queuekeeper#121)
@@ -179,7 +179,7 @@ prints nothing until its input ends, and unittest's dots name no test.
   tests, 0 failed, 0 unmeasured, 4 running: test_remote: OK (276 tests, 812.4s)`, with the
   process's whole output under it, and `progress.json` says the same with the processes running
   now. An admitted run's folder holds `output.log` too, everything the run printed as it printed
-  it, which is all this Mac sees of a run the second Mac took.
+  it, which is all this Mac sees of a run another Mac took.
 - **`qk progress` answers "how far along is it?"** from another shell. With no argument it reads
   each run still running under `.build/queuekeeper/runs/`, in the current directory and the
   project's root, or the newest one when none runs, and prints its command, how long it has run,

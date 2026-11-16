@@ -16,12 +16,12 @@ The mac-foreground entry names no device and records no approval (owner's decisi
 vocaro-engineering#207): the record schedules it, one holder at a time, and its expected release
 is its window. On this Mac, the owner's workstation, a session agrees the window with the owner
 first and reserves it for that window; foreground actions are refused once the expected release
-has passed. The second Mac is not a workstation: queuekeeper reserves its entry for each run without
+has passed. Another Mac is not a workstation: queuekeeper reserves its entry for each run without
 asking (foreground.slot), and a run there may outlast its expected release. Foreground drivers
 call require_foreground before acting; release waits for the processes the session recorded as
 its own, and says whether the previous frontmost app was restored.
 
-A record that names another Mac under DEFERRED is the second Mac's: every run sent there makes it so
+A record that names another Mac under DEFERRED is another Mac's: every run sent there makes it so
 (offload_host.defer_devices), and what it defers to that Mac's record is the extension's to say.
 """
 import contextlib
@@ -41,7 +41,7 @@ SCHEMA = 1
 OVERRIDE = "QUEUEKEEPER_DEVICE_RECORD"
 ABOUT = ("Device reservations on this Mac. Change entries only through "
          "`qk devices` (vocaro-engineering doc/guides/shared-host.md).")
-# The Mac whose record holds physical devices, in a record that defers them to it: the second Mac's.
+# The Mac whose record holds physical devices, in a record that defers them to it: another Mac's.
 DEFERRED = "physicalDevicesRecordedOn"
 # Written only by the record's own operations, which say who changed ownership and why.
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
@@ -466,8 +466,8 @@ class Record:
 def require_foreground(owner, record=None):
     """Refuse foreground work unless owner holds mac-foreground, and on this Mac within its window.
 
-    Drivers call it before acting, on either Mac. On this Mac the window is the reservation's expected
-    release, which the session agreed with the owner. On the second Mac, whose record defers physical
+    Drivers call it before acting, on any Mac. On this Mac the window is the reservation's expected
+    release, which the session agreed with the owner. On another Mac, whose record defers physical
     devices, queuekeeper holds the entry for the run and names it in QUEUEKEEPER_DEVICE_OWNER (foreground.slot), and
     the run may outlast its expected release."""
     if not owner:

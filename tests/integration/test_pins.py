@@ -124,7 +124,7 @@ class PinnedCheckoutTests(Fixture):
         self.assertEqual(offload_host.pin_head(made), self.one)
 
     def test_a_commit_the_checkout_lacks_is_fetched_from_its_origin_and_one_no_origin_holds_is_refused(self):
-        # As the second Mac's own checkout is when a round pins a commit that landed since its last connection.
+        # As another Mac's own checkout is when a round pins a commit that landed since its last connection.
         there = self.home / "there/Development/kit"
         there.parent.mkdir(parents=True)
         git(self.home, "clone", "-q", str(self.origin), str(there))
@@ -175,7 +175,7 @@ class PinnedCheckoutTests(Fixture):
 
 
 class PlaceSiblingsTests(Fixture):
-    def test_the_second_mac_links_each_folder_at_the_commit_sent_in_place_of_its_live_checkout(self):
+    def test_the_farm_mac_links_each_folder_at_the_commit_sent_in_place_of_its_live_checkout(self):
         slot = self.home / "build-host/checkouts/Example/0"
         (slot / "Example").mkdir(parents=True)
         # What the layout before this left under the name: a link to the live checkout, which every connection moves.

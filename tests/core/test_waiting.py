@@ -184,7 +184,7 @@ class StretchReadingTests(unittest.TestCase):
                             patch.object(resources.subprocess, "check_output", return_value=answer), \
                             self.assertRaisesRegex(RuntimeError, "Cannot establish the host resource directory"):
                         resources.slot_directory()
-                for answer in ("relative/folder", None):  # the second Mac's reading of the same directory
+                for answer in ("relative/folder", None):  # another Mac's reading of the same directory
                     with self.subTest(there=answer), patch.dict(os.environ, environment, clear=True), \
                             patch.object(offload_host, "output", return_value=answer), \
                             self.assertRaisesRegex(RuntimeError, "Cannot establish the host resource directory"):

@@ -10,7 +10,7 @@ but new processes in `ps`. The folder holds:
 - LOG, `qk unittest`'s own: a line as each of its processes finishes, with the count of all of them and of those
   that failed, then that process's whole output;
 - STATE, `qk unittest`'s own: the same as JSON, with the processes running now and when each started;
-- OUTPUT, an admitted runner's: everything it printed, as it printed it, which on the second Mac's run is all this Mac
+- OUTPUT, an admitted runner's: everything it printed, as it printed it, which on another Mac's run is all this Mac
   sees of it;
 - RECORD, an admitted runner's: its command, its process and how it ended.
 """
@@ -297,7 +297,7 @@ def describe(folder, now=None):
         try: moved = max(moved or 0, output.stat().st_mtime)
         except OSError: pass
         if not inner or inner.get("processes") is None:
-            # A run on the second Mac: its finished processes are the headings in its output here.
+            # A run on another Mac: its finished processes are the headings in its output here.
             lines.extend(f"  {line}" for line in output_facts(output))
     if moved: lines.append(f"  last moved {span(now - moved)} ago, at {stamp(moved)}")
     last = (inner or {}).get("last")

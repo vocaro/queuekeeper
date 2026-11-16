@@ -101,14 +101,14 @@ blank and not Queuekeeper's own, each cut at 300 characters, or for an unmeasure
 lines when it has any (`lane_report.own_output`). A run that Queuekeeper explains itself in a `why:`
 line, a lane group, and a run that stopped before its tests, which already quotes its last error, quote
 nothing more. On 2026-11-13 BreezEPUB's `ways-in` lane, given two `-only-testing` arguments, exited 2
-on the second Mac, and the summary said only `no test counts in its log` and `no failing test is named`
+on another Mac, and the summary said only `no test counts in its log` and `no failing test is named`
 while the dispatch's `run.log` held the script's one line, `ways-in-native selects its own tests for
 each run and takes no arguments`
 ([vocaro/queuekeeper#137](https://github.com/vocaro/queuekeeper/issues/137)).
 
 A lane whose command takes no arguments says `"arguments": false`. `qk run LANE -- ARGUMENTS` then
 exits 2 at once, as does `--repeat`, whose series reaches the command as arguments, naming the
-arguments it was given, before the lane is staged, admitted or sent to the second Mac, and its summary
+arguments it was given, before the lane is staged, admitted or sent to another Mac, and its summary
 is `qk run LANE: not run (exit 2); no tests ran`. Left out or `true`, the arguments are appended to the
 command as before. A lane group takes no arguments already, and does not take the key.
 
@@ -117,12 +117,12 @@ each reading of its one-minute load, its CPU's busy share and the busy limit tha
 by, taken every 60 seconds while the command runs and once at its end, with `null` for what could
 not be read, and the highest and last load, the highest busy share and the last limit of those read
 (`lane_report.RunLoad`). A run shorter than a busy reading needs has its busy share read over the
-whole run. A lane sent to the second Mac is read there, by that Mac's own run, and its receipt comes
+whole run. A lane sent to another Mac is read there, by that Mac's own run, and its receipt comes
 back within the result. The summary that ends `qk run` gives them in a `load:` line after the
 tests, in the words a queue gate's send-back uses: `the one-minute load was highest 605.76, last
 21.72 over 64 readings, and the CPU was at most 100% busy`. A run that did not pass and whose receipt
 keeps no reading says so there. Before 2026-11-13 nothing recorded the load of a lane's run: a lane
-that failed three times on the second Mac that day had it read by hand with `ssh build-host uptime`,
+that failed three times on another Mac that day had it read by hand with `ssh build-host uptime`,
 before and after each run, and after the first failure not at all
 ([vocaro/queuekeeper#133](https://github.com/vocaro/queuekeeper/issues/133)). Both figures count the
 lane's own work, so neither says alone what else the Mac was doing.
@@ -214,15 +214,15 @@ the lane ran and with any wait for admission (`seconds`), and the parts its log 
 (`qk unittest` and `qk xctest` processes, a lane group's lanes). Since 2026-11-13 it also records
 that time in two parts: the gate's own work, from its admission to its end (`workSeconds`), and
 the wait for admission before it (`waitSeconds`). The admission is when the lane's wait record
-first says it was admitted, on this Mac or on the second Mac
+first says it was admitted, on this Mac or on another Mac
 ([#112](https://github.com/vocaro/queuekeeper/issues/112)). Beside the times it records
 the CPU busy share of the Mac the gate ran on, `cpuBusy`, the reading admission judges by
 ([#200](https://github.com/vocaro/vocaro-engineering/issues/200)). That is the mean of readings taken every minute from the gate's
 admission to its end, kept with their highest, the limit that Mac sets (`busyLimit`, `HEAVY_BUSY_LIMIT`), the Mac and
 the count of readings. A gate that ends before a minute of its own work has one reading, at its end.
-The worker's log says them too. Each reading is of the Mac the lane's wait record names as it runs, which is the
-second Mac from the moment the lane is sent there. Before 2026-11-13 it was the Mac the lane's dispatch record named,
-and that record is filed only when the dispatch ends, so a gate that ran on the second Mac was read on this Mac and
+The worker's log says them too. Each reading is of the Mac the lane's wait record names as it runs, which is another
+Mac from the moment the lane is sent there. Before 2026-11-13 it was the Mac the lane's dispatch record named,
+and that record is filed only when the dispatch ends, so a gate that ran on another Mac was read on this Mac and
 judged by this Mac's limit: on 2026-11-13 three of Queuekeeper's gates on `build-host` were recorded against this
 Mac's 70% and not that Mac's 90%, and one of them was left out of the median as loaded
 ([vocaro/queuekeeper#132](https://github.com/vocaro/queuekeeper/issues/132)).

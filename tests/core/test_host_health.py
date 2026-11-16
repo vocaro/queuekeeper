@@ -22,7 +22,7 @@ def reading(swap=(0, 0), memory=64 * GB, largest=(), level=1):
                         for pid, name, size, seconds in largest]}
 
 
-# The second Mac on 2026-11-15. Its memory pressure level was not recorded that day: warning is assumed here.
+# Another Mac on 2026-11-15. Its memory pressure level was not recorded that day: warning is assumed here.
 SWAPPING = reading((int(31.7 * GB), 32 * GB), largest=[(312, "fseventsd", 34 * GB, 15 * DAY + 2 * 3600),
                                                         (901, "Xcode", 4 * GB, 3600), (77, "WindowServer", GB, 15 * DAY)],
                    level=2)
@@ -154,7 +154,7 @@ class Doctor(unittest.TestCase):
         self.assertTrue(found[1].startswith("build is short of memory"))
         self.assertIn("`sudo killall fseventsd` on build", found[1])
 
-    def test_a_second_mac_whose_toolkit_does_not_read_health_is_unchecked(self):
+    def test_a_farm_mac_whose_toolkit_does_not_read_health_is_unchecked(self):
         hosts = {"host": "build", "errors": [], "unchecked": [], "pythonCrashes": {}, "remote": {}}
         shown = self.doctor(hosts, reading())
         self.assertFalse([w for w in shown["warnings"] if "short of memory" in w])
@@ -208,7 +208,7 @@ class QueueDoctor(unittest.TestCase):
         self.assertNotIn("offload", shown)
         self.assertTrue(any(warning.startswith("mini is short of memory") for warning in shown["warnings"]))
 
-    def test_a_second_mac_without_the_reading_is_unknown_and_one_away_is_too(self):
+    def test_a_farm_mac_without_the_reading_is_unknown_and_one_away_is_too(self):
         with patch.object(remote, "reading_there", return_value=({"load": 1.0}, 10.0)) as there:
             self.assertIsNone(merge_queue.health_of("build"))
         there.assert_called_once_with("build", health=True)

@@ -43,10 +43,10 @@ or device type, or else the device type's name (`EPUBLib iPhone 17 Pro 1`). Core
 a device after `simctl create` is interrupted and before it prints the UDID: recover only by the
 member's exact name, and if more than one device has that name, stop and inspect instead.
 
-Each Mac has its own pool and device record. A lane run on the second Mac takes or creates its
-members among the second Mac's simulators and reserves them in the second Mac's record, so the
+Each Mac has its own pool and device record. A lane run on another Mac takes or creates its
+members among another Mac's simulators and reserves them in another Mac's record, so the
 two Macs' members of one name are two simulators, and a reservation on one Mac holds nothing on
-the other ([simulators on the second Mac](shared-host.md#simulators-on-the-second-mac)).
+the other ([simulators on another Mac](shared-host.md#simulators-on-another-mac)).
 
 Never delete or rename a pool member automatically, except by pruning.
 
@@ -102,7 +102,7 @@ shows every member, whether pruning may delete it, and what its last take left i
 template it was reset or cloned from and when that was made, the state it kept, or why it was
 erased; then every template. `qk simulator-pool reap [--dry-run] [--here]`
 shuts down a member or warmed template left booted for 2 hours that no live run, process or reservation
-accounts for, on both Macs, without asking the owner, and also runs before work is sent to the second Mac, before heavy work runs on the
+accounts for, on the Macs, without asking the owner, and also runs before work is sent to another Mac, before heavy work runs on the
 Mac it was started on, and in `qk doctor`; to keep one
 running, reserve it or boot a simulator outside the pool
 ([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#stale-pool-simulators)).
@@ -131,19 +131,19 @@ which with the take took a few seconds either way (Xcode 27.2 (27B52), iOS 27.2 
 iPhone 17 Pro members, November 2026,
 [vocaro-engineering#146](https://github.com/vocaro/vocaro-engineering/issues/146)):
 
-- On the second Mac with the host to itself under exclusive admission, a kept or cloned member
+- On another Mac with the host to itself under exclusive admission, a kept or cloned member
   booted in 3.5 to 4.5 s and an erased one in 21.5 to 25.5 s, five sessions each, alternated; on
   this Mac at one-minute loads of 150 to 360, in 1.6 to 2.2 s against 21.4 to 22.5 s. On the second
   Mac near a load of 1,000, kept boots took 5, 31 and 188 s, the last ending with the build beside
   it, and erased ones 25 and 37 s.
-- BreezEPUB's `tests` lane boots its member beside the build. With the second Mac to itself and the
+- BreezEPUB's `tests` lane boots its member beside the build. With another Mac to itself and the
   build warm (4 s), the boot is on the critical path: a kept run took 99 to 102 s and an erased one
   119 and 127 s, three runs each alternated, the erased boot 22 s against 4 s. Most of the rest is
   xcodebuild's test step, 93 to 100 s either way, of which XCTest's own testing took 8 to 18 s
   erased and 21 to 23 s kept. Under load, with a cold build, the lane's 122 to 318 s went to the
   build (69 to 190 s) and that step (28 to 165 s) in either mode; there QuickLook's first thumbnail
   after an erase took 5 s, and once failed after 53 s, where it took 2 s on a kept member.
-- With the second Mac to itself, VoiceOver was silent 26 to 45 s after `enable()` on each erased
+- With another Mac to itself, VoiceOver was silent 26 to 45 s after `enable()` on each erased
   member and spoke at once on each kept or cloned one; on this Mac under load the difference did not
   show ([readiness](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-simulator.md#readiness-and-silent-start)). Most kept or cloned members
   put their volume back to 60 3 to 17 s after they were muted
@@ -173,7 +173,7 @@ runtime is no longer installed, or its kind has no member left and is [unused fo
   shuts it down. A template whose second use answered is settled.
 - **Why the voices.** The first request for the system's voices on a freshly erased simulator makes
   its accessibility assets daemon build its voice database in memory, an idle wait that grows with
-  the host's load: 285 to 344 s in each of a member's xcodebuild clones with the second Mac to itself,
+  the host's load: 285 to 344 s in each of a member's xcodebuild clones with another Mac to itself,
   1,359 to over 1,900 s beside another gate, which on 2026-11-04 left 8 of 12 EPUBLib gates there
   without a verdict. Clones of a member that had used its voices once waited 50 to 79 s; after two
   uses with a reboot between, 11 to 13 s. The member's own first use takes 53 to 173 s at rest, so
@@ -217,12 +217,12 @@ runtime is no longer installed, or its kind has no member left and is [unused fo
   the boot and VoiceOver and 900 s for each use of the voices, and replaces a template whose
   VoiceOver stayed cold or whose voices did not settle; `--refresh` remakes it whatever its state.
   Run it ahead of a lane on a new runtime, or after a lane's take reports a cold or unsettled template.
-  On 2026-11-04 the whole warm-up took about four minutes a kind on the second Mac at rest (iOS 27.0
+  On 2026-11-04 the whole warm-up took about four minutes a kind on another Mac at rest (iOS 27.0
   build 24A434): VoiceOver spoke 57 to 58 s after it was switched on, the voices listed 2.3 and 5.7 s
   into the first use, which followed VoiceOver's, and 32.3 and 28.0 s into the second, after the
   reboot; on this Mac on iOS 27.2 build 24B8117, 7.5 s, 0.3 s and 3.8 s. A reset then took 0.6 to
   0.7 s, and the reset member's own first use listed the voices in 2.6 s, where an erased member's
-  took 53 to 173 s at rest. In two EPUBLib gates on the second Mac with the host to itself (toolkit
+  took 53 to 173 s at rest. In two EPUBLib gates on another Mac with the host to itself (toolkit
   `105e2ea`, 2026-11-04), each of the four xcodebuild clones a gate, two a device, listed the voices
   0.1 s into its first use, where the queue's last gate before the change had waited 534 to 606 s
   in each clone; the members reset in 0.7 to 0.8 s and booted in 15 to 18 s, and each device's run
@@ -245,8 +245,8 @@ runtime is no longer installed, or its kind has no member left and is [unused fo
   a template warmed so is recorded, shut down and never cloned or copied. devicectl's reading is of the
   running system, so the pool also reads what the shut-down template saved, `VoiceOverTouchEnabled` in
   `Library/Preferences/com.apple.Accessibility.plist`, after each warm-up and before each clone or copy,
-  and treats a template saved with it on the same way. On the second Mac on 2026-11-09 one of the 25
-  shut-down templates on both Macs was saved so, though devicectl had confirmed it off: its members booted with
+  and treats a template saved with it on the same way. On another Mac on 2026-11-09 one of the 25
+  shut-down templates on the Macs was saved so, though devicectl had confirmed it off: its members booted with
   VoiceOver on, and XCUITest found system Settings' toggle rows empty, with no switches, while the
   screen drew them. Copies of a template saved off, and erased members, were complete
   ([vocaro-engineering#263](https://github.com/vocaro/vocaro-engineering/issues/263)).
@@ -270,7 +270,7 @@ runtime is no longer installed, or its kind has no member left and is [unused fo
 17 Pro member, six on each Mac, held the source's files, 7,033 to 8,541 of them and 1.9 to 2.7 GB,
 with the same names and sizes, and the probe app the source had installed; each clone took 3.7 to
 6.2 s. A clone booted as fast as a kept member and ran its source's runtime build, 24B8117 of
-iOS-27-2's two installed builds. With the second Mac to itself, VoiceOver spoke at once on each of
+iOS-27-2's two installed builds. With another Mac to itself, VoiceOver spoke at once on each of
 five clones, its first phrase 10 to 11 s after the test started against 44 to 64 s on an erased
 member, and at once on a clone of a member warmed by `devicectl` alone, the template's recipe, which
 had taken 63 s to speak on that just-erased member
@@ -375,7 +375,7 @@ message came from two real runs on 2026-10-31, where removing that folder by han
 automatic path has not yet met a real occurrence.
 
 A lane that calls `xcodebuild` or `swift` itself gets the same recovery from `qk run` (#267). qk run
-puts the Apple package's `_shims` first on each Apple-enabled lane's PATH, here and on the second Mac, so each of those tools a lane's
+puts the Apple package's `_shims` first on each Apple-enabled lane's PATH, here and on another Mac, so each of those tools a lane's
 script calls by name runs through a wrapper, wherever the script sends its output. A wrapped run that
 fails with that message removes the module cache the message's module file is in
 (`SwiftExplicitPrecompiledModules`, `ModuleCache.noindex` or SwiftPM's `ModuleCache`), only inside the

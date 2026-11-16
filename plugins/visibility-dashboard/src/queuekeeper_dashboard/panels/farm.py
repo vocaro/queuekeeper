@@ -1,7 +1,7 @@
 """The Farm tab: each Mac's admission slots, who holds them and who waits, for every project, and what admission
 judges the Mac by: its CPU's busy share, its load, its memory pressure and whether its screen is locked.
 
-Reading the second Mac takes a second or more over SSH for each question, so the readings are made in a thread of
+Reading another Mac takes a second or more over SSH for each question, so the readings are made in a thread of
 their own and kept: a request is answered at once with the last ones, and ones older than FRESH seconds start
 others."""
 import json
@@ -44,7 +44,7 @@ KINDS = ("laptop", "desktop")
 
 def hardware_of(found):
     """A Mac's model and kind from its pressure answer (offload_host.hardware): its kind `other` when unknown or
-    absent, as from a second Mac whose toolkit predates the reading."""
+    absent, as from another Mac whose toolkit predates the reading."""
     found = found if isinstance(found, dict) else {}
     model = found.get("model") if isinstance(found.get("model"), str) else None
     return {"model": model, "kind": found.get("kind") if found.get("kind") in KINDS else "other"}

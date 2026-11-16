@@ -230,7 +230,7 @@ class Host:
     min_idle: float
     processes: list
     temp_roots: list = field(default_factory=list)
-    offload_host: str = None  # the second Mac, when this Mac sends work to one
+    offload_host: str = None  # another Mac, when this Mac sends work to one
     run: object = subprocess.run
 
     @classmethod
@@ -240,7 +240,7 @@ class Host:
         user_temp = run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True).stdout.strip()
         if user_temp: temp.append((Path(os.path.realpath(user_temp)), 2))
         return cls(home=home, development=Path(development or home / "Development"), now=time.time(),
-                   min_idle=min_idle, processes=census(run), temp_roots=temp, offload_host=second_mac(), run=run)
+                   min_idle=min_idle, processes=census(run), temp_roots=temp, offload_host=farm_mac(), run=run)
 
 
 # What an extension adds to the inventory (extend): the functions that list its items, those that name the
@@ -399,8 +399,8 @@ def prune_pins(out=print):
     return 0
 
 
-def second_mac():
-    """The second Mac this Mac offloads to, or None: here alone, or on the second Mac itself."""
+def farm_mac():
+    """Another Mac this Mac offloads to, or None: here alone, or on another Mac itself."""
     from . import remote  # remote imports this module
     try: return remote.configured()
     except ValueError: return None

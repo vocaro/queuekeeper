@@ -1,8 +1,8 @@
-"""macOS's crash-report alerts during a foreground run, on either Mac (vocaro-engineering#118).
+"""macOS's crash-report alerts during a foreground run, on any Mac (vocaro-engineering#118).
 
 An app that quits unexpectedly raises a "quit unexpectedly" alert in UserNotificationCenter that stays on the
 screen over the windows a foreground UI run clicks, so its clicks reach the alert and the run fails, as EPUBLib's
-toolbar runs did on the second Mac on 2026-11-02 (macOS 27.2 26B123). The owner wants these alerts on between
+toolbar runs did on another Mac on 2026-11-02 (macOS 27.2 26B123). The owner wants these alerts on between
 runs, so a foreground run turns them off for itself alone: it keeps com.apple.CrashReporter's DialogType from
 before the run in a record, sets it to none, and puts that exact value back however the run ends. A run whose queuekeeper
 died keeps its record, and the next queuekeeper command on that Mac puts the value back (recover). Before the run takes
@@ -30,7 +30,7 @@ from queuekeeper import lane_results, offload_host, resources
 DOMAIN, KEY = offload_host.CRASH_DIALOG
 OFF = "none"
 # Seconds between looks at the screen's system alerts while a run holds the foreground: the wait from one look's
-# end to the next one's start, not their cadence. An alert came about 1 s after its app's crash on the second Mac,
+# end to the next one's start, not their cadence. An alert came about 1 s after its app's crash on another Mac,
 # and a look took under one (2026-11-03); under load a System Events look took 17 s and 30 s there (2026-11-07,
 # #225), so each look first glances at the window list, which answers at once, and asks System Events only when
 # the list shows a window of a process that raises system alerts.
@@ -63,7 +63,7 @@ CRASHED = re.compile(r"^\s*(?:the application\s+)?[“\"]?(?P<name>[^“”\"]+?
 UNNAMED = {"the application", "an application", "application", "the app", "an app", "app"}
 # Seconds a cleared alert may stand and still count as cleared at the look that met it: the wait between looks
 # (WATCH), which a look that answers promptly fits well within, as on 2026-11-03. One that stood longer stood past
-# that look, as two did on the second Mac on 2026-11-07, 17 s and 30 s under load (#225, #226).
+# that look, as two did on another Mac on 2026-11-07, 17 s and 30 s under load (#225, #226).
 ONE_LOOK = WATCH
 # An alert about any of these is the owner's, whatever process raised it.
 OWNERS = re.compile(r"password|passcode|keychain|permission|allow|access|authenticat|touch id|administrator",
@@ -393,7 +393,7 @@ def guarded(purpose, *, said=None, receipt=None, windows=None, watch=None, apps=
         if left: raise Blocked(stopping(left))
         # What a look clears from here on, it clears during the run.
         state.running = True
-        # Watched even when this look could not read the alerts: on the second Mac on 2026-11-07 one such look
+        # Watched even when this look could not read the alerts: on another Mac on 2026-11-07 one such look
         # was a slow System Events call, not a missing grant, and the alert it missed stood the rest of the run.
         def watching():
             while not stop.wait(watch): state.look()

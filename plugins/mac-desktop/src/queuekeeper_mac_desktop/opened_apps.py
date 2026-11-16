@@ -1,10 +1,10 @@
-"""The apps a foreground run opened on the second Mac, quit before it releases the screen (vocaro/queuekeeper#104).
+"""The apps a foreground run opened on another Mac, quit before it releases the screen (vocaro/queuekeeper#104).
 
-On 2026-11-12 an EPUBLib `voiceover-mac` run that opened Safari for a MathML comparison released the second Mac's
+On 2026-11-12 an EPUBLib `voiceover-mac` run that opened Safari for a MathML comparison released another Mac's
 foreground with Safari's window still in front; 6 of the next 7 foreground runs met it, and a Mac VoiceOver session
 read it into its transcript (vocaro/EPUBLib#1034). So foreground.slot reads the regular apps, those with a Dock icon,
 running once it holds the foreground, and again before it releases it. An app that started in between is the run's
-to quit when nothing else could have started it: the second Mac is no workstation, and the run holds its whole
+to quit when nothing else could have started it: another Mac is no workstation, and the run holds its whole
 foreground (owner's decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207), so an app installed in an
 Applications folder, or built in the run's own checkout, or one the session recorded as launched (`devices update
 mac-foreground --launched BUNDLE`), is the run's. On any other Mac, the owner's workstation, only an app the run is

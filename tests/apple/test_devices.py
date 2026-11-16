@@ -186,7 +186,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(released["recovery"]["condition"], "orphan")
         self.reserve(owner="session-b", revision=released["revision"])
 
-    def test_recovering_a_run_sent_to_the_second_mac_waits_until_nothing_there_may_use_the_device(self):
+    def test_recovering_a_run_sent_to_the_farm_mac_waits_until_nothing_there_may_use_the_device(self):
         child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
@@ -218,7 +218,7 @@ class DeviceRecordTests(unittest.TestCase):
         recovered = recover(users([]))
         self.assertEqual(recovered["recovery"]["offload"]["host"], "build-host")
         self.assertIn("checkedAt", recovered["recovery"]["offload"])
-        # The owner can recover without the second Mac, recording why.
+        # The owner can recover without another Mac, recording why.
         entry = self.reserve(owner="session-b", revision=recovered["revision"])
         entry = self.record.update("iPhone", owner="session-b", revision=entry["revision"], state="uncertain-run",
                                    uncertain=True, run={"host": "build-host", "startedAt": started})
@@ -229,7 +229,7 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(json.loads(output)["entry"]["recovery"]["offload"], {"host": "build-host",
                                                                               "unchecked": "it is gone"})
         self.assertEqual((error, asked), ("", []))
-        # A run that stayed on this Mac asks no second Mac.
+        # A run that stayed on this Mac asks no other Mac.
         entry = self.reserve(owner="session-c", revision=self.record.entry("iPhone")["revision"])
         entry = self.record.update("iPhone", owner="session-c", revision=entry["revision"], uncertain=True,
                                    run="a local result bundle")
@@ -281,7 +281,7 @@ class DeviceRecordTests(unittest.TestCase):
     def test_foreground_finally_retains_explicit_unknown_launch_uncertainty(self):
         from queuekeeper_mac_desktop import foreground
         from queuekeeper_apple.voiceover import state
-        with patch.object(foreground, "second_mac", return_value=True), \
+        with patch.object(foreground, "farm_mac", return_value=True), \
              patch.object(foreground, "front", return_value="owned control"), \
              patch.object(foreground.offload_host, "mac_name", return_value="test Mac"):
             # Independent positive control: the normal context still releases.
@@ -627,8 +627,8 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertIn("overdue, which releases nothing", output)
         self.assertIn("its window has ended; foreground actions are refused", output)
 
-    def test_on_the_second_mac_a_foreground_run_may_outlast_its_expected_release(self):
-        # The second Mac is not a workstation: queuekeeper reserves its foreground per run and no window binds it.
+    def test_on_the_farm_mac_a_foreground_run_may_outlast_its_expected_release(self):
+        # Another Mac is not a workstation: queuekeeper reserves its foreground per run and no window binds it.
         self.assertTrue(self.record.defer("workstation"))
         self.assertIn(f"{devices.FOREGROUND}: free; queuekeeper reserves it for each run", self.cli("status")[1])
         self.foreground()
@@ -675,7 +675,7 @@ class DeviceRecordTests(unittest.TestCase):
 
     @unittest.skipUnless(Path(SANDBOX_EXEC).exists(), "no sandbox-exec to deny ps with")
     def test_a_sandboxed_runner_that_may_not_start_ps_still_checks_an_active_runs_foreground(self):
-        # As queuekeeper holds the second Mac's foreground: the entry's active run is a live process. A
+        # As queuekeeper holds another Mac's foreground: the entry's active run is a live process. A
         # sandboxed XCTest runner then checks it, and its sandbox refuses to start ps.
         entry = self.foreground()
         child = live()
@@ -740,7 +740,7 @@ class DeviceRecordTests(unittest.TestCase):
             "ui": {"command": [sys.executable, "-c", "open('ran', 'a').write('ran')"], "resource": "heavy",
                    "foreground": True}}}))
         def run(owner):
-            # On this Mac, only with --here: otherwise a foreground lane goes to the second Mac (test_foreground).
+            # On this Mac, only with --here: otherwise a foreground lane goes to another Mac (test_foreground).
             with patch.dict(os.environ, {devices.OWNER: owner} if owner else {}), \
                  patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.root / "slots"),
                                          "QUEUEKEEPER_GATE_LOCK_FILE": str(self.root / "gate")}), \
@@ -1264,7 +1264,7 @@ class BoundedRunTests(unittest.TestCase):
         # The stop ended the command before the launcher recorded the outcome.
         self.assertNotEqual(process_start(command["pid"]), command["start"])
 
-    def test_on_the_second_mac_a_run_takes_its_reservation_from_the_lease_and_changes_no_record(self):
+    def test_on_the_farm_mac_a_run_takes_its_reservation_from_the_lease_and_changes_no_record(self):
         self.record.defer("workstation")
         lease = {"record": "workstation", "devices": {"iPad": TABLET}, "until": later()}
         def run(*words, key="iPad", carried=lease):

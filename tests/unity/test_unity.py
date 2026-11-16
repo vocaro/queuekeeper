@@ -546,7 +546,7 @@ class DoctorTests(Folder):
         self.assertIn("Unity 6000.6.0f1, which lab pins, is not installed on this Mac", here)
         self.assertIn("is not installed on studio", there)
 
-    def test_a_second_mac_that_could_not_be_asked_is_not_warned_of(self):
+    def test_a_farm_mac_that_could_not_be_asked_is_not_warned_of(self):
         fake_editor(self.folder / "hub", "6000.6.0f1")
         self.there = None
         self.assertEqual(self.warnings(), [])

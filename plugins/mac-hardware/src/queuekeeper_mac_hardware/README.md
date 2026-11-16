@@ -44,13 +44,13 @@ match `apple-m5-max`.
 python3 scripts/qk host chip
 ```
 
-This prints this Mac's chip and the second Mac's, as a lane writes them.
+This prints this Mac's chip and another Mac's, as a lane writes them.
 
 ## How it fits the core
 
 The core knows nothing of chips. A lane key a plugin adds may say where its lane must run
-(`LaneKey.placement` in `extensions.py`): on this Mac, only on the second Mac, or either. This
-plugin's `chips` key answers from the two Macs' chips. Another plugin can restrict a lane the same
+(`LaneKey.placement` in `extensions.py`): on this Mac, only on another Mac, or either. This
+plugin's `chips` key answers from the Macs' chips. Another plugin can restrict a lane the same
 way for its own reason.
 
 ## Limits

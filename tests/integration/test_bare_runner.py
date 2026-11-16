@@ -166,7 +166,7 @@ class Runs(Folder):
     def runs_under_this_python(self, *arguments):
         """Run the bare runner in the project while the first python3 on PATH is too old for Queuekeeper, as Xcode's
         Python 3.9 was on 2026-11-14 (vocaro/queuekeeper#152): a stand-in that runs nothing and exits 2, as the
-        launcher does under such an interpreter. The second Mac is offered the command that names python3, and this
+        launcher does under such an interpreter. Another Mac is offered the command that names python3, and this
         Mac runs it under this interpreter: the suite's one test runs, is counted once and passes."""
         self.project()
         self.suite()

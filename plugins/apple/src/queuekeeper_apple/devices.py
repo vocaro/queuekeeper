@@ -24,14 +24,14 @@ device and, like a physical device's, records no approval (owner's decision, 202
 vocaro-engineering#207): the record schedules it, one holder at a time, and its expected release
 is its window. On this Mac, the owner's workstation, a session agrees the window with the owner
 first and reserves it for that window; foreground actions are refused once the expected release
-has passed. The second Mac is not a workstation: queuekeeper reserves its entry for each run without
+has passed. Another Mac is not a workstation: queuekeeper reserves its entry for each run without
 asking (foreground.slot), and a run there may outlast its expected release. Foreground drivers
 call require_foreground before acting; release waits for the processes the session recorded as
 its own, and says whether the previous frontmost app was restored.
 
-Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from both Macs, so a
-physical device is reserved in one record only: the Mac that sends runs to the second Mac. The
-second Mac's record defers physical devices to that Mac and refuses to reserve one. A run there
+Each Mac's simulators are its own, but a paired iPhone or iPad is reachable from the Macs, so a
+physical device is reserved in one record only: the Mac that sends runs to another Mac. Another
+Mac's record defers physical devices to that Mac and refuses to reserve one. A run there
 uses one under a reservation held in the sending Mac's record, which `qk remote --device` carries.
 
 A physical device's reservation records no approval (owner's decision, 2026-11-06): the record schedules
@@ -45,7 +45,7 @@ stops it before the reservation ends, keeping time for its termination and the s
 restoration. It records the run in the entry and never releases the device. A run that exits 0 but whose
 output counts no test that ran, such as an xcodebuild selection that matched none, is unmeasured unless
 `--no-tests` says it was meant to select none (vocaro/queuekeeper#100). `qk remote --device`
-bounds a run on the second Mac the same way, and there a bounded run takes its reservation from the lease.
+bounds a run on another Mac the same way, and there a bounded run takes its reservation from the lease.
 
 `devices take KEY` takes a paired device in turn: it joins the device's queue, waits while another
 session holds it or waits ahead, and reserves it. The queue lives
@@ -123,10 +123,10 @@ OBJECT_TIMEOUT = 10
 # SHA-1, as codesign, xcodebuild and security take one: a setting or option whose name ends in IDENTITY,
 # such as CODE_SIGN_IDENTITY=, SIGN_IDENTITY= or --identity, or codesign's -s or --sign (#86).
 SIGNING = re.compile(r"""(?:IDENTITY=|--IDENTITY\s+|\bCODESIGN\b[^;&|\n]*?\s(?:-S|--SIGN)(?:=|\s+))["']?\Z""")
-# The reservations a run on the second Mac may use, held in the sending Mac's record, as JSON:
+# The reservations a run on another Mac may use, held in the sending Mac's record, as JSON:
 # {"record": MAC, "devices": {KEY: UDID}, "until": the reservations' end}. offload_host.py sets it for the run.
 LEASE = "QUEUEKEEPER_DEVICE_LEASE"
-# A lease's timing report, passed only to the top-level work on the second Mac.
+# A lease's timing report, passed only to the top-level work on another Mac.
 WINDOW = "QUEUEKEEPER_DEVICE_WINDOW"
 # Seconds a bounded run keeps before its reservation ends for its own end once its bound expires:
 # supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
@@ -147,7 +147,7 @@ SETUP = "notificationSetup"
 # owner's shortcut, or the owner turned Do Not Disturb on himself.
 SILENCED = ("requested", "owner")
 # The process that reserved a simulator pool member and holds it, {"pid", "start"}: while it runs
-# as one of a live run's processes, the second Mac's census of leftover processes counts the
+# as one of a live run's processes, another Mac's census of leftover processes counts the
 # member's simulator as that run's (offload_host.leftovers).
 HOLDER = "holderProcess"
 # Set beside HOLDER when that process alone holds the reservation, as a run's pool records it and
@@ -409,7 +409,7 @@ class Record(reservations.Record):
         return self._change(key, revision, change)
 
     def _checked_elsewhere(self, key, revision, unchecked, users):
-        """For a recovery of a physical device whose run went to the second Mac: that host's check,
+        """For a recovery of a physical device whose run went to another Mac: that host's check,
         or a refusal while something there may still use the device. None for any other entry, and
         for one that recovery refuses anyway, which it then does under the lock."""
         current = self.entry(key)
@@ -436,7 +436,7 @@ class Record(reservations.Record):
     def defer(self, mac, *, replace=False):
         """Defer physical devices to mac's record, after which this record refuses to reserve one.
 
-        The second Mac's record defers them to the Mac that sends it runs; None ends a deferral.
+        Another Mac's record defers them to the Mac that sends it runs; None ends a deferral.
         Changing which Mac holds them is the owner's decision, so another Mac needs replace. It
         returns whether the record changed."""
         with self._exclusive():
@@ -558,7 +558,7 @@ class BoundedRun:
     Here the reservations come from this Mac's record: the session holds each with no run active,
     at revision when one is given. Each entry records the run: active,
     with this process as the run's and the command as the entry's own process, then its outcome.
-    On the second Mac, whose record defers physical devices, they come from the lease the dispatch
+    On another Mac, whose record defers physical devices, they come from the lease the dispatch
     carries (LEASE), and the dispatch records the run in the sending Mac's record. Every device
     identifier the command names, a hardware UDID or any device the record knows, is one it holds;
     an object of root's Git, by default the current directory's, is none (named).
@@ -625,7 +625,7 @@ class BoundedRun:
         return devices, min(ends)
 
     def _leased(self, keys, mac):
-        """The reservations held in mac's record that this run on the second Mac carries."""
+        """The reservations held in mac's record that this run on another Mac carries."""
         if not os.environ.get(LEASE):
             raise deferred_refusal(mac, keys[0])
         try:

@@ -284,9 +284,9 @@ class HostIsolationTests(unittest.TestCase):
             self.assertTrue(resources.guard_path(os.environ).is_relative_to(root))
             self.assertTrue(Path(offload_host.GATE_LOCK).is_relative_to(root))
 
-    def test_a_suite_run_inside_an_admission_takes_its_tests_out_of_it_and_off_the_second_mac(self):
+    def test_a_suite_run_inside_an_admission_takes_its_tests_out_of_it_and_off_the_farm_mac(self):
         # The toolkit's gate is admitted (#200), so its suite inherits the gate's token; a test must not reuse it, nor
-        # send a lane it runs to the real second Mac, nor report that lane's waits into the gate's own record (#335).
+        # send a lane it runs to the real Mac of the farm, nor report that lane's waits into the gate's own record (#335).
         token = '{"schemaVersion": 1, "locks": []}'
         source = str(Path(resources.__file__).resolve().parents[1])
         record = host_isolation.remote.lane_wait.VARIABLE
@@ -413,13 +413,13 @@ class InheritedVariableTests(unittest.TestCase):
                       and (name not in host_isolation.ISOLATION or value == self.PLANTED))
 
     def test_what_this_suite_inherited_leaves_no_variable_that_is_neither_set_nor_listed(self):
-        # On the second Mac, run for a dispatch, the suite inherits what the dispatch set; here, what this Mac's run did.
+        # On another Mac, run for a dispatch, the suite inherits what the dispatch set; here, what this Mac's run did.
         self.assertEqual(self.unexplained(self.left({})), [])
 
     def test_every_variable_the_toolkit_names_is_set_cleared_or_listed(self):
         names = toolkit_variables()
         self.assertGreater(len(names), 40)
-        # The keychain's, which reached the second Mac's suite before it was cleared, is among those found.
+        # The keychain's, which reached another Mac's suite before it was cleared, is among those found.
         self.assertIn(host_isolation.keychain.UNLOCKED, names)
         left = self.left(dict.fromkeys([*names, self.CONTROL], self.PLANTED))
         # The control, a variable neither set nor listed, is the only one found.
@@ -441,7 +441,7 @@ class SignalDispositionTests(unittest.TestCase):
 
     Each stop signal but SIGQUIT is sent, and stops the child only with default_signals. SIGQUIT is not sent: its
     default ends a process with a core, so macOS writes a crash report and raises a "Python quit unexpectedly" alert
-    over the screen each time, six times over foreground runs on the second Mac by 2026-11-12
+    over the screen each time, six times over foreground runs on another Mac by 2026-11-12
     (vocaro/queuekeeper#42). Its disposition is read instead, which is what default_signals changes: the default
     with it, ignored without it."""
 

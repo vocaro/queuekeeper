@@ -1,12 +1,12 @@
-"""Which Mac a command runs on, in which login session, and which Mac the second Mac is from there.
+"""Which Mac a command runs on, in which login session, and which Mac another Mac is from there.
 
 Instructions for the owner go wrong on the wrong Mac or in the wrong session: a keychain unlocked
-on the workstation does nothing for the second Mac, and an SSH alias that the workstation's
-~/.ssh/config defines does not resolve in a shell already on the second Mac
+on the workstation does nothing for another Mac, and an SSH alias that the workstation's
+~/.ssh/config defines does not resolve in a shell already on another Mac
 (vocaro-engineering#65). Before a command asks the owner for anything, it establishes both here,
-without connecting anywhere: this Mac's name as receipts record it (offload_host.mac_name), the
-second Mac's destination from the canonical resolver (remote.configured), what `ssh -G` resolves
-that destination to, and whether this Mac's device record marks it as the second Mac of another
+without connecting anywhere: this Mac's name as receipts record it (offload_host.mac_name), another
+Mac's destination from the canonical resolver (remote.configured), what `ssh -G` resolves
+that destination to, and whether this Mac's device record marks it as another Mac of another
 Mac. The session comes from the process's audit session flags: an SSH login is flagged remote and
 has no graphic access, so nothing in it can show a dialog, while a session with graphic access can
 (doc/guides/shared-host.md, Keychains on the right Mac).
@@ -77,8 +77,8 @@ def session(flags=READ, environment=None):
             "consoleAccess": bool(flags & CONSOLE), "sshVariables": variables}
 
 
-def second_mac():
-    """This Mac's view of the second Mac, without connecting: the SSH destination the canonical
+def farm_mac():
+    """This Mac's view of another Mac, without connecting: the SSH destination the canonical
     resolver names here (remote.configured), what `ssh -G` resolves it to, and the Mac this
     Mac's device record defers physical devices to, which every qk remote run sets on the second
     Mac's record and so marks this Mac as that Mac's second Mac."""
@@ -96,7 +96,7 @@ def names_mac(hostname, mac):
 
 
 class Location:
-    """Where the target Mac is from here: where is "here" or "second Mac", and mac names it; or
+    """Where the target Mac is from here: where is "here" or "farm Mac", and mac names it; or
     where is None and refusal says why nothing may be asked of the owner, and what to do instead."""
 
     def __init__(self, where=None, mac=None, destination=None, refusal=None, note=None):
@@ -104,9 +104,9 @@ class Location:
 
 
 def locate(here, view, target=None, there=None, unreached=None):
-    """Where the target is from this Mac, here, given second_mac()'s view. target names the Mac
-    whose keychain or screen the work needs, or None for the second Mac. there is the name the
-    second Mac gave of itself when it was reached, and unreached why it could not be, if it was
+    """Where the target is from this Mac, here, given farm_mac()'s view. target names the Mac
+    whose keychain or screen the work needs, or None for another Mac. there is the name another
+    Mac gave of itself when it was reached, and unreached why it could not be, if it was
     tried. A destination is used only on the Mac whose SSH configuration defines it."""
     destination, deferred = view.get("destination"), view.get("deferredTo")
     if target is not None and target == here:
@@ -120,7 +120,7 @@ def locate(here, view, target=None, there=None, unreached=None):
         if there == here:
             return Location("here", here, note=f"{destination} reaches this Mac itself")
         if target is None or target == there:
-            return Location("second Mac", there, destination, note=f"{there} is another Mac, which "
+            return Location("farm Mac", there, destination, note=f"{there} is another Mac, which "
                             f"{destination} reaches from this Mac ({view.get('hostname')})")
         return Location(refusal=(
             f"{target} is neither this Mac, {here}, nor another Mac, {there}, that {destination} reaches: run "

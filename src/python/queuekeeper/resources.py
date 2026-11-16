@@ -14,7 +14,7 @@ spare capacity: a fixed count left the host idle behind jobs waiting on simulato
 unqueued builds starved watchdogd until the kernel panicked (2026-10-14). The busy share is the
 part of the CPU's time, over about the last BUSY_WINDOW seconds, spent outside idle. It replaced
 the one-minute load average, which on a Mac running simulators counts their many daemons' brief
-wake-ups: the second Mac read a load of 27 to 66 against a limit of 7.5 while its CPU was up to
+wake-ups: another Mac read a load of 27 to 66 against a limit of 7.5 while its CPU was up to
 half idle, and its extra slots opened almost only when it was idle anyway (vocaro-engineering#200). Admission cannot
 preempt a job that becomes heavy later. A whole-host lane, a gate that runs a project's suites
 side by side, takes every guaranteed slot, so that two such lanes never run on one Mac at once
@@ -89,7 +89,7 @@ from . import lane_wait
 
 TOKEN = "QUEUEKEEPER_RESOURCE_TOKEN"
 # `qk run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
-# without running: how the second Mac says it cannot take a lane now.
+# without running: how another Mac says it cannot take a lane now.
 FREE_WAIT, BUSY = 5, 75
 # The admission log and its previous generation. A line that would take the log past LOG_LIMIT
 # bytes first makes the log the previous generation, so the two together stay within twice it.
@@ -109,7 +109,7 @@ def process_start(pid):
     """When pid started, as `ps -o lstart=` prints it, or None when no such process runs.
 
     A process in an app's sandbox, such as an XCTest runner checking the foreground reservation that
-    queuekeeper holds on the second Mac, may not start ps; the kernel's record gives it the same text."""
+    queuekeeper holds on another Mac, may not start ps; the kernel's record gives it the same text."""
     try:
         result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True)
     except OSError:
@@ -167,7 +167,7 @@ def guard_path(environment):
 # such as a newer toolkit may add, is read past.
 FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"model": bool, "admitted": str, "uncertain": bool,
                                                                                 "wholeHost": bool, "origin": dict}
-# Where work that asks for admission comes from, as JSON: the second Mac's runs of a dispatch read it from the Mac that
+# Where work that asks for admission comes from, as JSON: another Mac's runs of a dispatch read it from the Mac that
 # sent them (remote.dispatch), since their own checkout is a copy that names no session (work_origin).
 ORIGIN = "QUEUEKEEPER_ADMISSION_ORIGIN"
 # The fields of an origin, each a string, and the longest each keeps.
@@ -184,7 +184,7 @@ def clean_origin(found):
 def work_origin(directory=None):
     """Where the work asking for admission comes from, for `qk admissions now` to name beside its label, which for a
     plain command is only the command (vocaro-engineering#342): the repository (its main checkout's directory name),
-    the branch, the worktree's path, the agent session that ran queuekeeper, and the Mac it ran on. Work the second Mac runs for
+    the branch, the worktree's path, the agent session that ran queuekeeper, and the Mac it ran on. Work another Mac runs for
     another Mac takes the sender's (ORIGIN). Each field it cannot read is left out; it never raises."""
     try:
         sent = clean_origin(json.loads(os.environ[ORIGIN])) if os.environ.get(ORIGIN) else None
@@ -565,7 +565,7 @@ def busy_limit():
 
 def limit_source(source, path=None):
     """Where a Mac's admission limit comes from, in words, given its source as limits gives it or as
-    offload_host.limits gives the second Mac's: the limit's environment variable, the default (a source that
+    offload_host.limits gives another Mac's: the limit's environment variable, the default (a source that
     begins with "default"), or the path of the Mac's limits file. path is that Mac's limits file, which a default
     names as where to set the limit. None when the source is unknown, as from an older toolkit
     (vocaro/queuekeeper#29)."""
@@ -630,7 +630,7 @@ def judged(busy, limit, level, said=None):
     """pressure's answer for a reading of a Mac: its CPU's busy share in percent, None when unavailable, the limit
     of that Mac, and level, a function that reads its memory pressure level, called only when the share is below
     the limit. said quotes the limit with whose it is and where it comes from (limit_words); without it the reason
-    quotes the bare limit. The merge queue judges the second Mac's reading by it too (remote.pressure_there)."""
+    quotes the bare limit. The merge queue judges another Mac's reading by it too (remote.pressure_there)."""
     said = f"HEAVY_BUSY_LIMIT={limit:g}%" if said is None else said
     if busy is None:
         return "cpu", f"the CPU's busy share, which {said} bounds, is unavailable"
@@ -698,7 +698,7 @@ def publish_guard(path, state):
 
 
 # Seconds a retained request holds later incompatible work back after its process last asked,
-# including the gap between local waits while the second Mac is offered the work (Place).
+# including the gap between local waits while another Mac is offered the work (Place).
 PLACE_SECONDS = 180
 # All waiting requests, in the slot directory, changed only under its coordination lock.
 QUEUE = "exclusive-queue.json"
@@ -838,7 +838,7 @@ class Place:
         """Keep the place holding later work back while its process is away from this Mac's queue and unplaced()
         says that no Mac has taken the work: from a thread, every third of HEAVY_PLACE_SECONDS, it asks unplaced
         and then says the work still waits (still_waiting), until the block ends. It stops for good the first time
-        unplaced does not say True, so that work the second Mac took and runs stops holding this Mac back
+        unplaced does not say True, so that work another Mac took and runs stops holding this Mac back
         HEAVY_PLACE_SECONDS later, as does work whose placement cannot be told. Without this an offer to the second
         Mac that kept a whole-host gate away for longer than HEAVY_PLACE_SECONDS let a later gate take the slots as
         they were freed (vocaro/queuekeeper#160). Nothing here may stop the work: a failure ends the keeping."""
@@ -885,7 +885,7 @@ class Admission:
         # caller that runs its own commands, which may record none, leaves it False.
         self.supervised = supervised
         # Why the work is asking this Mac, for its admitted and withdrawn lines, or None: whether queuekeeper offered it to
-        # the second Mac first and why it is here (offered, because), or the Mac that sent it (dispatchedFrom).
+        # another Mac first and why it is here (offered, because), or the Mac that sent it (dispatchedFrom).
         # `qk admissions usage` counts it.
         self.placement = placement
         # Exclusive work holds the host, the model with it.
@@ -906,7 +906,7 @@ class Admission:
         self.slots, self.maximum = found["slots"][0], found["slotsMax"][0]
         self.busy_limit = float(found["busyLimit"][0])
         # Each limit as a refusal quotes it: whose it is and where it comes from (vocaro/queuekeeper#29). The Mac is
-        # named, not "this Mac": the second Mac's refusal is relayed to the Mac that offered it the work.
+        # named, not "this Mac": another Mac's refusal is relayed to the Mac that offered it the work.
         from . import offload_host
         self.said = limits_words(found, offload_host.mac_name())
         # The CPU's busy share, read over about BUSY_WINDOW seconds, shows a new job only once it has started work.
@@ -1858,15 +1858,15 @@ def report(paths=None, since=None, until=None, out=print):
     return 0
 
 
-# `qk admissions usage`: whether the second Mac is being used, and why work is on this Mac, read from both Macs'
+# `qk admissions usage`: whether another Mac is being used, and why work is on this Mac, read from each Mac's
 # capacity and admission logs rather than from the sound of a fan (doc/guides/shared-host.md, Which Mac runs a lane).
 USAGE_WINDOW = 3 * 3600
 # An admission with no end logged that began longer than this before the window's end is taken as one whose process
 # died unrecorded, and counts as running no longer: lanes' time limits are 2 h by default (processes.DEFAULT_LIMIT).
 UNENDED_SECONDS = 12 * 3600
-# Why work that queuekeeper never offered to the second Mac runs here, as cli's placement reasons say it, by the category
+# Why work that queuekeeper never offered to another Mac runs here, as cli's placement reasons say it, by the category
 # usage counts it under. Until the owner's decision of 2026-11-07, qk admit without --verify ran here, and log lines
-# from then still say so; it goes to the second Mac first now, unless one of cli.here_because's reasons keeps it here.
+# from then still say so; it goes to another Mac first now, unless one of cli.here_because's reasons keeps it here.
 NOT_OFFERED = [("qk admit runs here without --verify", "qk admit without --verify"),
                ("qk admit --here", "qk admit --here"),
                ("a part of the self lane ", "a self lane's part"),
@@ -1926,7 +1926,7 @@ def occupancy(entries, since, until):
 
 
 def placed(entry):
-    """Where an admitted line's work stands with the second Mac, as (group, reason): never offered to it, offered and
+    """Where an admitted line's work stands with another Mac, as (group, reason): never offered to it, offered and
     declined by it, sent from another Mac, or unrecorded, for a line that names no placement, which an older toolkit
     and admission's other callers write. A declined reason's numbers read as N, so that like reasons count together."""
     placement = entry.get("placement")
@@ -1957,7 +1957,7 @@ def window_lines(mac, entries, since, until):
 
 
 def placement_lines(entries, since, until):
-    """This Mac's admissions made in [since, until) by where they stand with the second Mac (placed), each with the
+    """This Mac's admissions made in [since, until) by where they stand with another Mac (placed), each with the
     admissions and the time they held, ended or not."""
     lines = {}
     for entry in entries:
@@ -1993,7 +1993,7 @@ def placement_lines(entries, since, until):
 
 
 def capacity_lines(readings):
-    """Both Macs' capacity side by side, readings being (column name, the name remote.spare's verdict gives the Mac,
+    """Each Mac's capacity side by side, readings being (column name, the name remote.spare's verdict gives the Mac,
     reading or why it is unavailable), with remote.spare's
     verdict for an ordinary heavy lane and for a whole-host lane on each."""
     from queuekeeper import remote
@@ -2041,7 +2041,7 @@ def usage(here, there, since, until, out=print):
 
 
 def usage_main(argv=None, out=print):
-    """qk admissions usage: whether the second Mac is being used, and why work is on this Mac."""
+    """qk admissions usage: whether another Mac is being used, and why work is on this Mac."""
     from queuekeeper import offload_host, remote
     parser = argparse.ArgumentParser(prog="qk admissions usage", description="Show each Mac's capacity now, side by "
         "side, with whether each has spare capacity for a heavy and for a whole-host lane; the share of the period "

@@ -71,7 +71,7 @@ class Recorded(Named):
                 self.assertEqual(self.said(), expected)
                 lane_wait.running()
 
-    def test_a_wait_for_this_mac_says_why_the_second_mac_did_not_take_it(self):
+    def test_a_wait_for_this_mac_says_why_the_farm_mac_did_not_take_it(self):
         lane_wait.waiting(lane_wait.OVERFLOW, "another Mac is busy")
         lane_wait.waiting(lane_wait.ADMISSION, "all 3 are busy")
         self.assertEqual(self.said(), "admission on this Mac: all 3 are busy; whichever Mac admits it first, the farm's "
@@ -81,7 +81,7 @@ class Recorded(Named):
         lane_wait.waiting(lane_wait.ADMISSION, "all 3 are busy")
         self.assertEqual(self.said(), "admission on this Mac: all 3 are busy")
 
-    def test_a_relayed_wait_names_the_second_mac_and_keeps_no_offer(self):
+    def test_a_relayed_wait_names_the_farm_mac_and_keeps_no_offer(self):
         lane_wait.waiting(lane_wait.OVERFLOW, "another Mac is busy")
         lane_wait.relayed(json.dumps({"kind": "admission", "reason": "busy", "stranded": True}).encode(), "build-host")
         record = lane_wait.current(self.path)
@@ -225,10 +225,10 @@ class Waits(Named):
         self.assertEqual(self.said(), "whichever Mac admits it first, the farm's other Macs asked again: fake is busy: "
                                       "fake did not take it")
 
-    def test_an_offer_keeps_the_place_until_the_second_mac_starts_the_lane(self):
-        """vocaro/queuekeeper#160: while the lane is offered to the second Mac, its place in this Mac's queue is kept
-        holding (resources.Place.kept) for as long as the lane's record says that the second Mac has not started it:
-        through the offer and the second Mac's own wait, and no longer once its admission there is relayed."""
+    def test_an_offer_keeps_the_place_until_the_farm_mac_starts_the_lane(self):
+        """vocaro/queuekeeper#160: while the lane is offered to another Mac, its place in this Mac's queue is kept
+        holding (resources.Place.kept) for as long as the lane's record says that another Mac has not started it:
+        through the offer and another Mac's own wait, and no longer once its admission there is relayed."""
         self.assertIsNone(lane_wait.taken_there())
         offered, keeping, unplaced = self.offer(), [], []
         class Place:
@@ -262,7 +262,7 @@ class Waits(Named):
             del os.environ[lane_wait.VARIABLE]
             self.assertIsNone(lane_wait.taken_there())
 
-    def test_overflow_says_a_second_mac_it_cannot_reach(self):
+    def test_overflow_says_a_farm_mac_it_cannot_reach(self):
         offered = self.offer()
         offered.away = "fake cannot be reached: it is asleep"
         with contextlib.redirect_stderr(StringIO()):
@@ -270,13 +270,13 @@ class Waits(Named):
         self.assertEqual(self.said(), "another Mac cannot be reached, and is asked again within a minute: fake cannot "
                                       "be reached: it is asleep")
 
-    def test_one_slow_probe_keeps_the_second_mac_in_rotation_and_two_say_how_many_and_how_long_ago(self):
-        """vocaro/queuekeeper#25: one `ssh build-host true` that did not finish in 30 s, while the second Mac answered a
+    def test_one_slow_probe_keeps_the_farm_mac_in_rotation_and_two_say_how_many_and_how_long_ago(self):
+        """vocaro/queuekeeper#25: one `ssh build-host true` that did not finish in 30 s, while another Mac answered a
         shell in 0.2 s, made status say it could not be reached for about six minutes, until the next offer."""
         slow = remote.Unreachable("fake cannot be reached: `ssh fake true` did not finish in 30s", "see whether fake is "
                                   "overloaded")
         for outcomes, expected in (
-                # One slow answer, then the second Mac takes the work: it never counted as unreachable.
+                # One slow answer, then another Mac takes the work: it never counted as unreachable.
                 ([slow, None], [None, None]),
                 # Two in a row: unreachable, said with how many and how long ago, then back.
                 ([slow, slow, None], [None, None, 2])):
@@ -308,7 +308,7 @@ class Waits(Named):
         self.assertEqual(sending, ["whichever Mac admits it first, the farm's other Macs asked again: fake is busy: "
                                    "fake did not take it"])
         self.assertIsNone(lane_wait.current(self.path)["probes"])
-        # Reached and busy, the lane still queued here: the status says the second Mac is busy, and no probe count.
+        # Reached and busy, the lane still queued here: the status says another Mac is busy, and no probe count.
         lane_wait.running()
         offered, said = self.offer(), []
         def admit(seconds):
@@ -331,14 +331,14 @@ class Waits(Named):
                          f"last 40 s ago), and is asked again within a minute: {slow.problem}")
         self.assertIn("the last 100 s ago", lane_wait.words(record, at=1100.0))
 
-    def test_a_second_mac_that_can_no_longer_take_it_leaves_this_mac_alone(self):
+    def test_a_farm_mac_that_can_no_longer_take_it_leaves_this_mac_alone(self):
         offered = self.offer()
         with patch.object(remote, "reachable", side_effect=[remote.Unavailable("names a device")]), \
                 contextlib.redirect_stderr(StringIO()):
             self.assertIsNone(offered.again())
         self.assertEqual(self.said(), "this Mac alone, as another Mac cannot take it: names a device")
 
-    def test_the_second_mac_taking_it_after_all_clears_the_wait(self):
+    def test_the_farm_mac_taking_it_after_all_clears_the_wait(self):
         """The cleared-wait case for a wait that crossed Macs."""
         lane_wait.waiting(lane_wait.OVERFLOW, "busy")
         lane_wait.relayed(json.dumps({"kind": None, "reason": None}).encode(), "fake")
@@ -360,7 +360,7 @@ class Waits(Named):
     def test_a_foreground_someone_holds_is_recorded(self):
         record = Mock()
         record.entry.return_value = {"ownerChatID": "s-2", "purpose": "voiceover", "expectedReleaseBy": "soon"}
-        with patch.object(foreground, "second_mac", return_value=True), \
+        with patch.object(foreground, "farm_mac", return_value=True), \
                 patch.object(foreground.reservations, "condition", return_value="held"), \
                 patch.object(foreground.offload_host, "mac_name", return_value="here"), self.assertRaises(TimeoutError):
             with foreground.slot("gate", timeout=0, record=record, ready=lambda: [], said=lambda text: None):
@@ -369,7 +369,7 @@ class Waits(Named):
 
 
 class Relay(unittest.TestCase):
-    """offload_host, which runs alone on the second Mac and so cannot import lane_wait, sending the record back."""
+    """offload_host, which runs alone on another Mac and so cannot import lane_wait, sending the record back."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -440,7 +440,7 @@ class Relay(unittest.TestCase):
         self.assertEqual(len(frames), 2)
 
     def test_a_wait_left_as_the_step_ends_is_not_sent_as_over(self):
-        """A run on the second Mac that declined has exited with its wait recorded: a wait that goes on across
+        """A run on another Mac that declined has exited with its wait recorded: a wait that goes on across
         offers keeps its start, so the end of the step clears nothing (the test above is its control)."""
         frames = []
         done = Mock()

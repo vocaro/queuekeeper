@@ -4,7 +4,7 @@ The release gate's device pass (the toolkit's doc/guides/releasing.md, Two gates
 queuekeeper.json's `release.lanes`, whose command is this one, or a project script that builds first and
 then calls run() from Python. `qk run LANE` admits it and writes its receipt, so `eng release` finds a pass
 of it at the commit as it finds any other lane's (release.lane_passed). The lane is heavy and says
-`"here"`: physical devices are reserved in this Mac's device record only, and the second Mac's defers them.
+`"here"`: physical devices are reserved in this Mac's device record only, and another Mac's defers them.
 
 For each device named, in the order named, the pass:
 
@@ -61,7 +61,7 @@ def passed(results, keys):
 
 
 class Misplaced(RuntimeError):
-    """The pass runs where it can reserve no physical device: on the second Mac, whose record defers them."""
+    """The pass runs where it can reserve no physical device: on another Mac, whose record defers them."""
 
 
 @dataclass

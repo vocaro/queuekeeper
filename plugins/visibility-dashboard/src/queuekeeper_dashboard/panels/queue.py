@@ -101,7 +101,7 @@ def flow(state, gates, now):
         agents.append({"name": f"{len(rest)} more", "waiting": sum(one["waiting"] for one in rest),
                        "testing": sum(one["testing"] for one in rest), "more": True})
     plain = lambda name: re.sub(r"^the ", "", str(name or "")).split(" (", 1)[0]
-    # A gate's Mac is this Mac, or the farm's Mac its record names by its SSH destination (lane_wait.second_mac).
+    # A gate's Mac is this Mac, or the farm's Mac its record names by its SSH destination (lane_wait.farm_mac).
     on = lambda found, mac: (lane_wait.host_of(found["mac"]) == mac["ssh"] if mac.get("ssh") and lane_wait.host_of(found["mac"])
                              else plain(found["mac"]) == plain(mac["name"]))
     farm = [{**mac, "gates": [role for role, found in gates if found.get("mac") and on(found, mac)]} for mac in macs()]
@@ -145,7 +145,7 @@ def health_of(repository, state):
             from queuekeeper import farm as macs_of, resources
             macs = macs_of.active()
             for mac in macs:
-                readings.append({"name": lane_wait.second_mac(mac["ssh"]),
+                readings.append({"name": lane_wait.farm_mac(mac["ssh"]),
                                  "reading": detail.get(resources.farm_role(mac, len(macs))), "readAt": at})
     return health.assess(state, repository.events(), readings=readings, record=record, findings=findings(repository))
 

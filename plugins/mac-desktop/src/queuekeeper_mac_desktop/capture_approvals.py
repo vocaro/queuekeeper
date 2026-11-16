@@ -17,7 +17,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-# The second Mac reads them with its system Python, before the toolkit is checked out there.
+# Another Mac reads them with its system Python, before the toolkit is checked out there.
 from queuekeeper.offload_host import CAPTURE_RUNNERS as RUNNERS, screen_capture_approvals as lapses
 
 

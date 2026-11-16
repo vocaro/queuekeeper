@@ -650,7 +650,7 @@ class CommandTests(unittest.TestCase):
                 "namespace": {"shared": True}, "limits": {"slots": 3, "slotsMax": 4}, "slots": [], "model": {"holder": None},
                 "holders": [], "unattributed": [], "waiters": [], **fields}
 
-    def test_an_unreachable_second_mac_is_unknown_beside_this_macs_reading(self):
+    def test_an_unreachable_farm_mac_is_unknown_beside_this_macs_reading(self):
         def unreachable(host, budget):
             self.assertLessEqual(budget, remote.ADMISSIONS_BUDGET)
             raise remote.Unreachable(f"{host} did not answer in {budget:g}s", "wake it")
@@ -666,7 +666,7 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("build-host: unknown: build-host did not answer") for line in lines))
         self.assertIn("  holders: none", lines)
 
-    def test_no_second_mac_configured_is_no_failure_and_here_reads_this_mac_alone(self):
+    def test_no_farm_mac_configured_is_no_failure_and_here_reads_this_mac_alone(self):
         asked = []
         found = resources.admissions_now(read_here=self.reading, read_there=lambda *_: asked.append(1),
                                          macs=lambda: [])

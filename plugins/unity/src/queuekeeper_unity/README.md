@@ -54,7 +54,7 @@ with the [Mac hardware plugin](../mac_hardware/README.md), which keeps it on a M
 
 ## Doctor, disk and host
 
-- `qk doctor` warns when the pinned editor is missing on this Mac or the second Mac, when
+- `qk doctor` warns when the pinned editor is missing on this Mac or another Mac, when
   Unity Hub is signed out on this Mac, when a lane passes `-nographics`, and when there is no Unity
   project where the project says.
 - `qk disk` lists `Library/`, `Temp/` and `Logs/` in every checkout of the project. They
@@ -153,12 +153,12 @@ failed. `closed` and `run` otherwise exit with their command's own status.
   through that package. An editor on a project without it is never counted as playing. The reply's
   form was not read from a live editor when this was written (2026-11-12): the plugin looks for
   `playMode` anywhere in it.
-- **The second Mac's Hub sign-in is not checked.** Over SSH, Unity's command may not read the
+- **Another Mac's Hub sign-in is not checked.** Over SSH, Unity's command may not read the
   keychain that holds the session. A run on a Mac that is not signed in ends unmeasured, by its log.
 - **Running many gates in one editor** is not here. vocaro/mpm's shared gate runner needs a Unity
   package for its C# half, and stays there until a second Unity project needs it
   ([issue 6](https://github.com/vocaro/queuekeeper/issues/6)).
-- **Whether a batch run with a graphics device works over SSH** on the second Mac, or needs an
+- **Whether a batch run with a graphics device works over SSH** on another Mac, or needs an
   unlocked screen, is not tested.
 
 The shared-host guide's [Unity editors](../../../../doc/guides/shared-host.md#unity-editors) section

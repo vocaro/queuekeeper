@@ -6,7 +6,7 @@ vocaro-engineering#135), which a landing prints after its result and `doctor` gi
   latency beside it, its slowest parts and how many loaded runs it left out;
 - and, from doctor alone, a direct-main gate with no budget, a gate that takes a physical device (not one whose
   --device options only name simulator types for `qk simulator-tests` or `qk simulator-pool`, vocaro/queuekeeper#113),
-  and a device pass's lane that would go to the second Mac.
+  and a device pass's lane that would go to another Mac.
 
 A project's own tooling adds what else a landing warns of, such as a release gate's commit limit
 (extensions.LANDING_WARNINGS).
@@ -218,7 +218,7 @@ def passes_devices(command):
 
 
 def misplaced_passes(config):
-    """The lanes that run a device pass and would go to the second Mac, whose device record defers physical
+    """The lanes that run a device pass and would go to another Mac, whose device record defers physical
     devices to this Mac, so the pass refuses there: an admitted lane, or group, without "here"."""
     lanes = config.get("lanes", {})
     found = []
@@ -230,7 +230,7 @@ def misplaced_passes(config):
 
 def doctor_warnings(config):
     """qk doctor's own: a direct-main gate with no budget, a gate that takes a physical device, and a device
-    pass's lane that would go to the second Mac."""
+    pass's lane that would go to another Mac."""
     lanes = config.get("lanes", {})
     warnings = [f"{name} runs a device pass with no \"here\", so qk run sends it to another Mac, whose device "
                 "record defers physical devices to this Mac: give it \"here\": \"a physical device, reserved in "

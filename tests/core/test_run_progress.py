@@ -178,7 +178,7 @@ class Command(Folder):
         self.assertEqual(status, 1)
         self.assertIn(f"no run kept under {self.root / run_progress.RUNS}", said)
 
-    def test_a_run_on_the_second_mac_is_read_from_its_output_here(self):
+    def test_a_run_on_the_farm_mac_is_read_from_its_output_here(self):
         folder = run_progress.new_folder()
         run_progress.write(folder / run_progress.RECORD, run_progress.started_record(["qk", "unittest", "-s", "tests"]))
         (folder / run_progress.OUTPUT).write_text("progress: 9 tests in 3 processes, 2 at a time\n"

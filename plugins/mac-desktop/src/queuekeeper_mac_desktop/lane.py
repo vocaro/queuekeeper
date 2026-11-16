@@ -1,4 +1,4 @@
-"""What the Mac desktop extension does around a lane's run and an admitted command's: the second Mac's foreground it
+"""What the Mac desktop extension does around a lane's run and an admitted command's: another Mac's foreground it
 holds, and the crash-report alerts and notifications it clears. The core's lane runner calls these through
 queuekeeper.extensions.FOREGROUND."""
 import os
@@ -16,13 +16,13 @@ def this_mac():
 
 class Foreground(extensions.Foreground):
     def foreground_mac(self):
-        return foreground.second_mac()
+        return foreground.farm_mac()
 
     def require_foreground(self):
         reservations.require_foreground(os.environ.get(reservations.OWNER))
 
     def foreground_held(self, stack, name, label, timeout, expected=None, again=None):
-        """None once the second Mac's foreground is held for the work label names, entered in stack; or BUSY, after
+        """None once another Mac's foreground is held for the work label names, entered in stack; or BUSY, after
         saying so, when the wait for it ran out, as admission's does (vocaro-engineering#297). Nothing ran, and the
         TimeoutError raised, an OSError, would be queuekeeper's own error, exit 2, which the merge queue counts as a
         failure. Only entering is caught: a release that fails once the work has run does not make the work not run.
@@ -48,7 +48,7 @@ class Foreground(extensions.Foreground):
             return lane_results.UNMEASURED
 
     def cleared_notifications(self, receipt):
-        """None once no Notification Center window is over the second Mac's screen, queuekeeper having closed the
+        """None once no Notification Center window is over another Mac's screen, queuekeeper having closed the
         notifications of any that was, under the foreground the run holds; or UNMEASURED, with nothing run, naming
         a window it could not clear (notification_center.py). The receipt says what was found and closed, never
         what a notification said."""
@@ -76,7 +76,7 @@ def register():
     extensions.provide("FOREGROUND", Foreground())
     # A foreground run whose command died left crash-report dialogs off; the next command puts them back.
     if crash_alerts.recover not in extensions.RECOVER: extensions.RECOVER.append(crash_alerts.recover)
-    # A run sent to the second Mac unlocks its login keychain there, for its own session, before its command.
+    # A run sent to another Mac unlocks its login keychain there, for its own session, before its command.
     if keychain.unlock_run not in extensions.PREPARE_LANE: extensions.PREPARE_LANE.append(keychain.unlock_run)
     extensions.PARSED_COMMANDS.update({
         "keychain": ("before the owner unlocks a keychain, say which Mac's keychain the work needs and print commands "

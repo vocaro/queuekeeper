@@ -1,13 +1,13 @@
 # Foreground runs
 
 How Queuekeeper takes a Mac's foreground for a lane that needs its screen, such as Mac VoiceOver or Mac
-XCUITest: setting the second Mac up for it, running and waiting, and the guards that clear crash alerts and
+XCUITest: setting another Mac up for it, running and waiting, and the guards that clear crash alerts and
 Notification Center windows. Its limits, what counts as evidence and how to batch sessions are in the
 toolkit's [second Mac foreground](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md) guide.
 
-## Setting up the second Mac's foreground
+## Setting up another Mac's foreground
 
-A command Queuekeeper runs on the second Mac starts over SSH. It runs in an audit session of its own,
+A command Queuekeeper runs on another Mac starts over SSH. It runs in an audit session of its own,
 yet the window server gives it the console user's session
 ([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)). Foreground work there needs
 settings of the owner's Mac that the hosted workflow once made on each disposable runner. They
@@ -26,7 +26,7 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
 2. **An unlocked screen that stays so.** In System Settings, Lock Screen: the screen saver and
    turning the display off never, and no password after either. A locked screen puts the login
    window in front, which a key or VoiceOver's cursor then reaches instead of the app. On
-   2026-10-30 the second Mac had the login window in front at one look and Safari at another.
+   2026-10-30 another Mac had the login window in front at one look and Safari at another.
    Waking the display is a run's own: an admitted test run may hold `caffeinate -u` and then
    `caffeinate -d` ([background Mac testing](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md)), but nothing unlocks
    a screen.
@@ -41,7 +41,7 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
    (`com.apple.systemevents`; add `/System/Library/CoreServices/System Events.app` if it is not
    listed). System Events posts the keys a run sends through it, and posting them needs its own
    grant; the wrapper's does not cover it. Without it, the first key raises "“System Events”
-   would like to control this Mac and access your data." on the second Mac's screen, from
+   would like to control this Mac and access your data." on another Mac's screen, from
    `universalAccessAuthWarn`. That is the Accessibility prompt, not an Automation one. On
    2026-11-12 (macOS 27.2 26B123) System Events asked for `kTCCServicePostEvent` at the first key
    over SSH, tccd denied it and raised the prompt, and foreground runs stopped on that alert,
@@ -63,7 +63,7 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
 4. **Screen recording for commands started over SSH.** Add `sshd-keygen-wrapper` in Privacy &
    Security, Screen & System Audio Recording too, in its Screen Recording list, not System Audio
    Recording Only (anchor `Privacy_ScreenCapture`). A run's screenshots use `screencapture`, and
-   `CGPreflightScreenCaptureAccess()` was false for such a command on the second Mac
+   `CGPreflightScreenCaptureAccess()` was false for such a command on another Mac
    (2026-10-30). Whether a capture without it fails, captures only the desktop or raises a prompt
    that takes the focus mid-session is unmeasured; a preflight is not a captured bitmap either
    ([capturing a background window](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md#capturing-a-background-window)).
@@ -71,7 +71,7 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
    met a system dialog in the middle: "“com.apple.sshd-session” is requesting to bypass the system
    private window picker and directly access your screen and audio", which took the focus and
    stopped it. That is the direct-capture approval described next, which the Screen Recording list
-   and the preflight do not cover. The second Mac's record holds it under
+   and the preflight do not cover. Another Mac's record holds it under
    `/usr/libexec/sshd-keygen-wrapper`, last prompted 2026-10-30 18:36 UTC, the time of that
    session, and lapsing 2026-11-29, so a command over SSH that captures after that date meets the
    prompt again. Whether adding `/usr/libexec/sshd-session` to the Screen Recording list changes
@@ -81,8 +81,8 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
    bypass the system private window picker and directly access your screen and audio", is
    separate from the Screen Recording list and the preflight: macOS records each Allow in
    `~/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist`, keyed by
-   the app's file URL (or a bundle ID for some apps), and asks again for any other path. On the
-   second Mac (macOS 27.2 26B123, 2026-11-06) BreezEPUB's XCTest runner had eleven entries, one
+   the app's file URL (or a bundle ID for some apps), and asks again for any other path. On another
+   Mac (macOS 27.2 26B123, 2026-11-06) BreezEPUB's XCTest runner had eleven entries, one
    for each checkout slot and derived-data folder it had been launched from. One path kept its
    approval across 452 captures and many clean, re-signed rebuilds, so the signature and CDHash
    do not matter, and `CGPreflightScreenCaptureAccess()` returning true does not keep the prompt
@@ -104,39 +104,39 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
    `com.apple.applicationaccess` profile (macOS 15.1 and later). The profile has to come from
    device-enrolled MDM; it cannot be installed by hand or through User Enrollment
    ([Apple's schema](https://github.com/apple/device-management/blob/release/mdm/profiles/com.apple.applicationaccess.yaml)).
-   The second Mac has no MDM, and gets none: the owner allows each stable path again when its
+   Another Mac has no MDM, and gets none: the owner allows each stable path again when its
    30 days lapse, about once a month, rather than run MDM (owner's decision, 2026-11-06). A run
    that meets the prompt stops unmeasured, as before; do not set up MDM or ask him about it again.
    `qk remote foreground` lists when each stable runner path's approval and
    `sshd-keygen-wrapper`'s lapse, or that they lapsed, read from that plist; a lapse does not
    change its verdict, since only a capture meets the prompt and only the owner answers it.
 5. **XCTest's automation mode without authentication.**
-   `sudo automationmodetool enable-automationmode-without-authentication`; the second Mac had it
+   `sudo automationmodetool enable-automationmode-without-authentication`; another Mac had it
    on 2026-10-30.
 6. **No VoiceOver welcome dialog.**
    `defaults write com.apple.VoiceOverTraining doNotShowSplashScreen -bool true`. A Mac that has
    never run VoiceOver opens the dialog first (hosted runner, `xcode-27` image, macOS 27.0.1,
-   October 2026). The second Mac had never run VoiceOver on 2026-10-30.
+   October 2026). Another Mac had never run VoiceOver on 2026-10-30.
 7. **No Dictation offer.** `defaults write com.apple.HIToolbox AppleDictationAutoEnable -int 0`.
    Every VoiceOver command presses Control, and after about four of them "Do you want to enable
    Dictation?" took the VoiceOver cursor (hosted runner, same image).
-   On 2026-11-05, with `qk remote foreground` reporting the second Mac ready, a Dictation prompt
+   On 2026-11-05, with `qk remote foreground` reporting another Mac ready, a Dictation prompt
    asking for the owner's password appeared there during a run of menu sessions, keys sent every
    5 s. A session never answers it: the owner cancels it, which keeps Dictation off. Its cause was
    not confirmed; the sessions' own transcripts did not name it.
 
-The hosted runner was prepared in other ways too, which the second Mac is not:
+The hosted runner was prepared in other ways too, which another Mac is not:
 
 - XCTest's "Automation Running" banner is a system launch agent with `KeepAlive` while
   `/var/db/com.apple.dt.automationmode/automation-enabled` exists, and with
   `EnablePressuredExit`. On the hosted image it was killed and restarted about every ten seconds
   during a UI test, and VoiceOver moved to an instance that survived, which lost three sessions
   of seven; `launchctl bootout` unloaded it there only because the image ran with System
-  Integrity Protection disabled. The second Mac has it enabled (2026-10-30), where bootout fails
+  Integrity Protection disabled. Another Mac has it enabled (2026-10-30), where bootout fails
   ("Operation not permitted while System Integrity Protection is engaged") and changes nothing.
   The banner stays: stop a session as soon as VoiceOver names it
-  ([speech capture](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#speech-capture-and-the-key-driver)). It restarts on the
-  second Mac as it did on the image: in EPUBLib's runs there on 2026-10-30 (macOS 27.2 26B123) the
+  ([speech capture](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#speech-capture-and-the-key-driver)). It restarts on another
+  Mac as it did on the image: in EPUBLib's runs there on 2026-10-30 (macOS 27.2 26B123) the
   kernel killed it for its per-process memory limit, 15 MB (`memorystatus: killing_specific_process
   ... per-process-limit`, with over 3 million pages free), about every 10 s, 20 starts in one
   run of two sessions, so a quiet host would not keep it. VoiceOver moved to a new instance in two
@@ -148,12 +148,12 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   transcript. A session the banner stopped is unmeasured, never passed or failed.
 - The hosted runner's 1024 × 768 screen was set to 1920 × 1080 with `displayplacer`, because it
   held a window to 1024 × 674 and an accessibility resize to 1100 points reported success
-  without resizing. The second Mac's screen is its own built-in display (3456 × 2234 Retina,
+  without resizing. Another Mac's screen is its own built-in display (3456 × 2234 Retina,
   2026-10-30), whose resolution is the owner's setting. Record the screen's bounds with every run
   and take every boundary from the session's own observer state.
 - Builds were signed ad hoc, `CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=`, needing no team,
-  certificate or secret, and the image's own privacy grants were enough for the UI test. On the
-  second Mac an ad hoc runner is unmeasured. Signing with a team needs its keychain in a GUI
+  certificate or secret, and the image's own privacy grants were enough for the UI test. On another
+  Mac an ad hoc runner is unmeasured. Signing with a team needs its keychain in a GUI
   session, which an SSH command does not reach
   ([keychains on the right Mac](shared-host.md#keychains-on-the-right-mac)).
 - Read actual on/off state with the canonical public AppKit getter under the foreground lease
@@ -164,22 +164,22 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
 ## Running foreground work
 
 - A project keeps its foreground work in a lane marked `"foreground": true`, with a heavy or
-  exclusive resource. `qk run LANE [-- ARGUMENTS]` sends it to the second Mac, uncommitted work
+  exclusive resource. `qk run LANE [-- ARGUMENTS]` sends it to another Mac, uncommitted work
   as a snapshot commit, as any lane goes ([how a run reaches the second
-  Mac](shared-host.md#how-a-run-reaches-the-second-mac)), and `qk remote run LANE` does the
-  same. It never falls back to this Mac: a second Mac that is not configured, cannot be reached
+  Mac](shared-host.md#how-a-run-reaches-another-mac)), and `qk remote run LANE` does the
+  same. It never falls back to this Mac: another Mac that is not configured, cannot be reached
   or is not ready stops the lane, with what the owner can change.
-- A stop is not the end of the work. When the second Mac cannot be reached, ask the owner for a
+- A stop is not the end of the work. When another Mac cannot be reached, ask the owner for a
   window on [this Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md#this-macs-foreground), saying what would run and for how
   long, rather than ending the turn on the stop; Queuekeeper's message names the command for the window.
-  A misconfigured or unready second Mac stays the owner's to fix unless the owner offers one.
-- `qk remote admit --foreground -- COMMAND` runs one command under the second Mac's foreground
+  A misconfigured or unready Mac stays the owner's to fix unless the owner offers one.
+- `qk remote admit --foreground -- COMMAND` runs one command under another Mac's foreground
   and its heavy-work admission, for work no lane holds; `--exclusive` with it holds the whole
-  host for a timing measurement. On the second Mac itself, `qk admit --foreground -- COMMAND`
-  holds them the same way. `qk admit` never sends foreground work to the other Mac: it runs where its foreground is held.
-- The foreground is the `mac-foreground` entry of the second Mac's own
+  host for a timing measurement. On another Mac itself, `qk admit --foreground -- COMMAND`
+  holds them the same way. `qk admit` never sends foreground work to another Mac: it runs where its foreground is held.
+- The foreground is the `mac-foreground` entry of another Mac's own
   [device record](shared-host.md#device-reservations), whose deferral of physical devices to
-  this Mac's record marks it as the second Mac's. Queuekeeper reserves it for the run, recording no
+  this Mac's record marks it as another Mac's. Queuekeeper reserves it for the run, recording no
   approval (vocaro-engineering#207), naming the reservation `queuekeeper PID on MAC`, records its own process as the entry's active run,
   and sets `QUEUEKEEPER_DEVICE_OWNER` for the work, so a driver's `devices check` before each key
   passes as on this Mac ([attended Mac sessions](shared-host.md#attended-mac-sessions)). The
@@ -193,16 +193,16 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
 - Put arguments a session needs after `--`: the lane's command receives them, such as session
   settings as `KEY=VALUE` words that a project's session runner reads. Check a step list here
   first with the project's own check, such as `scripts/run-voiceover-sessions.py --check`; the
-  lane checks it again on the second Mac, but only after the wait for the foreground.
+  lane checks it again on another Mac, but only after the wait for the foreground.
 - A lane's command writes what must come back, transcripts among it, in its results' `results/`,
   whose absolute path `qk run` gives it in `QUEUEKEEPER_RESULTS_DIR`: `.build/queuekeeper/LANE/results/`
-  on the Mac that runs it. However the run ends, those files come back from the second Mac into
+  on the Mac that runs it. However the run ends, those files come back from another Mac into
   `.build/queuekeeper/remote/LANE/results/` here, beside the run's log and receipt. Every run of a
-  lane, on either Mac, begins with that `results/` empty, so a later run that writes none keeps
+  lane, on any Mac, begins with that `results/` empty, so a later run that writes none keeps
   none an earlier run left. Inside a lane group, each lane's `QUEUEKEEPER_RESULTS_DIR` is
   `.build/queuekeeper/GROUP/results/LANE/`, which comes back with the group's results, beside its
   lanes' logs and receipts. A command that names a fixed path instead, such as
-  `.build/queuekeeper/LANE/results`, leaves a group's files on the second Mac: read the variable.
+  `.build/queuekeeper/LANE/results`, leaves a group's files on another Mac: read the variable.
 - `qk remote admit` sets no `QUEUEKEEPER_RESULTS_DIR` and brings no files back, and what its command
   writes inside the checkout is gone by the next look (2026-11-05). Write what you need outside
   the checkout, such as `~/Development/queuekeeper-farm/NAME/`, and copy it with
@@ -210,7 +210,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
 
 ## Waiting for the foreground
 
-- One run holds the second Mac's foreground at a time. A run that finds it held says once who
+- One run holds another Mac's foreground at a time. A run that finds it held says once who
   holds it, for what and until when expected, looks again every 10 s, and takes it as soon as it
   is released, for up to the 5,400 s that `qk run` waits for admission; then it ends with
   nothing run. A canceled waiter checks its stop signal before each reservation attempt, at
@@ -233,7 +233,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   second Mac is a defect to fix in its timing, not a reason for exclusive admission.
 - The entry outlives a run only as an orphan: a run whose Queuekeeper process died leaves its active run
   recorded, and every later run stops on it, naming it and the recovery command, until attended
-  recovery on the second Mac confirms its work stopped
+  recovery on another Mac confirms its work stopped
   ([recovering the foreground](#recovering-the-foreground)). A deadline releases nothing.
 - VoiceOver on is a valid initial state, not evidence that a previous run failed. The owner
   authorized automatic capture, temporary off for quiet tests, and exact restoration under the
@@ -246,10 +246,10 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   VoiceOver or ask the owner to turn it off.
 - Every query and Command-F5 rechecks the exact lease. Initial unreadable state refuses without
   changing anything. Every bound stretches with the one-minute load average per core, at most
-  `state.STRETCH_LIMIT`, 24, times: on 2026-11-03, at loads near 217 on the second Mac, a fixed
+  `state.STRETCH_LIMIT`, 24, times: on 2026-11-03, at loads near 217 on another Mac, a fixed
   5 s Command-F5 timed out and VoiceOver came on after it (#137). A load under one per core while
   the CPU's busy share, as admission reads it, is 95% or more is doubted, and stretches by the
-  limit, as a load that cannot be read does: on 2026-11-12 the second Mac's `getloadavg` fell
+  limit, as a load that cannot be read does: on 2026-11-12 another Mac's `getloadavg` fell
   from 951 to 307 in 27 s and rose from 7.45 to 250 in 12 s, each time with the CPU 99 to 100%
   busy, and a Command-F5 whose bound had stretched to only 5 s ended `KEY_LATE` while the load
   around it was 490 to 630 (vocaro/queuekeeper#43). A failed transition's error ends with the
@@ -293,7 +293,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
   before each step with `guard.check_banner` and exits `guard.BANNER_STOP`, 123, when it names the
   banner, and the session runner runs each session through `guard.run_again`, at most
   `guard.BANNER_ATTEMPTS` times while the run's time allows, keeping every stopped attempt's
-  transcript ([setting up](#setting-up-the-second-macs-foreground)). A runner that keeps one
+  transcript ([setting up](#setting-up-another-macs-foreground)). A runner that keeps one
   folder per session passes `before_again`, which sets the stopped attempt aside before the next
   one starts and returns where it was kept.
 - Build before the screen when the build is long: a lane holds the foreground for its whole
@@ -304,7 +304,7 @@ The hosted runner was prepared in other ways too, which the second Mac is not:
 
 An uncertain or orphaned `mac-foreground` entry needs attended recovery, which is the owner's
 decision, except a session's unverified VoiceOver restoration, which the live run's own runner
-may recover once ([waiting for the foreground](#waiting-for-the-foreground)). On the second Mac, once the run's work has stopped:
+may recover once ([waiting for the foreground](#waiting-for-the-foreground)). On another Mac, once the run's work has stopped:
 
 1. Put VoiceOver back in the state the run's `host.txt` recorded at its start, with Command-F5.
    VoiceOver quit through AppleScript leaves `com.apple.universalaccess voiceOverOnOffKey` at 1,
@@ -316,14 +316,14 @@ may recover once ([waiting for the foreground](#waiting-for-the-foreground)). On
    mac-foreground` prints and the refusal names: `qk devices recover mac-foreground --by SESSION
    --revision N --verified "WHAT WAS CHECKED"`. The refusal gives the command in full, as `python3
    ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover …`, which runs
-   from any folder in a terminal on the second Mac; from another Mac, add `--host` and the second Mac's SSH
+   from any folder in a terminal on another Mac; from another Mac, add `--host` and another Mac's SSH
    name after `recover`, which runs it in that Mac's login shell, where a command given to `ssh` itself
    finds a `python3` too old to start `qk` (vocaro/queuekeeper#167).
 
 ## Apps a run opened
 
 A foreground run quits every app it opened before it releases the screen. On 2026-11-12 an EPUBLib
-`voiceover-mac` run that opened Safari for a MathML comparison released the second Mac's foreground
+`voiceover-mac` run that opened Safari for a MathML comparison released another Mac's foreground
 with Safari's window still in front; 6 of the next 7 foreground runs met it, and a Mac VoiceOver
 session read it into its transcript ([EPUBLib#1034](https://github.com/vocaro/EPUBLib/issues/1034)).
 A driver still quits what it opened as soon as it is done with it, as EPUBLib's runner now quits its
@@ -334,7 +334,7 @@ Safari after the last session; Queuekeeper's quit is the net under it
   running, those with a Dock icon, through AppKit's `NSWorkspace.runningApplications`. After the
   run's command and its guards have ended, and only while the `mac-foreground` lease is still the
   run's, it reads them again. An app running at the first look is never touched, whoever opened it.
-- **What is the run's, on the second Mac.** The second Mac is used only for file serving and build
+- **What is the run's, on another Mac.** Another Mac is used only for file serving and build
   hosting, not as a workstation, and a run takes its whole foreground without asking (owner's
   decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207). So there a new app is the run's when
   it is installed in an Applications folder (`/Applications`, `/System/Applications`,
@@ -343,10 +343,10 @@ Safari after the last session; Queuekeeper's quit is the net under it
   `qk devices update mac-foreground --launched BUNDLE`.
 - **What is the run's, on any other Mac.** That decision does not reach this Mac, the owner's
   workstation, where he may open Safari or Mail while a run holds the screen. A Mac is the second
-  Mac when its device record defers physical devices to another Mac's (`foreground.second_mac`),
+  Mac when its device record defers physical devices to another Mac's (`foreground.farm_mac`),
   never by its name. On any other, only an app the run is shown to own is quit: one built in the
   run's checkout or recorded with `--launched`. Every other new app is left running and reported
-  as "this Mac is a workstation". `foreground.slot` takes the foreground only on the second Mac
+  as "this Mac is a workstation". `foreground.slot` takes the foreground only on another Mac
   today, so this holds for a record that stopped deferring during a run, and for any later route
   that runs foreground work here.
 - **How it quits one.** It asks the app to quit by its process, as the Dock's Quit does, waits up
@@ -374,12 +374,12 @@ running app, and its tests of quitting use stand-ins for the app list and the qu
 
 An app that quits unexpectedly raises an alert, "APP quit unexpectedly.", in a `UserNotificationCenter`
 window that stays on the screen until someone answers it. A foreground run's clicks under it reach the alert
-instead: in EPUBLib's Mac toolbar runs on the second Mac on 2026-11-02 (macOS 27.2 26B123, Xcode 27.2 27B52),
+instead: in EPUBLib's Mac toolbar runs on another Mac on 2026-11-02 (macOS 27.2 26B123, Xcode 27.2 27B52),
 the clicks on Search hit a MobileCal and then a ColorPickerUIService alert, both a `UserNotificationCenter`
 window at x 734, y 201, 260 × 250, and the runs passed, 10 of 10, only once their windows were moved clear of
 it ([EPUBLib#916](https://github.com/vocaro/EPUBLib/issues/916)). The owner wants these alerts on between runs,
 so Queuekeeper handles them for every foreground run, a `"foreground": true` lane or `qk admit --foreground`, on
-either Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocaro/vocaro-engineering/issues/118)):
+any Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocaro/vocaro-engineering/issues/118)):
 
 - **Off for the run alone.** Once the run holds the foreground and its admission, Queuekeeper reads
   `com.apple.CrashReporter DialogType`, keeps that value in
@@ -393,8 +393,8 @@ either Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocar
   ([outcomes](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md#outcomes-and-results)).
 - **Cleared, never answered.** Before the run starts, and again 2 s after each look ends while it runs, Queuekeeper reads
   the windows of the processes that raise system alerts through System Events, which needs the accessibility
-  grant the second Mac already has for commands started over SSH. The 2 s (`WATCH`) is the wait between looks,
-  not their cadence: a look took under a second on 2026-11-03, but under load on the second Mac on 2026-11-07
+  grant another Mac already has for commands started over SSH. The 2 s (`WATCH`) is the wait between looks,
+  not their cadence: a look took under a second on 2026-11-03, but under load on another Mac on 2026-11-07
   one System Events look took about 17 s and another about 30 s, and every click in that time can go to the
   alert ([vocaro-engineering#225](https://github.com/vocaro/vocaro-engineering/issues/225)). So each look during
   the run first glances at the window list (`CGWindowListCopyWindowInfo`, which gives a window's owner, layer
@@ -420,7 +420,7 @@ either Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocar
 - **A cleared alert, by whose crash and how long it stood.** A crash-report alert Queuekeeper cleared during a run that
   then fails makes the run unmeasured when, and only when, it stood longer than one look and was for a process
   other than the app under test: its clicks may have gone to the alert, as EPUBLib's did under alerts that stood
-  17 s and 30 s on the second Mac on 2026-11-07 (owner's decision, 2026-11-07,
+  17 s and 30 s on another Mac on 2026-11-07 (owner's decision, 2026-11-07,
   [vocaro-engineering#226](https://github.com/vocaro/vocaro-engineering/issues/226)). The process is the one the
   alert's text says quit ("Crasher944 quit unexpectedly."). The app under test is what a lane's `"apps"` names,
   or `qk admit --app NAME` (and `qk remote admit --app NAME`), each as the alert names its process. An alert
@@ -433,18 +433,18 @@ either Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocar
 - **Between steps.** A driver that wants to look between its own steps runs
   `python3 -m queuekeeper_mac_desktop.crash_alerts check` under the foreground it holds: it clears crash reports and
   exits 0, or 3 naming an alert it left, or 1 when the alerts cannot be read.
-- **Reported.** `qk remote foreground` lists every system alert over the second Mac's screen, and says when
+- **Reported.** `qk remote foreground` lists every system alert over another Mac's screen, and says when
   crash-report dialogs are off with no run holding the foreground: left by a run that died, which the next Queuekeeper
   command there puts back, or set by someone else, which the owner puts back with
   `defaults delete com.apple.CrashReporter DialogType`.
 
-On macOS 27.2 (26B123) no setting tried keeps the alert away, so clearing is what keeps a run going. On the
-second Mac on 2026-11-03, a small AppKit app that calls `fatalError` a second after it starts, named apart for
+On macOS 27.2 (26B123) no setting tried keeps the alert away, so clearing is what keeps a run going. On another
+Mac on 2026-11-03, a small AppKit app that calls `fatalError` a second after it starts, named apart for
 each setting, raised its alert about a second after its crash with `DialogType` set to `none`, set to `server`,
 with `UseUNC` set to 1, and with neither set, and macOS wrote its `.ips` each time. In each the run's watcher
 dismissed it with Ignore within a look or two, and a run that began with such an alert left on the screen
 dismissed it and passed. Queuekeeper still turns `DialogType` off for the run, as the owner asked, in case a later macOS
-honors it. Under a load of about 200 on the second Mac, System Events answered slowly enough that a probe of
+honors it. Under a load of about 200 on another Mac, System Events answered slowly enough that a probe of
 four crashes took about half an hour; a look gives up after 60 s and does not hold the run. Until 2026-11-07 a
 first look that could not read the alerts left the whole run unwatched: in one of EPUBLib's crash-alert runs for
 [EPUBLib#944](https://github.com/vocaro/EPUBLib/issues/944) that look failed once, though the runs before and after
@@ -455,7 +455,7 @@ it in the same hour read the alerts, and the alert then stood until the run ende
 A notification that Notification Center presents, a banner or an alert, shows in a window of
 `NotificationCenter`'s own, at Quartz window layer 23, over every app's windows. On this Mac, on macOS 27.2,
 that window covered the whole screen, 1728 × 1117, and was off the screen while no notification showed
-(2026-11-06). On the second Mac on 2026-11-05 one stayed on the screen across two exclusive foreground
+(2026-11-06). On another Mac on 2026-11-05 one stayed on the screen across two exclusive foreground
 admissions, every look of a 60 s retry among them with Finder in front, so a BreezEPUB benchmark's preflight
 never launched it until the owner closed it by hand
 ([BreezEPUB#15](https://github.com/vocaro/BreezEPUB/issues/15#issuecomment-6680023845)). Crash-report alerts are
@@ -467,11 +467,11 @@ never launched it until the owner closed it by hand
   when it is at layer 23, visible and of some extent, and its owner process runs
   `/System/Library/CoreServices/NotificationCenter.app/Contents/MacOS/NotificationCenter`: the list's owner name,
   "Notification Center" on 27.2, does not establish it alone. Every other window is left alone.
-- **Closed only under the lease.** Once a run on the second Mac, a `"foreground": true` lane or
+- **Closed only under the lease.** Once a run on another Mac, a `"foreground": true` lane or
   `qk admit --foreground`, holds the foreground, its admission and the crash-report guard, Queuekeeper closes each
   notification such a window presents and looks at the window list again, every 0.5 s for up to 5 s, until the
   window has left the screen, up to three rounds for notifications that show after the last. Only then does the
-  run start. Queuekeeper closes nothing on this Mac, whose notifications are the owner's, nor on the second Mac without
+  run start. Queuekeeper closes nothing on this Mac, whose notifications are the owner's, nor on another Mac without
   the `mac-foreground` lease that `QUEUEKEEPER_DEVICE_OWNER` names: there it refuses.
 - **How it closes one.** Through System Events, it performs the notification's own Close action, the one its
   close button performs, on an element whose subrole is `AXNotificationCenterBanner` or
@@ -483,9 +483,9 @@ never launched it until the owner closed it by hand
   its history and its settings as they were.
 - **Why accessibility, not something without it.** No route without the accessibility grant closes one
   identified notification. Escape goes to the app in front, and quitting `NotificationCenter` acts on every
-  notification it shows rather than an identified one, and is not a close at all. The second Mac already
+  notification it shows rather than an identified one, and is not a close at all. Another Mac already
   grants accessibility to commands started over SSH, which `foreground.slot` checks before it takes the
-  foreground ([setting up](#setting-up-the-second-macs-foreground)); Queuekeeper reads the grant again
+  foreground ([setting up](#setting-up-another-macs-foreground)); Queuekeeper reads the grant again
   (`AXIsProcessTrusted`) before it closes anything, and without it the run is unmeasured, saying so.
 - **Unmeasured, never failed.** A window list it cannot read, a window whose notifications it cannot read or
   close, one it may not close (a stack, a permission request, nothing it knows), or a window still on the screen
@@ -497,7 +497,7 @@ never launched it until the owner closed it by hand
   Mac, runs `qk host notifications --dismiss`, or `python3 -m queuekeeper_mac_desktop.notification_center check`:
   exit 0 once none is left, 3 naming a window left, 1 without the lease.
 
-Checked live on the second Mac (macOS 27.2) on 2026-11-07, under admitted foreground runs:
+Checked live on another Mac (macOS 27.2) on 2026-11-07, under admitted foreground runs:
 
 - **The shape.** A banner showed in `NotificationCenter`'s window at layer 23 covering the whole screen, as an
   `AXGroup` of subrole `AXNotificationCenterBanner` under an `AXScrollArea`, with the actions `AXPress`, `Name:Show
@@ -517,9 +517,9 @@ Checked live on the second Mac (macOS 27.2) on 2026-11-07, under admitted foregr
   notification is no live test there. A banner leaves the screen after about 5 s, sooner than System Events
   can read it on a loaded Mac. A test holds it with the pointer, a mouse-moved event over it (`CGEventPost`),
   and moves the pointer away when it ends, even on failure: a banner held past the test blocks the next run.
-- **Do Not Disturb.** The owner's Focus is shared across his devices, so a change on the second Mac is a change
+- **Do Not Disturb.** The owner's Focus is shared across his devices, so a change on another Mac is a change
   on his iPhone. The **Vocaro Silence Notifications** shortcut run there turns Do Not Disturb on, then fails
-  at Save File, since the second Mac has no iCloud Drive. Read `~/Library/DoNotDisturb/DB/Assertions.json`
+  at Save File, since another Mac has no iCloud Drive. Read `~/Library/DoNotDisturb/DB/Assertions.json`
   before changing Focus: on 2026-11-07 a test that assumed Do Not Disturb was still on turned it on again
   for all his devices, and **Vocaro Restore Notifications** run on this Mac turned it back off.
 

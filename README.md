@@ -49,7 +49,7 @@ commands and configuration details.
 **1. Check that the projects fit.** You need macOS, Python 3.14 or newer, Git, and the tools that
 already build and test each project. Each repository needs a remote named `origin` that can be
 pushed to without a prompt, and must allow changes to land directly on `main`. Queuekeeper does
-not integrate through pull requests. Start with one Mac; you can [add more](doc/getting_started.md#add-a-second-mac)
+not integrate through pull requests. Start with one Mac; you can [add more](doc/getting_started.md#add-another-mac)
 if needed to speed up builds and tests.
 
 **2. Install Queuekeeper once.** In an agent session with access to your development folder, ask:
@@ -208,7 +208,7 @@ its results are valid on. A lane whose output differs by GPU lists its chips, su
 The guides hold the detail, with the measurements and decisions behind each rule:
 
 - [Maintenance](doc/guides/maintenance.md): operating the merge queue, and the legacy spelling check
-- [Shared host](doc/guides/shared-host.md): admission, the second Mac, disk cleanup, device reservations
+- [Shared host](doc/guides/shared-host.md): admission, another Mac, disk cleanup, device reservations
   and process supervision
 - [Lanes](doc/guides/lanes.md): receipts, how tests are counted, compiling first, tests no lane runs,
   the gate's time budget

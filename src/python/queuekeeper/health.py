@@ -6,7 +6,7 @@ stale is unknown, never ok. A definite problem outranks an unknown one, and the 
 unknown. When it cannot tell, it says so and why, and exits UNKNOWN, the agent interface's code for unmeasured, so that
 a script never reads an unknown as healthy.
 
-assess is pure: it judges the readings it is given. gather makes them, reading the second Mac over SSH and the devices
+assess is pure: it judges the readings it is given. gather makes them, reading another Mac over SSH and the devices
 through Xcode, for the command line; the dashboard passes the readings its Farm tab already keeps."""
 import json
 import math
@@ -303,7 +303,7 @@ def changed_at(path):
 
 
 def gather(root):
-    """Read what assess judges, now: the queue, its journal, doctor's findings, each Mac's pressure (the second Mac's
+    """Read what assess judges, now: the queue, its journal, doctor's findings, each Mac's pressure (another Mac's
     over SSH) and the devices."""
     from . import events, extensions, farm, lane_wait, merge_queue, offload_host, remote
     state = merge_queue.snapshot(root)
@@ -317,7 +317,7 @@ def gather(root):
         try: answered = remote.reading_there(host)[0]
         except Exception as error:  # noqa: BLE001 - unknown, never well
             answered = {"error": str(getattr(error, "problem", None) or error)}
-        readings.append({"name": lane_wait.second_mac(host), "reading": answered, "readAt": time.time()})
+        readings.append({"name": lane_wait.farm_mac(host), "reading": answered, "readAt": time.time()})
     try: record = extensions.DEVICES.observations()
     except Exception as error:  # noqa: BLE001
         record = {"error": str(error)}

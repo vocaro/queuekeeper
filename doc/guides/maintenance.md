@@ -61,14 +61,14 @@ about a minute instead of after a full gate and a bisect, in every project witho
 same lane. A project needs no launcher for it, nor for the round's `qk run`: where the checkout has
 no `scripts/qk`, the worker runs the check and `qk run` with the toolkit's own `bin/qk`, and a
 `qk run spelling`, which a check that did not end in time goes through, runs the
-check with the toolkit that runs it, on whichever Mac that is, where the second Mac's is the toolkit
+check with the toolkit that runs it, on whichever Mac that is, where another Mac's is the toolkit
 sent with the lane. On 2026-11-13 apple-engineering's first landing failed in this lane, as `python3`
 could not open the `scripts/qk` that getting started never asked it for
 ([#108](https://github.com/vocaro/queuekeeper/issues/108)). A run that gets no admission or ends unmeasured is a no verdict, as any lane's is, and a
 finding rejects the batch. A project's own `spelling` lane runs in its place, and
 `"queue": {"spelling": false}` on `main` keeps the queue from running the toolkit's for a project
 that cannot pass it yet; the round's log says when the toolkit's ran. The
-lanes therefore go where every lane goes, to whichever Mac has spare capacity for them, the second Mac
+lanes therefore go where every lane goes, to whichever Mac has spare capacity for them, another Mac
 first ([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)), and the round's log says where
 each ran and why; one gate serves the whole batch. Each lane is placed by itself, so the `provision`
 lane may run on one Mac and the gate on the other: `qk run` therefore runs the project's `provision`
@@ -141,10 +141,10 @@ reads the shared checkout: a session's own `queuekeeper`. So a project commit th
 by hand only once that checkout has it.
 
 **A worker whose session ended exits.** macOS denies a worker the local network once the Claude session that
-started it ends, so it could no longer reach the second Mac. Before each round, while a second Mac is configured, the
+started it ends, so it could no longer reach another Mac. Before each round, while another Mac is configured, the
 worker checks for this and, if so, exits, holding nothing, with its entries back in the queue. A gate that finds it
 during a round, by the exit 69 of a lane's `qk run`, which then ran nothing on this Mac, does the same. Its log then
-says `exits, holding nothing, since this worker cannot reach the second Mac`. The next `qk land`, `qk queue wait` or
+says `exits, holding nothing, since this worker cannot reach another Mac`. The next `qk land`, `qk queue wait` or
 `qk queue resume` starts another worker (doc/guides/shared-host.md, Local Network access;
 vocaro-engineering#282, #300).
 
@@ -188,7 +188,7 @@ fast-forward is not either. A session never stashes, resets or edits that checko
 follow.
 
 **Where the queue's checkouts are.** Each queue's pair is in one folder beside the main checkouts and
-outside every repository, laid out as the second Mac lays out a run's (`checkouts/NAME/N/...`):
+outside every repository, laid out as another Mac lays out a run's (`checkouts/NAME/N/...`):
 
 ```
 ~/Development/queuekeeper-workers/NAME/NAME                 the worker's checkout of the project
@@ -197,7 +197,7 @@ outside every repository, laid out as the second Mac lays out a run's (`checkout
 
 So a project file that names the toolkit by a path relative to the checkout, as Pagepour's and
 studywright's `../vocaro-engineering/src/swift/EngineeringTestSupport` do, finds the queue's own copy,
-on this Mac as on the second Mac, with no change to the project. The toolkit's own queue is
+on this Mac as on another Mac, with no change to the project. The toolkit's own queue is
 `queuekeeper-workers/vocaro-engineering/vocaro-engineering`, with the copy its worker runs from beside it,
 `queuekeeper-workers/vocaro-engineering/vocaro-engineering-toolkit`. A folder inside the
 toolkit's checkout was set aside: `git clean -x`, a reclone and the toolkit's own tree-walking checks
@@ -319,7 +319,7 @@ hour later, from `qk queue status`
 `qk queue wait`, prints a line each time its entry's situation changes, such as the round it waits behind or the Mac
 its gate runs on, and a `heartbeat:` line at most every 5 minutes while nothing does, with what `qk queue status`
 shows of that round. On 2026-11-12 a landing printed nothing for 90 minutes, behind a failed round and then in its
-own gate on the second Mac, until the owner asked why
+own gate on another Mac, until the owner asked why
 ([#41](https://github.com/vocaro/queuekeeper/issues/41)). When a batch fails, the oldest half runs next, and so on until one entry fails
 alone; every entry that passes along the way lands.
 
@@ -353,14 +353,14 @@ on main, and `git rebase --skip` passes one it stops at whose change main holds 
 **A bisect's two halves gate at once.** While a bisect goes on, the newer half of its suspects gates
 beside the older half, in a second checkout, `~/Development/queuekeeper-workers/NAME/NAME-beside`, on the same
 `origin/main` (owner's decision, 2026-11-07, [#241](https://github.com/vocaro/vocaro-engineering/issues/241)).
-The older half runs on this Mac (`qk run --here`) and the newer on the second Mac
+The older half runs on this Mac (`qk run --here`) and the newer on another Mac
 (`qk run --offload-only`), which runs it only if it can start it now. Whichever half passes lands,
 so a newer half that passes can land before the older one. When both pass, the older half lands first,
 and the newer one lands on top of it only if its result carries over; otherwise it gates again. When
 both halves fail, the older one is bisected first. The newer half instead waits behind the older one,
 as before, when:
 
-- the second Mac declines it, or gives no verdict;
+- another Mac declines it, or gives no verdict;
 - a lane runs only on this Mac (a `self` lane, or one that says `here`; a light lane is offered as
   every lane is since 2026-11-07);
 - the round is docs-only, ungated or `--front`, or a newer entry was added with an option; or
@@ -377,7 +377,7 @@ stacked: it lands beside the gate on the docs lanes instead (*A docs-only entry 
 gate*, below). Once the batch's final lane has secured admission,
 the worker gates those entries stacked on the batch's tip, in the other checkout and on another Mac. Earlier
 lanes can run on a different Mac, and a dispatch can be declined before admission. In the two-Mac setup, the
-stack runs on this Mac when the final lane runs on the second Mac, and otherwise on the second Mac if it can
+stack runs on this Mac when the final lane runs on another Mac, and otherwise on another Mac if it can
 start now (owner's decision, 2026-11-07,
 [#241](https://github.com/vocaro/vocaro-engineering/issues/241)). The batch's push makes that tip
 `origin/main`, so the next round adopts the stacked gate as its own: it gates on, and its result settles
@@ -386,7 +386,7 @@ canceling its lanes and queuing its entries again:
 
 - the batch fails or gives no verdict;
 - the batch lands at another commit (after a carry-over, or with a `Flaky-test` trailer);
-- the stacked gate gives no verdict, as when the second Mac declines it;
+- the stacked gate gives no verdict, as when another Mac declines it;
 - an entry of it is removed;
 - an entry goes first (`--front`, `--no-gate`, or a pass waiting for its push);
 - main's lanes change;
@@ -414,8 +414,8 @@ of the gate it runs that has left the queue, and then stops that gate's lanes as
 it throws away, on this Mac or the second, which ends the run there and frees its admission. It gates what
 is left of the batch again, with no verdict counted and no hold, and stacks nothing on a batch an entry of
 which has left, since that tip will not land (owner's request,
-[#247](https://github.com/vocaro/vocaro-engineering/issues/247)). On 2026-11-07 a removed entry's gate on the
-second Mac held PDFReflowLib's queue for about 15 more minutes. `qk queue remove` says so of an entry that was
+[#247](https://github.com/vocaro/vocaro-engineering/issues/247)). On 2026-11-07 a removed entry's gate on another
+Mac held PDFReflowLib's queue for about 15 more minutes. `qk queue remove` says so of an entry that was
 testing; under a worker started from a toolkit older than this, it says instead that the gate runs on until
 its lanes end, at most `LANE_LIMIT` a lane, holding the queue until then.
 
@@ -490,8 +490,8 @@ entry is sent back with ends with the load during the failed lane and with the f
 the readings taken while the lane ran, which count the lane's own work, and those taken while it
 waited to start, which are of other work alone and are set against that Mac's busy limit
 ([vocaro/queuekeeper#12](https://github.com/vocaro/queuekeeper/issues/12)). Each is of the Mac the lane's wait record
-names, the second Mac from the moment the lane is sent there, and only those of the Mac the lane ran on are said; the
-dispatch's own record, filed only when it ends, had left a lane on the second Mac with its one reading at the end
+names, another Mac from the moment the lane is sent there, and only those of the Mac the lane ran on are said; the
+dispatch's own record, filed only when it ends, had left a lane on another Mac with its one reading at the end
 ([vocaro/queuekeeper#132](https://github.com/vocaro/queuekeeper/issues/132)). A gate holds the whole
 Mac and loads it heavily by itself, so a high load while it ran is no sign of other work. The tests come from the lane's
 `qk unittest` summary when it has one, and each test's module and what it imports are compared with
@@ -549,7 +549,7 @@ started: the system could not start it, or the interpreter it names, such as `py
 given a first argument that names no file in the checkout. Its receipt's `outcome` is then
 `not-started`, with why under `notStarted`, and its log and summary say "could not start". `python3`
 itself exits 2 for a missing file, as a failure does, so `qk run` reads the file system rather than
-what the interpreter prints. The worker reads the receipt, here or from the second Mac's dispatch,
+what the interpreter prints. The worker reads the receipt, here or from another Mac's dispatch,
 not the status alone, since a lane's own command may exit 127. Such a lane says nothing of the
 commits, and running it again would not start it either, so the worker holds the queue at once for a
 session, with every entry waiting and none sent back or bisected: the session makes the command start,
@@ -566,7 +566,7 @@ arguments: no lane ran, and no commit was tested. The worker holds the queue at 
 as for a lane whose command could not start, with every entry waiting and none sent back or bisected.
 It reads more than the status, since a lane's own command may exit 70: the run must also have left no
 receipt of the lane, which `qk run` writes for every lane whose command it reaches. On this Mac that
-is no `source.json` in the lane's folder since the lane began; on the second Mac, the dispatch's
+is no `source.json` in the lane's folder since the lane began; on another Mac, the dispatch's
 work stage exited 70 and returned no receipt. The hold's reason quotes the error and names the Mac.
 The session brings Queuekeeper and the folders the extensions load from to commits that work
 together on that Mac, or removes the entry whose commits changed what the project loads, and resumes;
@@ -583,8 +583,8 @@ Before it holds, the worker asks whether the batch itself is the cause, since an
 on this Mac, with `--version`, which loads the extensions and runs no lane, so it takes seconds and
 no admission. When Queuekeeper starts without the batch's commits and not with them, the batch is at
 fault: it is bisected and the entry sent back as for any failed lane, and the queue is not held. When
-it starts with neither, no entry is the cause, and the queue holds as above. When the lane ran on the
-second Mac and Queuekeeper starts here with the batch's commits, the fault is in what that Mac holds,
+it starts with neither, no entry is the cause, and the queue holds as above. When the lane ran on another
+Mac and Queuekeeper starts here with the batch's commits, the fault is in what that Mac holds,
 and the queue holds. A start that does not end within 60 seconds (`START_LIMIT`) says nothing, and
 the queue holds. The hold's reason says which of these was found.
 
@@ -592,7 +592,7 @@ the queue holds. The hold's reason says which of these was found.
 access, on which it exits instead of counting the run), 75 (no admission) and 78 (a misconfigured host) say nothing
 about the commits. The worker runs the lanes again, and holds the
 queue, with every entry waiting, once three runs in a row have given no verdict, as it also does for a
-push refused for any reason but a race. On 2026-11-04, 8 of 12 of EPUBLib's gates on the second Mac
+push refused for any reason but a race. On 2026-11-04, 8 of 12 of EPUBLib's gates on another Mac
 gave none, as the simulators' voices were not ready in time
 ([EPUBLib#946](https://github.com/vocaro/EPUBLib/issues/946)), and with a single retry each pair held
 the queue until a person resumed it. A project sets another bound on `main`, as
@@ -655,21 +655,21 @@ default, since PATH does not set it)`, which says whose limit it is and where it
 by its path, the environment, or the default (vocaro/queuekeeper#29). Its log names the
 reason when the wait starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
 looks it took and the first, highest and last one-minute load. A stop request (SIGTERM, SIGINT or SIGHUP)
-ends the wait at its next look, with the entries still waiting. With a second Mac configured, the test
+ends the wait at its next look, with the entries still waiting. With another Mac configured, the test
 reads the Mac the retry could use, not only the one that voided the last run: on 2026-11-07 a wait settled
 build-host for 2304 s, and the retry went to this Mac by first-come admission
 ([#253](https://github.com/vocaro/vocaro-engineering/issues/253)). The Mac is chosen as the run starts, so
-each look reads both Macs' capacity for the lane as `qk run`'s offer does (`remote.retry_macs`, the
-log saying which it reads and why): the second Mac when it has spare capacity for the lane, this Mac when
+each look reads each Mac's capacity for the lane as `qk run`'s offer does (`remote.retry_macs`, the
+log saying which it reads and why): another Mac when it has spare capacity for the lane, this Mac when
 only it has, and both, each of which must settle, when neither has and the lane will go to whichever
 admits it first. A lane that stays on this Mac reads this Mac. The choice is only as good as that reading:
-the second Mac can still decline an offer its capacity allowed, as it did that day, and the retry then
-goes to this Mac unsettled. Without a second Mac to choose, the test reads the Mac the lane ran
-on, since a lane that the second Mac ran left its load there
+another Mac can still decline an offer its capacity allowed, as it did that day, and the retry then
+goes to this Mac unsettled. Without another Mac to choose, the test reads the Mac the lane ran
+on, since a lane that another Mac ran left its load there
 ([#140](https://github.com/vocaro/vocaro-engineering/issues/140)). The worker knows it from the
 lane's dispatch, which `qk run` files under `.build/queuekeeper/remote/.dispatches/LANE/` in the
-queue's checkout: one that started during the run and reached the second Mac, rather than only
-preparing, names it. Each look asks the second Mac over SSH, as `qk doctor` does, for its
+queue's checkout: one that started during the run and reached another Mac, rather than only
+preparing, names it. Each look asks another Mac over SSH, as `qk doctor` does, for its
 CPU busy share, the `HEAVY_BUSY_LIMIT` it sets there (75% by default) and where it sets it, its one-minute
 load, which the log records, and its memory pressure, and judges them as admission does; the log and the hold
 name that Mac, and its limit as that Mac's (`HEAVY_BUSY_LIMIT=90% (build-host's limit, set in PATH)`). A second
@@ -841,8 +841,8 @@ Otherwise, record the failure on that test's issue,
 or file one by the project's labels, before adding the entry again: an entry added again with no
 record leaves the flake nobody's to fix. On 2026-11-05 the fix for
 [EPUBLib#978](https://github.com/vocaro/EPUBLib/issues/978) went through EPUBLib's queue four
-times: once on its own regression test's race, then twice on Mac display checks that ran on the
-second Mac beside another project's gate
+times: once on its own regression test's race, then twice on Mac display checks that ran on another
+Mac beside another project's gate
 ([EPUBLib#875](https://github.com/vocaro/EPUBLib/issues/875),
 [EPUBLib#896](https://github.com/vocaro/EPUBLib/issues/896)), each recorded on its issue, while
 the iOS lane passed every time. The options below are for a fix that cannot wait, not for a flake.
@@ -1051,7 +1051,7 @@ also checks for waiting work at login and every two minutes. After a reboot, `qk
 can start a worker, and `qk queue resume` can clear a hold and start one. After taking
 the queue lock, a worker checks for dispatchers proven gone and requests a stop for each run
 their records identify, including a crashed worker's gate (doc/guides/shared-host.md, How a run
-reaches the second Mac).
+reaches another Mac).
 Whatever a dead worker left testing was never pushed, so the next worker tests it again. A batch
 whose lanes passed is recorded `passed`, with the commit that passed and its base, before its push;
 a hold the push meets, a refusal or a remote out of reach, keeps it so, and the hold's reason says so.
@@ -1069,10 +1069,10 @@ from `origin/main` in its own checkout, and `qk run` there reads each lane from 
 **A deep queue.** `qk queue status` says why entries wait, from `queuekeeper-queue/round.json`, the
 worker's account of its round: whether it bisects, with how many suspects and the size of each
 half; each running gate's lane, the Mac it runs on and how long it has run; what a gate waits for
-and for how long, from the record `qk run` keeps in `.build/queuekeeper/.waits/LANE.json` on either
-Mac (a run on the second Mac sends it back as it changes, and it is cleared on admission), such as
-admission on either Mac behind another project's whole-host gate, an unlocked screen, the second
-Mac's foreground or a second Mac that cannot be reached; a gate stacked on the batch; and a wait for
+and for how long, from the record `qk run` keeps in `.build/queuekeeper/.waits/LANE.json` on any
+Mac (a run on another Mac sends it back as it changes, and it is cleared on admission), such as
+admission on any Mac behind another project's whole-host gate, an unlocked screen, the second
+Mac's foreground or another Mac that cannot be reached; a gate stacked on the batch; and a wait for
 the host to settle after a run with no verdict. The record says only what a lane waits for, never
 how it ended: a wait whose process is gone or that an earlier run left is ignored, and a lane's
 verdict stays its receipt's. A gate held up by a dead or uncertain guard
@@ -1084,9 +1084,9 @@ queue's own doctor acting on it is vocaro-engineering#290. `--json` has the same
 each gate's `waitingSince` and any `stuck` among them. On 2026-11-07,
 with 3 entries testing and 6 queued, that took a dozen commands: a bisect of a spelling failure,
 its older half waiting more than 25 minutes for this Mac behind StudyWright's and BreezEPUB's
-whole-host gates, and the second Mac answering "No route to host". For more, the answers live in
+whole-host gates, and another Mac answering "No route to host". For more, the answers live in
 `queuekeeper-queue/worker.log`, the worker's own log; in each gate's log in `queuekeeper-queue/logs/`, named
-`ROUND-LANE.log`, which `qk queue status` names; and, for a gate the second Mac ran, its full
+`ROUND-LANE.log`, which `qk queue status` names; and, for a gate another Mac ran, its full
 output in the queue checkout's `.build/queuekeeper/remote/.dispatches/LANE/*/run.log`, which the
 gate's log also copies once the lane ends.
 
@@ -1103,7 +1103,7 @@ gates and speculative stacks whose last lane no Mac admitted. Its signals:
 - **refused before running**: a waiting entry whose tree `qk unittest` refuses, as `qk land` now
   refuses before queuing, for an entry queued before that check or by an older toolkit.
 - **no verdict**: two or more gates in a row since the last verdict that printed no `qk unittest`
-  summary or left tests unmeasured, such as a lane at its limit or a second Mac out of reach
+  summary or left tests unmeasured, such as a lane at its limit or another Mac out of reach
   ([#253](https://github.com/vocaro/vocaro-engineering/issues/253),
   [#268](https://github.com/vocaro/vocaro-engineering/issues/268),
   [#282](https://github.com/vocaro/vocaro-engineering/issues/282)).
@@ -1123,7 +1123,7 @@ gates and speculative stacks whose last lane no Mac admitted. Its signals:
   `STUCK_SECONDS`'s: an idle Mac admits within `HEAVY_SETTLE_SECONDS` (30 seconds) of a slot freeing,
   so a quarter hour is no settle and no short lane ahead, and it is already three quarters of the
   20-minute gate goal. The busy share is read as the gate's busy sampler reads it, and the holders as
-  `qk admissions now` reads them, over ssh for a gate that waits for the second Mac. Holders that
+  `qk admissions now` reads them, over ssh for a gate that waits for another Mac. Holders that
   cannot be read are `unknown`, and a holder whose process could not be checked
   ([vocaro/queuekeeper#23](https://github.com/vocaro/queuekeeper/issues/23)) has its CPU use unknown;
   neither is guessed light. A Mac at or above its limit is busy, and its gate's wait is no finding; one
@@ -1140,7 +1140,7 @@ It changes nothing: no entry, no hold, no worker. The worker acts on a refused g
 back the one entry that brings the refusal, and runs the doctor for the reason of the hold it makes
 when the same refusal comes again with no entry to blame (A gate `qk unittest` refused, above; owner's
 decision, 2026-11-08, #290). For the other findings a session acts itself, as each `next:` line says.
-Restarting a worker that died (#287) and moving a no-verdict run to the other Mac are not the doctor's
+Restarting a worker that died (#287) and moving a no-verdict run to another Mac are not the doctor's
 yet.
 
 Use [`qk queue placement`](shared-host.md#check-gate-placement-without-running-a-gate) to see

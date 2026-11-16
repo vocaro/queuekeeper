@@ -287,8 +287,8 @@ class SimulatorTests(Fixture):
         self.assertEqual(items(runtimes=unused, matches=None)["beta"].status, disk.KEPT)
 
 
-    def test_a_runtime_candidate_names_the_second_macs_copy_and_stays_while_that_copy_would_come_back(self):
-        # vocaro-engineering#188 and #123: `qk remote setup --runtimes` keeps both Macs' runtimes alike.
+    def test_a_runtime_candidate_names_the_farm_macs_copy_and_stays_while_that_copy_would_come_back(self):
+        # vocaro-engineering#188 and #123: `qk remote setup --runtimes` keeps each Mac's runtimes alike.
         stamp = lambda days: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(LATER - days * 86400))
         ios = lambda version: f"com.apple.CoreSimulator.SimRuntime.iOS-{version}"
         listing = {"devices": {ios("27-0"): [device("iPhone 17")]}}
@@ -321,7 +321,7 @@ class SimulatorTests(Fixture):
             self.assertIsNone(items[key].command)
             self.assertIn("build-host's runtimes could not be read (it did not answer in 180s)", items[key].reason)
         self.assertEqual(items["release"].status, disk.KEPT)  # the chosen build is untouched
-        # Without a second Mac the reason names none.
+        # Without another Mac the reason names none.
         items = found(None, second=None)
         self.assertEqual(items["beta"].status, disk.CANDIDATE)
         self.assertNotIn("build-host", items["beta"].reason)
@@ -371,7 +371,7 @@ class SimulatorTests(Fixture):
         # A runtime kept for its own reason says only that.
         self.assertNotIn("launch host", found([first, {**second, "state": "Booted"}])["release"].reason)
 
-    def test_the_second_macs_runtimes_are_read_as_eng_remote_reads_them(self):
+    def test_the_farm_macs_runtimes_are_read_as_eng_remote_reads_them(self):
         from queuekeeper import remote
         self.assertIsNone(apple_disk.runtimes_there(None))
         with patch.object(remote, "developer_directory", return_value="/X.app"), \

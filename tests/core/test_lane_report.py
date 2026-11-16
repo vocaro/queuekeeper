@@ -359,7 +359,7 @@ class Summary(unittest.TestCase):
             f"  receipt: {self.lane_dir / 'source.json'}"])
 
     def test_a_dispatched_run_that_timed_out_says_so_and_names_what_it_did_not_finish(self):
-        """The second Mac's supervise line went to the dispatch's output.log alone, and the summary here gave counts
+        """Another Mac's supervise line went to the dispatch's output.log alone, and the summary here gave counts
         that read as a whole run's (vocaro/queuekeeper#37)."""
         runs = self.root / ".build/queuekeeper/remote" / lane_report.remote.DISPATCHES / "gate"
         ran = runs / f"20270115T080000Z-{os.getpid()}"
@@ -423,7 +423,7 @@ class Summary(unittest.TestCase):
                                       "  the last of its output:", "    the build broke",
                                       f"  receipt: {self.lane_dir / 'source.json'}"])
 
-    def test_a_lane_sent_to_the_second_mac_whose_command_refused_its_arguments_says_what_the_command_said(self):
+    def test_a_lane_sent_to_the_farm_mac_whose_command_refused_its_arguments_says_what_the_command_said(self):
         """BreezEPUB's ways-in on 2026-11-13: the dispatch's run.log held the lane script's one line, and the summary
         said only that the log had no test counts and named no failing test (vocaro/queuekeeper#137)."""
         runs = self.root / ".build/queuekeeper/remote" / lane_report.remote.DISPATCHES / "ways-in"
@@ -610,7 +610,7 @@ class Summary(unittest.TestCase):
         self.assertEqual(status, lane_results.UNMEASURED)
         self.assertEqual(stream.getvalue().splitlines()[-1], "qk run lane: unmeasured (exit 3); no tests ran")
 
-    def test_the_second_macs_own_run_leaves_the_summary_to_the_mac_that_sent_it(self):
+    def test_the_farm_macs_own_run_leaves_the_summary_to_the_mac_that_sent_it(self):
         self.configure(lane=self.printing("Ran 1 test in 0.1s\n\nOK"))
         with patch.dict("os.environ", {lane_report.remote.DISPATCHER: "this Mac"}):
             lines = self.qk("lane")[1]
@@ -728,7 +728,7 @@ class Summary(unittest.TestCase):
 
 class RunLoads(unittest.TestCase):
     """The load of the Mac a lane ran on, in its receipt and its summary (vocaro/queuekeeper#133): a lane that failed on
-    the second Mac on 2026-11-13 left it to be read by hand with `ssh build-host uptime`."""
+    another Mac on 2026-11-13 left it to be read by hand with `ssh build-host uptime`."""
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -757,7 +757,7 @@ class RunLoads(unittest.TestCase):
         self.assertEqual(lane_report.load_line({"load": load}, "failed"),
                          "  load: the one-minute load could not be read, and the CPU busy share could not be read")
 
-    def test_the_summary_of_a_lane_sent_to_the_second_mac_gives_that_macs_load_from_its_receipt(self):
+    def test_the_summary_of_a_lane_sent_to_the_farm_mac_gives_that_macs_load_from_its_receipt(self):
         runs = self.root / ".build/queuekeeper/remote" / lane_report.remote.DISPATCHES / "voiceover"
         ran = runs / f"20270115T080000Z-{os.getpid()}"
         ran.mkdir(parents=True)

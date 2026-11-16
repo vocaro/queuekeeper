@@ -204,7 +204,7 @@ class ScrollBarTests(unittest.TestCase):
 
 
 class PlacementTests(unittest.TestCase):
-    """remote.spare, which Offer.attempt reads for both Macs, with the screen in each reading."""
+    """remote.spare, which Offer.attempt reads for the Macs, with the screen in each reading."""
 
     def capacity(self, state):
         return {"slots": 3, "slotsMax": 6, "busy": [], "load": 1.0, "cpuBusy": 10.0, "busyLimit": 75.0, "screen": reading(state)}
@@ -232,13 +232,13 @@ class PlacementTests(unittest.TestCase):
         offered.host = "fake"
         return offered
 
-    def test_the_choice_sends_the_lane_from_a_locked_second_mac_to_an_unlocked_this_mac(self):
+    def test_the_choice_sends_the_lane_from_a_locked_farm_mac_to_an_unlocked_this_mac(self):
         with patch.object(remote, "capacity_there", return_value=self.capacity("locked")), \
                 patch.object(offload_host, "capacity", return_value=self.capacity("unlocked")):
             self.assertIn("fake's is locked", farm_fixture.choice(self.offer(True)))
             # The negative control: an undeclared lane is offered to the locked second Mac, as before.
             self.assertIsNone(farm_fixture.choice(self.offer(False)))
-        # Neither Mac unlocked: the lane is offered, and the second Mac declines it while its screen is locked.
+        # No Mac unlocked: the lane is offered, and another Mac declines it while its screen is locked.
         with patch.object(remote, "capacity_there", return_value=self.capacity("locked")), \
                 patch.object(offload_host, "capacity", return_value=self.capacity("locked")), \
                 patch("sys.stderr", new_callable=StringIO) as error:
@@ -246,7 +246,7 @@ class PlacementTests(unittest.TestCase):
         self.assertIn("no Mac has spare capacity for gate now (the lane needs an unlocked screen, and "
                       "fake's is locked", error.getvalue())
 
-    def test_the_second_mac_declines_a_lane_that_needs_its_screen_while_it_is_locked(self):
+    def test_the_farm_mac_declines_a_lane_that_needs_its_screen_while_it_is_locked(self):
         plan = {"unlockedScreen": True, "decline": True}
         with self.assertRaises(offload_host.Refusal) as refused:
             offload_host.screen_declined(plan, lambda: recorded("second-mac-locked-idle"))
@@ -319,7 +319,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.admit(False)[0], "admission")
         self.assertEqual(self.admit(False, once=False)[0], "admission")
 
-    def test_the_second_mac_names_itself(self):
+    def test_the_farm_mac_names_itself(self):
         self.screen.return_value = reading("locked", "Medias-MacBook-Pro-5")
         with patch.dict(os.environ, {remote.DISPATCHER: "Trevors-MacBook-Pro-715"}):
             status, error = self.admit(True)
@@ -450,7 +450,7 @@ class CommandTests(unittest.TestCase):
                 self.assertTrue(said[1].startswith(f"screen: {state} ("), said[1])
                 self.assertIn("on this Mac (Trevors-MacBook-Pro-715)", said[1])
 
-    def test_remote_reads_the_second_mac(self):
+    def test_remote_reads_the_farm_mac(self):
         with farm_fixture.only("build-host"), \
                 patch.object(remote, "screen_there", return_value=recorded("second-mac-locked-idle")) as there:
             status, said = self.run_command("--remote")

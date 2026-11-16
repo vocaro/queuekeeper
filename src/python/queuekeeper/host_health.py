@@ -1,6 +1,6 @@
 """A Mac short of memory, named with what holds it and what the owner can do (offload_host.host_health reads it).
 
-On 2026-11-15 the second Mac's fseventsd held 34 of its 64 GB after 15 days, swap was 31.7 of 32 GB and the
+On 2026-11-15 another Mac's fseventsd held 34 of its 64 GB after 15 days, swap was 31.7 of 32 GB and the
 one-minute load reached 720, so a gate timed out with 2235 tests passed, none failed and 375 never reached.
 Admission reads memory pressure, but nothing named the process or said how to free it. `qk doctor` and the Farm tab
 now warn when swap is nearly full while macOS reports memory pressure, or one process holds an outsized share of

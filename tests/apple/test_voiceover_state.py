@@ -143,7 +143,7 @@ class StretchTests(unittest.TestCase):
             self.assertEqual(state.stretched(5), 5 * state.STRETCH_LIMIT)
 
     def test_command_f5_waits_by_the_hosts_load_not_a_fixed_five_seconds(self):
-        # The second Mac's incident: loads 217/126/205 on 10 cores; the fixed 5 s timed out (#137).
+        # Another Mac's incident: loads 217/126/205 on 10 cores; the fixed 5 s timed out (#137).
         for load, expected in [((217, 126, 205), 108.5), ((1, 1, 1), state.WAIT)]:
             with self.subTest(load=load), patch.object(state.os, "getloadavg", return_value=load), \
                     patch.object(state.os, "cpu_count", return_value=10), \
@@ -400,7 +400,7 @@ class StateTests(unittest.TestCase):
         self.assert_releasable()
 
     def test_timed_out_command_f5_that_applies_late_is_undone_and_the_lease_releases(self):
-        # #137: the driver's Command-F5 timed out on a loaded second Mac and VoiceOver came on afterwards.
+        # #137: the driver's Command-F5 timed out on a loaded Mac and VoiceOver came on afterwards.
         # The scope sees the late key while it settles, turns VoiceOver off again and verifies it stays off.
         self.enabled = False
         late = []

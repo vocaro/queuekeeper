@@ -1,4 +1,4 @@
-"""Keychains on the right Mac: recovery, the second Mac's kept unlocked, and a check of key use where it runs.
+"""Keychains on the right Mac: recovery, another Mac's kept unlocked, and a check of key use where it runs.
 
 `qk keychain recover` is for the owner, and unlocks nothing. It says which Mac it runs on and
 which Mac's keychain the work needs (host_context.locate), checks that the exact keychain file is
@@ -8,13 +8,13 @@ an SSH alias is printed only on the Mac whose ~/.ssh/config defines the alias, a
 itself only the local command is. `security unlock-keychain` then asks for the password in the
 owner's own Terminal, and nothing of the toolkit reads it, stores it or passes it on.
 
-`qk keychain keep-unlocked` is the owner's too, once, for the second Mac, whose keychain the owner
+`qk keychain keep-unlocked` is the owner's too, once, for another Mac, whose keychain the owner
 keeps unlocked for its automation (the owner's decision, 2026-10-30). An unlock reaches only the
 session that made it, and each qk remote run is an SSH login of its own, so every run unlocks the
 login keychain itself (unlock_for_run), with the password this command asks for once, at
-the second Mac's own prompt, and keeps there readable only by its account.
+another Mac's own prompt, and keeps there readable only by its account.
 
-`qk keychain check` runs where the automation that uses the key runs, such as on the second Mac
+`qk keychain check` runs where the automation that uses the key runs, such as on another Mac
 through `qk remote admit`. It records the session it ran in, the keychain's status, whether the
 signing identity is there and whether signing with it succeeded, each separately, since an
 unlocked keychain and a listed identity do not show that the key can be used. It runs nothing
@@ -36,7 +36,7 @@ import tempfile
 from queuekeeper import extensions, lane_results, host_context, offload_host, remote
 
 DEFAULT = "~/Library/Keychains/login.keychain-db"
-# Seconds each of the check's commands, and the question to the second Mac, may take.
+# Seconds each of the check's commands, and the question to another Mac, may take.
 CHECK_TIMEOUT = 30
 ASK_TIMEOUT = 60
 # What Security says, in the words `security` and `codesign` print, when an operation needs a dialog
@@ -62,7 +62,7 @@ def guarded(mac, command, elsewhere):
 
 def unlock_commands(here, location, path):
     """The owner's commands that unlock path on the target, labeled by the Mac each runs on: the
-    local one on the target, and, when the target is the second Mac, the one that reaches it through
+    local one on the target, and, when the target is another Mac, the one that reaches it through
     the alias, for this Mac, which defines it. security asks for the password itself; neither command
     passes one."""
     unlock = shlex.join(["security", "unlock-keychain", path])
@@ -77,14 +77,14 @@ def unlock_commands(here, location, path):
 
 
 def check_commands(location, path, identity, sender=None):
-    """The post-check's commands: in the automation's context on the second Mac, through qk remote
+    """The post-check's commands: in the automation's context on another Mac, through qk remote
     from the Mac that sends work there, and in a shell on the target, which checks that shell's
     session only. sender names the Mac that sends work to the target when the target is this Mac."""
     check = ["python3", "scripts/qk", "keychain", "check", "--keychain", path,
              *(["--identity", identity] if identity else [])]
     through = shlex.join(["python3", "scripts/qk", "remote", "admit", "--", *check])
     lines = []
-    if location.where == "second Mac":
+    if location.where == "farm Mac":
         lines.append((f"from this Mac, as qk remote runs work on {location.mac}", through))
     elif sender:
         lines.append((f"from {sender}, as qk remote runs work on {location.mac}", through))
@@ -109,12 +109,12 @@ def missing(info, path):
 
 
 def find(path, target, ask, out):
-    """This Mac, its view of the second Mac, where the target is and the keychain file there, said in
+    """This Mac, its view of another Mac, where the target is and the keychain file there, said in
     the This Mac, Target and Keychain lines: here, the view, the location and the file's information,
-    the last two None after it said why it refused. ask, given a destination and a request, asks the
-    second Mac, as remote.ask does."""
+    the last two None after it said why it refused. ask, given a destination and a request, asks another
+    Mac, as remote.ask does."""
     ask = ask or (lambda destination, request: remote.ask(destination, request, ASK_TIMEOUT))
-    here, view, session = host_context.this_mac(), host_context.second_mac(), host_context.session()
+    here, view, session = host_context.this_mac(), host_context.farm_mac(), host_context.session()
     there = unreached = info = None
     if view["destination"] and target != here \
             and not host_context.names_mac(view["hostname"], here):
@@ -155,7 +155,7 @@ def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
     sender = view["deferredTo"] if location.where == "here" else None
     for where, command in check_commands(location, exact, identity, sender):
         out(f"  {where}:\n    {command}")
-    if location.where == "second Mac" or sender:
+    if location.where == "farm Mac" or sender:
         out(f"An unlock in a Terminal reaches that Terminal's session only, never an qk remote run. For every run on "
             f"{location.mac} to unlock its login keychain itself, run `python3 scripts/qk keychain keep-unlocked` "
             "once instead.")
@@ -163,7 +163,7 @@ def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
 
 
 def keep_command(location):
-    """The command that runs offload_host.keep_unlocked on the second Mac through location's alias, in
+    """The command that runs offload_host.keep_unlocked on another Mac through location's alias, in
     its login shell as a run is run, with a terminal for its prompt. It passes no password, and its
     remote half refuses on any Mac but location's."""
     request = {"keepUnlocked": {"root": remote.ROOT, "mac": location.mac}}
@@ -173,11 +173,11 @@ def keep_command(location):
 
 
 def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):
-    """qk keychain keep-unlocked, the owner's, once: on the second Mac, ask for its login password at
-    the second Mac's own prompt in this Terminal, keep it there for each qk remote run to unlock the
+    """qk keychain keep-unlocked, the owner's, once: on another Mac, ask for its login password at
+    another Mac's own prompt in this Terminal, keep it there for each qk remote run to unlock the
     login keychain in its own session, and stop that keychain locking on a timer or on sleep
     (offload_host.keep_unlocked). From the Mac that sends work there it goes through the alias with
-    `ssh -t`; on the second Mac it runs in this process. Exit as offload_host.keep_unlocked does, or 2
+    `ssh -t`; on another Mac it runs in this process. Exit as offload_host.keep_unlocked does, or 2
     when it refused before anything was asked. interact runs a command at this terminal and keep runs
     offload_host.keep_unlocked here; both are for tests."""
     interact = interact or (lambda command: subprocess.run(command, env=remote.environment()).returncode)
@@ -185,11 +185,11 @@ def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):
     here, view, location, info = find(DEFAULT, None, ask, out)
     if location is None: return 2
     if location.where == "here" and not view["deferredTo"]:
-        # The owner's decision covers the second Mac only, which holds no sensitive data.
+        # The owner's decision covers another Mac only, which holds no sensitive data.
         out(f"Refused: {here} is not another Mac, as its device record would say once qk remote has sent work "
             "to it: only another Mac's login password is kept. Nothing was asked for or changed.")
         return 2
-    if location.where == "second Mac":
+    if location.where == "farm Mac":
         status = interact(keep_command(location))
     else:
         status = keep({"root": remote.ROOT, "mac": here})
@@ -356,7 +356,7 @@ UNLOCKED = "QUEUEKEEPER_KEYCHAIN_UNLOCKED"
 
 
 def unlock_run(root, config):
-    """Before an admitted lane or command starts on the second Mac, sent there from another (remote.DISPATCHER):
+    """Before an admitted lane or command starts on another Mac, sent there from another (remote.DISPATCHER):
     unlock the login keychain for its session when the owner kept its password (extensions.PREPARE_LANE). A kept
     password that does not unlock it leaves the run unmeasured, with the owner's fix, and nothing of it runs."""
     if not os.environ.get(remote.DISPATCHER) or os.environ.get(UNLOCKED): return

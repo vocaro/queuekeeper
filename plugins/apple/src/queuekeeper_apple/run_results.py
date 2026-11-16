@@ -4,9 +4,9 @@
 
 A script calls `keep` once per run, on a pass as on a failure. It writes what `qk simulator-tests` keeps of
 a run (matrix.kept), simulator-tests/NAME.log and NAME.json, in DIRECTORY, or else the lane's results/ that
-`qk run` names in QUEUEKEEPER_RESULTS_DIR and brings back from the second Mac, and prints one line per test case.
+`qk run` names in QUEUEKEEPER_RESULTS_DIR and brings back from another Mac, and prints one line per test case.
 STATUS is the exit status of the script's xcodebuild. A lane's output goes to its log, so `qk run` prints
-these lines again from results/ when the lane ends, here or, for a run on the second Mac, once its results
+these lines again from results/ when the lane ends, here or, for a run on another Mac, once its results
 have come back (report); it leaves out what `qk simulator-tests` kept, whose lanes print their own.
 Use --activity-timing-prefix PREFIX to keep activities titled "PREFIX N s" under each test. The number
 in the title measures the wait. An unreadable activity tree is reported separately from the test outcome.

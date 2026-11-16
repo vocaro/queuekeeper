@@ -1,8 +1,8 @@
 """What a lane waits for now, in a small record beside its results, for `qk queue status` to read (#309).
 
 `qk run` names the record, .build/queuekeeper/.waits/LANE.json, in VARIABLE for itself and everything it starts, and
-removes it when it ends. A lane on the second Mac has its own there, which offload_host sends back as it changes, as
-`W` frames that the dispatcher writes to the lane's record here (relayed), so that the one file says it on either Mac.
+removes it when it ends. A lane on another Mac has its own there, which offload_host sends back as it changes, as
+`W` frames that the dispatcher writes to the lane's record here (relayed), so that the one file says it on any Mac.
 The queue reads the record and no printed line: rewording what a wait prints changes nothing in status.
 
 The record says what the lane waits for, since when and on which Mac, and whether the lane started there. The
@@ -24,7 +24,7 @@ HERE = "this Mac"
 SCHEMA = 1
 
 ADMISSION, SCREEN, FOREGROUND = "admission", "screen", "foreground"
-# Why a lane waits for this Mac instead of the second Mac; said beside the admission wait that follows it.
+# Why a lane waits for this Mac instead of another Mac; said beside the admission wait that follows it.
 UNREACHABLE, ALONE, OVERFLOW = "unreachable", "alone", "overflow"
 OFFERS = (UNREACHABLE, ALONE, OVERFLOW)
 # What `qk queue status` says after "waiting: ". Each wait's words live here and nowhere in the queue.
@@ -38,7 +38,7 @@ WORDS = {ADMISSION: "admission on {mac}: {reason}",
 STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted", "probes")
 
 _owned = None  # the record this process named, and so removes (begin, finish)
-_offer = None  # why this run waits for this Mac instead of the second Mac, until it is admitted
+_offer = None  # why this run waits for this Mac instead of another Mac, until it is admitted
 
 
 def relative(lane):
@@ -106,8 +106,8 @@ def same(found, record):
 def waiting(kind, reason, mac=HERE, stranded=False, probes=None):
     """The lane now waits for this, for a reason in plain words, on mac; since when carries over a wait that goes on
     under other words, so that its start is the wait's and not the latest wording's. A wait on this Mac says beside
-    it why the lane is not on the second Mac (OFFERS). stranded says that dead or uncertain guard entries hold it.
-    probes, for UNREACHABLE, is how many offers in a row could not reach the second Mac and when the last failed
+    it why the lane is not on another Mac (OFFERS). stranded says that dead or uncertain guard entries hold it.
+    probes, for UNREACHABLE, is how many offers in a row could not reach another Mac and when the last failed
     (remote.Offer.probes), whose age words() gives as it reads the record (vocaro/queuekeeper#25)."""
     global _offer
     if not os.environ.get(VARIABLE): return
@@ -130,15 +130,15 @@ def running(mac=HERE, *, admitted=True):
     if not same(read(os.environ[VARIABLE]), record): write({**record, "since": None})
 
 
-def second_mac(host):
+def farm_mac(host):
     """What a record calls the farm's Mac at the SSH destination host: its name in the farm (farm.named)."""
     from . import farm
     return farm.named(host)
 
 
 def host_of(mac):
-    """The SSH destination of the farm's Mac that second_mac named in mac, or None for this Mac or for words it
-    did not write. A record written before a Mac had a name in the farm says `the second Mac (HOST)`."""
+    """The SSH destination of the farm's Mac that farm_mac named in mac, or None for this Mac or for words it
+    did not write. A record written before a Mac had a name in the farm says `another Mac (HOST)`."""
     if not isinstance(mac, str) or mac == HERE: return None
     if mac.startswith("the second Mac (") and mac.endswith(")") and len(mac) > 17:
         return mac[len("the second Mac ("):-1]
@@ -151,14 +151,14 @@ def host_of(mac):
 
 
 def sent(host):
-    """The lane has gone to host to run. A wait goes on until the second Mac takes it (relayed) or declines it."""
+    """The lane has gone to host to run. A wait goes on until another Mac takes it (relayed) or declines it."""
     if not os.environ.get(VARIABLE): return
     found = read(os.environ[VARIABLE])
-    if not (found and found.get("kind")): running(second_mac(host), admitted=False)
+    if not (found and found.get("kind")): running(farm_mac(host), admitted=False)
 
 
 def taken_there():
-    """Whether a second Mac has started this run's lane, as its record says once that Mac's admission is relayed
+    """Whether another Mac has started this run's lane, as its record says once that Mac's admission is relayed
     (relayed): True or False, or None when no record says, as for a run that names none (`qk admit`) or one whose
     record cannot be read. A place in this Mac's queue is kept only while this is False (remote.overflow)."""
     if not os.environ.get(VARIABLE): return None
@@ -177,8 +177,8 @@ def relayed(data, host):
         lane_progress.relayed(record["progress"], host)
         if "kind" not in record: return
     if isinstance(record, dict) and record.get("kind") in WORDS:
-        waiting(record["kind"], record.get("reason"), second_mac(host), bool(record.get("stranded")))
-    else: running(second_mac(host), admitted=isinstance(record, dict) and record.get("admitted") is True)
+        waiting(record["kind"], record.get("reason"), farm_mac(host), bool(record.get("stranded")))
+    else: running(farm_mac(host), admitted=isinstance(record, dict) and record.get("admitted") is True)
 
 
 def alive(pid):
@@ -215,7 +215,7 @@ def admission_warnings(root, at=None):
 
 
 def words(record, at=None):
-    """What the lane waits for, in the words `qk queue status` shows, or None when it waits for nothing. A second Mac
+    """What the lane waits for, in the words `qk queue status` shows, or None when it waits for nothing. Another Mac
     that cannot be reached is said with how many offers in a row failed to reach it and how long ago, at at (an epoch
     time; now), the last did (probed)."""
     if not record or not record.get("kind"): return None

@@ -17,7 +17,7 @@ Every lane is admitted and offered to the farm's Macs first, and the farm is the
 so it has no Mac: no lane a test runs, in this process or a child, reaches a real Mac of the owner's farm. A test of
 a farm Mac writes its fake one into its farm (test_support.farm).
 
-`qk doctor` also fixes both Macs itself: it evens out their runtimes, deleting or copying them, and
+`qk doctor` also fixes the Macs itself: it evens out their runtimes, deleting or copying them, and
 shuts down stale pool simulators (cli.fix_hosts). Most doctor tests compare this Mac with the real
 second Mac, so cli.fix_hosts is replaced here by one that changes nothing; a test of the fixes calls
 FIX_HOSTS, the real one, against fakes. A heavy run here reaps this Mac first (cli.reap_here); QUEUEKEEPER_REAP_BEFORE_RUN
@@ -116,7 +116,7 @@ atexit.register(lambda owner=os.getpid(): os.getpid() == owner and shutil.rmtree
 GATE = str(ROOT / "gate")
 os.environ.update(HEAVY_SLOT_DIR=str(ROOT / "slots"), QUEUEKEEPER_GATE_LOCK_FILE=GATE)
 os.environ.pop(resources.TOKEN, None)
-# A suite the second Mac runs for a dispatch, as the toolkit's gate is, inherits the dispatch's variables, which make every
+# A suite another Mac runs for a dispatch, as the toolkit's gate is, inherits the dispatch's variables, which make every
 # receipt a test writes say it ran there; a test of a dispatch sets them itself.
 for variable in (remote.DISPATCHER, "QUEUEKEEPER_DEVICE_LEASE"): os.environ.pop(variable, None)
 # Nor does a Mac a test adds to its farm take a hardware UUID the suite was handed for its own (farm.add).
@@ -172,7 +172,7 @@ RESPONSIBLE_FOR = remote.responsible_for
 remote.responsible_for = lambda pid: None
 
 # Nor does any queuekeeper a test runs, in this process or a child, start the evidence offload's background retry,
-# which would offer this Mac's real evidence archives to the real second Mac (vocaro-engineering#157). A test
+# which would offer this Mac's real evidence archives to the real Mac of the farm (vocaro-engineering#157). A test
 # of retry_soon clears it.
 os.environ["QUEUEKEEPER_EVIDENCE_RETRY"] = "off"
 
@@ -204,8 +204,8 @@ ISOLATION = {name: os.environ[name] for name in (
 
 
 # The prefixes of the toolkit's variables, and those of them this module lets a test inherit, each with why that is
-# safe. A variable a run sets for the commands it starts reaches the suite whenever the suite is one of them, on either
-# Mac: on 2026-11-12 the second Mac's dispatch had unlocked the real keychain, and a test of a password that cannot
+# safe. A variable a run sets for the commands it starts reaches the suite whenever the suite is one of them, on any
+# Mac: on 2026-11-12 another Mac's dispatch had unlocked the real keychain, and a test of a password that cannot
 # unlock it failed there every time and passed here (vocaro/queuekeeper#46). So test_host_isolation fails when what
 # this module leaves holds one that it neither set (ISOLATION) nor lists here, and it plants every such variable the
 # toolkit's code names to find one: a new variable is cleared above, or listed here with its reason.

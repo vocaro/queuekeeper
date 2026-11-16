@@ -68,7 +68,7 @@ to it at once.
 - **Bounded runs.** A command run under a reservation is stopped before the reservation ends, with
   time left to restore the device. A command that names a different device is refused.
 - **Across Macs.** A device paired with two Macs is reserved in one record, and the reservation
-  travels with a run sent to the other Mac.
+  travels with a run sent to another Mac.
 - **Notifications.** A banner that arrives mid-run moves VoiceOver's focus and puts private text on
   screen. The plugin runs a Shortcut on the device to silence notifications, watches the device log
   for banners, and marks a run that one reached as unmeasured.

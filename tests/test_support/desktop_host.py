@@ -12,7 +12,7 @@ mac_desktop.register()
 os.environ["QUEUEKEEPER_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
 crash_alerts.run = lambda command, environment=None: "" if command[0] == "osascript" else None
 crash_alerts.change = lambda value: True
-# Nor does any reach the screen's Notification Center windows (#204): a foreground run a test makes on a second Mac
+# Nor does any reach the screen's Notification Center windows (#204): a foreground run a test makes on another Mac
 # finds none, and closes nothing. A test of them replaces this again.
 notification_center.run = lambda command, environment=None: "[]" if command[:3] == ["osascript", "-l", "JavaScript"] \
     else None

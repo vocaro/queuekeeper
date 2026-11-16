@@ -1,16 +1,16 @@
-"""A Mac's foreground for one run: the second Mac's taken by queuekeeper, this Mac's only within the owner's window.
+"""A Mac's foreground for one run: another Mac's taken by queuekeeper, this Mac's only within the owner's window.
 
-The second Mac is used only for file serving and build hosting, not as a workstation, so a run takes
+Another Mac is used only for file serving and build hosting, not as a workstation, so a run takes
 its whole foreground, screen, keyboard, pointer, focus and speech, without asking the owner (owner's
 decisions, 2026-10-30 and 2026-11-06, vocaro-engineering#207). queuekeeper takes it for a run as admission takes
-a slot: it waits while another run holds the second Mac's mac-foreground entry, reserves the entry,
+a slot: it waits while another run holds another Mac's mac-foreground entry, reserves the entry,
 which records no approval, runs the work with
 QUEUEKEEPER_DEVICE_OWNER naming the reservation, so that drivers' `devices check` passes, and releases it.
 This Mac is the owner's workstation. Its foreground needs a window the owner agreed beforehand, which
 the session reserves itself (doc/guides/shared-host.md, Attended Mac sessions), and queuekeeper never sends
 foreground work to it.
 
-A Mac's device record that defers physical devices to another Mac's is the second Mac's: every run
+A Mac's device record that defers physical devices to another Mac's is another Mac's: every run
 sent there makes it so (offload_host.defer_devices).
 """
 import contextlib
@@ -23,7 +23,7 @@ import time
 from . import opened_apps, reservations
 from queuekeeper import lane_wait, offload_host, processes
 
-# Seconds between looks at the second Mac's mac-foreground entry while another run holds it.
+# Seconds between looks at another Mac's mac-foreground entry while another run holds it.
 POLL = 10
 # Seconds a run is expected to hold the foreground when its lane names no timeout. A deadline releases
 # nothing: the run releases the entry when its work ends, however long that takes.
@@ -42,8 +42,8 @@ GRACE = 180
 GUARDS = []
 
 
-def second_mac(record=None):
-    """Whether this Mac is the second Mac: its device record defers physical devices to another Mac's."""
+def farm_mac(record=None):
+    """Whether this Mac is another Mac: its device record defers physical devices to another Mac's."""
     return bool((record or reservations.Record()).load().get(reservations.DEFERRED))
 
 
@@ -73,9 +73,9 @@ def refusal(found):
 
 @contextlib.contextmanager
 def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=None, said=None, again=None, **options):
-    """Hold the second Mac's mac-foreground for the run inside the block, without asking the owner.
+    """Hold another Mac's mac-foreground for the run inside the block, without asking the owner.
 
-    It refuses on any other Mac, and, before taking anything, on a second Mac that problems() finds not
+    It refuses on any other Mac, and, before taking anything, on another Mac that problems() finds not
     ready, which is a configuration problem for the owner. While another run holds the entry it waits,
     up to timeout seconds, then raises TimeoutError. A holder whose expected release falls after that deadline
     is judged at once: the wait says so, looks for GRACE seconds more in case it releases early, and then raises
@@ -91,7 +91,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     running (opened_apps.settle, vocaro/queuekeeper#104)."""
     record = record or reservations.Record()
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
-    if not second_mac(record):
+    if not farm_mac(record):
         raise reservations.Refused("queuekeeper takes the foreground only on another Mac; this Mac's needs a window the owner "
                               "agreed beforehand, which the session reserves as mac-foreground itself "
                               "(doc/guides/shared-host.md, Attended Mac sessions)")
@@ -175,7 +175,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         try:
             # Any Mac but the second is the owner's workstation, where only the apps the run is shown to own are its.
             settled = opened_apps.settle(opened, own, said=said, launched=launched,
-                                         workstation=not second_mac(record)) \
+                                         workstation=not farm_mac(record)) \
                 if same_lease and reservations.condition(current) != "released" else None
         except Exception as error:  # a release goes ahead however the apps' look went
             said(f"queuekeeper: could not quit the apps the run opened: {error}")

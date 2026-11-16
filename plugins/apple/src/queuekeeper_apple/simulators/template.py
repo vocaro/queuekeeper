@@ -6,7 +6,7 @@ A new simulator's first boot migrates its data, and VoiceOver's first start on i
 database, which took 40 to 60 s on a quiet Mac and minutes on a loaded one. The first request for the
 system's voices (`AVSpeechSynthesisVoice.speechVoices()`) on a freshly erased simulator makes its
 accessibility assets daemon build its voice database in memory, an idle wait of 285 to 344 s in each of
-a member's xcodebuild clones with the second Mac to itself and past 1,900 s beside another gate, while
+a member's xcodebuild clones with another Mac to itself and past 1,900 s beside another gate, while
 clones of a member that had used its voices twice, with a reboot between, answered in 11 to 13 s
 (vocaro/EPUBLib#946, vocaro-engineering#172). `simctl clone` copies a shut-down device's data, and so
 does the pool's reset, so a member cloned from or reset to a settled template boots past all of it.
@@ -37,8 +37,8 @@ SPEECH = "Processing markup for voice locale"
 PREDICATE = 'process == "vot" OR process == "MauiAUSP"'
 # Seconds VoiceOver may stay silent after it is switched on; under saturation it took up to 292 s.
 VOICEOVER_LIMIT = 600
-# Seconds one use of the system's voices may take. A member's own first use took 53 to 173 s with the
-# second Mac to itself and 24 s after a reboot; beside another gate a clone's first use passed 1,900 s.
+# Seconds one use of the system's voices may take. A member's own first use took 53 to 173 s with another
+# Mac to itself and 24 s after a reboot; beside another gate a clone's first use passed 1,900 s.
 VOICES_LIMIT = 900
 # Inside a take, a kind's first creation or reset warms its template before the lane's own work begins,
 # so the boot, VoiceOver and each use of the voices get shorter limits there: VoiceOver the probe's

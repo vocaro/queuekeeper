@@ -1,12 +1,12 @@
-"""Run a lane or an admitted command on the owner's second Mac, reached over SSH.
+"""Run a lane or an admitted command on another Mac of the farm, reached over SSH.
 
 Nothing here takes a slot on this host. The exact commit, and the toolkit commit that runs it,
-go to bare repositories on the second Mac by git over SSH, never through GitHub. A working tree
+go to bare repositories on another Mac by git over SSH, never through GitHub. A working tree
 with uncommitted changes goes as a snapshot commit on HEAD, which no branch holds. offload_host.py,
 sent along and run there by the host's own Python, checks them out in a persistent checkout,
-so builds stay warm, and runs `qk run` or `qk admit` under the second Mac's own heavy-work
-admission: that host's queue, not a private pool beside this one. A push sends only what the
-second Mac's checkouts lack, which their refs name there. The log and the result come back to
+so builds stay warm, and runs `qk run` or `qk admit` under another Mac's own heavy-work
+admission: that host's queue, not a private pool beside this one. A push sends only what another
+Mac's checkouts lack, which their refs name there. The log and the result come back to
 this checkout's .build/queuekeeper/remote, each dispatch's in a directory of its own as well, with
 what its preparation cost, and a lane group's lanes' logs and receipts with them once the run
 there ends. A whole lane's result at a commit is also kept by commit in
@@ -15,29 +15,29 @@ whole lane's run on this Mac at a commit with no working changes (keep_here); a 
 and queuekeeper says so when it sends one.
 
 `qk run` sends every admitted lane to whichever Mac has spare capacity for it now,
-the second Mac first, unless the lane says why it stays on this Mac, and `qk admit` a
+another Mac first, unless the lane says why it stays on this Mac, and `qk admit` a
 command the same way, unless `--here` or its paths and devices keep it on this Mac; what the command
 changed in the checkout's files that Git does not ignore comes back as a patch and is applied here
 (brought_back), while its build products stay there (the owner's decision, 2026-11-07). Before it
-offers the work it reads both Macs' capacity (offload_host.capacity, spare): the second Mac runs the work when it has a guaranteed
+offers the work it reads each Mac's capacity (offload_host.capacity, spare): another Mac runs the work when it has a guaranteed
 slot free, all of them for a whole-host lane, its CPU's busy share is under its limit and no whole-host lane
 or exclusive work holds it, and then only if it can start the work now; when it has no spare
-capacity and this Mac has, this Mac takes the work at once, with the second Mac's reason in the
+capacity and this Mac has, this Mac takes the work at once, with another Mac's reason in the
 receipt (Loaded); and while neither has, the work goes to whichever admits it first, offered to
-the second Mac again and again (overflow). Both Macs are for work, and a session never asks the
+another Mac again and again (overflow). The Macs are for work, and a session never asks the
 owner which (the owner's decisions, 2026-10-28 and 2026-11-04, vocaro-engineering#168). First it
-checks, within seconds, that the second Mac can be reached. When it cannot, because its name does not resolve, as when
-this Mac is away from the second Mac's network, nothing answers on its ssh port or ssh cannot
-connect, the work runs on this Mac at once (the owner's decision, 2026-10-27). A second Mac that
+checks, within seconds, that another Mac can be reached. When it cannot, because its name does not resolve, as when
+this Mac is away from another Mac's network, nothing answers on its ssh port or ssh cannot
+connect, the work runs on this Mac at once (the owner's decision, 2026-10-27). Another Mac that
 answers but is misconfigured, such as one that refuses the login or has another Xcode, stops the
 work for the owner's decision (the toolkit's doc/agents/core.md, Shared resources); only `--here` then runs it
 here. A run that was sent and lost its connection is unmeasured and runs nowhere else.
-`qk doctor` compares the two Macs and times how ssh connects to the second Mac, and reports a
-second Mac it cannot reach as unchecked, and gives both the same simulator runtimes, as
+`qk doctor` compares the Macs and times how ssh connects to another Mac, and reports another
+Mac it cannot reach as unchecked, and gives both the same simulator runtimes, as
 `qk remote setup --runtimes` does, without asking the owner (the owner's decision, 2026-11-03).
 Before it sends work, and
 in `qk doctor`, it lists the processes there that earlier runs left running, which nothing
-stops, and fast-forwards the second Mac's own toolkit checkout, ~/Development/queuekeeper, to
+stops, and fast-forwards another Mac's own toolkit checkout, ~/Development/queuekeeper, to
 origin/main when that checkout is on main with no uncommitted changes, saying why it leaves it otherwise:
 a dispatch goes on, and `qk doctor` reports an error (offload_host.update_toolkit, vocaro-engineering#203).
 """
@@ -76,16 +76,16 @@ NO_MAC = "the farm has no Mac that takes work now (add one with `qk farm add DES
 # A farm Mac's directory for repositories and checkouts, relative to its home. `qk farm add` moves there what a
 # Mac kept under its earlier name (offload_host.adopt_root).
 ROOT = "Development/queuekeeper-farm"
-# Persistent checkouts per project on the second Mac; more wait for one to come free.
+# Persistent checkouts per project on another Mac; more wait for one to come free.
 CHECKOUTS = 4
 # Where each dispatch's own results stay, unique to it, under .build/queuekeeper/remote/DISPATCHES/NAME/,
 # beside NAME/, the latest; and how many of each name's stay: two for each run that can overlap another.
 DISPATCHES = ".dispatches"
 DISPATCH_HOST = "dispatch-host"
 DISPATCHES_KEPT = 2 * CHECKOUTS
-# Seconds ssh waits for each address the second Mac's name resolves to before it tries the next.
+# Seconds ssh waits for each address another Mac's name resolves to before it tries the next.
 CONNECT_TIMEOUT = 10
-# ssh closes a connection that has heard nothing from the second Mac for about ServerAliveInterval
+# ssh closes a connection that has heard nothing from another Mac for about ServerAliveInterval
 # times ServerAliveCountMax seconds, two minutes (ssh_config(5)); a shorter silence leaves it open.
 SSH = ["ssh", "-T", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={CONNECT_TIMEOUT}", "-o", "ServerAliveInterval=30",
        "-o", "ServerAliveCountMax=4"]
@@ -103,7 +103,7 @@ NO_BANNER = "Connection timed out during banner exchange"
 TIMED_OUT = re.compile(r"^Connection to \S+ port \d+ timed out$")
 # The refs that carry a commit into a farm Mac's repositories.
 REF = "refs/queuekeeper/hosts/"
-# Seconds a push of one commit to the second Mac may take before queuekeeper stops it. A push there once ran
+# Seconds a push of one commit to another Mac may take before queuekeeper stops it. A push there once ran
 # for over 50 minutes before it failed (vocaro-engineering#67); one that sends only what the second
 # Mac lacks takes seconds, and a lost connection ends within ssh's two minutes.
 SEND_TIMEOUT = 1800
@@ -112,7 +112,7 @@ SEND_STOP_WAIT = 10
 # What Git's receive-pack says when the ref a push creates already exists: another session's push of the
 # same commit took it first (Git 2.54.0, files backend).
 RACED = re.compile(r"cannot lock ref .*reference already exists")
-# Pushes of one commit a send makes when each loses that race and the second Mac then names the commit
+# Pushes of one commit a send makes when each loses that race and another Mac then names the commit
 # neither by its pushed ref nor by a checkout's: the winning dispatch places the commit, which deletes
 # the pushed ref, and names it as a checkout's a moment later (offload_host.place). A push that finds
 # neither ref creates the pushed one again, sending nothing, so a second push settles it; a third covers
@@ -127,31 +127,31 @@ WRITTEN = re.compile(r"^Writing objects: 100% \(\d+/\d+\), ([\d.]+) (bytes|KiB|M
 TOTAL = re.compile(r"^Total (\d+) \(delta \d+\), reused (\d+)")
 UNITS = {"bytes": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30}
 # What Git says when push.negotiate's exchange failed and the push went on without it, as it does when
-# protocol v2 does not reach the second Mac.
+# protocol v2 does not reach another Mac.
 NEGOTIATION_FAILED = "push negotiation failed"
-# Seconds a stopped run has to end on the second Mac before the connection is closed.
+# Seconds a stopped run has to end on another Mac before the connection is closed.
 STOP_WAIT = 120
-# Seconds a run the dispatcher lost contact with may wait on the second Mac beyond its own timeouts: for a checkout
+# Seconds a run the dispatcher lost contact with may wait on another Mac beyond its own timeouts: for a checkout
 # (offload_host.CLAIM_TIMEOUT) or for its admission, whose wait `qk run` and `qk admit` bound by default at this.
 UNATTENDED_WAIT = 5400 + 300
 # Seconds between tries at a connection to collect a run from, and how long past that run's own bound a
 # dispatcher keeps trying, in this Mac's waking time (time.monotonic stops for sleep on macOS).
 REATTACH_PAUSE, REATTACH_GRACE = 15, 300
-# Seconds between the dispatcher's heartbeats on the run's standard input, and the seconds with none after which the
-# second Mac stops a run whose connection's end is a stop: one with a device lease, or one that has not said its
+# Seconds between the dispatcher's heartbeats on the run's standard input, and the seconds with none after which another
+# Mac stops a run whose connection's end is a stop: one with a device lease, or one that has not said its
 # dispatcher heard it start (offload_host.watch; vocaro-engineering#287). A Mac that crashed closes nothing. The
 # silence outlasts ssh's own two-minute bound, so that whatever silence ssh survives, the run survives too.
 HEARTBEAT_SECONDS, HEARTBEAT_SILENCE = 20, 180
 # Seconds one connection may take to stop a dead dispatcher's run (stop_dead_dispatches).
 STOP_DEAD_WAIT = 30
-# The toolkit's repository, which its origin names for the second Mac's policy refresh.
+# The toolkit's repository, which its origin names for another Mac's policy refresh.
 UPSTREAM = "https://github.com/vocaro/queuekeeper.git"
 # What a Git hook exports for its own repository must not reach another.
 GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX"}
-# `qk run`'s status when the second Mac's configuration stopped a lane: sysexits' EX_CONFIG.
+# `qk run`'s status when another Mac's configuration stopped a lane: sysexits' EX_CONFIG.
 MISCONFIGURED = 78
-# What says that a Mac's provision lane failed before a lane there, on either Mac (execute, cli.provisioned_here):
+# What says that a Mac's provision lane failed before a lane there, on any Mac (execute, cli.provisioned_here):
 # the merge queue quotes the line that holds it as a hold's cause (merge_queue.Worker.no_verdict_cause).
 UNPROVISIONED = "could not provision its checkout"
 # `qk run`'s status when a queue worker's gate found its process without Local Network access and ran nothing, here
@@ -161,22 +161,22 @@ LOST_ACCESS = 69
 # takes it out of its environment, so that no lane it runs here, nor what that lane starts, stops for it.
 QUEUE_GATE = "QUEUEKEEPER_QUEUE_GATE"
 QUEUE_GATE_EXCLUDE = "QUEUEKEEPER_QUEUE_GATE_EXCLUDE"
-# Seconds the check before a dispatch gives each address of the second Mac's name to answer on its ssh
-# port, and then `ssh true` to finish there, login shell included: an offline second Mac costs a few
+# Seconds the check before a dispatch gives each address of another Mac's name to answer on its ssh
+# port, and then `ssh true` to finish there, login shell included: an offline Mac costs a few
 # seconds, where ssh's ConnectTimeout would take ten for each address.
 REACH_TIMEOUT, REACH_SECONDS = 3, 30
 # ssh's own lines when it could not connect at all, before any login: a name that does not resolve, an
 # address that refuses or never answers, a connection closed during the banner exchange. Nothing it was
-# to run reached the second Mac.
+# to run reached another Mac.
 OFFLINE = re.compile(r"Could not resolve hostname|connect to host \S+ port \d+:|banner exchange|"
                      r"kex_exchange_identification:")
-# ssh's own lines when it connected and the second Mac, or this Mac's ssh configuration, refused the login.
+# ssh's own lines when it connected and another Mac, or this Mac's ssh configuration, refused the login.
 LOGIN = re.compile(r"Permission denied|Host key verification failed|Too many authentication failures|"
                    r"REMOTE HOST IDENTIFICATION HAS CHANGED|no matching host key type")
 # ssh's own lines when the name it reached presented another key than the one known_hosts records for it,
-# as when another machine took the second Mac's old .local name.
+# as when another machine took another Mac's old .local name.
 OTHER_KEY = re.compile(r"Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED")
-# Seconds the search for a renamed second Mac browses Bonjour for Macs that offer ssh, then gives each
+# Seconds the search for a renamed Mac browses Bonjour for Macs that offer ssh, then gives each
 # one's name to resolve, and at most how many it tries. Answers this Mac's mDNSResponder holds come in
 # under 0.1 s (macOS 27.0.1, 2026-11-01).
 BROWSE_SECONDS, RESOLVE_SECONDS, CANDIDATES = 2, 2, 8
@@ -185,19 +185,19 @@ BROWSE_SECONDS, RESOLVE_SECONDS, CANDIDATES = 2, 2, 8
 # 2026-11-03 (vocaro-engineering#129).
 BROWSED = re.compile(r"^\s*\S+\s+Add\s+\d+\s+\d+\s+(\S+)\s+_ssh\._tcp\.\s+(.+?)\s*$")
 RESOLVED = re.compile(r"can be reached at (\S+?)\.?:(\d+)\b")
-# The second Mac found under a new .local name in this process, by destination: what it was renamed
+# Another Mac found under a new .local name in this process, by destination: what it was renamed
 # from and to, and the name its key is known by (rediscover).
 RENAMED = {}
-# The second Mac searched for in this process and not found, by destination: the names Bonjour offered
+# Another Mac searched for in this process and not found, by destination: the names Bonjour offered
 # ssh under that were asked for its key, none presenting it (rediscover).
 UNFOUND = {}
 # Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records. That it
-# is set is also the documented way a project's script asks whether it runs on the second Mac (doc/build_farm.md,
+# is set is also the documented way a project's script asks whether it runs on another Mac (doc/build_farm.md,
 # vocaro/queuekeeper#93), so neither its name nor when it is set changes without that page.
 DISPATCHER = "QUEUEKEEPER_DISPATCHED_FROM"
-# Seconds `qk doctor` waits for the second Mac to report its Xcodes and runtimes.
+# Seconds `qk doctor` waits for another Mac to report its Xcodes and runtimes.
 SURVEY_TIMEOUT = 180
-# Seconds `qk doctor` waits for the census of the second Mac's leftover processes.
+# Seconds `qk doctor` waits for the census of another Mac's leftover processes.
 CENSUS_TIMEOUT = 60
 # Where a leftover process is explained.
 LEFTOVER_GUIDE = "doc/guides/shared-host.md, Processes left over from runs"
@@ -207,18 +207,18 @@ SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "queuekeeper snapshot", "GIT_AUTHOR_EMAI
                      "GIT_COMMITTER_NAME": "queuekeeper snapshot", "GIT_COMMITTER_EMAIL": "snapshot@queuekeeper.invalid"}
 
 
-# What every project's gates use on the second Mac (doc/guides/shared-host.md, Setting up the second Mac).
+# What every project's gates use on another Mac (doc/guides/shared-host.md, Setting up another Mac).
 SETUP_FORMULAE = ["python", "uv", "shellcheck", "xcodegen", "zstd"]
 # Where Homebrew's installer puts brew: Apple silicon, then Intel.
 BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-# The exit status of the setup script when the second Mac has no Homebrew.
+# The exit status of the setup script when another Mac has no Homebrew.
 NO_HOMEBREW = 4
 FORMULA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+/-]*$")
 MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 
-# How messages name this Mac beside the second Mac.
+# How messages name this Mac beside another Mac.
 HERE = "this Mac"
-# Where a runtime image copied from the other Mac is staged until simctl adds it: on the second Mac
+# Where a runtime image copied from another Mac is staged until simctl adds it: on another Mac
 # under ~/Development/queuekeeper-farm, and here among the toolkit's durable state, never in /private/tmp,
 # which a reboot empties. Both are relative to the Mac's home.
 RUNTIME_STAGING = f"{ROOT}/runtimes"
@@ -228,7 +228,7 @@ LOCAL_RUNTIME_STAGING = "Library/Application Support/queuekeeper/runtimes"
 # building worktrees of the sessions that share the volume (the toolkit's doc/agents/core.md, Concurrent work).
 RUNTIME_MARGIN = 40 << 30
 # The bytes a download is taken to need when no image says: more than the largest runtime image on
-# either Mac, iOS 26.5's 8.5 GB (October 2026).
+# any Mac, iOS 26.5's 8.5 GB (October 2026).
 RUNTIME_ESTIMATE = 10 << 30
 # The platforms whose runtimes `xcodebuild -downloadPlatform` downloads (Xcode 27.2's help).
 DOWNLOADABLE = {"iOS", "watchOS", "tvOS", "visionOS"}
@@ -237,30 +237,30 @@ RUNTIME = re.compile(r"^(.*) \(([^()]+)\)$")
 
 
 class Lost(RuntimeError):
-    """The second Mac took the work, the connection ended, and no result came back on any connection after it:
+    """Another Mac took the work, the connection ended, and no result came back on any connection after it:
     unmeasured, not failed."""
 
 
 class Unavailable(RuntimeError):
-    """The second Mac did not take the work, and nothing of it ran there."""
+    """Another Mac did not take the work, and nothing of it ran there."""
 
 
 class Busy(Unavailable):
-    """The second Mac could not start the work in time, or at once when the work asked it not to wait:
-    its queue or every checkout is in use. A busy second Mac is no configuration problem, and this Mac
+    """Another Mac could not start the work in time, or at once when the work asked it not to wait:
+    its queue or every checkout is in use. A busy Mac is no configuration problem, and this Mac
     takes the work while it is busy, if it can (overflow)."""
 
 
 class Loaded(Busy):
-    """The second Mac has no spare capacity for the work now, by its reading, while this Mac has, by its
+    """Another Mac has no spare capacity for the work now, by its reading, while this Mac has, by its
     own (spare): nothing was offered, and this Mac takes the work. Its text is the reason, as the
-    receipt's hereBecause gives it, naming the second Mac's CPU busy share when that is it (#168, #200).
-    The second Mac is read again before each later offer (Offer.again), so that it takes the work once
+    receipt's hereBecause gives it, naming another Mac's CPU busy share when that is it (#168, #200).
+    Another Mac is read again before each later offer (Offer.again), so that it takes the work once
     it has capacity before this Mac admits it."""
 
 
 class Misconfigured(Unavailable):
-    """The second Mac's configuration kept the work from running there: the owner's to fix, and
+    """Another Mac's configuration kept the work from running there: the owner's to fix, and
     no reason to run it on this Mac without the owner's decision (the toolkit's doc/agents/core.md, Shared resources).
     problem says what is wrong, and fix what fixing it takes."""
 
@@ -270,8 +270,8 @@ class Misconfigured(Unavailable):
 
 
 class Unreachable(Unavailable):
-    """The second Mac could not be reached, so nothing was sent: its name did not resolve, nothing
-    answered on its ssh port, or ssh could not connect. An offline second Mac is no configuration
+    """Another Mac could not be reached, so nothing was sent: its name did not resolve, nothing
+    answered on its ssh port, or ssh could not connect. An offline Mac is no configuration
     problem, and the work runs on this Mac instead (the owner's decision, 2026-10-27)."""
 
     def __init__(self, problem, fix):
@@ -280,16 +280,16 @@ class Unreachable(Unavailable):
 
 
 class NoLocalNetwork(Unreachable):
-    """This process cannot reach the second Mac though the second Mac may be up: macOS's Local Network privacy
+    """This process cannot reach another Mac though another Mac may be up: macOS's Local Network privacy
     denies it, since the process macOS holds responsible for it is a Python of queuekeeper's own, not an app that holds the
-    owner's grant (local_network_lost). Another process on this Mac may reach the second Mac all the while."""
+    owner's grant (local_network_lost). Another process on this Mac may reach another Mac all the while."""
 
 
 def ssh_failure(host, said, *context, sent=False):
-    """What ssh's own failure, its exit of 255, makes of the second Mac before any work started there. said
+    """What ssh's own failure, its exit of 255, makes of another Mac before any work started there. said
     is what ssh wrote, whose last line names the failure, and unreachable() describes it from said and
     context, such as asleep()'s reading when ssh started. A refused login is a configuration problem
-    (Misconfigured). Before the work was sent, every other failure, or none said, is a second Mac that
+    (Misconfigured). Before the work was sent, every other failure, or none said, is another Mac that
     cannot be reached (Unreachable). Once it was sent, only one in which ssh never logged in is: a last
     line that says ssh never connected (OFFLINE), or no SSH banner at all (NO_BANNER); the rest stops
     the work as unreachable() says, since the work may have started there."""
@@ -300,7 +300,7 @@ def ssh_failure(host, said, *context, sent=False):
         return Misconfigured(f"ssh reached {host} but could not log in: {line}{found}",
                              f"correct its entry in ~/.ssh/config, its host key in ~/.ssh/known_hosts or this Mac's key "
                              f"in its ~/.ssh/authorized_keys, until `ssh {host} true` succeeds without a prompt "
-                             "(doc/guides/shared-host.md, Setting up the second Mac)")
+                             "(doc/guides/shared-host.md, Setting up another Mac)")
     stop = unreachable(host, said, *context)
     if sent and line and not OFFLINE.search(line) and not banner: return stop
     return Unreachable(stop.problem, stop.fix)
@@ -314,7 +314,7 @@ def reachable(host, found=None):
     alone. Raise Unreachable when it cannot be reached, and Misconfigured when it answers but refuses
     the login or its login shell fails.
 
-    A .local name that does not resolve, or that answers with another key, may be a second Mac that
+    A .local name that does not resolve, or that answers with another key, may be another Mac that
     macOS renamed (rediscover): one found under a new name is checked there, and every connection of
     this process to host then goes to that name. A name an address of which answered on its ssh port
     reaches a Mac, so no rename explains a check that then failed, such as an `ssh HOST true` that did
@@ -357,11 +357,11 @@ def check(host, found=None):
         raise Misconfigured(f"{host}'s login shell could not run `true` (exit {checked.returncode}): "
                             f"{last_line(checked.stderr) or 'no output'}",
                             f"repair the login shell there, which every run uses, until `ssh {host} true` succeeds "
-                            "(doc/guides/shared-host.md, Setting up the second Mac)")
+                            "(doc/guides/shared-host.md, Setting up another Mac)")
 
 
 def answered(stop, addresses):
-    """stop, marked as a failure after an address of the second Mac answered on its ssh port, when connection()
+    """stop, marked as a failure after an address of another Mac answered on its ssh port, when connection()
     measured one that did (addresses), so that reachable() searches for no rename (vocaro/queuekeeper#25). Another
     key is a Misconfigured, and is searched for, since the name may now be another machine's."""
     stop.answered = isinstance(stop, Unreachable) and addresses is not None
@@ -402,7 +402,7 @@ def responsible_for(pid):
 
 
 def local_network_lost(pid=None):
-    """Why this process, or pid, probably has no Local Network access, for a connection to the second Mac that
+    """Why this process, or pid, probably has no Local Network access, for a connection to another Mac that
     failed; None while an app other than a Python is responsible for it, or macOS does not say (responsible_for)."""
     pid = pid or os.getpid()
     found = responsible_for(pid)
@@ -424,15 +424,15 @@ def moved(host):
 
 
 def rediscover(host):
-    """The new .local name of a second Mac that macOS renamed, or None, after saying what it found.
+    """The new .local name of another Mac that macOS renamed, or None, after saying what it found.
 
     macOS renames a Mac whose .local name another machine on the network claims, adding or raising a
-    -N suffix, and the old name then resolves to nothing, or to that other machine. The second Mac
+    -N suffix, and the old name then resolves to nothing, or to that other machine. Another Mac
     still offers ssh over Bonjour, under its computer name, so each Mac that does is resolved to its
     current name and asked, as ssh would ask the old name, to run `true` while presenting the key
-    known_hosts holds for the old name. That key is the second Mac's identity, not the name of either:
-    exactly one Mac presenting it is the second Mac, and RENAMED records it for every later connection
-    of this process. None found, or more than one, leaves the name as it is: a second Mac that is away."""
+    known_hosts holds for the old name. That key is another Mac's identity, not the name of either:
+    exactly one Mac presenting it is another Mac, and RENAMED records it for every later connection
+    of this process. None found, or more than one, leaves the name as it is: another Mac that is away."""
     settings = ssh_settings(host)
     old = (settings.get("hostname") or host).rstrip(".").lower()
     port = settings.get("port") or "22"
@@ -456,7 +456,7 @@ def rediscover(host):
 
 def searched(host):
     """What the search for host found when it found no Mac presenting its key, as words to add to the
-    problem; nothing when it was not searched for, or was found. A second Mac that Bonjour does not list
+    problem; nothing when it was not searched for, or was found. Another Mac that Bonjour does not list
     is away or asleep, not renamed, and one that Bonjour lists under another name but that presents
     another key is another machine: either way no rename explains the failure."""
     found = UNFOUND.get(host)
@@ -472,7 +472,7 @@ def renamed_fix(host):
     found = RENAMED[host]
     return (f"to keep it, set `HostName {found['to']}` under `Host {host}` in ~/.ssh/config, and `HostKeyAlias "
             f"{found['keyAlias']}` too, so a later rename needs no new known_hosts entry (doc/guides/shared-host.md, "
-            "Setting up the second Mac)")
+            "Setting up another Mac)")
 
 
 def presents(host, name, alias):
@@ -531,11 +531,11 @@ def last_line(text):
 
 
 def unreachable(host, detail, slept=None):
-    """A second Mac that ssh could not reach, as ssh's lines, detail, say: the last names the failure.
-    A .local name that did not resolve is multicast DNS, which only both Macs awake on one network
-    answer. A timeout says whether the second Mac's address answered at all. slept is asleep()'s
+    """Another Mac that ssh could not reach, as ssh's lines, detail, say: the last names the failure.
+    A .local name that did not resolve is multicast DNS, which only the Macs awake on one network
+    answer. A timeout says whether another Mac's address answered at all. slept is asleep()'s
     reading when ssh started, if it was read: a connection that this Mac slept through times out
-    whatever the second Mac does, since a Mac asleep answers nothing, and that is said instead."""
+    whatever another Mac does, since a Mac asleep answers nothing, and that is said instead."""
     lines = [line.strip() for line in (detail or "").splitlines() if line.strip()]
     said = lines[-1] if lines else None
     unresolved = re.search(r"Could not resolve hostname (\S+?):", said or "")
@@ -554,7 +554,7 @@ def unreachable(host, detail, slept=None):
         problem += (f"; this Mac slept for {sleep:.0f} s while ssh waited, and a Mac asleep answers nothing, so the "
                     f"timeout says nothing of {host}")
         return Misconfigured(problem, f"keep this Mac awake while queuekeeper connects to {host}; `ssh {host} true` shows "
-                                      f"whether {host} answers now (doc/guides/shared-host.md, How a run reaches the second "
+                                      f"whether {host} answers now (doc/guides/shared-host.md, How a run reaches another "
                                       "Mac)")
     remedy = (f"wake {host} and connect it to this Mac's network: {name} is a multicast DNS name, which resolves only "
               "while the Macs are awake on one network that passes multicast between them, as "
@@ -562,15 +562,15 @@ def unreachable(host, detail, slept=None):
               else f"see whether {host} is overloaded or its sshd is stuck, as `ssh -v {host} true` shows" if connected
               else f"wake {host} and connect it to the network")
     return Misconfigured(problem, f"{remedy}, or correct its entry in ~/.ssh/config or its authorized_keys, until "
-                                  f"`ssh {host} true` succeeds without a prompt (doc/guides/shared-host.md, Setting up the "
-                                  "second Mac)")
+                                  f"`ssh {host} true` succeeds without a prompt (doc/guides/shared-host.md, Setting up "
+                                  "another Mac)")
 
 
 def no_toolkit(host, status, detail):
     return Misconfigured(f"{host} could not run the toolkit (exit {status}): {detail or 'no output'}",
                          f"give {host}'s login shell a python3 that runs it: Homebrew's, which `qk remote setup` "
                          "installs, or the system's, which Xcode's command line tools provide "
-                         "(doc/guides/shared-host.md, Setting up the second Mac)")
+                         "(doc/guides/shared-host.md, Setting up another Mac)")
 
 
 def configured():
@@ -711,7 +711,7 @@ def toolkit_identity(kit, commit):
 
 
 def moved_trees(root, offered):
-    """The trees that work this Mac admitted after offering it to the second Mac would read in place of what it
+    """The trees that work this Mac admitted after offering it to another Mac would read in place of what it
     sent, as [(checkout, commit sent, what, the changes)]: a run here reads the checkout's working tree as it is
     when the run starts, and that tree is no longer the commit sent (vocaro-engineering#79). Empty for work for
     which nothing was sent, which runs the tree as it is."""
@@ -732,7 +732,7 @@ def moved_trees(root, offered):
 
 
 def changed_since(root, offered):
-    """Why work this Mac admitted after offering it to the second Mac would not run what it sent, or None
+    """Why work this Mac admitted after offering it to another Mac would not run what it sent, or None
     (moved_trees). A lane or a `qk admit` command then runs here from what it sent (sent_tree), and a lane whose
     toolkit alone changed with the toolkit it sent (sent_toolkit)."""
     moved = moved_trees(root, offered)
@@ -767,7 +767,7 @@ def remove_worktree(repository, path, private):
 
 @contextlib.contextmanager
 def sent_tree(root, sent, toolkit_moved=False):
-    """The trees `qk admit` sent to the second Mac, laid out here as the second Mac lays them out, for this Mac
+    """The trees `qk admit` sent to another Mac, laid out here as another Mac lays them out, for this Mac
     to run the command from once the tree here is no longer what was sent (moved_trees; vocaro-engineering#276):
     (checkout, toolkit). The checkout is a detached worktree of the project at the commit sent, in a temporary
     directory under the main checkout's name, with the toolkit beside it, where a project's relative paths to
@@ -825,7 +825,7 @@ def checkout_name(root):
 def origin(root):
     """The toolkit's origin for policy refresh, with GitHub SSH URLs normalized to HTTPS.
 
-    The second Mac writes it into the repository that every checkout of the toolkit there shares,
+    Another Mac writes it into the repository that every checkout of the toolkit there shares,
     so a path, such as a clone's origin naming the checkout it was cloned from, is refused: there it
     names another checkout, and every session's policy refresh fails until a dispatch sends a URL
     again (vocaro-engineering#78). The fix names that checkout's own origin, when it has a URL, or
@@ -858,13 +858,13 @@ def host_command(source, request):
 
 
 def login(script):
-    """Have the second Mac's login shell run script, so its PATH is Terminal's, Homebrew's included."""
+    """Have another Mac's login shell run script, so its PATH is Terminal's, Homebrew's included."""
     return f'exec "$SHELL" -l -c {shlex.quote(script)}'
 
 
 def ssh(host, script, **options):
     """Run script in host's login shell. When ssh's captured words say the name did not resolve or answered
-    with another key, ssh logged in nowhere and nothing ran, so a second Mac that macOS renamed is looked
+    with another key, ssh logged in nowhere and nothing ran, so another Mac that macOS renamed is looked
     for (rediscover) and, once found, script runs there: every connection finds it, not only those after
     reachable(), such as a foreground lane's and `qk remote foreground`'s (vocaro-engineering#129)."""
     run = lambda: subprocess.run([*SSH, *moved(host), host, login(script)], env=environment(), **options)
@@ -882,7 +882,7 @@ def renamed_failure(said):
 
 
 def send(root, host, repository, commit, advertised=None, sends=None):
-    """Push one commit by name to a bare repository on the second Mac, without the push hooks:
+    """Push one commit by name to a bare repository on another Mac, without the push hooks:
     this is no publication, and a pre-push hook would run the gates this offloads. Return the push's
     record, which sends, a list, also gets before the push starts, so that a push that fails or is
     stopped leaves its record: its exit status and seconds, what its lines say it cost (pushed), its
@@ -890,19 +890,19 @@ def send(root, host, repository, commit, advertised=None, sends=None):
     setting, unset by default.
 
     advertised is what the repository there said its checkouts hold before the push
-    (offload_host.advertise), or None when it said nothing. Git sends only what the second Mac lacks
+    (offload_host.advertise), or None when it said nothing. Git sends only what another Mac lacks
     of the commits it advertises that this Mac has too, so the push is warm when this Mac has one
     of them and cold, sending the commit's whole history, when it has none.
 
     Sessions that send one commit at once race for its ref, and the push that loses fails with
     "reference already exists" (RACED). The commit is then there all the same, so that push has sent
-    it, once the second Mac names it by the pushed ref or by a checkout's (holds). The winner's
+    it, once another Mac names it by the pushed ref or by a checkout's (holds). The winner's
     dispatch may already have placed it, deleting the pushed ref, and not yet named it as a
     checkout's; the push is then made again, up to RACE_PUSHES in all, and the record's attempts says
     how many it took and raced what the earlier ones said (vocaro-engineering#152). A ref that names
     another commit, or a failure that is no race, stops the send.
     A push still running after SEND_TIMEOUT seconds, or when a stop is requested, ends with
-    everything it started, and nothing of it enters the second Mac's repository."""
+    everything it started, and nothing of it enters another Mac's repository."""
     variables = {**environment(), "GIT_SSH_COMMAND": shlex.join([*SSH, *moved(host)])}
     known = advertised is not None and "commits" in advertised
     have = held(root, advertised["commits"]) if known and advertised["commits"] else []
@@ -928,7 +928,7 @@ def send(root, host, repository, commit, advertised=None, sends=None):
             raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository}: its ref {REF}{commit} "
                                 f"names {found['other'][:12]} instead",
                                 f"delete that ref with `git --git-dir ~/{repository} update-ref -d {REF}{commit}` on "
-                                f"{host} and send the work again (doc/guides/shared-host.md, How a run reaches the second Mac)")
+                                f"{host} and send the work again (doc/guides/shared-host.md, How a run reaches another Mac)")
         if not raced or attempt >= RACE_PUSHES: break
         print(f"remote: {commit[:12]} lost the race for its ref on {host}, which names it nowhere yet "
               f"({found['seen']}); pushing it again", file=sys.stderr, flush=True)
@@ -937,7 +937,7 @@ def send(root, host, repository, commit, advertised=None, sends=None):
                             f"the race for the commit's ref to another session's push of it, and then {host} named "
                             f"it neither by that ref nor by a checkout's ({found['seen']})",
                             "send the work again, or start dispatches of one commit a few seconds apart; nothing on "
-                            f"{host} needs repair (doc/guides/shared-host.md, How a run reaches the second Mac)")
+                            f"{host} needs repair (doc/guides/shared-host.md, How a run reaches another Mac)")
     raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository} (git push exited "
                         f"{record['status']}): {(record['said'] or ['no output'])[-1]}",
                         f"repair ~/{repository} on {host}, or free space there, until the push succeeds")
@@ -982,12 +982,12 @@ def push_once(root, host, repository, commit, variables, record, began):
                             f"and was stopped, so nothing ran there: {sending(record)}",
                             f"see whether the link between the Macs is slow, as Wi-Fi can be, or what keeps {host} from "
                             "taking the pack, as its disk or load; a push that completes leaves what it sent there, "
-                            "so the next sends only what is new (doc/guides/shared-host.md, How a run reaches the second Mac)")
+                            "so the next sends only what is new (doc/guides/shared-host.md, How a run reaches another Mac)")
     return pushing.returncode
 
 
 def holds(root, host, repository, commit, variables):
-    """What the second Mac's repository names commit by, after a push of it failed: commit, whether its
+    """What another Mac's repository names commit by, after a push of it failed: commit, whether its
     pushed ref or a checkout's (offload_host.CACHE) names it; other, the commit its pushed ref names
     instead, if any; and seen, what `git ls-remote` showed, as queuekeeper says it."""
     refs = [f"{REF}{commit}", f"{offload_host.CACHE}{commit}"]
@@ -1038,10 +1038,10 @@ def end(process):
 def pushed(lines):
     """What a push's lines, each (seconds since it started, text), say it cost, as far as they go.
 
-    phases: connect, from the push's start to the first line of the pack Git makes, which follows the
-    second Mac's ref advertisement and Git's search for what to send; pack, until Git began to write
-    the pack; transfer, until it wrote the pack's last byte, which the second Mac indexes as it
-    arrives; and receiver, until the second Mac reported the ref, which takes the rest of its indexing,
+    phases: connect, from the push's start to the first line of the pack Git makes, which follows another
+    Mac's ref advertisement and Git's search for what to send; pack, until Git began to write
+    the pack; transfer, until it wrote the pack's last byte, which another Mac indexes as it
+    arrives; and receiver, until another Mac reported the ref, which takes the rest of its indexing,
     its check that every object is there and the ref's update. A phase whose end the lines do not
     show is left out. objects and bytes are as Git reports them, the bytes to Git's rounding, and
     written as Git writes them; negotiationFailed says that push.negotiate's exchange failed and the
@@ -1087,7 +1087,7 @@ def sending(record):
 
 def preparing(preparation, phases, receipt):
     """What came before the work's queue, and then the queue's wait, as queuekeeper says it: preparation is
-    execute's, phases the second Mac's, and receipt the work's own there, which gives queueSeconds."""
+    execute's, phases another Mac's, and receipt the work's own there, which gives queueSeconds."""
     here = preparation.get("seconds", {})
     parts = [f"{label} {here[key]:.2f} s" for key, label in
              (("staging", "staging"), ("connection", "the preparing connection"), ("send", "the pushes")) if key in here]
@@ -1175,10 +1175,10 @@ def file_results(base, name, dispatch, staging=None, receipt=None, latest=True):
 
 def passed(root, lane, revision="HEAD"):
     """The receipt of a passing run of the whole lane at exactly revision's commit, kept by commit in the
-    repository's Git directory, or None: a run on the second Mac, whose ranOn is `second Mac`, or
+    repository's Git directory, or None: a run on another Mac, whose ranOn is `second Mac`, or
     `build host` in a receipt written before vocaro-engineering#58, or a run on this Mac in any worktree
     of the repository, whose ranOn is `this Mac` (keep_here, vocaro-engineering#198). The receipt is the
-    last such run's, on either Mac, so a later failure at the commit replaces a pass.
+    last such run's, on any Mac, so a later failure at the commit replaces a pass.
 
     A snapshot's run never counts, for HEAD or for the snapshot itself: no branch holds it. Nor
     does a run on a snapshot of the toolkit's working tree, nor a group's serial reference."""
@@ -1279,7 +1279,7 @@ def keep(kept, lane, receipt, results=None):
     """Keep receipt as the lane's at the commit whose directory in the store is kept: whole or not at all,
     for a reader beside a run of the lane at this commit that ends at once. With results, the run's
     results/ folder, what it holds is kept beside it, in LANE.results/ (kept_results), in place of an
-    earlier run's, and the receipt's keptResults names it: per-test lines and times that the second Mac's
+    earlier run's, and the receipt's keptResults names it: per-test lines and times that another Mac's
     checkout slot or the next run here would overwrite (vocaro-engineering#218). A run that wrote nothing
     there, or more than KEPT_RESULTS_LIMIT, keeps none, and an earlier run's go."""
     kept.mkdir(parents=True, exist_ok=True)
@@ -1311,12 +1311,12 @@ def keep(kept, lane, receipt, results=None):
 
 def keep_here(root, lane, receipt, status, whole=True, results=None):
     """Keep a judged run of the whole lane on this Mac by commit in the repository's Git directory, beside
-    the second Mac's, and return its path, or None when it is no commit's run. Every worktree reads it
+    another Mac's, and return its path, or None when it is no commit's run. Every worktree reads it
     there, as eng release, a checkpoint and `qk remote passed` do: the merge queue's gate on this Mac ran
     in the queue's own checkout, whose receipt no session's checkout reads and the next round replaces
     (vocaro-engineering#198).
 
-    It is kept only as a run on the second Mac is: the whole lane, with no arguments, --expect or --serial
+    It is kept only as a run on another Mac is: the whole lane, with no arguments, --expect or --serial
     (whole), at the checkout's commit with no working changes, by a toolkit with none, and run for this
     Mac, not for a Mac that sent it (DISPATCHER), which keeps the receipt itself. status is the lane's
     judged status, 0 only for a pass. A run with no verdict, interrupted or past its timeout, is not
@@ -1354,7 +1354,7 @@ def ran_where(receipt):
 def uncounted(root, lane):
     """Why a run of the lane from root now would be no commit's pass, naming the working tree's changes that
     make it so, or None when the tree has none (vocaro-engineering#197). A run on such a tree runs a snapshot
-    on the second Mac, or the changes here, and neither eng release, a checkpoint nor `qk remote passed`
+    on another Mac, or the changes here, and neither eng release, a checkpoint nor `qk remote passed`
     counts it."""
     try:
         changed = git(root, "diff", "--name-only", "HEAD").splitlines()
@@ -1382,14 +1382,14 @@ def describe(identity):
             f"({identity.get('build')}), {', '.join(xcode)})")
 
 
-# What a lane's command writes under its results' results/ on the second Mac, such as speech transcripts, comes
+# What a lane's command writes under its results' results/ on another Mac, such as speech transcripts, comes
 # back whole into the results' results/ here, however the run ended. The command finds that directory in
 # parallel.RESULTS_VARIABLE; a group's lanes each find results/LANE/ of the group's, which comes back with it.
 RESULTS = "results/"
-# What `qk admit`'s command changed on the second Mac in the checkout's files that Git does not ignore, as a binary
+# What `qk admit`'s command changed on another Mac in the checkout's files that Git does not ignore, as a binary
 # patch against the commit sent, which comes back beside the dispatch's results (offload_host.gather_changes).
 CHANGES = "changes.patch"
-# `qk admit`'s status when its command ran on the second Mac and the changes it made to the checkout could not be
+# `qk admit`'s status when its command ran on another Mac and the changes it made to the checkout could not be
 # applied here: the tree here changed after it was sent, the patch does not apply, or it did not come back. The
 # patch is kept under UNAPPLIED_DIRECTORY. sysexits' EX_CANTCREAT, which no other queuekeeper status uses.
 UNAPPLIED = 73
@@ -1397,13 +1397,13 @@ UNAPPLIED_DIRECTORY = ".build/queuekeeper/remote/unapplied"
 
 
 def brought_back(root, sent, status, products=True):
-    """`qk admit`'s or `qk remote admit`'s status once what its command changed on the second Mac is applied to the
+    """`qk admit`'s or `qk remote admit`'s status once what its command changed on another Mac is applied to the
     checkout here: its own status there, or UNAPPLIED, after saying why and where the patch is kept, when the changes
     cannot be applied.
 
     The patch applies only while the tree here is still the one sent (changed_since): a session that edited the
     checkout meanwhile keeps its edits, and the patch waits for it. git apply applies all of it or none. Files Git
-    ignores, such as the command's build products, stay on the second Mac, which is said in one line when products:
+    ignores, such as the command's build products, stay on another Mac, which is said in one line when products:
     `qk admit` chose that Mac for the command, while `qk remote admit` was sent there on purpose."""
     ran = sent.get("ran")
     if not ran: return status
@@ -1412,7 +1412,7 @@ def brought_back(root, sent, status, products=True):
               f"stayed in {ran.get('checkout') or 'its checkout there'}; `qk admit --here` runs it on this Mac and "
               "keeps them here", file=sys.stderr, flush=True)
     changes = ran.get("changes")
-    # The command did not run there, as when the second Mac declined it, or its provision lane failed.
+    # The command did not run there, as when another Mac declined it, or its provision lane failed.
     if changes is None: return status
     if changes.get("error"):
         print(f"queuekeeper: what the command changed in the checkout could not be gathered on another Mac, so it stays "
@@ -1458,8 +1458,8 @@ def apply_changes(root, sent_commit, patch, named, where, name, status):
 
 def brought_back_here(root, sent_commit, checkout, status):
     """`qk admit`'s status once what its command changed in the worktree of what it sent (sent_tree) is applied to
-    the checkout here, as brought_back applies what it changed on the second Mac, or UNAPPLIED. The patch is
-    gathered as the second Mac gathers it (offload_host.gather_changes)."""
+    the checkout here, as brought_back applies what it changed on another Mac, or UNAPPLIED. The patch is
+    gathered as another Mac gathers it (offload_host.gather_changes)."""
     name = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}-here"
     with tempfile.TemporaryDirectory(prefix="eng-changes-") as directory:
         patch = Path(directory) / CHANGES
@@ -1475,7 +1475,7 @@ def brought_back_here(root, sent_commit, checkout, status):
 
 
 def returned_path(path, returns):
-    """Whether a file the second Mac sends back is one the plan asked for: one of returns by its exact path, or a
+    """Whether a file another Mac sends back is one the plan asked for: one of returns by its exact path, or a
     file under one of them that ends in /, by a relative path that leaves it nowhere."""
     if not isinstance(path, str) or not returns: return False
     parts = Path(path).parts
@@ -1504,7 +1504,7 @@ def asleep():
 
 
 def heartbeat(channel, seconds):
-    """Write a heartbeat to the second Mac's standard input every this many seconds until the connection ends, from
+    """Write a heartbeat to another Mac's standard input every this many seconds until the connection ends, from
     a thread of its own, so that a stalled reader of this run's output does not read there as this Mac's crash."""
     while channel.poll() is None:
         time.sleep(seconds)
@@ -1519,7 +1519,7 @@ def dispatch_records():
 
 def remember_dispatch(journal, host):
     """Record this process as a journaled run's dispatcher, and return the record's path, or None when it cannot be
-    recorded: a run this Mac cannot then find again ends at its bound on the second Mac, as any unattended run does."""
+    recorded: a run this Mac cannot then find again ends at its bound on another Mac, as any unattended run does."""
     try:
         path, start = dispatch_records() / f"{journal}.json", resources.process_start(os.getpid())
         if start is None: raise OSError("this process's start time cannot be read")
@@ -1543,8 +1543,8 @@ def dispatcher_dead(pid, start):
 
 
 def stop_dead_dispatches():
-    """Stop each run on the second Mac whose dispatcher on this Mac is proven dead, by its own journal alone, so that
-    the run leaves admission and frees its checkout the usual way. Only a record the second Mac has answered for is
+    """Stop each run on another Mac whose dispatcher on this Mac is proven dead, by its own journal alone, so that
+    the run leaves admission and frees its checkout the usual way. Only a record another Mac has answered for is
     removed: one it could not be asked about stays for a later dispatch or worker, and says nothing was stopped."""
     try: paths = sorted(dispatch_records().glob("*.json"))
     except OSError: return
@@ -1577,7 +1577,7 @@ def stop_dead_dispatches():
 def lost(host, status, said, dispatched, slept, output, journal=None, gone=False):
     """What `qk remote` says of a run that returned no result: ssh's own last line, said, when it exits
     255 for a failure of its own; when the run was dispatched and lost, in UTC; and how long this Mac
-    slept in between, of which slept is asleep()'s reading at the dispatch. journal is where the second Mac
+    slept in between, of which slept is asleep()'s reading at the dispatch. journal is where another Mac
     keeps a run that outlives its connection, and gone says that its process there ended with no result."""
     now, sleeping = time.time(), asleep()
     moment = lambda seconds: time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(seconds))
@@ -1594,7 +1594,7 @@ def lost(host, status, said, dispatched, slept, output, journal=None, gone=False
 
 
 def detached_seconds(config, lane, work):
-    """How long a run on the second Mac may last with nobody attending it: its own timeouts, each lane's,
+    """How long a run on another Mac may last with nobody attending it: its own timeouts, each lane's,
     N times the lane's for a --repeat series as qk run limits it there, or the time limit work's `qk admit`
     carries, with UNATTENDED_WAIT for what comes before them. queuekeeper stops each of them at its timeout there, and
     this bounds an queuekeeper that does not."""
@@ -1610,7 +1610,7 @@ def detached_seconds(config, lane, work):
 
 
 def tell(channel, word):
-    """Say a word to offload_host.py on the second Mac (offload_host.watch), if the connection still takes it."""
+    """Say a word to offload_host.py on another Mac (offload_host.watch), if the connection still takes it."""
     try:
         channel.stdin.write(word + b"\n")
         channel.stdin.flush()
@@ -1621,7 +1621,7 @@ def tell(channel, word):
 def hang_up(channel):
     """Close channel's standard input once its connection has ended. A word it could no longer take, such as a
     heartbeat that woke after a busy decline, stays in the writer's buffer, and closing tries it once more: that
-    fails with a broken pipe, which here means only that the second Mac's end has closed, as the connection's end
+    fails with a broken pipe, which here means only that another Mac's end has closed, as the connection's end
     already says. Left open, the writer's finalizer would try it again, in whichever thread drops the channel last,
     and print the failure as an ignored exception (vocaro-engineering#380). Any other failure is raised."""
     try: channel.stdin.close()
@@ -1629,7 +1629,7 @@ def hang_up(channel):
 
 
 class Frames:
-    """What one dispatch has heard from the second Mac, in order, across every connection that carried it: the
+    """What one dispatch has heard from another Mac, in order, across every connection that carried it: the
     lane's log and the output, kept in log and output, and what came back in staging, the files in returned.
 
     A later connection sends the run's journal from its start (offload_host.reattach), so rewind has the log and
@@ -1710,7 +1710,7 @@ class Frames:
         return kind
 
 
-# What a lane run on the second Mac says while it runs (vocaro-engineering#320). On 2026-11-08 a working 27-minute
+# What a lane run on another Mac says while it runs (vocaro-engineering#320). On 2026-11-08 a working 27-minute
 # BreezEPUB run wrote nothing here, a session took it for a stalled one, and stopping it lost its iPad result. The
 # lines count for nothing: they go to this Mac's stderr, never into run.log or output.log, which stay what the second
 # Mac wrote. The bound: a heartbeat each PROGRESS_INTERVAL seconds, 41 over the longest lane timeout measured then
@@ -1758,7 +1758,7 @@ def clock_line(config, lane, arguments=()):
 
 
 class Progress:
-    """A lane's run on the second Mac, as this Mac sees it arrive: its progress lines relayed with the time they came,
+    """A lane's run on another Mac, as this Mac sees it arrive: its progress lines relayed with the time they came,
     and a heartbeat that says only what is known, whether its log grew. An open connection is no progress, so a heartbeat
     never says a run is working: a reader compares its numbers. Nothing here can end the run: a stderr that has closed
     ends these lines, not the lane (a redirect's reader that left, say). A group's lanes log apart, and those logs come
@@ -1813,31 +1813,31 @@ class Progress:
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
             serial=False, subdirectory=None, sent=None, changes=False, slot=None, slot_wait=None):
-    """Run queuekeeper's work on the second Mac and return its exit status, with the log and receipt kept here.
+    """Run queuekeeper's work on another Mac and return its exit status, with the log and receipt kept here.
 
-    work is the second Mac's queuekeeper arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
+    work is another Mac's queuekeeper arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
     admit [--exclusive | --model] -- COMMAND, which runs in the checkout's root, or in its subdirectory
     when one is named. It runs at HEAD, or at a snapshot commit of the working tree when that has
     uncommitted changes. A lane group's lanes' logs and receipts come back under the results' lanes/
     once the run there ends, however it ended (group_files), and what a lane wrote under its results'
-    results/ comes back under the results' results/ (RESULTS). The second Mac waits for a checkout and
+    results/ comes back under the results' results/ (RESULTS). Another Mac waits for a checkout and
     for its own admission; with decline, it refuses work it cannot start now instead, and Busy says
-    why, as it does when no checkout came free in time. Unreachable says that ssh could not reach the
-    second Mac before the work was sent, and Misconfigured what of the second Mac's configuration kept
-    the work from running there, and what fixing it takes. The second Mac's device record defers
+    why, as it does when no checkout came free in time. Unreachable says that ssh could not reach another
+    Mac before the work was sent, and Misconfigured what of another Mac's configuration kept
+    the work from running there, and what fixing it takes. Another Mac's device record defers
     physical devices to this Mac's, and lease gives the run the reservations it carries from here.
     serial says the work runs a group's lanes in turn: the serial reference, whose result, like a
     snapshot's, is no commit's pass. sent, when given, keeps what the first call sent: a later call
     with it offers the same commits again, without a snapshot, the preparing connection or a push,
-    since the second Mac holds them. With changes, what the command changed in the checkout's files that Git
+    since another Mac holds them. With changes, what the command changed in the checkout's files that Git
     does not ignore comes back as a patch, CHANGES, beside the results (offload_host.gather_changes), and sent's
     ran says where the results are and what the patch holds (brought_back). With slot, only that checkout slot
-    will do, and the second Mac waits for it for slot_wait seconds (offload_host.claim); the receipt's
+    will do, and another Mac waits for it for slot_wait seconds (offload_host.claim); the receipt's
     checkoutSlot says which was asked for and given, where it is, and how long the wait for it took.
 
-    The receipt's preparation records what came before the second Mac's queue: the seconds of
+    The receipt's preparation records what came before another Mac's queue: the seconds of
     staging the commits, the preparing connection and the pushes here, each push's record (send),
-    and both Macs' Git. The result's phases give the second Mac's wait for a checkout, placing the
+    and each Mac's Git. The result's phases give another Mac's wait for a checkout, placing the
     commits there and each queuekeeper command, and the work's own receipt its queue's wait. A dispatch's
     results stay in a directory of their own as well as in the latest (file_results); a push that
     fails or is stopped leaves its preparation there, with nothing in the latest.
@@ -1883,15 +1883,15 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     kept = store(root) / commit
     members = group_files(config, lane)
     returns = [*(members or []), RESULTS] if lane is not None else [CHANGES] if changes else None
-    # Only commits go to the second Mac for the folders beside the project, so one its origin lacks cannot run there.
+    # Only commits go to another Mac for the folders beside the project, so one its origin lacks cannot run there.
     unsent = pins.local(pins.held())
     if unsent:
         raise ValueError(f"{name} not sent to {host}: {' and '.join(unsent)} {'is' if len(unsent) == 1 else 'are'} "
                          "pinned for this run at a commit its origin does not hold, which another Mac cannot "
                          "fetch; push it, or run on this Mac with --here")
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
-            # The folders beside the project its extensions load from, each at the commit this run pinned, which the
-            # second Mac takes from its own checkout of the folder (pins.dispatched, offload_host.place_siblings).
+            # The folders beside the project its extensions load from, each at the commit this run pinned, which another
+            # Mac takes from its own checkout of the folder (pins.dispatched, offload_host.place_siblings).
             "siblings": pins.dispatched(root, sibling_variables(root)),
             "decline": decline, "busy": BUSY,
             "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
@@ -1941,10 +1941,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             gap = toolkit_gap(toolkit)
             if gap: print(f"remote: {gap}", file=sys.stderr, flush=True)
         # The connection that prepares the repositories also lists what earlier runs left running there,
-        # before any work is sent: a connection to the second Mac can take seconds of its own. It has
+        # before any work is sent: a connection to another Mac can take seconds of its own. It has
         # each repository name the commits its checkouts hold, which the pushes then need not send.
         attempt, moment = asleep(), time.monotonic()
-        # It also fast-forwards the second Mac's own toolkit checkout when it can, which no run there uses
+        # It also fast-forwards another Mac's own toolkit checkout when it can, which no run there uses
         # (vocaro-engineering#203): bounded, and nothing of it stops the work.
         census = census_command(repositories, reap_request(root), update=update_request(),
                                 siblings=sibling_requests(root))
@@ -1957,7 +1957,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             raise Misconfigured(f"{host} could not prepare ~/{ROOT} (exit {prepared.returncode}): "
                                 f"{last_line(prepared.stderr) or 'no output'}",
                                 f"make ~/{ROOT} writable there and install the Xcode this Mac uses, with its license "
-                                "accepted and its first launch run (doc/guides/shared-host.md, Setting up the second Mac)")
+                                "accepted and its first launch run (doc/guides/shared-host.md, Setting up another Mac)")
         for line in reap_lines(host, final_object(prepared).get("reap"), listing=False):
             print(f"remote: {line}", file=sys.stderr, flush=True)
         for line in leftover_lines(host, *read_census(prepared)):
@@ -2027,7 +2027,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             return stopping is not None
 
         def carry(channel):
-            """Take what channel brings, until its end, saying a stop to the second Mac when one comes."""
+            """Take what channel brings, until its end, saying a stop to another Mac when one comes."""
             lines, told = queue.Queue(), False
             def relay():
                 for line in iter(channel.stdout.readline, b""): lines.put(line)
@@ -2056,7 +2056,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         def collect():
             """Reconnect, as often as it takes, until a connection brings the run's result or says it has gone. This
             Mac's waking time counts, so that a sleep of any length leaves the tries it allows. A stop has its usual
-            wait, within which a connection says it to the second Mac."""
+            wait, within which a connection says it to another Mac."""
             print(f"remote: the connection to {host} ended; the run goes on there, and this dispatch reconnects to "
                   "collect it", file=sys.stderr, flush=True)
             limit, tries = time.monotonic() + detached + REATTACH_GRACE, 0
@@ -2175,7 +2175,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                             f"{result.get('checkout')}, so {name} did not run there; its log is {own / 'run.log'}",
                             f"give {host} what provisioning needs, which that log names, such as a tool "
                             "`qk remote setup` installs or the git-credentials token for private dependencies "
-                            "(doc/guides/shared-host.md, Setting up the second Mac)")
+                            "(doc/guides/shared-host.md, Setting up another Mac)")
     return exit_status(result)
 
 
@@ -2191,7 +2191,7 @@ def exit_status(result):
 
 def checkout_request(args):
     """The checkout slot --checkout-slot names and the seconds to wait for it, as (slot, wait), or (None, None)
-    without one. A value the second Mac's pool does not hold is a refusal here, before anything is sent."""
+    without one. A value another Mac's pool does not hold is a refusal here, before anything is sent."""
     slot, wait = args.checkout_slot, args.checkout_wait
     if slot is None:
         if wait is not None: raise ValueError("--checkout-wait bounds the wait for a slot: add --checkout-slot")
@@ -2204,22 +2204,22 @@ def checkout_request(args):
     return int(slot), wait
 
 
-# Seconds exclusive work sent with `qk remote admit --exclusive` is offered to the second Mac to start at once,
-# before it takes a place in the second Mac's queue (exclusive_offers).
+# Seconds exclusive work sent with `qk remote admit --exclusive` is offered to another Mac to start at once,
+# before it takes a place in another Mac's queue (exclusive_offers).
 EXCLUSIVE_PARK_SECONDS = 900
 
 
 def exclusive_offers(name, offer, park, park_after=None, clock=time.monotonic, sleep=time.sleep):
-    """offer()'s status once the second Mac starts the exclusive work at once, or park()'s, its status after
-    waiting in the second Mac's queue, once EXCLUSIVE_PARK_SECONDS of offers it declined have passed.
+    """offer()'s status once another Mac starts the exclusive work at once, or park()'s, its status after
+    waiting in another Mac's queue, once EXCLUSIVE_PARK_SECONDS of offers it declined have passed.
 
     Exclusive work queued on a Mac holds back every later request there while the slots it needs drain
     (resources.Admission, doc/guides/shared-host.md). Queued from the start, a gate suite sent as exclusive work
-    kept the second Mac at under 20% CPU, refusing every lane for 12 minutes while one lane drained, and those
-    lanes all went to this Mac (2026-11-12). So it is offered first as `--if-free` work: the second Mac starts it
+    kept another Mac at under 20% CPU, refusing every lane for 12 minutes while one lane drained, and those
+    lanes all went to this Mac (2026-11-12). So it is offered first as `--if-free` work: another Mac starts it
     only while every slot is free and no request queued ahead of it waits, carrying the work's arrival from the
     first offer (requestStarted), so it never starts before older work; a declined offer leaves no place behind,
-    since the second Mac's admit leaves its place as its process ends. Offers come OVERFLOW_WAIT apart, doubling
+    since another Mac's admit leaves its place as its process ends. Offers come OVERFLOW_WAIT apart, doubling
     to OVERFLOW_WAIT_MAX. Work that keeps finding a slot busy would wait forever that way, so after park_after
     seconds it queues there at its first arrival, and slots drain toward it as before."""
     deadline = clock() + (EXCLUSIVE_PARK_SECONDS if park_after is None else park_after)
@@ -2254,7 +2254,7 @@ def not_run_if_busy(name, send):
 
 def commit_arguments(declarations):
     """Verify --git-commit REPOSITORY=SHA locally, before dispatch. Only commits qualify; no repository
-    path or exemption needs to reach the second Mac, whose admitted command keeps the original argv."""
+    path or exemption needs to reach another Mac, whose admitted command keeps the original argv."""
     commits = set()
     for declaration in declarations:
         repository, separator, commit = declaration.rpartition("=")
@@ -2294,7 +2294,7 @@ def main(root, config, args):
         if args.serial and "parallel" not in lane:
             raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
         extra = args.passed or []
-        # The second Mac runs a group's lanes in turn under its own admission, as `qk run --serial` does here.
+        # Another Mac runs a group's lanes in turn under its own admission, as `qk run --serial` does here.
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         budget = lane.get("timeout") if "parallel" not in lane else None
@@ -2348,9 +2348,9 @@ def main(root, config, args):
 
 
 def foreground_lane(root, config, lane, arguments, expect):
-    """Run a foreground lane on the second Mac, as `qk remote run` does, where queuekeeper waits for its foreground and
+    """Run a foreground lane on another Mac, as `qk remote run` does, where queuekeeper waits for its foreground and
     holds it for the run (foreground.slot). It never falls back to this Mac, the owner's workstation, whose
-    foreground needs the owner's window first and then `qk run --here`: a second Mac that is not configured or
+    foreground needs the owner's window first and then `qk run --here`: another Mac that is not configured or
     cannot be reached stops the lane."""
     hosts = farm.foreground()
     if not hosts:
@@ -2420,10 +2420,10 @@ def there_lane(root, config, lane, arguments, expect, why, hosts=None):
 
 
 def offering_here(here, send):
-    """send()'s status, for foreground work bound for the second Mac. When the second Mac cannot be reached,
+    """send()'s status, for foreground work bound for another Mac. When another Mac cannot be reached,
     the Unreachable it raises also says that the owner can approve a window on this Mac's foreground, within
     which here runs the work, since foreground work never moves to this Mac by itself: without that, a
-    session read waking the second Mac as the only fix and stopped without asking (2026-10-31)."""
+    session read waking another Mac as the only fix and stopped without asking (2026-10-31)."""
     try:
         return send()
     except Unreachable as away:
@@ -2434,7 +2434,7 @@ def offering_here(here, send):
 
 
 def foreground_report(host):
-    """Print what the second Mac lacks for foreground work started over SSH, each with the owner's fix, and who
+    """Print what another Mac lacks for foreground work started over SSH, each with the owner's fix, and who
     holds its foreground; exit 0 when it lacks nothing, MISCONFIGURED otherwise."""
     found = ask(host, {"foreground": True})
     entry = found.get("entry")
@@ -2443,7 +2443,7 @@ def foreground_report(host):
         f"expected release {entry.get('expectedReleaseBy')}"
     print(f"{found.get('mac')}'s foreground: {holder}")
     for line in crash_dialog_report(found.get("crashDialogs"), entry): print(line)
-    if "captureApprovals" in found:  # a second Mac whose toolkit predates them says nothing
+    if "captureApprovals" in found:  # another Mac whose toolkit predates them says nothing
         for line in extensions.FOREGROUND.capture_lines(found["captureApprovals"]): print(line)
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
@@ -2456,8 +2456,8 @@ def foreground_report(host):
 
 
 def crash_dialog_report(found, entry):
-    """What `qk remote foreground` says of the second Mac's crash-report dialogs and system alerts: a DialogType
-    left off with no run holding the foreground, and every alert over the screen (crash_alerts.py). A second Mac
+    """What `qk remote foreground` says of another Mac's crash-report dialogs and system alerts: a DialogType
+    left off with no run holding the foreground, and every alert over the screen (crash_alerts.py). Another Mac
     whose toolkit predates them says nothing."""
     if not found: return []
     lines = []
@@ -2486,8 +2486,8 @@ def crash_dialog_report(found, entry):
 def install_script(formulae):
     """Find Homebrew, put it first on the login shell's PATH in ~/.zprofile, and install formulae.
 
-    Installing Homebrew itself needs the second Mac's password, which only the owner types, so a
-    second Mac without it ends the script with NO_HOMEBREW and nothing changed."""
+    Installing Homebrew itself needs another Mac's password, which only the owner types, so another
+    Mac without it ends the script with NO_HOMEBREW and nothing changed."""
     candidates = " ".join(shlex.quote(candidate) for candidate in BREW)
     return f"""set -u
 brew=$(command -v brew || true)
@@ -2519,7 +2519,7 @@ echo "setup: brew install {' '.join(formulae)}"
 
 def verify_script(formulae, modules, developer=None, siblings=()):
     """One `ok` or `MISSING` line for each thing the gates need, read by a fresh login shell, as
-    `qk remote` reads the second Mac; exit 1 when anything is missing. The last line is the
+    `qk remote` reads another Mac; exit 1 when anything is missing. The last line is the
     version of the Xcode at developer, the path a run there uses, which the caller compares. siblings are
     (name, clone) for each folder beside the project that its extensions load from, whose checkout there
     setup only checks: making it is the owner's step, clone the command that does (vocaro/queuekeeper#117)."""
@@ -2556,9 +2556,9 @@ def verify_script(formulae, modules, developer=None, siblings=()):
 
 
 def setup(host, formulae, modules, check, runtimes=False, root=None):
-    """Install what the gates use on the second Mac, then check it as `qk remote` will see it.
-    With check, only check. With runtimes, give both Macs the same simulator runtimes instead
-    (match_runtimes). With root, it also checks that the second Mac has its own checkout of each folder
+    """Install what the gates use on another Mac, then check it as `qk remote` will see it.
+    With check, only check. With runtimes, give the Macs the same simulator runtimes instead
+    (match_runtimes). With root, it also checks that another Mac has its own checkout of each folder
     beside the project that its extensions load from, and names the clone that makes one it lacks, which it
     leaves to the owner (vocaro/queuekeeper#117)."""
     if runtimes:
@@ -2636,8 +2636,8 @@ OBJECT_TIMEOUT = 10
 
 
 def runtime_pins():
-    """The runtime builds something pins (PINNED_BUILDS), which offload_host cannot read on the
-    second Mac, since it imports nothing but itself there: a superseded one keeps its users."""
+    """The runtime builds something pins (PINNED_BUILDS), which offload_host cannot read on another
+    Mac, since it imports nothing but itself there: a superseded one keeps its users."""
     return sorted({build for pinned in PINNED_BUILDS for build in pinned()})
 
 
@@ -2657,7 +2657,7 @@ def runtime_lock():
 def runtime_plan(found, stores, host):
     """A step for each runtime that only one Mac lists: the runtime, its build, the Mac that has it
     (source), the one that lacks it (target), and how the two come to match: a delete from the source
-    when no simulator but Xcode's defaults uses it there, so a runtime nobody uses costs neither Mac
+    when no simulator but Xcode's defaults uses it there, so a runtime nobody uses costs no Mac
     its space (none uses a build its identifier no longer resolves to, offload_host.images), else a
     copy of the source's image to the target when that can be read, else a download there by its
     build, else None, with why."""
@@ -2722,7 +2722,7 @@ def send_runtime(host, image, developer, report):
                     sent += len(chunk)
                     report(sent)
         except BrokenPipeError:
-            pass  # The second Mac stopped reading, and its answer says why.
+            pass  # Another Mac stopped reading, and its answer says why.
         except OSError as error:
             failure = f"reading {image['file']} failed: {error}"
         finally:
@@ -2789,11 +2789,11 @@ def match_runtimes(host, check):
     developer directory lists, as `qk doctor` compares them, and return 0 once both list the same.
 
     A runtime only one Mac lists that no simulator but Xcode's defaults uses there is deleted from
-    that Mac (the owner's decision, 2026-11-03). Any other goes to the other Mac as its own disk
+    that Mac (the owner's decision, 2026-11-03). Any other goes to another Mac as its own disk
     image, over SSH: staged there, and added with `simctl runtime add --move`, so no second copy
     stays. One whose image cannot be read is downloaded there with xcodebuild, by its build. A copy or
     download that would leave less than RUNTIME_MARGIN free where it lands is refused before it
-    starts. Then both Macs' runtimes are listed again, and what still differs is named. With
+    starts. Then each Mac's runtimes are listed again, and what still differs is named. With
     check, say what it would do and change nothing."""
     developer = developer_directory()
     if developer is None:
@@ -2826,7 +2826,7 @@ def bring_runtimes(host, developer, check):
     if found[HERE]["xcode"] != found[host].get("xcode"):
         there = version(found[host]["xcode"]) if found[host].get("xcode") else "missing"
         print(f"runtimes: the Xcode at {developer} is {version(found[HERE]['xcode'])} on this Mac and {there} on "
-              f"{host}; install this Mac's Xcode at that path there first (doc/guides/shared-host.md, Setting up the second "
+              f"{host}; install this Mac's Xcode at that path there first (doc/guides/shared-host.md, Setting up another "
               "Mac)", flush=True)
         return 1
     xcode = f"{version(found[HERE]['xcode'])} at {developer}"
@@ -2904,7 +2904,7 @@ def bring_runtimes(host, developer, check):
         print(f"runtimes: {len(plan)} runtime(s) differ; `qk remote setup --runtimes` or `qk doctor` evens them out",
               flush=True)
         return 1
-    # What both Macs list now decides the outcome, not what each step reported.
+    # What the Macs list now decides the outcome, not what each step reported.
     found = toolchains(host, developer)
     for side in (HERE, host):
         if found[side].get("runtimes") is None:
@@ -2921,13 +2921,13 @@ def bring_runtimes(host, developer, check):
 
 
 def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False, exclude=None, hosts=None):
-    """Offer a lane to the second Mac to start now, once (Offer.make), and return the Offer.
+    """Offer a lane to another Mac to start now, once (Offer.make), and return the Offer.
 
-    With fallback, the offer first reads both Macs' capacity for the lane (Offer.attempt): a whole-host
-    lane needs every guaranteed slot of its Mac, an exclusive one every slot. The second Mac runs the
+    With fallback, the offer first reads each Mac's capacity for the lane (Offer.attempt): a whole-host
+    lane needs every guaranteed slot of its Mac, an exclusive one every slot. Another Mac runs the
     lane only if it can start it now: its queue admits the lane within FREE_WAIT (`qk run --if-free`
     there) and one of the project's checkouts there is free. A tree with uncommitted changes goes as a
-    snapshot commit (execute), and so does the toolkit's. The second Mac cannot run a lane whose
+    snapshot commit (execute), and so does the toolkit's. Another Mac cannot run a lane whose
     arguments name a physical device of this Mac's record, nor any lane when Git cannot name the
     commits to send. With queue_gate, for a queue worker's own `qk run` of a gate's lane, a process that lost Local
     Network access ends with LOST_ACCESS rather than the work running on this Mac (Offer.lost_access).
@@ -2977,7 +2977,7 @@ def simulators(command):
     return found
 
 
-# Where the system tools a command starts or uses as an interpreter live, the same on both Macs: a path under one of
+# Where the system tools a command starts or uses as an interpreter live, the same on the Macs: a path under one of
 # these names no file of this Mac's alone (local_paths). /dev too, for /dev/null in a shell's redirection.
 # A root itself, spelled without its slash as PATH=/usr/bin:/bin spells it, is shared too (#379), though /binary is not.
 SHARED_PATHS = ("/usr/", "/bin/", "/sbin/", "/dev/", "/opt/homebrew/", "/Library/Developer/")
@@ -2988,10 +2988,10 @@ PATH_SEPARATOR = re.compile(r"""[\s'"=:;&|()<>]+""")
 
 
 def local_paths(command, top):
-    """Why the second Mac cannot run command as it runs here because a word names a path of this Mac's alone, or
+    """Why another Mac cannot run command as it runs here because a word names a path of this Mac's alone, or
     None: an absolute path outside the checkout, such as a session's scratchpad, /private/tmp, /tmp or the toolkit's
-    checkout, or one under ~, none of which the second Mac has. A path in the checkout says this checkout's path. The
-    system tools a command starts or uses as an interpreter are on both Macs: a path under SHARED_PATHS or Xcode, and
+    checkout, or one under ~, none of which another Mac has. A path in the checkout says this checkout's path. The
+    system tools a command starts or uses as an interpreter are on the Macs: a path under SHARED_PATHS or Xcode, and
     one that is what PATH resolves its name to."""
     for word in map(str, command):
         for part in PATH_SEPARATOR.split(word):
@@ -3017,7 +3017,7 @@ TEE_OUTPUTS = re.compile(r"""(?:^|(?<=[\s|;&(]))tee(?:\s+[^\s;&|()<>]+)*""")
 
 
 def ignored_inputs(command, top, directory):
-    """Why the second Mac cannot run command as it runs here because a word names, relative to directory, a file
+    """Why another Mac cannot run command as it runs here because a word names, relative to directory, a file
     in the checkout that exists now and Git ignores, such as a session's scratch script under .build (#390), or
     None. The commit sent leaves out every file Git ignores. A directory keeps nothing here: one Git ignores is most
     often build output the command makes there itself, such as DerivedData or a scratch path. A tracked file Git
@@ -3048,9 +3048,9 @@ def ignored_inputs(command, top, directory):
 
 
 def local_environment(environment=None):
-    """Why the second Mac cannot run a command as it runs here because of this Mac's environment, or None. Its login
+    """Why another Mac cannot run a command as it runs here because of this Mac's environment, or None. Its login
     shell has none of this Mac's variables: an xcodebuild TEST_RUNNER_ variable would not reach the tests there.
-    DEVELOPER_DIR goes with every dispatch, and the second Mac refuses the work as misconfigured when its Xcode
+    DEVELOPER_DIR goes with every dispatch, and another Mac refuses the work as misconfigured when its Xcode
     there differs, which only an ssh call could compare beforehand; a command that selects one stays here."""
     environment = os.environ if environment is None else environment
     runner = sorted(key for key in environment if key.startswith("TEST_RUNNER_"))
@@ -3063,14 +3063,14 @@ def local_environment(environment=None):
 
 
 def first_command(root, config, command, kind):
-    """Offer `qk admit`'s command to the second Mac to start now, once, as first() offers a lane,
-    to run in the directory of its checkout that matches the current one here; return the Offer. The
-    second Mac cannot run it as it runs here when its directory is outside the checkout or one Git
+    """Offer `qk admit`'s command to another Mac to start now, once, as first() offers a lane,
+    to run in the directory of its checkout that matches the current one here; return the Offer. Another
+    Mac cannot run it as it runs here when its directory is outside the checkout or one Git
     ignores, which the commit sent lacks, or when its words name this checkout's path, a simulator by
     its identifier, or a hardware UDID (devices.named), all of which are this Mac's, a path of this Mac's
     alone (local_paths) or a file Git ignores (ignored_inputs), or when this Mac's environment sets TEST_RUNNER_ variables or DEVELOPER_DIR
     (local_environment); a device goes
-    to the second Mac only under a reservation `qk remote admit --device` carries. kind is
+    to another Mac only under a reservation `qk remote admit --device` carries. kind is
     --exclusive or --model, if either, and --time-limit when the command has a limit of its own."""
     top, directory, words = Path(root).resolve(), Path.cwd().resolve(), " ".join(command)
     try:
@@ -3092,7 +3092,7 @@ def first_command(root, config, command, kind):
                    "reservation `qk remote admit --device` carries from here")
     else:
         refused = local_paths(command, top) or ignored_inputs(command, top, directory) or local_environment()
-    # The second Mac's admission takes it now or declines it, as `qk run --if-free` does a lane. There it runs
+    # Another Mac's admission takes it now or declines it, as `qk run --if-free` does a lane. There it runs
     # where it was sent, since it runs for the Mac that sent it (DISPATCHER).
     work = ["admit", *kind, "--if-free", "--", *command]
 
@@ -3107,14 +3107,14 @@ def first_command(root, config, command, kind):
 
 
 class Offer:
-    """Work offered to the second Mac to start now, which it runs or declines before anything runs.
+    """Work offered to another Mac to start now, which it runs or declines before anything runs.
 
     send(host, sent) runs the work there (execute), keeping in sent what it sent, so that the work
-    can be offered again without a second snapshot or push. refused is why the second Mac cannot run
+    can be offered again without a second snapshot or push. refused is why another Mac cannot run
     the work, if it cannot, and instead the command that runs it here when the owner so decides after a
     configuration problem stopped it. whole_host says the work needs every guaranteed slot of its Mac,
     exclusive every slot, and screen an unlocked console screen (spare). status, once made, is the work's status there, MISCONFIGURED or
-    BUSY, or why the work runs on this Mac instead; busy is why the second Mac did not take it, as the
+    BUSY, or why the work runs on this Mac instead; busy is why another Mac did not take it, as the
     receipt gives it, while it has not: declined as busy, or not offered while it has no spare capacity
     and this Mac has (Loaded); and None once it ran there or can no longer take it."""
 
@@ -3235,12 +3235,12 @@ class Offer:
         return error.problem if isinstance(error, Unreachable) else str(error)
 
     def declined(self, busy):
-        """Why the second Mac did not take the work, as the receipt and messages give it."""
+        """Why another Mac did not take the work, as the receipt and messages give it."""
         return str(busy) if isinstance(busy, Loaded) else f"{self.called(self.host)} is busy: {busy}"
 
     def make(self, fallback=True):
         """Offer the work once and set status. Without fallback, for a caller that runs the work itself
-        when the second Mac does not, every reason that it does not is BUSY, after saying why; the capacity
+        when another Mac does not, every reason that it does not is BUSY, after saying why; the capacity
         of the Macs is not read for it, since the work never runs here (--offload-only)."""
         macs = farm.destinations() if self.hosts is None else tuple(self.hosts)
         self.hosts = tuple(host for host in macs if host != self.exclude)
@@ -3260,7 +3260,7 @@ class Offer:
         except Misconfigured as stop:
             self.stopped(stop)
         except Busy as busy:
-            # This Mac takes work the second Mac is too busy to start now, when it can (overflow).
+            # This Mac takes work another Mac is too busy to start now, when it can (overflow).
             self.busy = said = self.declined(busy)
             print(f"queuekeeper: {f'trying {self.name} on this Mac' if fallback else f'{self.name} not run'}: {said}",
                   file=sys.stderr, flush=True)
@@ -3274,10 +3274,10 @@ class Offer:
         return self.status
 
     def lost_access(self, reason):
-        """Whether reason, why the second Mac did not take the work, ends a queue worker's gate: this process has lost
-        Local Network access, as it does once the session that started the worker ends, so the second Mac need not be
+        """Whether reason, why another Mac did not take the work, ends a queue worker's gate: this process has lost
+        Local Network access, as it does once the session that started the worker ends, so another Mac need not be
         away, and every lane of the gate would run on this Mac (vocaro-engineering#300). Status is then LOST_ACCESS,
-        and nothing runs here. Any other `qk run` keeps its fallback, and so does a second Mac that is only away."""
+        and nothing runs here. Any other `qk run` keeps its fallback, and so does another Mac that is only away."""
         if not self.queue_gate or not isinstance(reason, NoLocalNetwork): return False
         print(f"queuekeeper: {self.name} not run, here or there: {reason.problem}\nqueuekeeper: a queue worker's gate gives no verdict "
               f"for this, and the worker exits for a live session to start another (exit {LOST_ACCESS})",
@@ -3293,8 +3293,8 @@ class Offer:
         return MISCONFIGURED
 
     def again(self):
-        """Offer the work to the second Mac once more, while it was busy: its status when it ran there,
-        MISCONFIGURED when the second Mac's configuration stopped it, or None while the second Mac is
+        """Offer the work to another Mac once more, while it was busy: its status when it ran there,
+        MISCONFIGURED when another Mac's configuration stopped it, or None while another Mac is
         still busy or cannot be reached, and from then on when it can no longer take the work. A second
         Mac that cannot be reached is asked again within reprobe() seconds, since one slow answer, or one
         that went offline during a long wait, may come back before it ends. It counts as unreachable only
@@ -3332,7 +3332,7 @@ class Offer:
         return None
 
     def reprobe(self):
-        """Seconds at most until the second Mac is asked again after failed offers in a row that could not reach it:
+        """Seconds at most until another Mac is asked again after failed offers in a row that could not reach it:
         REPROBE_WAIT after the first, doubling to REPROBE_WAIT_MAX."""
         return min(REPROBE_WAIT * 2 ** max(self.failed - 1, 0), REPROBE_WAIT_MAX)
 
@@ -3341,48 +3341,48 @@ class Offer:
         return {"failed": self.failed, "last": self.failed_at} if self.failed else None
 
 
-# Seconds this Mac's admission waits between offers to the second Mac while both Macs are busy: at
+# Seconds this Mac's admission waits between offers to another Mac while the Macs are busy: at
 # first, after its FREE_WAIT, and at most. The wait doubles from one offer to the next.
 OVERFLOW_WAIT, OVERFLOW_WAIT_MAX = 15, 120
-# Seconds at most until the second Mac is asked again after an offer could not reach it: at first, and after more
+# Seconds at most until another Mac is asked again after an offer could not reach it: at first, and after more
 # offers in a row that could not. An offer that cannot reach it costs it nothing, since nothing is sent; one ssh
 # probe that did not finish in 30 s while `ssh build-host true` answered in 0.2 s from a shell on the same Mac kept
-# the second Mac out of rotation for about six minutes (2026-11-12, vocaro/queuekeeper#25).
+# another Mac out of rotation for about six minutes (2026-11-12, vocaro/queuekeeper#25).
 REPROBE_WAIT, REPROBE_WAIT_MAX = 30, 60
-# Offers in a row that could not reach the second Mac before it counts as unreachable.
+# Offers in a row that could not reach another Mac before it counts as unreachable.
 UNREACHABLE_AFTER = 2
 # Seconds `qk run` and `qk admit` wait in all for one Mac or the other to admit the work.
 OVERFLOW_TIMEOUT = 5400
 
 
 def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
-    """This Mac's admission of work the second Mac declined as busy, the work's status when the second Mac
-    took it after all or its configuration stopped it, or BUSY when neither Mac admitted it in timeout
+    """This Mac's admission of work another Mac declined as busy, the work's status when another Mac
+    took it after all or its configuration stopped it, or BUSY when no Mac admitted it in timeout
     seconds, after saying so.
 
     admit(seconds) is this Mac's admission of the work, or None when none came in that time. The work
-    comes here once the second Mac has not taken it, declined as busy or not offered while it had no
+    comes here once another Mac has not taken it, declined as busy or not offered while it had no
     spare capacity and this Mac had (Offer.attempt): this Mac's admission waits FREE_WAIT, as the second
-    Mac's did, then, while both Macs keep it waiting, OVERFLOW_WAIT doubling to OVERFLOW_WAIT_MAX, and
-    between those waits both Macs are read again and the second Mac is offered the work again when the
+    Mac's did, then, while the Macs keep it waiting, OVERFLOW_WAIT doubling to OVERFLOW_WAIT_MAX, and
+    between those waits the Macs are read again and another Mac is offered the work again when the
     reading allows (Offer.again). The wait in this Mac's queue is the backoff between offers, so the
-    work starts on whichever Mac admits it first, and the second Mac is asked again at least every
+    work starts on whichever Mac admits it first, and another Mac is asked again at least every
     OVERFLOW_WAIT_MAX seconds: each offer costs it a checkout claim, the project's provision lane and
     a policy refresh, so not every few seconds. After an offer that could not reach it, which cost it
     nothing, it is asked again within Offer.reprobe()'s seconds instead. Each of this Mac's waits that ends unadmitted is logged
     as withdrawn, as a declined offer is there. All kinds keep their arrival across local waits
     (resources.Place) and remote retries (elapsed age in the dispatch plan). A retained place holds
     later work back only for HEAVY_PLACE_SECONDS after its last local attempt (#360), so during each offer
-    the place is kept holding while the lane's record says that the second Mac has not started it
+    the place is kept holding while the lane's record says that another Mac has not started it
     (Place.kept, lane_wait.taken_there): an offer can take longer than that, and a later whole-host gate
     then took the slots a waiting one had arrived first for (vocaro/queuekeeper#160). With once, as
     for --if-free, each Mac is asked once. refused holds why each of this Mac's waits ended unadmitted,
     the last of which the give-up line says (vocaro-engineering#270)."""
     deadline, window, said = time.monotonic() + timeout, FREE_WAIT, None
     while True:
-        # Once the second Mac can no longer take it, this Mac's queue alone, for the rest of the time.
+        # Once another Mac can no longer take it, this Mac's queue alone, for the rest of the time.
         bound = window if offered.busy is not None else deadline - time.monotonic()
-        # An offer that could not reach the second Mac is followed soon by another (Offer.reprobe).
+        # An offer that could not reach another Mac is followed soon by another (Offer.reprobe).
         if offered.busy is not None and offered.failed: bound = min(bound, offered.reprobe())
         if offered.away is not None:
             lane_wait.waiting(lane_wait.UNREACHABLE, offered.away, probes=offered.probes())
@@ -3409,10 +3409,10 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
 
 
 def ask(host, request, timeout=SURVEY_TIMEOUT, unsent=False):
-    """offload_host.py's answer to request on the second Mac, run by its login shell as a run there is. A second
+    """offload_host.py's answer to request on another Mac, run by its login shell as a run there is. A second
     Mac ssh cannot reach raises Misconfigured, which qk doctor and the merge queue's wait report; with unsent,
     for a question asked before work is sent (capacity_there), it raises as execute's preparing connection does
-    (ssh_failure): Unreachable, so that the work runs on this Mac, unless the second Mac refused the login."""
+    (ssh_failure): Unreachable, so that the work runs on this Mac, unless another Mac refused the login."""
     request = host_command(Path(offload_host.__file__).read_text(), json.dumps(request))
     attempt = asleep()
     failed = lambda said, *context: ssh_failure(host, said, *context) if unsent else unreachable(host, said, *context)
@@ -3430,13 +3430,13 @@ def ask(host, request, timeout=SURVEY_TIMEOUT, unsent=False):
 
 
 def survey(host, developer):
-    """The second Mac's offload_host.toolchain, read in its login shell as a run there reads it."""
+    """Another Mac's offload_host.toolchain, read in its login shell as a run there reads it."""
     return ask(host, {"toolchain": developer})
 
 
 def screen_there(host):
-    """The second Mac's console screen, as offload_host.screen reads it there, for `qk host screen --remote`. A
-    second Mac that cannot be reached raises Misconfigured or Unreachable, as ask does."""
+    """Another Mac's console screen, as offload_host.screen reads it there, for `qk host screen --remote`. Another
+    Mac that cannot be reached raises Misconfigured or Unreachable, as ask does."""
     return ask(host, {"screen": True}, timeout=CENSUS_TIMEOUT)
 
 
@@ -3463,8 +3463,8 @@ def toolkit_qk(host, arguments, *, project=False, timeout=CENSUS_TIMEOUT):
 
 
 def capacity_there(host, *, diagnostic=False, started=None):
-    """The second Mac's capacity for heavy work, as offload_host.capacity reads it there, in its login shell as a
-    run there reads it. A second Mac that cannot be reached raises Unreachable, as the connection that prepares
+    """Another Mac's capacity for heavy work, as offload_host.capacity reads it there, in its login shell as a
+    run there reads it. Another Mac that cannot be reached raises Unreachable, as the connection that prepares
     a run does, and one that does not answer with a reading Unavailable: the work then runs on this Mac, saying so. One whose admission limits cannot
     be read refuses every request there, which is its owner's to fix (Misconfigured)."""
     request = {"capacity": "diagnostic" if diagnostic else True}
@@ -3484,8 +3484,8 @@ def capacity_there(host, *, diagnostic=False, started=None):
 
 
 def admission_log_there(host, since):
-    """The second Mac's admission log entries written at or after since, a datetime, as resources.read_log reads
-    this Mac's, for `qk admissions usage`. A second Mac that cannot be reached or does not answer with its lines
+    """Another Mac's admission log entries written at or after since, a datetime, as resources.read_log reads
+    this Mac's, for `qk admissions usage`. Another Mac that cannot be reached or does not answer with its lines
     raises Unavailable, as capacity_there does."""
     answered = ask(host, {"admissionLog": since.timestamp()}, timeout=CENSUS_TIMEOUT, unsent=True)
     if not isinstance(answered, dict) or not isinstance(answered.get("lines"), list):
@@ -3493,14 +3493,14 @@ def admission_log_there(host, since):
     return [entry for entry in map(resources.read_entry, answered["lines"]) if entry is not None]
 
 
-# Seconds `qk admissions now` gives the second Mac in all, connection included, and the most bytes it reads back.
+# Seconds `qk admissions now` gives another Mac in all, connection included, and the most bytes it reads back.
 ADMISSIONS_BUDGET, ADMISSIONS_BYTES = 10, 1 << 20
 
 
 def admissions_there(host, budget=ADMISSIONS_BUDGET):
-    """Who holds and who waits for admission on the second Mac now, as offload_host.admissions_now reads it there, for
+    """Who holds and who waits for admission on another Mac now, as offload_host.admissions_now reads it there, for
     `qk admissions now` (vocaro-engineering#342). One noninteractive connection, bounded in all by budget seconds: no
-    search for a renamed Mac (ssh's rediscover), which could take longer, and nothing changed there. A second Mac that
+    search for a renamed Mac (ssh's rediscover), which could take longer, and nothing changed there. Another Mac that
     cannot be reached in time raises Unreachable, and one whose answer is no reading Unavailable."""
     script = host_command(Path(offload_host.__file__).read_text(),
                          json.dumps({"admissionsNow": offload_host.NOW_SCHEMA}))
@@ -3515,7 +3515,7 @@ def admissions_there(host, budget=ADMISSIONS_BUDGET):
         raise Unreachable(f"ssh to {host} could not start: {error}", "check ssh on this Mac") from None
     if found.returncode == 255:
         raise Unreachable(f"ssh could not reach {host}: {last_line(found.stderr) or 'it said nothing'}",
-                          "check that it is awake and on the network (doc/guides/shared-host.md, Second Mac)")
+                          "check that it is awake and on the network (doc/guides/shared-host.md, Another Mac)")
     if len(found.stdout) > ADMISSIONS_BYTES:
         raise Unavailable(f"{host} sent {len(found.stdout)} bytes, more than a reading's {ADMISSIONS_BYTES}")
     try: answered = json.loads(last_line(found.stdout) or "")
@@ -3544,7 +3544,7 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
     whole-host lane and every slot up to the maximum for exclusive work, no whole-host lane or exclusive work
     running there, and no exclusive work queued ahead there (queuedExclusive), behind which admission holds every
     later request (vocaro-engineering#191). A free guaranteed slot is spare capacity however busy the Mac's CPU
-    is, as admission admits work into one: the owner wants the second Mac loaded as much as possible, never idle
+    is, as admission admits work into one: the owner wants another Mac loaded as much as possible, never idle
     beside a loaded Mac (owner's decision, 2026-11-07). While the
     Mac's admission keeps the guaranteed slots for a whole-host lane queued ahead (kept), a whole-host or
     exclusive lane waits its turn behind it and other work needs a slot beyond them free, as admission rules
@@ -3637,11 +3637,11 @@ def limit_words(reading, key, value, mac):
 
 
 def retry_macs(host, lanes, lane, screen=False):
-    """([each Mac, the second Mac as host and this Mac as None], why them, to follow "next on") that a run of lanes'
+    """([each Mac, another Mac as host and this Mac as None], why them, to follow "next on") that a run of lanes'
     lane, about to start, could use, by each Mac's capacity now as Offer.attempt reads it: the merge queue's settle wait
     before a retry reads these (vocaro-engineering#253). The Mac cannot be known for certain beforehand, since it is
-    chosen as the run starts: the second Mac when it has spare capacity for the lane, this Mac when only it has, and
-    whichever admits the lane first when neither has, so then both could take it. Even the second Mac's spare capacity
+    chosen as the run starts: another Mac when it has spare capacity for the lane, this Mac when only it has, and
+    whichever admits the lane first when neither has, so then both could take it. Even another Mac's spare capacity
     is only its reading, and it can still decline the offer: then this Mac takes the run. screen says the lane needs an
     unlocked screen, for this run if not by its configuration."""
     settings = lanes[lane]
@@ -3671,10 +3671,10 @@ def retry_macs(host, lanes, lane, screen=False):
 
 
 def pressure_there(host):
-    """The second Mac's pressure as resources.pressure gives this Mac's, judged by resources.judged with the
+    """Another Mac's pressure as resources.pressure gives this Mac's, judged by resources.judged with the
     limit it sets there (offload_host.pressure), and its one-minute load, None when unavailable, which the merge
     queue logs beside it: what the merge
-    queue's settle wait reads before a lane's retry that could use it (retry_macs). A second Mac that cannot be reached,
+    queue's settle wait reads before a lane's retry that could use it (retry_macs). Another Mac that cannot be reached,
     or that does not answer with its reading, raises Unavailable, and the wait reads this Mac instead."""
     answered, busy = reading_there(host)
     load = answered.get("load")
@@ -3684,7 +3684,7 @@ def pressure_there(host):
 
 
 def reading_there(host, health=False):
-    """(offload_host's pressure answer from the second Mac, its CPU busy share in percent or None when unavailable),
+    """(offload_host's pressure answer from another Mac, its CPU busy share in percent or None when unavailable),
     or Unavailable when the Mac cannot be reached or does not answer with its busy limit. With health, the answer
     also carries its host_health reading under health, which a toolkit there older than it leaves out."""
     answered = ask(host, {"pressure": True, **({"health": True} if health else {})}, timeout=CENSUS_TIMEOUT)
@@ -3696,7 +3696,7 @@ def reading_there(host, health=False):
 
 
 def busy_there(host):
-    """(the second Mac's CPU busy share in percent, None when unavailable; the busy limit it sets there): what the merge
+    """(another Mac's CPU busy share in percent, None when unavailable; the busy limit it sets there): what the merge
     queue records beside a gate's wall time when the gate ran there (vocaro-engineering#235). Unavailable as
     pressure_there raises it."""
     answered, busy = reading_there(host)
@@ -3704,7 +3704,7 @@ def busy_there(host):
 
 
 def dispatched(root, name, since):
-    """The second Mac that ran the newest dispatch of name from root that started at or after since, an epoch
+    """Another Mac that ran the newest dispatch of name from root that started at or after since, an epoch
     time, or None when none did: the merge queue's record of where a lane it ran gave no verdict. A dispatch's
     directory is named for the second it started (execute); one that only prepared, whose receipt says so,
     ran nothing there. A lost dispatch records its destination beside the log."""
@@ -3746,13 +3746,13 @@ def reap_request(root):
 
 
 def census_command(advertise=None, reap=None, update=None, stop_leftovers=True, siblings=None):
-    """The second Mac's command that prints offload_host.leftovers, the census of what runs left
+    """Another Mac's command that prints offload_host.leftovers, the census of what runs left
     running there, as its last line; with advertise, paths of repositories relative to the home
     there, it has each name the commits its checkouts hold, and says which, and its Git's version
     (offload_host.advertise); with reap, offload_host.reap's arguments, it first shuts down the stale pool
     simulators the census finds, and says which, and stops the leftovers it proves an ended run's, or with
     stop_leftovers false only lists them (offload_host.stop_leftovers); with update, update_request's, it
-    fast-forwards the second Mac's own toolkit checkout when it can, and says what became of it
+    fast-forwards another Mac's own toolkit checkout when it can, and says what became of it
     (offload_host.update_toolkit); with siblings, sibling_requests', it does the same for each folder a project's
     extensions load from, which that Mac links beside a dispatched checkout."""
     request = {"leftovers": ROOT, **({"advertise": list(advertise)} if advertise else {}),
@@ -3763,7 +3763,7 @@ def census_command(advertise=None, reap=None, update=None, stop_leftovers=True, 
 
 
 def update_request(want=True):
-    """What a connection asks of offload_host.update_toolkit on the second Mac (vocaro-engineering#203): its own
+    """What a connection asks of offload_host.update_toolkit on another Mac (vocaro-engineering#203): its own
     toolkit checkout, and with want, the commit this Mac's origin/main names, which spares the fetch there when
     that checkout holds it already. Without want, or when this Mac names none, it fetches."""
     request = {"path": offload_host.TOOLKIT_CHECKOUT, "root": ROOT}
@@ -3775,7 +3775,7 @@ def update_request(want=True):
 
 def sibling_requests(root):
     """What a connection asks of offload_host.update_toolkit for each folder beside the project that its
-    extensions load from (config.sibling_folders): the second Mac's own ~/Development/NAME, and the commit this Mac's
+    extensions load from (config.sibling_folders): another Mac's own ~/Development/NAME, and the commit this Mac's
     checkout of it names as origin/main, which spares the fetch there when that checkout holds it already."""
     requests = []
     for name in sibling_folders(root):
@@ -3800,7 +3800,7 @@ def toolkit_line(host, found, what="toolkit checkout"):
     at = f" at {found['head'][:12]}" if found.get("head") else ""
     return (f"left {where}{at} as it is: {found.get('reason') or 'it gave no reason'}. queuekeeper fast-forwards it to "
             "origin/main only on main, clean, with no commit of its own and nothing running from it; the owner "
-            "decides what becomes of it (doc/guides/shared-host.md, The second Mac's own toolkit checkout)"), True
+            "decides what becomes of it (doc/guides/shared-host.md, Another Mac's own toolkit checkout)"), True
 
 
 def update_there(host, siblings=()):
@@ -3821,7 +3821,7 @@ def update_there(host, siblings=()):
 
 
 def sibling_clone(root, name):
-    """How the second Mac's own checkout of name, a folder beside the project at root that its extensions load
+    """How another Mac's own checkout of name, a folder beside the project at root that its extensions load
     from, is made: a `git clone` of the origin this Mac's checkout of it names, run there. queuekeeper does not run
     it; making that checkout is the owner's step (vocaro/queuekeeper#117)."""
     here = (git_state.main_checkout(root) or Path(root)).resolve().parent / name
@@ -3844,8 +3844,8 @@ def read_census(found):
 
 
 def leftover_census(host):
-    """The second Mac's census of leftover processes, read in its login shell as a run there reads
-    it, and None; or None and why it is missing. A second Mac that cannot be reached raises; any
+    """Another Mac's census of leftover processes, read in its login shell as a run there reads
+    it, and None; or None and why it is missing. Another Mac that cannot be reached raises; any
     other failure of the census is only reported, since it stops nothing."""
     attempt = asleep()
     try:
@@ -3860,7 +3860,7 @@ def leftover_census(host):
 
 
 def reap_there(host, request, stop_leftovers=True):
-    """offload_host.reap's report from the second Mac, by the census's connection, with stop_leftovers as
+    """offload_host.reap's report from another Mac, by the census's connection, with stop_leftovers as
     census_command takes it. A failure of any kind is the report's problem: nothing there was stopped that it
     does not name."""
     empty = {"stopped": [], "failed": [], "skipped": [], "eligible": [], "kept": [], "dryRun": request.get("dry_run")}
@@ -3916,7 +3916,7 @@ def reap_lines(where, report, listing=True, held=False):
 
 
 def device_users(host, udid, since):
-    """What on the second Mac may still use the physical device a run there was given, since the
+    """What on another Mac may still use the physical device a run there was given, since the
     epoch time since, as lines to show; none when nothing does (offload_host.device_users). A second
     Mac that cannot be reached or does not answer raises, and a recovery waits for it."""
     request = json.dumps({"device": {"udid": udid, "root": ROOT, "since": since}})
@@ -4005,7 +4005,7 @@ def connection(host, timeout=CONNECT_TIMEOUT):
     addresses that name resolves to under its AddressFamily, in the order ssh tries them. Each is
     connected to in turn, as ssh does, for at most timeout seconds, until one answers; ssh tries none
     after that one. A host reached through a proxy is not measured, and unchecked says so; a name that
-    does not resolve is reported in unresolved. A second Mac found renamed is measured under its new
+    does not resolve is reported in unresolved. Another Mac found renamed is measured under its new
     name (rediscover)."""
     settings = ssh_settings(host)
     name = RENAMED[host]["to"] if host in RENAMED else settings.get("hostname") or host
@@ -4054,13 +4054,13 @@ def slow_connection(host, found, timeout=CONNECT_TIMEOUT):
             f"not answer before {used['address']}, which answered in {used['seconds']:.2f} s: {waits}. So each "
             f"connection to {host}, several in every run, first waits up to ConnectTimeout's {timeout} s for "
             f"{'each' if plural else 'it'}, and an ssh without ConnectTimeout, such as a plain `ssh {host}`, waits out "
-            f"the system's TCP connection timeout; to fix it, {fix} (doc/guides/shared-host.md, Setting up the second Mac)")
+            f"the system's TCP connection timeout; to fix it, {fix} (doc/guides/shared-host.md, Setting up another Mac)")
 
 
 def compare_device_records(report, host, here, there):
-    """Add to `qk doctor`'s report what the two Macs' device records say of physical devices, which
-    only this Mac's record holds (doc/guides/shared-host.md, Physical devices and the second Mac): this
-    Mac's must defer them to no Mac, and the second Mac's must defer them to this Mac and hold none."""
+    """Add to `qk doctor`'s report what the Macs' device records say of physical devices, which
+    only this Mac's record holds (doc/guides/shared-host.md, Physical devices and another Mac): this
+    Mac's must defer them to no Mac, and another Mac's must defer them to this Mac and hold none."""
     fix = "which Mac's record holds physical devices is the owner's decision"
     ours, theirs = here.get("deviceRecord") or {}, there.get("deviceRecord") or {}
     for side, found in [("this Mac", ours), (host, theirs)]:
@@ -4100,10 +4100,10 @@ def python_crash_notes(hosts):
 
 def compare_hosts(host=None):
     """What `qk doctor` reports of one of the farm's Macs, the one at host, else the first that takes work now, as
-    the second Mac: this Mac's and the second Mac's default Xcodes
+    another Mac: this Mac's and another Mac's default Xcodes
     (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
     and the simulator runtimes it lists. A difference is an error, and what could not be compared is
-    named in unchecked. A second Mac that cannot be reached, as when this Mac is away from its
+    named in unchecked. Another Mac that cannot be reached, as when this Mac is away from its
     network, is no error, since work then runs here (the owner's decision, 2026-10-28): unchecked
     says why it was not compared, while one that answers but refuses the login is an error. The
     processes there that runs left running are listed in leftovers, which are no error: they say
@@ -4117,7 +4117,7 @@ def compare_hosts(host=None):
     if host is None:
         report["unchecked"].append(f"{NO_MAC}, so this Mac was compared with none")
         return report
-    # Measured first, so that it also says why a second Mac that cannot be reached is not.
+    # Measured first, so that it also says why another Mac that cannot be reached is not.
     reached = report["connection"] = connection(host)
     if reached.get("unchecked"): report["unchecked"].append(reached["unchecked"])
     slow = slow_connection(host, reached)
@@ -4158,7 +4158,7 @@ def compare_hosts(host=None):
     compare_device_records(report, host, here, there)
     version = lambda text: ", ".join((text or "no Xcode").splitlines())
     default = lambda side: (side.get("defaultDeveloperDir"), side.get("defaultXcode"))
-    # When both Macs' default is this Mac's developer directory, the next check covers its version.
+    # When each Mac's default is this Mac's developer directory, the next check covers its version.
     shared = here.get("defaultDeveloperDir") == there.get("defaultDeveloperDir") == developer
     if default(here) != default(there) and not shared:
         report["errors"].append(
@@ -4177,7 +4177,7 @@ def compare_hosts(host=None):
             f"the Xcode at this Mac's developer directory, {developer}, is {version(here['xcode'])} on this Mac and "
             f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so qk remote refuses "
             f"every run there; to fix it, install this Mac's Xcode at that path on {host} (doc/guides/shared-host.md, "
-            "Setting up the second Mac), or select with DEVELOPER_DIR an Xcode the Macs have at the same path")
+            "Setting up another Mac), or select with DEVELOPER_DIR an Xcode the Macs have at the same path")
     if None in (here.get("runtimes"), there.get("runtimes")):
         report["unchecked"].append(f"the simulator runtimes, which simctl did not list on "
                                    f"{'this Mac' if here.get('runtimes') is None else host}")
@@ -4188,5 +4188,5 @@ def compare_hosts(host=None):
                                 "`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
                                 "defaults uses and copying any other to the Mac that lacks it, and it could not here: "
                                 "see its `runtimes:` lines, or run `python3 scripts/qk remote setup --runtimes` "
-                                "(doc/guides/shared-host.md, Setting up the second Mac)")
+                                "(doc/guides/shared-host.md, Setting up another Mac)")
     return report

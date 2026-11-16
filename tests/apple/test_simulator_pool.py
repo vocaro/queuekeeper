@@ -345,7 +345,7 @@ class PoolTests(unittest.TestCase):
         self.assertNotIn(("erase", created.udid), self.simctl.calls)
         entry = devices.Record(self.path).entry("Project Duo 3")
         self.assertEqual((entry["device"], entry["ownerChatID"], entry["created"]), (created.udid, "me", True))
-        # Each names the process that holds it, by which the second Mac's census of leftover
+        # Each names the process that holds it, by which another Mac's census of leftover
         # processes counts a booted member as a live run's.
         holder = {"pid": os.getpid(), "start": resources.process_start(os.getpid())}
         self.assertIsNotNone(holder["start"])

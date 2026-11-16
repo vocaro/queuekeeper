@@ -5,7 +5,7 @@ test opts into ``preserved(owner, target=False)`` to run quietly. A speech drive
 VoiceOver inside either context; its inner restoration finishes before the outer lease ends.
 No preference is written: a checked Command-F5 is sent only when a known state differs.
 
-Every bound is stretched by the host's load (#137): on a second Mac at a load average near 200 a fixed
+Every bound is stretched by the host's load (#137): on another Mac at a load average near 200 a fixed
 5 s Command-F5 timed out, and the late key left VoiceOver on. A load under one per core beside a saturated CPU
 is doubted and stretches by the limit (vocaro/queuekeeper#43). A transition that fails inside a
 preserved() scope is not yet uncertainty: the scope restores the original state, watches it stay
@@ -131,7 +131,7 @@ def _read(public=None, running=None, *, wait=None, poll=POLL):
 
 
 def _toggle():
-    # Stretched: on a loaded second Mac a fixed 5 s timed out and System Events delivered the key later (#137).
+    # Stretched: on a loaded Mac a fixed 5 s timed out and System Events delivered the key later (#137).
     subprocess.run(["osascript", "-e", 'tell application "System Events" to key code 96 using {command down}'],
                    check=True, capture_output=True, text=True, timeout=stretched(WAIT))
 

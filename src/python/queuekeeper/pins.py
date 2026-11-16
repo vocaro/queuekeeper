@@ -15,7 +15,7 @@ extensions from each root in place of the folder (config.extensions_of), sets ea
 one, to its root for itself and what it starts (exported), and makes no set of its own. A root is the Mac's one
 checkout of that folder at that commit (offload_host.pinned_checkout), which nothing moves.
 
-Nothing is sent to the second Mac but the commits: it takes each from its own checkout of the folder
+Nothing is sent to another Mac but the commits: it takes each from its own checkout of the folder
 (offload_host.place_siblings). A commit its origin lacks, one chosen with --sibling that is not pushed, therefore
 runs on this Mac only.
 """
@@ -87,7 +87,7 @@ def main_commit(checkout, fetch=False):
 
 
 def pushed(checkout, commit):
-    """Whether a branch of checkout's origin holds commit, as its remote-tracking refs say, so that the second Mac
+    """Whether a branch of checkout's origin holds commit, as its remote-tracking refs say, so that another Mac
     can fetch it."""
     try: return bool(git(checkout, "for-each-ref", "--count=1", "--contains", commit, "refs/remotes"))
     except Unpinned: return False
@@ -126,7 +126,7 @@ def make(root, names, choices=None, fetch=False, say=None):
     (config.siblings_in; a list names them with no variable), at its origin/main as this Mac's checkout of it holds
     that, fetched first with fetch, which may be the function that fetches a checkout, or as choices says (chosen),
     with this Mac's one checkout of it at that commit made if it is not there. A folder chosen by hand says so
-    ("chosen"), one whose commit no branch of its origin holds says "local", as the second Mac cannot take it, and
+    ("chosen"), one whose commit no branch of its origin holds says "local", as another Mac cannot take it, and
     one that code finds by an environment variable names it ("variable").
 
     Each folder a pinned one declares in turn, in its queuekeeper.json at the commit pinned
@@ -189,17 +189,17 @@ def encoded(pins):
 
 
 def local(pins):
-    """The folders of pins that the second Mac cannot take, each a commit no branch of its origin holds."""
+    """The folders of pins that another Mac cannot take, each a commit no branch of its origin holds."""
     return sorted(name for name, pin in (pins or {}).items() if pin.get("local"))
 
 
 def dispatched(root, names):
-    """What a dispatch asks the second Mac to place for the project at root, for each folder of the run's pin set and
+    """What a dispatch asks another Mac to place for the project at root, for each folder of the run's pin set and
     each of names, {NAME: VARIABLE or None} (config.sibling_variables), that the set lacks: {"name", "commit"}, the
     commit the set holds, and for work that runs under none, such as `qk admit`, the folder's origin/main as this
-    Mac's checkout of it names that, which is where the second Mac's own checkout of it stood for such work before;
+    Mac's checkout of it names that, which is where another Mac's own checkout of it stood for such work before;
     and "variable", where the folder has one. A folder with no commit to name, as one that is no Git checkout here,
-    has none, and the second Mac loads its own as it stands."""
+    has none, and another Mac loads its own as it stands."""
     pins, wanted = held() or {}, []
     names = dict(names) if isinstance(names, dict) else dict.fromkeys(names)
     for name in [*pins, *(name for name in names if name not in pins)]:

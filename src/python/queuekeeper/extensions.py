@@ -45,14 +45,14 @@ class Foreground:
     nothing: it knows no foreground. One extension puts its own in FOREGROUND, with `provide`."""
 
     def foreground_mac(self):
-        """The second Mac whose foreground a foreground run takes, or None: the run holds this Mac's."""
+        """Another Mac whose foreground a foreground run takes, or None: the run holds this Mac's."""
         return None
 
     def require_foreground(self):
         """Refuse foreground work on this Mac unless the session holds its foreground."""
 
     def foreground_held(self, stack, name, label, timeout, expected=None, again=None):
-        """None once the second Mac's foreground is held for the work, entered in stack, or BUSY after saying so.
+        """None once another Mac's foreground is held for the work, entered in stack, or BUSY after saying so.
         again is the command that runs the work again, which a wait that gives up names."""
         return None
 
@@ -62,17 +62,17 @@ class Foreground:
         return None
 
     def cleared_notifications(self, receipt):
-        """None once nothing covers the second Mac's screen, or a status, with nothing run."""
+        """None once nothing covers another Mac's screen, or a status, with nothing run."""
         return None
 
     def capture_lines(self, found):
-        """The lines that say what the second Mac reported of its capture approvals."""
+        """The lines that say what another Mac reported of its capture approvals."""
         return []
 
 
 class Devices:
     """What an extension does with the devices a run uses: the windows it waits in around a lane's run and an
-    admitted command's, and the reservations a dispatch to the second Mac carries. This one, the core's own, knows no
+    admitted command's, and the reservations a dispatch to another Mac carries. This one, the core's own, knows no
     devices. One extension puts its own in DEVICES, with `provide`."""
 
     # The words a command's help uses for where the session holding a device is named.
@@ -120,7 +120,7 @@ class Devices:
         return False
 
     def lease(self, keys, owner, words, root=None, *, budget=None, commits=()):
-        """The reservations held here that a run on the second Mac carries, or None when it uses no device."""
+        """The reservations held here that a run on another Mac carries, or None when it uses no device."""
         if keys: raise ValueError("--device names a physical device, which no extension switched on here reserves")
         return None
 

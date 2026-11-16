@@ -37,7 +37,7 @@ class CrashNotes(unittest.TestCase):
             self.assertIn("Python-broken.ips", result["notes"][0])
             self.assertEqual(before, {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in root.iterdir()})
 
-    def test_local_notes_are_available_even_without_a_second_mac_and_are_not_errors(self):
+    def test_local_notes_are_available_even_without_a_farm_mac_and_are_not_errors(self):
         notes = {"since": "yesterday", "reports": [{"signal": "SIGQUIT"}], "notes": []}
         with patch.object(remote, "configured", return_value=None), \
                 patch.object(offload_host, "python_crash_reports", return_value=notes):
@@ -45,7 +45,7 @@ class CrashNotes(unittest.TestCase):
         self.assertEqual(result["pythonCrashes"]["local"], notes)
         self.assertEqual(result["errors"], [])
 
-    def test_host_survey_carries_crash_notes_for_the_second_mac(self):
+    def test_host_survey_carries_crash_notes_for_the_farm_mac(self):
         notes = {"since": "yesterday", "reports": [{"signal": "SIGABRT"}], "notes": []}
         with patch.object(offload_host, "identity", return_value={"xcode": None}), \
                 patch.object(offload_host, "output", return_value=None), \

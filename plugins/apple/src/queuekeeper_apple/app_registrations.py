@@ -1,7 +1,7 @@
 """Unregister the Mac apps a run built from LaunchServices and pluginkit when the run ends (#87).
 
 Xcode registers a Mac app when it builds it, and macOS registers one when it launches, and neither
-is undone. On 2026-10-31 the second Mac had 22 registered builds of one app, whose Quick Look
+is undone. On 2026-10-31 another Mac had 22 registered builds of one app, whose Quick Look
 extensions shared their bundle identifiers and version, and the system ran an old copy's extension
 instead of the build under test. So every outermost `qk run` and `qk admit` (around_run) watches
 its descendants for `xcodebuild -derivedDataPath FOLDER` and, however it ends, runs `lsregister -u`

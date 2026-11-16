@@ -163,10 +163,10 @@ other file, and one that fails shows its fault in its own tab while the others g
 
 **Limits.**
 
-- The Farm tab reads each Mac about every ten seconds, since each question to the second Mac is a
+- The Farm tab reads each Mac about every ten seconds, since each question to another Mac is a
   connection over SSH.
 - A server started where macOS denies local-network access, such as from some background
-  launchers, shows the second Mac as unreachable. One started from a terminal reads it.
+  launchers, shows another Mac as unreachable. One started from a terminal reads it.
 - The page polls. A change shows within two seconds, not at once.
 
 ## The event journal

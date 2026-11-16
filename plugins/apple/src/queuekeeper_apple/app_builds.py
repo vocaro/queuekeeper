@@ -1,7 +1,7 @@
 """The last good build of a project's app, kept on this Mac and run from there: `qk app run|keep|status`.
 
 A gate builds the app, but as a test build in the queue checkout's DerivedData, which the next batch replaces,
-sometimes on the second Mac, and never for a physical device. So the merge queue, once it has pushed a gated
+sometimes on another Mac, and never for a physical device. So the merge queue, once it has pushed a gated
 batch, starts `qk app keep --after-landing` in the background (merge_queue.Worker.keep_app), which builds the
 pushed commit as an ordinary build and keeps the product here. "Good" is a commit that landed through the gate
 and then built: a build that fails keeps nothing, and the build kept before it stays the one that runs.
@@ -348,8 +348,8 @@ def build(root, store, config, platform, commit, *, admit=None):
     derived = store.derived(platform)
     command = build_command(app, platform, derived)
     say(f"building {platform} at {commit[:12]}; log {log}")
-    # --here: the build's product is this Mac's, kept in the store and run here (qk admit offers a command to the
-    # second Mac first otherwise).
+    # --here: the build's product is this Mac's, kept in the store and run here (qk admit offers a command to another
+    # Mac first otherwise).
     admit = admit or (lambda words: [sys.executable, str(source / "scripts/qk"), "admit", "--here", "--time-limit",
                                      str(BUILD_LIMIT), "--", *words])
     try:

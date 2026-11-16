@@ -81,7 +81,7 @@ project names them, in order, in `queue.preflight` on `main`:
   It exits 0 when each passed, 1 when one found something, and 3 when none did but one could not
   run.
 - **A lane's command finds the project's main checkout** in `QUEUEKEEPER_PROJECT_CHECKOUT`, here,
-  in the worker's checkout, in a scratch worktree and on the second Mac alike, so that a launcher
+  in the worker's checkout, in a scratch worktree and on another Mac alike, so that a launcher
   can find the tools that sit beside the project.
 - **`"queue": {"preflight": []}` runs none.**
 
@@ -185,7 +185,7 @@ qk queue close --why "moving the queue's state" && {  # new entries are refused 
 `qk queue doctor` reads the queue's own records and says whether it is testing or stuck,
 and what would unstick it. It names a gate that has waited 15 minutes for admission on a
 Mac with spare CPU, and each holder there with its command, PID, hold time, CPU use and
-worktree. It also names each Mac, this one and the second Mac, that is short of memory: swap at
+worktree. It also names each Mac, this one and another Mac, that is short of memory: swap at
 least 80% full while macOS reports memory pressure at warning or critical, or one process holding
 more than a quarter of physical memory. Swap near its total is no sign by itself, since macOS
 sizes swap to what it uses. The finding lists

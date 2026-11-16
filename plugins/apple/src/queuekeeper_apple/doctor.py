@@ -12,7 +12,7 @@ from .simulators import pool as simulator_pool
 
 def fix_hosts(root, hosts):
     """What `doctor` fixes of remote.compare_hosts' report itself (the owner's decision, 2026-11-03): runtimes that
-    differ, which it evens out (remote.match_runtimes) and then compares again; stale pool simulators on both
+    differ, which it evens out (remote.match_runtimes) and then compares again; stale pool simulators on the
     Macs, which it shuts down (simulators.pool.reap_reports) and lists in reaped; and Xcode's default simulators
     on this Mac, which it deletes as `disk --delete` does, checking each again first, and lists in
     deletedDefaults. Its progress goes to standard error, so that standard output stays the report."""
@@ -20,7 +20,7 @@ def fix_hosts(root, hosts):
         with contextlib.redirect_stdout(sys.stderr): remote.match_runtimes(hosts["host"], check=False)
         hosts = remote.compare_hosts(hosts["host"])
         hosts.pop("runtimesDiffer", None)
-    # The second Mac only when it answered the comparison: one away is no error, and is not waited for.
+    # Another Mac only when it answered the comparison: one away is no error, and is not waited for.
     # A diagnostic stops no leftover process: it lists those reap would stop (vocaro-engineering#353).
     reaped = simulator_pool.reap_reports(None, root, dry_run=False, here="remote" not in hosts, stop_leftovers=False)
     # With each held entry whose process is gone that reap could not release, and why, so that no leftover

@@ -1,8 +1,8 @@
-"""The second Mac's side of `qk remote`, sent over SSH and run there by that Mac's own Python.
+"""Another Mac's side of `qk remote`, sent over SSH and run there by that Mac's own Python.
 
 It imports nothing from the toolkit, because it runs before the toolkit is checked out there,
 and Python 3.9, a Mac's system Python, runs it. It claims a persistent checkout of the project,
-places the dispatched commits, and runs `qk run` or `qk admit` there under the second Mac's
+places the dispatched commits, and runs `qk run` or `qk admit` there under another Mac's
 own heavy-work admission, with its device record deferring physical devices to the sending Mac's
 and the run given the reservations it carries. Standard output carries framed lines: `O` for
 output, `L` for the lane's log as it grows, then, once the work has ended, an `F` naming each file the plan asks back,
@@ -33,7 +33,7 @@ the login keychain's password and keeps it for runs to unlock that keychain with
 keep-unlocked`; given `{"foreground": true}`, what the Mac lacks for foreground work started over
 SSH and who holds its mac-foreground, for `qk remote foreground`; given `{"pressure": true}`, its
 CPU's busy share, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
-given `{"capacity": true}`, its spare capacity for heavy work, which `qk run` reads on both Macs
+given `{"capacity": true}`, its spare capacity for heavy work, which `qk run` reads on the Macs
 before it chooses one (remote.spare); given `{"admissionLog": SINCE}`, its admission log's lines from
 SINCE, an epoch time, for `qk admissions usage`; given `{"admissionsNow": 1}`, who holds and who waits for its
 admission now, for `qk admissions now` (admissions_now); given `{"screen": true}`, whether its console screen is locked, for
@@ -156,7 +156,7 @@ STARTED = "%a %b %d %H:%M:%S %Y"
 # project's .gitignore need not name, and which would leave its checkout with changes (claim).
 NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 # The refs under which a repository here names each commit a checkout of it holds. A push learns what
-# the second Mac has from its refs alone, and a detached checkout's HEAD is none of them, so without
+# another Mac has from its refs alone, and a detached checkout's HEAD is none of them, so without
 # these a push sends the commit's whole history (vocaro-engineering#67).
 CACHE = "refs/queuekeeper/checkouts/"
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -194,13 +194,13 @@ TAKEN = "takenFromPool"
 LAUNCHD_SIM = re.compile(r"(?:\S*/)?launchd_sim\s")
 # What follows a pool's name in a member's: LABEL N, as simulators/pool.py names one; and in its kind's
 # warmed template's, LABEL template (RUNTIME), with pool.py's own pattern, which this file cannot import
-# because it runs on the second Mac alone.
+# because it runs on another Mac alone.
 MEMBER = re.compile(r".+ [1-9][0-9]*")
 TEMPLATE = re.compile(r"(?P<label>.+) template \((?P<runtime>[^()]+)\)")
 SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 # The toolkit's own checkout on each Mac, relative to its home, which update_toolkit keeps at origin/main
 # there (vocaro-engineering#203); and the shell words that run the Apple extension's `qk devices` from any folder
-# on either Mac: that checkout's own launcher, which puts its plugins on the import path, with that checkout as the
+# on any Mac: that checkout's own launcher, which puts its plugins on the import path, with that checkout as the
 # project, which declares the extension. `python3 -m queuekeeper_apple.devices` finds no such module outside a
 # process qk started, since the plugins left src/python (vocaro/queuekeeper#167).
 TOOLKIT_CHECKOUT = "Development/queuekeeper"
@@ -214,7 +214,7 @@ PINS, PIN_READY, PIN_DAYS, PIN_VARIABLE = "Development/queuekeeper-pins", ".read
 # a checkout to the Mac's own (tests/host_isolation.py).
 PINS_DIRECTORY = "QUEUEKEEPER_PINS_DIR"
 # Seconds one update_toolkit may take in all, the bound it adds to the connection that prepares a dispatch,
-# and at most for its fetch; and its lock beside the second Mac's repositories, under ROOT.
+# and at most for its fetch; and its lock beside another Mac's repositories, under ROOT.
 UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40, 25
 # Seconds its ps and its lsof each have at least, whatever is left of that bound: under load, the git steps
 # before them used nearly all of it, and a ps given the last second listed nothing (vocaro-engineering#221).
@@ -246,7 +246,7 @@ _journal, _detached_at = None, None
 
 
 class Refusal(RuntimeError):
-    """The second Mac will not start the work, and nothing of it ran. A busy second Mac cannot start
+    """Another Mac will not start the work, and nothing of it ran. A busy Mac cannot start
     it now; any other refusal is its configuration's, and fix says what fixing that takes."""
 
     def __init__(self, reason, fix=None, busy=False):
@@ -262,10 +262,10 @@ DECLINED_LIMIT = 600
 
 
 def declined_reason(path):
-    """Why the second Mac's queue declined offered work, for the dispatcher's Busy: what its admission wrote in path,
+    """Why another Mac's queue declined offered work, for the dispatcher's Busy: what its admission wrote in path,
     such as the exclusive request queued ahead that holds every later one back, or only that its queue could not
     take the work, from a toolkit that writes nothing (2026-11-12: the dispatcher saw only that, and the cause, an
-    exclusive request queued there, took a look at the second Mac's own admission log)."""
+    exclusive request queued there, took a look at another Mac's own admission log)."""
     try:
         said = " ".join(path.read_text().split())[:DECLINED_LIMIT] if path is not None else ""
     except OSError:
@@ -793,7 +793,7 @@ def keep(path, password):
 
 
 def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run, out=print, terminal=None):
-    """`qk keychain keep-unlocked` on the second Mac, in the owner's Terminal there or through the
+    """`qk keychain keep-unlocked` on another Mac, in the owner's Terminal there or through the
     `ssh -t` the sending Mac runs: ask for this Mac's login password, and once it has unlocked the login
     keychain, keep it in request["root"], under the home, readable only by this account, for each qk
     remote run to unlock that keychain in its own session (the Mac desktop extension's keychain.unlock_for_run). Then set the keychain to
@@ -812,7 +812,7 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
         refusal = f"{path} is not on {here}"
     elif not root.is_dir():
         refusal = (f"{root} is not on {here}: set up the farm's other Macs first, and run qk remote there once "
-                   "(doc/guides/shared-host.md, Setting up the second Mac)")
+                   "(doc/guides/shared-host.md, Setting up another Mac)")
     elif not terminal:
         refusal = "it asks for the password at a terminal, and this has none: run it in your own Terminal"
     if refusal:
@@ -1113,7 +1113,7 @@ def host_health():
     (memoryBytes), its swap used and total and its memory pressure level (memoryLevel, as memory_level reads it),
     None when unread, and its HEALTH_LARGEST largest processes by resident
     memory, each with its PID, executable name, resident bytes and seconds since it started. It lists processes
-    without their arguments. On 2026-11-15 the second Mac's fseventsd held 34 of its 64 GB after 15 days and swap
+    without their arguments. On 2026-11-15 another Mac's fseventsd held 34 of its 64 GB after 15 days and swap
     was full, so a gate timed out with none of its tests failed; nothing named the process."""
     memory = output(["sysctl", "-n", "hw.memsize"])
     swap = swap_usage(output(["sysctl", "-n", "vm.swapusage"]))
@@ -1223,7 +1223,7 @@ def chosen_builds(records, matches):
     CoreSimulator resolves its devices to: the build `simctl runtime match list -j` (matches) chooses
     for an installed SDK, else the build whose image CoreSimulator last used. An identifier whose choice
     neither shows is left out. disk.chosen_builds applies the same rule on this Mac; this module imports
-    nothing from the toolkit, since it runs on the second Mac's own Python (vocaro-engineering#190)."""
+    nothing from the toolkit, since it runs on another Mac's own Python (vocaro-engineering#190)."""
     groups = {}
     for record in records:
         if isinstance(record, dict): groups.setdefault(record.get("runtimeIdentifier", ""), []).append(record)
@@ -1543,8 +1543,8 @@ def limits(sources=None):
     beside the admission log, as a number or {"perCore": F}, else its default, as resources.limits reads them,
     which this file cannot import (#49). A file or variable admission could not read raises ValueError naming it, as admission does:
     its owner fixes it rather than queuekeeper guessing. sources, a dict, is given where each comes from, by key:
-    its variable's name, the file's path or "default", as resources.limits names them, so that a line quoting the
-    second Mac's limit can say where it is set (limit_sources, vocaro/queuekeeper#29)."""
+    its variable's name, the file's path or "default", as resources.limits names them, so that a line quoting another
+    Mac's limit can say where it is set (limit_sources, vocaro/queuekeeper#29)."""
     sources = {} if sources is None else sources
     cores = os.cpu_count() or 1
     path = admission_directory() / ADMISSION_LIMITS
@@ -1766,7 +1766,7 @@ def queued_ahead(directory, slots, maximum, owners, own=None, before=None):
 
 
 def capacity(own=None, *, diagnostic=False, before=None):
-    """This Mac's spare capacity for heavy work, which `qk run` reads on both Macs before it chooses one
+    """This Mac's spare capacity for heavy work, which `qk run` reads on the Macs before it chooses one
     (remote.spare; vocaro-engineering#168): its guaranteed slots and their maximum; the slots busy among those
     up to the maximum; its CPU's busy share in percent, None when unavailable (cpuBusy), and the limit at or above
     which its admission finds no spare capacity (busyLimit), with its one-minute load beside them, which no longer
@@ -1901,7 +1901,7 @@ def kernel_start(pid):
     """When pid started, as `ps -o lstart=` prints it with its spacing collapsed, from the kernel's own record of the
     process (sysctl KERN_PROC_PID), which reads none of its arguments and starts no process: LookupError when no such
     process runs, OSError when the kernel cannot say. As resources.kernel_start reads it, which this module, run on
-    the second Mac before the toolkit is there, cannot import."""
+    another Mac before the toolkit is there, cannot import."""
     try: os.kill(pid, 0)
     except ProcessLookupError: raise LookupError(f"no process {pid} runs") from None
     except PermissionError: pass
@@ -2204,7 +2204,7 @@ def admissions_now(at=None):
 
 def waiter_reading(waiter, record, kind, position, process, at, hold):
     """One waiting request: from its queue record and its own observation record, either of which may be missing. A
-    queued request without a record is a place kept while its process is away, such as offering its work to the other
+    queued request without a record is a place kept while its process is away, such as offering its work to another
     Mac, or one an older toolkit queued, which writes none; it says when it last asked and whether it still holds later
     work back (HEAVY_PLACE_SECONDS), and no reason."""
     number = lambda value: value if type(value) in (int, float) else None
@@ -2439,7 +2439,7 @@ def leftovers(root, listed=listing, written=disk_writes):
     placed = {}
     for pid, process in table.items():
         # macOS's own agents, which launchd starts, can work in the temporary directory, as
-        # IMTransferAgent did on both Macs (macOS 27, October 2026).
+        # IMTransferAgent did on the Macs (macOS 27, October 2026).
         if process["uid"] != uid or pid in own or pid in runs or process["args"].startswith("/System/"): continue
         where = place(pid)
         if where is not None: placed[pid] = where
@@ -2449,7 +2449,7 @@ def leftovers(root, listed=listing, written=disk_writes):
     candidates = {pid: where for pid, where in placed.items() if pid not in runs}
     children = {}
     for pid, process in table.items(): children.setdefault(process["parent"], []).append(pid)
-    # This file stays ASCII: it reaches the second Mac as a command-line argument.
+    # This file stays ASCII: it reaches another Mac as a command-line argument.
     command = lambda pid: table[pid]["args"][:COMMAND_LIMIT] + ("..." if len(table[pid]["args"]) > COMMAND_LIMIT else "")
     now, rows = time.time(), []
     for pid, (kind, path, device) in candidates.items():
@@ -3356,8 +3356,8 @@ def reap(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=t
 
 
 def stop_stale(root, pools, dry_run=False, scan=True, listed=None, begin=None, clock=time.monotonic):
-    """Shut down the simulators that are stale: `qk simulator-pool reap`, and before work is sent to the
-    second Mac. One goes only when it is a member of a pool or the pool's warmed template, among pools or,
+    """Shut down the simulators that are stale: `qk simulator-pool reap`, and before work is sent to another
+    Mac. One goes only when it is a member of a pool or the pool's warmed template, among pools or,
     with scan, those the checkouts name; the census lists it left over; nothing naming its UDID runs outside its own processes;
     the device record holds no live reservation of it; and its launchd_sim has run REAP_AFTER; all
     checked again immediately before the stop, under the record's lock. It reads and logs, and never
@@ -3707,7 +3707,7 @@ def claim(base, count, directory, wait=True, commit=None, slot=None, timeout=CLA
 
 def local_url(url):
     """Whether a Git remote URL names files on its own Mac, as a path or file:// does, and so names
-    another checkout, or nothing, on the other Mac. Git reads a URL with no scheme as a path unless a
+    another checkout, or nothing, on another Mac. Git reads a URL with no scheme as a path unless a
     colon comes before any slash, as in scp's host:path (vocaro-engineering#78)."""
     if "://" in url: return url.lower().startswith("file://")
     return ":" not in url.split("/", 1)[0]
@@ -3930,11 +3930,11 @@ def place(repository, checkout, commit, ref, origin=None):
 
 
 def credentials(environment, path):
-    """Give the run's git the second Mac's credential file and no other helper.
+    """Give the run's git another Mac's credential file and no other helper.
 
     SwiftPM clones private dependencies with git, and an SSH session cannot unlock the keychain
     that osxkeychain, Xcode's git default, reads. The variables reach only this run, so the
-    owner's own git configuration on the second Mac is unchanged."""
+    owner's own git configuration on another Mac is unchanged."""
     count = int(environment.get("GIT_CONFIG_COUNT", "0"))
     for offset, value in enumerate(["", f"store --file={shlex.quote(str(path))}"]):
         environment[f"GIT_CONFIG_KEY_{count + offset}"] = "credential.helper"
@@ -4124,7 +4124,7 @@ def missing_module(command, sources):
 def defer_devices(kit, mac, command=(), toolkit=None):
     """Make this Mac's device record defer physical devices to mac's, the sending Mac's.
 
-    A paired iPhone or iPad is reachable from both Macs, so it is reserved in one record only;
+    A paired iPhone or iPad is reachable from the Macs, so it is reserved in one record only;
     this one then refuses to reserve it. A record that defers them to another Mac, or holds one,
     is a configuration problem for the owner, so the work does not start.
 
@@ -4166,7 +4166,7 @@ def defer_devices(kit, mac, command=(), toolkit=None):
                           "that its device record is misconfigured")
         raise Refusal(f"its device record cannot defer physical devices to {mac}: {problem[0]}",
                       "decide which Mac's record holds physical devices and resolve that in another Mac's record "
-                      "(doc/guides/shared-host.md, Physical devices and the second Mac)")
+                      "(doc/guides/shared-host.md, Physical devices and another Mac)")
     if deferred.stdout.strip(): say(deferred.stdout.strip())
 
 
@@ -4413,7 +4413,7 @@ def main(plan):
             version = lambda text: " ".join(text.split())
             raise Refusal(f"the Xcode at {plan['developerDir']} is {version(found or 'missing')}, not the dispatcher's "
                           f"{version(expected)}", "install this Mac's Xcode at that path on another Mac "
-                          "(doc/guides/shared-host.md, Setting up the second Mac), or select with DEVELOPER_DIR an Xcode "
+                          "(doc/guides/shared-host.md, Setting up another Mac), or select with DEVELOPER_DIR an Xcode "
                           "the Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
         screen_declined(plan)
@@ -4453,7 +4453,7 @@ def main(plan):
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
         if plan.get("lease"): environment["QUEUEKEEPER_DEVICE_LEASE"] = json.dumps(plan["lease"])
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]
-        # A receipt the work writes here says that it ran on the second Mac, sent from this Mac (remote.DISPATCHER).
+        # A receipt the work writes here says that it ran on another Mac, sent from this Mac (remote.DISPATCHER).
         if plan.get("dispatcher"): environment["QUEUEKEEPER_DISPATCHED_FROM"] = plan["dispatcher"]
         # Where the work comes from on the sending Mac, which this Mac's admissions name (resources.ORIGIN).
         if isinstance(plan.get("origin"), dict): environment["QUEUEKEEPER_ADMISSION_ORIGIN"] = json.dumps(plan["origin"])

@@ -61,7 +61,7 @@ def sibling_variables(root):
     """The folders beside the project at root that a run of it loads from, {NAME: VARIABLE or None}: those its
     queuekeeper.json declares (siblings_in), and those each of them declares in turn under "siblings" in its own
     queuekeeper.json, as that folder's checkout beside the project stands. A run pins each at a commit (pins), which
-    reads a pinned folder's own list at that commit, and the second Mac is not sent them: it takes that commit from
+    reads a pinned folder's own list at that commit, and another Mac is not sent them: it takes that commit from
     its own checkout of each (offload_host.place_siblings)."""
     try: found = siblings_in(json.loads((Path(root) / FILE).read_text()))
     except (OSError, ValueError, AttributeError): return {}
@@ -272,7 +272,7 @@ def compile_first(name, lane):
                          "self lane is not admitted")
 
 
-# What a lane takes of its Mac. Every lane is admitted, first come, first served, and offered to the second Mac
+# What a lane takes of its Mac. Every lane is admitted, first come, first served, and offered to another Mac
 # first (the owner's decision, 2026-11-07, vocaro-engineering#200): heavy, one slot of heavy-work admission, which a
 # lane that gives no resource takes too; light, which once ran unadmitted where it started, now means heavy, so
 # that the queuekeeper.json files that give it keep loading; exclusive, the host to itself; and self, a lane whose
@@ -349,7 +349,7 @@ def exclusive_refusal(config, command):
     """Why `qk admit --exclusive` or `qk remote admit --exclusive` refuses command, or None.
 
     A command word for word a heavy lane's own (its command or compileFirst) is that lane's work, which its
-    configuration admits as heavy: a gate suite sent as exclusive work held every slot of the second Mac for 33
+    configuration admits as heavy: a gate suite sent as exclusive work held every slot of another Mac for 33
     minutes, queued and then running, while every other lane went to this Mac (2026-11-12). Any other command,
     an exclusive lane's, or a self lane's, whose script admits its own parts, is not refused."""
     words = list(command)
@@ -697,7 +697,7 @@ def carry_over_check(check):
 
 
 def retired(lanes):
-    """Refuse "buildHost", true or false, on any lane or group. It once sent a lane to the second Mac, and
+    """Refuse "buildHost", true or false, on any lane or group. It once sent a lane to another Mac, and
     vocaro-engineering#58 removed it: every heavy or exclusive lane goes there unless it says why it stays,
     so a checkout that still has it is older than its project's change, and reading it as nothing could
     move that checkout's work without a word (doc/guides/shared-host.md, Earlier names)."""
@@ -711,7 +711,7 @@ def retired(lanes):
 
 
 def place(name, lane):
-    """Every admitted lane goes to the second Mac first unless "here" says why it stays on this Mac, such as
+    """Every admitted lane goes to another Mac first unless "here" says why it stays on this Mac, such as
     a physical device or a measurement tied to this Mac's hardware, like goldens rendered on its GPU
     (doc/guides/shared-host.md, Which Mac runs a lane)."""
     if "here" not in lane: return
@@ -775,7 +775,7 @@ def toolkit_command(root, words, toolkit=None):
 def implicit_command(root, name, toolkit=None):
     """The command of the toolkit's spelling or docs check, name in IMPLICIT_WORDS, in the project at root: its
     launcher's IMPLICIT_SPELLING or IMPLICIT_DOCS, else the same words run by the toolkit (toolkit_command). qk run
-    makes it on the Mac that runs the lane, so that on the second Mac it names the toolkit sent there."""
+    makes it on the Mac that runs the lane, so that on another Mac it names the toolkit sent there."""
     return toolkit_command(root, IMPLICIT_WORDS[name], toolkit)
 
 
@@ -797,11 +797,11 @@ def lane_to_run(config, name, root):
 
 
 def stays(lanes, name):
-    """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to the
-    second Mac first: a self lane runs where it starts, and a lane, or a lane of a group, says why with "here". A
+    """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to another
+    Mac first: a self lane runs where it starts, and a lane, or a lane of a group, says why with "here". A
     group runs its lanes under its one admission on one Mac, so a lane of it that stays here keeps the group
-    here. A light lane is placed as every lane is (the owner's decision, 2026-11-07). A foreground lane goes to the
-    second Mac too, and only there (foreground.py)."""
+    here. A light lane is placed as every lane is (the owner's decision, 2026-11-07). A foreground lane goes to another
+    Mac too, and only there (foreground.py)."""
     lane = lanes[name]
     if unadmitted(lane): return "a self lane runs where it starts, and its script admits each of its parts"
     if lane.get("here"): return f"the lane says: {lane['here']}"

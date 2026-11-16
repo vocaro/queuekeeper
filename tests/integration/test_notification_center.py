@@ -91,7 +91,7 @@ class HostTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def held(self):
-        """The second Mac's foreground, held as queuekeeper holds it for a run."""
+        """Another Mac's foreground, held as queuekeeper holds it for a run."""
         with foreground.slot("Project ui-mac", timeout=1, record=self.record, ready=lambda: [],
                              said=lambda text: None) as owner:
             yield owner
@@ -135,7 +135,7 @@ class WindowTests(HostTest):
 
     def test_the_scripts_set_no_variable_that_a_system_events_term_takes(self):
         # Inside `tell application "System Events"`, `kind` is a property of its own, so `set kind to ""` failed
-        # with -10006 on the second Mac on 2026-11-07 and no notification could be read (#204), and `item 1 of
+        # with -10006 on another Mac on 2026-11-07 and no notification could be read (#204), and `item 1 of
         # (position of b)` fails to be a specifier. Every variable the scripts set ends in `_`, and each position
         # is kept in a variable before an item of it is read.
         for name, script in (("ELEMENTS_SCRIPT", notification_center.ELEMENTS_SCRIPT),
@@ -183,7 +183,7 @@ class DismissTests(HostTest):
         with self.held():
             with self.assertRaisesRegex(devices.Refused, "held by queuekeeper"):
                 self.dismiss(owner="another session")
-        # Nor on a Mac that is not the second Mac, the owner's workstation.
+        # Nor on a Mac that is not another Mac, the owner's workstation.
         workstation = devices.Record(self.root / "workstation.json")
         with self.assertRaisesRegex(devices.Refused, "only on another Mac"):
             notification_center.dismiss(self.said.append, record=workstation, owner="anyone")

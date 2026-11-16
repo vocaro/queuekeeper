@@ -163,7 +163,7 @@
             }
           },
           "resource": {
-            "description": "The admission the lane takes, first come, first served, the second Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which qk run runs where it starts, unadmitted (doc/guides/shared-host.md, Heavy-work admission)",
+            "description": "The admission the lane takes, first come, first served, another Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which qk run runs where it starts, unadmitted (doc/guides/shared-host.md, Heavy-work admission)",
             "enum": [
               "light",
               "heavy",
@@ -181,7 +181,7 @@
             "type": "boolean"
           },
           "arguments": {
-            "description": "Whether the lane's command takes arguments. A lane that says false selects its own tests: qk run LANE -- ARGUMENTS, and --repeat, whose series reaches the command as arguments, are refused at once with exit status 2, before the lane is staged, admitted or sent to the second Mac. Left out or true, the arguments are appended to the command",
+            "description": "Whether the lane's command takes arguments. A lane that says false selects its own tests: qk run LANE -- ARGUMENTS, and --repeat, whose series reaches the command as arguments, are refused at once with exit status 2, before the lane is staged, admitted or sent to another Mac. Left out or true, the arguments are appended to the command",
             "type": "boolean"
           },
           "timeout": {
@@ -236,7 +236,7 @@
             ]
           },
           "foreground": {
-            "description": "The lane takes a Mac's screen, keyboard, pointer, focus or speech, as Mac VoiceOver and Mac XCUITest lanes do. It needs a heavy or exclusive resource. qk run sends it to the second Mac, which queuekeeper takes the foreground of for the run, waiting while another run holds it, and never to this Mac; qk run --here, or here, runs it on this Mac only for the session holding mac-foreground within the owner's window",
+            "description": "The lane takes a Mac's screen, keyboard, pointer, focus or speech, as Mac VoiceOver and Mac XCUITest lanes do. It needs a heavy or exclusive resource. qk run sends it to another Mac, which queuekeeper takes the foreground of for the run, waiting while another run holds it, and never to this Mac; qk run --here, or here, runs it on this Mac only for the session holding mac-foreground within the owner's window",
             "type": "boolean"
           },
           "apps": {
@@ -249,7 +249,7 @@
             }
           },
           "here": {
-            "description": "Why an admitted lane runs only on this Mac rather than on the owner's second Mac: a physical device, or a measurement tied to this Mac's hardware, such as goldens rendered on its GPU. Simulator, background Mac UI and foreground lanes go to the second Mac like the rest. A lane group that runs such a lane stays here with it",
+            "description": "Why an admitted lane runs only on this Mac rather than on another Mac of the farm: a physical device, or a measurement tied to this Mac's hardware, such as goldens rendered on its GPU. Simulator, background Mac UI and foreground lanes go to another Mac like the rest. A lane group that runs such a lane stays here with it",
             "type": "string",
             "minLength": 1
           },
@@ -258,7 +258,7 @@
             "type": "boolean"
           },
           "display": {
-            "description": "The Mac desktop extension's key, which a project gets with queuekeeper_mac_desktop or an extension that requires it, such as queuekeeper_apple. A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: qk run runs its command, on either Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
+            "description": "The Mac desktop extension's key, which a project gets with queuekeeper_mac_desktop or an extension that requires it, such as queuekeeper_apple. A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: qk run runs its command, on any Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
             "type": "boolean"
           },
           "unity": {
@@ -266,7 +266,7 @@
             "type": "boolean"
           },
           "chips": {
-            "description": "The Mac hardware extension's key, which a project gets with queuekeeper_mac_hardware. The chips the lane's results are valid on, such as [\"apple-m5-max\"], for a lane whose output differs by GPU. qk run runs the lane only on a Mac with one of them, waits for that Mac when it is busy, and never runs it on another. A lane without the key runs on either Mac. qk host chip prints a Mac's",
+            "description": "The Mac hardware extension's key, which a project gets with queuekeeper_mac_hardware. The chips the lane's results are valid on, such as [\"apple-m5-max\"], for a lane whose output differs by GPU. qk run runs the lane only on a Mac with one of them, waits for that Mac when it is busy, and never runs it on another. A lane without the key runs on any Mac. qk host chip prints a Mac's",
             "type": "array",
             "minItems": 1,
             "items": {

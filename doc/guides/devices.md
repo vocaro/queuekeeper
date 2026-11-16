@@ -52,7 +52,7 @@ Restore's two Text outputs the one to save is the `off` Text's.
 
 Run on a Mac with `shortcuts run`, both shortcuts end with "The action “Go to Home Screen” is not supported
 on Mac" and exit 1, after their Focus step has run. On 2026-11-07 Restore, run on this Mac with the marker
-set to `eng`, turned the owner's shared Do Not Disturb off. On the second Mac, which has no iCloud Drive,
+set to `eng`, turned the owner's shared Do Not Disturb off. On another Mac, which has no iCloud Drive,
 Silence turned Do Not Disturb on and then failed at Save File, so Restore cannot undo it there.
 
 He runs each once by hand, starting with no Focus on, and answers each prompt with Always
@@ -145,10 +145,10 @@ The setup names the device the entry records, so a replaced device needs it agai
   Mac reaches a paired device too, because this Mac's record holds the reservation, and this
   Mac silences, restores and releases the device, so it reaches the device already; the relayed
   lines never leave the Mac that read them, and only the count and the first banner's clock go
-  in its record; and `offload_host.py`, which runs on the second Mac before the toolkit is
+  in its record; and `offload_host.py`, which runs on another Mac before the toolkit is
   checked out there, imports none of it, so a relay there would be a copy of the watch. A device
   without Wi-Fi lockdown (the iPad) is plugged into this Mac for a watched leased run: plugged
-  only into the second Mac, it is recorded as not watched, with the reason. The iPhone's log
+  only into another Mac, it is recorded as not watched, with the reason. The iPhone's log
   reaches this Mac over the network (vocaro-engineering#194). The watch spans the dispatch, the wait for admission there
   included, so a banner before the command starts also sends it again: a spare run, never a
   missed banner.
@@ -220,7 +220,7 @@ its receipt, so `eng release` counts a pass of it at the commit as it counts any
 ```
 
 - The lane is heavy and says `"here"`: physical devices are reserved in this Mac's record only,
-  and the second Mac's defers them, so a pass sent there refuses. `qk doctor` warns of a device
+  and another Mac's defers them, so a pass sent there refuses. `qk doctor` warns of a device
   pass's lane without `"here"`, and of a `gate` that runs one.
 - For each device named, in the order named, the pass uses the session's own reservation when it
   holds one, and leaves it held; or else takes the device in turn, first come first served, with

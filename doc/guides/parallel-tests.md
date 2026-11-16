@@ -48,7 +48,7 @@ retain samples. `qk queue status` shows separate per-leaf progress observations,
 its admission wait, including the host, phase, quiet interval, threshold and sampling coverage.
 Requests blocked on admission print the running holders' observations on a state transition
 and at most every 30 seconds while that state continues, and `qk admissions now` lists them
-under each holder on both Macs. The second Mac relays member
+under each holder on the Macs. Another Mac relays member
 snapshots alongside its wait record; completed members disappear independently.
 
 Each outer lane run creates a fresh namespace in its wait record; nested groups inherit it.
@@ -120,7 +120,7 @@ A lane whose `parallel` names other lanes runs them at once under its own single
   resource. A group that runs two or more such lanes needs `"jobs": 1`: its one model lock
   cannot keep its own lanes from driving the model at once
   ([model admission](shared-host.md#model-admission)).
-- A heavy or exclusive group goes to the second Mac whole, unless it or one of its lanes says why
+- A heavy or exclusive group goes to another Mac whole, unless it or one of its lanes says why
   it stays on this Mac (`"here"`), and its lanes' logs and receipts come back with its own results,
   under `.build/queuekeeper/remote/GROUP/lanes/`
   ([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)). A gate script that runs such a
@@ -130,10 +130,10 @@ A lane whose `parallel` names other lanes runs them at once under its own single
   `9520125`).
 - `qk run --serial GROUP` runs the lanes one after another, on this Mac: the reference a
   failure seen only side by side is checked against ([parallel-only failures](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/parallel-tests.md#a-failure-seen-only-side-by-side)).
-  `qk remote run --serial GROUP` runs them one after another on the second Mac, under its
+  `qk remote run --serial GROUP` runs them one after another on another Mac, under its
   admission, for a group that runs there. The serial reference is no pass of the group's:
   `qk remote passed` counts only its lanes side by side
-  ([how a run reaches the second Mac](shared-host.md#how-a-run-reaches-the-second-mac)).
+  ([how a run reaches another Mac](shared-host.md#how-a-run-reaches-another-mac)).
 
 A group is for lanes one admission can bound. A release checkpoint's lanes are not one: each is
 heavy by itself, so `eng checkpoint` runs them one after another, each under its own admission
@@ -149,21 +149,21 @@ step that needs another's output stays a separate step before the group.
 `QUEUEKEEPER_RESULTS_DIR`, empty at the start of each run: `.build/queuekeeper/LANE/results/` for a lane
 run alone, and `.build/queuekeeper/GROUP/results/LANE/` for a lane of a group, so that lanes side
 by side never share one. What a command writes there, such as transcripts or a
-[kept failure record](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#kept-failure-records), comes back from the second Mac into
+[kept failure record](https://github.com/vocaro/apple-engineering/blob/main/guides/app-testing.md#kept-failure-records), comes back from another Mac into
 `.build/queuekeeper/remote/LANE/results/` (or `.../GROUP/results/LANE/`) however the run ends,
 and the dispatch names the group's lanes whose files came back. Read the variable rather than
 naming the path in `engineering.json`: a fixed path is wrong inside a group, whose lanes' own
-`.build/queuekeeper/LANE/results/` stays on the second Mac.
+`.build/queuekeeper/LANE/results/` stays on another Mac.
 
 A lane run inside another, as a gate script's `qk run --here suites`, also copies its
 `results/` into the outer lane's, as `results/LANE/`, however it ends, so that it comes back with
 the outer lane's dispatch. A whole lane's `results/` is kept by commit beside its receipt, in
 `.git/queuekeeper/remote/COMMIT/LANE.results/`, which the receipt's `keptResults` names,
-for a run on either Mac; a later run of the lane at that commit replaces it, and one that wrote
+for a run on any Mac; a later run of the lane at that commit replaces it, and one that wrote
 more than 64 MiB keeps it only in its dispatch. `qk remote passed LANE` names the folder
 (vocaro-engineering#218). A passing landing gate's log and `qk land --wait` name where its results
-are and how many files they hold. A gate on the second Mac whose command writes nothing there, such
-as a `qk unittest` lane, says that its command wrote none, since the second Mac sends back all it
+are and how many files they hold. A gate on another Mac whose command writes nothing there, such
+as a `qk unittest` lane, says that its command wrote none, since another Mac sends back all it
 writes there (#38). `qk disk` reclaims these folders by their rule, and never the receipts
 ([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#reclaiming-disk-space)).
 
@@ -190,7 +190,7 @@ python3 scripts/qk results keep --log "$log" --bundle "$bundle" --name "$device"
 
 which writes `simulator-tests/NAME.log` and `NAME.json` in `QUEUEKEEPER_RESULTS_DIR` (or `--results DIRECTORY`)
 and prints one line per test case, with its outcome and seconds. A lane's output goes to its log,
-so `qk run` prints those lines from `results/` when the lane ends, for a run on the second Mac once
+so `qk run` prints those lines from `results/` when the lane ends, for a run on another Mac once
 its results have come back; it leaves out what `qk simulator-tests` kept. An outcome
 is passed, failed, skipped, expected failure or unmeasured; an unmeasured test gives its reason, and
 one with no recorded time prints none rather than zero. A bundle that is missing, unreadable or
@@ -207,7 +207,7 @@ Pass `--activity-timing-prefix PREFIX` to retain XCTest activities titled `PREFI
 example, `--activity-timing-prefix "Files Recents loaded after"` keeps the wait in
 `Files Recents loaded after 5 s` as `{"title": "Files Recents loaded after 5 s", "seconds": 5}`
 under that test's `activities` in `NAME.json`. Repeat the option to select more prefixes.
-The result output prints the selected titles with their test names on either Mac. An empty
+The result output prints the selected titles with their test names on any Mac. An empty
 list means the test had no matching activity. A `null` means the activity tree could not be
 read, and the result output says so. The test's outcome and duration still come from its
 test record.
@@ -215,13 +215,13 @@ test record.
 Keep the system trace when a test reports sustained loading, even if the test passes. Collect
 the relevant services' logs from the start of the operation before releasing the simulator.
 Put a losslessly compressed copy in `QUEUEKEEPER_RESULTS_DIR` and name it for the device and phase.
-For an incident on the second Mac, cite the dated dispatch that `qk` prints. A later run can
+For an incident on another Mac, cite the dated dispatch that `qk` prints. A later run can
 replace the latest results and the copy kept by commit. Copy any trace needed beyond dispatch
 retention to the project's evidence archive.
 
 BreezEPUB's 480 s Files Recents wait kept its timing and passing verdict. The next gate reused
 the checkout and replaced the system log before the follow-up investigation. BreezEPUB `30e1d59f`
-keeps that capture in `simulator-logs/` alongside the test results. A fixture on the second Mac
+keeps that capture in `simulator-logs/` alongside the test results. A fixture on another Mac
 verified that the returned gzip decoded to the original bytes after reuse of the validation path.
 [Lost trace](https://github.com/vocaro/vocaro-engineering/issues/260#issuecomment-6764976504) ·
 [Retention verification](https://github.com/vocaro/vocaro-engineering/issues/260#issuecomment-6766037464)
@@ -380,11 +380,11 @@ the test. The whole list goes to `unittest/unreached.txt` in a lane's
 own under `.build/queuekeeper/unittest-unreached/`, which keeps the newest five. `qk run`'s summary
 then gives the list's path and, for a lane whose command is `qk unittest` and that ran with no
 arguments of its own, `qk run LANE -- NAME...`. The toolkit's gate timed out at 2,400 s on
-2026-11-13 on a second Mac loaded by other work, with 75 classes unreached that nothing named,
+2026-11-13 on another Mac loaded by other work, with 75 classes unreached that nothing named,
 and its log stopped mid-run as if it had crashed (vocaro/queuekeeper#37). Supervision now writes its
 `supervise: timed out after Ns` line, and its line for a stall, into the lane's log as well as on stderr, which for a run on
-the second Mac reached only the dispatch's `output.log`, and the summary of a dispatched run gives
-the second Mac's reason as its `why`.
+another Mac reached only the dispatch's `output.log`, and the summary of a dispatched run gives
+another Mac's reason as its `why`.
 
 Keep tests that share state out of each other's way rather than turning parallelism off: a
 group, an `xdist_group` or a serialized suite for the few that must share; per-test fixtures
@@ -454,7 +454,7 @@ waited 2 s took 2.1 s in one process, taking turns; with `--no-parallel`, 4.0 s.
 Each Swift Testing process writes its event stream (`--event-stream-output-path`), and `qk xctest`
 keeps every test's wall-clock start and finish from it beside its id, shard, verdict and seconds, in
 the order the tests started, whatever order the shards' output prints in: in `xctest/` of the lane's
-[results](#a-lanes-results), so a run on either Mac keeps them by commit, or in the package's
+[results](#a-lanes-results), so a run on any Mac keeps them by commit, or in the package's
 `.build/queuekeeper/xctest/` outside a lane. A test still running when its process timed out keeps its
 start, unmeasured. `TEST_TIMES` and `test_times` in `plugins/apple/src/queuekeeper_apple/xctest_shards.py`
 say what each record holds (vocaro-engineering#367).
@@ -478,7 +478,7 @@ passing classes, a skip, a Swift Testing test and a Swift Testing suite of two, 
 `--split-swift-testing` runs in shards of their own. `XCTEST_SHARDS_UNMEASURED` makes the skip
 unmeasured and `XCTEST_SHARDS_FAIL` plants a failure, its negative controls.
 
-EPUBLib's Mac suite at `7e874a67` on the second Mac (M1 Max, 10 cores, macOS 27.2, Xcode 27.2,
+EPUBLib's Mac suite at `7e874a67` on another Mac (M1 Max, 10 cores, macOS 27.2, Xcode 27.2,
 2026-10-31), heavy runs alternated with the load sampled rather than exclusive ones: its
 `swift-tests` lane, one test at a time, held its slot 1,266 s, the one-minute load 19 when it was
 admitted; `qk xctest -j 4 --build-jobs 4` took 495 s with a 54 s build at load 661, and 530 s
@@ -531,7 +531,7 @@ process. `gate-swift-mac` runs the Mac suites of
 `src/swift/EngineeringTestSupport`, and `gate-swift-ios` only the two suites whose drawing is UIKit's
 on an iPhone 17 Pro and an iPad Air 13-inch (M4) simulator, with `--build-jobs 4`; the model suites,
 GoldenTests, VoiceOverSpeechTests and SRGBPixelSamplerTests, run once, on the Mac. The width has no
-measurement at the next higher bound. Each run was through `qk run` on the second Mac (M1 Max, macOS
+measurement at the next higher bound. Each run was through `qk run` on another Mac (M1 Max, macOS
 27.2, Xcode 27.2, 2026-11-09):
 
 | Lane | Run | Tests | Seconds | One-minute load after |
@@ -557,10 +557,10 @@ failures. Four-worker runs bracketed each sweep under exclusive admission on the
 | Workstation (18 cores) | 165.4 / 147.4 s | 122.2 s | 102.7 s | |
 | Second Mac (10 cores) | 208.1 / 171.4 s | 116.5 s | 123.5 s | 130.1 s |
 
-Eight workers was fastest on the smaller second Mac and improved the workstation's sample too.
+Eight workers was fastest on the smaller Mac and improved the workstation's sample too.
 The worker limit applies only to this gate's Python lane. [Timing records and full-gate verification](https://github.com/vocaro/vocaro-engineering/issues/145).
 
-On the second Mac, a separate 120-test sample at eight workers took 120.7 and 121.2 s with one
+On another Mac, a separate 120-test sample at eight workers took 120.7 and 121.2 s with one
 test per process, 112.8 s in batches of four, and 131.0 s in batches of eight. The four-test batches
 ran the same test IDs with zero skips or failures and reduced the process count from 120 to 48.
 In an earlier comparison of the same 120 tests, whole-class grouping cut the sum of process times

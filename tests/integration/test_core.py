@@ -36,7 +36,7 @@ def mine(limit, where="set in the environment"):
 
 
 def setUpModule():
-    # qk doctor compares this Mac with the second Mac. These tests configure none, so that it
+    # qk doctor compares this Mac with another Mac. These tests configure none, so that it
     # never reaches the owner's; test_remote's doctor tests reach a fake one. It also checks the
     # account's agent skill links: these tests install no agent host, and test_skills installs some.
     nowhere = str(Path(tempfile.gettempdir()) / f"no-agent-host-{uuid.uuid4()}")
@@ -76,7 +76,7 @@ class ConfigurationTests(unittest.TestCase):
                         with self.assertRaises(ValueError): config.load(root)
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "simulatorPool": "Example",
                 "extensions": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
-            # The folders beside the project that its extensions load from, which the second Mac links (sibling_folders).
+            # The folders beside the project that its extensions load from, which another Mac links (sibling_folders).
             self.assertEqual(config.sibling_folders(root), ["kit"])
             self.assertEqual(config.sibling_variables(root), {"kit": None})
             self.assertEqual(config.sibling_folders(root / "none"), [])
@@ -570,7 +570,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_a_lane_that_takes_no_arguments_refuses_them_before_anything_runs_or_is_sent(self):
         """BreezEPUB's ways-in on 2026-11-13 refused two -only-testing arguments in its own script, after the run had
-        been staged and sent to the second Mac (vocaro/queuekeeper#137)."""
+        been staged and sent to another Mac (vocaro/queuekeeper#137)."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ran = root / "ran"
@@ -657,7 +657,7 @@ class ConfigurationTests(unittest.TestCase):
             # The quick lane runs under the same default as the hung one, so the limit leaves it room on a host
             # slowed in a way the load does not show. The hung one sleeps twenty times as long and would exit 0
             # if nothing stopped it: its sleep, not a ceiling on this test's elapsed time, is the bound. At a load
-            # of at most one per core, where stretched(30) is 30, this test took 37.5 s on the second Mac (#319).
+            # of at most one per core, where stretched(30) is 30, this test took 37.5 s on another Mac (#319).
             limit = round(stretched(3))
             lanes = {"hung": {"command": [sys.executable, "-c", f"import time; time.sleep({20 * limit})"]},
                      "quick": {"command": [sys.executable, "-c", "print('Ran 1 test')"]},
@@ -880,7 +880,7 @@ class ResourceTests(unittest.TestCase):
                 self.assertEqual([slot for slot, _fd in lighter.descriptors], [1])
 
     def test_the_capacity_reading_shows_the_slots_held_the_busy_limit_and_what_runs(self):
-        """offload_host.capacity, which qk run reads on both Macs before it chooses one (vocaro-engineering#168),
+        """offload_host.capacity, which qk run reads on the Macs before it chooses one (vocaro-engineering#168),
         agrees with admission: the limits admission reads, the slots it holds and the guard entries it writes."""
         from queuekeeper import offload_host
         os.environ["HEAVY_SETTLE_SECONDS"] = "0"
@@ -1011,7 +1011,7 @@ class ResourceTests(unittest.TestCase):
 
     def test_a_quoted_limit_says_it_is_the_macs_and_where_it_is_set(self):
         # On 2026-11-12 "at or above HEAVY_BUSY_LIMIT=70%" was read as a project's limit, when it was the Mac's, from
-        # its limits file (vocaro/queuekeeper#29). Each source by its words, here and in the second Mac's reading.
+        # its limits file (vocaro/queuekeeper#29). Each source by its words, here and in another Mac's reading.
         os.environ.pop("HEAVY_SLOTS_MAX")
         path = self.write_limits({"busyLimit": 70})
         os.environ["HEAVY_BUSY_LIMIT"] = "60"
@@ -1025,7 +1025,7 @@ class ResourceTests(unittest.TestCase):
         with patch.object(resources, "cpu_busy", return_value=(76.0, 15.0)):
             self.assertEqual(resources.pressure(), ("cpu", f"the CPU is 76% busy, at or above HEAVY_BUSY_LIMIT=70% "
                                                            f"(this Mac's limit, set in {path})"))
-        # The second Mac's reading says where it sets each limit, and the line names that Mac; an older toolkit's
+        # Another Mac's reading says where it sets each limit, and the line names that Mac; an older toolkit's
         # reading does not say where, and the line says only whose the limit is.
         from queuekeeper import offload_host, remote
         os.environ.pop("HEAVY_SLOTS")
@@ -1384,7 +1384,7 @@ class ResourceTests(unittest.TestCase):
                 with resources.Admission("tests", timeout=0): self.fail("admitted")
 
     def test_a_whole_host_place_said_to_wait_still_is_admitted_before_a_later_one_when_the_slots_free(self):
-        """vocaro/queuekeeper#160: a gate offered to both Macs was away from this Mac's queue for about 260 s of each
+        """vocaro/queuekeeper#160: a gate offered to the Macs was away from this Mac's queue for about 260 s of each
         cycle, longer than HEAVY_PLACE_SECONDS, so its place held nothing back when the slots were freed and a gate
         that arrived 42 minutes after it was admitted. A place whose caller says that its work still waits
         (Place.still_waiting, as Place.kept does every 60 s) holds the later gate back however long it is away."""
@@ -1409,7 +1409,7 @@ class ResourceTests(unittest.TestCase):
                 for held in running: self.addCleanup(held.close)
                 self.assertIn("a whole-host lane needs every guaranteed slot", gate("older gate", older))
                 asked = clock[0]
-                # It offers itself to the second Mac, which declines it 260 s later, saying meanwhile that it waits.
+                # It offers itself to another Mac, which declines it 260 s later, saying meanwhile that it waits.
                 for _minute in range(4):
                     clock[0] += 60
                     if said: older.still_waiting()
@@ -1459,8 +1459,8 @@ class ResourceTests(unittest.TestCase):
         place.leave()
 
     def test_a_place_is_kept_only_while_its_work_is_said_to_be_unplaced(self):
-        """Place.kept says that the work still waits only while its caller says no Mac has taken it (#160). Once the
-        second Mac has taken the lane, or its placement cannot be told, nothing more is said, so the place stops holding
+        """Place.kept says that the work still waits only while its caller says no Mac has taken it (#160). Once another
+        Mac has taken the lane, or its placement cannot be told, nothing more is said, so the place stops holding
         later work back HEAVY_PLACE_SECONDS after it last asked, as before, and keeps its arrival. A place whose
         process has ended is dropped whatever it said."""
         place = resources.Place()
@@ -1477,7 +1477,7 @@ class ResourceTests(unittest.TestCase):
             self.assertLess(time.time() - found["seen"], resources.PLACE_SECONDS)
             with self.assertRaisesRegex(TimeoutError, "behind a whole-host lane queued ahead of it: away gate"):
                 with resources.Admission("later gate", whole_host=True, timeout=0): self.fail("admitted")
-            # Taken by the second Mac, or unknown: the keeper asks once and ends, having said nothing.
+            # Taken by another Mac, or unknown: the keeper asks once and ends, having said nothing.
             for answer in (False, None):
                 with self.subTest(unplaced=answer):
                     self.queue(stale)
@@ -1687,7 +1687,7 @@ class ResourceTests(unittest.TestCase):
                         self.assertEqual([slot for slot, _fd in admitted.descriptors], [0])
 
     def test_a_whole_host_request_keeps_its_place_across_waits_until_it_leaves(self):
-        """resources.Place: work that alternates between this Mac's waits and offers to the second Mac keeps one place
+        """resources.Place: work that alternates between this Mac's waits and offers to another Mac keeps one place
         in arrival order, and leaves it once it no longer waits here; a stop takes it out at once."""
         queue = resources.slot_directory() / resources.QUEUE
         self.hold(0)
@@ -3229,7 +3229,7 @@ class AdmissionLogTests(unittest.TestCase):
 
 
 class UsageTests(unittest.TestCase):
-    """qk admissions usage: whether the second Mac is used and why work is on this Mac, from fake readings and logs."""
+    """qk admissions usage: whether another Mac is used and why work is on this Mac, from fake readings and logs."""
     UNTIL = datetime.fromisoformat("2026-11-06T12:00:00+00:00")
     SINCE = UNTIL - timedelta(hours=3)
     IDLE = {"slots": 3, "slotsMax": 9, "busy": [], "load": 1.0, "cpuBusy": 5.0, "busyLimit": 75.0, "wholeHost": [],
@@ -3253,9 +3253,9 @@ class UsageTests(unittest.TestCase):
                                              self.SINCE, self.UNTIL), 0)
         return output.getvalue().splitlines()
 
-    def test_a_busy_second_mac_and_the_work_never_offered_to_it_are_shown_apart(self):
+    def test_a_busy_farm_mac_and_the_work_never_offered_to_it_are_shown_apart(self):
         # The positive control, as on 2026-11-06: this Mac ran one job most of the period, a whole-host gate queuekeeper
-        # never offered among them, while the second Mac ran three or four.
+        # never offered among them, while another Mac ran three or four.
         busy = {**self.IDLE, "busy": [0, 1, 2, 3], "cpuBusy": 97.0, "memory": 2}
         here_log = (self.job("g", 0, 150, whole=True, placement={"offered": False, "because": "--here"})
                     + self.job("a", 150, 160, label="swift build --jobs 4",
@@ -3329,7 +3329,7 @@ class UsageTests(unittest.TestCase):
         # holds only part of counts only that part.
         seconds, whole, dead = resources.occupancy(self.job("now", 120) + self.job("early", -60, 30), self.SINCE, self.UNTIL)
         self.assertEqual((seconds, whole, dead), ({0: 90 * 60, 1: 90 * 60}, 0.0, 0))
-        # A second Mac whose log cannot be fetched says why.
+        # Another Mac whose log cannot be fetched says why.
         lines = self.report(self.IDLE, self.IDLE, [], "build-host did not send its admission log")
         self.assertIn("  build-host: log unavailable: build-host did not send its admission log", lines)
 
@@ -3609,7 +3609,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_admission_frees_a_stranded_entry_whose_owner_has_ended_and_admits_the_request(self):
         # A task stop's SIGKILL stranded entries whose commands had all ended, and every session's heavy work on
-        # both Macs waited until the owner removed them by hand (2026-11-01). Admission now frees such an entry
+        # the Macs waited until the owner removed them by hand (2026-11-01). Admission now frees such an entry
         # itself at once, marked uncertain or not, and logs it as reclaimed (vocaro/queuekeeper#23).
         for uncertain in [False, True]:
             with self.subTest(uncertain=uncertain), contextlib.ExitStack() as stack:
@@ -4603,7 +4603,7 @@ class LaneLabelTests(unittest.TestCase):
         self.assertFalse(ran.exists())
 
     def foreground_project(self):
-        """Beta, whose gate lane takes the foreground, on a second Mac whose device record is this test's and whose
+        """Beta, whose gate lane takes the foreground, on another Mac whose device record is this test's and whose
         foreground reads ready, and the marker that lane leaves if it runs."""
         ran = self.marker(Path("Beta"), "gate", "ran")
         beta = self.project("Beta", gate={"command": [sys.executable, "-c", f"open({str(ran)!r}, 'w')"],
@@ -4625,7 +4625,7 @@ class LaneLabelTests(unittest.TestCase):
             return cli.main(["--project", str(root), "admit", "--foreground", "--here", "--timeout", "0", "--",
                              *command]), error.getvalue()
 
-    def test_work_whose_wait_for_the_second_macs_foreground_runs_out_is_busy_not_an_eng_error(self):
+    def test_work_whose_wait_for_the_farm_macs_foreground_runs_out_is_busy_not_an_eng_error(self):
         """Its TimeoutError, an OSError, made qk run exit 2, which the queue takes for a failure (#297), as an
         admission wait's did (#268). Waiting for no time reaches it without foreground.POLL's sleep."""
         from queuekeeper import remote
@@ -4690,9 +4690,9 @@ class LaneLabelTests(unittest.TestCase):
         self.assertIn("  gate: 1 admitted; waited mean 0s, max 0s; held mean 1m00s, max 1m00s, total 1m00s; "
                       "ends released 1", output.getvalue())
 
-    def test_each_runs_admission_line_says_whether_eng_offered_it_to_the_second_mac_and_why_it_ran_here(self):
+    def test_each_runs_admission_line_says_whether_eng_offered_it_to_the_farm_mac_and_why_it_ran_here(self):
         # The positive controls: a lane that stays here, qk run --here, qk admit --here, and a lane and a plain qk
-        # admit that queuekeeper offered first, which with no second Mac configured are declined, each say so on their
+        # admit that queuekeeper offered first, which with no other Mac configured are declined, each say so on their
         # admitted line (qk admit is offered first since the owner's decision of 2026-11-07).
         root = self.project("Alpha", gate={"command": self.QUICK, "resource": "heavy"},
                             device={"command": self.QUICK, "resource": "heavy", "here": "it needs this Mac's iPhone"})
@@ -4700,7 +4700,7 @@ class LaneLabelTests(unittest.TestCase):
             self.assertEqual(self.run_lane(root, *arguments)[0], 0)
         self.admit(root, self.QUICK, "--here")
         self.admit(root, self.QUICK)
-        # Work the second Mac runs for another Mac says which sent it.
+        # Work another Mac runs for another Mac says which sent it.
         with patch.dict(os.environ, {"QUEUEKEEPER_DISPATCHED_FROM": "Sender"}):
             self.assertEqual(self.run_lane(root, "--here", "gate")[0], 0)
         # The negative control: a caller's own admission names no placement.
@@ -4723,7 +4723,7 @@ class LaneLabelTests(unittest.TestCase):
         # A line an earlier toolkit wrote, when qk admit without --verify ran here, keeps its category.
         self.assertEqual(resources.placed({"placement": {"offered": False, "because": "qk admit runs here without "
                                                          "--verify"}}), ("never", "qk admit without --verify"))
-        # qk admissions usage reads this log, and says why it cannot read the second Mac's.
+        # qk admissions usage reads this log, and says why it cannot read another Mac's.
         with contextlib.redirect_stdout(StringIO()) as output:
             self.assertEqual(cli.main(["admissions", "usage"]), 0)
         text = output.getvalue()

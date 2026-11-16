@@ -1,5 +1,5 @@
 """offload_host.stop_leftovers and the Launches record behind it (vocaro-engineering#353), over fake ps and lsof
-listings of a second Mac whose home is a temporary directory, with its own admission guard and log. No test signals
+listings of another Mac whose home is a temporary directory, with its own admission guard and log. No test signals
 a process: every stop goes to a fake kill, and every fake PID lies above macOS's highest, 99998."""
 import json
 import os
@@ -244,7 +244,7 @@ class StopTests(Fixture):
 
 
 class RequestTests(Fixture):
-    """The second Mac's answer to the requests `qk doctor` and `qk simulator-pool reap` send there
+    """Another Mac's answer to the requests `qk doctor` and `qk simulator-pool reap` send there
     (simulators.pool.reap_reports), over the same fixture: the sent command is answered here with fakes."""
 
     def reap_reports(self, **options):
