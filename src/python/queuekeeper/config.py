@@ -31,9 +31,11 @@ def extensions(declared):
 
 def unknown(named):
     """Refuse an extension named as a module of Queuekeeper's own package that it does not have, such as
-    queuekeeper.apple: the plugins are packages of their own, named with an underscore (vocaro/queuekeeper#187)."""
+    queuekeeper.apple: the plugins are packages of their own, named with an underscore (vocaro/queuekeeper#187).
+    A folder with no module in it, such as one a checkout keeps from before the plugins left the core with only
+    ignored files in it, imports as a namespace package, which has no origin, and is no module either."""
     if not named.startswith(__package__ + "."): return
-    try: found = importlib.util.find_spec(named) is not None
+    try: found = getattr(importlib.util.find_spec(named), "origin", None) is not None
     except ModuleNotFoundError: found = False
     if found: return
     plugin = __package__ + "_" + named.removeprefix(__package__ + ".")

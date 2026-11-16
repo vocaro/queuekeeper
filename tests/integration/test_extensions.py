@@ -255,6 +255,15 @@ class OldPluginNameTests(unittest.TestCase):
             config.parse(source)
         self.assertNotIn("queuekeeper.apple", sys.modules)
 
+    def test_an_old_name_whose_folder_a_checkout_keeps_with_only_ignored_files_is_refused(self):
+        import queuekeeper
+        from queuekeeper import config
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "apple" / "__pycache__").mkdir(parents=True)
+            with patch.object(queuekeeper, "__path__", [*queuekeeper.__path__, folder]), patch.dict(sys.modules), \
+                    self.assertRaisesRegex(ValueError, "list queuekeeper_apple$"):
+                config.extensions(["queuekeeper.apple"])
+
     def test_a_name_in_queuekeeper_that_no_package_matches_names_none(self):
         from queuekeeper import config
         for named in ("queuekeeper.nothing", "queuekeeper.nothing.deeper"):
