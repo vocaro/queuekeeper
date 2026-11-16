@@ -773,17 +773,18 @@ Workers started from Terminal, Codex, or the signed LaunchAgent read the same fi
 An explicit `HEAVY_SLOT_DIR` namespace reads its own `farm.json` from that directory. A farm with
 no Mac that takes work keeps every lane on this Mac.
 
-With two Macs or more that take work, merge queue gates are offered to each in the list's order.
-The queue includes this Mac as the local fallback automatically.
-For each eligible lane, the queue tries the first listed Mac with capacity. If that Mac is
-unreachable or declines before the work starts, the queue tries the next alias. When all decline,
-the ordinary gate can take local admission and rechecks the build Macs while waiting. A
+Every Mac that takes work is offered a lane or an admitted command, in the list's order, and this
+Mac is the local fallback. Each Mac that can be reached is read for its capacity, and the first
+with spare capacity for the work is sent it: a whole-host lane passes over a Mac with a guaranteed
+slot busy and starts at once on an idle Mac later in the list. A Mac that is unreachable, or
+declines before the work starts, is passed over for the next. When no Mac of the list has spare
+capacity, the work takes this Mac's admission while this Mac has, and otherwise goes to whichever
+admits it first, the first Mac reached asked first, with the list read again while it waits. A
 misconfigured host stops the offer with its diagnosis, and an interrupted connection to a run
 that may have started yields no verdict.
 
-The whole list serves merge queue gates. Foreground lanes, a standalone `qk run` and commands
-that act on one Mac, such as `qk remote setup`, use the first Mac that takes work now, or the one
-`--host` names.
+Foreground lanes and commands that act on one Mac, such as `qk remote setup`, use the first Mac
+that takes work now, or the one `--host` names.
 
 #### Check gate placement without running a gate
 

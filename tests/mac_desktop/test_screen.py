@@ -11,6 +11,7 @@ import plistlib
 import sys
 import tempfile
 import unittest
+from test_support import farm as farm_fixture
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
@@ -203,7 +204,7 @@ class ScrollBarTests(unittest.TestCase):
 
 
 class PlacementTests(unittest.TestCase):
-    """remote.spare, which Offer.choose reads for both Macs, with the screen in each reading."""
+    """remote.spare, which Offer.attempt reads for both Macs, with the screen in each reading."""
 
     def capacity(self, state):
         return {"slots": 3, "slotsMax": 6, "busy": [], "load": 1.0, "cpuBusy": 10.0, "busyLimit": 75.0, "screen": reading(state)}
@@ -234,14 +235,14 @@ class PlacementTests(unittest.TestCase):
     def test_the_choice_sends_the_lane_from_a_locked_second_mac_to_an_unlocked_this_mac(self):
         with patch.object(remote, "capacity_there", return_value=self.capacity("locked")), \
                 patch.object(offload_host, "capacity", return_value=self.capacity("unlocked")):
-            self.assertIn("the second Mac's is locked", self.offer(True).choose())
+            self.assertIn("the second Mac's is locked", farm_fixture.choice(self.offer(True)))
             # The negative control: an undeclared lane is offered to the locked second Mac, as before.
-            self.assertIsNone(self.offer(False).choose())
+            self.assertIsNone(farm_fixture.choice(self.offer(False)))
         # Neither Mac unlocked: the lane is offered, and the second Mac declines it while its screen is locked.
         with patch.object(remote, "capacity_there", return_value=self.capacity("locked")), \
                 patch.object(offload_host, "capacity", return_value=self.capacity("locked")), \
                 patch("sys.stderr", new_callable=StringIO) as error:
-            self.assertIsNone(self.offer(True).choose())
+            self.assertIsNone(farm_fixture.choice(self.offer(True)))
         self.assertIn("neither Mac has spare capacity for gate now (the lane needs an unlocked screen, and the second "
                       "Mac's is locked", error.getvalue())
 

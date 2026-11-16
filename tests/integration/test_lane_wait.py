@@ -215,7 +215,7 @@ class Waits(Named):
 
     def offer(self):
         offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0)
-        offered.host, offered.busy = "fake", "the second Mac is busy: fake did not take it"
+        offered.hosts, offered.host, offered.busy = ("fake",), "fake", "the second Mac is busy: fake did not take it"
         return offered
 
     def test_overflow_says_whichever_mac_admits_it_first(self):

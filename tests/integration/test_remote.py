@@ -5895,7 +5895,7 @@ class KeptSlotsTests(unittest.TestCase):
         offered = remote.Offer("gate", "", lambda host, sent: 0)
         with patch.object(remote, "capacity_there", return_value={**queued, "screen": None}), \
                 patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}):
-            self.assertEqual(offered.choose(), refused)
+            self.assertEqual(farm_fixture.choice(offered), refused)
 
     def test_settle_time_and_memory_pressure_withhold_the_slots_beyond_kept_ones(self):
         """Beyond the guaranteed slots kept for a whole-host lane queued ahead, a lighter lane has spare capacity only
@@ -5943,11 +5943,11 @@ class KeptSlotsTests(unittest.TestCase):
         loaded = {**self.IDLE, "busy": [0], "screen": None}
         with patch.object(remote, "capacity_there", return_value=loaded), \
                 patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}) as here:
-            self.assertIsNotNone(offered.choose())
+            self.assertIsNotNone(farm_fixture.choice(offered))
             here.assert_called_once_with(own=None, before=offered.started)
             here.reset_mock()
             offered.place = resources.Place()
-            offered.choose()
+            farm_fixture.choice(offered)
             here.assert_called_once_with(own=offered.place.identity, before=offered.started)
         # Its admission here hands it the place it keeps.
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
@@ -8595,6 +8595,7 @@ class GateHostPoolTests(unittest.TestCase):
         busy = {**free, "wholeHost": ["another gate"]}
         with patch.object(remote, "reachable") as reachable, \
                 patch.object(remote, "capacity_there", side_effect=[busy, free, busy, busy, busy, free, free]), \
+                patch.object(remote.offload_host, "capacity", return_value=free), \
                 contextlib.redirect_stderr(StringIO()):
             self.assertEqual(offer.make(), "build-host is running a whole-host lane: another gate; "
                              "another gate took the slot; gate-04 is running a whole-host lane: another gate; "
@@ -8619,6 +8620,77 @@ class GateHostPoolTests(unittest.TestCase):
                 reachable.assert_called_once_with("gate-04")
 
 
+class FanOutTests(unittest.TestCase):
+    """Any work, not a queue gate alone, is offered to each of the farm's Macs in order (Offer.attempt)."""
+
+    FREE = {"slots": 3, "slotsMax": 6, "busy": [], "busyLimit": 75}
+
+    def offer(self, taken, **need):
+        def send(host, sent):
+            taken.append(host)
+            return 0
+        return remote.Offer("gate", "`qk run --here gate`", send, **need)
+
+    def test_a_whole_host_lane_goes_at_once_to_an_idle_third_mac_behind_a_lightly_loaded_second(self):
+        """This Mac full, the second with one slot busy, which a whole-host lane needs free, the third idle: the
+        lane starts on the third and waits for neither of the others."""
+        readings = {"mini": {**self.FREE, "busy": [0]}, "studio": self.FREE}
+        taken, here = [], {**self.FREE, "busy": [0, 1, 2]}
+        with farm_fixture.only("mini", "studio"), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=lambda host, **options: readings[host]), \
+                patch.object(remote.offload_host, "capacity", return_value=here) as local, \
+                contextlib.redirect_stderr(StringIO()):
+            offered = self.offer(taken, whole_host=True)
+            self.assertEqual(offered.make(), 0)
+            # The negative control: ordinary work, which a free guaranteed slot serves, goes to the second Mac.
+            self.assertEqual(self.offer(taken).make(), 0)
+        self.assertEqual((taken, offered.host), (["studio", "mini"], "studio"))
+        # A Mac with spare capacity took it, so this Mac's was never read.
+        local.assert_not_called()
+
+    def test_a_mac_that_declines_or_is_away_is_passed_over_for_the_next(self):
+        away = remote.Unreachable("mini cannot be reached", "wake it")
+        taken = []
+
+        def send(host, sent):
+            if host == "studio": raise remote.Busy("every checkout is in use")
+            taken.append(host)
+            return 0
+        with farm_fixture.only("mini", "studio", "rented"), \
+                patch.object(remote, "reachable", side_effect=lambda host: (_ for _ in ()).throw(away) if host == "mini" else None), \
+                patch.object(remote, "capacity_there", return_value=self.FREE), contextlib.redirect_stderr(StringIO()):
+            offered = remote.Offer("the command", "`qk admit --here`", send)
+            self.assertEqual(offered.make(), 0)
+        self.assertEqual((taken, offered.host), (["rented"], "rented"))
+
+    def test_with_no_spare_capacity_anywhere_the_first_mac_reached_is_asked_first_and_named(self):
+        full, taken = {**self.FREE, "busy": [0, 1, 2, 3, 4, 5]}, []
+        with farm_fixture.only(farm_fixture.mac("mini.local", "mini"), "studio"), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", return_value=full), \
+                patch.object(remote.offload_host, "capacity", return_value=full), \
+                patch("sys.stderr", new_callable=StringIO) as error:
+            self.assertEqual(self.offer(taken).make(), 0)
+            said = error.getvalue()
+            # While this Mac has spare capacity, nothing is offered and the work goes to this Mac's queue.
+            with patch.object(remote.offload_host, "capacity", return_value=self.FREE):
+                offered = self.offer(taken)
+                offered.make()
+        self.assertEqual(taken, ["mini.local"])
+        self.assertIn("no Mac has spare capacity for gate now (every guaranteed slot of mini is busy", said)
+        self.assertIn("mini asked first", said)
+        self.assertEqual(offered.status, "every guaranteed slot of mini is busy (HEAVY_SLOTS=3); "
+                                         "every guaranteed slot of studio is busy (HEAVY_SLOTS=3)")
+        self.assertEqual(offered.busy, offered.status)
+
+    def test_macs_that_are_all_away_are_one_unreachable_farm(self):
+        def away(host): raise remote.Unreachable(f"{host} cannot be reached", "wake it")
+        offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0)
+        offered.hosts, offered.choosing = ("mini", "studio"), True
+        with patch.object(remote, "reachable", side_effect=away), self.assertRaises(remote.Unreachable) as raised:
+            offered.attempt()
+        self.assertEqual(raised.exception.problem, "mini cannot be reached; studio cannot be reached")
+
+
 class OfferAgainTests(unittest.TestCase):
     def test_repeated_declines_send_one_stable_request_age_and_release_the_context(self):
         seen = []
@@ -8626,7 +8698,7 @@ class OfferAgainTests(unittest.TestCase):
             seen.append(resources.request_started())
             raise remote.Busy("all checkout slots are busy")
         offered = remote.Offer("work", "", decline)
-        with patch.object(remote, "configured", return_value="fake"), \
+        with farm_fixture.only("fake"), \
                 patch.object(remote, "reachable"), contextlib.redirect_stderr(StringIO()):
             offered.make(fallback=False)
             offered.again()
@@ -8657,7 +8729,7 @@ class OfferAgainTests(unittest.TestCase):
 
     def offer(self):
         offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0)
-        offered.host, offered.busy = "fake", "every checkout is in use"
+        offered.hosts, offered.host, offered.busy = ("fake",), "fake", "every checkout is in use"
         return offered
 
     def test_a_second_mac_away_at_one_offer_is_asked_again_and_runs_the_work_once_back(self):

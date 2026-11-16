@@ -2881,7 +2881,7 @@ def bring_runtimes(host, developer, check):
 def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False, exclude=None):
     """Offer a lane to the second Mac to start now, once (Offer.make), and return the Offer.
 
-    With fallback, the offer first reads both Macs' capacity for the lane (Offer.choose): a whole-host
+    With fallback, the offer first reads both Macs' capacity for the lane (Offer.attempt): a whole-host
     lane needs every guaranteed slot of its Mac, an exclusive one every slot. The second Mac runs the
     lane only if it can start it now: its queue admits the lane within FREE_WAIT (`qk run --if-free`
     there) and one of the project's checkouts there is free. A tree with uncommitted changes goes as a
@@ -2889,7 +2889,8 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     arguments name a physical device of this Mac's record, nor any lane when Git cannot name the
     commits to send. With queue_gate, for a queue worker's own `qk run` of a gate's lane, a process that lost Local
     Network access ends with LOST_ACCESS rather than the work running on this Mac (Offer.lost_access).
-    A configured gate pool tries the listed aliases in order, excluding the active batch's host when stacking.
+    Every Mac of the farm that takes work now is asked, in the farm's order (Offer.attempt); a queue gate leaves out
+    exclude, the Mac the active batch runs on, when stacking.
     """
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
@@ -2898,12 +2899,11 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     refused = (f"its arguments name the physical device of {', '.join(named)}, which the second Mac uses only under "
                "a reservation `qk remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
-    hosts = gate_hosts() if queue_gate else None
     offered = Offer(lane, f"`qk run --here {lane}`", lambda host, sent: execute(
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
         whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
-        screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate and (fallback or hosts is not None),
-        hosts=None if hosts is None else tuple(host for host in hosts if host != exclude))
+        screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate, fallback=fallback,
+        exclude=exclude if queue_gate else None)
     offered.make(fallback)
     return offered
 
@@ -3076,94 +3076,132 @@ class Offer:
     and this Mac has (Loaded); and None once it ran there or can no longer take it."""
 
     def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False, screen=False,
-                 queue_gate=False, hosts=None):
+                 queue_gate=False, hosts=None, exclude=None, fallback=True):
         self.started = resources.request_started()
         self.name, self.instead, self.send, self.refused = name, instead, send, refused
-        self.whole_host, self.exclusive, self.screen, self.queue_gate = whole_host, exclusive, screen, queue_gate
-        self.sent, self.host, self.status, self.busy, self.away = {}, None, None, None, None
-        self.hosts = hosts
-        # The offers again() made in a row that could not reach the second Mac, and when the last of them failed
+        self.whole_host, self.exclusive, self.screen = whole_host, exclusive, screen
+        self.status, self.busy, self.away = None, None, None
+        # The farm's Macs to ask, in order, as SSH destinations: those given, else, read by make, every Mac that
+        # takes work now but exclude. host is the one asked last, and sent what was sent to it; each Mac keeps what
+        # was sent to it (sents), since each is pushed its own commits.
+        self.hosts, self.exclude, self.host, self.sents = hosts, exclude, None, {}
+        # A queue worker's gate ends when the process lost Local Network access (lost_access) rather than run every
+        # lane here: one that may run here, or one with several Macs to ask.
+        self.gate, self.queue_gate = queue_gate, queue_gate and (fallback or (hosts is not None and len(hosts) > 1))
+        # The offers again() made in a row that could not reach any Mac, and when the last of them failed
         # (an epoch time): away is set only once there are UNREACHABLE_AFTER (vocaro/queuekeeper#25).
         self.failed, self.failed_at = 0, None
-        self.remote_macs = "the build Macs" if hosts is not None else "the second Mac"
-        # Whether each offer first reads both Macs' capacity (choose): an offer this Mac may take does, and
-        # --offload-only's, which never runs the work here, does not. Set by make.
+        self.remote_macs = "the second Mac"
+        # Whether each offer may send the work to this Mac's queue instead, by this Mac's capacity (attempt): an offer
+        # this Mac may take does, and --offload-only's, which never runs the work here, does not. Set by make.
         self.choosing = False
         self.neither = None
         # This Mac's queue place of the work while it waits here (resources.Place), set by
         # its admission here: this Mac's capacity reading does not count it as a request queued ahead (#186).
         self.place = None
 
+    @property
+    def sent(self):
+        """What was sent to the Mac asked last, or nothing while none was asked."""
+        return self.sents.get(self.host, {})
+
+    @sent.setter
+    def sent(self, kept):
+        self.sents[self.host] = kept
+
+    def several(self):
+        return self.hosts is not None and len(self.hosts) > 1
+
+    def called(self, host):
+        """What a message calls the Mac at host: its name in the farm once the farm has several to tell apart."""
+        return farm.named(host) if self.several() else "the second Mac"
+
+    def offer(self, host):
+        self.host = host
+        return self.send(host, self.sents.setdefault(host, {}))
+
+    def spare_there(self, host):
+        """Why the Mac at host has no spare capacity for the work now, by its own reading, or None while it has."""
+        kept = self.sents.get(host, {})
+        options = {"started": kept["requestStarted"]} if "requestStarted" in kept else {}
+        return spare(capacity_there(host, **options), self.called(host), self.whole_host, self.exclusive, self.screen,
+                     extra=self.several())
+
     def attempt(self):
-        """Offer the work once: its status there, or Busy, Unreachable or Unavailable raised; Loaded, a Busy,
-        when the second Mac has no spare capacity for it while this Mac has, with nothing offered."""
+        """Offer the work once, to the farm's Macs in order: its status on the one that took it, or Busy, Unreachable
+        or Unavailable raised when none did.
+
+        Each Mac that can be reached is read for its capacity (spare), and the first with spare capacity is sent the
+        work; one that declines it as busy, or cannot be reached, is passed over for the next, so work goes at once to
+        an idle Mac behind a loaded one. When no Mac has spare capacity, the work goes to this Mac's queue while this
+        Mac has (Loaded, with nothing offered); and when this Mac has none either, or never runs the work
+        (--offload-only), to whichever admits it first, the first Mac reached asked first, as before the choice
+        existed. Every Mac is for work: a session uses one with capacity and never asks the owner which
+        (vocaro-engineering#168). A Mac whose configuration stops the work stops it (Misconfigured), and so does this
+        process's loss of the local network. An offer that never runs here, to a farm of one Mac, reads no capacity."""
         if self.refused is not None: raise Unavailable(self.refused)
         with processes.forwarding_signals(), resources.request_order(self.started):
-            if self.hosts is not None: return self.attempt_pool()
-            # A second Mac that cannot be reached costs seconds here, and nothing is sent to it.
-            reachable(self.host)
-            # Reached again, it is no longer said to be unreachable, with its failed probes, while the offer goes on.
-            if self.away is not None and self.busy is not None: lane_wait.waiting(lane_wait.OVERFLOW, self.busy)
-            if self.choosing:
-                reason = self.choose()
-                if reason is not None: raise Loaded(reason)
-            return self.send(self.host, self.sent)
+            failures, full, said, reached = [], [], [], False
+            for host in self.hosts:
+                try:
+                    # A Mac that cannot be reached costs seconds here, and nothing is sent to it.
+                    reachable(host)
+                    # Reached again, it is no longer said to be unreachable, with its failed probes, while the offer
+                    # goes on.
+                    if not reached and self.away is not None and self.busy is not None:
+                        lane_wait.waiting(lane_wait.OVERFLOW, self.busy)
+                    reached = True
+                    reason = self.spare_there(host) if self.choosing or self.several() else None
+                    if reason is None: return self.offer(host)
+                    full.append(host)
+                    said.append(reason)
+                except (NoLocalNetwork, Misconfigured):
+                    raise
+                except Unavailable as error:
+                    failures.append(error)
+                    said.append(self.words(error))
+            if full:
+                if self.choosing:
+                    reading = offload_host.capacity(own=self.place.identity if self.place is not None else None,
+                                                    before=self.started)
+                    here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
+                            else spare(reading, HERE, self.whole_host, self.exclusive, self.screen))
+                    if here is None: raise Loaded("; ".join(said))
+                    said.append(here)
+                host = full[0]
+                if self.neither != tuple(said):
+                    print(f"queuekeeper: {'no' if self.several() else 'neither'} Mac has spare capacity for {self.name} "
+                          f"now ({'; '.join(said)}), so it goes to whichever admits it first, {self.called(host)} asked "
+                          "first", file=sys.stderr, flush=True)
+                    self.neither = tuple(said)
+                return self.offer(host)
+            if len(failures) == 1: raise failures[0]
+            # No Mac was reached: the first says why, and the rest with it.
+            if all(isinstance(error, Unreachable) for error in failures):
+                raise type(failures[0])("; ".join(error.problem for error in failures), failures[0].fix)
+            if any(isinstance(error, Busy) for error in failures): raise Loaded("; ".join(said))
+            raise Unavailable("; ".join(said))
 
-    def attempt_pool(self):
-        """Offer to each eligible Mac in order until one takes it. Keep prepared commits per destination."""
-        refused = []
-        for host in self.hosts:
-            try:
-                reachable(host)
-                options = {"started": self.sent[host]["requestStarted"]} if "requestStarted" in self.sent.get(host, {}) else {}
-                reason = spare(capacity_there(host, **options), host, self.whole_host, self.exclusive, self.screen, extra=True)
-            except (NoLocalNetwork, Misconfigured):
-                raise
-            except Unavailable as error:
-                refused.append(getattr(error, "problem", str(error)))
-                continue
-            if reason is not None:
-                refused.append(reason)
-                continue
-            try:
-                return self.send(host, self.sent.setdefault(host, {}))
-            except (NoLocalNetwork, Misconfigured):
-                raise
-            except (Busy, Unreachable) as error:
-                refused.append(error.problem if isinstance(error, Unreachable) else str(error))
-        raise Loaded("; ".join(refused))
-
-    def choose(self):
-        """Why the work goes to this Mac's queue now rather than being offered, by both Macs' capacity for it
-        (spare), or None to offer it: the second Mac has spare capacity, or neither Mac has, and then the
-        work goes to whichever admits it first, the second Mac asked first, as before the choice existed. Both
-        Macs are for work: a session uses the one with capacity and never asks the owner which
-        (vocaro-engineering#168)."""
-        options = {"started": self.sent["requestStarted"]} if "requestStarted" in self.sent else {}
-        there = spare(capacity_there(self.host, **options), "the second Mac", self.whole_host, self.exclusive, self.screen)
-        if there is None: return None
-        reading = offload_host.capacity(own=self.place.identity if self.place is not None else None, before=self.started)
-        here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
-                else spare(reading, HERE, self.whole_host, self.exclusive, self.screen))
-        if here is None: return there
-        if self.neither != (there, here):
-            print(f"queuekeeper: neither Mac has spare capacity for {self.name} now ({there}; {here}), so it goes to "
-                  "whichever admits it first, the second Mac asked first", file=sys.stderr, flush=True)
-            self.neither = there, here
-        return None
+    @staticmethod
+    def words(error):
+        return error.problem if isinstance(error, Unreachable) else str(error)
 
     def declined(self, busy):
         """Why the second Mac did not take the work, as the receipt and messages give it."""
-        return str(busy) if isinstance(busy, Loaded) else f"the second Mac is busy: {busy}"
+        return str(busy) if isinstance(busy, Loaded) else f"{self.called(self.host)} is busy: {busy}"
 
     def make(self, fallback=True):
         """Offer the work once and set status. Without fallback, for a caller that runs the work itself
         when the second Mac does not, every reason that it does not is BUSY, after saying why; the capacity
         of the Macs is not read for it, since the work never runs here (--offload-only)."""
-        self.host = configured() if self.hosts is None else next(iter(self.hosts), None)
+        macs = farm.destinations() if self.hosts is None else tuple(self.hosts)
+        self.hosts = tuple(host for host in macs if host != self.exclude)
         self.choosing = fallback
+        self.queue_gate = self.gate and (fallback or self.several())
+        if self.several(): self.remote_macs = "the farm's other Macs"
+        self.host = next(iter(self.hosts), None)
         if self.host is None:
-            if self.hosts is not None:
+            if macs:
                 self.status = "no other build Mac is eligible" if fallback else BUSY
                 return self.status
             if not fallback:
@@ -3232,11 +3270,11 @@ class Offer:
             if self.lost_access(away): return self.status
             self.failed, self.failed_at = self.failed + 1, time.time()
             if self.failed < UNREACHABLE_AFTER:
-                print(f"queuekeeper: {self.name} asks the second Mac again within {self.reprobe()}s, as one offer that "
+                print(f"queuekeeper: {self.name} asks {self.remote_macs} again within {self.reprobe()}s, as one offer that "
                       f"could not reach it does not make it unreachable: {away.problem}", file=sys.stderr, flush=True)
                 return None
             if away.problem != self.away:
-                print(f"queuekeeper: {self.name} waits for this Mac, and asks the second Mac again within {self.reprobe()}s, "
+                print(f"queuekeeper: {self.name} waits for this Mac, and asks {self.remote_macs} again within {self.reprobe()}s, "
                       f"after {self.failed} offers in a row could not reach it: {away.problem}", file=sys.stderr, flush=True)
             self.away = self.status = away.problem
         except Unavailable as reason:
@@ -3277,7 +3315,7 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
 
     admit(seconds) is this Mac's admission of the work, or None when none came in that time. The work
     comes here once the second Mac has not taken it, declined as busy or not offered while it had no
-    spare capacity and this Mac had (Offer.choose): this Mac's admission waits FREE_WAIT, as the second
+    spare capacity and this Mac had (Offer.attempt): this Mac's admission waits FREE_WAIT, as the second
     Mac's did, then, while both Macs keep it waiting, OVERFLOW_WAIT doubling to OVERFLOW_WAIT_MAX, and
     between those waits both Macs are read again and the second Mac is offered the work again when the
     reading allows (Offer.again). The wait in this Mac's queue is the backoff between offers, so the
@@ -3305,9 +3343,9 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
         admission = admit(max(min(bound, deadline - time.monotonic()), 0))
         if admission is not None: return admission
         if once or time.monotonic() >= deadline:
-            who = "no Mac" if offered.hosts is not None else "neither Mac"
+            who = "no Mac" if offered.several() else "neither Mac"
             print(f"queuekeeper: {offered.name} not run: {who} admitted it {'now' if once else f'in {timeout:g}s'}"
-                  + (f"; the second Mac cannot be reached: {offered.away}" if offered.away
+                  + (f"; {offered.remote_macs} cannot be reached: {offered.away}" if offered.away
                      else f"; {offered.busy}" if offered.busy else "")
                   + (f"; this Mac's last wait: {refused[-1]}" if refused else ""), file=sys.stderr, flush=True)
             return BUSY
@@ -3553,7 +3591,7 @@ def limit_words(reading, key, value, mac):
 
 def retry_macs(host, lanes, lane, screen=False):
     """([each Mac, the second Mac as host and this Mac as None], why them, to follow "next on") that a run of lanes'
-    lane, about to start, could use, by each Mac's capacity now as Offer.choose reads it: the merge queue's settle wait
+    lane, about to start, could use, by each Mac's capacity now as Offer.attempt reads it: the merge queue's settle wait
     before a retry reads these (vocaro-engineering#253). The Mac cannot be known for certain beforehand, since it is
     chosen as the run starts: the second Mac when it has spare capacity for the lane, this Mac when only it has, and
     whichever admits the lane first when neither has, so then both could take it. Even the second Mac's spare capacity

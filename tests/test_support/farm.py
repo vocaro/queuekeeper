@@ -2,8 +2,9 @@
 import contextlib
 import json
 import uuid
+from unittest.mock import patch
 
-from queuekeeper import farm
+from queuekeeper import farm, remote
 
 
 def mac(host, name=None, state=farm.ACTIVE):
@@ -39,3 +40,13 @@ def use(case, *hosts):
     entered = only(*hosts)
     entered.__enter__()
     case.addCleanup(entered.__exit__, None, None, None)
+
+
+def choice(offered, *hosts):
+    """Why an offer this Mac may take goes to this Mac's queue rather than to the Macs at hosts, else to the one
+    asked last, all taken as reached; or None when one of them is offered it (remote.Offer.attempt)."""
+    offered.hosts, offered.choosing = hosts or ((offered.host or "fake"),), True
+    with patch.object(remote, "reachable"):
+        try: offered.attempt()
+        except remote.Loaded as loaded: return str(loaded)
+    return None

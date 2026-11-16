@@ -26,12 +26,12 @@ qk farm remove NAME                     # take it out for good
 
 ## Which Mac runs a lane
 
-A lane is offered first to another Mac and runs on the starting Mac when the other has no room. When
-neither has room, it runs on whichever admits it first. The tool decides, by reading each Mac's free
+A lane is offered to the farm's other Macs in their order, starts on the first with room, and runs on the
+starting Mac when none of them has room. When no Mac has room, it runs on whichever admits it first. The tool decides, by reading each Mac's free
 slots, CPU busy share and memory pressure. The agent does not.
 
-- **Gate hosts.** The queue's gates can use a list of Macs, tried in order. A rented Mac with SSH
-  can be one of them.
+- **Any number of Macs.** Lanes, admitted commands and the queue's gates use every Mac of the farm, tried
+  in order. A rented Mac with SSH can be one of them.
 - **Exclusive work.** Exclusive work sent to another Mac is offered until it can start there at once,
   and takes a place in that Mac's queue only after 15 minutes. A queued exclusive request holds every
   later request back, so queuing it from the start left a Mac idle while it waited. A heavy lane's own
