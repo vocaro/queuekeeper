@@ -79,6 +79,9 @@ class Fixture(unittest.TestCase):
         git(self.kit, "fetch", "-q", "origin")
         return git(self.kit, "rev-parse", "HEAD")
 
+    def pinned(self, name, commit):
+        return self.store / name / commit / name
+
     def qk(self, *words, **variables):
         return subprocess.run([sys.executable, str(ROOT / "bin/qk"), "--project", str(self.project), *words],
                               cwd=self.project, capture_output=True, text=True, env={**os.environ, **variables})
@@ -87,7 +90,8 @@ class Fixture(unittest.TestCase):
 class PinnedCheckoutTests(Fixture):
     def test_it_is_one_read_only_checkout_for_each_commit_that_no_landing_moves(self):
         made = offload_host.pinned_checkout(self.kit, "kit", self.one)
-        self.assertEqual(made, self.store / "kit" / self.one)
+        # Named as the folder is, since SwiftPM calls a local package by its folder's name (vocaro-engineering#497).
+        self.assertEqual(made, self.store / "kit" / self.one / "kit")
         self.assertEqual(offload_host.pin_head(made), self.one)
         file = made / "src/python/fixture_kit.py"
         self.assertIn("'one'", file.read_text())
@@ -110,6 +114,14 @@ class PinnedCheckoutTests(Fixture):
         (made / "src/python/fixture_kit.py").unlink()
         self.assertEqual(offload_host.pinned_checkout(self.kit, "kit", self.one), made)
         self.assertIn("'one'", (made / "src/python/fixture_kit.py").read_text())
+
+    def test_whatever_else_holds_the_commits_folder_is_replaced(self):
+        held = self.store / "kit" / self.one
+        (held / "src").mkdir(parents=True)
+        (held / "src/stray").write_text("not a checkout")
+        made = offload_host.pinned_checkout(self.kit, "kit", self.one)
+        self.assertEqual(sorted(path.name for path in held.iterdir()), ["kit"])
+        self.assertEqual(offload_host.pin_head(made), self.one)
 
     def test_a_commit_the_checkout_lacks_is_fetched_from_its_origin_and_one_no_origin_holds_is_refused(self):
         # As the second Mac's own checkout is when a round pins a commit that landed since its last connection.
@@ -134,7 +146,7 @@ class PinnedCheckoutTests(Fixture):
         stale = offload_host.stale_pins()
         self.assertEqual([found[0] for found in stale], [old])
         for found in stale: offload_host.remove_pin(*found)
-        self.assertFalse(old.exists())
+        self.assertFalse(old.parent.exists())
         self.assertTrue(new.is_dir())
         self.assertNotIn(str(old), git(self.kit, "worktree", "list"))
 
@@ -173,7 +185,7 @@ class PlaceSiblingsTests(Fixture):
         with patch.object(offload_host, "say", said.append):
             placed = offload_host.place_siblings(slot, [{"name": "kit", "commit": self.one}], home=self.home)
             again = offload_host.place_siblings(slot, [{"name": "kit", "commit": self.one}], home=self.home)
-        root = self.home / offload_host.PINS / "kit" / self.one
+        root = self.home / offload_host.PINS / "kit" / self.one / "kit"
         self.assertEqual(placed, {"kit": {"commit": self.one, "root": str(root)}})
         self.assertEqual(again, placed)
         self.assertEqual((slot / "kit").resolve(), root.resolve())
@@ -217,8 +229,8 @@ class MakeTests(Fixture):
         (self.kit / "src/python/fixture_kit.py").write_text(KIT.format(value="edited here"))
         said = []
         made = pins.make(self.project, ["kit"], say=said.append)
-        self.assertEqual(made, {"kit": {"commit": self.one, "root": str(self.store / "kit" / self.one)}})
-        self.assertEqual(said, [f"kit at {self.one[:12]}, its origin/main, from {self.store / 'kit' / self.one}"])
+        self.assertEqual(made, {"kit": {"commit": self.one, "root": str(self.pinned("kit", self.one))}})
+        self.assertEqual(said, [f"kit at {self.one[:12]}, its origin/main, from {self.pinned('kit', self.one)}"])
         self.assertEqual(pins.local(made), [])
         self.assertEqual(pins.dispatched(self.project, ["kit", "absent"]),
                          [{"name": "kit", "commit": self.one}, {"name": "absent"}])
@@ -238,7 +250,7 @@ class MakeTests(Fixture):
         two = self.publish("two")
         chosen = pins.chosen(self.project, ["kit"], [f"kit={self.one}"])
         made = pins.make(self.project, ["kit"], chosen)
-        self.assertEqual(made["kit"], {"commit": self.one, "root": str(self.store / "kit" / self.one),
+        self.assertEqual(made["kit"], {"commit": self.one, "root": str(self.pinned("kit", self.one)),
                                        "chosen": self.one})
         # A session's worktree of the folder, with a change it has not committed: a snapshot, which no origin holds.
         session = self.home / "session"
@@ -289,9 +301,9 @@ class FurtherFolderTests(Fixture):
                                                                  "absent": "ABSENT_ROOT"})
         said = []
         made = pins.make(self.project, config.sibling_variables(self.project), say=said.append)
-        root = self.store / "more" / self.first
+        root = self.pinned("more", self.first)
         # The two name each other, which ends; the one this Mac has nothing of is said and left out.
-        self.assertEqual(made, {"kit": {"commit": self.declares, "root": str(self.store / "kit" / self.declares),
+        self.assertEqual(made, {"kit": {"commit": self.declares, "root": str(self.pinned("kit", self.declares)),
                                         "variable": "KIT_ROOT"},
                                 "more": {"commit": self.first, "root": str(root), "variable": "MORE_ROOT"}})
         self.assertIn(f"no absent: this Mac has no {self.home / 'Development/absent'}", said)
@@ -307,7 +319,7 @@ class FurtherFolderTests(Fixture):
         with patch.object(offload_host, "say", lambda text: None):
             placed = offload_host.place_siblings(slot, sent, home=self.home)
         self.assertEqual(placed["more"], {"commit": self.first, "variable": "MORE_ROOT",
-                                          "root": str(self.home / offload_host.PINS / "more" / self.first)})
+                                          "root": str(self.home / offload_host.PINS / "more" / self.first / "more")})
         self.assertNotIn("absent", placed)
 
     def test_the_list_is_read_at_the_commit_pinned_not_as_the_checkout_stands(self):
@@ -321,7 +333,7 @@ class FurtherFolderTests(Fixture):
     def test_a_lane_finds_the_folder_by_its_variable_at_the_commit_the_run_began_with(self):
         ran = self.qk("run", "--here", "asks")
         self.assertEqual(ran.returncode, 0, ran.stderr)
-        root = self.store / "more" / self.first
+        root = self.pinned("more", self.first)
         self.assertIn(f"queuekeeper: this run loads more at {self.first[:12]}, its origin/main, from {root}\n", ran.stderr)
         log = (self.project / ".build/queuekeeper/asks/run.log").read_text()
         self.assertIn(f"more-is {root} None\n", log)
@@ -350,7 +362,7 @@ class HeldTests(Fixture):
         made = pins.make(self.project, ["kit"])
         with patch.dict(os.environ, {pins.VARIABLE: pins.encoded(made)}):
             self.assertEqual(config.extensions_of(self.project),
-                             [("fixture_kit", str(self.store / "kit" / self.one / "src/python"))])
+                             [("fixture_kit", str(self.pinned("kit", self.one) / "src/python"))])
         # A folder the set does not name, as one of another project's run, is found beside the project as ever.
         with patch.dict(os.environ, {pins.VARIABLE: pins.encoded({"other": made["kit"]})}):
             self.assertEqual(config.extensions_of(self.project), live)
@@ -378,16 +390,16 @@ class RunTests(Fixture):
         ran = self.qk("run", "--here", "nested")
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertIn(f"queuekeeper: this run loads kit at {self.one[:12]}, its origin/main, from "
-                      f"{self.store / 'kit' / self.one}\n", ran.stderr)
+                      f"{self.pinned('kit', self.one)}\n", ran.stderr)
         log = (self.project / ".build/queuekeeper/nested/run.log").read_text()
-        pinned = self.store / "kit" / self.one / "src/python/fixture_kit.py"
+        pinned = self.pinned("kit", self.one) / "src/python/fixture_kit.py"
         self.assertEqual([line for line in log.splitlines() if line.startswith("kit-says")],
                          [f"kit-says one from {pinned}"] * 2)
         # The landing did reach the shared checkout, which a command of no run still loads as it stands.
         self.assertEqual(git(self.kit, "rev-parse", "HEAD"), two)
         self.assertIn(f"kit-says two from {self.kit / 'src/python/fixture_kit.py'}", self.qk("kit-says").stdout)
         receipt = json.loads((self.project / ".build/queuekeeper/nested/source.json").read_text())
-        self.assertEqual(receipt["siblings"], {"kit": {"commit": self.one, "root": str(self.store / "kit" / self.one)}})
+        self.assertEqual(receipt["siblings"], {"kit": {"commit": self.one, "root": str(self.pinned("kit", self.one))}})
 
     def test_sibling_is_refused_under_a_set_and_for_a_folder_the_project_does_not_load_from(self):
         made = pins.encoded(pins.make(self.project, ["kit"]))

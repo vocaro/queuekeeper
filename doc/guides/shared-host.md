@@ -1677,9 +1677,10 @@ hand (`qk --version`, `qk unittest`, `qk doctor`, `qk admit`) loads the folder a
 The pin set travels in `QUEUEKEEPER_SIBLINGS`. A command that finds it set uses it and makes none, which is
 how a nested command keeps its run's commit. The queue's worker drops one it inherits and makes its own.
 
-**Where the commit is checked out.** Once on each Mac, in `~/Development/queuekeeper-pins/FOLDER/COMMIT`:
-a detached worktree of that Mac's own checkout of the folder, with its files read-only. Runs pinned to the
-same commit share it, and nothing moves it to another commit, so it cannot change under a lane.
+**Where the commit is checked out.** Once on each Mac, in `~/Development/queuekeeper-pins/FOLDER/COMMIT/FOLDER`,
+which ends in the folder's own name because SwiftPM names a local package by its folder: a detached
+worktree of that Mac's own checkout of the folder, with its files read-only. Runs pinned to the same
+commit share it, and nothing moves it to another commit, so it cannot change under a lane.
 `qk disk` lists them, and `qk disk --prune-pins` removes each that no run has used for a week.
 
 **The second Mac** is sent the commits and nothing else. It takes each from its own

@@ -205,7 +205,7 @@ SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 # process qk started, since the plugins left src/python (vocaro/queuekeeper#167).
 TOOLKIT_CHECKOUT = "Development/queuekeeper"
 QK_DEVICES = f"python3 ~/{TOOLKIT_CHECKOUT}/bin/qk --project ~/{TOOLKIT_CHECKOUT} devices"
-# Where a Mac keeps the checkouts runs are pinned to, under the home: NAME/COMMIT for each folder a project's
+# Where a Mac keeps the checkouts runs are pinned to, under the home: NAME/COMMIT/NAME for each folder a project's
 # extensions load from and each commit a run pinned it at, with NAME/COMMIT.ready beside one that is whole
 # (pinned_checkout); the days one stays unused before it is pruned; and the variable that carries a run's pin set to
 # every qk command under it, {NAME: {"commit", "root"}} as JSON (pins).
@@ -3749,10 +3749,17 @@ def pin_git(clone, *arguments, environment=None, timeout=120):
     return done.stdout.strip()
 
 
+def pin_path(name, commit, home=None):
+    """Where the checkout of name at commit is: NAME/COMMIT/NAME under pins_root. It ends in the folder's own name,
+    since tools name a folder by its last component: SwiftPM calls a local package by it, and Xcode then sought
+    apple-engineering's products under a commit's name and found none (vocaro-engineering#497)."""
+    return pins_root(home) / name / commit / name
+
+
 def pinned_checkout(clone, name, commit, home=None, fetch=True, environment=None):
     """The one checkout of name at commit that every run on this Mac pinned to it loads from, made when it is not
-    there yet: ~/Development/queuekeeper-pins/NAME/COMMIT, a detached worktree of clone, this Mac's own checkout of
-    name, with its files read-only (vocaro-engineering#497). Nothing is sent: a commit the clone lacks is fetched
+    there yet: ~/Development/queuekeeper-pins/NAME/COMMIT/NAME (pin_path), a detached worktree of clone, this Mac's
+    own checkout of name, with its files read-only (vocaro-engineering#497). Nothing is sent: a commit the clone lacks is fetched
     from its origin, all of it first and then the commit by name, when fetch allows.
 
     A run loads from it while others make, use and prune checkouts of other commits beside it, and nothing ever
@@ -3761,7 +3768,7 @@ def pinned_checkout(clone, name, commit, home=None, fetch=True, environment=None
     its time is each use's, by which an unused one is pruned (stale_pins). One left half-made is made again.
     A RuntimeError or OSError says why it could not be made."""
     folder = pins_root(home) / name
-    checkout, ready = folder / commit, folder / f"{commit}{PIN_READY}"
+    checkout, ready = pin_path(name, commit, home), folder / f"{commit}{PIN_READY}"
     folder.mkdir(parents=True, exist_ok=True)
     with (folder / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -3784,10 +3791,13 @@ def pinned_checkout(clone, name, commit, home=None, fetch=True, environment=None
                 pin_git(clone, "fetch", "--no-tags", "--quiet", "origin", commit, environment=environment,
                         timeout=UPDATE_FETCH_SECONDS)
         if not has(): raise RuntimeError(f"{clone} does not hold {commit}")
-        if checkout.exists() or checkout.is_symlink():
+        # Whatever is in the commit's folder goes: one left half-made, or a checkout of another layout.
+        if checkout.parent.is_symlink(): checkout.parent.unlink()
+        elif checkout.parent.exists():
             subprocess.run(["git", "-C", str(clone), "worktree", "remove", "--force", "--force", str(checkout)],
                            stdin=subprocess.DEVNULL, capture_output=True)
-            shutil.rmtree(checkout, ignore_errors=True)
+            shutil.rmtree(checkout.parent, ignore_errors=True)
+        checkout.parent.mkdir()
         pin_git(clone, "worktree", "prune")
         pin_git(clone, "worktree", "add", "--detach", "--quiet", str(checkout), commit)
         if pin_head(checkout) != commit: raise RuntimeError(f"{checkout} is not at {commit}")
@@ -3805,10 +3815,10 @@ def stale_pins(home=None, days=PIN_DAYS, now=None):
     worktree of, or None when its ready file does not say): what `qk disk` lists and remove_pin reclaims. One with no ready
     file, left half-made, counts from its own time."""
     now, found = time.time() if now is None else now, []
-    for checkout in sorted(pins_root(home).glob("*/*")):
-        if not checkout.is_dir() or checkout.is_symlink(): continue
-        ready = checkout.with_name(f"{checkout.name}{PIN_READY}")
-        try: used = (ready if ready.is_file() else checkout).stat().st_mtime
+    for held in sorted(pins_root(home).glob("*/*")):
+        if not held.is_dir() or held.is_symlink(): continue
+        checkout, ready = held / held.parent.name, held.with_name(f"{held.name}{PIN_READY}")
+        try: used = (ready if ready.is_file() else held).stat().st_mtime
         except OSError: continue
         if now - used < days * 24 * 60 * 60: continue
         try: clone = Path(ready.read_text().strip())
@@ -3819,13 +3829,13 @@ def stale_pins(home=None, days=PIN_DAYS, now=None):
 
 def remove_pin(checkout, ready, clone):
     """Remove one pinned checkout stale_pins found, under its folder's lock, unless a run has used it since."""
-    with (checkout.parent / "lock").open("a") as lock:
+    with (checkout.parent.parent / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         with contextlib.suppress(OSError): ready.unlink()
         if clone is not None and clone.is_dir():
             subprocess.run(["git", "-C", str(clone), "worktree", "remove", "--force", "--force", str(checkout)],
                            stdin=subprocess.DEVNULL, capture_output=True)
-        shutil.rmtree(checkout, ignore_errors=True)
+        shutil.rmtree(checkout.parent, ignore_errors=True)
         if clone is not None and clone.is_dir():
             subprocess.run(["git", "-C", str(clone), "worktree", "prune"], stdin=subprocess.DEVNULL, capture_output=True)
 
@@ -3867,7 +3877,7 @@ def place_siblings(slot, siblings, environment=None, home=None):
             checkout = pinned_checkout(clone, name, commit, home=home, environment=environment)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             say(f"no checkout of {name} at {commit[:12]} for the project's extension to load from: {error}")
-            pins[name] = {"commit": commit, "root": str(pins_root(home) / name / commit), "error": str(error)}
+            pins[name] = {"commit": commit, "root": str(pin_path(name, commit, home)), "error": str(error)}
             continue
         if not (link.is_symlink() and link.resolve() == checkout.resolve()):
             if link.is_symlink(): link.unlink()
