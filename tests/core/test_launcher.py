@@ -61,7 +61,7 @@ class EarlierLauncherTests(unittest.TestCase):
     def run_shape(self, source):
         with tempfile.TemporaryDirectory() as project:
             (Path(project) / "queuekeeper.json").write_text(json.dumps(
-                {"schemaVersion": 1, "name": "earlier", "extensions": ["queuekeeper.apple"], "lanes": {}}))
+                {"schemaVersion": 1, "name": "earlier", "extensions": ["queuekeeper_apple"], "lanes": {}}))
             # Neither the composition this test process runs under nor a checkout's own launcher reaches it.
             environment = {name: value for name, value in os.environ.items() if name != "PYTHONPATH"}
             return subprocess.run([sys.executable, "-c", self.SHAPE, str(source), project], env=environment,

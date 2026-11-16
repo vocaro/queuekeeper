@@ -1,4 +1,5 @@
 """Small, strict project configuration without third-party dependencies."""
+import importlib.util
 import json
 import os
 import re
@@ -11,14 +12,6 @@ TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
 # The extensions a project gets when its queuekeeper.json names none, and that a command with no project loads.
 EXTENSIONS = ()
 FILE = "queuekeeper.json"
-# Historical configurations remain readable when the queue inspects main or an older commit.
-# These are configuration aliases only; the old Python packages do not exist.
-EXTENSION_ALIASES = {
-    "queuekeeper.apple": "queuekeeper_apple",
-    "queuekeeper.mac_desktop": "queuekeeper_mac_desktop",
-    "queuekeeper.mac_hardware": "queuekeeper_mac_hardware",
-    "queuekeeper.unity": "queuekeeper_unity",
-}
 
 
 def extensions(declared):
@@ -31,9 +24,22 @@ def extensions(declared):
         if not isinstance(named, str) or not re.fullmatch(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", named) or (
                 isinstance(entry, dict) and (set(entry) - {"module", "path"} or not isinstance(entry.get("path", ""), str))):
             raise ValueError('extensions lists module names, or {"module": NAME, "path": FOLDER}')
-        module = EXTENSION_ALIASES.get(named, named)
-        normalized.append({**entry, "module": module} if isinstance(entry, dict) else module)
+        unknown(named)
+        normalized.append(dict(entry) if isinstance(entry, dict) else named)
     return normalized
+
+
+def unknown(named):
+    """Refuse an extension named as a module of Queuekeeper's own package that it does not have, such as
+    queuekeeper.apple: the plugins are packages of their own, named with an underscore (vocaro/queuekeeper#187)."""
+    if not named.startswith(__package__ + "."): return
+    try: found = importlib.util.find_spec(named) is not None
+    except ModuleNotFoundError: found = False
+    if found: return
+    plugin = __package__ + "_" + named.removeprefix(__package__ + ".")
+    raise ValueError(f"extensions names {named}, which is no module of Queuekeeper's"
+                     + (f"; the plugin is the package {plugin}: list {plugin}" if "." not in plugin and
+                        importlib.util.find_spec(plugin) is not None else ""))
 
 
 def extensions_of(root, base=None):

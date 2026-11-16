@@ -16,7 +16,7 @@
       "minLength": 1
     },
     "extensions": {
-      "description": "The extensions the project switches on: each a module's name, or its name and the folder its package is in, relative to the project's main checkout. Historical builtin names such as queuekeeper.apple normalize to queuekeeper_apple when reading older configurations. Without the key a project loads no extensions",
+      "description": "The extensions the project switches on: each a module's name, or its name and the folder its package is in, relative to the project's main checkout. Without the key a project loads no extensions",
       "type": "array",
       "items": {
         "oneOf": [

@@ -232,24 +232,37 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class HistoricalConfigurationTests(unittest.TestCase):
-    def test_historical_main_configuration_loads_the_new_plugin_packages(self):
-        import json
-        from queuekeeper import config, merge_queue
-        source = json.dumps({"schemaVersion": 1, "name": "historical", "extensions": ["queuekeeper.apple"],
-                             "simulatorPool": "Historical", "lanes": {"gate": {"command": ["true"], "display": True}}})
-        with patch.object(merge_queue, "config_source", return_value=source), patch.object(extensions, "LOADED", []):
-            parsed = merge_queue.config_at(Path("/unused"), "origin/main")
-            self.assertEqual(parsed["extensions"], ["queuekeeper_apple"])
-            self.assertEqual(extensions.LOADED, ["queuekeeper_mac_desktop", "queuekeeper_apple"])
-            self.assertNotIn("queuekeeper.apple", sys.modules)
-
-    def test_all_historical_builtin_names_normalize_without_mutating_the_input(self):
+class OldPluginNameTests(unittest.TestCase):
+    """The plugins' names before they left the core, such as queuekeeper.apple, are no extensions (#187)."""
+    def test_each_old_name_is_refused_naming_its_package(self):
         from queuekeeper import config
-        declared = ["queuekeeper.apple", {"module": "queuekeeper.mac_desktop", "path": "../kit/src"},
-                    "queuekeeper.mac_hardware", "queuekeeper.unity", "custom.hooks"]
-        self.assertEqual(config.extensions(declared),
-                         ["queuekeeper_apple", {"module": "queuekeeper_mac_desktop", "path": "../kit/src"},
-                          "queuekeeper_mac_hardware", "queuekeeper_unity", "custom.hooks"])
-        self.assertEqual(declared[0], "queuekeeper.apple")
-        self.assertEqual(declared[1]["module"], "queuekeeper.mac_desktop")
+        for old, package in [("queuekeeper.apple", "queuekeeper_apple"),
+                             ("queuekeeper.mac_desktop", "queuekeeper_mac_desktop"),
+                             ("queuekeeper.mac_hardware", "queuekeeper_mac_hardware"),
+                             ("queuekeeper.unity", "queuekeeper_unity")]:
+            for declared in ([old], [{"module": old, "path": "../kit/src"}]):
+                with self.subTest(declared=declared), self.assertRaisesRegex(
+                        ValueError, f"extensions names {old}, which is no module of Queuekeeper's; "
+                                    f"the plugin is the package {package}: list {package}$"):
+                    config.extensions(declared)
+
+    def test_a_project_that_lists_an_old_name_is_refused_and_loads_nothing(self):
+        import json
+        from queuekeeper import config
+        source = json.dumps({"schemaVersion": 1, "name": "old", "extensions": ["queuekeeper.apple"], "lanes": {}})
+        with patch.object(extensions, "LOADED", []), \
+                self.assertRaisesRegex(ValueError, "list queuekeeper_apple$"):
+            config.parse(source)
+        self.assertNotIn("queuekeeper.apple", sys.modules)
+
+    def test_a_name_in_queuekeeper_that_no_package_matches_names_none(self):
+        from queuekeeper import config
+        for named in ("queuekeeper.nothing", "queuekeeper.nothing.deeper"):
+            with self.subTest(named=named), \
+                    self.assertRaisesRegex(ValueError, f"extensions names {named}, which is no module of Queuekeeper's$"):
+                config.extensions([named])
+
+    def test_the_package_names_and_a_projects_own_modules_are_kept_as_given(self):
+        from queuekeeper import config
+        declared = ["queuekeeper_apple", {"module": "queuekeeper_mac_desktop", "path": "../kit/src"}, "custom.hooks"]
+        self.assertEqual(config.extensions(declared), declared)

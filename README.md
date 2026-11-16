@@ -154,8 +154,7 @@ Install the desired plugin distributions from their folders alongside core when 
 **Migrating existing projects:** replace extension names such as `queuekeeper.apple` with
 `queuekeeper_apple` in configuration and imports. Projects that relied on Apple being implicit must now
 list `"extensions": ["queuekeeper_apple"]`. Rerun `python3 tools/install-checkout.py` on each Mac to
-update the import roots. Historical configuration names are translated when reading older commits,
-so the queue can inspect main across the migration; this does not restore the old Python imports.
+update the import roots. An old name is refused, naming its package.
 Native simulator helpers and build-tool wrappers ship inside the Apple package.
 
 Tests mirror component ownership under `tests/`, with cross-component scenarios in `tests/integration`
