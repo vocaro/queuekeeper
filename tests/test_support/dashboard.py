@@ -31,7 +31,7 @@ HOSTS = {"schemaVersion": 1, "hosts": [
      "slots": [{"slot": 0, "holder": "a"}, {"slot": 1, "holder": "b"}, {"slot": 2, "holder": None}],
      "holders": [{"identity": "holder-1", "label": "project gate", "heldSeconds": 90.0, "slots": [0], "wholeHost": True, "exclusive": False}],
      "waiters": [{"identity": "place-1", "request": "request-1", "label": "other unit", "waitedSeconds": 12.5, "reason": "every slot is busy"}]},
-    {"name": "second Mac (build)", "role": "second", "state": "unknown", "reasons": ["ssh could not reach build"]}]}
+    {"name": "build", "role": "second", "state": "unknown", "reasons": ["ssh could not reach build"]}]}
 
 
 LOADS = {"here": {"cpuBusy": 68.0, "busyLimit": 75.0, "load": 3.2, "memory": "normal", "screen": "locked", "error": None}}

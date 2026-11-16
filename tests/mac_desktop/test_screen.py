@@ -210,22 +210,22 @@ class PlacementTests(unittest.TestCase):
         return {"slots": 3, "slotsMax": 6, "busy": [], "load": 1.0, "cpuBusy": 10.0, "busyLimit": 75.0, "screen": reading(state)}
 
     def test_a_locked_mac_is_refused_and_an_unlocked_one_taken_for_a_lane_that_needs_it(self):
-        refused = remote.spare(self.capacity("locked"), "the second Mac", screen=True)
-        self.assertTrue(refused.startswith("the lane needs an unlocked screen, and the second Mac's is locked (screen: "
+        refused = remote.spare(self.capacity("locked"), "another Mac", screen=True)
+        self.assertTrue(refused.startswith("the lane needs an unlocked screen, and another Mac's is locked (screen: "
                                            "locked (console user trevorharmon, CGSSessionScreenIsLocked yes, "
                                            "IOConsoleLocked no) on Trevors-MacBook-Pro-715"), refused)
-        self.assertIsNone(remote.spare(self.capacity("unlocked"), "the second Mac", screen=True))
+        self.assertIsNone(remote.spare(self.capacity("unlocked"), "another Mac", screen=True))
         unknown = remote.spare(self.capacity("unknown"), "this Mac", screen=True)
         self.assertIn("this Mac's is unknown (screen: unknown (no login session is on the console)", unknown)
         missing = {key: value for key, value in self.capacity("unlocked").items() if key != "screen"}
-        self.assertEqual(remote.spare(missing, "the second Mac", screen=True),
-                         "the lane needs an unlocked screen, and the second Mac did not report its screen")
+        self.assertEqual(remote.spare(missing, "another Mac", screen=True),
+                         "the lane needs an unlocked screen, and another Mac did not report its screen")
 
     def test_a_lane_that_does_not_declare_it_ignores_the_screen(self):
         for state in ("locked", "unknown"):
             with self.subTest(state=state):
-                self.assertIsNone(remote.spare(self.capacity(state), "the second Mac"))
-                self.assertIsNone(remote.spare(self.capacity(state), "the second Mac", whole_host=True))
+                self.assertIsNone(remote.spare(self.capacity(state), "another Mac"))
+                self.assertIsNone(remote.spare(self.capacity(state), "another Mac", whole_host=True))
 
     def offer(self, screen):
         offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0, whole_host=True, screen=screen)
@@ -235,7 +235,7 @@ class PlacementTests(unittest.TestCase):
     def test_the_choice_sends_the_lane_from_a_locked_second_mac_to_an_unlocked_this_mac(self):
         with patch.object(remote, "capacity_there", return_value=self.capacity("locked")), \
                 patch.object(offload_host, "capacity", return_value=self.capacity("unlocked")):
-            self.assertIn("the second Mac's is locked", farm_fixture.choice(self.offer(True)))
+            self.assertIn("fake's is locked", farm_fixture.choice(self.offer(True)))
             # The negative control: an undeclared lane is offered to the locked second Mac, as before.
             self.assertIsNone(farm_fixture.choice(self.offer(False)))
         # Neither Mac unlocked: the lane is offered, and the second Mac declines it while its screen is locked.
@@ -243,8 +243,8 @@ class PlacementTests(unittest.TestCase):
                 patch.object(offload_host, "capacity", return_value=self.capacity("locked")), \
                 patch("sys.stderr", new_callable=StringIO) as error:
             self.assertIsNone(farm_fixture.choice(self.offer(True)))
-        self.assertIn("neither Mac has spare capacity for gate now (the lane needs an unlocked screen, and the second "
-                      "Mac's is locked", error.getvalue())
+        self.assertIn("no Mac has spare capacity for gate now (the lane needs an unlocked screen, and "
+                      "fake's is locked", error.getvalue())
 
     def test_the_second_mac_declines_a_lane_that_needs_its_screen_while_it_is_locked(self):
         plan = {"unlockedScreen": True, "decline": True}
@@ -324,7 +324,7 @@ class AdmissionTests(unittest.TestCase):
         with patch.dict(os.environ, {remote.DISPATCHER: "Trevors-MacBook-Pro-715"}):
             status, error = self.admit(True)
         self.assertEqual(status, resources.BUSY)
-        self.assertIn("queuekeeper: gate not run on the second Mac (Trevors-MacBook-Pro-715)", error)
+        self.assertIn("queuekeeper: gate not run on Trevors-MacBook-Pro-715", error)
 
 
 class InheritedAdmissionTests(unittest.TestCase):
@@ -393,14 +393,14 @@ class MessageTests(unittest.TestCase):
 
     def test_a_fallback_says_in_one_line_that_the_run_is_on_this_mac_and_why(self):
         offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0)
-        offered.status = "the second Mac is busy: build-host did not take it: its heavy-work queue cannot take the lane now"
+        offered.status = "build-host is busy: build-host did not take it: its heavy-work queue cannot take the lane now"
         offered.sent = {"commit": "0b1d0b3b9329"}
         with patch.dict(os.environ), patch("sys.stderr", new_callable=StringIO) as error:
             os.environ.pop(remote.DISPATCHER, None)
             cli.fell_back("gate", offered)
-        self.assertEqual(error.getvalue(), "queuekeeper: gate runs on this Mac (Trevors-MacBook-Pro-715), not the second Mac: the "
-                         "second Mac is busy: build-host did not take it: its heavy-work queue cannot take the lane now; "
-                         "the second Mac's lines above are from the offer it did not take\n")
+        self.assertEqual(error.getvalue(), "queuekeeper: gate runs on this Mac (Trevors-MacBook-Pro-715), not another Mac: "
+                         "build-host is busy: build-host did not take it: its heavy-work queue cannot take the lane now; "
+                         "another Mac's lines above are from the offer it did not take\n")
 
     def test_an_unmeasured_run_reads_the_screen_again_and_names_the_mac(self):
         receipt = {}
@@ -451,13 +451,13 @@ class CommandTests(unittest.TestCase):
                 self.assertIn("on this Mac (Trevors-MacBook-Pro-715)", said[1])
 
     def test_remote_reads_the_second_mac(self):
-        with patch.object(remote, "configured", return_value="build-host"), \
+        with farm_fixture.only("build-host"), \
                 patch.object(remote, "screen_there", return_value=recorded("second-mac-locked-idle")) as there:
             status, said = self.run_command("--remote")
         there.assert_called_once_with("build-host")
         self.assertEqual(status, 1)
-        self.assertIn("on the second Mac (Medias-MacBook-Pro-5)", said)
-        with patch.object(remote, "configured", return_value="build-host"), \
+        self.assertIn("on build-host (Medias-MacBook-Pro-5)", said)
+        with farm_fixture.only("build-host"), \
                 patch.object(remote, "screen_there", side_effect=remote.Unavailable("it answered None")):
             status, said = self.run_command("--remote", "--json")
         self.assertEqual(status, 2)

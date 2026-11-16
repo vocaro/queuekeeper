@@ -186,8 +186,8 @@ def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):
     if location is None: return 2
     if location.where == "here" and not view["deferredTo"]:
         # The owner's decision covers the second Mac only, which holds no sensitive data.
-        out(f"Refused: {here} is not a second Mac, as its device record would say once qk remote has sent work "
-            "to it: only the second Mac's login password is kept. Nothing was asked for or changed.")
+        out(f"Refused: {here} is not another Mac, as its device record would say once qk remote has sent work "
+            "to it: only another Mac's login password is kept. Nothing was asked for or changed.")
         return 2
     if location.where == "second Mac":
         status = interact(keep_command(location))
@@ -376,9 +376,9 @@ def add_arguments(parser):
         "keychain file is there, and print the commands that unlock it, to copy into your own Terminal: each runs "
         "only on the Mac it names. It unlocks nothing and reads no password")
     recover_parser.add_argument("--target", metavar="MAC", help="the Mac whose keychain the work needs, by its "
-        "LocalHostName (default: the second Mac, as qk remote reaches it from this Mac)")
+        "LocalHostName (default: another Mac, as qk remote reaches it from this Mac)")
     recover_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")
-    keep_parser = operations.add_parser("keep-unlocked", help="once, on the second Mac: ask for its login password "
+    keep_parser = operations.add_parser("keep-unlocked", help="once, on another Mac: ask for its login password "
         "at its own prompt in this Terminal, keep it there, readable only by its account, for every qk remote run to "
         "unlock the login keychain in its own session, and stop that keychain locking on a timer or on sleep")
     keep_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")

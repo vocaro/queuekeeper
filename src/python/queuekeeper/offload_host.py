@@ -457,7 +457,7 @@ def reattach(request):
 
 
 def say(text):
-    emit(b"O", f"second Mac: {text}".encode())
+    emit(b"O", f"{mac_name()}: {text}".encode())
 
 
 def output(command, environment=None):
@@ -811,7 +811,7 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
     elif not path.is_file():
         refusal = f"{path} is not on {here}"
     elif not root.is_dir():
-        refusal = (f"{root} is not on {here}: set up the second Mac first, and run qk remote there once "
+        refusal = (f"{root} is not on {here}: set up the farm's other Macs first, and run qk remote there once "
                    "(doc/guides/shared-host.md, Setting up the second Mac)")
     elif not terminal:
         refusal = "it asks for the password at a terminal, and this has none: run it in your own Terminal"
@@ -4162,10 +4162,10 @@ def defer_devices(kit, mac, command=(), toolkit=None):
         if deferred.returncode != SETUP_REFUSED:
             raise Refusal(f"its device setup (`{spelled}`) failed with status {deferred.returncode}, which is not "
                           f"its device record's refusal: {problem[0]}",
-                          "repair what that error names in the toolkit sent or on the second Mac; nothing here says "
+                          "repair what that error names in the toolkit sent or on another Mac; nothing here says "
                           "that its device record is misconfigured")
         raise Refusal(f"its device record cannot defer physical devices to {mac}: {problem[0]}",
-                      "decide which Mac's record holds physical devices and resolve that in the second Mac's record "
+                      "decide which Mac's record holds physical devices and resolve that in another Mac's record "
                       "(doc/guides/shared-host.md, Physical devices and the second Mac)")
     if deferred.stdout.strip(): say(deferred.stdout.strip())
 
@@ -4363,7 +4363,7 @@ def watch(silence=None):
                     # In this order, so that the stop's own words wait on no connection.
                     _silent.set()
                     _stop.set()
-                    write_frame(b"O", f"second Mac: nothing from the dispatcher for {silence}s; stopping this run, "
+                    write_frame(b"O", f"{mac_name()}: nothing from the dispatcher for {silence}s; stopping this run, "
                                       "which leaves admission, and sending no result".encode())
                     return
                 if not select.select([0], [], [], min(left, WATCH_SECONDS))[0]: continue
@@ -4412,9 +4412,9 @@ def main(plan):
         if expected and found != expected:
             version = lambda text: " ".join(text.split())
             raise Refusal(f"the Xcode at {plan['developerDir']} is {version(found or 'missing')}, not the dispatcher's "
-                          f"{version(expected)}", "install this Mac's Xcode at that path on the second Mac "
+                          f"{version(expected)}", "install this Mac's Xcode at that path on another Mac "
                           "(doc/guides/shared-host.md, Setting up the second Mac), or select with DEVELOPER_DIR an Xcode "
-                          "both Macs have at the same path")
+                          "the Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
         screen_declined(plan)
         base = root / "checkouts" / project["directory"]

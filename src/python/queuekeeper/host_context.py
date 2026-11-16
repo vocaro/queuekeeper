@@ -115,19 +115,19 @@ def locate(here, view, target=None, there=None, unreached=None):
         return Location("here", here, note=f"{destination} resolves to this Mac")
     if destination:
         if there is None:
-            return Location(refusal=f"{destination}, the second Mac, could not be reached, so nothing about it can be "
+            return Location(refusal=f"{destination}, another Mac, could not be reached, so nothing about it can be "
                                     f"checked: {unreached or 'it was not asked'}")
         if there == here:
             return Location("here", here, note=f"{destination} reaches this Mac itself")
         if target is None or target == there:
-            return Location("second Mac", there, destination, note=f"{there} is the second Mac, which "
+            return Location("second Mac", there, destination, note=f"{there} is another Mac, which "
                             f"{destination} reaches from this Mac ({view.get('hostname')})")
         return Location(refusal=(
-            f"{target} is neither this Mac, {here}, nor the second Mac, {there}, that {destination} reaches: run "
+            f"{target} is neither this Mac, {here}, nor another Mac, {there}, that {destination} reaches: run "
             f"this on {target} itself, in a shell there"))
     if deferred:
         if target is None:
-            return Location("here", here, note=f"{here} is the second Mac of {deferred}, as its device record says: "
+            return Location("here", here, note=f"{here} is another Mac of {deferred}, as its device record says: "
                             f"you are already on the target, where no alias of {deferred}'s names it")
         if target == deferred:
             return Location(refusal=(
@@ -139,5 +139,5 @@ def locate(here, view, target=None, there=None, unreached=None):
     return Location(refusal=(
         f"this Mac, {here}, sends work to no Mac ({remote.NO_MAC}), and its device record does not mark it as a "
         f"Mac that takes another's. Run this "
-        f"on the Mac that sends work to the second Mac, or, if this Mac is the one the work needs, with --target "
+        f"on the Mac that sends work to another Mac, or, if this Mac is the one the work needs, with --target "
         f"{here}"))

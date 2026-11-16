@@ -1090,13 +1090,13 @@ def main(argv=None):
     recover.add_argument("--host", metavar="HOST", help="recover the entry in this SSH host's record, using its "
                          "login shell and ~/Development/queuekeeper/bin/qk; without it, in this Mac's")
     recover.add_argument("--offload-unchecked", metavar="REASON", help="the owner's reason to recover without "
-                         "checking the second Mac the entry's run went to, such as that it is gone")
+                         "checking another Mac the entry's run went to, such as that it is gone")
     # Its name until vocaro-engineering#58, which main refuses, naming the new one.
     recover.add_argument("--build-host-unchecked", metavar="REASON", help=argparse.SUPPRESS)
     importer = commands.add_parser("import", help="merge earlier ad hoc records, preserving every entry")
     importer.add_argument("paths", nargs="+")
     importer.add_argument("--by", required=True)
-    defer = commands.add_parser("defer", help="reserve physical devices only in MAC's record, as the second Mac's "
+    defer = commands.add_parser("defer", help="reserve physical devices only in MAC's record, as another Mac's "
                                 "record does; prints what it changed")
     target = defer.add_mutually_exclusive_group(required=True)
     target.add_argument("mac", nargs="?", help="the Mac whose record holds physical devices")

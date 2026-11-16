@@ -578,7 +578,7 @@ class RecoverRestorationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.record = devices.Record(Path(temporary.name) / "record.json")
-        self.owner = "queuekeeper 4242 on the second Mac"
+        self.owner = "queuekeeper 4242 on another Mac"
         entry = self.record.reserve(devices.FOREGROUND, owner=self.owner, revision=0, purpose="offline test",
             release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
         # As foreground.slot leaves it: this process is the run, and the original it read is recorded.

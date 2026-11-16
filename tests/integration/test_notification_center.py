@@ -178,14 +178,14 @@ class DismissTests(HostTest):
         with self.assertRaisesRegex(devices.Refused, "name the session whose mac-foreground"):
             self.dismiss()
         with self.assertRaisesRegex(devices.Refused, "nobody holds mac-foreground"):
-            self.dismiss(owner="queuekeeper 1 on the second Mac")
+            self.dismiss(owner="queuekeeper 1 on another Mac")
         # Another run's lease is not this one's.
         with self.held():
             with self.assertRaisesRegex(devices.Refused, "held by queuekeeper"):
                 self.dismiss(owner="another session")
         # Nor on a Mac that is not the second Mac, the owner's workstation.
         workstation = devices.Record(self.root / "workstation.json")
-        with self.assertRaisesRegex(devices.Refused, "only on the second Mac"):
+        with self.assertRaisesRegex(devices.Refused, "only on another Mac"):
             notification_center.dismiss(self.said.append, record=workstation, owner="anyone")
         self.assertEqual(self.host.pressed, [])
         self.assertEqual(self.host.notifications, [BANNER])

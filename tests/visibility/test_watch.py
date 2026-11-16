@@ -47,12 +47,12 @@ class View(unittest.TestCase):
 
     def test_each_gate_shows_its_lane_its_mac_its_time_and_what_it_waits_for(self):
         gates = {"batch": {"lane": "gate", "mac": "this Mac", "began": NOW - 372, "progress": [{"phase": "testing"}]},
-                 "stacked": {"lane": "gate", "mac": None, "began": NOW - 40, "waiting": "admission on the second Mac",
+                 "stacked": {"lane": "gate", "mac": None, "began": NOW - 40, "waiting": "admission on another Mac",
                              "waitingSince": NOW - 30, "stuck": "no output for 20 minutes"}}
         lines = self.frame({"worker": True, "round": {"round": "r", "entries": ["a"], "gates": gates}})
         self.assertEqual(lines[2:], ["", "Gates", "  batch: gate lane on this Mac, 6m 12s", "    phase: testing",
                                      "  stacked: gate lane on no Mac yet, 40s",
-                                     "    waiting: admission on the second Mac, for 30s", "    no output for 20 minutes"])
+                                     "    waiting: admission on another Mac, for 30s", "    no output for 20 minutes"])
 
     def test_entries_show_their_state_their_age_and_where_they_landed(self):
         lines = self.frame({"waiting": [entry("a", "queued", "Add a")], "ungated": ["z"],

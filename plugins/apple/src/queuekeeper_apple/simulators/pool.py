@@ -1359,7 +1359,7 @@ def main(argv, project=None):
                                 "whose runtime is no longer installed or whose kind has no member left")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members or templates")
     reap = action("reap", help="shut down members and warmed templates left booted for 2 hours that "
-                               "nothing accounts for, on this Mac and the second Mac (doc/guides/shared-host.md, Stale "
+                               "nothing accounts for, on this Mac and the farm's other Macs (doc/guides/shared-host.md, Stale "
                                "pool simulators)")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
     reap.add_argument("--here", action="store_true", help="only this Mac")

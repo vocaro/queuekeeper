@@ -65,14 +65,14 @@ class SlotTests(unittest.TestCase):
 
     def test_only_the_second_mac_takes_its_foreground_and_only_once_it_is_ready(self):
         # This Mac's foreground needs the owner's window, which the session reserves itself.
-        with self.assertRaisesRegex(devices.Refused, "only on the second Mac"):
+        with self.assertRaisesRegex(devices.Refused, "only on another Mac"):
             with self.slot(): self.fail("ran on this Mac")
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
         self.second_mac()
         lacking = [("a command started over SSH is not trusted for accessibility", "add sshd-keygen-wrapper")]
         with self.assertRaisesRegex(devices.Refused, "the owner's .*\n- a command started over SSH is not trusted "
                                                      "for accessibility: add sshd-keygen-wrapper"):
-            with self.slot(ready=lambda: lacking): self.fail("ran on a second Mac that is not ready")
+            with self.slot(ready=lambda: lacking): self.fail("ran on another Mac that is not ready")
         # Nothing was taken.
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
 
@@ -534,7 +534,7 @@ class OpenedAppsTests(unittest.TestCase):
             entry = self.slot()
             self.assertEqual(self.asked, [])
             self.assertEqual(entry["state"], "released")
-            self.assertIn("could not read the second Mac's running apps", "\n".join(self.said))
+            self.assertIn(f"could not read {offload_host.mac_name()}'s running apps", "\n".join(self.said))
             self.assertIn("the running apps could not be read", entry["appsQuit"])
 
     def test_a_run_that_no_longer_holds_the_lease_quits_nothing(self):
@@ -710,7 +710,7 @@ class DeadlineTests(unittest.TestCase):
                 error, waited = self.wait(clock)
                 self.assertIsInstance(error, TimeoutError)
                 self.assertEqual(waited, self.TIMEOUT)
-                self.assertEqual(str(error), f"the second Mac's foreground stayed held by eng 21346 for {self.TIMEOUT}s")
+                self.assertEqual(str(error), f"{offload_host.mac_name()}'s foreground stayed held by eng 21346 for {self.TIMEOUT}s")
                 self.assertEqual(len(self.said), 1)
                 self.assertNotIn("deadline", self.said[0])
 

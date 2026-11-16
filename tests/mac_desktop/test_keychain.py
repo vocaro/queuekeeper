@@ -607,7 +607,7 @@ class KeepUnlockedTests(unittest.TestCase):
         self.assertFalse(self.kept.exists())
         for request, terminal, why in [({"root": remote.ROOT, "mac": THIRD}, True, f"this is {SECOND}, not {THIRD}"),
                                        (None, False, "this has none"),
-                                       ({"root": "Development/elsewhere", "mac": SECOND}, True, "set up the second Mac")]:
+                                       ({"root": "Development/elsewhere", "mac": SECOND}, True, "set up the farm's other Macs")]:
             with self.subTest(why):
                 status, said, asked = self.keep([], request, run=run, terminal=terminal)
                 self.assertEqual((status, asked, run.calls), (2, [], []))

@@ -67,7 +67,7 @@ def problems():
 
 def refusal(found):
     lines = [f"- {problem}: {fix}" for problem, fix in found]
-    return reservations.Refused("the second Mac's foreground is not ready for work started over SSH, and setting it up is "
+    return reservations.Refused(f"{offload_host.mac_name()}'s foreground is not ready for work started over SSH, and setting it up is "
                            f"the owner's ({GUIDE}):\n" + "\n".join(lines))
 
 
@@ -92,7 +92,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     record = record or reservations.Record()
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
     if not second_mac(record):
-        raise reservations.Refused("queuekeeper takes the foreground only on the second Mac; this Mac's needs a window the owner "
+        raise reservations.Refused("queuekeeper takes the foreground only on another Mac; this Mac's needs a window the owner "
                               "agreed beforehand, which the session reserves as mac-foreground itself "
                               "(doc/guides/shared-host.md, Attended Mac sessions)")
     found = (ready or problems)()
@@ -107,7 +107,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     while True:
         entry = record.entry(reservations.FOREGROUND)
         if processes.requested() is not None:
-            raise processes.Interrupted(processes.requested(), "while waiting for the second Mac's foreground")
+            raise processes.Interrupted(processes.requested(), f"while waiting for {offload_host.mac_name()}'s foreground")
         state = reservations.condition(entry) if entry is not None else "released"
         if state == "released":
             release_by = (datetime.now(timezone.utc) + timedelta(seconds=expected)).isoformat()
@@ -118,10 +118,10 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
             except reservations.Stale:
                 continue
         if state in ("orphan", "uncertain"):
-            raise reservations.Refused(f"the second Mac's {reservations.FOREGROUND} is {state}, held by {entry.get('ownerChatID')} "
-                                  f"for {entry.get('purpose')}; it needs attended recovery first, on the second Mac: "
+            raise reservations.Refused(f"{offload_host.mac_name()}'s {reservations.FOREGROUND} is {state}, held by {entry.get('ownerChatID')} "
+                                  f"for {entry.get('purpose')}; it needs attended recovery first, on that Mac: "
                                   f"`{offload_host.recover_command(reservations.FOREGROUND, entry.get('revision'), 'WHAT')}`, "
-                                  "or from another Mac the same with `--host` and the second Mac's SSH name after "
+                                  "or from another Mac the same with `--host` and that Mac's SSH name after "
                                   f"`recover`, never as a command given to ssh ({GUIDE})")
         holder, due = entry.get("ownerChatID"), entry.get("expectedReleaseBy")
         lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release {due}")
@@ -135,22 +135,22 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
             after = (f", after this wait's deadline, {ends.isoformat()}: looking again for {gives_up - now:.0f}s in case "
                      f"it releases early, then ending with nothing run; run `{again}` after {due}"
                      if gives_up is not None else "")
-            said(f"queuekeeper: waiting for the second Mac's foreground, held by {holder} for {entry.get('purpose')}, "
+            said(f"queuekeeper: waiting for {offload_host.mac_name()}'s foreground, held by {holder} for {entry.get('purpose')}, "
                  f"expected release {due}{after}")
             announced = judged
         late = (f"; its expected release, {due}, falls after this wait's deadline, {ends.isoformat()}. Run `{again}` "
                 f"after {due}" if gives_up is not None else "")
         if now >= deadline:
-            raise TimeoutError(f"the second Mac's foreground stayed held by {holder} for {timeout:g}s{late}")
+            raise TimeoutError(f"{offload_host.mac_name()}'s foreground stayed held by {holder} for {timeout:g}s{late}")
         if gives_up is not None and now >= gives_up:
-            raise TimeoutError(f"the second Mac's foreground stayed held by {holder} for {now - began:.0f}s{late}")
+            raise TimeoutError(f"{offload_host.mac_name()}'s foreground stayed held by {holder} for {now - began:.0f}s{late}")
         time.sleep(poll)
     entry = record.update(reservations.FOREGROUND, owner=owner, revision=entry["revision"], activeRun=True,
                           hostProcessIdentifier=os.getpid())
     identity = reservations.identity(entry)
     before = front()
     opened, own = opened_apps.read(), opened_apps.checkout()
-    said(f"queuekeeper: holding the second Mac's foreground as {owner} for {purpose}; {before or 'no application'} is in front")
+    said(f"queuekeeper: holding {offload_host.mac_name()}'s foreground as {owner} for {purpose}; {before or 'no application'} is in front")
     previous = os.environ.get(reservations.OWNER)
     os.environ[reservations.OWNER] = owner
     outcome = "ended by an exception"
@@ -193,7 +193,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
                                        "the lease's guards put back what they changed, or changed nothing"
                                        + (f"; {apps}" if apps else ""),
                            frontmost="restored" if restored else "not-ours", apps_quit=apps)
-            said(f"queuekeeper: released the second Mac's foreground; {after or 'no application'} is in front")
+            said(f"queuekeeper: released {offload_host.mac_name()}'s foreground; {after or 'no application'} is in front")
 
 
 def main(argv=None):

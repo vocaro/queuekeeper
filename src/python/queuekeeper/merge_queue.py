@@ -1283,7 +1283,7 @@ def load_words(lane, host, readings, waited=()):
     (vocaro-engineering#273), and plainly that it could not be read when none says. readings are those taken while the
     lane ran and waited those while it waited to start, which are said apart: the first count the lane's own work, a
     whole-host gate's nearly all of them, and only the second are of other work alone (vocaro/queuekeeper#12)."""
-    where = f"the second Mac ({host})" if host else "this Mac"
+    where = lane_wait.second_mac(host) if host else "this Mac"
     over = lane_report.readings_over
     def loads_of(of): return [reading[0] for reading in of if reading and reading[0] is not None]
     def shares_of(of):
@@ -2534,7 +2534,7 @@ def diagnose(root):
         found("no verdict", f"{len(blank)} gates since the last verdict gave none, each leaving tests unmeasured or "
               f"printing no qk unittest summary: {', '.join(blank)} (vocaro-engineering#253, #268, #282)",
               f"the worker runs it again up to queue.noVerdictRuns times and then holds; read {blank[0]} for the "
-              "cause: a lane that reached its limit, or a second Mac out of reach")
+              "cause: a lane that reached its limit, or another Mac out of reach")
     for identifier, own in refusing.items():
         found("refused before running", f"qk unittest refuses {identifier}'s tree before running anything: "
               + "; ".join(own) + ". Every gate holding it runs nothing",
@@ -3801,7 +3801,7 @@ class Worker:
         """The Mac the lane ran on, for a hold's reason (vocaro-engineering#185): ` on the second Mac (HOST)` by its
         dispatch's record, ` on this Mac (NAME)` by the receipt the run wrote here since began, or nothing when
         neither says."""
-        if self.ran_on: return f" on the second Mac ({self.ran_on})"
+        if self.ran_on: return f" on {lane_wait.second_mac(self.ran_on)}"
         receipt = self.checkout / ".build/queuekeeper" / lane / "source.json"
         try:
             if receipt.stat().st_mtime < began: return ""
@@ -3822,9 +3822,9 @@ class Worker:
             folder = ran / remote.RESULTS
             kept = result_files(folder)
             if not kept:
-                return (f"{lane} per-test results: none: its command wrote none in its results/ on the second Mac "
-                        f"({self.ran_on}), which sends back all it writes there")
-            return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by the second Mac ({self.ran_on}); "
+                return (f"{lane} per-test results: none: its command wrote none in its results/ on "
+                        f"{lane_wait.second_mac(self.ran_on)}, which sends back all it writes there")
+            return (f"{lane} per-test results: {kept} in {folder}, on this Mac, sent back by {lane_wait.second_mac(self.ran_on)}; "
                     f"queuekeeper keeps the newest {remote.DISPATCHES_KEPT} dispatches of a lane")
         folder = self.checkout / ".build/queuekeeper" / lane / "results"
         try:
@@ -4981,7 +4981,7 @@ class Worker:
         other.newer, other.tip, other.lanes = newer, other.head(), lanes
         self.queue.mark(newer, TESTING)
         self.say(f"testing the newer {len(newer)} entr{'y' if len(newer) == 1 else 'ies'} of the bisect at "
-                 f"{other.tip[:12]} on {base[:12]} beside them, on the second Mac if it can start them now")
+                 f"{other.tip[:12]} on {base[:12]} beside them, on another Mac if it can start them now")
         return other
 
     def after_beside(self, beside, applied, outcome):
@@ -5126,7 +5126,7 @@ class Worker:
         if result in UNRUN or not self.lane_now: return None
         lane, began = self.lane_now[0], self.lane_now[1]
         ran = remote.dispatch(self.checkout, lane, began)[0]
-        receipts = ([(ran / "source.json", "the second Mac", ("result", "receipt"))] if ran is not None else []) \
+        receipts = ([(ran / "source.json", None, ("result", "receipt"))] if ran is not None else []) \
             + [(self.checkout / ".build/queuekeeper" / lane / "source.json", HERE_MAC, ())]
         for receipt, mac, within in receipts:
             try:
@@ -5137,7 +5137,9 @@ class Worker:
                 continue
             if isinstance(after, dict) and after.get("state"):
                 if after["state"] != "locked": return None
-                return lane, offload_host.screen_line(after, f"{mac} ({after.get('mac') or 'unnamed'})")
+                # This Mac with its name, and another by the name its receipt gives.
+                return lane, offload_host.screen_line(after, f"{mac} ({after.get('mac') or 'unnamed'})" if mac
+                                                      else after.get("mac") or "another Mac")
         try: said = log.read_text(errors="replace") if log else ""
         except OSError: said = ""
         screens = SCREEN_LINE.findall(said)
@@ -5422,7 +5424,7 @@ class Stack:
         self.worker.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} that arrived during the gate, "
                         f"at {self.tip[:12]}, stacked on {self.base[:12]}, "
                         + ("on another Mac if it can start them now" if remote.gate_hosts() is not None
-                           else "on this Mac" if self.where == HERE else "on the second Mac if it can start them now"))
+                           else "on this Mac" if self.where == HERE else "on another Mac if it can start them now"))
         def gate():
             try:
                 self.box["result"] = self.runner.gate(self.lanes, self.name, where=self.where, cancel=self.cancel)
@@ -5704,7 +5706,7 @@ def run(root, *, if_waiting=False):
                 # Holding nothing: the next `qk land`, `qk queue wait` or `qk queue resume` starts a worker of its
                 # session's, and a hold would wait for a session to resume it instead.
                 queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
-                worker.say(f"exits, holding nothing, since this worker cannot reach the second Mac: {lost}; the next "
+                worker.say(f"exits, holding nothing, since this worker cannot reach another Mac: {lost}; the next "
                            "`qk land`, `qk queue wait` or `qk queue resume` from a live session starts another")
                 return 0
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

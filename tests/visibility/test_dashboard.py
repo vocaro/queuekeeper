@@ -32,7 +32,7 @@ HOSTS = {"schemaVersion": 1, "hosts": [
      "slots": [{"slot": 0, "holder": "a"}, {"slot": 1, "holder": "b"}, {"slot": 2, "holder": None}],
      "holders": [{"identity": "holder-1", "label": "project gate", "heldSeconds": 90.0, "slots": [0], "wholeHost": True, "exclusive": False}],
      "waiters": [{"identity": "place-1", "request": "request-1", "label": "other unit", "waitedSeconds": 12.5, "reason": "every slot is busy"}]},
-    {"name": "second Mac (build)", "role": "second", "state": "unknown", "reasons": ["ssh could not reach build"]}]}
+    {"name": "build", "role": "second", "state": "unknown", "reasons": ["ssh could not reach build"]}]}
 
 
 GB = 1024 ** 3
@@ -271,7 +271,7 @@ class Panels(Fixture):
                   {"id": "new", "branch": "zed/y", "state": "conflict", "subject": "Z", "settled": now - 60},
                   {"id": "landed", "branch": "claude/z", "state": "landed", "settled": now - 10}]
         state = {"waiting": waiting, "recent": recent, "round": {"entries": ["c"]}}
-        gates = [("batch", {"mac": "this Mac"}), ("stacked", {"mac": "the second Mac (build)"}), ("older half", {})]
+        gates = [("batch", {"mac": "this Mac"}), ("stacked", {"mac": "build"}), ("older half", {})]
         self.assertEqual(queue.flow(state, gates, now)["macs"], [])  # before the farm's first reading
         self.read_farm()
         found = queue.flow(state, gates, now)
@@ -281,7 +281,7 @@ class Panels(Fixture):
             {"name": "2 more", "waiting": 2, "testing": 0, "more": True}])
         self.assertEqual(found["macs"], [
             {"name": "this Mac (desk)", "role": "here", "state": "observed", "used": 2, "most": 7, "gates": ["batch"]},
-            {"name": "second Mac (build)", "role": "second", "state": "unknown", "used": 0, "most": 0, "gates": ["stacked"]}])
+            {"name": "build", "role": "second", "state": "unknown", "used": 0, "most": 0, "gates": ["stacked"]}])
         self.assertEqual(found["back"], {"agent": "zed", "id": "new", "subject": "Z", "state": "conflict", "settled": now - 60})
         self.assertEqual([queue.agent(branch) for branch in ("claude/a/b", "main", "/lead", None)], ["claude", "other", "other", "other"])
         self.assertEqual(queue.data(self.one, {})["flow"]["agents"], [])
@@ -352,7 +352,7 @@ class Panels(Fixture):
         self.assertEqual(farm.summary(self.one), {
             "title": "Farm", "level": "warning",
             "text": "1 Mac read, 2 of 7 slots in use, 1 waiting; the screen of this Mac (desk) is locked; "
-                    "second Mac (build) could not be read"})
+                    "build could not be read"})
 
     def test_a_mac_short_of_memory_makes_the_farms_line_a_warning(self):
         self.read_farm()
@@ -385,13 +385,13 @@ class Panels(Fixture):
                 patch.object(farm.remote, "screen_there", return_value={"state": "locked"}):
             found = READ_DETAIL()
             self.assertEqual((found["here"]["cpuBusy"], found["here"]["screen"]), (10.0, "unlocked"))
-            self.assertEqual((found["second"]["cpuBusy"], found["second"]["screen"]), (80.0, "locked"))
+            self.assertEqual((found["build"]["cpuBusy"], found["build"]["screen"]), (80.0, "locked"))
             there.assert_called_with("build", health=True)
             self.assertIsNone(found["here"]["health"])
-            self.assertIn("build is short of memory", found["second"]["health"])
-            self.assertIn("`sudo killall fseventsd` on build", found["second"]["health"])
+            self.assertIn("build is short of memory", found["build"]["health"])
+            self.assertIn("`sudo killall fseventsd` on build", found["build"]["health"])
             with patch.object(farm.remote, "screen_there", side_effect=farm.remote.Unavailable("build is asleep")):
-                self.assertEqual(READ_DETAIL()["second"]["error"], "build is asleep")
+                self.assertEqual(READ_DETAIL()["build"]["error"], "build is asleep")
             with farm_fixture.only():
                 self.assertEqual(list(READ_DETAIL()), ["here"])
             # Several Macs are each read, by their names in the farm, and a paused one is not.

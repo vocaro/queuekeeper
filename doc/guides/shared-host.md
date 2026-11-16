@@ -647,8 +647,7 @@ python3 scripts/qk admissions <(ssh build-host \
 `python3 scripts/qk admissions now` shows admission as it stands on this Mac and on each of the
 farm's Macs that take work now, all asked at once. In `--json`, each of the farm's Macs carries
 `mac`, its name in the farm, `id`, its hardware UUID, and `ssh`, its SSH destination; its `role` is
-its name in the farm once the farm has several Macs, `second` while it has one, and this Mac's is
-`here`. It shows
+its name in the farm, and this Mac's is `here`. It shows
 each holder's slots, kind and hold time, and each waiter's wait and the reason it prints itself,
 with where each one's work comes from: its repository, branch, worktree, agent session and Mac
 (`resources.work_origin`), the sender's for work the second Mac runs for this one. It changes nothing. A Mac it cannot read in 10 seconds is unknown, never idle, and this Mac's reading
@@ -863,8 +862,9 @@ the second Mac, and kept in its receipt as `screen`, and read again, as `screenA
 unmeasured, after a line naming that Mac: `queuekeeper: LANE unmeasured on this Mac (NAME)`. Any lane that
 ends unmeasured with a log saying the screen is locked is read again the same way. A lane that runs on
 this Mac after it was offered to the second Mac says so in one line, with why, before it starts:
-`queuekeeper: gate runs on this Mac (NAME), not the second Mac: REASON; the second Mac's lines above are from
-the offer it did not take`. The merge queue's hold for runs that gave no verdict names the Mac the
+`queuekeeper: gate runs on this Mac (NAME), not another Mac: REASON; another Mac's lines above are from
+the offer it did not take`. A message names one of the farm's Macs by its name in the farm, as
+`qk farm list` gives it. The merge queue's hold for runs that gave no verdict names the Mac the
 last ran on, and quotes the last screen line of its log. A run whose last reading shows a locked screen
 does not count toward that hold, and the queue runs the lane next with `qk run --unlocked-screen`,
 which places it as `"unlockedScreen": true` does, on an undeclared lane too
@@ -948,7 +948,7 @@ whose admission then held it back for as long as the exclusive work waited and r
 2. When the second Mac's reading shows no spare capacity and this Mac's shows some, the lane goes
    to this Mac's queue at once, and nothing is offered: `queuekeeper: trying LANE on this Mac:` says why,
    and the receipt's `hereBecause` records it, naming the second Mac's CPU when that is it, as
-   `the second Mac is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%, set in PATH)`, PATH
+   `studio is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%, set in PATH)`, for a Mac named studio, PATH
    being that Mac's limits file, else the
    whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
    kept for a whole-host lane queued there, or exclusive work queued there. The CPU limit counts
@@ -962,8 +962,8 @@ whose admission then held it back for as long as the exclusive work waited and r
    when every checkout of the project there is in use or the model is held: this Mac's own
    admission then gets the same five seconds, and the lane runs here if it admits it, the receipt
    recording that the second Mac was busy. Busy is no configuration problem.
-3. While neither Mac's reading shows spare capacity, `queuekeeper: neither Mac has spare capacity for
-   LANE now (…), so it goes to whichever admits it first, the second Mac asked first` says so, and
+3. While neither Mac's reading shows spare capacity, `queuekeeper: no Mac has spare capacity for
+   LANE now (…), so it goes to whichever admits it first, NAME asked first` says so, and
    the lane is offered to the second Mac, whose guaranteed slots admit it however busy its CPU. While
    both decline it, the lane waits for whichever admits it first. It waits in this Mac's queue,
    15 s at first, doubling to 120 s, and between those waits both Macs are read again and the lane
@@ -1135,8 +1135,8 @@ its log counts, so its counts read here; a lane a stop ended has the outcome `st
 status. A run whose connection is lost before it ends brings none back and is unmeasured; they
 stay in the second Mac's checkout until a later run there replaces them.
 
-Every run's receipt says where it ran. `ranOn` is `this Mac` or `second Mac`, which a receipt
-written before 2026-10-28 gives as `build host`, and `mac` names the Mac. A run on one of the
+Every run's receipt says where it ran. `ranOn` is `this Mac` or the name of the farm's Mac it ran on, which a receipt
+written before 2026-11-16 gives as `second Mac` and one before 2026-10-28 as `build host`, and `mac` names the Mac. A run on one of the
 farm's Macs also keeps `host`, its SSH destination, `farmMac`, its name in the farm, and `macId`,
 its hardware UUID, which stays the Mac's own when the owner renames it. On this Mac,
 `hereBecause` says why the run ran here: the lane's own reason, `--here` or `qk admit --here`,
@@ -2126,7 +2126,7 @@ shell that still uses one meant something by it, and ignoring it would move that
 - `devices recover --build-host-unchecked REASON`: refused; use `--offload-unchecked REASON`.
 
 Nothing reads the other renamed words, so nothing refuses them: a receipt's `ranOn`, now
-`second Mac`, and a device record's recovery, which records its check of the second Mac as
+the name of the farm's Mac, and a device record's recovery, which records its check of the second Mac as
 `offload`. Receipts and records written before keep `build host` and `buildHost`, since they are
 data already on disk, and such a receipt still counts: `qk remote passed` and `eng release` read
 the second Mac's receipts by commit, whatever their `ranOn`.

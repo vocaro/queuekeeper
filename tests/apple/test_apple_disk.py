@@ -303,7 +303,7 @@ class SimulatorTests(Fixture):
         items = found({"images": [copy("24A434", ["A"])]})
         for key in ("beta", "unused"):
             self.assertEqual(items[key].status, disk.CANDIDATE, items[key].reason)
-            self.assertIn("build-host holds no copy, so removing it here also leaves the two Macs alike", items[key].reason)
+            self.assertIn("build-host holds no copy, so removing it here also leaves the Macs alike", items[key].reason)
         items = found({"images": [copy("24A5423a", []), copy("24A100", [])]})
         for key in ("beta", "unused"):
             self.assertEqual(items[key].status, disk.CANDIDATE, items[key].reason)

@@ -1877,9 +1877,9 @@ NOT_OFFERED = [("qk admit runs here without --verify", "qk admit without --verif
 # Older admissions marked local path exclusions as offered. Recognize the exact diagnostics written by
 # remote.first_command and remote.local_paths, retaining the original reason for each admission.
 LEGACY_LOCAL_PATH_REASONS = (
-    ("it names /", ", a path outside the checkout, which the second Mac does not have"),
-    ("it names ~", ", under this Mac's home, which the second Mac's checkout does not hold"),
-    ("it names this checkout's path ", ", which the second Mac's checkout is not"),
+    ("it names /", ", a path outside the checkout, which another Mac does not have"),
+    ("it names ~", ", under this Mac's home, which another Mac's checkout does not hold"),
+    ("it names this checkout's path ", ", which another Mac's checkout is not"),
 )
 # A lane run's label, a project's name and its lane (cli.lane_label): two words with neither a path nor an option.
 LANE_LABEL = re.compile(r"[A-Za-z0-9_.-]+ [A-Za-z0-9_.-]+")
@@ -1974,7 +1974,7 @@ def placement_lines(entries, since, until):
         counted[1] += max(held, 0)
         # An unrecorded line says only its label, so the labels that held the longest stand in for the reason.
         counted[2][admitted["label"]] += max(held, 0)
-    heads = {"never": "never offered to the second Mac", "declined": "offered to the second Mac and declined",
+    heads = {"never": "never offered to another Mac", "declined": "offered to another Mac and declined",
              "sent": "sent here by another Mac", "unrecorded": "placement unrecorded (an older toolkit's line, or a "
              "caller's own admission, such as qk admit's before it logged placement)"}
     out = []
@@ -2043,14 +2043,14 @@ def usage(here, there, since, until, out=print):
 def usage_main(argv=None, out=print):
     """qk admissions usage: whether the second Mac is being used, and why work is on this Mac."""
     from queuekeeper import offload_host, remote
-    parser = argparse.ArgumentParser(prog="qk admissions usage", description="Show both Macs' capacity now, side by "
+    parser = argparse.ArgumentParser(prog="qk admissions usage", description="Show each Mac's capacity now, side by "
         "side, with whether each has spare capacity for a heavy and for a whole-host lane; the share of the period "
         "each Mac spent at each count of admitted heavy jobs; and why this Mac's admissions ran here: never offered "
-        "to the second Mac, and why, or offered and declined, and why (doc/guides/shared-host.md, Which Mac runs a lane).")
+        "to another Mac, and why, or offered and declined, and why (doc/guides/shared-host.md, Which Mac runs a lane).")
     parser.add_argument("--since", type=local_time, metavar="WHEN", help="the period's start, an ISO 8601 date or "
                         "time, local unless it names a zone (default 3 hours before --until)")
     parser.add_argument("--until", type=local_time, metavar="WHEN", help="the period's end (default now)")
-    parser.add_argument("--there", type=Path, action="append", metavar="LOG", help="a copy of the second Mac's "
+    parser.add_argument("--there", type=Path, action="append", metavar="LOG", help="a copy of another Mac's "
                         "admission log to read instead of asking it over ssh; name the previous generation first")
     args = parser.parse_args(argv)
     until = args.until or datetime.now(timezone.utc)
@@ -2060,8 +2060,8 @@ def usage_main(argv=None, out=print):
     from queuekeeper import farm
     try: macs = farm.active()
     except ValueError as error: macs, why = [], str(error)
-    else: why = "no second Mac is configured"
-    if not macs: return usage(here, ("second Mac", "the second Mac", why, why), since, until, out)
+    else: why = "the farm has no other Mac that takes work now"
+    if not macs: return usage(here, ("the farm's other Macs", "another Mac", why, why), since, until, out)
     there = []
     for index, mac in enumerate(macs):
         host = mac["ssh"]
@@ -2072,14 +2072,13 @@ def usage_main(argv=None, out=print):
         else:
             try: entries = remote.admission_log_there(host, since - timedelta(seconds=UNENDED_SECONDS))
             except (remote.Unreachable, remote.Unavailable, remote.Misconfigured) as error: entries = str(error)
-        there.append((farm_mac_name(mac, len(macs)), host if len(macs) == 1 else mac["name"], reading, entries))
+        there.append((farm_mac_name(mac, len(macs)), mac["name"], reading, entries))
     return usage(here, there, since, until, out)
 
 
 def farm_mac_name(mac, count):
-    """What a report calls one of the farm's Macs: by its name in the farm and its SSH destination once the farm
-    has several to tell apart, and as the second Mac while it has one."""
-    if count == 1: return f"second Mac ({mac['ssh']})"
+    """What a report calls one of the farm's Macs: by its name in the farm, with its SSH destination when that is
+    another word."""
     return mac["name"] if mac["name"] == mac["ssh"] else f"{mac['name']} ({mac['ssh']})"
 
 
@@ -2090,9 +2089,8 @@ def unknown_host(name, role, why, state="unknown"):
 
 
 def farm_role(mac, count):
-    """The key a report gives one of the farm's Macs among its hosts: its name in the farm, and `second` while the
-    farm has one Mac, as before it could have more. This Mac's is `here`."""
-    return "second" if count == 1 else mac["name"]
+    """The key a report gives one of the farm's Macs among its hosts: its name in the farm. This Mac's is `here`."""
+    return mac["name"]
 
 
 def admissions_now(here_only=False, read_here=None, read_there=None, macs=None):
@@ -2110,9 +2108,9 @@ def admissions_now(here_only=False, read_here=None, read_there=None, macs=None):
     hosts = [here]
     if here_only: return {"schemaVersion": 1, "hosts": hosts}
     try: found = (macs or farm.active)()
-    except ValueError as error: return {"schemaVersion": 1, "hosts": [*hosts, unknown_host("second Mac", "second", str(error))]}
+    except ValueError as error: return {"schemaVersion": 1, "hosts": [*hosts, unknown_host("the farm's other Macs", "farm", str(error))]}
     if not found:
-        hosts.append(unknown_host("second Mac", "second", "no second Mac is configured", "notConfigured"))
+        hosts.append(unknown_host("the farm's other Macs", "farm", "the farm has no other Mac that takes work now", "notConfigured"))
         return {"schemaVersion": 1, "hosts": hosts}
     def ask(mac):
         name, role = farm_mac_name(mac, len(found)), farm_role(mac, len(found))
@@ -2266,7 +2264,7 @@ def now_main(argv=None, out=print, read=None):
     """qk admissions now: who holds and who waits for heavy-work admission on each Mac now (vocaro-engineering#342). 0
     when every Mac asked about was read whole, 1 when one is partial or unknown, 2 for a mistaken command line."""
     parser = argparse.ArgumentParser(prog="qk admissions now", description="Show who holds heavy-work admission on "
-        "this Mac and the second Mac now, and who waits for it, for how long and why, as each waiter says it. It changes "
+        "this Mac and the farm's other Macs now, and who waits for it, for how long and why, as each waiter says it. It changes "
         "nothing. A Mac that cannot be read is unknown, never idle (doc/guides/shared-host.md, Who holds and who waits).")
     parser.add_argument("--json", action="store_true", help="print the readings as JSON")
     parser.add_argument("--here", action="store_true", help="read this Mac only, in this process's namespace")

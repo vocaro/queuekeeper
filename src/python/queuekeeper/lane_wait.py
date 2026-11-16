@@ -10,6 +10,7 @@ lane's receipt (source.json) gives its verdict. A wait stops counting once the p
 (current).
 
 Nothing here may stop a lane: a record that cannot be written or read is left as it is."""
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -29,10 +30,10 @@ OFFERS = (UNREACHABLE, ALONE, OVERFLOW)
 # What `qk queue status` says after "waiting: ". Each wait's words live here and nowhere in the queue.
 WORDS = {ADMISSION: "admission on {mac}: {reason}",
          SCREEN: "an unlocked screen: {reason}",
-         FOREGROUND: "the second Mac's foreground, {reason}",
-         UNREACHABLE: "the second Mac cannot be reached{probes}, and is asked again within a minute: {reason}",
-         ALONE: "this Mac alone, as the second Mac cannot take it: {reason}",
-         OVERFLOW: "whichever Mac admits it first, the second Mac asked again: {reason}"}
+         FOREGROUND: "another Mac's foreground, {reason}",
+         UNREACHABLE: "another Mac cannot be reached{probes}, and is asked again within a minute: {reason}",
+         ALONE: "this Mac alone, as another Mac cannot take it: {reason}",
+         OVERFLOW: "whichever Mac admits it first, the farm's other Macs asked again: {reason}"}
 # What identifies a state of the record, apart from when it was written.
 STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted", "probes")
 
@@ -130,14 +131,23 @@ def running(mac=HERE, *, admitted=True):
 
 
 def second_mac(host):
-    return f"the second Mac ({host})"
+    """What a record calls the farm's Mac at the SSH destination host: its name in the farm (farm.named)."""
+    from . import farm
+    return farm.named(host)
 
 
 def host_of(mac):
-    """The second Mac's host that second_mac named in mac, or None for this Mac or for words it did not write."""
-    if isinstance(mac, str) and mac.startswith("the second Mac (") and mac.endswith(")") and len(mac) > 17:
+    """The SSH destination of the farm's Mac that second_mac named in mac, or None for this Mac or for words it
+    did not write. A record written before a Mac had a name in the farm says `the second Mac (HOST)`."""
+    if not isinstance(mac, str) or mac == HERE: return None
+    if mac.startswith("the second Mac (") and mac.endswith(")") and len(mac) > 17:
         return mac[len("the second Mac ("):-1]
-    return None
+    from . import farm
+    with contextlib.suppress(ValueError):
+        for found in farm.read():
+            if found["name"] == mac: return found["ssh"]
+    # A Mac reached by an SSH destination the farm does not list is named by that destination, a single word.
+    return mac if mac and not mac.startswith("this Mac") and not any(map(str.isspace, mac)) else None
 
 
 def sent(host):

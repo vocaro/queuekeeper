@@ -312,7 +312,7 @@ class ReapTests(unittest.TestCase):
             ("not listed by simctl here", unlisted, {}, f"simctl here does not list {UDID}"),
             ("listed under another name", renamed, {}, "simctl lists .* as 'Pagepour Duo 2'"),
             ("no pool's", outside, {"key": "Elsewhere Duo 1"}, "neither a member nor a warmed template"),
-            ("its run went to the other Mac", None, {"run": {"host": "build-host", "startedAt": self.DUE}},
+            ("its run went to another Mac", None, {"run": {"host": "build-host", "startedAt": self.DUE}},
              "its run went to build-host, whose processes this Mac cannot check"),
             ("a physical device", None, {"device": "00008110-0011223344556677"}, "records no simulator"),
             ("a listing without this reap", unlisting, {}, "does not show this reap's own process"),

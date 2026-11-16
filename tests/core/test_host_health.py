@@ -173,20 +173,20 @@ class QueueDoctor(unittest.TestCase):
         self.assertEqual(asked, [None, "build"])
         self.assertEqual(notes, [])
         [found] = findings
-        self.assertEqual((found["signal"], found["mac"]), ("short of memory", "the second Mac (build)"))
+        self.assertEqual((found["signal"], found["mac"]), ("short of memory", "build"))
         self.assertIn("swap is 31.7 GB of 32.0 GB used", found["diagnosis"])
-        self.assertIn("`sudo killall fseventsd` on the second Mac (build), which is safe", found["remedy"])
+        self.assertIn("`sudo killall fseventsd` on build, which is safe", found["remedy"])
         self.assertEqual([one["pid"] for one in found["largest"]], [312, 901, 77])
         with farm_fixture.only("build"):
             findings, notes = merge_queue.memory_findings(lambda host: None if host else reading())
         self.assertEqual(findings, [])
-        self.assertEqual(notes, ["whether the second Mac (build) is short of memory is unknown, as its processes "
+        self.assertEqual(notes, ["whether build is short of memory is unknown, as its processes "
                                  "could not be read there"])
         # Every Mac of the farm that takes work now is read, in the farm's order.
         asked.clear()
         with farm_fixture.only("build", farm_fixture.mac("loaned", state="paused"), "mini"):
             findings, notes = merge_queue.memory_findings(read)
-        self.assertEqual((asked, [found["mac"] for found in findings]), ([None, "build", "mini"], ["the second Mac (build)"]))
+        self.assertEqual((asked, [found["mac"] for found in findings]), ([None, "build", "mini"], ["build"]))
 
     def test_doctor_compares_each_of_the_farm_s_macs_and_fails_when_any_differs(self):
         reports = {"build": {"host": "build", "errors": [], "unchecked": [], "pythonCrashes": {},

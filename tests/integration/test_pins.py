@@ -421,7 +421,7 @@ class RunTests(Fixture):
         ran = self.qk("run", "--sibling", f"kit={session}", "nested")
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertIn("queuekeeper: nested runs on this Mac: kit is pinned for this run at a commit its origin does not "
-                      "hold, which the second Mac cannot fetch; push it to run nested there\n", ran.stderr)
+                      "hold, which another Mac cannot fetch; push it to run nested there\n", ran.stderr)
         log = (self.project / ".build/queuekeeper/nested/run.log").read_text()
         self.assertEqual(sum(line.startswith("kit-says a session's from") for line in log.splitlines()), 2)
         receipt = json.loads((self.project / ".build/queuekeeper/nested/source.json").read_text())

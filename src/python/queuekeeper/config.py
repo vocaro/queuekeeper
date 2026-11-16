@@ -173,7 +173,7 @@ def parse(source):
                 raise ValueError(f"{name}.{key} must be true or false")
         resource_of(name, lane)
         if lane.get("foreground") and unadmitted(lane):
-            raise ValueError(f"{name}.foreground needs an admitted lane: the second Mac's foreground is held inside the "
+            raise ValueError(f"{name}.foreground needs an admitted lane: another Mac's foreground is held inside the "
                              "run's admission, and a self lane is not admitted")
         place(name, lane)
         model(name, lane)
@@ -705,7 +705,7 @@ def retired(lanes):
     if not marked: return
     named = ", ".join(marked[:-1]) + " and " + marked[-1] if len(marked) > 1 else marked[0]
     raise ValueError(f"queuekeeper.json gives {named} \"buildHost\", which vocaro-engineering#58 removed: every heavy "
-                     "or exclusive lane goes to the second Mac unless it says why it stays, with \"here\": \"REASON\", "
+                     "or exclusive lane goes to another Mac unless it says why it stays, with \"here\": \"REASON\", "
                      f"so delete {'it' if len(marked) == 1 else 'each'}, and rebase a checkout older than that change "
                      "onto main (doc/guides/shared-host.md, Earlier names)")
 

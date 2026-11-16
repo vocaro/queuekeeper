@@ -142,7 +142,7 @@ def settle(before, own, *, said, launched=(), workstation=False, wait=None, step
     ending, wait, step = ending or alive, QUIT_WAIT if wait is None else wait, STEP if step is None else step
     now = read()
     if before is None or now is None:
-        said(f"queuekeeper: could not read the second Mac's running apps {'before' if before is None else 'after'} "
+        said(f"queuekeeper: could not read {offload_host.mac_name()}'s running apps {'before' if before is None else 'after'} "
              f"the run, so it quit none it may have opened ({GUIDE}, {SECTION})")
         return {"quit": [], "left": ["the running apps could not be read"]}
     known = {app["pid"] for app in before}

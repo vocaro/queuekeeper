@@ -67,7 +67,7 @@ class Foreground(extensions.Foreground):
 
 
 def notifications_arguments(parser):
-    parser.add_argument("--dismiss", action="store_true", help="close the windows' notifications; needs the second "
+    parser.add_argument("--dismiss", action="store_true", help="close the windows' notifications; needs that "
                         "Mac's mac-foreground lease, named by QUEUEKEEPER_DEVICE_OWNER")
 
 
@@ -80,14 +80,14 @@ def register():
     if keychain.unlock_run not in extensions.PREPARE_LANE: extensions.PREPARE_LANE.append(keychain.unlock_run)
     extensions.PARSED_COMMANDS.update({
         "keychain": ("before the owner unlocks a keychain, say which Mac's keychain the work needs and print commands "
-                     "that run only there (recover); keep the second Mac's login keychain unlocked for every qk "
+                     "that run only there (recover); keep another Mac's login keychain unlocked for every qk "
                      "remote run (keep-unlocked); where the automation runs, check the keychain, the signing identity "
                      "and signing with it, without a prompt (check)",
                      keychain.add_arguments, lambda root, args, config: keychain.execute(args), False),
     })
     extensions.HOST_READS["notifications"] = (
         "list the Notification Center windows over this Mac's screen, exiting 0 when none is and 3 when one is; with "
-        "--dismiss, on the second Mac under the foreground lease the caller holds, close their notifications and "
+        "--dismiss, on another Mac under the foreground lease the caller holds, close their notifications and "
         "confirm each window gone, as a foreground run does before it starts (exit 0, 3 naming a window left, 1 "
         "without a lease)", notifications_arguments,
         lambda args: notification_center.main(["check" if args.dismiss else "list"]))

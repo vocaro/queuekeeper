@@ -412,7 +412,7 @@ def local_network_lost(pid=None):
     whose = "itself" if held == pid else f"PID {held}, {path},"
     return (f"macOS holds {whose} responsible for this process (PID {pid}), a Python with no app of its own, so its "
             "Local Network privacy denies it the local network, as it does once the Claude session that started a "
-            "detached process ends: other processes on this Mac may reach the second Mac all the while, which need "
+            "detached process ends: other processes on this Mac may reach another Mac all the while, which need "
             "not be away or asleep (vocaro-engineering#282)")
 
 
@@ -557,7 +557,7 @@ def unreachable(host, detail, slept=None):
                                       f"whether {host} answers now (doc/guides/shared-host.md, How a run reaches the second "
                                       "Mac)")
     remedy = (f"wake {host} and connect it to this Mac's network: {name} is a multicast DNS name, which resolves only "
-              "while both Macs are awake on one network that passes multicast between them, as "
+              "while the Macs are awake on one network that passes multicast between them, as "
               f"`dscacheutil -q host -a name {name}` shows" if name and name.rstrip(".").lower().endswith(".local")
               else f"see whether {host} is overloaded or its sshd is stuck, as `ssh -v {host} true` shows" if connected
               else f"wake {host} and connect it to the network")
@@ -742,7 +742,7 @@ def changed_since(root, offered):
 def moved_reason(move):
     """What changed in one of moved_trees's trees after it was sent, with the changed paths."""
     _checkout, commit, what, changes = move
-    return (f"the {what} changed after {commit[:12]} was sent to the second Mac, and a run here would read "
+    return (f"the {what} changed after {commit[:12]} was sent to another Mac, and a run here would read "
             f"the changed tree, not what was sent:\n{changes}")
 
 
@@ -838,7 +838,7 @@ def origin(root):
         try: upstream = git(source, "config", "--get", "remote.origin.url")
         except (RuntimeError, OSError): upstream = None
         if not upstream or offload_host.local_url(upstream): upstream = UPSTREAM
-        raise RuntimeError(f"{root}'s origin is {url}, a path on this Mac, from which the second Mac cannot fetch the "
+        raise RuntimeError(f"{root}'s origin is {url}, a path on this Mac, from which another Mac cannot fetch the "
                            f"policy; set it with `git -C {shlex.quote(str(root))} remote set-url origin {upstream}` "
                            "and send the work again (the toolkit's doc/guides/adoption.md, Locating the toolkit from a worktree)")
     return "https://github.com/" + url[len("git@github.com:"):] if url.startswith("git@github.com:") else url
@@ -975,7 +975,7 @@ def push_once(root, host, repository, commit, variables, record, began):
     for line in record["said"]:
         if line != "Everything up-to-date": print(f"remote: git push said: {line}", file=sys.stderr, flush=True)
     if stop == "stopped":
-        raise processes.Interrupted(processes.requested(), f"while sending {commit[:12]} to {host}, before the second "
+        raise processes.Interrupted(processes.requested(), f"while sending {commit[:12]} to {host}, before that "
                                                            "Mac started the run")
     if stop == "timedOut":
         raise Misconfigured(f"the push of {commit[:12]} into ~/{repository} on {host} did not finish in {SEND_TIMEOUT}s "
@@ -1077,11 +1077,11 @@ def sending(record):
             else "Git reported no count of what it sent"
     advertised, have = record["advertised"], record["held"]
     commits = f"{advertised} commit{'' if advertised == 1 else 's'}"
-    cache = {"warm": f"warm: the second Mac's checkouts hold {commits}, "
+    cache = {"warm": f"warm: another Mac's checkouts hold {commits}, "
                      + ("which this Mac has" if have == advertised == 1 else f"{have} of them here too"),
-             "cold": f"cold: the second Mac's checkouts hold {commits}, none of them here" if advertised
-             else "cold: the second Mac's checkouts hold no commit",
-             "unknown": "warm or cold unknown: the second Mac said nothing of what its checkouts hold"}[record["transfer"]]
+             "cold": f"cold: another Mac's checkouts hold {commits}, none of them here" if advertised
+             else "cold: another Mac's checkouts hold no commit",
+             "unknown": "warm or cold unknown: another Mac said nothing of what its checkouts hold"}[record["transfer"]]
     return f"{record['seconds']:.2f} s, {cache}; {sent}" + (f" ({phases})" if phases else "")
 
 
@@ -1348,7 +1348,7 @@ def ran_where(receipt):
     """Where a kept receipt's run ran, as eng release and `qk remote passed` say it."""
     if receipt.get("ranOn") == HERE:
         return f"on this Mac ({receipt.get('mac') or 'unnamed'}), in {receipt.get('checkout') or 'a worktree'}"
-    return f"on the second Mac, {describe(receipt['result']['host'])}"
+    return f"on another Mac, {describe(receipt['result']['host'])}"
 
 
 def uncounted(root, lane):
@@ -1408,14 +1408,14 @@ def brought_back(root, sent, status, products=True):
     ran = sent.get("ran")
     if not ran: return status
     if products:
-        print(f"queuekeeper: the command ran on the second Mac, so its build products and other files Git ignores "
+        print(f"queuekeeper: the command ran on another Mac, so its build products and other files Git ignores "
               f"stayed in {ran.get('checkout') or 'its checkout there'}; `qk admit --here` runs it on this Mac and "
               "keeps them here", file=sys.stderr, flush=True)
     changes = ran.get("changes")
     # The command did not run there, as when the second Mac declined it, or its provision lane failed.
     if changes is None: return status
     if changes.get("error"):
-        print(f"queuekeeper: what the command changed in the checkout could not be gathered on the second Mac, so it stays "
+        print(f"queuekeeper: what the command changed in the checkout could not be gathered on another Mac, so it stays "
               f"in {ran.get('checkout')} there: {changes['error']}", file=sys.stderr, flush=True)
         return UNAPPLIED
     files = changes.get("files") or []
@@ -1423,10 +1423,10 @@ def brought_back(root, sent, status, products=True):
     patch = Path(ran["results"]) / CHANGES
     named = ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
     if not ran.get("returned") or not patch.is_file():
-        print(f"queuekeeper: the command changed {named} on the second Mac, and the patch did not come back; the second "
+        print(f"queuekeeper: the command changed {named} on another Mac, and the patch did not come back; that "
               f"Mac's copy is {ran.get('checkout')}/.build/queuekeeper/admit/{CHANGES}", file=sys.stderr, flush=True)
         return UNAPPLIED
-    return apply_changes(root, sent["commit"], patch, named, "on the second Mac", Path(ran["results"]).name, status)
+    return apply_changes(root, sent["commit"], patch, named, "on another Mac", Path(ran["results"]).name, status)
 
 
 def apply_changes(root, sent_commit, patch, named, where, name, status):
@@ -1887,7 +1887,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     unsent = pins.local(pins.held())
     if unsent:
         raise ValueError(f"{name} not sent to {host}: {' and '.join(unsent)} {'is' if len(unsent) == 1 else 'are'} "
-                         "pinned for this run at a commit its origin does not hold, which the second Mac cannot "
+                         "pinned for this run at a commit its origin does not hold, which another Mac cannot "
                          "fetch; push it, or run on this Mac with --here")
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
             # The folders beside the project its extensions load from, each at the commit this run pinned, which the
@@ -1991,7 +1991,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             sent.update(commit=commit, head=head, project=project, kit=kit, developer=developer, local=local,
                         preparation=preparation)
     if processes.requested() is not None:
-        raise processes.Interrupted(processes.requested(), "before the second Mac started the run")
+        raise processes.Interrupted(processes.requested(), "before another Mac started the run")
 
     results = base / name
     # Results are staged, so a refusal leaves the previous run's whole.
@@ -2112,7 +2112,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         raise Lost(lost(host, ended, said, started, slept, own / "output.log", journal=kept, gone=frames.gone))
     # commit is what ran there: HEAD, or a snapshot of the working tree on it. ranOn and mac say where, as
     # a run on this Mac's receipt does, so that the share of each Mac's work can be counted.
-    receipt = {"ranOn": "second Mac", "mac": (result.get("host") or {}).get("name"), "host": host,
+    receipt = {"ranOn": farm.named(host), "mac": (result.get("host") or {}).get("name"), "host": host,
                **farm_mac(host),
                "commit": commit, "head": head, "snapshot": commit != head,
                **toolkit_identity(kit, commit), "lane": lane, "arguments": list(arguments),
@@ -2167,8 +2167,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             print(f"remote: no log came back for {', '.join(member for member in members if member not in came)}",
                   file=sys.stderr, flush=True)
     if (remote.get("macOS"), remote.get("build")) != (local.get("macOS"), local.get("build")):
-        print(f"remote: the second Mac runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
-              f"{local.get('macOS')} ({local.get('build')}): the result qualifies the second Mac's platform",
+        print(f"remote: another Mac runs macOS {remote.get('macOS')} ({remote.get('build')}) and this Mac "
+              f"{local.get('macOS')} ({local.get('build')}): the result qualifies another Mac's platform",
               file=sys.stderr, flush=True)
     if result.get("stage") == "provision" and status and not result["stopped"]:
         raise Misconfigured(f"{host} {UNPROVISIONED}: the provision lane exited {status} in "
@@ -2197,7 +2197,7 @@ def checkout_request(args):
         if wait is not None: raise ValueError("--checkout-wait bounds the wait for a slot: add --checkout-slot")
         return None, None
     if not (slot.isascii() and slot.isdigit() and int(slot) < CHECKOUTS):
-        raise ValueError(f"--checkout-slot {slot} names no checkout: the second Mac keeps slots 0 to {CHECKOUTS - 1}")
+        raise ValueError(f"--checkout-slot {slot} names no checkout: another Mac keeps slots 0 to {CHECKOUTS - 1}")
     if wait is None: wait = offload_host.CLAIM_TIMEOUT
     if not (math.isfinite(wait) and wait >= 0):
         raise ValueError("--checkout-wait needs a number of seconds, 0 or more")
@@ -2231,13 +2231,13 @@ def exclusive_offers(name, offer, park, park_after=None, clock=time.monotonic, s
             left = deadline - clock()
             if left <= 0: break
             if str(busy) != said:
-                print(f"queuekeeper: {name} waits to start on the second Mac with every slot free, asked again every "
+                print(f"queuekeeper: {name} waits to start on another Mac with every slot free, asked again every "
                       f"{OVERFLOW_WAIT_MAX}s or sooner, holding no place in its queue for {int(left)}s more: {busy}",
                       file=sys.stderr, flush=True)
                 said = str(busy)
             sleep(min(window, left))
             window = min(2 * window, OVERFLOW_WAIT_MAX)
-    print(f"queuekeeper: {name} takes its place in the second Mac's queue after {EXCLUSIVE_PARK_SECONDS if park_after is None else park_after:g}s "
+    print(f"queuekeeper: {name} takes its place in another Mac's queue after {EXCLUSIVE_PARK_SECONDS if park_after is None else park_after:g}s "
           "of offers it declined, and its slots drain toward it", file=sys.stderr, flush=True)
     return park()
 
@@ -2248,7 +2248,7 @@ def not_run_if_busy(name, send):
     try:
         return send()
     except Busy as busy:
-        print(f"queuekeeper: {name} not run on the second Mac: {busy}", file=sys.stderr, flush=True)
+        print(f"queuekeeper: {name} not run on another Mac: {busy}", file=sys.stderr, flush=True)
         return BUSY
 
 
@@ -2276,7 +2276,7 @@ def main(root, config, args):
     if args.operation == "passed":
         receipt = passed(root, args.lane, args.commit)
         if receipt is None:
-            print(f"No passing run of the whole {args.lane} lane at {args.commit} kept by commit, from either Mac")
+            print(f"No passing run of the whole {args.lane} lane at {args.commit} kept by commit, from any Mac")
             return 1
         print(f"{args.lane} passed at {receipt['commit']} {ran_where(receipt)}")
         if receipt.get("keptResults"):
@@ -2383,10 +2383,8 @@ def eligible(macs):
 
 
 def called(host):
-    """What a message calls the farm's Mac at host: its name, once the farm has several Macs to tell apart."""
-    try: several = len(farm.read()) > 1
-    except ValueError: several = False
-    return farm.named(host) if several else "the second Mac"
+    """What a message calls the farm's Mac at host: its name in the farm."""
+    return farm.named(host)
 
 
 def waiting_host(hosts, lane=None):
@@ -2450,7 +2448,7 @@ def foreground_report(host):
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):
-        print("These are the owner's settings to change, on the second Mac (doc/guides/foreground.md); "
+        print(f"These are the owner's settings to change, on {called(host)} (doc/guides/foreground.md); "
               "foreground work there stops until they are.")
         return MISCONFIGURED
     print("Ready for foreground work started over SSH.")
@@ -2497,7 +2495,7 @@ for candidate in {candidates}; do
     if [ -z "$brew" ] && [ -x "$candidate" ]; then brew=$candidate; fi
 done
 if [ -z "$brew" ]; then
-    echo "setup: Homebrew is not installed on the second Mac. Its installer asks for the second Mac's password, so install it there yourself (https://brew.sh), then run qk remote setup again." >&2
+    echo "setup: Homebrew is not installed on another Mac. Its installer asks for another Mac's password, so install it there yourself (https://brew.sh), then run qk remote setup again." >&2
     exit {NO_HOMEBREW}
 fi
 # Homebrew's bin must come before /usr/bin, or the system's python3 3.9 shadows Homebrew's, as it
@@ -2941,7 +2939,7 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
             *(["--", *arguments] if arguments else [])]
     # A run that names a physical device uses it here, or there only by `qk remote run --device`.
     named = extensions.DEVICES.reserved_devices(arguments)
-    refused = (f"its arguments name the physical device of {', '.join(named)}, which the second Mac uses only under "
+    refused = (f"its arguments name the physical device of {', '.join(named)}, which another Mac uses only under "
                "a reservation `qk remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
     offered = Offer(lane, f"`qk run --here {lane}`", lambda host, sent: execute(
@@ -2998,7 +2996,7 @@ def local_paths(command, top):
     for word in map(str, command):
         for part in PATH_SEPARATOR.split(word):
             if part.startswith("~"):
-                return f"it names {part}, under this Mac's home, which the second Mac's checkout does not hold"
+                return f"it names {part}, under this Mac's home, which another Mac's checkout does not hold"
             # A URL's //host/path, split at its scheme's colon, is no path.
             if not part.startswith("/") or part == "/" or part.startswith("//"): continue
             if part.startswith(SHARED_PATHS) or part in SHARED_ROOTS: continue
@@ -3007,8 +3005,8 @@ def local_paths(command, top):
             if found and os.path.realpath(found) == os.path.realpath(part): continue
             resolved = Path(os.path.realpath(part))
             if resolved == top or top in resolved.parents:
-                return f"it names this checkout's path {part}, which the second Mac's checkout is not"
-            return f"it names {part}, a path outside the checkout, which the second Mac does not have"
+                return f"it names this checkout's path {part}, which another Mac's checkout is not"
+            return f"it names {part}, a path outside the checkout, which another Mac does not have"
     return None
 
 
@@ -3045,7 +3043,7 @@ def ignored_inputs(command, top, directory):
                            input="\0".join(candidates) + "\0", capture_output=True, text=True)
     ignored = [name for name in found.stdout.split("\0") if name in candidates] if found.returncode == 0 else []
     if not ignored: return None
-    return (f"it names {candidates[ignored[0]]}, a file Git ignores, which the commit sent to the second Mac lacks; "
+    return (f"it names {candidates[ignored[0]]}, a file Git ignores, which the commit sent to another Mac lacks; "
             "a command that runs or reads one runs here")
 
 
@@ -3057,9 +3055,9 @@ def local_environment(environment=None):
     environment = os.environ if environment is None else environment
     runner = sorted(key for key in environment if key.startswith("TEST_RUNNER_"))
     if runner:
-        return f"its environment sets {', '.join(runner)}, which the second Mac's login shell does not have"
+        return f"its environment sets {', '.join(runner)}, which another Mac's login shell does not have"
     if environment.get("DEVELOPER_DIR"):
-        return (f"its environment selects DEVELOPER_DIR={environment['DEVELOPER_DIR']}, which the second Mac's Xcode "
+        return (f"its environment selects DEVELOPER_DIR={environment['DEVELOPER_DIR']}, which another Mac's Xcode "
                 "may not match")
     return None
 
@@ -3084,13 +3082,13 @@ def first_command(root, config, command, kind):
         refused = f"its directory {directory} is outside the checkout {top}"
     elif relative != "." and subprocess.run(["git", "-C", str(top), "check-ignore", "-q", relative], env=environment(),
                                             capture_output=True).returncode == 0:
-        refused = f"its directory {relative} is one Git ignores, which the second Mac's checkout lacks"
+        refused = f"its directory {relative} is one Git ignores, which another Mac's checkout lacks"
     elif str(top) in words:
-        refused = f"it names this checkout's path {top}, which the second Mac's checkout is not"
+        refused = f"it names this checkout's path {top}, which another Mac's checkout is not"
     elif simulators(command):
         refused = "it names a simulator by its identifier, a member of this Mac's pool"
     elif named:
-        refused = (f"it names the hardware UDID {', '.join(named)}, which the second Mac uses only under a "
+        refused = (f"it names the hardware UDID {', '.join(named)}, which another Mac uses only under a "
                    "reservation `qk remote admit --device` carries from here")
     else:
         refused = local_paths(command, top) or ignored_inputs(command, top, directory) or local_environment()
@@ -3136,7 +3134,6 @@ class Offer:
         # The offers again() made in a row that could not reach any Mac, and when the last of them failed
         # (an epoch time): away is set only once there are UNREACHABLE_AFTER (vocaro/queuekeeper#25).
         self.failed, self.failed_at = 0, None
-        self.remote_macs = "the second Mac"
         # Whether each offer may send the work to this Mac's queue instead, by this Mac's capacity (attempt): an offer
         # this Mac may take does, and --offload-only's, which never runs the work here, does not. Set by make.
         self.choosing = False
@@ -3154,12 +3151,18 @@ class Offer:
     def sent(self, kept):
         self.sents[self.host] = kept
 
+    @property
+    def remote_macs(self):
+        """What a message calls the Macs the work is offered to: the one by its name in the farm, or the several."""
+        macs = self.hosts if self.hosts is not None else tuple(filter(None, [self.host]))
+        return farm.named(macs[0]) if len(macs) == 1 else "the farm's other Macs"
+
     def several(self):
         return self.hosts is not None and len(self.hosts) > 1
 
     def called(self, host):
-        """What a message calls the Mac at host: its name in the farm once the farm has several to tell apart."""
-        return farm.named(host) if self.several() else "the second Mac"
+        """What a message calls the Mac at host: its name in the farm."""
+        return farm.named(host)
 
     def offer(self, host):
         self.host = host
@@ -3215,7 +3218,7 @@ class Offer:
                     said.append(here)
                 host = full[0]
                 if self.neither != tuple(said):
-                    print(f"queuekeeper: {'no' if self.several() else 'neither'} Mac has spare capacity for {self.name} "
+                    print(f"queuekeeper: no Mac has spare capacity for {self.name} "
                           f"now ({'; '.join(said)}), so it goes to whichever admits it first, {self.called(host)} asked "
                           "first", file=sys.stderr, flush=True)
                     self.neither = tuple(said)
@@ -3243,7 +3246,6 @@ class Offer:
         self.hosts = tuple(host for host in macs if host != self.exclude)
         self.choosing = fallback
         self.queue_gate = self.gate and (fallback or self.several())
-        if self.several(): self.remote_macs = "the farm's other Macs"
         self.host = next(iter(self.hosts), None)
         if self.host is None:
             if macs:
@@ -3251,7 +3253,7 @@ class Offer:
                 return self.status
             if not fallback:
                 print(f"queuekeeper: {self.name} not run: {NO_MAC}", file=sys.stderr, flush=True)
-            self.status = "no second Mac is configured" if fallback else BUSY
+            self.status = "the farm has no other Mac that takes work now" if fallback else BUSY
             return self.status
         try:
             self.status = self.attempt()
@@ -3388,7 +3390,7 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
         admission = admit(max(min(bound, deadline - time.monotonic()), 0))
         if admission is not None: return admission
         if once or time.monotonic() >= deadline:
-            who = "no Mac" if offered.several() else "neither Mac"
+            who = "no Mac" if offered.several() else "no Mac"
             print(f"queuekeeper: {offered.name} not run: {who} admitted it {'now' if once else f'in {timeout:g}s'}"
                   + (f"; {offered.remote_macs} cannot be reached: {offered.away}" if offered.away
                      else f"; {offered.busy}" if offered.busy else "")
@@ -3656,7 +3658,7 @@ def retry_macs(host, lanes, lane, screen=False):
         if not busy or (not reading.get("error") and spare(reading, HERE, *needs) is None):
             return [None], f"this Mac, since no build Mac reports spare capacity for {lane}"
         return [*busy, None], f"whichever Mac admits {lane} first, since none reports spare capacity"
-    try: there = spare(capacity_there(host), "the second Mac", *needs)
+    try: there = spare(capacity_there(host), farm.named(host), *needs)
     except Unavailable as away:
         return [None], f"this Mac, since {host}'s capacity cannot be read: {getattr(away, 'problem', away)}"
     if there is None: return [host], f"{host}, which has spare capacity for {lane} and is asked first"
@@ -4164,7 +4166,7 @@ def compare_hosts(host=None):
             f"({version(here.get('defaultXcode'))}) on this Mac and {there.get('defaultDeveloperDir')} "
             f"({version(there.get('defaultXcode'))}) on {host}, so whatever reads {host}'s default, such as "
             f"`ssh {host} xcodebuild -version` or a script without DEVELOPER_DIR, sees another Xcode than this Mac's; "
-            "to fix it, the owner chooses the Xcode both Macs use and selects it with `sudo xcode-select -s PATH` "
+            "to fix it, the owner chooses the Xcode the Macs use and selects it with `sudo xcode-select -s PATH` "
             "on the Mac that differs")
     if developer is None or not here.get("xcode"):
         report["unchecked"].append("the Xcode at this Mac's developer directory and its simulator runtimes, since "
@@ -4175,7 +4177,7 @@ def compare_hosts(host=None):
             f"the Xcode at this Mac's developer directory, {developer}, is {version(here['xcode'])} on this Mac and "
             f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so qk remote refuses "
             f"every run there; to fix it, install this Mac's Xcode at that path on {host} (doc/guides/shared-host.md, "
-            "Setting up the second Mac), or select with DEVELOPER_DIR an Xcode both Macs have at the same path")
+            "Setting up the second Mac), or select with DEVELOPER_DIR an Xcode the Macs have at the same path")
     if None in (here.get("runtimes"), there.get("runtimes")):
         report["unchecked"].append(f"the simulator runtimes, which simctl did not list on "
                                    f"{'this Mac' if here.get('runtimes') is None else host}")

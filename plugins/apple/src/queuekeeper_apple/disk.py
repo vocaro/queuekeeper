@@ -250,7 +250,7 @@ def across(host, item, build):
                     "--runtimes` would copy it back is unknown")
     copies = [image for image in there["images"] if isinstance(image, dict) and image.get("build") == build]
     if not copies:
-        item.reason += f"; {second} holds no copy, so removing it here also leaves the two Macs alike"
+        item.reason += f"; {second} holds no copy, so removing it here also leaves the Macs alike"
     elif any(image.get("users") is None for image in copies):
         return kept(f"{second} holds a copy whose simulators could not be listed, so whether `qk remote setup "
                     "--runtimes` would copy it back is unknown")
@@ -260,7 +260,7 @@ def across(host, item, build):
                     f"`qk remote setup --runtimes` would copy it back here; it can go once {second}'s copy can")
     else:
         item.reason += (f"; {second} holds a copy no simulator uses there, which `qk remote setup --runtimes` then "
-                        "deletes, leaving the two Macs alike")
+                        "deletes, leaving the Macs alike")
     return item
 
 

@@ -62,7 +62,7 @@ def fix_hosts(root, hosts):
     elif siblings:
         why = "none is configured" if hosts.get("host") is None else f"{hosts['host']} did not answer the comparison"
         hosts.setdefault("unchecked", []).append(
-            f"whether the second Mac has its own checkout of {', '.join(siblings)}, beside the project's checkout for "
+            f"whether another Mac has its own checkout of {', '.join(siblings)}, beside the project's checkout for "
             f"its extensions to load from, which was not asked since {why}")
     return hosts
 
@@ -236,11 +236,11 @@ def lane_label(root, config, lane):
 
 def placement(reason):
     """Where a run ran, for its receipt, so that the share of heavy work each Mac ran can be counted:
-    ranOn, `this Mac` or `second Mac`, the name of the Mac, and on this Mac hereBecause, why the run
-    ran here rather than on the second Mac. Work the second Mac runs for this Mac says so, and names
-    the Mac that sent it (remote.DISPATCHER)."""
+    ranOn, `this Mac` or, for work this Mac runs for the Mac that sent it (remote.DISPATCHER), this Mac's own
+    name; the name of the Mac; and on the Mac the run started on hereBecause, why the run ran there rather than on
+    another Mac of the farm. Work a Mac runs for another says so, and names the Mac that sent it."""
     sender = os.environ.get(remote.DISPATCHER)
-    if sender: return {"ranOn": "second Mac", "mac": offload_host.mac_name(), "dispatchedFrom": sender}
+    if sender: return {"ranOn": offload_host.mac_name(), "mac": offload_host.mac_name(), "dispatchedFrom": sender}
     return {"ranOn": "this Mac", "mac": offload_host.mac_name(), "hereBecause": reason}
 
 
@@ -255,10 +255,10 @@ def admission_placement(offered, reason):
 
 
 def this_mac():
-    """The Mac this queuekeeper runs on, as messages name it: `this Mac (NAME)`, or `the second Mac (NAME)` for work the
-    second Mac runs for the Mac that sent it (remote.DISPATCHER), so that a log never leaves the Mac to be guessed
-    (vocaro-engineering#185)."""
-    return f"{'the second Mac' if os.environ.get(remote.DISPATCHER) else 'this Mac'} ({offload_host.mac_name()})"
+    """The Mac this queuekeeper runs on, as messages name it: `this Mac (NAME)`, or NAME alone for work it runs
+    for the Mac that sent it (remote.DISPATCHER), where `this Mac` is the sender, so that a log never leaves the Mac
+    to be guessed (vocaro-engineering#185)."""
+    return offload_host.mac_name() if os.environ.get(remote.DISPATCHER) else f"this Mac ({offload_host.mac_name()})"
 
 
 # Seconds between readings of this Mac's screen while a lane that needs it unlocked waits for it.
@@ -368,8 +368,8 @@ def declined(reason):
 def fell_back(name, offered):
     """Say in one line, before the run starts, that work offered to the second Mac runs on this Mac, and why, so
     that the second Mac's lines a declined offer left above are not read as the run's (vocaro-engineering#185)."""
-    above = "; the second Mac's lines above are from the offer it did not take" if offered.sent else ""
-    print(f"queuekeeper: {name} runs on {this_mac()}, not the second Mac: {offered.status}{above}", file=sys.stderr, flush=True)
+    above = "; another Mac's lines above are from the offer it did not take" if offered.sent else ""
+    print(f"queuekeeper: {name} runs on {this_mac()}, not another Mac: {offered.status}{above}", file=sys.stderr, flush=True)
 
 
 def unmeasured_screen(name, receipt):
@@ -386,7 +386,7 @@ def host_screen(args):
     """`qk host screen [--remote]`: one line, or the reading as JSON, saying whether this Mac's or the second
     Mac's console screen is locked (offload_host.screen), exiting 0 unlocked, 1 locked and 2 unknown. The
     second Mac is read over SSH by the same code, so either Mac's answer is read, never assumed."""
-    if args.host and not args.remote: raise ValueError("--host names the second Mac that --remote reads")
+    if args.host and not args.remote: raise ValueError("--host names another Mac that --remote reads")
     if args.remote:
         host = remote.chosen(args.host)
         try:
@@ -397,7 +397,7 @@ def host_screen(args):
         if not isinstance(found, dict) or found.get("state") not in SCREEN_STATUS:
             found = {"mac": host, "at": time.strftime("%H:%M:%S"), "state": "unknown",
                      "reason": f"{host} answered {found!r}"}
-        where = f"the second Mac ({found.get('mac')})"
+        where = f"{farm.named(host)} ({found.get('mac')})"
     else:
         found, where = offload_host.screen(), this_mac()
     print(json.dumps(found, indent=2) if args.json else offload_host.screen_line(found, where))
@@ -490,7 +490,7 @@ def admitted_tree(stack, root, name, offered, receipt):
         stack.enter_context(patch_environment({"QUEUEKEEPER_ROOT": str(tree[1])}))
         return tree[0]
     for _checkout, commit, what, changes in moved:
-        why = f"the {what} changed after {commit[:12]} was sent to the second Mac:\n{changes}"
+        why = f"the {what} changed after {commit[:12]} was sent to another Mac:\n{changes}"
         try: toolkit = stack.enter_context(remote.sent_toolkit(offered.sent))
         except (OSError, RuntimeError) as error:
             print(f"queuekeeper: {name} not run on this Mac: {why}\nqueuekeeper: and no worktree of the toolkit that was "
@@ -515,7 +515,7 @@ def from_sent(stack, root, sent, moved, receipt, name="the command"):
     (vocaro-engineering#276, whose command waited behind a gate here and then refused over an unrelated
     documentation edit; vocaro/queuekeeper#136, the same for a lane). The worktrees go when the work ends, however
     it ends (remote.sent_tree)."""
-    why = "; ".join(f"the {what} changed after {commit[:12]} was sent to the second Mac:\n{changes}"
+    why = "; ".join(f"the {what} changed after {commit[:12]} was sent to another Mac:\n{changes}"
                     for _checkout, commit, what, changes in moved)
     try:
         checkout, toolkit = stack.enter_context(remote.sent_tree(
@@ -654,7 +654,7 @@ def admit(root, args, config=None, *, device_window=None):
     # Mac's, which the session holds within the owner's window. qk remote admit --foreground sends it there.
     second = args.foreground and extensions.FOREGROUND.foreground_mac()
     if args.foreground and args.verify:
-        raise ValueError("--verify never sends foreground work: send it to the second Mac with "
+        raise ValueError("--verify never sends foreground work: send it to another Mac with "
                          "qk remote admit --foreground -- COMMAND")
     if args.app and not args.foreground:
         raise ValueError("--app names the app under test of foreground work, whose crash-report alerts queuekeeper clears: "
@@ -934,7 +934,7 @@ def unsendable(lane):
     local = pins.local(pins.held())
     if not local: return None
     return (f"{' and '.join(local)} {'is' if len(local) == 1 else 'are'} pinned for this run at a commit its origin "
-            f"does not hold, which the second Mac cannot fetch; push it to run {lane} there")
+            f"does not hold, which another Mac cannot fetch; push it to run {lane} there")
 
 
 def load_extensions(argv):
@@ -967,22 +967,22 @@ def perform(argv, report):
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] [--repeat N [--erase|--template] [--only TEST]] "
         "lane [-- ARGUMENTS ...]",
         help="run a configured lane, admitting a heavy or exclusive one, on whichever Mac has spare capacity for "
-        "it now, the second Mac first, and on this Mac while the second Mac has none or cannot be reached, unless "
+        "it now, the farm's other Macs first, and on this Mac while another Mac has none or cannot be reached, unless "
         "the lane says why it stays on this Mac: qk run LANE [-- ARGUMENTS], which appends the arguments, such as "
         "a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests: N selected with "
         "some skipped or canceled is unmeasured, exit 3, and any other count fails; without it, a run with arguments needs at least one in place of the lane's minimumTests, which a whole run must reach, or equal where the lane says \"exactTests\": true")
     where = run.add_mutually_exclusive_group()
-    where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on the second Mac: "
-        "for a build whose products the session uses here, or, with the owner's decision, while the second Mac is "
+    where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on another Mac: "
+        "for a build whose products the session uses here, or, with the owner's decision, while another Mac is "
         f"misconfigured (exit {remote.MISCONFIGURED})")
-    where.add_argument("--offload-only", action="store_true", help="offer the lane to the second Mac, which runs it "
-        f"only if it can start it now, and never run it here: exit {BUSY} when the second Mac declines it, cannot be "
+    where.add_argument("--offload-only", action="store_true", help="offer the lane to another Mac, which runs it "
+        f"only if it can start it now, and never run it here: exit {BUSY} when another Mac declines it, cannot be "
         f"reached or none is configured, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status "
         "there; for a caller that holds or will take its own admission here")
     # Its name until vocaro-engineering#58, which main refuses, naming the new one, beside --here too.
     run.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)
-    run.add_argument("--if-free", action="store_true", help=f"run only if the second Mac's heavy-work admission, or "
+    run.add_argument("--if-free", action="store_true", help=f"run only if another Mac's heavy-work admission, or "
         f"else this Mac's, admits the lane within {FREE_WAIT}s; otherwise exit {BUSY} without running it")
     run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on this "
         "Mac: the reference a failure seen only side by side is checked against")
@@ -1018,7 +1018,7 @@ def perform(argv, report):
         "qk progress [--all] [RUN ...]")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
         "test, a simulator run, a gate suite) through heavy-work admission on whichever Mac has spare capacity for "
-        "it, the second Mac first, as qk run places a lane: qk admit -- COMMAND; what it changes in the "
+        "it, the farm's other Macs first, as qk run places a lane: qk admit -- COMMAND; what it changes in the "
         "checkout's files that Git does not ignore comes back and is applied here, while its build products stay "
         "on the Mac that ran it. Add --here for a command whose products this session uses here afterwards, "
         "--model for a generative-model run, and --exclusive only for work that needs the host to itself")
@@ -1030,7 +1030,7 @@ def perform(argv, report):
                       "model run holds at a time: on-device generation, on this Mac or in a simulator, another local "
                       "generative model on the GPU, or Core ML whose compute units include the GPU")
     admission.add_argument("--foreground", action="store_true", help="the command takes the screen, keyboard, "
-        "pointer, focus or speech, as Mac VoiceOver and Mac UI tests do: on the second Mac queuekeeper holds its foreground for "
+        "pointer, focus or speech, as Mac VoiceOver and Mac UI tests do: on another Mac queuekeeper holds its foreground for "
         "the command, waiting while another run holds it; on this Mac the session must hold mac-foreground within "
         "the owner's window (doc/guides/shared-host.md, Attended Mac sessions)")
     admission.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under test, "
@@ -1038,20 +1038,20 @@ def perform(argv, report):
         "alert for another process, one that stood longer than one look, is unmeasured; one for NAME stays failed "
         "(doc/guides/foreground.md, Crash-report alerts)")
     placed = admission.add_mutually_exclusive_group()
-    placed.add_argument("--here", action="store_true", help="run the command on this Mac, never offering it to the "
-        "second Mac: for a command whose products this session uses here afterwards, such as build output, derived "
-        "data, files Git ignores or an app it then launches. Without it, the command goes to the second Mac first, "
+    placed.add_argument("--here", action="store_true", help="run the command on this Mac, never offering it to "
+        "another Mac: for a command whose products this session uses here afterwards, such as build output, derived "
+        "data, files Git ignores or an app it then launches. Without it, the command goes to the farm's other Macs first, "
         "to run in its checkout's directory that matches this one, at HEAD or a snapshot commit, and stays here when "
         "its directory is outside the checkout or one Git ignores, it names this checkout's path, an existing file "
         "Git ignores (such as a scratch script under .build, which the commit sent lacks), a simulator or "
-        "device, it is nested in an admission or a self lane's part, or the second Mac has no spare capacity or "
+        "device, it is nested in an admission or a self lane's part, or another Mac has no spare capacity or "
         f"cannot be reached. What it changed there in files Git does not ignore is applied here; exit {remote.UNAPPLIED} "
         "says it could not be, and names the patch kept")
     # The default since the owner's decision of 2026-11-07, still accepted from callers that pass it.
     placed.add_argument("--verify", action="store_true", help="what qk admit does without --here: offer the "
-        "command to the second Mac first")
+        "command to the farm's other Macs first")
     admission.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the "
-        f"command within {FREE_WAIT}s, on the second Mac or here; otherwise exit {BUSY} without running it")
+        f"command within {FREE_WAIT}s, on another Mac or here; otherwise exit {BUSY} without running it")
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
     admission.add_argument("--time-limit", type=float, default=processes.DEFAULT_LIMIT, metavar="SECONDS",
         help=f"seconds the command may run once admitted before it and its processes are stopped and it exits "
@@ -1067,8 +1067,8 @@ def perform(argv, report):
         "recover OWNER removes that owner's once a census against its process record finds nothing it ran still "
         "running; qk admissions remove OWNER --why TEXT removes by hand one recovery cannot prove finished once "
         "nothing its owner may have started is found running; qk admissions limits prints the admission limits in force and where each comes from; qk "
-        "admissions usage shows both Macs' capacity now, the share of the last 3 hours each spent at each count of "
-        "heavy jobs, and why this Mac's work ran here, never offered to the second Mac or declined by it; qk admissions "
+        "admissions usage shows each Mac's capacity now, the share of the last 3 hours each spent at each count of "
+        "heavy jobs, and why this Mac's work ran here, never offered to another Mac or declined by it; qk admissions "
         "now shows who holds and who waits for admission on each Mac now, how long and why",
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
         "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
@@ -1078,9 +1078,9 @@ def perform(argv, report):
     logged.add_argument("--since", type=resources.local_time, metavar="WHEN", help="count requests made from WHEN, "
                         "an ISO 8601 date or time, local unless it names a zone")
     logged.add_argument("--until", type=resources.local_time, metavar="WHEN", help="count requests made before WHEN")
-    logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as the second Mac's, "
+    logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as another Mac's, "
                         "to read instead of this host's; name the previous generation first")
-    distant = commands.add_parser("remote", help="run a lane or other heavy command on the owner's second Mac over "
+    distant = commands.add_parser("remote", help="run a lane or other heavy command on another Mac of the farm over "
         "SSH: qk remote run LANE [-- ARGUMENTS] or qk remote admit [--foreground] -- COMMAND; qk remote passed "
         "LANE says whether the whole lane passed there at a commit; qk remote foreground says whether its "
         "foreground is ready")
@@ -1088,22 +1088,22 @@ def perform(argv, report):
     remote_run = operations.add_parser("run", usage="%(prog)s [-h] [--host HOST] [--serial] [--expect N] "
         "[--device KEY] [--device-owner SESSION] [--checkout-slot N] [--checkout-wait SECONDS] "
         "lane [-- ARGUMENTS ...]",
-        help="run a configured lane on the second Mac at HEAD, or at a snapshot commit of uncommitted work")
-    remote_admit = operations.add_parser("admit", help="run a heavy command on the second Mac, in its checkout's "
+        help="run a configured lane on another Mac at HEAD, or at a snapshot commit of uncommitted work")
+    remote_admit = operations.add_parser("admit", help="run a heavy command on another Mac, in its checkout's "
         "root, at HEAD or at a snapshot commit of uncommitted work; what it changes there in files Git does not "
         f"ignore is applied here, as for qk admit, and exit {remote.UNAPPLIED} says it could not be, and names the "
         "patch kept")
-    remote_setup = operations.add_parser("setup", help="install on the second Mac, with Homebrew, the tools "
+    remote_setup = operations.add_parser("setup", help="install on another Mac, with Homebrew, the tools "
         f"every project's gates use ({', '.join(remote.SETUP_FORMULAE)}) and the formulae named, then check them as "
-        "qk remote sees the second Mac; Homebrew itself the owner installs")
+        "qk remote sees another Mac; Homebrew itself the owner installs")
     remote_setup.add_argument("formulae", nargs="*", metavar="formula", help="a further Homebrew formula to install")
     remote_setup.add_argument("--import", dest="imports", action="append", metavar="MODULE",
-                              help="check that the second Mac's python3 imports MODULE (repeatable)")
+                              help="check that another Mac's python3 imports MODULE (repeatable)")
     remote_setup.add_argument("--check", action="store_true", help="only check; install or copy nothing")
-    remote_foreground = operations.add_parser("foreground", help="say what the second Mac lacks for foreground work, "
+    remote_foreground = operations.add_parser("foreground", help="say what another Mac lacks for foreground work, "
         "Mac VoiceOver and Mac UI tests, started over SSH, each with the owner's fix, and which run holds its "
         f"foreground; exit 0 when it lacks nothing, {remote.MISCONFIGURED} otherwise")
-    remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the second Mac the "
+    remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the farm's other Macs the "
         "same simulator runtimes of the Xcode at this Mac's developer directory, as qk doctor does: a runtime only "
         "one Mac has is deleted there when no simulator but Xcode's defaults uses it, and otherwise its disk image "
         "is copied over SSH to the Mac that lacks it; it exits 0 only when both list the same")
@@ -1117,22 +1117,22 @@ def perform(argv, report):
                             "stops it before the reservation ends")
         choice.add_argument("--device-owner", metavar="SESSION", help="the session holding --device (default: "
                             f"{extensions.DEVICES.device_owner})")
-        choice.add_argument("--checkout-slot", metavar="N", help="run in this one of the second Mac's checkouts of the "
+        choice.add_argument("--checkout-slot", metavar="N", help="run in this one of another Mac's checkouts of the "
                             f"project, 0 to {remote.CHECKOUTS - 1}, waiting for it under the checkout's lock, however "
                             "many others are free, to repeat a check in a named checkout (doc/guides/shared-host.md, A "
                             "named checkout slot); by default the free checkout nearest the commit")
         choice.add_argument("--checkout-wait", type=float, metavar="SECONDS", help="with --checkout-slot, how long to "
                             f"wait for it (default {offload_host.CLAIM_TIMEOUT}); then exit {BUSY} without running")
     remote_run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests")
-    remote_run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on the "
-        "second Mac under its admission: the serial reference of a group that runs there, which counts for no commit")
+    remote_run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on "
+        "another Mac under its admission: the serial reference of a group that runs there, which counts for no commit")
     remote_run.add_argument(SIBLING, action="append", default=[], metavar="NAME=WHERE", help="as qk run's; the "
         "commit must be one NAME's origin holds")
     remote_run.add_argument("lane")
     kind = remote_admit.add_mutually_exclusive_group()
-    kind.add_argument("--exclusive", action="store_true", help="hold every slot of the second Mac")
-    kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of the second Mac")
-    remote_admit.add_argument("--foreground", action="store_true", help="hold the second Mac's foreground for the "
+    kind.add_argument("--exclusive", action="store_true", help="hold every slot of another Mac")
+    kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of another Mac")
+    remote_admit.add_argument("--foreground", action="store_true", help="hold another Mac's foreground for the "
         "command, as Mac VoiceOver and Mac UI tests need, waiting while another run holds it")
     remote_admit.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under "
         "test, as qk admit's")
@@ -1142,7 +1142,7 @@ def perform(argv, report):
         "foreign commit hash in a local repository, so its exact positional argument names no hardware device "
         "(repeatable); device options and known device identifiers still require reservations")
     remote_admit.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
-    remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on the second Mac at "
+    remote_passed = operations.add_parser("passed", help="exit 0 when the whole lane passed on another Mac at "
         "exactly this commit; a snapshot's run never counts")
     remote_passed.add_argument("lane")
     remote_passed.add_argument("--commit", default="HEAD")
@@ -1179,7 +1179,7 @@ def perform(argv, report):
     reads = hosts.add_subparsers(dest="operation", required=True)
     screen = reads.add_parser("screen", help="say whether a Mac's console screen is locked, from both keys the "
         "IORegistry holds and the console user, and exit 0 unlocked, 1 locked or 2 unknown")
-    screen.add_argument("--remote", action="store_true", help="read the second Mac's screen over SSH")
+    screen.add_argument("--remote", action="store_true", help="read another Mac's screen over SSH")
     screen.add_argument("--host", help="the farm's Mac to read, by its name in `qk farm list`, or an SSH "
                         "destination, when not the first that takes work now")
     screen.add_argument("--json", action="store_true", help="print the reading as JSON")
@@ -1353,7 +1353,7 @@ def perform(argv, report):
             unsent = unsendable(args.lane)
             if lane.get("foreground") and not second:
                 if args.offload_only or not (args.here or lane.get("here")):
-                    if unsent: raise ValueError(f"{args.lane} not run: it runs on the second Mac, and {unsent}")
+                    if unsent: raise ValueError(f"{args.lane} not run: it runs on another Mac, and {unsent}")
                     return remote.foreground_lane(root, config, args.lane, extra, args.expect)
                 extensions.FOREGROUND.require_foreground()
             group = report.group = lane.get("parallel")
@@ -1383,7 +1383,7 @@ def perform(argv, report):
             if args.offload_only:
                 if reason is not None:
                     raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --offload-only cannot offer it "
-                                     "to the second Mac")
+                                     "to another Mac")
                 if args.serial: raise ValueError("--serial runs a lane group here, and --offload-only never does")
                 # The caller runs the lane under its own admission when the second Mac declines it.
                 return remote.first(root, config, args.lane, extra, args.expect, fallback=False,

@@ -232,7 +232,7 @@ def doctor_warnings(config):
     """qk doctor's own: a direct-main gate with no budget, a gate that takes a physical device, and a device
     pass's lane that would go to the second Mac."""
     lanes = config.get("lanes", {})
-    warnings = [f"{name} runs a device pass with no \"here\", so qk run sends it to the second Mac, whose device "
+    warnings = [f"{name} runs a device pass with no \"here\", so qk run sends it to another Mac, whose device "
                 "record defers physical devices to this Mac: give it \"here\": \"a physical device, reserved in "
                 f"this Mac's device record\" ({PASS})" for name in misplaced_passes(config)]
     if GATE not in lanes: return warnings

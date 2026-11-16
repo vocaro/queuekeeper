@@ -29,7 +29,7 @@ def state(gate=None, waiting=1, held=None, worker=True):
     found = {"worker": worker, "held": held, "waiting": entries, "round": None}
     if gate is not None:
         found["round"] = {"round": "r1", "started": NOW - 700, "entries": ["e0"], "gates": {"batch": {
-            "lane": "gate", "mac": "the second Mac (build-host)", "log": "/log", **gate}}}
+            "lane": "gate", "mac": "build-host", "log": "/log", **gate}}}
     return found
 
 
@@ -37,7 +37,7 @@ def macs(memory="normal", second=None, read_at=NOW - 5):
     """This Mac's reading, and the second Mac's: well, or the reading `second` gives."""
     well = {"memory": memory, "load": 3.0, "cpuBusy": 20, "busyLimit": 85, "error": None}
     return [{"name": "this Mac", "reading": well, "readAt": read_at},
-            {"name": "the second Mac (build-host)", "reading": second if second is not None else well, "readAt": read_at}]
+            {"name": "build-host", "reading": second if second is not None else well, "readAt": read_at}]
 
 
 DEVICES = {"devices": [{"name": "Test iPad", "connection": "connected", "state": "released"}], "error": None,
@@ -114,7 +114,7 @@ class Verdict(unittest.TestCase):
         self.assertEqual(levels(assess(state({"began": NOW - USUAL})))["progress"], "ok")
 
     def test_a_long_wait_for_a_mac_is_slow_and_a_short_one_is_not(self):
-        waiting = lambda seconds: state({"began": NOW - seconds, "waiting": "admission on the second Mac (build-host): "
+        waiting = lambda seconds: state({"began": NOW - seconds, "waiting": "admission on build-host: "
                                         "all 3 slots are busy", "waitingSince": NOW - seconds})
         self.assertEqual(levels(assess(waiting(health.WAIT_LONG)))["progress"], "warning")
         self.assertEqual(levels(assess(waiting(120)))["progress"], "ok")
@@ -149,8 +149,8 @@ class Verdict(unittest.TestCase):
         self.assertEqual(levels(assess(state({"began": NOW - 60}), record={**DEVICES, "devices": []}))["devices"], "idle")
 
     def test_a_mac_short_of_memory_is_slow_and_one_at_critical_pressure_stops_it(self):
-        short = {"signal": "short of memory", "mac": "the second Mac (build-host)",
-                 "diagnosis": "the second Mac (build-host) has swap 97% full; fseventsd holds 34 GB"}
+        short = {"signal": "short of memory", "mac": "build-host",
+                 "diagnosis": "build-host has swap 97% full; fseventsd holds 34 GB"}
         found = assess(state({"began": NOW - 60}), findings=[short])
         self.assertEqual((found["verdict"], levels(found)["macs"]), ("slow", "warning"))
         self.assertIn("fseventsd holds 34 GB", found["sentence"])
@@ -181,7 +181,7 @@ class Command(unittest.TestCase):
         status, said = self.run_main()
         self.assertEqual(status, health.HEALTHY)
         self.assertTrue(said.startswith("All good. Everything is moving normally."), said)
-        self.assertIn("  ✓ Progress   the gate on the second Mac (build-host) is 5m in, usually 15m", said)
+        self.assertIn("  ✓ Progress   the gate on build-host is 5m in, usually 15m", said)
         status, said = self.run_main(readings=None)
         self.assertEqual(status, health.UNKNOWN_STATUS)
         self.assertIn("  ? Macs       no Mac's reading was made", said)

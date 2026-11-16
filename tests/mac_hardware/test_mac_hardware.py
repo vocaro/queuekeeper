@@ -191,7 +191,7 @@ class RunTests(Macs):
     def test_it_is_sent_to_the_second_mac_to_wait_there_and_never_offered_as_free(self):
         status, error = self.run_lane()
         self.assertEqual((status, self.sent), (0, [("studio", ["run", "--here", "gate"])]))
-        self.assertIn("gate runs only on the second Mac (gate.chips: its chips are apple-m1-max", error)
+        self.assertIn("gate runs only on studio (gate.chips: its chips are apple-m1-max", error)
 
     def test_it_cannot_be_run_here(self):
         status, error = self.run_lane("--here")

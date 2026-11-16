@@ -59,6 +59,9 @@ ADVERTISED = remote.advertised
 # from this Mac's, which both read from the one environment otherwise: 0 puts it over its limit at any CPU reading.
 # FAKE_SCREEN_IOREG names the recorded IORegistry the second Mac reads its screen from, and this Mac's
 # QUEUEKEEPER_SCREEN_IOREG never reaches it (offload_host.SCREEN_RECORDING).
+# FAKE_HOMES names a directory in which a host with a directory of its own name is a Mac apart: that is its home, and
+# beside it are its heavy-work queue, its temporary directory and its device record, so that a farm of several Macs
+# has one of each for each Mac. A host with none there is the one Mac FAKE_HOME gives.
 FAKE_SSH = """#!/bin/sh
 if [ "$1" = -G ]; then
     case " fake $FAKE_ALIASES " in
@@ -86,9 +89,13 @@ if [ -n "$FAKE_SSH_SAYS" ]; then
     printf '%s\\n' "$FAKE_SSH_SAYS" >&2
     exit 255
 fi
+if [ -n "$FAKE_HOMES" ] && [ -d "$FAKE_HOMES/$1" ]; then
+    FAKE_HOME="$FAKE_HOMES/$1" FAKE_SLOTS="$FAKE_HOMES/$1.slots" FAKE_GATE="$FAKE_HOMES/$1.gate"
+    FAKE_TMPDIR="$FAKE_HOMES/$1.tmp" FAKE_DEVICE_RECORD="$FAKE_HOMES/$1.device-handoff.json"
+fi
 shift
 cd "$FAKE_HOME" || exit 255
-# The second Mac has its own heavy-work queue.
+# Another Mac has its own heavy-work queue.
 HOME="$FAKE_HOME" SHELL="$FAKE_SHELL" HEAVY_SLOT_DIR="$FAKE_SLOTS" QUEUEKEEPER_GATE_LOCK_FILE="$FAKE_GATE" \
     TMPDIR="${FAKE_TMPDIR:-$TMPDIR}" QUEUEKEEPER_DEVICE_RECORD="${FAKE_DEVICE_RECORD:-$FAKE_HOME/device-handoff.json}" \
     exec env -u QUEUEKEEPER_SCREEN_IOREG ${FAKE_BUSY_LIMIT:+"HEAVY_BUSY_LIMIT=$FAKE_BUSY_LIMIT"} \
@@ -189,7 +196,7 @@ if child.poll() is None:
 relay.join()
 # Not sys.exit: send() is still blocked in sys.stdin's readline, holding its buffer's lock, and the interpreter's
 # shutdown, closing sys.stdin, would find it held and abort, a crash report and a "Python quit unexpectedly" alert
-# each time on the second Mac (vocaro/queuekeeper#42).
+# each time on vocaro/queuekeeper#42.
 sys.stdout.flush()
 sys.stderr.flush()
 os._exit(child.returncode)
@@ -1140,7 +1147,7 @@ class RemoteTests(unittest.TestCase):
                 status, output, error = self.qk("remote", "admit", *options, "--", *writes, name, str(code))
                 self.assertEqual(status, code, output + error)
                 self.assertEqual((self.project / "evidence" / name).read_text(), "probed\n")
-                self.assertIn(f"queuekeeper: applied here what the command changed on the second Mac: evidence/{name}",
+                self.assertIn(f"queuekeeper: applied here what the command changed on another Mac: evidence/{name}",
                               error)
                 result = self.slot_receipt("admit")["result"]
                 self.assertEqual(result["changes"], {"files": [f"evidence/{name}"]})
@@ -1434,7 +1441,7 @@ class RemoteTests(unittest.TestCase):
         # qk run keeps a lane that would go to the second Mac on this Mac when it names a physical device.
         status, output, error = self.run_here("gate", "--", PHONE)
         self.assertEqual(status, 0, error)
-        self.assertIn("the second Mac uses only under a reservation", error)
+        self.assertIn("another Mac uses only under a reservation", error)
         self.assertIn(f"Ran 2 tests in {self.project.resolve()}", (self.project / ".build/queuekeeper/gate/run.log").read_text())
 
     def test_a_command_that_names_a_hardware_udid_no_entry_holds_is_refused_without_a_device(self):
@@ -1748,7 +1755,7 @@ class RemoteTests(unittest.TestCase):
         self.quick_exclusive_offers(0)
         with self.exclusive_dispatch() as (log, dispatcher):
             with self.busy_mac(kind=None):
-                self.until_said(log, "takes its place in the second Mac's queue", dispatcher)
+                self.until_said(log, "takes its place in another Mac's queue", dispatcher)
                 queue = Path(os.environ["FAKE_SLOTS"]) / resources.QUEUE
                 deadline = time.monotonic() + stretched(60)
                 while time.monotonic() < deadline and not any(
@@ -1967,7 +1974,7 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.qk("remote", "run", "check", "--checkout-slot", "1", "--checkout-wait", "1")
         self.assertEqual(status, resources.BUSY, output + error)
         said = " ".join(error.split())
-        self.assertIn("queuekeeper: check not run on the second Mac: fake did not take it: checkout slot 1 of example did not "
+        self.assertIn("queuekeeper: check not run on another Mac: fake did not take it: checkout slot 1 of example did not "
                       "come free in 1s, held by PID 4242", said)
         self.assertFalse(self.checkout(0).exists())
         self.assertFalse(self.checkout(1).exists())
@@ -1975,7 +1982,7 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.qk("remote", "admit", "--foreground", "--checkout-slot", "1", "--checkout-wait",
                                          "0", "--", sys.executable, "-c", "pass")
         self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn("queuekeeper: the command not run on the second Mac:", error)
+        self.assertIn("queuekeeper: the command not run on another Mac:", error)
         self.assertFalse(self.record_there.exists())
         # The negative control: with no option the same held slot is passed over for a free one, at once.
         status, output, error = self.qk("remote", "run", "check")
@@ -1987,7 +1994,7 @@ class RemoteTests(unittest.TestCase):
             with self.subTest(value=value):
                 status, output, error = self.qk("remote", "run", "check", "--checkout-slot", value)
                 self.assertEqual(status, 2, output + error)
-                self.assertIn(f"--checkout-slot {value} names no checkout: the second Mac keeps slots 0 to 3", error)
+                self.assertIn(f"--checkout-slot {value} names no checkout: another Mac keeps slots 0 to 3", error)
         for wait in ("-1", "nan", "inf"):
             with self.subTest(wait=wait):
                 status, output, error = self.qk("remote", "run", "check", "--checkout-slot", "1", "--checkout-wait", wait)
@@ -2017,7 +2024,7 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"checkout slot 1 of example, {self.checkout(1)}, has changes a run left:", error)
         self.assertIn("?? left.txt", error)
         self.assertIn(f"worktree remove --force {self.checkout(1)}", error)
-        self.assertNotIn("not run on the second Mac", error)
+        self.assertNotIn("not run on another Mac", error)
         self.assertTrue(left.exists())
         self.assertFalse(self.checkout(0).exists())
         # The negative control: with no option a checkout with changes is passed over, and a run goes to another.
@@ -2118,7 +2125,7 @@ class RemoteTests(unittest.TestCase):
                                       release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
                 process, log = self.slot_dispatcher("remote", "admit", "--foreground", "--checkout-slot", "1",
                                                     "--", *command)
-                self.await_condition(process, log, lambda: "waiting for the second Mac's foreground, held by "
+                self.await_condition(process, log, lambda: f"waiting for {offload_host.mac_name()}'s foreground, held by "
                                      "other foreground run" in log.read_text())
                 waiter_pid = int(waiter.read_text())
                 self.assertEqual(record.entry(devices.FOREGROUND), held)
@@ -2601,7 +2608,7 @@ class RemoteTests(unittest.TestCase):
                     time.sleep(0.1)
         finally:
             os.close(lock)
-        self.assertTrue(free, "the second Mac still holds the checkout's slot")
+        self.assertTrue(free, "another Mac still holds the checkout's slot")
         self.all_ended(lane)
         deadline = time.monotonic() + stretched(60)
         while guard.exists() and time.monotonic() < deadline: time.sleep(0.1)
@@ -2945,7 +2952,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(receipt["result"]["receipt"]["scrollBars"]["kind"], "legacy")
         # check has a provision lane, which runs first on the second Mac and says nothing of its own.
         self.assertRegex(output + error, r"queuekeeper: scroll bars: legacy \(AppleShowScrollBars Automatic, pointing devices: USB Mouse\) "
-                                         r"on the second Mac \(\S+\) at ")
+                                         r"on \S+ at ")
         self.assertEqual((output + error).count("queuekeeper: scroll bars: "), 1, output + error)
         # Run here, the record and the line are this Mac's.
         with patch.dict(os.environ, {offload_host.SCROLL_BARS_RECORDING: here, "FAKE_SCROLL_BARS": there}):
@@ -2984,10 +2991,10 @@ class RemoteTests(unittest.TestCase):
         self.assertTrue((self.checkout(0) / ".build/provisioned").exists())
         self.assertFalse((self.project / ".build/queuekeeper/check").exists())
         receipt = json.loads((self.project / ".build/queuekeeper/remote/check/source.json").read_text())
-        self.assertEqual((receipt["ranOn"], receipt["mac"], receipt["host"]), ("second Mac", offload_host.mac_name(), "fake"))
+        self.assertEqual((receipt["ranOn"], receipt["mac"], receipt["host"]), ("fake", offload_host.mac_name(), "fake"))
         # The second Mac's own receipt says so too, and names the Mac that sent the run.
         there = receipt["result"]["receipt"]
-        self.assertEqual((there["ranOn"], there["dispatchedFrom"]), ("second Mac", offload_host.mac_name()))
+        self.assertEqual((there["ranOn"], there["dispatchedFrom"]), (offload_host.mac_name(), offload_host.mac_name()))
         self.assertNotIn("hereBecause", there)
         # build says why it stays here, and a group that runs it stays with it; a self lane, whose script admits its
         # own parts, runs where it starts.
@@ -3005,7 +3012,7 @@ class RemoteTests(unittest.TestCase):
     def test_a_lane_run_on_this_mac_runs_after_the_provision_lane_in_its_checkout(self):
         """vocaro/queuekeeper#19: check needs what the provision lane makes, and found it only on the second Mac."""
         made = self.project / ".build/provisioned"
-        for arguments, because in [(("--here", "check"), "--here"), (("check",), "exclusive work holds the second Mac: ")]:
+        for arguments, because in [(("--here", "check"), "--here"), (("check",), "exclusive work holds fake: ")]:
             with self.subTest(arguments), contextlib.ExitStack() as stack:
                 made.unlink(missing_ok=True)
                 if arguments == ("check",): stack.enter_context(self.busy_second_mac())
@@ -3082,7 +3089,7 @@ class RemoteTests(unittest.TestCase):
         # vocaro-engineering#58 removed it. A checkout that still gives it, true to send a lane there or
         # false to keep it here, is refused, rather than having its work go where it did not say.
         refused = ("queuekeeper: queuekeeper.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
-                   "exclusive lane goes to the second Mac unless it says why it stays, with \"here\": \"REASON\", so "
+                   "exclusive lane goes to another Mac unless it says why it stays, with \"here\": \"REASON\", so "
                    "delete {}, and rebase a checkout older than that change onto main (doc/guides/shared-host.md, "
                    "Earlier names)\n")
         original = (self.project / "queuekeeper.json").read_text()
@@ -3108,7 +3115,7 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
-                         "second Mac")
+                         "fake")
         self.assertNotIn("buildHost", error)
 
     def test_a_receipt_from_before_the_rename_counts_as_one_of_now(self):
@@ -3116,7 +3123,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(self.run_here("gate")[0], 0)
         kept = remote.store(self.project) / self.commit / "gate.json"
         receipt = json.loads(kept.read_text())
-        self.assertEqual((receipt["ranOn"], receipt["result"]["receipt"]["ranOn"]), ("second Mac", "second Mac"))
+        self.assertEqual((receipt["ranOn"], receipt["result"]["receipt"]["ranOn"]), ("fake", offload_host.mac_name()))
         for name in ["build host", "second Mac"]:
             with self.subTest(name):
                 receipt["ranOn"] = receipt["result"]["receipt"]["ranOn"] = name
@@ -3241,7 +3248,7 @@ class RemoteTests(unittest.TestCase):
         # The load of the Mac that ran it, which its own run read and kept in the receipt that came back, beside the
         # verdict (vocaro/queuekeeper#133).
         there = receipt["result"]["receipt"]
-        self.assertEqual(there["ranOn"], "second Mac")
+        self.assertEqual(there["ranOn"], offload_host.mac_name())
         self.assertGreaterEqual(len(there["load"]["readings"]), 1)
         self.assertEqual(lines[-2], lane_report.load_line(there, "passed"))
         self.assertRegex(lines[-2], r"^  load: the one-minute load (was highest [\d.]+, last [\d.]+ over \d+ readings?"
@@ -3563,7 +3570,7 @@ class RemoteTests(unittest.TestCase):
                 status, output, error = self.run_here("--expect", expect, lane, "--", "--filter", "Corpus")
                 self.assertEqual(status, code, output + error)
                 receipt = json.loads((self.project / ".build/queuekeeper/remote" / lane / "source.json").read_text())
-                self.assertEqual((receipt["ranOn"], receipt["result"]["receipt"]["outcome"]), ("second Mac", outcome))
+                self.assertEqual((receipt["ranOn"], receipt["result"]["receipt"]["outcome"]), ("fake", outcome))
                 self.assertFalse((self.project / ".build/queuekeeper" / lane).exists())
                 if code == lane_results.UNMEASURED:
                     cause = receipt["result"]["receipt"]["unmeasured"]
@@ -3581,7 +3588,7 @@ class RemoteTests(unittest.TestCase):
                 status, output, error = self.run_here(lane)
                 self.assertEqual(status, expected, output + error)
                 receipt = json.loads((self.project / ".build/queuekeeper/remote" / lane / "source.json").read_text())
-                self.assertEqual((receipt["ranOn"], receipt["host"]), ("second Mac", "fake"))
+                self.assertEqual((receipt["ranOn"], receipt["host"]), ("fake", "fake"))
                 self.assertFalse((self.project / ".build/queuekeeper" / lane).exists())
                 # The second Mac admitted it, as it admits a heavy lane sent there: its wait in the queue there.
                 self.assertIsInstance(receipt["result"]["receipt"]["queueSeconds"], float)
@@ -3592,7 +3599,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 3, output + error)
         receipt = json.loads((self.project / ".build/queuekeeper/fail/source.json").read_text())
         self.assertEqual(receipt["ranOn"], "this Mac")
-        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds the second Mac: "), receipt)
+        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds fake: "), receipt)
         # Admitted here: its wait in this Mac's queue is recorded, and the policy was refreshed for it.
         self.assertIsInstance(receipt["queueSeconds"], float)
         self.assertEqual(receipt["policy"], "policy")
@@ -3626,9 +3633,9 @@ class RemoteTests(unittest.TestCase):
                         time.sleep(0.02)
                     self.assertTrue(there(found), f"exit {dispatcher.poll()}, found {found}: {log.read_text()}")
                     said = remote.lane_wait.words(found)
-                    self.assertIn("admission on the second Mac (fake): ", said)
+                    self.assertIn("admission on fake: ", said)
                     self.assertIn("exclusive", said)
-                    self.assertEqual(found["mac"], "the second Mac (fake)")
+                    self.assertEqual(found["mac"], "fake")
             except BaseException:
                 if dispatcher is not None:
                     dispatcher.terminate()
@@ -3638,7 +3645,7 @@ class RemoteTests(unittest.TestCase):
             self.assertEqual(dispatcher.wait(timeout=stretched(120)), 0, log.read_text())
         self.assertFalse(record.exists(), log.read_text())
         receipt = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
-        self.assertEqual((receipt["ranOn"], receipt["host"]), ("second Mac", "fake"))
+        self.assertEqual((receipt["ranOn"], receipt["host"]), ("fake", "fake"))
         # Negative control: free, it waited for nothing.
         status, output, error = self.qk("run", "check")
         self.assertEqual(status, 0, output + error)
@@ -3651,7 +3658,7 @@ class RemoteTests(unittest.TestCase):
         with self.busy_second_mac():
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
-        busy = "exclusive work holds the second Mac: "
+        busy = "exclusive work holds fake: "
         self.assertIn(f"queuekeeper: trying gate on this Mac: {busy}", error)
         self.assertNotIn("remote: sending", error)
         receipt = self.ran_here()
@@ -3675,7 +3682,7 @@ class RemoteTests(unittest.TestCase):
         finally:
             for lock in locks: os.close(lock)
         self.assertEqual(status, 0, output + error)
-        busy = "the second Mac is busy: fake did not take it: every checkout of example is in use"
+        busy = "fake is busy: fake did not take it: every checkout of example is in use"
         self.assertIn(f"queuekeeper: trying gate on this Mac: {busy}", error)
         self.assertIn("remote: sending", error)
         self.assertEqual(self.ran_here()["hereBecause"], busy)
@@ -3697,25 +3704,25 @@ class RemoteTests(unittest.TestCase):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("on this Mac", error)
-        self.assertNotIn("neither Mac has spare capacity", error)
+        self.assertNotIn("no Mac has spare capacity", error)
         self.assertIn("remote: sending", error)
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
-                         "second Mac")
+                         "fake")
         # With both Macs over their limits, the second Mac still takes it at once: no wait for whichever admits first.
         shutil.rmtree(self.project / ".build/queuekeeper/remote/gate")
         with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0", "HEAVY_BUSY_LIMIT": "0"}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
-        self.assertNotIn("neither Mac has spare capacity", error)
+        self.assertNotIn("no Mac has spare capacity", error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
-                         "second Mac")
+                         "fake")
         # The negative control: a second Mac with no spare capacity by its slots sends the lane here.
         shutil.rmtree(self.project / ".build/queuekeeper/remote/gate")
         with self.busy_second_mac():
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
-        self.assertIn("queuekeeper: trying gate on this Mac: exclusive work holds the second Mac: ", error)
+        self.assertIn("queuekeeper: trying gate on this Mac: exclusive work holds fake: ", error)
         self.assertEqual(self.ran_here()["ranOn"], "this Mac")
 
     def test_a_lane_that_needs_an_unlocked_screen_runs_only_where_the_screen_reads_unlocked(self):
@@ -3730,11 +3737,11 @@ class RemoteTests(unittest.TestCase):
         with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-idle.plist")}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
-        self.assertRegex(error, r"queuekeeper: trying gate on this Mac: the lane needs an unlocked screen, and the second Mac's is "
+        self.assertRegex(error, r"queuekeeper: trying gate on this Mac: the lane needs an unlocked screen, and fake's is "
                                 r"locked \(screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked yes, "
                                 r"IOConsoleLocked no\) on \S+ at \d\d:\d\d:\d\d\)")
         self.assertNotIn("remote: sending", error)
-        self.assertRegex(error, r"queuekeeper: gate runs on this Mac \(\S+\), not the second Mac: the lane needs an unlocked "
+        self.assertRegex(error, r"queuekeeper: gate runs on this Mac \(\S+\), not another Mac: the lane needs an unlocked "
                                 r"screen\b")
         self.assertRegex(error, r"queuekeeper: screen: unlocked \(console user trevorharmon, CGSSessionScreenIsLocked absent, "
                                 r"IOConsoleLocked no\) on this Mac \(\S+\) at ")
@@ -3753,7 +3760,7 @@ class RemoteTests(unittest.TestCase):
         self.assertRegex(error, r"queuekeeper: gate waits: the lane needs an unlocked screen, and this Mac \(\S+\)'s is locked "
                                 r"\(screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked yes, "
                                 r"IOConsoleLocked no\)")
-        self.assertIn("queuekeeper: gate not run: neither Mac admitted it now; the second Mac is busy: fake did not take it: "
+        self.assertIn("queuekeeper: gate not run: no Mac admitted it now; fake is busy: fake did not take it: "
                       "its screen is locked", error)
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
         self.assertFalse((self.project / ".build/queuekeeper/remote/gate").exists())
@@ -3764,7 +3771,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("screen", error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
-                         "second Mac")
+                         "fake")
 
     def test_unlocked_screen_places_an_undeclared_lane_as_the_declaration_does(self):
         """vocaro-engineering#293: the merge queue runs a lane a locked screen left without a verdict as
@@ -3774,7 +3781,7 @@ class RemoteTests(unittest.TestCase):
         with patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-locked-idle.plist")}):
             status, output, error = self.run_here("--unlocked-screen", "gate")
         self.assertEqual(status, 0, output + error)
-        self.assertIn("queuekeeper: trying gate on this Mac: the lane needs an unlocked screen, and the second Mac's is locked",
+        self.assertIn("queuekeeper: trying gate on this Mac: the lane needs an unlocked screen, and fake's is locked",
                       error)
         self.assertNotIn("remote: sending", error)
         receipt = self.ran_here()
@@ -3794,37 +3801,68 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("screen", error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
-                         "second Mac")
+                         "fake")
+
+    def test_a_whole_host_lane_passes_two_loaded_macs_of_three_and_runs_in_the_third_s_own_home(self):
+        """A farm of three Macs, each with a home, a queue and a device record of its own: the first two each have
+        a guaranteed slot busy, which a whole-host lane needs free, so the lane starts at once on the idle third, in
+        that Mac's checkout, and waits for neither of the others nor for this Mac."""
+        homes = durable_scratch()
+        self.addCleanup(homes.cleanup)
+        root = Path(homes.name)
+        for name in ("mini", "rented"):
+            (root / name).mkdir()
+            (root / f"{name}.tmp").mkdir()
+        farm_fixture.write("fake", farm_fixture.mac("mini", "Mini"), "rented")
+        of = lambda home: home / remote.ROOT / "checkouts/example/0/example"
+        with patch.dict(os.environ, {"FAKE_HOMES": str(root), "FAKE_ALIASES": "mini rented",
+                                     "MINI_SLOTS": str(root / "mini.slots"), "MINI_GATE": str(root / "mini.gate")}), \
+                self.busy_mac(kind=None), self.busy_mac("MINI_SLOTS", "MINI_GATE", kind=None):
+            status, output, error = self.run_here("suites")
+            self.assertEqual(status, 0, output + error)
+            receipt = json.loads((self.project / ".build/queuekeeper/remote/suites/source.json").read_text())
+            self.assertEqual((receipt["ranOn"], receipt["host"], receipt["farmMac"]), ("rented", "rented", "rented"))
+            self.assertIn("remote: sending", error)
+            self.assertNotIn("on this Mac", error)
+            # The negative control: a lighter heavy lane, which a free guaranteed slot serves, goes to the first Mac.
+            status, output, error = self.run_here("gate")
+            self.assertEqual(status, 0, output + error)
+            first = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
+            self.assertEqual((first["ranOn"], first["host"]), ("fake", "fake"))
+        self.assertTrue(of(root / "rented").is_dir())
+        self.assertTrue(of(self.home).is_dir())
+        self.assertFalse((root / "mini" / remote.ROOT).exists())
+        self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
 
     def test_a_whole_host_lane_goes_to_the_mac_whose_guaranteed_slots_are_all_free(self):
         """A gate marked wholeHost is a Mac's work: two never run on one Mac at once, while a lighter heavy lane
         still shares the Mac (vocaro-engineering#168)."""
         remote_receipt = lambda lane: json.loads((self.project / ".build/queuekeeper/remote" / lane / "source.json").read_text())
-        with self.subTest("the second Mac runs a whole-host lane"), self.busy_mac(kind="--whole-host"):
+        with self.subTest("another Mac runs a whole-host lane"), self.busy_mac(kind="--whole-host"):
             # Any heavy lane then goes to this Mac, the whole-host lane and a lighter one alike.
             for lane in ["suites", "gate"]:
                 status, output, error = self.run_here(lane)
                 self.assertEqual(status, 0, output + error)
                 receipt = self.ran_here(lane)
-                self.assertTrue(receipt["hereBecause"].startswith("the second Mac is running a whole-host lane: "),
+                self.assertTrue(receipt["hereBecause"].startswith("fake is running a whole-host lane: "),
                                 receipt["hereBecause"])
-                self.assertIn(f"queuekeeper: trying {lane} on this Mac: the second Mac is running a whole-host lane: ", error)
+                self.assertIn(f"queuekeeper: trying {lane} on this Mac: fake is running a whole-host lane: ", error)
                 self.assertNotIn("remote: sending", error)
                 self.assertFalse((self.project / ".build/queuekeeper/remote" / lane).exists())
                 shutil.rmtree(self.project / ".build/queuekeeper" / lane)
-        with self.subTest("the second Mac runs a lighter heavy lane"), self.busy_mac(kind=None):
+        with self.subTest("another Mac runs a lighter heavy lane"), self.busy_mac(kind=None):
             # One guaranteed slot there is busy: the whole-host lane needs them all, so it comes here; the
             # negative control, a lighter heavy lane, shares the second Mac.
             status, output, error = self.run_here("suites")
             self.assertEqual(status, 0, output + error)
-            busy = "a whole-host lane needs every guaranteed slot of the second Mac (HEAVY_SLOTS=3) free, and 1 is busy"
+            busy = "a whole-host lane needs every guaranteed slot of fake (HEAVY_SLOTS=3) free, and 1 is busy"
             self.assertIn(f"queuekeeper: trying suites on this Mac: {busy}", error)
             self.assertEqual(self.ran_here("suites")["hereBecause"], busy)
             self.assertFalse((self.project / ".build/queuekeeper/remote/suites").exists())
             status, output, error = self.run_here("gate")
             self.assertEqual(status, 0, output + error)
             self.assertNotIn("on this Mac", error)
-            self.assertEqual(remote_receipt("gate")["ranOn"], "second Mac")
+            self.assertEqual(remote_receipt("gate")["ranOn"], "fake")
             self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
             shutil.rmtree(self.project / ".build/queuekeeper/suites")
         with self.subTest("this Mac runs a whole-host lane"), self.busy_mac("HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE",
@@ -3833,7 +3871,7 @@ class RemoteTests(unittest.TestCase):
             status, output, error = self.run_here("suites")
             self.assertEqual(status, 0, output + error)
             self.assertNotIn("on this Mac", error)
-            self.assertEqual(remote_receipt("suites")["ranOn"], "second Mac")
+            self.assertEqual(remote_receipt("suites")["ranOn"], "fake")
             self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
             # Both Macs run one: the lane waits for whichever Mac admits it first, the second Mac asked first and
             # declining it, since a whole-host lane never runs beside another on one Mac.
@@ -3842,17 +3880,17 @@ class RemoteTests(unittest.TestCase):
                 there.enter_context(self.busy_mac(kind="--whole-host"))
                 status, output = self.waits_there("suites", "waits for whichever Mac admits it first", there.close)
             self.assertEqual(status, 0, output)
-            self.assertIn("neither Mac has spare capacity for suites now (the second Mac is running a whole-host lane: ",
+            self.assertIn("no Mac has spare capacity for suites now (fake is running a whole-host lane: ",
                           output)
             self.assertIn("; this Mac is running a whole-host lane: ", output)
-            self.assertIn("queuekeeper: trying suites on this Mac: the second Mac is busy: fake did not take it: its heavy-work "
+            self.assertIn("queuekeeper: trying suites on this Mac: fake is busy: fake did not take it: its heavy-work "
                           "queue cannot take the lane now", output)
-            self.assertEqual(remote_receipt("suites")["ranOn"], "second Mac")
+            self.assertEqual(remote_receipt("suites")["ranOn"], "fake")
             self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
 
     def test_while_both_macs_are_busy_the_lane_runs_on_whichever_admits_it_first(self):
         waiting = "waits for whichever Mac admits it first"
-        with self.subTest("the second Mac"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+        with self.subTest("another Mac"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:
             here.enter_context(self.busy_here())
             there.enter_context(self.busy_second_mac())
             status, output = self.waits_there("gate", waiting, there.close)
@@ -3875,7 +3913,7 @@ class RemoteTests(unittest.TestCase):
             status, output = self.waits_there("gate", waiting, here.close)
             self.assertEqual(status, 0, output)
             receipt = self.ran_here()
-            self.assertTrue(receipt["hereBecause"].startswith("the second Mac is busy: "), receipt)
+            self.assertTrue(receipt["hereBecause"].startswith("fake is busy: "), receipt)
             self.assertFalse((self.project / ".build/queuekeeper/remote/gate").exists())
 
     def test_a_lane_this_mac_takes_after_sending_a_snapshot_runs_only_the_tree_it_sent(self):
@@ -4025,8 +4063,8 @@ class RemoteTests(unittest.TestCase):
             status, output = self.waits_there("built", waiting, change)
             self.assertEqual(status, 0, output)
             self.assertIn("queuekeeper: built runs on this Mac from what was sent, ", output)
-            self.assertRegex(output, r"since the working tree changed after \w+ was sent to the second Mac:\nD\tnew.txt; "
-                                     r"the toolkit's working tree changed after \w+ was sent to the second Mac:\n"
+            self.assertRegex(output, r"since the working tree changed after \w+ was sent to another Mac:\nD\tnew.txt; "
+                                     r"the toolkit's working tree changed after \w+ was sent to another Mac:\n"
                                      r"M\tqueuekeeper.json")
             lane = self.project / ".build/queuekeeper/built"
             log = (lane / "run.log").read_text()
@@ -4111,8 +4149,8 @@ class RemoteTests(unittest.TestCase):
         with patch.object(remote, "moved_trees", return_value=moved), contextlib.redirect_stderr(StringIO()) as said, \
                 contextlib.ExitStack() as stack:
             self.assertEqual(cli.admitted_tree(stack, self.project, "gate", Offered, receipt), 2)
-        self.assertIn("queuekeeper: gate not run on this Mac: the working tree changed after 0123456789ab was sent to the "
-                      "second Mac:\nM\tnotes.txt\nqueuekeeper: and no worktree of what was sent could be made here: ",
+        self.assertIn("queuekeeper: gate not run on this Mac: the working tree changed after 0123456789ab was sent to "
+                      "another Mac:\nM\tnotes.txt\nqueuekeeper: and no worktree of what was sent could be made here: ",
                       said.getvalue())
         self.assertNotIn("sentTree", receipt)
         self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
@@ -4125,16 +4163,16 @@ class RemoteTests(unittest.TestCase):
             status, output, error = self.run_here("gate")
             waited = time.monotonic() - started
             self.assertEqual(status, resources.BUSY, output + error)
-            self.assertIn("queuekeeper: gate not run: neither Mac admitted it in 8s; the second Mac is busy: fake did not take "
+            self.assertIn("queuekeeper: gate not run: no Mac admitted it in 8s; fake is busy: fake did not take "
                           "it", error)
             # What held this Mac's slots too, not the second Mac's reason alone (#270).
-            self.assertRegex(error, r"not run: neither Mac admitted it in 8s; .*; this Mac's last wait: Resource queue busy"
+            self.assertRegex(error, r"not run: no Mac admitted it in 8s; .*; this Mac's last wait: Resource queue busy"
                                     r".*; waited \d+s( on \S+)?; nothing ran\n")
             self.assertIn("waits for whichever Mac admits it first", error)
             self.assertGreaterEqual(waited, 8)
             status, output, error = self.run_here("--if-free", "gate")
             self.assertEqual(status, resources.BUSY, output + error)
-            self.assertIn("queuekeeper: gate not run: neither Mac admitted it now", error)
+            self.assertIn("queuekeeper: gate not run: no Mac admitted it now", error)
             self.assertNotIn(" again", error)
         for place in (".build/queuekeeper/gate", ".build/queuekeeper/remote/gate"):
             self.assertFalse((self.project / place).exists())
@@ -4391,7 +4429,7 @@ class RemoteTests(unittest.TestCase):
         return [("login", login, ["ssh reached fake but could not log in: someone@fake: Permission denied",
                                   "authorized_keys, until `ssh fake true` succeeds"]),
                 ("xcode", xcode,["fake refused it: the Xcode at", "not the dispatcher's Xcode 99.0 Build version 99A1",
-                                  "install this Mac's Xcode at that path on the second Mac"]),
+                                  "install this Mac's Xcode at that path on another Mac"]),
                 ("toolkit", toolkit, ["fake could not run the toolkit", "command not found: python3",
                                       "qk remote setup"]),
                 ("provisioning", provisioning, ["fake could not provision its checkout: the provision lane exited 4",
@@ -4547,7 +4585,7 @@ exec {shlex.quote(real)} "$@"
         with self.busy_second_mac():
             status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn("queuekeeper: gate not run: the second Mac is busy: fake did not take it: its heavy-work queue cannot "
+        self.assertIn("queuekeeper: gate not run: fake is busy: fake did not take it: its heavy-work queue cannot "
                       "take the lane now: ", error)
         # Why its queue declined, as the second Mac's admission said it there: the dispatcher's log and admission line
         # name the cause, with no look at the second Mac's own log (2026-11-12).
@@ -4610,7 +4648,7 @@ exec {shlex.quote(real)} "$@"
         status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, 0, output + error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
-                         "second Mac")
+                         "fake")
         self.assertNotIn("vocaro-engineering#58", error)
 
     def test_a_lane_stays_here_when_asked_or_when_it_says_why_or_without_a_second_mac(self):
@@ -4625,7 +4663,7 @@ exec {shlex.quote(real)} "$@"
         for macs in [(), (farm_fixture.mac("fake", state="paused"),)]:
             with self.subTest(macs), farm_fixture.only(*macs):
                 self.assertEqual(self.run_here("gate")[0], 0)
-                self.assertEqual(receipt()["hereBecause"], "no second Mac is configured")
+                self.assertEqual(receipt()["hereBecause"], "the farm has no other Mac that takes work now")
         self.assertFalse((self.home / remote.ROOT).exists())
         # A toolkit checkout with changes no longer keeps the lane here: its tree goes as a snapshot
         # (vocaro-engineering#104).
@@ -4636,7 +4674,7 @@ exec {shlex.quote(real)} "$@"
         self.assertNotIn("on this Mac", error)
         self.assertFalse((self.project / ".build/queuekeeper/gate/source.json").exists())
         sent = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
-        self.assertEqual((sent["ranOn"], sent["toolkitSnapshot"]), ("second Mac", True))
+        self.assertEqual((sent["ranOn"], sent["toolkitSnapshot"]), ("fake", True))
 
     def work_in_progress(self, checkout=None):
         """Uncommitted work of every kind on a new commit: a tracked edit beyond what is staged, a
@@ -4792,7 +4830,7 @@ exec {shlex.quote(real)} "$@"
         with self.busy_second_mac():
             status, output, error = self.run_here("--offload-only", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
-        self.assertIn("queuekeeper: gate not run: the second Mac is busy: fake did not take it", error)
+        self.assertIn("queuekeeper: gate not run: fake is busy: fake did not take it", error)
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
 
     def test_eng_remote_run_and_admit_send_uncommitted_work_as_a_snapshot(self):
@@ -4843,7 +4881,7 @@ exec {shlex.quote(real)} "$@"
         # vocaro-engineering#58 removed it. True, which sent a lane to the second Mac, and false, which no longer
         # kept one here, are refused alike, on a lane of any kind and on a group, before any other check.
         refused = ("queuekeeper.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
-                   "exclusive lane goes to the second Mac unless it says why it stays, with \"here\": \"REASON\", so "
+                   "exclusive lane goes to another Mac unless it says why it stays, with \"here\": \"REASON\", so "
                    "delete {}, and rebase a checkout older than that change onto main (doc/guides/shared-host.md, "
                    "Earlier names)")
         heavy = {"command": ["true"], "resource": "heavy"}
@@ -4936,9 +4974,9 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), (self.checkout(0) / "pkg").resolve())
         receipt = json.loads((self.project / ".build/queuekeeper/remote/admit/source.json").read_text())
-        self.assertEqual((receipt["ranOn"], receipt["subdirectory"], receipt["snapshot"]), ("second Mac", "pkg", True))
+        self.assertEqual((receipt["ranOn"], receipt["subdirectory"], receipt["snapshot"]), ("fake", "pkg", True))
         self.assertEqual((receipt["result"]["receipt"]["ranOn"], receipt["result"]["receipt"]["directory"]),
-                         ("second Mac", str((self.checkout(0) / "pkg").resolve())))
+                         (offload_host.mac_name(), str((self.checkout(0) / "pkg").resolve())))
         self.assertFalse((self.project / ".build/queuekeeper/admit").exists())
         # From the checkout's root it runs in the root there.
         status, output, error = self.admit_in(self.project, "--verify", "--", *probe)
@@ -4952,8 +4990,8 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(self.ran_in(), (self.project / "pkg").resolve())
         receipt = json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())
         self.assertEqual(receipt["ranOn"], "this Mac")
-        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds the second Mac: "), receipt)
-        self.assertIn("queuekeeper: trying the command on this Mac: exclusive work holds the second Mac: ", error)
+        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds fake: "), receipt)
+        self.assertIn("queuekeeper: trying the command on this Mac: exclusive work holds fake: ", error)
         self.assertNotIn("remote: sending", error)
         # A second Mac over its CPU limit with a guaranteed slot free takes the command (owner's decision, 2026-11-07).
         shutil.rmtree(self.project / ".build/queuekeeper/admit")
@@ -4962,7 +5000,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(status, 0, output + error)
         self.assertIn("remote: sending", error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/admit/source.json").read_text())["ranOn"],
-                         "second Mac")
+                         "fake")
         self.assertFalse((self.project / ".build/queuekeeper/admit").exists())
         # The negative control: --here runs it here, offering it nowhere.
         status, output, error = self.admit_in(self.project / "pkg", "--here", "--", *probe)
@@ -4982,7 +5020,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.checkout(0).resolve())
         receipt = json.loads((self.project / ".build/queuekeeper/remote/admit/source.json").read_text())
-        self.assertEqual(receipt["ranOn"], "second Mac")
+        self.assertEqual(receipt["ranOn"], "fake")
         # The scratchpad's path is this Mac's alone, which keeps the command here, though not for its UUID.
         status, output, error = self.admit_in(self.project, "--", *probe, scratchpad, f"--run={DUO}-1")
         self.assertEqual(status, 0, output + error)
@@ -5042,7 +5080,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.checkout(0).resolve())
         receipt = json.loads((self.project / ".build/queuekeeper/remote/admit/source.json").read_text())
-        self.assertEqual((receipt["ranOn"], receipt["host"]), ("second Mac", "fake"))
+        self.assertEqual((receipt["ranOn"], receipt["host"]), ("fake", "fake"))
         self.assertFalse((self.project / ".build/queuekeeper/admit").exists())
         # Its build products stayed there, which one line says, naming --here.
         self.assertIn(f"build products and other files Git ignores stayed in {self.checkout(0)}", error)
@@ -5062,7 +5100,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(status, 0, output + error)
         self.assertEqual(self.ran_in(), self.project.resolve())
         receipt = json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())
-        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds the second Mac: "), receipt)
+        self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds fake: "), receipt)
         self.assertNotIn("build products", error)
         # --here and --verify contradict each other.
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
@@ -5071,7 +5109,7 @@ exec {shlex.quote(real)} "$@"
     def test_admit_keeps_here_a_command_that_names_a_path_of_this_macs_alone(self):
         probe = self.probe()
         top = self.project.resolve()
-        outside = "a path outside the checkout, which the second Mac does not have"
+        outside = "a path outside the checkout, which another Mac does not have"
         for words, said in [(["/tmp/x"], f"it names /tmp/x, {outside}"),
                             (["/private/tmp/claude-501/scratchpad/run.py"],
                              f"it names /private/tmp/claude-501/scratchpad/run.py, {outside}"),
@@ -5112,7 +5150,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual([entry["placement"] for entry in admitted], [{"offered": False, "because": reason}])
         status, output, error = self.qk("admissions", "usage")
         self.assertEqual(status, 0, output + error)
-        self.assertIn("  never offered to the second Mac: 1, held ", output)
+        self.assertIn("  never offered to another Mac: 1, held ", output)
         self.assertIn(f"    {reason}: 1, held ", output)
         # An explicit interpreter PATH that spells /bin and /sbin bare is offered to the second Mac (#379), and the
         # same command with a look-alike root or --here stays here.
@@ -5120,7 +5158,7 @@ exec {shlex.quote(real)} "$@"
         status, output, error = self.admit_in(self.project, "--", *probe, path)
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/admit/source.json").read_text())["ranOn"],
-                         "second Mac")
+                         "fake")
         status, output, error = self.admit_in(self.project, "--", *probe, "PATH=/usr/bin:/binary")
         self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
         self.assertIn(f"queuekeeper: running the command on this Mac: it names /binary, {outside}", error)
@@ -5128,7 +5166,7 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual((status, self.ran_in()), (0, self.project.resolve()), output + error)
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())["hereBecause"],
                          "qk admit --here")
-        self.assertNotIn("  offered to the second Mac and declined:", output)
+        self.assertNotIn("  offered to another Mac and declined:", output)
         status, output, error = self.admit_in(self.project, "--", *probe, "/usr/bin/true", "pkg/README.md")
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
 
@@ -5140,7 +5178,7 @@ exec {shlex.quote(real)} "$@"
         scratch.mkdir(parents=True)
         (scratch / "stall_control.py").write_text("print('stall')\n")
         (scratch / "input.json").write_text("{}\n")
-        said = "a file Git ignores, which the commit sent to the second Mac lacks"
+        said = "a file Git ignores, which the commit sent to another Mac lacks"
         for words, directory, named in [
                 ([".build/issue-52/main/stall_control.py"], top, ".build/issue-52/main/stall_control.py"),
                 (["--input=.build/issue-52/main/input.json"], top, ".build/issue-52/main/input.json"),
@@ -5193,7 +5231,7 @@ exec {shlex.quote(real)} "$@"
     def test_admit_keeps_here_a_command_that_this_macs_environment_sets_up(self):
         probe = self.probe()
         for variables, said in [({"TEST_RUNNER_EXAMPLE_FLAG": "1"},
-                                 "its environment sets TEST_RUNNER_EXAMPLE_FLAG, which the second Mac's login shell"),
+                                 "its environment sets TEST_RUNNER_EXAMPLE_FLAG, which another Mac's login shell"),
                                 ({"DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer"},
                                  "its environment selects DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer")]:
             with self.subTest(variables), patch.dict(os.environ, variables):
@@ -5301,7 +5339,7 @@ exec {shlex.quote(real)} "$@"
                 self.assertEqual((self.project / "pkg/README.md").read_text(), "a package, formatted\n")
                 self.assertEqual((self.project / "pkg/generated.bin").read_bytes(), bytes(range(256)))
                 self.assertFalse((self.project / "gone.txt").exists())
-                self.assertIn("queuekeeper: applied here what the command changed on the second Mac: ", error)
+                self.assertIn("queuekeeper: applied here what the command changed on another Mac: ", error)
                 # The index here is the session's: the changes are in the working tree alone.
                 self.assertEqual(git(self.project, "diff", "--cached", "--name-only"), "")
                 # Ignored products stayed there, and the checkout there is clean for the next run, at slot 0 again.
@@ -5610,7 +5648,7 @@ exec {shlex.quote(real)} "$@"
             self.assertEqual(list(sent["phases"]), ["connect", "pack", "transfer", "receiver"])
             self.assertEqual(sent["pushNegotiate"], None)
             self.assertIn(f"remote: sent {first[:12]} to ~/{remote.ROOT}/repositories/example.git in ", error)
-            self.assertIn("cold: the second Mac's checkouts hold no commit; it sent ", error)
+            self.assertIn("cold: another Mac's checkouts hold no commit; it sent ", error)
             receipt, error = again, said
             sent = receipt["preparation"]["sends"][0]
             self.assertEqual((sent["transfer"], sent["advertised"], sent["held"], sent["objects"]), ("warm", 1, 1, 0))
@@ -5842,7 +5880,7 @@ class KeptSlotsTests(unittest.TestCase):
     admission does, so that queuekeeper offers no work there that would be held back or compete with it (#186)."""
     IDLE = {"slots": 3, "slotsMax": 5, "busy": [], "load": 2.0, "cpuBusy": 20.0, "busyLimit": 75.0, "wholeHost": [],
             "exclusive": []}
-    HELD = "the guaranteed slots of the second Mac are kept for a whole-host lane queued ahead: EPUBLib gate"
+    HELD = "the guaranteed slots of another Mac are kept for a whole-host lane queued ahead: EPUBLib gate"
 
     def test_kept_guaranteed_slots_leave_only_the_slots_beyond_them(self):
         kept = {**self.IDLE, "kept": "EPUBLib gate"}
@@ -5851,11 +5889,11 @@ class KeptSlotsTests(unittest.TestCase):
             (kept, {}, None),
             ({**kept, "busy": [3]}, {}, None),
             ({**kept, "busy": [3, 4]}, {},
-             f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=5 (the second Mac's limit) is busy"),
+             f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=5 (another Mac's limit) is busy"),
             ({**kept, "slotsMax": 3}, {},
-             f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=3 (the second Mac's limit) is busy"),
+             f"{self.HELD}, and every slot beyond them up to HEAVY_SLOTS_MAX=3 (another Mac's limit) is busy"),
             # Beyond them, the CPU's busy share still bounds it.
-            ({**kept, "cpuBusy": 80.0}, {}, "the second Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
+            ({**kept, "cpuBusy": 80.0}, {}, "another Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
             # A whole-host or exclusive lane waits its turn behind it, however idle the Mac is.
             (kept, {"whole_host": True}, f"{self.HELD}, which the lane would wait behind"),
             (kept, {"exclusive": True}, f"{self.HELD}, which the lane would wait behind"),
@@ -5866,36 +5904,36 @@ class KeptSlotsTests(unittest.TestCase):
             ({**self.IDLE, "kept": ""}, {"exclusive": True}, None),
             ({**self.IDLE, "kept": 7, "busy": [3, 4]}, {}, None),
             ({**self.IDLE, "kept": None, "busy": [0, 1, 2]}, {},
-             "every guaranteed slot of the second Mac is busy (HEAVY_SLOTS=3)"),
+             "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
         ]
         for reading, need, expected in cases:
             with self.subTest(reading=reading, need=need):
-                self.assertEqual(remote.spare(reading, "the second Mac", **need), expected)
+                self.assertEqual(remote.spare(reading, "another Mac", **need), expected)
         # A whole-host lane running there, or exclusive work, still says so first.
-        self.assertEqual(remote.spare({**kept, "wholeHost": ["Pagepour gate"]}, "the second Mac"),
-                         "the second Mac is running a whole-host lane: Pagepour gate")
+        self.assertEqual(remote.spare({**kept, "wholeHost": ["Pagepour gate"]}, "another Mac"),
+                         "another Mac is running a whole-host lane: Pagepour gate")
 
     def test_exclusive_work_queued_ahead_leaves_no_spare_capacity_for_any_lane(self):
         """Admission holds every later request behind a live exclusive request queued ahead, so a Mac whose reading
         reports one (queuedExclusive) has no spare capacity for any lane, however idle it is (#191)."""
         queued = {**self.IDLE, "queuedExclusive": "bench", "kept": None}
-        refused = "exclusive work is queued ahead on the second Mac: bench"
+        refused = "exclusive work is queued ahead on another Mac: bench"
         for need in [{}, {"whole_host": True}, {"exclusive": True}]:
             with self.subTest(need=need):
-                self.assertEqual(remote.spare(queued, "the second Mac", **need), refused)
+                self.assertEqual(remote.spare(queued, "another Mac", **need), refused)
                 # The negative controls: a reading that reports none, an older toolkit's without the key and a
                 # malformed one find the idle Mac's capacity as before.
                 for reading in [{**self.IDLE, "queuedExclusive": None}, self.IDLE, {**self.IDLE, "queuedExclusive": ""},
                                 {**self.IDLE, "queuedExclusive": 7}]:
-                    self.assertIsNone(remote.spare(reading, "the second Mac", **need), reading)
+                    self.assertIsNone(remote.spare(reading, "another Mac", **need), reading)
         # Work running there still says so first.
-        self.assertEqual(remote.spare({**queued, "exclusive": ["simulator bench"]}, "the second Mac"),
-                         "exclusive work holds the second Mac: simulator bench")
+        self.assertEqual(remote.spare({**queued, "exclusive": ["simulator bench"]}, "another Mac"),
+                         "exclusive work holds another Mac: simulator bench")
         # So queuekeeper sends the lane to this Mac's queue when only the second Mac has exclusive work queued.
         offered = remote.Offer("gate", "", lambda host, sent: 0)
         with patch.object(remote, "capacity_there", return_value={**queued, "screen": None}), \
                 patch.object(remote.offload_host, "capacity", return_value={**self.IDLE, "screen": None}):
-            self.assertEqual(farm_fixture.choice(offered), refused)
+            self.assertEqual(farm_fixture.choice(offered), refused.replace("another Mac", "fake"))
 
     def test_settle_time_and_memory_pressure_withhold_the_slots_beyond_kept_ones(self):
         """Beyond the guaranteed slots kept for a whole-host lane queued ahead, a lighter lane has spare capacity only
@@ -5906,16 +5944,16 @@ class KeptSlotsTests(unittest.TestCase):
             (kept, None),
             ({**kept, "sinceAdmission": None}, None),
             ({**kept, "sinceAdmission": 30.0}, None),
-            ({**kept, "sinceAdmission": 12.7}, f"{self.HELD}, and the CPU of the second Mac does not yet show the job "
+            ({**kept, "sinceAdmission": 12.7}, f"{self.HELD}, and the CPU of another Mac does not yet show the job "
                                                "admitted 12s ago, within HEAVY_SETTLE_SECONDS=30"),
-            ({**kept, "memory": 2}, f"{self.HELD}, and on the second Mac memory pressure is level 2 (warning), not 1 (normal)"),
-            ({**kept, "memory": 4}, f"{self.HELD}, and on the second Mac memory pressure is level 4 (critical), not 1 (normal)"),
-            ({**kept, "memory": None}, f"{self.HELD}, and on the second Mac memory pressure, which must be level 1 "
+            ({**kept, "memory": 2}, f"{self.HELD}, and on another Mac memory pressure is level 2 (warning), not 1 (normal)"),
+            ({**kept, "memory": 4}, f"{self.HELD}, and on another Mac memory pressure is level 4 (critical), not 1 (normal)"),
+            ({**kept, "memory": None}, f"{self.HELD}, and on another Mac memory pressure, which must be level 1 "
                                        "(normal), cannot be read"),
-            ({**kept, "memory": "1"}, f"{self.HELD}, and on the second Mac memory pressure, which must be level 1 "
+            ({**kept, "memory": "1"}, f"{self.HELD}, and on another Mac memory pressure, which must be level 1 "
                                       "(normal), cannot be read"),
             # The CPU's busy share still comes first, as in admission, after the settle time.
-            ({**kept, "memory": 2, "cpuBusy": 80.0}, "the second Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
+            ({**kept, "memory": 2, "cpuBusy": 80.0}, "another Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%)"),
             # The negative controls: an older toolkit's reading without the keys, and malformed settle readings,
             # withhold nothing by them.
             ({key: value for key, value in kept.items() if key not in ("sinceAdmission", "settle", "memory")}, None),
@@ -5925,14 +5963,14 @@ class KeptSlotsTests(unittest.TestCase):
         ]
         for reading, expected in cases:
             with self.subTest(reading=reading):
-                self.assertEqual(remote.spare(reading, "the second Mac"), expected)
+                self.assertEqual(remote.spare(reading, "another Mac"), expected)
         # A guaranteed slot needs neither: without kept slots, an unsettled Mac under pressure still has one spare.
         for need in [{}, {"whole_host": True}, {"exclusive": True}]:
             with self.subTest(need=need):
-                self.assertIsNone(remote.spare({**kept, "kept": None, "sinceAdmission": 1.0, "memory": 4}, "the second Mac",
+                self.assertIsNone(remote.spare({**kept, "kept": None, "sinceAdmission": 1.0, "memory": 4}, "another Mac",
                                                **need))
         # A whole-host or exclusive lane behind the kept slots still says it waits its turn.
-        self.assertEqual(remote.spare({**kept, "memory": 4}, "the second Mac", whole_host=True),
+        self.assertEqual(remote.spare({**kept, "memory": 4}, "another Mac", whole_host=True),
                          f"{self.HELD}, which the lane would wait behind")
 
     def test_this_macs_reading_does_not_count_the_works_own_place(self):
@@ -6129,7 +6167,7 @@ class AdmissionsThereTests(unittest.TestCase):
         here, there = found["hosts"]
         self.assertEqual((here["role"], here["state"], here["waiters"]), ("here", "observed", []))
         self.assertEqual((there["name"], there["state"], there["holders"], there["waiters"]),
-                         ("second Mac (build-host)", "unknown", None, None))
+                         ("build-host", "unknown", None, None))
 
 
 class SimulatorPositionTests(unittest.TestCase):
@@ -6344,7 +6382,7 @@ class RemoteSetupTests(unittest.TestCase):
     def test_a_second_mac_without_homebrew_is_left_unchanged_and_the_owner_told_to_install_it(self):
         status, output, error = self.qk("numpy")
         self.assertEqual(status, 1)
-        self.assertIn("Homebrew is not installed on the second Mac", output)
+        self.assertIn("Homebrew is not installed on another Mac", output)
         self.assertIn("https://brew.sh", output)
         self.assertFalse((self.home / ".zprofile").exists())
         self.assertNotIn("ready", output)
@@ -6880,7 +6918,7 @@ class ConnectionTests(unittest.TestCase):
         local = remote.unreachable("build-host", "ssh: Could not resolve hostname mac.local: nodename nor servname "
                                                  "provided, or not known")
         self.assertIn("build-host cannot be reached: ssh: Could not resolve hostname mac.local", local.problem)
-        self.assertIn("mac.local is a multicast DNS name, which resolves only while both Macs are awake on one network",
+        self.assertIn("mac.local is a multicast DNS name, which resolves only while the Macs are awake on one network",
                       local.fix)
         self.assertIn("`dscacheutil -q host -a name mac.local`", local.fix)
         self.assertIn("until `ssh build-host true` succeeds without a prompt", local.fix)
@@ -7446,7 +7484,7 @@ class DoctorFixTests(unittest.TestCase):
                 fixed, _, _, _, _, _ = self.fix({"host": host, "errors": [], "unchecked": []}, root=project)
                 self.assertEqual((fixed["errors"], self.updates), ([], []))
                 self.assertEqual(fixed["unchecked"], [
-                    "whether the second Mac has its own checkout of apple-engineering, local-only, beside the "
+                    "whether another Mac has its own checkout of apple-engineering, local-only, beside the "
                     f"project's checkout for its extensions to load from, which was not asked since {why}"])
 
     def test_every_test_gets_a_doctor_that_changes_neither_mac(self):
@@ -7901,8 +7939,8 @@ class RemoteRuntimeTests(unittest.TestCase):
             return report
         # Small reads, so the stop comes halfway through the image.
         with patch.object(offload_host, "CHUNK", 1 << 16), patch.object(remote, "reporter", stopping):
-            for direction, here, there in [("to the second Mac", [("iOS 27.1", "24A94401")], []),
-                                           ("from the second Mac", [], [("iOS 27.0", "24A5423a")])]:
+            for direction, here, there in [("to another Mac", [("iOS 27.1", "24A94401")], []),
+                                           ("from another Mac", [], [("iOS 27.0", "24A5423a")])]:
                 with self.subTest(direction):
                     for mac, runtimes in [("here", here), ("there", there)]:
                         shutil.rmtree(self.runtimes / mac)
@@ -8753,7 +8791,7 @@ class OfferAgainTests(unittest.TestCase):
             remote.offload_host.answer({"capacity": True, "requestStarted": 940, "requestAge": 1})
         capacity.assert_called_once_with(diagnostic=False, before=940)
 
-    """While both Macs are busy, a second Mac that cannot be reached at one offer is asked at the next."""
+    """While the Macs are busy, another Mac that cannot be reached at one offer is asked at the next."""
 
     def offer(self):
         offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0)
@@ -8826,7 +8864,7 @@ class OfferAgainTests(unittest.TestCase):
         offered.away = "fake cannot be reached: it is asleep"
         with patch("sys.stderr", new_callable=StringIO) as error:
             self.assertEqual(remote.overflow(offered, lambda seconds: None, once=True), remote.BUSY)
-        self.assertIn("neither Mac admitted it now; the second Mac cannot be reached: fake cannot be reached: it is asleep",
+        self.assertIn("no Mac admitted it now; fake cannot be reached: fake cannot be reached: it is asleep",
                       error.getvalue())
 
     def test_neither_mac_admitting_gives_this_macs_last_reason_after_the_second_macs(self):
@@ -8838,7 +8876,7 @@ class OfferAgainTests(unittest.TestCase):
             offered.away = "fake cannot be reached: it is asleep"
             with self.subTest(refused=len(refused)), patch("sys.stderr", new_callable=StringIO) as error:
                 self.assertEqual(remote.overflow(offered, lambda seconds: None, once=True, refused=refused), remote.BUSY)
-                self.assertIn("the second Mac cannot be reached", error.getvalue())
+                self.assertIn("fake cannot be reached", error.getvalue())
                 self.assertTrue(error.getvalue().endswith(expected), error.getvalue())
                 self.assertNotIn("older", error.getvalue())
 
@@ -8910,7 +8948,7 @@ class ExclusiveOfferTests(unittest.TestCase):
         def offer():
             self.offers += 1
             if admitted_at is not None and self.offers >= admitted_at: return 0
-            raise remote.Busy("every slot of the second Mac is not free")
+            raise remote.Busy("every slot of another Mac is not free")
         return offer
 
     def run_offers(self, offer, park_after=900):
@@ -8931,7 +8969,7 @@ class ExclusiveOfferTests(unittest.TestCase):
         status, said = self.run_offers(self.offers_until(), park_after=200)
         self.assertEqual(status, "parked")
         self.assertEqual(self.slept, [15, 30, 60, 95])
-        self.assertIn("takes its place in the second Mac's queue after 200s", said)
+        self.assertIn("takes its place in another Mac's queue after 200s", said)
 
     def test_a_second_mac_that_cannot_be_reached_or_is_misconfigured_ends_the_offers_as_before(self):
         for error in (remote.Unreachable("down", "wake it"), remote.Misconfigured("old Xcode", "update it")):

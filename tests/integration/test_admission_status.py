@@ -663,7 +663,7 @@ class CommandTests(unittest.TestCase):
         with patch.dict(os.environ, {"HEAVY_SLOT_DIR": "", "QUEUEKEEPER_GATE_LOCK_FILE": ""}):
             status = resources.now_main([], out=lines.append, read=lambda here_only: found)
         self.assertEqual(status, 1)
-        self.assertTrue(any(line.startswith("second Mac (build-host): unknown: build-host did not answer") for line in lines))
+        self.assertTrue(any(line.startswith("build-host: unknown: build-host did not answer") for line in lines))
         self.assertIn("  holders: none", lines)
 
     def test_no_second_mac_configured_is_no_failure_and_here_reads_this_mac_alone(self):
@@ -684,9 +684,9 @@ class CommandTests(unittest.TestCase):
                           ("mini", "mini", "unknown"), ("rented", "rented", "observed")])
         self.assertEqual([(one["mac"], one["ssh"], one["id"]) for one in several[1:]],
                          [(mac["name"], mac["ssh"], mac["id"]) for mac in macs])
-        # One Mac keeps the role and name it had before the farm could have more.
+        # One Mac is named as each of several is.
         one = resources.admissions_now(read_here=self.reading, read_there=read, macs=lambda: macs[:1])["hosts"][1]
-        self.assertEqual((one["role"], one["name"], one["mac"]), ("second", "second Mac (studio.local)", "studio"))
+        self.assertEqual((one["role"], one["name"], one["mac"]), ("studio", "studio (studio.local)", "studio"))
         only = resources.admissions_now(here_only=True, read_here=self.reading, read_there=lambda *_: asked.append(1))
         self.assertEqual((len(only["hosts"]), asked), (1, []))
         # A reading this Mac cannot take is unknown, never idle.

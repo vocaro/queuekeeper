@@ -249,7 +249,7 @@ def lease(owner=None, record=None):
     for the run that holds its screen."""
     record = record or reservations.Record()
     if not foreground.second_mac(record):
-        raise reservations.Refused("queuekeeper closes Notification Center's notifications only on the second Mac, under the "
+        raise reservations.Refused("queuekeeper closes Notification Center's notifications only on another Mac, under the "
                               f"foreground lease a run holds there; this Mac's are the owner's ({GUIDE}, {SECTION})")
     reservations.require_foreground(owner if owner is not None else os.environ.get(reservations.OWNER), record)
 

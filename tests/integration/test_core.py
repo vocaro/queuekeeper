@@ -3249,7 +3249,7 @@ class UsageTests(unittest.TestCase):
     def report(self, here, there, here_log, there_log):
         with contextlib.redirect_stdout(StringIO()) as output:
             self.assertEqual(resources.usage(("this Mac (Here)", "this Mac", here, here_log),
-                                             ("second Mac (build-host)", "build-host", there, there_log),
+                                             ("build-host", "build-host", there, there_log),
                                              self.SINCE, self.UNTIL), 0)
         return output.getvalue().splitlines()
 
@@ -3268,7 +3268,7 @@ class UsageTests(unittest.TestCase):
         there_log = [entry for index in range(4) for entry in self.job(f"t{index}", 0, 180 if index < 3 else 90,
                      placement={"dispatchedFrom": "Here"})]
         lines = self.report(self.IDLE, busy, here_log, there_log)
-        self.assertEqual(lines[1].split(), ["this", "Mac", "(Here)", "|", "second", "Mac", "(build-host)"])
+        self.assertEqual(lines[1].split(), ["this", "Mac", "(Here)", "|", "build-host"])
         rows = {line.split()[0]: line for line in lines[2:11]}
         self.assertEqual(rows["slots"].split("  ")[-1].strip(),
                          "0 of 3 guaranteed, 9 at most | 4 of 3 guaranteed, 9 at most (slots 0, 1, 2, 3)")
@@ -3279,14 +3279,14 @@ class UsageTests(unittest.TestCase):
                       "free, and 3 are busy", lines[9])
         self.assertIn("  this Mac (Here): 5 admitted; time at N heavy jobs: 0 6%, 1 87%, 2 7%; mean 1.0; "
                       "a whole-host lane held it 83%", lines)
-        self.assertIn("  second Mac (build-host): 4 admitted; time at N heavy jobs: 3 50%, 4 50%; mean 3.5; "
+        self.assertIn("  build-host: 4 admitted; time at N heavy jobs: 3 50%, 4 50%; mean 3.5; "
                       "a whole-host lane held it 0%", lines)
         placements = lines[lines.index("Why this Mac's admissions made in the period ran here:") + 1:]
         self.assertEqual(placements, [
-            "  never offered to the second Mac: 2, held 2h40m",
+            "  never offered to another Mac: 2, held 2h40m",
             "    qk run --here: 1, held 2h30m",
             "    qk admit without --verify: 1, held 10m00s",
-            "  offered to the second Mac and declined: 2, held 13m00s",
+            "  offered to another Mac and declined: 2, held 13m00s",
             "    build-host is busy (CPU N% busy, at or above its HEAVY_BUSY_LIMIT=N%): 2, held 13m00s",
             "  placement unrecorded (an older toolkit's line, or a caller's own admission, such as qk admit's "
             "before it logged placement): 1, held 10m00s",
@@ -3296,19 +3296,19 @@ class UsageTests(unittest.TestCase):
 
     def test_usage_counts_historical_local_path_exclusions_as_never_offered(self):
         reasons = [
-            "it names /tmp/task-1234, a path outside the checkout, which the second Mac does not have",
-            "it names ~/task-1234, under this Mac's home, which the second Mac's checkout does not hold",
-            "it names this checkout's path /tmp/project-1234, which the second Mac's checkout is not",
+            "it names /tmp/task-1234, a path outside the checkout, which another Mac does not have",
+            "it names ~/task-1234, under this Mac's home, which another Mac's checkout does not hold",
+            "it names this checkout's path /tmp/project-1234, which another Mac's checkout is not",
         ]
         log = [entry for index, reason in enumerate(reasons)
                for entry in self.job(str(index), 0, 1, placement={"offered": True, "because": reason})]
-        log += self.job("declined", 1, 2, placement={"offered": True, "because": "the second Mac is busy"})
+        log += self.job("declined", 1, 2, placement={"offered": True, "because": "another Mac is busy"})
         lines = self.report(self.IDLE, self.IDLE, log, [])
-        self.assertIn("  never offered to the second Mac: 3, held 3m00s", lines)
+        self.assertIn("  never offered to another Mac: 3, held 3m00s", lines)
         for reason in reasons:
             self.assertIn(f"    {reason}: 1, held 1m00s", lines)
-        self.assertIn("  offered to the second Mac and declined: 1, held 1m00s", lines)
-        self.assertIn("    the second Mac is busy: 1, held 1m00s", lines)
+        self.assertIn("  offered to another Mac and declined: 1, held 1m00s", lines)
+        self.assertIn("    another Mac is busy: 1, held 1m00s", lines)
 
     def test_idle_macs_old_and_unended_admissions_and_unreadable_capacity_count_nothing_busy(self):
         # The negative controls: an admission wholly before the period, one with no end logged begun a day before,
@@ -3319,7 +3319,7 @@ class UsageTests(unittest.TestCase):
         lines = self.report(self.IDLE, "build-host did not report its capacity: it answered None", here_log, [])
         self.assertIn("  this Mac (Here): 0 admitted; time at N heavy jobs: 0 100%; mean 0.0; a whole-host lane held "
                       "it 0%; 1 admission(s) with no end logged, begun over 12 h before, not counted", lines)
-        self.assertIn("  second Mac (build-host): 0 admitted; time at N heavy jobs: 0 100%; mean 0.0; a whole-host "
+        self.assertIn("  build-host: 0 admitted; time at N heavy jobs: 0 100%; mean 0.0; a whole-host "
                       "lane held it 0%", lines)
         self.assertIn("unavailable: build-host did not report its capacity: it answered None", lines[2])
         self.assertEqual(lines[9], "  whole-host lane  spare capacity | -")
@@ -3331,7 +3331,7 @@ class UsageTests(unittest.TestCase):
         self.assertEqual((seconds, whole, dead), ({0: 90 * 60, 1: 90 * 60}, 0.0, 0))
         # A second Mac whose log cannot be fetched says why.
         lines = self.report(self.IDLE, self.IDLE, [], "build-host did not send its admission log")
-        self.assertIn("  second Mac (build-host): log unavailable: build-host did not send its admission log", lines)
+        self.assertIn("  build-host: log unavailable: build-host did not send its admission log", lines)
 
 
 class RecoveryTests(unittest.TestCase):
@@ -4714,7 +4714,7 @@ class LaneLabelTests(unittest.TestCase):
             {"offered": False, "because": "qk admit --here"},
             {"dispatchedFrom": "Sender"}, None])
         for placement in offered:
-            self.assertEqual(placement, {"offered": True, "because": "no second Mac is configured"})
+            self.assertEqual(placement, {"offered": True, "because": "the farm has no other Mac that takes work now"})
         entries = [resources.read_entry(json.dumps(line)) for line in admitted]
         self.assertEqual([resources.placed(entry) for entry in entries[:2] + entries[3:4] + entries[5:]], [
             ("never", "a lane that stays on this Mac"), ("never", "qk run --here"),
@@ -4727,11 +4727,11 @@ class LaneLabelTests(unittest.TestCase):
         with contextlib.redirect_stdout(StringIO()) as output:
             self.assertEqual(cli.main(["admissions", "usage"]), 0)
         text = output.getvalue()
-        self.assertIn("  never offered to the second Mac: 3, held ", text)
+        self.assertIn("  never offered to another Mac: 3, held ", text)
         self.assertIn("    qk run --here: 1, held ", text)
         self.assertIn("    qk admit --here: 1, held ", text)
-        self.assertIn("  offered to the second Mac and declined: 2, held ", text)
-        self.assertIn("  second Mac: log unavailable: no second Mac is configured", text)
+        self.assertIn("  offered to another Mac and declined: 2, held ", text)
+        self.assertIn("  the farm's other Macs: log unavailable: the farm has no other Mac that takes work now", text)
 
     def test_a_project_without_a_name_is_named_by_its_checkout(self):
         root = Path(self.temp.name) / "Gamma"

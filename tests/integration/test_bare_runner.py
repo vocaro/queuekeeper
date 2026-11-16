@@ -106,7 +106,7 @@ class CommandSent(Folder):
     def test_unittest_repeats_its_result_after_admission_notes_without_counting_it_twice(self):
         summary = "queuekeeper unittest: 7 tests (0 skipped) in 1 processes, 4 at a time, 1.0s: OK"
         for note in ("Verified cached artifact: https://example.com/artifact.zip",
-                     "queuekeeper: the command ran on the second Mac, so its build products stayed there"):
+                     "queuekeeper: the command ran on another Mac, so its build products stayed there"):
             for status in (0, 73):
                 with self.subTest(note=note, status=status):
                     output = self.root / "output.log"

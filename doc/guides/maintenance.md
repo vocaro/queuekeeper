@@ -618,7 +618,7 @@ screen reading, with the Mac that reading is from, and a session can read why th
 runs, such as a lane that holds no assertion locking by idle, and change the lane.
 
 The `queue.noVerdictRuns` hold's reason says how many
-runs gave no verdict, on which Mac the last ran (`on this Mac (NAME)` or `on the second Mac (HOST)`, when
+runs gave no verdict, on which Mac the last ran (`on this Mac (NAME)` or `on NAME`, the Mac's name in the farm, when
 its receipt or dispatch says), and why it gave none: the lane that reached its limit, the number of tests
 its log reports unmeasured with the first of them and the last screen reading queuekeeper logged
 (vocaro-engineering#185), the error its receipt records, no admission, or the host's configuration. A log
