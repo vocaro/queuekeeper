@@ -109,17 +109,35 @@ class CommandSent(Folder):
                      "queuekeeper: the command ran on another Mac, so its build products stayed there"):
             for status in (0, 73):
                 with self.subTest(note=note, status=status):
-                    output = self.root / "output.log"
-                    output.write_text(summary + "\n" + note + "\n")
-                    @contextlib.contextmanager
-                    def admitted(command):
-                        yield {"status": None, "output": output}
-                    said = io.StringIO()
-                    with patch.object(cli.run_progress, "admitted", admitted), \
-                            patch.object(cli, "admitted_run", return_value=status), contextlib.redirect_stderr(said):
-                        self.assertEqual(cli.admitted_runner(self.root, ["unittest"], 0), status)
-                    self.assertEqual(said.getvalue().splitlines()[-1], f"  {summary} (command exit {status})")
-                    self.assertEqual(cli.merge_queue.UNITTEST_SUMMARY.findall(output.read_text() + said.getvalue()), ["OK"])
+                    said, output = self.repeated("unittest", summary, note, status)
+                    self.assertEqual(said.splitlines()[-1], f"  {summary} (command exit {status})")
+                    self.assertEqual(cli.merge_queue.UNITTEST_SUMMARY.findall(output + said), ["OK"])
+
+    def test_xctest_repeats_its_result_after_admission_notes_as_unittest_does(self):
+        """qk xctest prints the summary qk unittest does, and a run another Mac ran ends with the note that its
+        build products stayed there (#206)."""
+        summary = "queuekeeper xctest: 7 tests (1 skipped) in 2 processes, 4 at a time, 3.0s: OK"
+        said, _ = self.repeated("xctest", summary, "queuekeeper: the command ran on another Mac, so its build "
+                                "products stayed there", 0)
+        self.assertEqual(said.splitlines()[-1], f"  {summary} (command exit 0)")
+
+    def test_a_runner_with_no_such_summary_adds_nothing(self):
+        said, _ = self.repeated("simulator-tests", "queuekeeper unittest: 7 tests (0 skipped) in 1 processes, 4 at a "
+                                "time, 1.0s: OK", "a note", 0)
+        self.assertEqual(said, "")
+
+    def repeated(self, runner, summary, note, status):
+        """(what the runner's admission printed on standard error once it ran, the runner's output)."""
+        output = self.root / "output.log"
+        output.write_text(summary + "\n" + note + "\n")
+        @contextlib.contextmanager
+        def admitted(command):
+            yield {"status": None, "output": output}
+        said = io.StringIO()
+        with patch.object(cli.run_progress, "admitted", admitted), \
+                patch.object(cli, "admitted_run", return_value=status), contextlib.redirect_stderr(said):
+            self.assertEqual(cli.admitted_runner(self.root, [runner], 0), status)
+        return said.getvalue(), output.read_text()
 
     def test_a_project_with_a_launcher_is_run_again_by_its_path_from_here(self):
         (self.root / "scripts").mkdir()
@@ -162,6 +180,37 @@ class Runs(Folder):
         self.suite()
         status, said = self.main("--project", str(self.root), "unittest", "-s", "tests")
         self.assertEqual(status, 0, said)
+
+    def test_what_preparing_the_command_prints_comes_before_the_run_and_its_result_last(self):
+        """A project's artifact check prints as it prepares the command (extensions.PREPARE_LANE). Its line waited in
+        this process's buffer for standard output, a pipe into `tail` for one, and came out after the run's summary
+        (vocaro/queuekeeper#139, #206)."""
+        self.project()
+        self.suite()
+        note = "Verified cached artifact: https://example.com/artifact.zip"
+        with tempfile.TemporaryFile("w+") as kept:
+            sys.stdout.flush(), sys.stderr.flush()
+            saved = os.dup(1), os.dup(2)
+            os.dup2(kept.fileno(), 1), os.dup2(kept.fileno(), 2)
+            # Buffered as standard output is when it is a pipe.
+            buffered = io.TextIOWrapper(io.BufferedWriter(io.FileIO(1, "w", closefd=False), 1 << 16))
+            try:
+                with patch.object(cli, "refresh_policy", return_value=None), \
+                        patch.object(extensions, "PREPARE_LANE", [lambda root, config: print(note)]), \
+                        patch.object(sys, "stdout", buffered), patch.object(sys, "stderr", buffered):
+                    status = cli.main(["--project", str(self.root), "unittest", "-s", "tests"])
+                buffered.flush()
+            finally:
+                for descriptor, number in zip(saved, (1, 2)):
+                    os.dup2(descriptor, number)
+                    os.close(descriptor)
+            kept.seek(0)
+            said = kept.read()
+        self.assertEqual(status, 0, said)
+        lines = said.splitlines()
+        self.assertLess(lines.index(note), next(at for at, line in enumerate(lines)
+                                                if line.startswith("queuekeeper unittest: 1 tests ")), said)
+        self.assertRegex(lines[-1], r"^  queuekeeper unittest: 1 tests .* \(command exit 0\)$")
 
     def runs_under_this_python(self, *arguments):
         """Run the bare runner in the project while the first python3 on PATH is too old for Queuekeeper, as Xcode's

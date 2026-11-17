@@ -821,6 +821,9 @@ def admit(root, args, config=None, *, device_window=None):
                 blocked = extensions.FOREGROUND.cleared_notifications(receipt) if second else None
                 if blocked is not None: return blocked
                 for prepare in extensions.PREPARE_LANE: prepare(root, config)
+                # What they printed, such as an artifact check's notes, comes before the command's output, not after
+                # whatever the command prints once this process exits and its buffer is written (#206).
+                sys.stdout.flush()
                 directory, variables = Path.cwd(), None
                 if tree is not None:
                     # In the worktree's directory that matches the current one, as on another Mac, after its
@@ -903,14 +906,16 @@ def admitted_runner(root, argv, first):
     everything it prints, whatever its standard output is, such as a pipe into `tail` (vocaro/queuekeeper#22)."""
     with run_progress.admitted(["qk", *argv[first:]]) as outcome:
         outcome["status"] = admitted_run(root, argv, first)
-    if argv[first:first + 1] == ["unittest"] and outcome.get("output"):
-        # Admission's artifact checks and returned-products notes run after the runner. Repeat its
-        # verdict last, indented so log readers do not count another suite (vocaro/queuekeeper#139).
+    if outcome.get("output"):
+        # Admission's returned-products notes follow the runner. Repeat its verdict last, the summary that `qk
+        # unittest` and `qk xctest` print alike, indented so log readers do not count another suite
+        # (vocaro/queuekeeper#139, #206).
+        ends = re.compile(rf"^queuekeeper {re.escape(argv[first])}: \d+ tests ")
         with contextlib.suppress(OSError):
             summary = None
             with outcome["output"].open(errors="replace") as output:
                 for line in output:
-                    if re.match(r"^queuekeeper unittest: \d+ tests ", line): summary = line.rstrip()
+                    if ends.match(line): summary = line.rstrip()
             if summary:
                 sys.stdout.flush()
                 print(f"  {summary} (command exit {outcome['status']})", file=sys.stderr, flush=True)
