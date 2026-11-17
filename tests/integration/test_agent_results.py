@@ -114,6 +114,22 @@ class AgentResults(unittest.TestCase):
         self.assertEqual(found["tests"], {"passed": 5730, "failed": 0, "skipped": 3, "unmeasured": 0, "ran": 5730})
         self.assertFalse(found["logTruncated"])
 
+    def test_a_landed_group_gate_is_counted_by_its_summary_not_by_its_qk_unittest_lane(self):
+        # vocaro/queuekeeper#177: AXVerify's gate, a group of three lanes, passed with 212 tests, and its log printed
+        # the group's summary before its qk unittest lane's own output of 68 tests. The record counted 67 and 1 skip.
+        log = self.root / "20261116-060746-9f16caf9-gate.log"
+        log.write_text("PASS gate-python (1s, status 0): /w/gate-python.log\n"
+                       "PASS gate-swift-mac (66s, status 0): /w/gate-swift-mac.log\n"
+                       "PASS gate-swift-ios (321s, status 0): /w/gate-swift-ios.log\n"
+                       "qk run gate: passed, on this Mac\n"
+                       "  tests: 212 passed, 0 failed, 1 skipped, 0 unmeasured\n"
+                       "  lanes: 3 passed, 0 failed, 0 unmeasured\n\n"
+                       "Ran 39 tests in 0.1s\n\nOK\nRan 29 tests in 0.1s\n\nOK (skipped=1)\n"
+                       "queuekeeper unittest: 68 tests (1 skipped) in 5 processes, 4 at a time, 0.8s: OK\n")
+        self.entry["log"] = str(log)
+        found = agent_results.lookup(self.queue, "old-entry")
+        self.assertEqual(found["tests"], {"passed": 212, "failed": 0, "skipped": 1, "unmeasured": 0, "ran": 212})
+
     def test_a_log_read_only_at_its_end_gives_no_count_and_says_its_failing_tests_are_partial(self):
         early = "FAIL: test_early (test_example.Example.test_early)\n\nRan 7 tests in 1s\n\nFAILED (failures=1)\n"
         late = "FAIL: test_late (test_example.Example.test_late)\n\nRan 2 tests in 1s\n\nFAILED (failures=1)\n"
