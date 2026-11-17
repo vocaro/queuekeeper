@@ -182,17 +182,42 @@ PANELS["farm"]["deviceRecord"] = {"devices": [
      "releaseBy": None, "waiting": 0, "connection": "connected", "transport": "localNetwork"}],
     "deferredTo": None, "error": None, "connectionError": None, "checkedAt": ago(4)}
 
+# The round's gate log: a gate still running whose suites have passed but one, which failed a test.
+LOG += "".join(f"== lumen.test_{name}.Tests[1]: OK ({count} tests, 0.{count}s)\ntest_{name} (lumen.test_{name}.Tests.test_{name}) ... ok\n"
+               for count, name in enumerate(("layout", "fonts", "colors", "pages", "links", "search", "export", "import"), 2))
+LOG += """== lumen.test_sync.Tests[1]: FAILED (failures=1) (3 tests, 4.2s)
+FAIL: test_a_note_edited_offline_merges (lumen.test_sync.Tests.test_a_note_edited_offline_merges)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_sync.py", line 88, in test_a_note_edited_offline_merges
+AssertionError: 'draft' != 'merged'
+remote: heartbeat: gate on studio.local, 4m 00s in: its log grew by 212 lines, the latest 3s ago
+"""
 LOGS = [{"name": "worker.log", "size": 48213, "modified": ago(3)},
-        {"name": ROUND + "-gate.log", "size": len(LOG), "modified": ago(3)},
-        {"name": ROUND + "-device.log", "size": 1904, "modified": ago(64)},
-        {"name": BEFORE + "-gate.log", "size": 291377, "modified": ago(540)}]
+        {"name": ROUND + "-gate.log", "size": len(LOG), "modified": ago(3), "round": ROUND[:15], "commit": ROUND[16:],
+         "lane": "gate", "running": True},
+        {"name": ROUND + "-docs.log", "size": 1904, "modified": ago(240), "round": ROUND[:15], "commit": ROUND[16:],
+         "lane": "docs", "status": 0, "seconds": 41, "mac": None},
+        {"name": BEFORE + "-gate.log", "size": 291377, "modified": ago(1610), "round": BEFORE[:15], "commit": BEFORE[16:],
+         "lane": "gate", "status": 1, "seconds": 288, "mac": "studio.local"},
+        {"name": BEFORE + "-rerun-1-1.log", "size": 6973, "modified": ago(1580), "round": BEFORE[:15], "commit": BEFORE[16:],
+         "lane": "rerun", "test": 1, "attempt": 1, "status": 0},
+        {"name": BEFORE + "-rerun-1-2.log", "size": 6973, "modified": ago(1570), "round": BEFORE[:15], "commit": BEFORE[16:],
+         "lane": "rerun", "test": 1, "attempt": 2, "status": 0}]
 
 
 def logs(query):
-    """What the Logs panel is answered: the logs, and the round's gate log once the page asks for one."""
+    """What the Logs panel is answered: the logs, and the round's gate log, indexed, once the page asks for one."""
     if not query.get("name"): return {"logs": LOGS}
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "gate.log"
+        path.write_text(LOG)
+        found = panels.load("logs").index(path, len(LOG))
     offset = min(int(query.get("offset", 0)), len(LOG))
-    return {"name": query["name"], "size": len(LOG), "offset": offset, "next": len(LOG), "text": LOG[offset:], "logs": LOGS}
+    return {"name": query["name"], "size": len(LOG), "offset": offset, "next": len(LOG), "text": LOG[offset:], "line": 1 if not offset else None,
+            "path": "/Users/you/lumen/.git/queuekeeper-queue/logs/" + query["name"], "ask": query.get("ask"), "logs": LOGS,
+            "log": next((log for log in LOGS if log["name"] == query["name"]), {"name": query["name"]}), "reruns": [], "flaky": {},
+            "index": {key: found[key] for key in ("lines", "marks", "failures", "summary", "size")}}
 
 
 class App(server.App):

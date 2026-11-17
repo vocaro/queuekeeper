@@ -135,7 +135,7 @@ qk serve ../other-project # show another repository too
 | Queue (home) | Daily totals and alerts, the round's gates, entries in progress, and entries up next; Testing ahead means new arrivals tested on top of the current batch. Compact rows link to entry and gate details |
 | Farm | Each Mac's admission slots, what holds them and what waits, for every project, with its CPU's busy share against its limit, its load, its memory pressure and whether its screen is locked; recorded physical iOS reservations, owners and expected release, with connection status and transport from Xcode. Running and waiting requests link to admission details; persistent human-friendly IDs appear below their labels |
 | History | Recent settled changes, why each came back, the day's totals and the journal's last two hundred events |
-| Logs | The queue's logs, newest first, and one of them followed as it is written |
+| Logs | The queue's logs by round, newest first, each with how its run ended, and one of them read with its failing tests and their reruns, a bar of the whole log that marks failures and goes to them, passing suites folded, and a search of the whole file; it follows new lines while you are at the bottom |
 
 The page asks for its tab's data every two seconds, so it follows the queue without being
 reloaded.

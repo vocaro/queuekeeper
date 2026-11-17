@@ -497,15 +497,88 @@ class Panels(Fixture):
 
     def test_a_log_is_read_from_its_tail_and_then_from_where_the_last_chunk_ended(self):
         path = mq.Queue(self.repo).logs / "gate.log"
-        path.write_text("a" * (logs.TAIL + 10) + "END\n")
+        path.write_text("a" * (logs.TAIL + logs.BACK + 10) + "END\n")  # a line too long to start the tail at its start
         first = logs.data(self.one, {"name": "gate.log"})
-        self.assertEqual((first["offset"], first["next"], first["size"]), (14, path.stat().st_size, path.stat().st_size))
+        self.assertEqual((first["offset"], first["next"], first["size"]), (logs.BACK + 14, path.stat().st_size, path.stat().st_size))
         self.assertTrue(first["text"].endswith("END\n"))
         with path.open("a") as log: log.write("more\n")
         second = logs.data(self.one, {"name": "gate.log", "offset": str(first["next"])})
         self.assertEqual((second["text"], second["offset"]), ("more\n", first["next"]))
         self.assertEqual(logs.data(self.one, {"name": "gate.log", "offset": "999999999"})["text"], "")
-        self.assertEqual(len(logs.data(self.one, {"name": "gate.log", "offset": "0"})["text"]), min(logs.CHUNK, logs.TAIL + 19))
+        self.assertEqual(len(logs.data(self.one, {"name": "gate.log", "offset": "0"})["text"]), min(logs.CHUNK, logs.TAIL + logs.BACK + 19))
+
+    def test_a_logs_name_and_the_journal_say_its_round_commit_lane_and_how_it_ended(self):
+        queue_ = mq.Queue(self.repo)
+        round_ = "20261116-212941-9f43197f"
+        passed = "  queuekeeper unittest: 1 tests (0 skipped) in 1 processes, 1 at a time, 0.9s: OK (command exit 0)\n"
+        failed = "queuekeeper unittest: 1 tests (0 skipped) in 1 processes, 1 at a time, 0.9s: FAILED: core.test_x\n"
+        for lane, text in (("gate", "x\n"), ("docs", "x\n"), ("rerun-1-2", passed), ("rerun-2-1", failed)):
+            (queue_.logs / f"{round_}-{lane}.log").write_text(text)
+        (queue_.logs / "other.log").write_text("x")
+        events.emit(queue_.directory, "gate.began", lane="gate", round=round_)
+        events.emit(queue_.directory, "gate.ended", lane="gate", round=round_, status=1, seconds=1488,
+                    log=str(queue_.logs / f"{round_}-gate.log"), mac="this Mac (Trevors-MacBook-Pro)")
+        events.emit(queue_.directory, "gate.began", lane="docs", round=round_)
+        found = {log["name"]: log for log in logs.data(self.one, {})["logs"]}
+        gate = found[f"{round_}-gate.log"]
+        self.assertEqual({key: gate[key] for key in ("round", "commit", "lane", "status", "seconds", "mac")},
+                         {"round": "20261116-212941", "commit": "9f43197f", "lane": "gate", "status": 1, "seconds": 1488,
+                          "mac": None})
+        self.assertNotIn("running", gate)
+        self.assertTrue(found[f"{round_}-docs.log"]["running"])
+        self.assertEqual([tuple(found[f"{round_}-{lane}.log"][key] for key in ("lane", "test", "attempt", "status"))
+                          for lane in ("rerun-1-2", "rerun-2-1")], [("rerun", 1, 2, 0), ("rerun", 2, 1, 1)])
+        self.assertNotIn("round", found["other.log"])
+        events.emit(queue_.directory, "test.flaky", test="core.test_x.T.test_y", commit="9f43197f" + "0" * 32,
+                    issue="https://x/issues/9")
+        events.emit(queue_.directory, "test.flaky", test="core.test_x.T.test_z", commit="1" * 40)
+        chosen = logs.data(self.one, {"name": f"{round_}-gate.log"})
+        self.assertEqual(chosen["log"]["status"], 1)
+        self.assertEqual(sorted(log["name"] for log in chosen["reruns"]), [f"{round_}-rerun-1-2.log", f"{round_}-rerun-2-1.log"])
+        self.assertEqual(chosen["flaky"], {"core.test_x.T.test_y": "https://x/issues/9"})
+        self.assertEqual(chosen["path"], str(queue_.logs / f"{round_}-gate.log"))
+
+    def test_a_logs_index_says_where_its_failures_suites_heartbeats_and_summary_are(self):
+        lines = ["progress: here", "== core.test_a.A[1]: OK (2 tests, 0.1s)", "test_one (core.test_a.A.test_one) ... ok",
+                 "remote: heartbeat 2026-11-17T06:57:51Z: gate on build-host, 5m 00s in",
+                 "== core.test_b.B[1]: FAILED (failures=1) (3 tests, 31.1s)",
+                 "FAIL: test_two (core.test_b.B.test_two)", "-" * 70, "Traceback (most recent call last):",
+                 '  File "x.py", line 3, in test_two', "AssertionError: Lists differ: [] != [1]", "",
+                 "ERROR: test_three (core.test_b.B.test_three)", "Traceback (most recent call last):", "KeyError: 'x'",
+                 "queuekeeper unittest: 5 tests (0 skipped) in 2 processes, 8 at a time, 1.5s: FAILED: core.test_b.B[1]"]
+        start = lambda number: len("\n".join(lines[:number - 1])) + 1  # where line number starts
+        path = mq.Queue(self.repo).logs / "gate.log"
+        path.write_text("\n".join(lines) + "\n")
+        found = logs.data(self.one, {"name": "gate.log", "find": "TEST_TWO"})
+        index = found["index"]
+        self.assertEqual((index["lines"], index["size"], found["line"], found["offset"]), (len(lines), path.stat().st_size, 1, 0))
+        self.assertEqual(index["failures"], [
+            {"test": "core.test_b.B.test_two", "line": 6, "offset": start(6), "reason": "AssertionError: Lists differ: [] != [1]"},
+            {"test": "core.test_b.B.test_three", "line": 12, "offset": start(12), "reason": "KeyError: 'x'"}])
+        self.assertEqual(index["marks"], [[2, "pass"], [4, "beat"], [5, "failed"], [6, "fail"], [12, "fail"], [15, "summary"]])
+        self.assertEqual(index["summary"], lines[-1])
+        self.assertEqual(found["found"], {"text": "TEST_TWO", "lines": [[6, start(6)], [9, start(9)]], "count": 2})
+        self.assertNotIn("index", logs.data(self.one, {"name": "gate.log", "known": str(index["size"])}))
+        self.assertEqual(logs.data(self.one, {"name": "gate.log", "line": "12"})["line"], 1)
+        before = logs.data(self.one, {"name": "gate.log", "before": str(start(12))})
+        self.assertEqual((before["offset"], before["next"], before["text"]), (0, start(12), "\n".join(lines[:11]) + "\n"))
+        with self.assertRaises(LookupError): logs.data(self.one, {"name": "gate.log", "line": "x"})
+
+    def test_a_long_log_is_read_by_whole_lines_and_from_near_a_line_asked_for(self):
+        path = mq.Queue(self.repo).logs / "gate.log"
+        path.write_text("".join(f"line {number:06}\n" for number in range(1, 60001)))  # 12 bytes a line
+        tail = logs.data(self.one, {"name": "gate.log"})
+        self.assertTrue(tail["text"].startswith("line ") and tail["text"].endswith("line 060000\n"))
+        self.assertEqual(tail["line"], int(tail["text"][5:11]))
+        near = logs.data(self.one, {"name": "gate.log", "line": "30000"})
+        self.assertEqual(near["text"][:12], f"line {near['line']:06}\n")
+        self.assertTrue(30000 - logs.BACK // 12 - 1 <= near["line"] < 30000)
+        self.assertTrue(near["text"].endswith("\n") and len(near["text"]) < logs.CHUNK)
+        after = logs.data(self.one, {"name": "gate.log", "offset": str(near["next"])})
+        self.assertEqual(after["text"][:12], f"line {near['line'] + len(near['text']) // 12:06}\n")
+        at = logs.data(self.one, {"name": "gate.log", "at": str(12 * 999 + 5)})
+        self.assertEqual(at["text"][:12], f"line {at['line']:06}\n")
+        self.assertTrue(1000 - logs.BACK // 12 - 1 <= at["line"] < 1000)
 
     def test_only_a_log_of_the_queues_is_read_by_a_name_with_no_folder_in_it(self):
         queue_ = mq.Queue(self.repo)

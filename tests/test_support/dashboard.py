@@ -55,6 +55,7 @@ class Fixture(test_merge_queue.Fixture):
             self.addCleanup(reading.stop)
         self.addCleanup(farm.STATE.update, reading=None, detail={}, at=0.0, busy=False, error=None, samples=[])
         farm.STATE.update(reading=None, detail={}, at=0.0, busy=False, error=None, samples=[])
+        for cache in (logs.CACHE, logs.FOUND): self.addCleanup(cache.clear)
         self.one = repository.Repository("project", self.repo)
 
     def settle(self, branch, state=mq.FAILED, **fields):
