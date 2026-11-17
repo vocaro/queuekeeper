@@ -52,6 +52,7 @@ import threading
 import time
 import unicodedata
 import urllib.request
+from xml.etree import ElementTree
 
 from . import budgets, disk, extensions, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
@@ -987,6 +988,36 @@ def failed_tests(log):
         if any(identity.startswith("unittest.") for identity in ids): return None, f"{name} did not load"
         found += ids
     return list(dict.fromkeys(found)), None
+
+
+def junit_failures(path):
+    """The names, classname.name, of the test cases a JUnit XML file says failed or erred, in its order; or (None, why
+    it names none to rerun), as failed_tests gives (vocaro/queuekeeper#109)."""
+    try: root = ElementTree.parse(path).getroot()
+    except FileNotFoundError: return None, f"the lane wrote no {Path(path).name} in its results folder"
+    except (OSError, ElementTree.ParseError) as error: return None, f"{path} cannot be read: {error}"
+    found = []
+    for case in root.iter("testcase"):
+        if case.find("failure") is None and case.find("error") is None: continue
+        name, owner = case.get("name"), case.get("classname")
+        if not name: return None, f"{path} has a failed test case with no name"
+        found.append(f"{owner}.{name}" if owner else name)
+    if not found: return None, f"{path} names no failed test"
+    return list(dict.fromkeys(found)), None
+
+
+def declared_failures(lanes, lane, failed):
+    """(the lane, of lane itself or of the group it names, whose failedTests say how to rerun its failed tests, those
+    settings), when that lane is the only one of failed, the lanes of a group that did not pass; or None. A lane of the
+    toolkit's qk unittest reruns by rerun_command instead (vocaro/queuekeeper#109)."""
+    settings = lanes.get(lane)
+    if not isinstance(settings, dict): return None
+    if "parallel" not in settings:
+        return (lane, settings["failedTests"]) if isinstance(settings.get("failedTests"), dict) else None
+    if len(failed) != 1 or failed[0] not in settings["parallel"]: return None
+    member = lanes.get(failed[0])
+    return (failed[0], member["failedTests"]) if isinstance(member, dict) and isinstance(member.get("failedTests"), dict) \
+        else None
 
 
 def module_files(base, parts):
@@ -2891,6 +2922,7 @@ class Worker:
         self.measured = None  # the passing gate run of the last round, which its landed entries record
         self.alone = False  # whether this round's batch is one entry an option of qk land put on its own (choose)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
+        self.failed_results = None  # that lane's results folder, where a failedTests lane names its failures (gate)
         self.failed_load = None  # load_words for that lane, or None (gate)
         self.tooling = None  # why Queuekeeper itself could not start for that lane, or None (tool_unstarted)
         self.probed = ""  # what starting Queuekeeper with and without the batch found (batch_stops_start)
@@ -3511,6 +3543,7 @@ class Worker:
         (quick_lanes, Worker.quick): self.checks, which the round sets for its batch, unless given."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
+        self.failed_results = None
         self.failed_dispatch = None
         self.tooling = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
@@ -3618,6 +3651,8 @@ class Worker:
             self.gate_ended(lane, round_name, status_, log, ended - started)
             if status_:
                 self.failed_lane = lane
+                # Its results folder came back beside what it printed, here or from another Mac.
+                self.failed_results = printed.parent / "results"
                 self.tooling = self.tool_unstarted(lane, began, status_, ran, log)
                 if status_ not in NO_VERDICT:
                     self.failed_load = loads.finish(self.ran_on)
@@ -4148,7 +4183,9 @@ class Worker:
         lanes = config.get("lanes", {})
         member = unittest_member(lanes, lane) if lane else None
         command = rerun_command(lanes[member].get("command")) if member else None
-        if command is None: return None
+        if command is None:
+            declared = declared_failures(lanes, lane, self.group_failed) if lane else None
+            return self.rerun_declared(declared, applied, base, head, log, round_name) if declared else None
         others = [name for name in self.group_failed if name != member]
         if others:
             self.say(f"{lane}'s lane{'' if len(others) == 1 else 's'} {', '.join(others)} did not pass, which no rerun of "
@@ -4178,28 +4215,9 @@ class Worker:
         if busy:
             self.say(f"the failed tests are not rerun, as {busy}: bisecting")
             return None
-        if self.head() != head: self.reset(head)
-        flakes, real = [], {}
-        for number, test in enumerate(tests, 1):
-            logs = []
-            for attempt in range(1, RERUNS + 1):
-                path = self.queue.logs / f"{round_name}-rerun-{number}-{attempt}.log"
-                logs.append(str(path))
-                try: status_ = processes.run([*command, test], cwd=self.checkout, log_path=path, timeout=LANE_LIMIT,
-                                             env=self.environment)
-                except processes.TimedOut as error: status_ = f"unmeasured, {error}"
-                except OSError as error: status_ = f"not started, {error}"
-                if status_:
-                    self.say(f"{test} failed again alone, on rerun {attempt} (exit {status_}), so the failure is real; "
-                             f"see {path}")
-                    # Only a rerun that ran and failed confirms the failure, whose output blame reads.
-                    real[test] = path if isinstance(status_, int) else None
-                    break
-            if test in real:
-                if len(applied) == 1: return None
-                continue
-            flakes.append({"test": test, "commit": head, "gateLog": str(log), "rerunLogs": logs,
-                           "mac": offload_host.mac_name()})
+        ran = self.rerun_each(tests, lambda test: [*command, test], applied, head, log, round_name)
+        if ran is None: return None
+        flakes, real = ran
         top = self.suite_top(command)
         if real:
             if flakes:
@@ -4234,13 +4252,53 @@ class Worker:
             reached = sorted(changed & set(files)) if files is not None else None
             if reached is None: touching[flake["test"]] = "whose module the worker cannot find"
             elif reached: touching[flake["test"]] = f"which changes {', '.join(reached[:5])}, which it imports"
+        self.keep_flakes(flakes, applied, touching,
+                         "The batch was bisected, as it also adds a failed test that passed alone, which is no flake."
+                         if added else
+                         "The batch was bisected, as one of its commits changes the module of a failed test, or a file "
+                         "it imports." if touching else
+                         f"No commit of the batch's {len(applied)} changes its module or a file it imports, so the "
+                         "batch landed.")
+        if touching:
+            self.say(f"every failed test passed alone, but the batch reaches {'; '.join(f'{test}, {why}' for test, why in touching.items())}: bisecting")
+            return None
+        self.say(f"every failed test passed alone {RERUNS} times and no commit of the batch changes its module or a file "
+                 "it imports: landing the batch")
+        return flakes
+
+    def rerun_each(self, tests, command_of, applied, head, log, round_name):
+        """(the flakes of tests, {test: the log of the rerun that failed, or None}) once each is rerun alone on head,
+        by command_of(test), up to RERUNS times, stopping at its first failure; or None once a lone entry's test failed
+        again, which leaves nothing to weigh."""
+        if self.head() != head: self.reset(head)
+        flakes, real = [], {}
+        for number, test in enumerate(tests, 1):
+            logs = []
+            for attempt in range(1, RERUNS + 1):
+                path = self.queue.logs / f"{round_name}-rerun-{number}-{attempt}.log"
+                logs.append(str(path))
+                try: status_ = processes.run(command_of(test), cwd=self.checkout, log_path=path, timeout=LANE_LIMIT,
+                                             env=self.environment)
+                except processes.TimedOut as error: status_ = f"unmeasured, {error}"
+                except OSError as error: status_ = f"not started, {error}"
+                if status_:
+                    self.say(f"{test} failed again alone, on rerun {attempt} (exit {status_}), so the failure is real; "
+                             f"see {path}")
+                    # Only a rerun that ran and failed confirms the failure, whose output blame reads.
+                    real[test] = path if isinstance(status_, int) else None
+                    break
+            if test in real:
+                if len(applied) == 1: return None
+                continue
+            flakes.append({"test": test, "commit": head, "gateLog": str(log), "rerunLogs": logs,
+                           "mac": offload_host.mac_name()})
+        return flakes, real
+
+    def keep_flakes(self, flakes, applied, touching, outcome):
+        """Record flakes, with outcome, what became of the batch, on the tracker (hardening), in the queue's events and
+        in each entry of applied; touching, the tests the batch reaches, is whether the batch did not land."""
         for flake in flakes:
-            flake["outcome"] = ("The batch was bisected, as it also adds a failed test that passed alone, which is no "
-                                "flake." if added else
-                                "The batch was bisected, as one of its commits changes the module of a failed test, or "
-                                "a file it imports." if touching else
-                                f"No commit of the batch's {len(applied)} changes its module or a file it imports, so "
-                                "the batch landed.")
+            flake["outcome"] = outcome
             flake["issue"], flake["trackerError"] = hardening(self.checkout, flake)
             if flake["issue"] is None: del flake["issue"]
             else: del flake["trackerError"]
@@ -4252,11 +4310,59 @@ class Worker:
         for entry in applied:
             current = self.queue.read(entry["id"]) or entry
             self.queue.record(entry, flakes=current.get("flakes", []) + flakes)
-        if touching:
-            self.say(f"every failed test passed alone, but the batch reaches {'; '.join(f'{test}, {why}' for test, why in touching.items())}: bisecting")
+
+    def rerun_declared(self, declared, applied, base, head, log, round_name):
+        """rerun's verdict for a lane that is not qk unittest but whose failedTests name, in the JUnit XML it wrote to
+        its results folder, the tests that failed, and how to rerun one alone (vocaro/queuekeeper#109). Each is rerun
+        as a qk unittest lane's is, and when every rerun passes, each is a flake, recorded as any, and the batch lands
+        only when none of its commits changes one of the lane's paths, the files its tests depend on; a lane that lists
+        none bisects. A failure that a rerun confirms bisects, as no output names an entry to blame."""
+        lane, settings = declared
+        folder = self.failed_results
+        # A group's lanes each write under results/LANE/.
+        if folder is not None and lane != self.failed_lane: folder = folder / lane
+        if folder is None:
+            self.say(f"{lane}'s results folder is not known, so no failed test is rerun: bisecting")
             return None
-        self.say(f"every failed test passed alone {RERUNS} times and no commit of the batch changes its module or a file "
-                 "it imports: landing the batch")
+        tests, why = junit_failures(folder / settings["results"])
+        if tests is None:
+            self.say(f"{lane} failed with no failed test to rerun alone ({why}): bisecting")
+            return None
+        if len(tests) > RERUN_MOST:
+            self.say(f"{lane} failed {len(tests)} tests, more than the {RERUN_MOST} a flake would: bisecting")
+            return None
+        self.say(f"{lane} failed {len(tests)} test{'' if len(tests) == 1 else 's'} at {head[:12]}: {', '.join(tests)}; "
+                 f"rerunning each alone up to {RERUNS} times on that commit before a bisect")
+        busy = self.settle("the failed tests run alone")
+        if busy:
+            self.say(f"the failed tests are not rerun, as {busy}: bisecting")
+            return None
+        template = settings["rerun"]
+        ran = self.rerun_each(tests, lambda test: [word.replace("{test}", test) for word in template], applied, head,
+                              log, round_name)
+        if ran is None: return None
+        flakes, real = ran
+        if real:
+            if flakes:
+                self.say(f"{', '.join(flake['test'] for flake in flakes)} passed alone beside the real failure, so "
+                         "no commit is blamed")
+            return None
+        paths = settings.get("paths") or []
+        changed = [path for path in text(self.checkout, "log", "--format=", "--name-only", "--no-renames",
+                                         f"{base}..{head}").splitlines() if path]
+        reached = sorted({path for path in changed if any(names_path(path, key) for key in paths)})
+        why = (None if paths and not reached else
+               f"{lane}'s failedTests list no paths its tests depend on, so any change may reach them" if not paths else
+               f"the batch changes {', '.join(reached[:5])}, which {lane}'s tests depend on")
+        self.keep_flakes(flakes, applied, {flake["test"]: why for flake in flakes} if why else {},
+                         f"The batch was bisected, as {why}." if why else
+                         f"No commit of the batch's {len(applied)} changes a path {lane}'s tests depend on, so the batch "
+                         "landed.")
+        if why:
+            self.say(f"every failed test passed alone, but {why}: bisecting")
+            return None
+        self.say(f"every failed test passed alone {RERUNS} times and no commit of the batch changes a path {lane}'s tests "
+                 "depend on: landing the batch")
         return flakes
 
     def adder(self, applied, added):

@@ -107,7 +107,28 @@ The worker tries the cheap explanations before the expensive one:
    same time, on different Macs, and every entry that passes along the way lands.
 
 Steps 1 and 2 read test names from the output of `qk unittest`, the bundled Python test
-runner. A failure in any other kind of lane goes straight to the bisect.
+runner. Any other lane gets step 1 only when it declares `failedTests`, and step 2 never: a
+failure its reruns confirm goes to the bisect. Without `failedTests`, which includes Xcode
+and Unity lanes for now, a failure goes straight to the bisect.
+
+```json
+"gate": {
+  "command": ["scripts/test.sh"],
+  "failedTests": {
+    "results": "junit.xml",
+    "rerun": ["scripts/test.sh", "--only", "{test}"],
+    "paths": ["src/", "tests/", "scripts/test.sh"]
+  }
+}
+```
+
+The lane writes its results as JUnit XML to `results`, a path in the folder that
+`QUEUEKEEPER_RESULTS_DIR` names while it runs. Each failed or erred `testcase` is a failed test,
+named `classname.name`, and `rerun` runs one of them alone, with `{test}` replaced by that name.
+`paths` lists the files the tests depend on, each a file or a directory ending in `/`: a batch whose
+failed tests all pass alone lands only when it changes none of them. A lane that lists none
+records the flakes and bisects. In a lane group, the reruns apply only when the one lane that
+failed declares `failedTests`.
 
 An entry sent back is told the load during the failed lane, the failed tests, and whether its
 commits change their files. For a lane other than `qk unittest`, such as a Swift gate, the tests and

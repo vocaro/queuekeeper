@@ -8828,6 +8828,175 @@ class FlakyParts(unittest.TestCase):
                 self.assertTrue(said.startswith(why), said)
 
 
+
+# A lane that is no qk unittest: its own runner, which writes JUnit XML into the lane's results folder and reruns the
+# one test it is given (vocaro/queuekeeper#109).
+JUNIT_LANE = """import os, pathlib, sys
+from xml.sax.saxutils import quoteattr
+
+RUNS, PLAN = pathlib.Path({runs!r}), pathlib.Path({plan!r})
+
+
+def sometimes():
+    done = len(RUNS.read_text()) if RUNS.exists() else 0
+    RUNS.write_text("x" * (done + 1))
+    plan = PLAN.read_text() if PLAN.exists() else ""
+    return plan[done:done + 1] != "F"
+
+
+TESTS = {{"suite.Flaky.sometimes": sometimes, "suite.Flaky.steady": lambda: True}}
+chosen = sys.argv[1:] or list(TESTS)
+passed = {{name: TESTS[name]() for name in chosen}}
+for name, ok in passed.items(): print(("ok " if ok else "FAILED ") + name)
+folder = os.environ.get("QUEUEKEEPER_RESULTS_DIR")
+if folder and not sys.argv[1:]:
+    cases = "".join("<testcase classname=" + quoteattr(name.rpartition(".")[0]) + " name="
+                    + quoteattr(name.rpartition(".")[2]) + ">" + ("" if ok else "<failure message='planned'/>")
+                    + "</testcase>" for name, ok in passed.items())
+    pathlib.Path(folder).mkdir(parents=True, exist_ok=True)
+    (pathlib.Path(folder) / "junit.xml").write_text("<testsuites><testsuite>" + cases + "</testsuite></testsuites>")
+sys.exit(0 if all(passed.values()) else 1)
+"""
+
+
+class DeclaredFlakyReruns(Fixture):
+    """A lane that is not qk unittest but whose failedTests name its failed tests in JUnit XML and how to rerun one
+    reruns them alone before a bisect, as a qk unittest lane does (vocaro/queuekeeper#109)."""
+    ROOT_PREFIX = FlakyReruns.ROOT_PREFIX
+    TEST = "suite.Flaky.sometimes"
+
+    def setUp(self):
+        super().setUp()
+        self.runs, self.plan = self.base / "runs", self.base / "plan"
+        (self.repo / "tests").mkdir()
+        (self.repo / "tests/lane.py").write_text(JUNIT_LANE.format(runs=str(self.runs), plan=str(self.plan)))
+        self.gate({"paths": ["tests/"]})
+
+    def gate(self, failed):
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "tests/lane.py"], "timeout": 600, "failedTests": {
+            "results": "junit.xml", "rerun": ["python3", "tests/lane.py", "{test}"], **failed}}
+        if not failed: del config["lanes"]["gate"]["failedTests"]
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", ".")
+        run(self.repo, "git", "commit", "-qm", "Gate on a lane of its own runner")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def runs_of_the_test(self):
+        return len(self.runs.read_text()) if self.runs.exists() else 0
+
+    def worked(self):
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        return said.getvalue()
+
+    def test_a_failed_test_that_passes_alone_lands_the_batch_and_is_recorded(self):
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        log = self.worked()
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
+        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS)
+        self.assertIn(f"gate failed 1 test at ", log)
+        self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
+        self.assertIn("no commit of the batch changes a path gate's tests depend on: landing the batch", log)
+        self.assertNotIn("fail together", log)
+        for entry in entries:
+            [flake] = entry["flakes"]
+            self.assertEqual(flake["test"], self.TEST)
+            self.assertEqual(len(flake["rerunLogs"]), mq.RERUNS)
+            self.assertTrue(all("ok suite.Flaky.sometimes" in Path(path).read_text() for path in flake["rerunLogs"]))
+        [tracked] = self.tracked
+        self.assertIn("the batch landed", tracked["outcome"])
+
+    def test_a_batch_that_changes_a_path_its_tests_depend_on_bisects_with_the_flake_recorded(self):
+        self.gate({"paths": ["tests/", "a"]})
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        log = self.worked()
+        self.assertIn("every failed test passed alone, but the batch changes a, which gate's tests depend on: bisecting",
+                      log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+        [tracked] = self.tracked
+        self.assertIn("The batch was bisected, as the batch changes a", tracked["outcome"])
+
+    def test_a_lane_that_lists_no_paths_bisects_once_its_failed_tests_pass_alone(self):
+        self.gate({"paths": []})
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        self.add("a", "b")
+        log = self.worked()
+        self.assertIn("gate's failedTests list no paths its tests depend on, so any change may reach them: bisecting", log)
+
+    def test_a_failure_a_rerun_confirms_sends_the_lone_entry_back(self):
+        self.plan.write_text("FF")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        log = self.worked()
+        self.assertIn(f"{self.TEST} failed again alone, on rerun 1 (exit 1), so the failure is real", log)
+        self.assertEqual(self.runs_of_the_test(), 2)
+        entry = self.state(identifier)
+        self.assertNotEqual(entry["state"], "landed")
+        self.assertNotIn("flakes", entry)
+        self.assertEqual(self.tracked, [])
+
+    def test_a_lane_without_failed_tests_bisects_as_before(self):
+        # The negative control: the same lane, failing the same way, with no failedTests, reruns nothing.
+        self.gate({})
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        self.add("a", "b")
+        log = self.worked()
+        self.assertNotIn("rerunning each alone", log)
+        self.assertEqual(self.tracked, [])
+
+
+class DeclaredFailures(unittest.TestCase):
+    """The parts of a failedTests lane's reruns: the JUnit XML it names its failures in and the setting itself
+    (vocaro/queuekeeper#109)."""
+
+    def test_the_failed_and_erred_cases_of_a_junit_file_are_named_classname_dot_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "junit.xml"
+            path.write_text("<testsuites><testsuite><testcase classname='a.B' name='one'><failure/></testcase>"
+                            "<testcase classname='a.B' name='two'/><testcase name='three'><error/></testcase>"
+                            "<testcase classname='a.B' name='one'><failure/></testcase></testsuite></testsuites>")
+            self.assertEqual(mq.junit_failures(path), (["a.B.one", "three"], None))
+            path.write_text("<testsuite><testcase classname='a.B' name='two'/></testsuite>")
+            self.assertEqual(mq.junit_failures(path), (None, f"{path} names no failed test"))
+            path.write_text("<testsuite>")
+            self.assertTrue(mq.junit_failures(path)[1].startswith(f"{path} cannot be read: "))
+            self.assertEqual(mq.junit_failures(Path(folder) / "none.xml"),
+                             (None, "the lane wrote no none.xml in its results folder"))
+
+    def test_a_group_reruns_its_one_failed_lane_that_declares_failed_tests(self):
+        declared = {"results": "j.xml", "rerun": ["t", "{test}"]}
+        lanes = {"one": {"command": ["x"], "failedTests": declared}, "two": {"command": ["y"]},
+                 "group": {"parallel": ["one", "two"]}}
+        self.assertEqual(mq.declared_failures(lanes, "one", []), ("one", declared))
+        self.assertEqual(mq.declared_failures(lanes, "group", ["one"]), ("one", declared))
+        self.assertIsNone(mq.declared_failures(lanes, "group", ["one", "two"]))
+        self.assertIsNone(mq.declared_failures(lanes, "group", ["two"]))
+        self.assertIsNone(mq.declared_failures(lanes, "two", []))
+
+    def test_the_setting_is_checked_when_the_configuration_loads(self):
+        good = {"results": "junit.xml", "rerun": ["scripts/test.sh", "--only", "{test}"], "paths": ["src/"]}
+        for changed, message in (({}, None),
+                                 ({"paths": "src/"}, "paths lists the files"),
+                                 ({"results": "/abs.xml"}, "relative and inside it"),
+                                 ({"results": "../out.xml"}, "relative and inside it"),
+                                 ({"rerun": ["scripts/test.sh"]}, "names {test}"),
+                                 ({"rerun": "scripts/test.sh {test}"}, "names {test}"),
+                                 ({"other": 1}, "needs results and rerun")):
+            settings = {key: value for key, value in {**good, **changed}.items() if value is not None}
+            with self.subTest(changed), tempfile.TemporaryDirectory() as root:
+                (Path(root) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                    "gate": {"command": ["true"], "failedTests": settings}}}))
+                if message is None: configuration.load(root)
+                else:
+                    with self.assertRaisesRegex(ValueError, f"gate.failedTests.*{message}"): configuration.load(root)
+
 class BothHalves(Fixture):
     """A bisect's two halves gate at once, the newer beside the older, one on each Mac (vocaro-engineering#241).
     Here both run on this Mac, as the fixture has no other Mac: HERE and BESIDE are no options, and every lane

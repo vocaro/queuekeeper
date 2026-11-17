@@ -120,7 +120,8 @@ def load(root):
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms", "exactTests"})
+                       "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms", "exactTests",
+                       "failedTests"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
 EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
@@ -189,6 +190,7 @@ def parse(source):
         screen(name, lane)
         compile_first(name, lane)
         stall(name, lane)
+        failed_tests_setting(name, lane)
         extension_keys(name, lane)
         command = lane.get("command")
         if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
@@ -249,6 +251,31 @@ def stall(name, lane):
         raise ValueError(f"{name}.stall stop needs a reason naming the healthy-run measurement and bound")
     if unadmitted(lane):
         raise ValueError(f"{name}.stall needs an admitted leaf lane, not a self lane's polling wrapper")
+
+
+def failed_tests_setting(name, lane):
+    """A lane's failedTests: where the lane writes its results in JUnit XML, under its results folder
+    (QUEUEKEEPER_RESULTS_DIR), the command that reruns one of its tests alone, with {test} for the test's name, and the
+    paths its tests depend on, each a file or a directory ending in /, which the merge queue reads to rerun a failed
+    test alone before a bisect, as it does a qk unittest lane's (vocaro/queuekeeper#109)."""
+    if "failedTests" not in lane: return
+    settings = lane["failedTests"]
+    if not isinstance(settings, dict) or set(settings) - {"results", "rerun", "paths"} \
+            or not {"results", "rerun"} <= set(settings):
+        raise ValueError(f"{name}.failedTests needs results and rerun, and supports paths")
+    results = settings["results"]
+    if not isinstance(results, str) or not results.strip() or Path(results).is_absolute() or ".." in Path(results).parts:
+        raise ValueError(f"{name}.failedTests.results is the JUnit XML file's path in the lane's results folder "
+                         "(QUEUEKEEPER_RESULTS_DIR), relative and inside it")
+    rerun = settings["rerun"]
+    if not isinstance(rerun, list) or not rerun or any(not isinstance(word, str) or not word for word in rerun) \
+            or not any("{test}" in word for word in rerun):
+        raise ValueError(f"{name}.failedTests.rerun is an argv list, never shell source, that names {{test}}, the "
+                         "failed test it reruns alone")
+    paths = settings.get("paths", [])
+    if not isinstance(paths, list) or any(not isinstance(path, str) or not path.strip() for path in paths):
+        raise ValueError(f"{name}.failedTests.paths lists the files its tests depend on, each a file or a directory "
+                         "ending in /")
 
 
 def test_lanes(declared):

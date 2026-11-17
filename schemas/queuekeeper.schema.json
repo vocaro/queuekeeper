@@ -116,7 +116,8 @@
                 "chips",
                 "arguments",
                 "idioms",
-                "exactTests"
+                "exactTests",
+                "failedTests"
               ]
             }
           },
@@ -187,6 +188,39 @@
           "timeout": {
             "type": "integer",
             "minimum": 1
+          },
+          "failedTests": {
+            "description": "Where a lane that is not qk unittest names its failed tests, so that the merge queue reruns each alone before a bisect (doc/merge_queue.md#when-a-batch-fails).",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "results",
+              "rerun"
+            ],
+            "properties": {
+              "results": {
+                "description": "The JUnit XML file the lane writes, as a path relative to its results folder, QUEUEKEEPER_RESULTS_DIR.",
+                "type": "string",
+                "minLength": 1
+              },
+              "rerun": {
+                "description": "The argv that reruns one test alone, with {test} for its name, classname.name from the JUnit XML.",
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "paths": {
+                "description": "The files the lane's tests depend on, each a file or a directory ending in /. A batch whose failed tests all pass alone lands only when it changes none of them; with none listed, it bisects.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
           },
           "stall": {
             "description": "Opt-in quiet monitoring for an admitted leaf lane. Report-only by default; stopping requires a healthy-run measurement and a reviewed bound (doc/guides/parallel-tests.md).",
