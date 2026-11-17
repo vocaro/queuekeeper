@@ -2922,7 +2922,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 2, output + error)
         login = self.home / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
         self.assertIn(f"{kept} holds the password of {login}, which is not there", output + error)
-        self.assertIn("`python3 scripts/qk keychain keep-unlocked`", output + error)
+        self.assertIn("`python3 scripts/qk keychain keep-unlocked --target ", output + error)
         self.assertNotIn("the work ran", output)
 
     def run_here(self, *arguments):
