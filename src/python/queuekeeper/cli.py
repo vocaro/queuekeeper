@@ -1063,6 +1063,30 @@ def working_configuration(root):
     return load(root)
 
 
+# Run in a process of its own, so that registering every plugin leaves this one's registries as the project has them.
+EVERY_COMMAND = """
+import json
+from queuekeeper import checkout, extensions, visibility
+for name in [*checkout.components(), *visibility.available().values()]:
+    try: extensions.load([name])
+    except Exception: pass
+print(json.dumps(sorted({*extensions.COMMANDS, *extensions.PARSED_COMMANDS})))
+"""
+
+
+def every_feature_command():
+    """The names of the commands that every plugin of this checkout and every visibility feature add, whether or not
+    the project loads it or its owner turned it on, as the docs check takes them: a guide tells a reader to type
+    `qk serve` before the dashboard is on (vocaro/queuekeeper#39). None of them when they cannot be read."""
+    environment = {**os.environ, "PYTHONPATH": os.pathsep.join(path for path in sys.path if path)}
+    try:
+        listed = subprocess.run([sys.executable, "-c", EVERY_COMMAND], capture_output=True, text=True, timeout=60,
+                                env=environment, cwd=TOOLKIT_ROOT)
+        return set(json.loads(listed.stdout.splitlines()[-1])) if listed.returncode == 0 else set()
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return set()
+
+
 def load_extensions(argv):
     """Load the extensions of the project argv names: its folder is --project's when that comes first, as a launcher
     gives it, else the current one, and a linked worktree's extensions are found from its main checkout."""
@@ -1285,7 +1309,8 @@ def perform(argv, report):
     merge_queue.land_arguments(commands.add_parser("land", help="land a finished commit through the merge queue of this "
         "repository, or with --repo of another, and return at once: the queue gates it on origin/main and pushes it"))
     documentation = commands.add_parser("docs", help="check the project's Markdown: each link's file, anchor and "
-        "source line exists, and, with queuekeeper.json's docs.citations, each citation of a document by path and "
+        "source line exists, each `qk WORD` a shell block or code span tells a reader to type names a subcommand, and, "
+        "with queuekeeper.json's docs.citations, each citation of a document by path and "
         "section title or anchor in its Markdown and source names a heading or bold lead-in of it; exit 1 on any "
         "that does not (doc/guides/maintenance.md, Docs check)")
     documentation.add_argument("operation", choices=["check"])
@@ -1431,7 +1456,8 @@ def perform(argv, report):
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)
         elif args.action == "docs":
-            failures = docs.check(root, args.paths or None, citations=config.get("docs", {}).get("citations", False))
+            failures = docs.check(root, args.paths or None, citations=config.get("docs", {}).get("citations", False),
+                                  commands=set(commands.choices) | every_feature_command())
             print("\n".join(failures) if failures else "Documentation checks passed")
             return int(bool(failures))
         # The subcommand names are this parser's, so a new one is covered as it is added (vocaro/queuekeeper#35).

@@ -55,6 +55,16 @@ class Setup(unittest.TestCase):
         self.assertIn(sys.executable, text)
         self.assertIn(str(ROOT / "bin/qk"), text)
 
+    def test_a_shell_finds_the_installed_qk_on_the_path_and_runs_its_help(self):
+        # As a reader of the Install section types it: by name, found on the PATH (vocaro/queuekeeper#39).
+        self.run_script()
+        ran = subprocess.run(["/bin/zsh", "-fc", "qk --help"], capture_output=True, text=True, cwd=self.home,
+                             env=host_isolation.reduced(HOME=str(self.home), PATH=f"{self.local}:/usr/bin:/bin"),
+                             timeout=host_isolation.stretched(60))
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        for command in ("land", "queue", "docs", "visibility"):
+            self.assertIn(command, ran.stdout)
+
     def test_the_first_writable_folder_on_the_path_is_used_and_one_that_is_not_on_it_is_said(self):
         other = self.home / "bin"
         other.mkdir()

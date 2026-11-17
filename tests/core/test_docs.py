@@ -187,5 +187,44 @@ class CitationSettingTests(unittest.TestCase):
                                          printed.getvalue())
 
 
+class CommandTests(unittest.TestCase):
+    """Each `qk WORD` the docs tell a reader to type names one of qk's subcommands (vocaro/queuekeeper#39)."""
+    TEXT = ("# Setup\n\nRun `qk visibility enable dashboard`, then `python3 scripts/qk --project . sevre --open`.\n"
+            "`qk COMMAND` and `qk --help` are no command's words, nor is the `qk` in prose.\n\n"
+            "```sh\nqk land --wait\n~/.local/bin/qk lnad\ncd x && python3 scripts/qk queue status  # qk queue\n```\n\n"
+            "```python\nrun(['qk', 'nothing'])  # qk nothing, in code that is not a shell's\n```\n\n"
+            "```\n$ qk serve --open\n```\n\n~~~zsh\nqk unittset -s tests\n~~~\n")
+
+    def test_each_typed_command_is_read_from_shell_blocks_and_code_spans(self):
+        self.assertEqual(docs.commands_typed(self.TEXT), [
+            (3, "visibility"), (3, "sevre"), (7, "land"), (8, "lnad"), (9, "queue"), (9, "queue"), (17, "serve"),
+            (21, "unittset")])
+
+    def test_a_word_that_is_no_subcommand_is_reported_with_its_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "README.md").write_text(self.TEXT)
+            known = {"visibility", "land", "queue", "serve", "unittest"}
+            readme = root / "README.md"
+            self.assertEqual(docs.check(root, commands=known), [
+                f"{readme}:3: names no qk command: qk sevre", f"{readme}:8: names no qk command: qk lnad",
+                f"{readme}:21: names no qk command: qk unittset"])
+            self.assertEqual(docs.check(root), [])   # with no subcommand names given, none is read
+
+    def test_qk_docs_check_knows_every_subcommand_features_and_plugins_included(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": []}))
+            # serve and watch are visibility features' commands, unity a plugin's, none of them loaded here.
+            (root / "README.md").write_text("`qk land`, `qk docs check`, `qk serve --open`, `qk watch`, `qk unity test`\n")
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(cli.main(["--project", str(root), "docs", "check"]), 0, printed.getvalue())
+            (root / "README.md").write_text("Then type `qk dashboard`.\n")
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(cli.main(["--project", str(root), "docs", "check"]), 1)
+            self.assertEqual(printed.getvalue().strip(), f"{root / 'README.md'}:1: names no qk command: qk dashboard")
+
+
 if __name__ == "__main__":
     unittest.main()

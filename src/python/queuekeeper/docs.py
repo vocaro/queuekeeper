@@ -41,6 +41,11 @@ RECORDS = {"evidence", "archive", "archives", "archived"}
 # What no section title holds, which marks text after a path's comma as code or data: braces, brackets,
 # operators, or a call such as Path(x).
 NOT_A_TITLE = re.compile(r"[{}\[\]<>=$|\\]|\w\(")
+# The info strings of a fenced block of shell commands; a block with none is read as one too.
+SHELL = {"", "sh", "bash", "zsh", "shell", "console", "shell-session", "sh-session"}
+# A command line's `qk WORD`, by any path to the command, as in python3 scripts/qk land or ~/.local/bin/qk doctor,
+# with --project before the word if given. A word in capitals, such as qk COMMAND, is a placeholder.
+QK_COMMAND = re.compile(r"(?<![\w.$-])(?:\S*/)?qk(?:[ \t]+--project(?:=\S+|[ \t]+\S+))?[ \t]+([a-z][a-z0-9-]*)(?![\w-])")
 
 
 def slug(text):
@@ -115,10 +120,28 @@ def anchors_from(headings, ids):
     return found
 
 
-def check(root, paths=None, citations=False):
+def commands_typed(text):
+    """Each (line number, word) of a `qk WORD` that text, a Markdown document, tells a reader to type: in a fenced
+    block of shell commands, or in a code span outside any fenced block."""
+    found, fence = [], None
+    for number, line in enumerate(text.splitlines(), 1):
+        if fence:
+            if re.match(rf" {{0,3}}{re.escape(fence[0][0])}{{{len(fence[0])},}}[ \t]*$", line): fence = None
+            elif fence[1]: found += [(number, match[1]) for match in QK_COMMAND.finditer(line)]
+            continue
+        opening = re.match(r" {0,3}(`{3,}|~{3,})[ \t]*([^\s`{]*)", line)
+        if opening:
+            fence = (opening[1], opening[2].lower() in SHELL)
+            continue
+        found += [(number, match[1]) for span in CODE_SPAN.finditer(line) for match in QK_COMMAND.finditer(span[2])]
+    return found
+
+
+def check(root, paths=None, citations=False, commands=()):
     """Each failure of the project's Markdown: a missing link, anchor or source line, a wrong-case link, and an
     AGENTS.md of 32 KiB or more. With citations, queuekeeper.json's docs.citations, also each citation that names
-    no document or section of this checkout (cited)."""
+    no document or section of this checkout (cited). With commands, the names of qk's subcommands, also each
+    `qk WORD` a reader is told to type whose word is none of them (vocaro/queuekeeper#39)."""
     root = Path(root).resolve()
     failures = []
     tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, timeout=30)
@@ -143,7 +166,11 @@ def check(root, paths=None, citations=False):
         if not path.is_absolute(): path = root / path
         if path.name == "AGENTS.md" and path.stat().st_size >= 32768:
             failures.append(f"{path}: agent instructions reach 32 KiB")
-        text = re.sub(r"```.*?```", "", path.read_text(), flags=re.S)
+        whole = path.read_text()
+        if commands:
+            failures += [f"{path}:{number}: names no qk command: qk {word}"
+                         for number, word in commands_typed(whole) if word not in commands]
+        text = re.sub(r"```.*?```", "", whole, flags=re.S)
         for raw in re.findall(r"\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)", text):
             target = unquote(raw.strip("<>"))
             url = urlsplit(target)

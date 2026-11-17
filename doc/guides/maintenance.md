@@ -1379,6 +1379,15 @@ source line (`PATH:LINE`) must exist, and an `AGENTS.md` must stay under 32 KiB.
 reads the Markdown at the root and under `doc/`, `docs/`, `guides/`, `knowledge/`, `agents/` and
 `policies/`.
 
+**Commands a reader types.** Each `qk WORD` in a fenced shell block (`sh`, `bash`, `zsh`, `shell`,
+`console` or none) or in a code span, by any path to the command and with `--project` before the word
+if given, must name a subcommand: one of the core's, the project's extensions', or any plugin's or
+visibility feature's in this checkout, whether or not it is loaded or on. A hit reads `PATH:LINE:
+names no qk command: qk WORD`. A word in capitals, as in `qk COMMAND`, is a placeholder and not read.
+The docs once told the owner to type commands that no shell found, and nothing ran them as typed
+(vocaro/queuekeeper#39); a test of the setup script likewise runs the `qk --help` it installs, found
+on the PATH by name.
+
 **Citations, for a project that turns them on.** With `"docs": {"citations": true}` in
 queuekeeper.json, the check also reads citations of a document by its path and a section title,
 as in `(doc/guides/shared-host.md, Heavy-work admission)`, and by its path and an anchor, as in
