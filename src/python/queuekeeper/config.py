@@ -464,6 +464,22 @@ def unread(config, path):
     return any(names_path(path, key) for key in declared.get("paths", {}))
 
 
+def unread_named(config, changed):
+    """The lanes main's queue.unread.paths name for the paths changed, beyond queue.unread.lanes, each with the paths
+    that name it and why: {lane: {path: why}}, in order. A path that a small check reads, and no other code lane, names
+    that check's lanes, so that a batch of such paths runs them in place of the gate (vocaro/queuekeeper#27). An
+    excluded path names none."""
+    declared = unread_declared(config.get("queue", {}))
+    if declared is False: return {}
+    named = {}
+    for path in changed:
+        if any(names_path(path, key) for key in declared.get("exclude", {})): continue
+        for key, value in declared.get("paths", {}).items():
+            if isinstance(value, dict) and names_path(path, key):
+                for lane in value.get("lanes", []): named.setdefault(lane, {})[key] = value["why"]
+    return named
+
+
 def unread_lanes(config):
     """The lanes a batch of unread paths runs in place of the gate, without the preflight lanes; None when main's
     queue.unread is false, so that every batch gates."""
@@ -543,6 +559,9 @@ def landing_lanes(lanes, queue):
                   for name in named})
     found.update({name: "a docs-only batch runs it, by the default or queue.unread.lanes"
                   for name in unread_lanes({"queue": queue}) or [] if name not in found})
+    declared = unread_declared(queue)
+    for name, paths in unread_named({"queue": queue}, list(declared.get("paths", {}) if declared else ())).items():
+        found.setdefault(name, f"a docs-only batch that changes {', '.join(paths)} runs it, by queue.unread.paths")
     waiting = list(found)
     while waiting:
         name = waiting.pop()
@@ -610,7 +629,8 @@ def merge_queue(queue, lanes):
         if queue["unread"] is not False and not unread_object(queue["unread"], lanes):
             raise ValueError("queue.unread is false to gate every batch and carry nothing over, or an object of "
                              "optional paths, mapping each path, a directory ending in /, to why no code lane "
-                             "reads it; "
+                             "reads it, or to an object of that why and lanes, the distinct configured lanes, never "
+                             "gate, of the few checks that do read it, which a batch changing it runs too; "
                              "exclude, the paths among them or the Markdown defaults that code does read, each with "
                              "why; lanes, the distinct configured lanes a batch of unread paths runs instead, never "
                              "gate; and defaults, false to drop the Markdown defaults")
@@ -675,14 +695,17 @@ def preflight_lanes(queue, lanes):
 def unread_object(declared, lanes):
     """Whether declared is a valid queue.unread object (merge_queue)."""
     if not isinstance(declared, dict) or set(declared) - {"paths", "exclude", "lanes", "defaults"}: return False
-    def reasons(value): return isinstance(value, dict) and all(
-        isinstance(key, str) and key.strip() and isinstance(why, str) and why.strip() for key, why in value.items())
-    if not reasons(declared.get("paths", {})) or not reasons(declared.get("exclude", {})): return False
+    def said(why): return isinstance(why, str) and why.strip()
+    def runs(named): return isinstance(named, list) and named and len(set(map(str, named))) == len(named) \
+        and all(isinstance(name, str) and (name in lanes or name == DOCS) and name != "gate" for name in named)
+    def reasons(value, laned=False): return isinstance(value, dict) and all(
+        isinstance(key, str) and key.strip() and (said(why) or laned and isinstance(why, dict)
+                                                  and set(why) == {"why", "lanes"} and said(why["why"])
+                                                  and runs(why["lanes"])) for key, why in value.items())
+    if not reasons(declared.get("paths", {}), laned=True) or not reasons(declared.get("exclude", {})): return False
     if "defaults" in declared and type(declared["defaults"]) is not bool: return False
     if declared.get("defaults") is False and not declared.get("paths"): return False
-    named = declared.get("lanes", [DOCS])
-    return isinstance(named, list) and named and len(set(map(str, named))) == len(named) \
-        and all((name in lanes or name == DOCS) and name != "gate" for name in named)
+    return runs(declared.get("lanes", [DOCS]))
 
 
 def docs_only(declared, lanes):

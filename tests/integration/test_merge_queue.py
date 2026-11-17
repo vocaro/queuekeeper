@@ -3320,6 +3320,29 @@ class DocsOnly(Fixture):
         self.assertTrue(any("by main's queue.unread: running only spelling, docs" in words for words in said), said)
         self.assertIn("docs lanes only (spelling, docs): no gate of that commit", mq.describe(self.state(ids[0])))
 
+    def test_a_docs_only_batch_runs_the_lanes_its_paths_name_and_records_why(self):
+        """vocaro/queuekeeper#27: a path that one small check reads names that check's lane, and a docs-only batch
+        that changes it runs that lane beside the docs lanes, never the gate, and its landing says so."""
+        privacy = self.base / "privacy-runs"
+        config = json.loads(json.dumps(self.configured))
+        config["lanes"]["privacy"] = {"command": ["python3", "lane.py", str(privacy), str(self.base / "privacy-status")]}
+        why = "only the privacy check reads it"
+        queue = {key: value for key, value in config["queue"].items() if key != "carryOver"}
+        unread = {"paths": {**config["queue"].get("carryOver", {}), "doc/release/": {"why": why, "lanes": ["privacy"]}}}
+        self.publish({**config, "queue": {**queue, "unread": unread}}, "Name the privacy lane")
+        (self.repo / "doc/release").mkdir(parents=True, exist_ok=True)
+        self.commit("doc/release/notes.md", "notes")
+        [notes] = self.add("notes")
+        said = []
+        with patch.object(mq.Worker, "say", lambda worker, words: said.append(words)): self.assertEqual(self.work(), 0)
+        state = self.state(notes)
+        self.assertEqual((state["state"], self.gates(), len(privacy.read_text())), ("landed", 0, 1))
+        self.assertEqual(state["docsOnly"], ["spelling", "docs", "privacy"])
+        self.assertEqual(state["docsNamed"], {"privacy": {"doc/release/": why}})
+        named = f"privacy for doc/release/ ({why})"
+        self.assertIn(f"queue.unread.paths named {named}", mq.describe(state))
+        self.assertTrue(any(f"queue.unread.paths names {named}" in words for words in said), said)
+
     def landed_order(self, *ids):
         """The entries' landed commits, oldest on main first."""
         run(self.repo, "git", "fetch", "-q", "origin")
@@ -3707,6 +3730,35 @@ class Unread(unittest.TestCase):
         self.assertIsNone(mq.docs_lanes(config, ["doc/a.md", "src/a.py"]))
         self.assertIsNone(mq.docs_lanes({"queue": {"unread": False}}, ["doc/a.md"]))
 
+    def test_a_path_names_the_few_lanes_that_read_it(self):
+        """vocaro/queuekeeper#27: a batch of plain unread paths runs the docs lanes, one that changes a path naming
+        lanes runs those too, and one beside a path a code lane reads gates. A path naming lanes never carries over,
+        since those lanes read it."""
+        laned = {"why": "the privacy check reads it", "lanes": ["notes"]}
+        config = {"lanes": self.LANES, "queue": {"unread": {"paths": {"doc/release/": laned, "records/": "why"},
+                                                            "exclude": {"doc/release/input.md": "a test reads it"}}}}
+        self.assertEqual(mq.docs_lanes(config, ["doc/a.md", "records/a.json"]), ["spelling", "docs"])
+        self.assertEqual(mq.docs_lanes(config, ["doc/a.md", "doc/release/b.md"]), ["spelling", "docs", "notes"])
+        self.assertIsNone(mq.docs_lanes(config, ["doc/release/b.md", "src/a.py"]))
+        self.assertIsNone(mq.docs_lanes(config, ["doc/release/input.md"]))
+        self.assertEqual(configuration.unread_named(config, ["doc/a.md", "doc/release/b.md"]),
+                         {"notes": {"doc/release/": "the privacy check reads it"}})
+        self.assertTrue(mq.carried_over("records/a.json", config, set()))
+        self.assertFalse(mq.carried_over("doc/release/b.md", config, set()))
+        self.assertIn("rides the code gate", mq.rides(config, ["doc/release/b.md", "src/a.py"]))
+        self.assertEqual(mq.rides(config, ["doc/release/b.md"]),
+                         "is documentation only: lands on the spelling, docs and notes lanes, not the code gate, "
+                         "main's queue.unread.paths naming notes for doc/release/ (the privacy check reads it)")
+        self.assertEqual(configuration.landing_lanes(self.LANES, config["queue"])["notes"],
+                         "a docs-only batch that changes doc/release/ runs it, by queue.unread.paths")
+        self.assertEqual(self.parsed(config["queue"])["queue"]["unread"], config["queue"]["unread"])
+        for bad in ({"why": "w"}, {"why": "", "lanes": ["notes"]}, {"why": "w", "lanes": ["gate"]},
+                    {"why": "w", "lanes": ["absent"]}, {"why": "w", "lanes": []}, {"why": "w", "lanes": ["notes"], "x": 1}):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "queue.unread"):
+                self.parsed({"unread": {"paths": {"doc/release/": bad}}})
+        with self.assertRaisesRegex(ValueError, "queue.unread"):
+            self.parsed({"unread": {"exclude": {"doc/x.md": laned}}})
+
     def test_the_configuration_is_checked(self):
         for declared in (False, {}, {"paths": {"records/": "why"}}, {"lanes": ["notes"]}, {"defaults": True},
                          {"paths": {"doc/": "why"}, "exclude": {"doc/x.md": "why"}, "defaults": False}):
@@ -3745,6 +3797,9 @@ class Unread(unittest.TestCase):
         queue = schema["properties"]["queue"]["properties"]
         self.assertEqual(set(queue["unread"]["properties"]), {"paths", "exclude", "lanes", "defaults"})
         self.assertEqual(queue["unread"]["properties"]["lanes"]["items"]["not"], {"const": "gate"})
+        laned = queue["unread"]["properties"]["paths"]["additionalProperties"]["oneOf"][1]
+        self.assertEqual((set(laned["properties"]), laned["properties"]["lanes"]["items"]["not"]),
+                         ({"why", "lanes"}, {"const": "gate"}))
         self.assertTrue(queue["docsOnly"]["deprecated"] and queue["carryOver"]["deprecated"])
 
 

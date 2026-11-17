@@ -505,11 +505,42 @@
           "additionalProperties": false,
           "properties": {
             "paths": {
-              "description": "Each path, a directory ending in /, with why no code lane reads it; these add to the Markdown defaults, and are how a project names any other documentation folder, such as guides/",
+              "description": "Each path, a directory ending in /, with why no code lane reads it; these add to the Markdown defaults, and are how a project names any other documentation folder, such as guides/. A path that a few small checks do read gives an object of why and lanes, those checks' lanes, which a docs-only batch changing it runs too; such a path never carries over a passed result",
               "type": "object",
               "additionalProperties": {
-                "type": "string",
-                "minLength": 1
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "why",
+                      "lanes"
+                    ],
+                    "properties": {
+                      "why": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "lanes": {
+                        "description": "The lanes that read this path, which a docs-only batch changing it runs as well as queue.unread.lanes; never gate",
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "not": {
+                            "const": "gate"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             },
             "exclude": {

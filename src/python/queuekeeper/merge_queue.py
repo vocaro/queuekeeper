@@ -59,7 +59,7 @@ from . import events, pre_push, recovery
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, SPELLING, TOOLKIT_ROOT, admission, implicit_command, implicit_spelling, \
     lane_to_run, legacy_carried, legacy_spelling_warning, legacy_unread_warning, load, names_path, parse, preflight, project_checkout, \
-    siblings_in, stays, toolkit_command, unlocked_screen, unread, unread_declared, unread_lanes
+    siblings_in, stays, toolkit_command, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -75,7 +75,7 @@ QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
 # Passed is a batch whose lanes passed and whose push has not landed it: Worker.keep and Worker.push_passed.
 WAITING = {QUEUED, TESTING, PASSED}
 # What an entry's record gives the event of its final state (Queue.settle), where it has them.
-EVENT_FIELDS = ("why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "ungated")
+EVENT_FIELDS = ("why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated")
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
@@ -620,11 +620,19 @@ def ahead(front, no_gate, why):
 
 def docs_lanes(config, changed):
     """The lanes a batch that changes only the paths changed runs in place of the gate: its preflight lanes, then main's
-    queue.unread.lanes, when no code lane reads any of them (config.unread), else None. Both sides of a rename arrive
-    in changed, so moving a source or fixture into documentation still runs the code gate."""
+    queue.unread.lanes, and the lanes queue.unread.paths names for them (unread_named), when no code lane reads any of
+    them (config.unread), else None. Both sides of a rename arrive in changed, so moving a source or fixture into
+    documentation still runs the code gate."""
     lanes = unread_lanes(config)
     if not changed or lanes is None or not all(unread(config, path) for path in changed): return None
+    lanes += [name for name in unread_named(config, changed) if name not in lanes]
     return [name for name in preflighted(config) if name not in lanes] + lanes
+
+
+def named_said(named):
+    """The lanes queue.unread.paths named for a docs-only batch (unread_named), as a line says them, with why."""
+    return "; ".join(f"{lane} for {', '.join(f'{path} ({why})' for path, why in paths.items())}"
+                     for lane, paths in named.items())
 
 
 def docs_first(entries, config, changed_by, blocked=(), gating=()):
@@ -684,8 +692,10 @@ def carried_over(path, config, batch_files):
     """Whether main changing path leaves a passed batch's result standing: a path no code lane reads, by main's
     queue.unread (config.unread), and one the batch does not touch. It is the same reading that lets a batch of such
     paths skip the gate, so a docs entry that lands beside a gate (Worker.docs_beside) never stops its pass carrying
-    over."""
-    return path not in batch_files and (unread(config, path) or legacy_carried(config, path))
+    over. A path whose queue.unread.paths entry names lanes is read by those lanes, so it never carries over
+    unchecked: main gaining it gates again (vocaro/queuekeeper#27)."""
+    return path not in batch_files and (unread(config, path) and not unread_named(config, [path])
+                                        or legacy_carried(config, path))
 
 
 def carry_checks(config, moved, base, docs_check=IMPLICIT_DOCS):
@@ -1912,7 +1922,9 @@ def rides(config, changed):
     landing, and found out only by waiting that it rode the code gate (vocaro/queuekeeper#118)."""
     changed = sorted(changed)
     docs = docs_lanes(config, changed)
-    if docs: return f"is documentation only: lands on {spoken(docs)}, not the code gate"
+    named = unread_named(config, changed) if docs else {}
+    if docs: return (f"is documentation only: lands on {spoken(docs)}, not the code gate"
+                     + (f", main's queue.unread.paths naming {named_said(named)}" if named else ""))
     queue = config.get("queue", {})
     if unread_declared(queue) is False:
         why = f"main's queue.{'unread' if 'unread' in queue else 'docsOnly'} is false, so every entry does"
@@ -2018,7 +2030,9 @@ def describe(entry):
         verdict = entry["passed"]
         line += (f"\n         passed at {verdict['head'][:12]} on {verdict['base'][:12]}: the push lands it without "
                  "gating it again")
-    if entry.get("docsOnly"): line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
+    if entry.get("docsOnly"):
+        line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
+        if entry.get("docsNamed"): line += f"; queue.unread.paths named {named_said(entry['docsNamed'])}"
     if entry.get("ungated"):
         line += (f"\n         landed without the gate, on {', '.join(entry['ungated']['lanes']) or 'no lane'}, because "
                  f"{entry['ungated']['why']}; the next gate on main covers it")
@@ -3966,6 +3980,8 @@ class Worker:
         main has passed over an earlier ungated landing (covered)."""
         head = self.head()
         gated_on = base
+        named = unread_named(config, [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base,
+                                                             head).splitlines() if path]) if docs else {}
         unsure = False
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
@@ -4011,6 +4027,7 @@ class Worker:
                     self.queue.settle(entry, LANDED, landedAs=commit, landedTip=head,
                                       **({"landedCommits": count} if count else {}),
                                       **({"docsOnly": docs} if docs else {}),
+                                      **({"docsNamed": named} if named else {}),
                                       **({"ungated": ungated} if ungated else {}),
                                       **({"gate": self.measured} if self.measured and not docs else {}),
                                       **({} if docs or ungated else {"gatedOn": gated_on}))
@@ -4583,9 +4600,11 @@ class Worker:
         changed = [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base, head).splitlines()
                    if path]
         docs = None if ungated else docs_lanes(config, changed)
+        named = unread_named(config, changed) if docs else {}
         if docs: self.say(f"no code lane reads any path the batch changes, by main's queue.unread: running only "
                           f"{', '.join(docs)}, "
-                          "which is no gate of the pushed commit")
+                          "which is no gate of the pushed commit"
+                          + (f"; queue.unread.paths names {named_said(named)}" if named else ""))
         round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}"
         beside = self.beside(waiting, batch, base, config, docs, ungated, changed)
         # A batch that changes documents and code runs main's docs lanes too, both halves of a bisect alike (#122).

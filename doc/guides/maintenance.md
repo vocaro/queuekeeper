@@ -937,6 +937,19 @@ carries nothing over. List a path only when no lane reads it, and check first: s
 compiles sources under `measurements/audits`, and BreezEPUB's script tests read parts of
 `evidence/`. A path left out costs a gate run; a path wrongly listed lands untested.
 
+A path that one or two small checks read, and no other code lane, can name those checks' lanes in
+place of a plain reason (vocaro/queuekeeper#27):
+
+```json
+"paths": {"doc/release/": {"why": "only the privacy checks read it", "lanes": ["privacy-docs"]}}
+```
+
+A docs-only batch that changes such a path runs `lanes` plus every lane its changed paths name,
+never the gate, and its landing records them as `docsNamed`, each with the paths that named it and
+why, which `qk queue status` and `qk queue result` show. Since those lanes read the path, `main`
+gaining it never carries over a passed result: the batch gates again. A batch that changes such a
+path beside code rides the gate as any other.
+
 `queue.unread` replaces `queue.docsOnly` and `queue.carryOver`, which said the same thing in two
 lists that could disagree. A release reads them as `queue.unread`: `carryOver`'s paths join
 `docsOnly.paths`, and an explicit `docsOnly` keeps the defaults off, as it replaced them. `qk doctor`

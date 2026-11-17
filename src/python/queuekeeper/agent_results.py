@@ -137,7 +137,7 @@ def entry_result(queue, entry):
                        for flake in entry.get("flakes", [])],
             "artifacts": artifacts, "gates": gates,
             "resultsSummary": (entry.get("gate") or {}).get("results"),
-            "docsOnly": entry.get("docsOnly"), "ungated": entry.get("ungated"),
+            "docsOnly": entry.get("docsOnly"), "docsNamed": entry.get("docsNamed"), "ungated": entry.get("ungated"),
             "recovery": recovery.in_project(recovery.for_entry(entry, held), queue.root)}
 
 
