@@ -56,7 +56,7 @@ from xml.etree import ElementTree
 
 from . import budgets, disk, extensions, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
-from . import events, pre_push, recovery
+from . import events, pre_push, recovery, restartable
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, SPELLING, TOOLKIT_ROOT, admission, implicit_command, implicit_spelling, \
     lane_to_run, legacy_carried, legacy_spelling_warning, legacy_unread_warning, load, names_path, parse, preflight, project_checkout, \
@@ -3311,14 +3311,19 @@ class Worker:
                     f"{len(own)}, such as {own[0][:12]}")
         # What runs in a session's worktree inside it, or opens Git's own files, is not running from its tree; nor
         # is what names only the checkout itself, as every session names its project root (disk.runners, #182).
+        # Sessions' worktrees are passed over by their folder too, so that a shell left naming one that has since
+        # been removed holds nothing back (vocaro/queuekeeper#159).
         listed = text(shared, "worktree", "list", "--porcelain").splitlines()
         apart = [Path(line[len("worktree "):]) for line in listed[1:] if line.startswith("worktree ")]
-        apart.append(Path(text(shared, "rev-parse", "--path-format=absolute", "--git-common-dir")))
+        apart += [Path(shared) / ".claude" / "worktrees", Path(text(shared, "rev-parse", "--path-format=absolute", "--git-common-dir"))]
         try: users = disk.runners(disk.census(), shared, apart, placed=loads_from_working_directory)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             return f"{UNKNOWN_USE}: {error}"
         launchers = self.launchers(users)
-        users = [use for use in users if not (use[0].pid in launchers and use[1] == "argument")]
+        # A process that restarts itself once the checkout moves, as the dashboard's server, holds nothing back
+        # (restartable, vocaro/queuekeeper#159).
+        moving = restartable.passed(shared)
+        users = [use for use in users if not (use[0].pid in launchers and use[1] == "argument") and use[0].pid not in moving]
         if users:
             named = "; ".join(f"PID {process.pid} ({process.command or process.args.split(' ')[0] or '?'}), "
                               f"{how} {path}" for process, how, path in users[:SHOWN_USERS])

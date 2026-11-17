@@ -6724,6 +6724,25 @@ class SharedCheckout(Fixture):
                 started[0].kill()
                 started[0].wait()
 
+    def test_a_process_that_restarts_itself_and_a_shell_naming_a_removed_worktree_do_not_hold_it_back(self):
+        """vocaro/queuekeeper#159: a dashboard left open registers as restarting itself once the checkout moves
+        (restartable), and a session's shell can outlive the worktree it names; neither holds the checkout back."""
+        def started():
+            self.server = self.python(self.repo / "scripts")
+            self.assertIsNotNone(mq.restartable.register(self.repo, "the dashboard", pid=self.server.pid))
+            self.held(["sh", "-c", "sleep 300; exit 0", str(self.repo / ".claude/worktrees/removed/notes.md")], self.repo)
+        before, after, main, said = self.land(started)
+        self.assertEqual(after, main)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+        # The negative control: a registration whose PID another process now has, by its start time, passes over
+        # nothing, and is removed.
+        record = mq.restartable.folder(self.repo) / f"{self.server.pid}.json"
+        record.write_text(json.dumps({"pid": self.server.pid, "started": "Thu Jan  1 00:00:00 1970", "what": "x"}))
+        before, after, main, said = self.land()
+        self.assertEqual(after, before)
+        self.assertRegex(said, rf"may still run its toolkit: PID {self.server.pid} \([\w.]+\), working directory")
+        self.assertFalse(record.exists())
+
     def test_a_toolkit_run_from_the_checkouts_root_holds_it_back_and_is_named(self):
         def started(): self.runner = self.held(["sh", "-c", "sleep 300; exit 0", "scripts/qk"], self.repo)
         before, after, main, said = self.land(started)

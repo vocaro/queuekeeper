@@ -170,6 +170,14 @@ left in `src/python` (only Python loads code from there unnamed), or a signed qu
 launcher, which names the checkout's `src/python` in its arguments but only waits on the worker it
 started, which counts by its own (`Worker.stays`,
 [vocaro-engineering#384](https://github.com/vocaro/vocaro-engineering/issues/384)).
+Nor is a process that restarts itself once the checkout moves. A long-running one, such as `qk serve`, registers
+under the checkout's Git directory, in `queuekeeper-restartable/PID.json` with when it started; once the
+checkout's HEAD moves it replaces itself, by exec, with the same command from the new code, and an open
+dashboard page reloads when the commit it serves changes. A registration whose process has ended, or whose PID
+another process now has, is removed. Nor is a process whose working directory or argument lies under
+`.claude/worktrees/` in the checkout, whether or not Git still lists that worktree, such as a shell left naming
+one that has been removed (owner's decision, 2026-11-17: Queuekeeper's scripts and code are free to restart as
+needed; [vocaro/queuekeeper#159](https://github.com/vocaro/queuekeeper/issues/159)).
 A running `queuekeeper` keeps the modules it loaded at its start but reads six others when first used, and a
 lane that starts another `queuekeeper` reads the tree as it is then, so a run spanning the move could mix two
 toolkits. Otherwise the worker leaves the checkout as it is and its log says why, naming up to five

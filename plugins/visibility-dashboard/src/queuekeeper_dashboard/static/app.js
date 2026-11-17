@@ -220,8 +220,14 @@
     show();
   };
 
+  // The commit the server serves: one that moved, as when the server restarted itself on new code, reloads the page,
+  // so that its scripts and styles are the server's.
+  let served = null;
   async function ask(path) {
     const response = await fetch(path, { cache: "no-store" });
+    const commit = response.headers.get("X-Queuekeeper-Commit");
+    if (commit && served && commit !== served) location.reload();
+    if (commit) served = commit;
     const found = await response.json().catch(() => ({ error: "the server's answer could not be read" }));
     if (!response.ok) throw new Error(found.error || "the server answered " + response.status);
     return found;

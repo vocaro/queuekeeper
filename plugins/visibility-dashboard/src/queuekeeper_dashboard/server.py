@@ -9,19 +9,27 @@
     /api/all/panel/NAME                a panel's data for every repository, the request's query passed to the panel
     /api/r/REPOSITORY/panel/NAME       a panel's data for a repository, the request's query passed to the panel
 
+Started from a Git checkout of Queuekeeper, it registers as a process that restarts itself (queuekeeper.restartable):
+once that checkout's HEAD moves, as when the queue's worker fast-forwards the shared checkout after a landing, it
+replaces itself with the same command from the new code, so a dashboard left open never holds the checkout behind
+(vocaro/queuekeeper#159). Each answer names the commit it serves, by which an open page reloads itself after the
+server has moved.
+
 It answers GET alone, and only a request whose Host names this Mac: a page elsewhere that pointed a name of its own
 at this address would otherwise read the queue through its visitor's browser. It binds 127.0.0.1 unless told
 otherwise, and says so when it is told."""
 import argparse
 import http.server
 import json
+import os
 from pathlib import Path
+import signal
 import sys
 import threading
 from urllib.parse import parse_qsl, unquote, urlsplit
 import webbrowser
 
-from queuekeeper import git_state
+from queuekeeper import git_state, restartable
 from . import HELP, panels, registry, repository
 
 PORT, BIND = 8750, "127.0.0.1"
@@ -117,7 +125,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         for name, value in (("Content-Type", kind), ("Content-Length", str(len(body))), ("Cache-Control", "no-store"),
                             ("Content-Security-Policy", POLICY), ("X-Content-Type-Options", "nosniff"),
-                            ("Referrer-Policy", "no-referrer")):
+                            ("Referrer-Policy", "no-referrer"), ("X-Queuekeeper-Commit", self.server.commit or "")):
             self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD": self.wfile.write(body)
@@ -185,8 +193,12 @@ def make(given=(), port=PORT, bind=BIND):
     """A server of given repositories and the registry's, bound and not yet serving."""
     server = Server((bind, port), Handler)
     server.daemon_threads = True
-    server.app, server.bound = App(given), bind
+    server.app, server.bound, server.commit = App(given), bind, None
     return server
+
+
+def stopped(number, frame):
+    raise KeyboardInterrupt
 
 
 def main(argv, project=None):
@@ -218,8 +230,24 @@ def main(argv, project=None):
     if args.bind not in (BIND, "localhost", "::1"):
         print(f"queuekeeper: {args.bind} is not this Mac alone: every machine that can reach it can read the queue "
               "and its logs", file=sys.stderr, flush=True)
-    if args.open: webbrowser.open(address)
+    checkout = restartable.code_checkout()
+    if checkout:
+        server.commit = restartable.head(checkout)
+        restartable.register(checkout, f"the dashboard at {address}")
+
+        def moved(old, new):
+            print(f"queuekeeper: the toolkit at {checkout} moved from {old[:12]} to {new[:12]}", flush=True)
+            server.server_close()
+            restartable.restart()
+
+        restartable.watch(checkout, moved)
+    # A kill ends it as Ctrl-C does, so that it says it no longer runs (restartable.unregister).
+    signal.signal(signal.SIGTERM, stopped)
+    # A server that restarted itself has its page open already.
+    if args.open and not os.environ.get(restartable.RESTARTED): webbrowser.open(address)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
-    finally: server.server_close()
+    finally:
+        server.server_close()
+        if checkout: restartable.unregister(checkout)
     return 0
