@@ -1233,7 +1233,7 @@ python3 scripts/qk admit --here -- /usr/bin/clang -std=c11 -O2 -Wall -Wextra -We
 ```
 
 Install the app at a stable path and register it with Launch Services. When macOS prompts for
-Local Network access, allow Queuekeeper. If the app is blocked from reaching the second
+Local Network access, allow Queuekeeper. If the app is blocked from reaching another
 Mac, check its access in System Settings under Privacy & Security, then Local Network.
 
 ```sh

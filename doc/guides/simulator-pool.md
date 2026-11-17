@@ -76,7 +76,7 @@ command has ended, leaving a running lane's own member to it and exiting 1 when 
 Closeout runs it, so a session that ends cleanly leaves no member to wait out its
 expected release (vocaro-engineering#179). So that the hour is sized from measurement, each take, extend
 and release of a member taken this way (by UDID or `--mine`), and each reap release of one, appends a line to
-`~/Library/Application Support/vocaro-engineering/simulator-holds.jsonl`, beside reap's
+`~/Library/Application Support/queuekeeper/simulator-holds.jsonl`, beside reap's
 `simulator-reaps.jsonl` (`HEAVY_SLOT_DIR` moves both): its `event` (`take`, `extend`, `release` or `reap`),
 `pool`, `key`, `udid`, `owner`, `time`, the reservation's start (`reservedAt`) and `heldSeconds` since it,
 `expectedReleaseBefore` and `expectedReleaseAfter` (none once it has ended), how it `ended` (the release's

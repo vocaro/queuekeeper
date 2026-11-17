@@ -117,8 +117,8 @@ Do this once you have landed changes on one Mac.
 Add more Macs the same way. `qk farm list` shows them in the order work is offered to them, and
 [the build farm](build_farm.md#adding-and-removing-macs) covers renaming, pausing and removing one.
 
-From then on, lanes are offered to another Mac first and run on the first Mac when the second
-has no room. [The build farm](build_farm.md) explains how the choice is made and how the code gets
+From then on, lanes are offered to the farm's other Macs first and run on the first Mac when none
+has room. [The build farm](build_farm.md) explains how the choice is made and how the code gets
 there.
 
 ## Keep the queue running
@@ -126,7 +126,8 @@ there.
 A worker starts by itself when you run `qk land` and exits when nothing is waiting. To
 have the queue also check for waiting work at login and every two minutes, set up the signed
 launcher. It also avoids a macOS restriction that can cut a background worker off from the local
-network. See [The build farm](build_farm.md#macos-local-network-privacy).
+network ([The build farm](build_farm.md#macos-local-network-privacy)).
+[Signed queue launcher](guides/maintenance.md#signed-queue-launcher) gives the steps.
 
 ## See what the queue is doing
 

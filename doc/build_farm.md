@@ -87,7 +87,8 @@ cannot unlock a screen.
 
 macOS can silently deny local-network access to a background process whose parent has exited.
 Queuekeeper detects this instead of reporting another Mac as down, and includes a small signed
-launcher that avoids it.
+launcher that avoids it, set up as [Signed queue launcher](guides/maintenance.md#signed-queue-launcher)
+describes.
 
 See also [Lanes and admission](lanes_and_admission.md) and the
 [Apple plugin](../plugins/apple/src/queuekeeper_apple/README.md), which keeps Xcode and simulator runtimes

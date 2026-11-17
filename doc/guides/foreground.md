@@ -88,7 +88,7 @@ python3 scripts/qk remote foreground    # 0 ready; 78 with what the owner change
    do not matter, and `CGPreflightScreenCaptureAccess()` returning true does not keep the prompt
    away. Launch a capturing runner or tool from one path per host, outside the checkout slots:
    `capture_approvals.stable_runner_path(PROJECT, BUNDLE)`, under
-   `~/Library/Application Support/VocaroEngineering/foreground-runners`. Under the foreground
+   `~/Library/Application Support/queuekeeper/foreground-runners`. Under the foreground
    lease, `capture_approvals.stage` copies the signed bundle there with `ditto`, refusing while one
    still runs from it, and `capture_approvals.rebind` points the xctestrun's paths at the copy
    ([vocaro-engineering#209](https://github.com/vocaro/vocaro-engineering/issues/209); BreezEPUB's
@@ -383,7 +383,7 @@ any Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocaro/v
 
 - **Off for the run alone.** Once the run holds the foreground and its admission, Queuekeeper reads
   `com.apple.CrashReporter DialogType`, keeps that value in
-  `~/Library/Application Support/vocaro-engineering/crash-dialog.json`, sets it to `none`, and logs both. However
+  `~/Library/Application Support/queuekeeper/crash-dialog.json`, sets it to `none`, and logs both. However
   the run ends, passed, failed, stopped or raising, it puts that exact value back, deleting the key when it was
   unset, macOS's default, reads it back, logs it, and only then removes the record; the receipt's `crashAlerts`
   says what it was and whether it was put back. A run whose Queuekeeper died leaves the record, and the next Queuekeeper command

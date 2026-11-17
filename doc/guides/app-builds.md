@@ -126,7 +126,7 @@ behind origin/main.
 
 ## The store
 
-Everything is under `~/Library/Application Support/vocaro-engineering/apps/NAME/`, outside
+Everything is under `~/Library/Application Support/queuekeeper/apps/NAME/`, outside
 every checkout and outside Xcode's DerivedData, so that every session and the queue share it:
 
 - `source/` is a detached worktree of the project, locked with the reason "qk app's source
