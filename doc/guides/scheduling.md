@@ -176,7 +176,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Not built, [#211] |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Not built, [#211] |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Not built, [#211] |
-| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Not built, [#211]; the kinds setting is open |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Not built, [#211]; how a device is matched to a Mac is open |
 
 ### D1: Is the order of goals right?
 
@@ -360,8 +360,16 @@ One setting is missing: nothing says which kinds of lane a Mac may run, apart fr
 mark and a lane's `chips`. With it, keeping gates off the owner's workstation is his setting and
 not a rule. What stays is what follows from where a command starts: work that names this checkout's
 ignored files, a local path, a pool simulator or a device attached here runs here, and results come
-back to the Mac that sent the work. Open for the owner: the setting's vocabulary, by kind of work
-or by lane.
+back to the Mac that sent the work.
+
+**The setting, decided 2026-11-17: kinds plus labels.** A Mac says which kinds of work it takes
+(whole-host gates, exclusive work, model runs, foreground), which is the owner's preference, and
+which labels it has, such as a license; a lane says which labels it needs. A lane is not named in
+a Mac's settings. A device is the case labels do not fit. An iPad or iPhone paired over Wi-Fi is
+reachable from every Mac, and one kept to a USB cable from one Mac only, so it belongs to no Mac.
+Suggested, and open: a device is a resource of the farm with one reservation record, each Mac
+reports the paired devices it reaches and whether by cable or network, a device lane goes to a Mac
+that reaches its device now, and a device's entry may say that only a cable counts ([#211]).
 
 ### Smaller questions with issues of their own
 
