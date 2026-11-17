@@ -14,7 +14,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation
 from host_isolation import stretched
-from queuekeeper import cli, lane_results, offload_host, remote
+from queuekeeper import cli, lane_results, offload_host, remote, window_placement
 from queuekeeper_apple import devices
 from queuekeeper_mac_desktop import crash_alerts, foreground
 from queuekeeper_apple.voiceover import state as voiceover_state
@@ -40,11 +40,15 @@ class Host:
         self.readable, self.listable = readable, listable
         self.changes, self.pressed = [], []
         self.listings = self.glances = 0
+        self.order = None
         self.lock = threading.Lock()
 
     def run(self, command, environment=None):
         with self.lock:
             if command[:2] == ["defaults", "read"]: return self.value
+            if command[:3] == ["osascript", "-l", "JavaScript"] and command[-1] == offload_host.ORDER_SCRIPT:
+                # The screen's windows front to back, which a test gives; unreadable otherwise.
+                return None if self.order is None else json.dumps(self.order)
             if command[:3] == ["osascript", "-l", "JavaScript"]:
                 self.glances += 1
                 self.assertGlance(command[-1])
@@ -176,6 +180,71 @@ class AlertTests(HostTest):
         self.assertNotIn(crash_alerts.describe(CRASH), prompt)
         self.assertIn("a system alert queuekeeper cannot dismiss", remaining)
         self.assertIn(crash_alerts.describe(CRASH), remaining)
+
+
+WARN = {"app": "universalAccessAuthWarn", "frame": [633, 238, 461, 181],
+        "texts": ["“System Events” would like to control this Mac."], "buttons": ["Deny", "Allow"]}
+# The screen's windows front to back: the menu bar and the Dock's full-screen window, which hide nothing, then
+# five app windows that between them cover the alert, as on build-host on 2026-11-12 (#14).
+COVERED = [{"app": "Window Server", "layer": 24, "frame": [0, 0, 1728, 33]},
+           {"app": "Dock", "layer": 20, "frame": [0, 0, 1728, 1117]},
+           {"app": "Xcode", "layer": 0, "frame": [0, 33, 900, 1084]},
+           {"app": "Safari", "layer": 0, "frame": [800, 33, 928, 1084]},
+           {"app": "Mail", "layer": 0, "frame": [600, 200, 200, 100]},
+           {"app": "Terminal", "layer": 0, "frame": [700, 300, 300, 200]},
+           {"app": "Finder", "layer": 0, "frame": [0, 33, 1728, 1084]},
+           {"app": "Notes", "layer": 0, "frame": [0, 900, 300, 200]},
+           {"app": "universalAccessAuthWarn", "layer": 0, "frame": [633, 238, 461, 181]}]
+
+
+class PlacementTests(HostTest):
+    """Where an alert sits among the screen's windows, from the window list's order (#14)."""
+
+    def test_an_alert_is_in_front_partly_or_fully_hidden_by_the_windows_before_it(self):
+        self.assertEqual(window_placement.placement(WARN, COVERED),
+                         {"state": "hidden", "coveredBy": ["Xcode", "Safari", "Mail", "Terminal", "Finder"]})
+        # Two windows that only between them cover it hide it fully too.
+        halves = [COVERED[2], COVERED[3], COVERED[-1]]
+        self.assertEqual(window_placement.placement(WARN, halves)["state"], "hidden")
+        self.assertEqual(window_placement.placement(WARN, [COVERED[4], COVERED[-1]]),
+                         {"state": "partly", "coveredBy": ["Mail"]})
+        # The menu bar and the Dock hide nothing, nor does a window that does not overlap it.
+        self.assertEqual(window_placement.placement(WARN, COVERED[:2] + [COVERED[7], COVERED[-1]]),
+                         {"state": "front", "coveredBy": []})
+        # Not in the list, or no list: nothing is said.
+        self.assertIsNone(window_placement.placement(WARN, COVERED[:-1]))
+        self.assertIsNone(window_placement.placement(WARN, None))
+        self.assertEqual(window_placement.placed(None), "")
+
+    def test_a_stop_says_where_the_alert_sits_and_the_window_list_is_read_without_names(self):
+        self.host.order = COVERED
+        message = crash_alerts.stopping([WARN])
+        self.assertIn("owner's to answer", message)
+        self.assertIn("; it is fully hidden behind 5 windows: Xcode, Safari, Mail, Terminal, Finder, so it cannot be "
+                      "seen there", message)
+        self.host.order = [COVERED[-1]]
+        self.assertIn("; it is in front of every other window", crash_alerts.stopping([WARN]))
+        self.assertNotIn("kCGWindowName", offload_host.ORDER_SCRIPT)
+        self.assertIn("CGWindowListCopyWindowInfo", offload_host.ORDER_SCRIPT)
+
+    def test_a_window_list_that_cannot_be_read_still_stops_the_run_with_the_alert_named(self):
+        for answer in (None, "", "not json", "{}", json.dumps(["not a window", {"app": "Finder"}])):
+            with self.subTest(answer), patch.object(crash_alerts, "run", return_value=answer):
+                message = crash_alerts.stopping([WARN])
+                self.assertIn(crash_alerts.describe(WARN), message)
+                self.assertNotIn("hidden", message)
+
+    def test_remote_foreground_reads_where_each_alert_sits(self):
+        def answer(command, *rest, **options):
+            return json.dumps(COVERED) if command[-1] == offload_host.ORDER_SCRIPT else ""
+        with patch.object(offload_host, "system_alerts", return_value=[WARN]), \
+                patch.object(offload_host, "crash_dialog", return_value="basic"), \
+                patch.object(offload_host, "output", side_effect=answer):
+            found = offload_host.crash_dialogs()
+        self.assertEqual((found["alerts"], window_placement.windows(found["windows"])), ([WARN], COVERED))
+        said = ReportTests.report(self, {**found, "value": "basic", "record": None})
+        self.assertIn("; it is fully hidden behind 5 windows: Xcode, Safari, Mail, Terminal, Finder, so it cannot be "
+                      "seen there; a foreground run", said)
 
 
 class GuardTests(HostTest):
@@ -656,6 +725,10 @@ class ReportTests(unittest.TestCase):
         said = self.report({"value": "basic", "record": None, "alerts": [CRASH]})
         self.assertIn("a system alert is over the screen: UserNotificationCenter's window at x 734, y 201, 260×250: "
                       "'ColorPickerUIService quit unexpectedly.'", said)
+        hidden = {**CRASH, "placement": {"state": "hidden", "coveredBy": ["Xcode", "Safari"]}}
+        self.assertIn("'ColorPickerUIService quit unexpectedly.'; it is fully hidden behind 2 windows: Xcode, Safari, "
+                      "so it cannot be seen there; a foreground run",
+                      self.report({"value": "basic", "record": None, "alerts": [hidden]}))
         said = self.report({"value": "none", "record": None, "alerts": []})
         self.assertIn("crash-report dialogs are off with no run going", said)
         said = self.report({"value": "none", "record": {"before": "basic"}, "alerts": []})

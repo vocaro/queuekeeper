@@ -67,6 +67,7 @@ import uuid
 import zlib
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, processes, resources, git_state
+from . import window_placement
 from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, sibling_variables, unlocked_screen
 from . import farm
 from .resources import BUSY, FREE_WAIT
@@ -2470,10 +2471,11 @@ def crash_dialog_report(found, entry):
     alerts = found.get("alerts")
     if alerts is None:
         lines.append("- its system alerts cannot be read (System Events needs accessibility)")
-    for alert in alerts or []:
+    for alert in window_placement.place_alerts(alerts, found.get("windows")) or []:
         x, y, width, height = alert["frame"]
         lines.append(f"- a system alert is over the screen: {alert['app']}'s window at x {x}, y {y}, "
-                     f"{width}×{height}: {next(iter(alert['texts']), 'no text')!r}; a foreground run dismisses a "
+                     f"{width}×{height}: {next(iter(alert['texts']), 'no text')!r}"
+                     f"{window_placement.placed(alert.get('placement'))}; a foreground run dismisses a "
                      "crash report itself and stops, unmeasured, on any other")
     return lines
 

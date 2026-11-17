@@ -1047,6 +1047,20 @@ def system_alerts(run=output):
     return alerts
 
 
+# On-screen windows front to back, by owner, layer and bounds alone, which needs no permission; read as
+# window_placement.windows (#14).
+ORDER_SCRIPT = """ObjC.import('CoreGraphics');
+var list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(
+    $.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID))) || [];
+JSON.stringify(list.filter(function (w) { return !(w.kCGWindowAlpha === 0); }).map(function (w) {
+  var b = w.kCGWindowBounds || {};
+  return {app: w.kCGWindowOwnerName, layer: w.kCGWindowLayer, frame: [b.X, b.Y, b.Width, b.Height]};
+}));"""
+
+
+ORDER = ["osascript", "-l", "JavaScript", "-e", ORDER_SCRIPT]
+
+
 def crash_dialogs():
     """DialogType, the record a run that has it off keeps, and the system alerts on the screen, for
     `qk remote foreground`."""
@@ -1054,7 +1068,8 @@ def crash_dialogs():
     try: kept = json.loads(path.read_text())
     except FileNotFoundError: kept = None
     except (OSError, ValueError) as error: kept = {"error": f"{path} cannot be read: {error}"}
-    return {"value": crash_dialog(), "record": kept, "alerts": system_alerts()}
+    alerts = system_alerts()
+    return {"value": crash_dialog(), "record": kept, "alerts": alerts, "windows": alerts and output(ORDER)}
 
 
 def foreground():

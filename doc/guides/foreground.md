@@ -416,7 +416,12 @@ any Mac (`crash_alerts.py`, [vocaro-engineering#118](https://github.com/vocaro/v
   those are the owner's.
 - **Unmeasured, never failed.** A system alert Queuekeeper may not clear before the run stops it with nothing run, as
   unmeasured (exit 3), naming the alert and its frame. One met during a run that then fails, or still there as
-  it ends, makes that run unmeasured too; a run that passes passed.
+  it ends, makes that run unmeasured too; a run that passes passed. The stop, and `qk remote foreground`, also
+  say where each alert sits, from the window list's front-to-back order and frames: in front of every other
+  window, or partly or fully hidden behind the app windows in front of it, which they name by owner. The window
+  list calls an alert behind five other windows on screen as well, as on build-host on 2026-11-12, where the
+  owner at that Mac saw no alert ([#14](https://github.com/vocaro/queuekeeper/issues/14)). The menu bar and the
+  Dock's windows, layer 20 and above, hide nothing; a window list that cannot be read leaves the placement out.
 - **A cleared alert, by whose crash and how long it stood.** A crash-report alert Queuekeeper cleared during a run that
   then fails makes the run unmeasured when, and only when, it stood longer than one look and was for a process
   other than the app under test: its clicks may have gone to the alert, as EPUBLib's did under alerts that stood

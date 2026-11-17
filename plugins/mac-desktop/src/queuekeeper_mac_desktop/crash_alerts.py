@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 
-from queuekeeper import lane_results, offload_host, resources
+from queuekeeper import lane_results, offload_host, resources, window_placement
 
 DOMAIN, KEY = offload_host.CRASH_DIALOG
 OFF = "none"
@@ -125,7 +125,8 @@ class Blocked(Exception):
 def describe(alert):
     x, y, width, height = alert["frame"]
     said = next(iter(alert["texts"]), "no text")
-    return f"{alert['app']}'s window at x {x}, y {y}, {width}×{height}: {said!r}"
+    return (f"{alert['app']}'s window at x {x}, y {y}, {width}×{height}: {said!r}"
+            f"{window_placement.placed(alert.get('placement'))}")
 
 
 def owners(alert):
@@ -190,7 +191,9 @@ def stamp(when):
 
 
 def stopping(left):
-    """Why left, the system alerts queuekeeper could not clear, stop a run."""
+    """Why left, the system alerts queuekeeper could not clear, stop a run, with where each sits among the
+    screen's windows, so that the owner finds one hidden behind others (#14)."""
+    left = window_placement.place_alerts(left, run(offload_host.ORDER))
     prompts = [alert for alert in left if owners(alert)]
     others = [alert for alert in left if not owners(alert)]
     reasons = []
