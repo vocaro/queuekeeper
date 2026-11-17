@@ -1,10 +1,12 @@
 """The dashboard's server: `qk serve`.
 
-    /                                  the page, which is also every path below /r/
+    /                                  the page, which is also every path below /all/ and /r/: / and /all/TAB
+                                       show every repository at once, /r/REPOSITORY/TAB one of them
     /static/NAME                       the page's own script and styles
     /panels/NAME.js                    a panel's script
     /api/panels                        the panels, in tab order
     /api/repositories                  the repositories, each with what its queue is doing
+    /api/all/panel/NAME                a panel's data for every repository, the request's query passed to the panel
     /api/r/REPOSITORY/panel/NAME       a panel's data for a repository, the request's query passed to the panel
 
 It answers GET alone, and only a request whose Host names this Mac: a page elsewhere that pointed a name of its own
@@ -79,17 +81,29 @@ class App:
         parts = [unquote(part) for part in path.split("/") if part]
         if parts == ["panels"]: return panels.listed()
         if parts == ["repositories"]: return self.listing()
+        if len(parts) == 3 and parts[:2] == ["all", "panel"]:
+            module = self.panel(parts[2])
+            if not hasattr(module, "everywhere"): raise Refused(404, f"the {parts[2]} panel shows one repository at a time")
+            return self.drawn(parts[2], lambda: module.everywhere(self.refresh(), query))
         if len(parts) == 4 and parts[0] == "r" and parts[2] == "panel":
             found = self.repository(parts[1])
-            try: module = panels.load(parts[3])
-            except LookupError as error: raise Refused(404, str(error)) from None
-            except Exception as error:  # noqa: BLE001
-                raise Refused(500, f"the {parts[3]} panel did not load: {error}") from None
-            try: return module.data(found, query)
-            except LookupError as error: raise Refused(404, str(error)) from None
-            except Exception as error:  # noqa: BLE001
-                raise Refused(500, f"the {parts[3]} panel has a fault: {error}") from None
+            module = self.panel(parts[3])
+            return self.drawn(parts[3], lambda: module.data(found, query))
         raise Refused(404, "no such address")
+
+    @staticmethod
+    def panel(name):
+        try: return panels.load(name)
+        except LookupError as error: raise Refused(404, str(error)) from None
+        except Exception as error:  # noqa: BLE001
+            raise Refused(500, f"the {name} panel did not load: {error}") from None
+
+    @staticmethod
+    def drawn(name, read):
+        try: return read()
+        except LookupError as error: raise Refused(404, str(error)) from None
+        except Exception as error:  # noqa: BLE001
+            raise Refused(500, f"the {name} panel has a fault: {error}") from None
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -129,7 +143,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             path = url.path
             if path.startswith("/api/"):
                 return self.json(200, self.server.app.answer(path[len("/api"):], dict(parse_qsl(url.query))))
-            if path == "/" or path == "/r" or path.startswith("/r/"): return self.file(STATIC / "index.html")
+            if path in ("/", "/r", "/all") or path.startswith(("/r/", "/all/")): return self.file(STATIC / "index.html")
             name = path.rsplit("/", 1)[1]
             if path == f"/static/{name}" and name in {found.name for found in STATIC.iterdir() if found.is_file()}:
                 return self.file(STATIC / name)

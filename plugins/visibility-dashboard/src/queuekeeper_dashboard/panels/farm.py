@@ -175,6 +175,11 @@ def data(repository, query):
             "hosts": [host(found, names) for found in (reading or {}).get("hosts", [])] if reading else None}
 
 
+def everywhere(repositories, query):
+    """The farm is every project's already: admission is a Mac's, not a repository's."""
+    return data(None, query)
+
+
 def summary(repository):
     reading, _, error = current()
     if not reading: return {"title": "Farm", "text": error or "Reading the Macs…", "level": "warning" if error else "plain"}

@@ -6,8 +6,10 @@
     python3 tools/dashboard-screenshots.py --theme light --out /tmp/shots
 
 What is captured is the dashboard itself: this checkout's page, scripts and styles, served by the dashboard's own
-server. Only the data is made up, the same every run: a project named lumen-ios with a round being tested, entries
-waiting and settled, and two Macs. Times are counted back from now, since the page shows each as how long ago it
+server. Each tab is taken where the page opens, showing every repository at once. Only the data is made up, the same
+every run: three projects, lumen-ios and orbit-game each with a round being tested and fieldnotes idle, with entries
+waiting and settled, and two Macs. Each project's answers are made up as one repository's, and the panels' own
+`combine` makes every repository's from them, as the server does. Times are counted back from now, since the page shows each as how long ago it
 was. Three things differ from what `qk serve` sends: the data, the theme, which the page takes from the system and
 this script fixes, and one more script on the page, which reports the page's height so that each picture is as
 tall as its tab.
@@ -21,6 +23,7 @@ checkout, and it is light: one headless Chrome for a few seconds, which admissio
 to another Mac, which may have no Chrome and would keep the pictures in its own checkout; there it refuses
 (vocaro/queuekeeper#172)."""
 import argparse
+import copy
 import os
 from pathlib import Path
 import re
@@ -217,6 +220,75 @@ LOGS = [{"name": "worker.log", "size": 48213, "modified": ago(3)},
          "lane": "rerun", "test": 1, "attempt": 2, "status": 0}]
 
 
+ORBIT = time.strftime("%Y%m%d-%H%M%S", time.localtime(ago(431))) + "-9e21b4c0"
+LEVEL = {"id": "qk0420-level-select", "state": "testing", "subject": "Remember the last level played",
+         "branch": "codex/level-select", "submitted": ago(980)}
+LEVELS = {"id": "qk0381-level-timer", "state": "landed", "subject": "Pause the level timer while the game is in the background",
+          "branch": "codex/level-timer", "landedAs": "3b8e51c0d7a2f9", "submitted": ago(3900), "settled": ago(2900)}
+JOURNAL = {"id": "qk0398-journal-export", "state": "landed", "subject": "Export a journal as Markdown",
+           "branch": "agent/journal-export", "landedAs": "77c1e0d4a9b2f3", "submitted": ago(5200), "settled": ago(4100)}
+
+
+def others():
+    """orbit-game's and fieldnotes' own answers, from lumen-ios's: orbit-game testing one entry on This Mac, and
+    fieldnotes idle, having landed earlier in the day."""
+    orbit, notes = copy.deepcopy(PANELS), copy.deepcopy(PANELS)
+    for found, landed in ((orbit, 5), (notes, 7)):
+        found["queue"]["overview"].update(counts={"waiting": 0, "landed": landed, "cameBack": 0}, lines=[])
+        found["queue"]["overview"]["trend"].update(
+            landed=[(hour * 7 + landed * 3) % 9 // 6 if 8 <= hour <= 20 else 0 for hour in range(24)],
+            waiting=[(hour * 3 + landed) % 5 // 4 for hour in range(24)])
+        own = JOURNAL if found is notes else LEVELS
+        found["queue"].update(recent=[own], waiting=[], round=None)
+        found["queue"]["flow"]["agents"] = []
+        for mac in found["queue"]["flow"]["macs"]: mac["gates"] = []
+        found["history"].update(recent=[own], gates=[], total=1, events=[{"time": own["settled"], "kind": "entry.landed", "level": "success",
+            "text": f"{own['id']} landed as {own['landedAs'][:12]}: {own['subject']}."}])
+        found["history"]["attention"] = []
+        found["history"]["gateSeconds"] = [seconds * 7 // 4 if found is orbit else seconds // 3 for seconds in found["history"]["gateSeconds"]]
+        found["history"]["today"].update(landed=landed, rounds=landed, removed=0,
+                                         medianGateSeconds=sorted(found["history"]["gateSeconds"])[len(found["history"]["gateSeconds"]) // 2])
+    orbit["queue"]["overview"].update(level="active", headline="Testing 1 entry", detail="The gate lane is running on This Mac.",
+                                      began=ago(431), counts={"waiting": 1, "landed": 5, "cameBack": 0})
+    orbit["queue"].update(waiting=[LEVEL], round={"name": ORBIT, "base": "9e21b4c0f2a7d1", "entries": [LEVEL["id"]], "bisect": None,
+        "gates": [{"role": "batch", "lane": "gate", "mac": "This Mac", "began": ago(431), "phase": "unit tests, 88 of 140",
+                   "entries": [LEVEL["id"]], "log": ORBIT + "-gate.log"}]})
+    orbit["queue"]["flow"]["agents"] = [{"name": "codex", "waiting": 0, "testing": 1}]
+    orbit["queue"]["flow"]["macs"][0]["gates"] = ["batch"]
+    orbit["queue"]["overview"]["trend"]["medianGateSeconds"] = 445
+    orbit["queue"]["health"].update(sentence="Testing 1 entry, the gate about as long as its usual 7m.",
+                                    forecast={"waiting": 1, "clearsAt": ago(-60)})
+    orbit["queue"]["health"]["signs"][0] = health.sign("progress", health.OK, "testing 1 entry", "Testing 1")
+    notes["queue"]["health"]["signs"][0] = health.sign("progress", health.IDLE, "nothing is waiting", "Nothing waiting")
+    notes["queue"]["health"]["signs"][1] = health.sign("pace", health.OK, "the last entry landed 1h 8m ago", "Last landed 1h 8m ago")
+    orbit["history"]["gates"] = [{"began": ago(3600 * back + 130), "ended": ago(3600 * back), "lane": "gate", "status": 0, "mac": None,
+                                  "round": None, "log": None} for back in (6.5, 4.5, 2.5)]
+    notes["queue"]["overview"].update(level="idle", headline="Idle", detail="Nothing is waiting.", began=None)
+    notes["queue"]["health"].update(verdict="quiet", level=health.IDLE, label="All quiet", forecast=None,
+                                    sentence="Nothing is waiting. The last entry landed 1h 8m ago. The Macs are ready.")
+    return {"orbit-game": orbit, "fieldnotes": notes}
+
+
+MADE_UP = {REPOSITORY: PANELS, **others()}
+OTHER_LOGS = {"orbit-game": [{"name": "worker.log", "size": 20117, "modified": ago(5)},
+                             {"name": ORBIT + "-gate.log", "size": 88213, "modified": ago(5), "round": ORBIT[:15], "commit": ORBIT[16:],
+                              "lane": "gate", "running": True}],
+              "fieldnotes": [{"name": "worker.log", "size": 9120, "modified": ago(4100)}]}
+
+
+def everywhere(tab, query):
+    """What a tab is answered for every repository at once, from each one's made-up answer."""
+    if tab == "farm": return PANELS["farm"]
+    if tab == "logs":
+        listed = sorted(({**log, "repository": name} for name, found in ((REPOSITORY, LOGS), *OTHER_LOGS.items()) for log in found),
+                        key=lambda log: (log["name"] != "worker.log", -log["modified"]))
+        if not query.get("name"): return {"logs": listed, "unread": []}
+        found = logs(query)
+        return {**found, "repository": query.get("repository"), "log": {**found["log"], "repository": query.get("repository")},
+                "logs": listed, "unread": []}
+    return panels.load(tab).combine([(name, found[tab], None) for name, found in MADE_UP.items()])
+
+
 def logs(query):
     """What the Logs panel is answered: the logs, and the round's gate log, indexed, once the page asks for one."""
     if not query.get("name"): return {"logs": LOGS}
@@ -241,6 +313,7 @@ class App(server.App):
         parts = [part for part in path.split("/") if part]
         if parts == ["panels"]: return panels.listed()
         if parts == ["repositories"]: return REPOSITORIES
+        if len(parts) == 3 and parts[:2] == ["all", "panel"] and parts[2] in TABS: return everywhere(parts[2], query)
         if len(parts) == 4 and parts[:3] == ["r", REPOSITORY, "panel"] and parts[3] in TABS:
             if parts[3] == "queue" and (query.get("entry") or query.get("gate")):
                 raw = [{**entry, "commits": ["a" * 40] * entry.get("commits", 1)} for entry in [*WAITING, *RECENT]]
@@ -330,7 +403,7 @@ def main(argv):
         with tempfile.TemporaryDirectory() as profile:
             for tab in args.tabs:
                 target = args.out / f"dashboard-{'home' if tab == 'queue' else tab}.png"
-                address = f"http://{server.BIND}:{made.server_address[1]}/r/{REPOSITORY}/{tab}"
+                address = f"http://{server.BIND}:{made.server_address[1]}/" + ("" if tab == "queue" else f"all/{tab}")
                 target.unlink(missing_ok=True)
                 why = capture(args.chrome, profile, address, target)
                 if why: failed += 1

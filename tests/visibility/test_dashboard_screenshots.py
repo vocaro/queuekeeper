@@ -38,6 +38,21 @@ class MadeUpData(test_dashboard.Fixture):
         for name in self.script.TABS:
             self.assertIsInstance(app.answer(f"/r/{self.script.REPOSITORY}/panel/{name}", {}), dict)
 
+    def test_every_repositorys_made_up_data_has_the_fields_the_panel_gives_for_every_repository(self):
+        app = self.script.App()
+        for name in self.script.TABS:
+            with self.subTest(panel=name):
+                made_up = app.answer(f"/all/panel/{name}", {})
+                self.assertEqual(set(made_up), set(panels.load(name).everywhere({"project": self.one}, {})))
+        for name, found in self.script.MADE_UP.items():
+            for tab in ("queue", "history"):
+                with self.subTest(repository=name, panel=tab):
+                    self.assertEqual(set(found[tab]), set(panels.load(tab).data(self.one, {})))
+        (self.one.logs / "one-gate.log").parent.mkdir(parents=True, exist_ok=True)
+        (self.one.logs / "one-gate.log").write_text("a line\n")
+        real = panels.load("logs").everywhere({"project": self.one}, {"name": "one-gate.log", "repository": "project"})
+        self.assertEqual(set(app.answer("/all/panel/logs", {"name": "one-gate.log", "repository": "orbit-game"})), set(real))
+
     def test_each_panels_made_up_data_has_the_fields_the_panel_gives(self):
         for name, made_up in self.script.PANELS.items():
             with self.subTest(panel=name):

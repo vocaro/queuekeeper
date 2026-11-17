@@ -686,6 +686,110 @@ class Repositories(Fixture):
         self.assertIsNone(registry.checkout_of("/a/origin.git/queuekeeper-queue"))
 
 
+def queue_part(name, waiting=(), gates=None, recent=(), health_=None, counts=None, macs=()):
+    """What queue.data answers for one repository, as queue.combine reads it."""
+    round_ = {"name": f"{name}-round", "entries": [one["id"] for one in waiting if one.get("state") == "testing"],
+              "bisect": None, "gates": gates} if gates else None
+    return {"overview": {"level": "idle", "headline": "Idle", "detail": "Nothing is waiting.", "lines": [],
+                         "counts": counts or {"waiting": len(waiting), "landed": 0, "cameBack": 0},
+                         "trend": {"waiting": [len(waiting)] * 24, "landed": [0] * 24, "cameBack": [0] * 24, "medianGateSeconds": 300}},
+            "health": health_ or {"verdict": "quiet", "level": "idle", "label": "All quiet", "sentence": "Nothing is waiting.",
+                                  "signs": [], "forecast": None, "findings": []},
+            "worker": True, "held": None, "round": round_, "waiting": list(waiting), "recent": list(recent),
+            "ungated": [], "flow": {"agents": [], "macs": [{"name": "this Mac", "role": "here", "state": "observed",
+                                                            "used": 1, "most": 4, "gates": list(macs)}], "back": None}}
+
+
+def verdict_of(verdict, level, label, *signs, sentence=""):
+    return {"verdict": verdict, "level": level, "label": label, "sentence": sentence, "signs": list(signs),
+            "forecast": None, "findings": []}
+
+
+class EveryRepository(Fixture):
+    """The page's first view, every repository at once: each panel's `everywhere`, combined from each repository's
+    own answer."""
+
+    def test_every_queue_is_combined_and_each_entry_and_gate_names_its_repository(self):
+        now = 1_800_000_000.0
+        alpha = queue_part("alpha", waiting=[
+            {"id": "a1", "state": "testing", "branch": "claude/one", "submitted": 10.0},
+            {"id": "a2", "state": "queued", "branch": "claude/two", "submitted": 30.0}],
+            gates=[{"role": "batch", "lane": "gate", "began": 5.0, "entries": ["a1"]}], macs=["batch"],
+            recent=[{"id": "a0", "state": "failed", "branch": "zed/x", "subject": "Z", "settled": now - 60}],
+            counts={"waiting": 2, "landed": 3, "cameBack": 1})
+        beta = queue_part("beta", waiting=[{"id": "b1", "state": "queued", "branch": "codex/x", "submitted": 20.0}],
+                          counts={"waiting": 1, "landed": 4, "cameBack": 0})
+        found = queue.combine([("alpha", alpha, None), ("beta", beta, None), ("gamma", None, "no queue")], now)
+        self.assertEqual(found["counts"], {"waiting": 3, "landed": 7, "cameBack": 1, "testing": 1})
+        self.assertEqual(found["trend"]["waiting"], [3] * 24)
+        self.assertEqual([(one["id"], one["repository"]) for one in found["active"]], [("a1", "alpha")])
+        # Up next is every repository's, oldest first.
+        self.assertEqual([(one["id"], one["repository"]) for one in found["pending"]], [("b1", "beta"), ("a2", "alpha")])
+        round_, = found["rounds"]
+        self.assertEqual((round_["repository"], round_["gates"][0]["repository"], round_["medianGateSeconds"]), ("alpha", "alpha", 300))
+        self.assertEqual(found["flow"]["queues"], [
+            {"name": "alpha", "waiting": 1, "testing": 1, "held": False, "worker": True},
+            {"name": "beta", "waiting": 1, "testing": 0, "held": False, "worker": True}])
+        self.assertEqual(found["flow"]["agents"], [{"name": "claude", "waiting": 1, "testing": 1, "queues": ["alpha"]},
+                                                   {"name": "codex", "waiting": 1, "testing": 0, "queues": ["beta"]}])
+        self.assertEqual(found["flow"]["macs"][0]["gates"], [{"repository": "alpha", "role": "batch"}])
+        self.assertEqual((found["flow"]["back"]["id"], found["flow"]["back"]["repository"]), ("a0", "alpha"))
+        rows = {row["name"]: row for row in found["repositories"]}
+        self.assertEqual((rows["alpha"]["testing"], rows["beta"]["counts"]["landed"], rows["gamma"]["error"]), (1, 4, "no queue"))
+        self.assertEqual(found["lines"], [{"title": "Cannot read", "text": "no queue", "level": "warning", "panel": "queue",
+                                           "repository": "gamma"}])
+
+    def test_the_verdict_names_each_repository_in_trouble_and_says_the_macs_once(self):
+        from queuekeeper import health
+        macs = health.sign("macs", health.WARNING, "this Mac's memory pressure is at warning")
+        alpha = queue_part("alpha", health_=verdict_of("slow", health.WARNING, "Slower than usual",
+            health.sign("progress", health.WARNING, "the gate has waited 20m for admission", "Waiting 20m for a Mac"), macs))
+        beta = queue_part("beta", health_=verdict_of("slow", health.WARNING, "Slower than usual",
+            health.sign("progress", health.OK, "testing 1 entry", "Testing 1"), macs))
+        gamma = queue_part("gamma")
+        found = queue.verdict([("alpha", alpha, None), ("beta", beta, None), ("gamma", gamma, None)])
+        self.assertEqual((found["level"], found["label"]), ("warning", "Slower than usual"))
+        self.assertEqual(found["sentence"], "1 of 3 needs a look: alpha, waiting 20m for a Mac. "
+                                            "This Mac's memory pressure is at warning. The other 2 are fine.")
+        progress, shared = found["signs"]
+        self.assertEqual((progress["short"], shared["short"]), ("alpha: Waiting 20m for a Mac", macs["short"]))
+        quiet = queue.verdict([("alpha", gamma, None), ("beta", gamma, None)])
+        self.assertEqual((quiet["label"], quiet["sentence"]), ("All quiet", "Nothing is waiting in any of the 2 repositories."))
+        unread = queue.verdict([("alpha", gamma, None), ("beta", None, "no queue")])
+        self.assertEqual((unread["label"], unread["sentence"]), ("Can't tell", "beta cannot be read: no queue. The other one is fine."))
+
+    def test_every_history_is_summed_and_merged_newest_first(self):
+        def day(landed): return {"landed": landed, "cameBack": 1, "failed": 1, "conflict": 0, "removed": 0, "flaky": 0,
+                                 "rounds": 2, "medianGateSeconds": 300}
+        def part(at, landed): return {"today": day(landed), "yesterday": day(1), "gateSeconds": [300, 310],
+                                      "gates": [{"began": at, "ended": at + 5, "lane": "gate", "status": 0, "mac": None, "round": None, "log": None}],
+                                      "landings": [{"day": 100.0, "hours": [landed] + [0] * 23}],
+                                      "recent": [{"id": f"e{at}", "settled": at}], "total": 1,
+                                      "events": [{"time": at, "kind": "entry.landed", "text": "x", "level": "success"}],
+                                      "attention": [{"time": at, "kind": "entry.failed", "text": "y", "level": "danger", "entry": "e"}]}
+        found = history.combine([("alpha", part(10.0, 2), None), ("beta", part(20.0, 3), None), ("gamma", None, "no queue")])
+        self.assertEqual((found["today"]["landed"], found["today"]["rounds"], found["today"]["medianGateSeconds"]), (5, 4, None))
+        self.assertEqual(found["landings"], [{"day": 100.0, "hours": [5] + [0] * 23}])
+        self.assertEqual([one["repository"] for one in found["events"]], ["beta", "alpha"])
+        self.assertEqual([(one["repository"], one["entry"]) for one in found["attention"]], [("beta", "e"), ("alpha", "e")])
+        self.assertEqual([one["repository"] for one in found["recent"]], ["beta", "alpha"])
+        self.assertEqual([one["repository"] for one in found["gates"]], ["alpha", "beta"])
+        self.assertEqual([row.get("error") for row in found["repositories"]], [None, None, "no queue"])
+        self.assertEqual(found["total"], 2)
+
+    def test_the_real_panels_answer_for_every_repository(self):
+        (mq.Queue(self.repo).logs / "r-gate.log").write_text("hello\n")
+        found = {name: panels.load(name).everywhere({"project": self.one}, {}) for name in ("queue", "farm", "history", "logs")}
+        self.assertEqual([row["name"] for row in found["queue"]["repositories"]], ["project"])
+        self.assertEqual([row["name"] for row in found["history"]["repositories"]], ["project"])
+        self.assertEqual({log["repository"] for log in found["logs"]["logs"]}, {"project"})
+        chunk = panels.load("logs").everywhere({"project": self.one}, {"name": "r-gate.log", "repository": "project"})
+        self.assertEqual((chunk["text"], chunk["repository"], chunk["log"]["repository"]), ("hello\n", "project", "project"))
+        with self.assertRaises(LookupError): panels.load("logs").everywhere({"project": self.one}, {"name": "r-gate.log"})
+        self.assertEqual({panel["name"]: panel["everywhere"] for panel in panels.listed()},
+                         {"queue": True, "farm": True, "history": True, "logs": True})
+
+
 class Served(Fixture):
     """Requests to a server on a port of its own, on this Mac alone."""
 
@@ -710,7 +814,7 @@ class Served(Fixture):
         return status, json.loads(body)
 
     def test_the_page_and_every_panel_script_are_served(self):
-        for path in ("/", "/r", "/r/project/queue", "/r/project/logs?name=worker.log"):
+        for path in ("/", "/r", "/all", "/all/history", "/r/project/queue", "/r/project/logs?name=worker.log"):
             status, headers, body = self.get(path)
             self.assertEqual((status, headers["Content-Type"]), (200, "text/html; charset=utf-8"), path)
             self.assertIn(b'<script src="/static/app.js">', body)
@@ -749,6 +853,16 @@ class Served(Fixture):
             self.assertIsInstance(found, dict)
         status, found = self.api("/r/project/panel/logs?name=gate.log&offset=2")
         self.assertEqual((status, found["text"], found["next"]), (200, "llo\n", 6))
+
+    def test_each_tab_is_answered_for_every_repository_at_once(self):
+        (mq.Queue(self.repo).logs / "gate.log").write_text("hello\n")
+        for name in ("queue", "farm", "history", "logs"):
+            status, found = self.api(f"/all/panel/{name}")
+            self.assertEqual(status, 200, (name, found))
+        status, found = self.api("/all/panel/logs?name=gate.log&repository=project&offset=2")
+        self.assertEqual((status, found["text"], found["repository"]), (200, "llo\n", "project"))
+        for path in ("/all/panel/home", "/all/panel/nope", "/all/panel/logs?name=gate.log", "/all/panel/logs?name=gate.log&repository=nope"):
+            self.assertEqual(self.api(path)[0], 404, path)
 
     def test_what_is_not_there_is_answered_404_as_json(self):
         for path in ("/r/nope/panel/home", "/r/project/panel/nope", "/r/project/panel/logs?name=../hold",

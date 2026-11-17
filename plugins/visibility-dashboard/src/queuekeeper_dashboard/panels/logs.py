@@ -1,6 +1,9 @@
 """The Logs tab: the queue's logs, newest first, each named by its round, commit and lane with how its run ended, and
 one of them read in chunks of whole lines with an index of where its failures, suites and heartbeats are.
 
+Every repository's logs are listed at once too (everywhere), each with its repository's name, and one of them is read
+by that name and its own.
+
 Only a file in the queue's own logs folder, or its worker.log, is read, by a name with no folder in it."""
 import bisect
 import os
@@ -8,6 +11,7 @@ import re
 import stat
 
 from queuekeeper import farm
+from . import each
 
 TITLE, ORDER = "Logs", 100
 MOST, TAIL, CHUNK, BACK = 100, 64 << 10, 256 << 10, 8 << 10
@@ -200,3 +204,18 @@ def data(repository, query):
         answer["flaky"] = {event["test"]: event.get("issue") for event in repository.events() if event["kind"] == "test.flaky"
                            and isinstance(event.get("test"), str) and str(event.get("commit", "")).startswith(log["commit"])}
     return answer
+
+
+def everywhere(repositories, query):
+    """Every repository's logs, newest first, each with its repository's name; and with name and repository, a
+    chunk of that repository's log, as data gives it, with every repository's logs beside it."""
+    found = each(repositories, lambda repository: described(repository, listing(repository)))
+    logs = sorted(({**log, "repository": name} for name, listed, _ in found for log in listed or []),
+                  key=lambda log: (log["name"] != WORKER, -log["modified"]))
+    unread = [{"repository": name, "error": why} for name, listed, why in found if listed is None]
+    if not query.get("name"): return {"logs": logs, "unread": unread}
+    name = query.get("repository")
+    if name not in repositories: raise LookupError(f"no repository is named {name}" if name else "a log is named with its repository")
+    answer = data(repositories[name], query)
+    return {**answer, "repository": name, "log": {**answer["log"], "repository": name},
+            "reruns": [{**log, "repository": name} for log in answer["reruns"]], "logs": logs, "unread": unread}

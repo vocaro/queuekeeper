@@ -32,7 +32,7 @@ QK.panel("farm", {
     }
     const samples = data.samples || [];
     // One hue per project across the page, from the slots held now and over the last hour.
-    const hues = QK.hues([...(data.hosts || []).flatMap(found => [...(found.cells || []).map(cell => cell.project),
+    const hues = QK.repositoryHues([...(data.hosts || []).flatMap(found => [...(found.cells || []).map(cell => cell.project),
       ...found.holders.map(one => one.project), ...found.waiters.map(one => one.project)]),
       ...samples.flatMap(one => Object.keys(one.projects || {}).filter(name => name !== "other"))]);
     const hue = project => project ? hues[project] || "other" : "other";

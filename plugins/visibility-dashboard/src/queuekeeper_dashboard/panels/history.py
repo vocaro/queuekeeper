@@ -1,12 +1,14 @@
 """The History tab: the day's totals beside yesterday's to the same hour, today's gate runs on each Mac, when work
 has landed by day and hour, how long passing gates take, the last events that need attention, and the journal's
-last events, newest first."""
+last events, newest first; and every repository's at once (everywhere), each repository's own answer combined
+(combine)."""
 import os
 import re
 import statistics
 import time
 
 from queuekeeper import events, farm
+from . import each
 
 TITLE, ORDER = "History", 40
 MOST = 200
@@ -109,6 +111,41 @@ def data(repository, query):
             # The last events that need attention, from the whole journal, newest first.
             "attention": [shown(event) for event in reversed([event for event in journal if event["kind"] in ATTENTION][-NOTED:])],
             "total": len(found)}
+
+
+RECENT = 30  # the settled entries every repository's history lists, newest first
+SUMMED = ("landed", "cameBack", "failed", "conflict", "removed", "flaky", "rounds")
+
+
+def combine(parts):
+    """Every repository's History at once, from parts, [(name, its History answer (data), None)] or (name, None,
+    why it cannot be read): the day's totals summed beside yesterday's, a row for each repository with its own day
+    and gate times, every lane run on the Macs they share, landings summed by day and hour, and the settled entries,
+    events and events that need attention of all of them, newest first. A gate time is a repository's alone, so no median is taken across
+    them. A run, entry or event carries its repository's name."""
+    read = [(name, found) for name, found, _ in parts if found]
+    def day(key):
+        return {**{name: sum(found[key].get(name) or 0 for _, found in read) for name in SUMMED}, "medianGateSeconds": None}
+    landings = {}
+    for _, found in read:
+        for one in found["landings"]:
+            hours = landings.setdefault(one["day"], [0] * 24)
+            for hour, count in enumerate(one["hours"]): hours[hour] += count
+    rows = [{"name": name, "error": why} if found is None else
+            {"name": name, "today": found["today"], "yesterday": found["yesterday"], "gateSeconds": found["gateSeconds"]}
+            for name, found, why in parts]
+    tagged = lambda key: [{**one, "repository": name} for name, found in read for one in found[key]]
+    return {"today": day("today"), "yesterday": day("yesterday"), "repositories": rows,
+            "gates": sorted(tagged("gates"), key=lambda run: run["began"]),
+            "landings": [{"day": at, "hours": landings[at]} for at in sorted(landings)],
+            "recent": sorted(tagged("recent"), key=lambda one: -(one.get("settled") or 0))[:RECENT],
+            "events": sorted(tagged("events"), key=lambda event: -(event.get("time") or 0))[:MOST],
+            "attention": sorted(tagged("attention"), key=lambda event: -(event.get("time") or 0))[:NOTED],
+            "total": sum(found["total"] for _, found in read)}
+
+
+def everywhere(repositories, query):
+    return combine(each(repositories, lambda repository: data(repository, query)))
 
 
 def summary(repository):

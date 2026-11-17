@@ -1,6 +1,10 @@
 QK.panel("history", {
+  // For one repository, or for every repository at once (context.repository null), where data.repositories has a
+  // row for each and each run, entry and event names its repository.
   render(element, data, context) {
-    const h = QK.h, svg = QK.svg, today = data.today, yesterday = data.yesterday || {};
+    const h = QK.h, svg = QK.svg, today = data.today, yesterday = data.yesterday || {}, all = !context.repository;
+    const hues = all ? QK.repositoryHues(data.repositories.map(one => one.name)) : {};
+    const tag = name => all && name ? h("span", { class: "tag" }, h("i", { class: "dot " + (hues[name] || "other") }), name) : null;
     // The change from yesterday to the same time of day, colored by whether it is good: more landed is good, more
     // flaky tests or a slower gate is not, and rounds are neither.
     function change(now, then, better, seconds) {
@@ -43,9 +47,9 @@ QK.panel("history", {
             const tone = run.status === 0 ? "good" : run.status === 3 ? "unknown" : "danger";
             const bar = svg("rect", { class: "run " + tone + (run.lane === "gate" ? "" : " minor"), x: x(run.began), y: row * lane + 8 + (run.lane === "gate" ? 0 : 5),
               width: Math.max(2, x(run.ended) - x(run.began)), height: run.lane === "gate" ? 18 : 8, rx: 3 },
-              svg("title", null, run.lane + " " + (run.status === 0 ? "passed" : run.status === 3 ? "unmeasured" : "exited " + run.status)
+              svg("title", null, (all ? run.repository + " · " : "") + run.lane + " " + (run.status === 0 ? "passed" : run.status === 3 ? "unmeasured" : "exited " + run.status)
                 + " · " + QK.span(run.ended - run.began) + " · ended " + QK.clock(run.ended)));
-            return run.log ? svg("a", { href: QK.href(context.repository, "logs", { name: run.log }) }, bar) : bar;
+            return run.log ? svg("a", { href: QK.logHref(context, run.repository, run.log) }, bar) : bar;
           })])));
     }
     // Landings by day and hour, a darker cell for more.
@@ -81,13 +85,46 @@ QK.panel("history", {
         bins.filter((_, index) => index % Math.ceil(bins.length / 6) === 0).map(bin =>
           svg("text", { class: "axis", x: x(bin.from), y: H - 5 }, bin.from + "m")));
     }
+    // Each repository's day beside yesterday's to this time, and its passing gates' times as a strip of dots on one
+    // scale of minutes, the median marked: a repository's gate is its own, so no median is taken across them.
+    function repositories() {
+      // Those that did something today first, the busiest first; the rest in the listed order.
+      const busy = one => one.error ? 1e9 : one.today.landed + one.today.cameBack + one.today.rounds;
+      const rows = data.repositories.slice().sort((a, b) => busy(b) - busy(a)), timed = rows.filter(one => (one.gateSeconds || []).length);
+      const minutes = timed.flatMap(one => one.gateSeconds).map(seconds => seconds / 60);
+      const low = minutes.length ? Math.floor(Math.min(...minutes)) : 0, high = minutes.length ? Math.ceil(Math.max(...minutes)) + 1 : 1;
+      const W = 300, H = 26, x = value => 6 + (value - low) / Math.max(1, high - low) * (W - 12);
+      function strip(one) {
+        const runs = one.gateSeconds || [];
+        if (runs.length < 3) return h("span", { class: "sub" }, runs.length ? QK.count(runs.length, "passing gate") : "No passing gate yet");
+        const sorted = runs.slice().sort((a, b) => a - b), median = sorted[Math.floor(sorted.length / 2)];
+        return svg("svg", { class: "strip-plot", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
+          "aria-label": one.name + ": median gate " + QK.span(median) + " over " + QK.count(runs.length, "passing run") },
+          svg("title", null, "Median " + QK.span(median) + " · fastest " + QK.span(sorted[0]) + " · slowest " + QK.span(sorted[sorted.length - 1])
+            + " · last " + QK.count(runs.length, "passing run")),
+          svg("line", { class: "base", x1: 0, x2: W, y1: H / 2, y2: H / 2 }),
+          runs.map(seconds => svg("circle", { class: "run", cx: x(seconds / 60), cy: H / 2, r: 3.5 })),
+          svg("line", { class: "median", x1: x(median / 60), x2: x(median / 60), y1: 2, y2: H - 2 }));
+      }
+      return h("div", { class: "chart-scroll" }, h("table", { class: "repo-table" },
+        h("thead", null, h("tr", null, ["Repository", "Landed", "Came back", "Flaky", "Rounds", "Median gate"].map(name => h("th", null, name)),
+          h("th", null, "Passing gates", minutes.length ? h("span", { class: "muted" }, " " + low + "–" + high + " min") : null))),
+        h("tbody", null, rows.map(one => one.error ? h("tr", null, h("td", null, tag(one.name)), h("td", { class: "warning wrap", colspan: 6 }, "Cannot be read: " + one.error))
+          : h("tr", null, h("td", null, h("a", { href: QK.href(one.name, "history") }, tag(one.name))),
+            h("td", null, h("b", null, one.today.landed), " ", (found => found ? h("span", { class: "change " + found.tone, title: found.title }, found.text) : null)(
+              change(one.today.landed, one.yesterday.landed, "more"))),
+            h("td", { class: one.today.cameBack ? "danger" : null }, one.today.cameBack),
+            h("td", null, one.today.flaky), h("td", null, one.today.rounds),
+            h("td", null, typeof one.today.medianGateSeconds === "number" ? QK.span(one.today.medianGateSeconds) : "–"),
+            h("td", { class: "strip-cell" }, strip(one)))))));
+    }
     // The events as a timeline, an hour's heading before each hour's events. An event links to its entry, or to
-    // the log its lane wrote.
+    // the log its lane wrote, in its own repository where every repository is shown, which its tag names.
     function said(event) {
       const text = h("span", { class: "wrap" + (event.level === "plain" ? "" : " " + event.level) }, event.text);
-      if (event.log) return h("a", { class: "plainlink", href: QK.href(context.repository, "logs", { name: event.log }) }, text);
-      if (event.entry) return h("a", { class: "plainlink", href: QK.href(context.repository, "queue", { entry: event.entry }) }, text);
-      return text;
+      const linked = event.log ? h("a", { class: "plainlink", href: QK.logHref(context, event.repository, event.log) }, text)
+        : event.entry ? h("a", { class: "plainlink", href: QK.href(event.repository || context.repository, "queue", { entry: event.entry }) }, text) : text;
+      return all && event.repository ? h("span", null, tag(event.repository), linked) : linked;
     }
     function timeline(list, hours) {
       let hour = null;
@@ -131,16 +168,20 @@ QK.panel("history", {
       h("div", { class: "card" }, h("h2", null, "Today", h("span", { class: "muted" }, "Changes are against yesterday at this time")),
         h("div", { class: "today" }, settled(),
           h("div", { class: "numbers" }, number("Flaky tests", today.flaky, "flaky", "fewer"), number("Rounds", today.rounds, "rounds"),
-            number("Median gate", today.medianGateSeconds === null ? "–" : QK.span(today.medianGateSeconds), "medianGateSeconds", "fewer", true)))),
+            all ? QK.number("Repositories", data.repositories.length, null, null)
+              : number("Median gate", today.medianGateSeconds === null ? "–" : QK.span(today.medianGateSeconds), "medianGateSeconds", "fewer", true)))),
+      all ? h("div", { class: "card" }, h("h2", null, "By repository", h("span", { class: "muted" }, "Today, against yesterday at this time")),
+        repositories()) : null,
       h("div", { class: "card" }, h("h2", null, "Lane runs", h("span", { class: "muted" }, "Today, by Mac")), swimlanes(),
         (data.gates || []).length ? h("div", { class: "legend sub" }, h("span", null, h("i", { class: "dot good" }), "passed"),
           h("span", null, h("i", { class: "dot danger" }), "failed"), h("span", null, h("i", { class: "dot unknown" }), "unmeasured"),
-          h("span", null, "Thin bars are lanes other than the gate. A bar opens its log.")) : null),
-      h("div", { class: "columns" },
-        h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "By day and hour")), heatmap()),
-        h("div", { class: "card" }, h("h2", null, "Gate duration", h("span", { class: "muted" }, runs.length ? "Last " + QK.count(runs.length, "passing run") : "")), durations())),
+          h("span", null, "Thin bars are lanes other than the gate." + (all ? " Every repository's runs share their Macs." : "") + " A bar opens its log.")) : null),
+      all ? h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "Every repository, by day and hour")), heatmap())
+        : h("div", { class: "columns" },
+          h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "By day and hour")), heatmap()),
+          h("div", { class: "card" }, h("h2", null, "Gate duration", h("span", { class: "muted" }, runs.length ? "Last " + QK.count(runs.length, "passing run") : "")), durations())),
       data.recent.length ? h("div", { class: "card" }, h("h2", null, "Recent changes", h("span", { class: "muted" }, "Newest first")),
-        h("ul", { class: "rows entries" }, data.recent.map(found => QK.entry(found, context)))) : null,
+        h("ul", { class: "rows entries" }, data.recent.map(found => QK.entry(found, context, { hues })))) : null,
       events());
   },
 });

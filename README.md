@@ -112,19 +112,20 @@ simulator resources, including safe cleanup candidates; see
 ## Dashboard
 
 The dashboard is a web page of the queue and the build farm, served from your own Mac. It shows
-every project whose queue has run since the dashboard was turned on, and redraws itself as the queue
-changes.
+every project whose queue has run since the dashboard was turned on, all at once, and redraws itself
+as the queues change. The picker in its header narrows any tab to one project.
 
 ```sh
 qk visibility enable dashboard
 qk serve --open
 ```
 
-**Home** (the Queue tab) shows the day's summary, the current test round, entries in progress, and
-entries up next. New arrivals tested on top of the current batch are labeled **Testing ahead**.
+**Home** (the Queue tab) shows one verdict on every queue, naming any project that needs a look, the
+day's totals, a row for each project, every round being tested, and every entry in progress and up
+next. New arrivals tested on top of the current batch are labeled **Testing ahead**.
 
 <p align="center">
-  <img src="assets/dashboard-home.png" alt="The dashboard's Queue home view: a one-sentence health verdict with a forecast and five signs, daily totals, the flow from agents to main, one active test round, an entry in progress and an entry up next." width="100%">
+  <img src="assets/dashboard-home.png" alt="The dashboard's Queue home view across three projects: a one-sentence health verdict with a forecast and five signs, daily totals, a row for each project, the flow from agents through each project's queue to main, two rounds being tested, two entries in progress and one up next, each tagged with its project." width="100%">
 </p>
 
 **Farm** shows each Mac's slots, its load, and the work running and waiting on it, for every

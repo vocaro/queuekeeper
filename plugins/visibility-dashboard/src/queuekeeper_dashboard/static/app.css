@@ -26,6 +26,7 @@ nav a.on { background: var(--soft); color: var(--text); font-weight: 500; box-sh
 main { max-width: 920px; margin: 0 auto; padding: 8px 20px 24px; }
 a { color: var(--accent); }
 .muted { color: var(--muted); }
+.nowrap { white-space: nowrap; }
 .mono, code { font-family: var(--mono); font-size: var(--text-small); }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-top: 12px; }
 .card > h2 { margin: 0 0 8px; font-size: var(--text-body); font-weight: 600; display: flex; justify-content: space-between; gap: 12px; }
@@ -104,10 +105,34 @@ h3.label { margin-top: 12px; }
 .rows.entries > li { grid-template-columns: 6rem minmax(0, 1fr) auto; }
 .rows.lines > li { grid-template-columns: 110px minmax(0, 1fr) auto; }
 /* Share a content-sized name column across repository rows, including each status dot. */
-.rows.repositories { display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr) auto; column-gap: 16px; }
-.rows.lines.repositories > li { grid-column: 1 / -1; grid-template-columns: subgrid; }
+/* Every repository at once: a row for each on Queue, and a tag of its name in its hue beside what it owns. */
+.rows.repos { display: grid; grid-template-columns: fit-content(30%) auto minmax(0, 1fr) auto 96px auto; column-gap: 14px; }
+.rows.repos > li { grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
+.rows.repos > li:hover { background: var(--soft); }
+.rows.repos .chip { justify-self: start; }
+.rows.repos .spark { height: 24px; margin: 0; }
+.rows.repos > li.quiet { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.rows.repos > li.quiet:hover { background: none; }
+.quiet-tags { display: flex; flex-wrap: wrap; gap: 6px 0; align-items: baseline; }
+.quiet-tags .tag { margin-right: 6px; }
+.repo-numbers { display: flex; gap: 10px; white-space: nowrap; } .repo-numbers .danger { color: var(--bad); }
 .repository-label { display: flex; align-items: center; gap: 0.5em; min-width: 0; }
 .repository-label b { min-width: 0; overflow-wrap: anywhere; }
+.tag { display: inline-flex; align-items: center; gap: 5px; margin-right: 8px; padding: 0 7px; border-radius: 5px; background: var(--soft);
+  color: var(--muted); font-size: var(--text-micro); font-weight: 600; text-decoration: none; white-space: nowrap; vertical-align: 1px; }
+a.tag:hover { color: var(--text); }
+.tag .dot { width: 7px; height: 7px; } .tag .good { color: var(--good); }
+.repo-table { width: 100%; border-collapse: collapse; font-size: var(--text-small); }
+.repo-table th { text-align: left; font-size: var(--text-micro); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); padding: 0 10px 6px 0; white-space: nowrap; }
+.repo-table td { padding: 7px 10px 7px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+.repo-table td a { text-decoration: none; }
+.repo-table td.danger { color: var(--bad); font-weight: 600; } .repo-table td.warning { color: var(--warn); }
+.repo-table td.strip-cell { width: 40%; min-width: 200px; }
+.strip-plot { display: block; width: 100%; height: 26px; }
+.strip-plot .base { stroke: var(--line); vector-effect: non-scaling-stroke; }
+.strip-plot .run { fill: var(--accent); fill-opacity: 0.45; }
+.strip-plot .median { stroke: var(--text); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.roundhead .tag { margin: 0; }
 .rows.events > li { grid-template-columns: 7.5rem minmax(0, 1fr); }
 .rows.pairs > li { grid-template-columns: minmax(0, 1fr) auto; }
 .rows a.row { color: inherit; text-decoration: none; display: contents; }
@@ -371,7 +396,9 @@ pre.log { margin: 0; background: var(--soft); border-radius: 8px; padding: 10px 
   .timeline li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .macgrid { grid-template-columns: 1fr; justify-items: start; }
   .shortage .procs li { grid-template-columns: minmax(0, 1fr) 4.2rem 5.2rem; } .shortage .procs .meter { display: none; }
-  .rows.repositories { grid-template-columns: minmax(0, 1fr) auto; }
+  .rows.repos { grid-template-columns: minmax(0, 1fr) auto; row-gap: 4px; }
+  .rows.repos > li > a > :nth-child(3) { grid-column: 1 / -1; white-space: normal; }
+  .rows.repos > li > a > :nth-child(5) { display: none; }
   .rows.lines > li { grid-template-columns: minmax(0, 1fr) auto; }
   .rows.lines > li > a > :first-child { grid-column: 1 / -1; }
   .rows.lines .ellipsis { white-space: normal; }

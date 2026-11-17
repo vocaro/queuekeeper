@@ -1,25 +1,30 @@
 QK.panel("logs", {
   // The page holds one stretch of the chosen log, from start to next, as whole lines from line firstLine. A request
   // asks for the tail, for the stretch around a line, for what comes before the stretch, or for what was written
-  // after it; ask numbers the request, so an answer to an earlier one is dropped.
+  // after it; ask numbers the request, so an answer to an earlier one is dropped. Where every repository is shown,
+  // a log is named with its repository's name too, state.repository.
   query(context) {
     const state = context.state;
-    if (!state.name) return context.query.name ? { name: context.query.name } : {};
+    if (!state.name) return context.query.name ? { name: context.query.name, ...(context.query.repository ? { repository: context.query.repository } : {}) } : {};
     const query = { name: state.name, ask: String(state.ask || 0) }, want = state.want || { mode: "tail" };
+    if (!context.repository) query.repository = state.repository || "";
     if (want.mode !== "tail") query[want.mode] = String(want.value);
     if (state.index) query.known = String(state.index.size);
     if (state.find) query.find = state.find;
     return query;
   },
   render(element, data, context) {
-    const h = QK.h, svg = QK.svg, state = context.state, LIMIT = 2 << 20, FOLD = 6;
+    const h = QK.h, svg = QK.svg, state = context.state, LIMIT = 2 << 20, FOLD = 6, all = !context.repository;
+    const hues = all ? QK.repositoryHues((data.logs || []).map(log => log.repository)) : {};
+    const tag = name => all && name ? h("span", { class: "tag" }, h("i", { class: "dot " + (hues[name] || "other") }), name) : null;
+    const same = log => log.name === state.name && (!all || log.repository === state.repository);
     const LANES = ["gate", "docs", "spelling"], ROUND = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/;
     if (!state.built) {
       state.built = true;
       Object.assign(state, { ask: 0, want: { mode: "tail" }, text: "", follow: true, fold: true, only: false, wrap: true,
         open: new Set(), rounds: new Set(), filter: "All", search: "", hit: -1, signatures: {} });
       state.list = h("div", { class: "loglist" });
-      state.searchBox = h("input", { type: "search", id: "log-search", placeholder: "Find a commit or lane", "aria-label": "Find a log",
+      state.searchBox = h("input", { type: "search", id: "log-search", placeholder: all ? "Find a repository, commit or lane" : "Find a commit or lane", "aria-label": "Find a log",
         oninput: () => { state.search = state.searchBox.value.trim().toLowerCase(); state.listed = null; browse(state.logs || []); } });
       state.chips = h("div", { class: "chips", role: "group", "aria-label": "Show" });
       state.head = h("div", { class: "card loghead" });
@@ -53,11 +58,11 @@ QK.panel("logs", {
       } }, label);
       return button;
     }
-    function choose(name) {
-      Object.assign(state, { name, want: { mode: "tail" }, ask: state.ask + 1, text: "", start: 0, next: undefined, firstLine: 1,
+    function choose(name, repository) {
+      Object.assign(state, { name, repository: all ? repository : undefined, want: { mode: "tail" }, ask: state.ask + 1, text: "", start: 0, next: undefined, firstLine: 1,
         index: null, found: null, hit: -1, follow: true, drawn: null, open: new Set(), log: null, jump: null, target: null, drawnFirst: undefined, signatures: {} });
       state.findBox.value = state.find || "";
-      history.replaceState(null, "", QK.href(context.repository, "logs", { name }));
+      history.replaceState(null, "", QK.logHref(context, repository, name));
       state.listed = null;
       browse(state.logs || []);
       context.refresh();
@@ -147,20 +152,20 @@ QK.panel("logs", {
     }
     function hhmm(at) { return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }); }
     function row(log, label, extra, reruns) {
-      const [tone, glyph, said] = mark(log, reruns), on = log.name === state.name;
-      return h("a", { class: "logrow" + (on ? " on" : "") + (extra ? " " + extra : ""), href: QK.href(context.repository, "logs", { name: log.name }),
-        "aria-current": on ? "true" : null, title: log.name + " · " + said, onclick: event => {
+      const [tone, glyph, said] = mark(log, reruns), on = same(log);
+      return h("a", { class: "logrow" + (on ? " on" : "") + (extra ? " " + extra : ""), href: QK.logHref(context, log.repository, log.name),
+        "aria-current": on ? "true" : null, title: (all ? log.repository + " · " : "") + log.name + " · " + said, onclick: event => {
           if (event.metaKey || event.ctrlKey || event.shiftKey) return;
           event.preventDefault();
-          choose(log.name);
+          choose(log.name, log.repository);
         } },
         h("span", { class: "mark " + tone, "aria-label": said }, glyph),
         h("span", { class: "lane" }, label, log.mac ? h("span", { class: "sub" }, " " + log.mac) : null),
         h("span", { class: "meta" }, typeof log.seconds === "number" ? QK.span(log.seconds) : QK.size(log.size)));
     }
     function browse(logs) {
-      const signature = JSON.stringify([state.name, state.filter, state.search, [...state.rounds],
-        logs.map(log => [log.name, log.status, Math.round(log.modified / 30)])]);
+      const signature = JSON.stringify([state.name, state.repository, state.filter, state.search, [...state.rounds], state.workers,
+        logs.map(log => [log.repository, log.name, log.status, Math.round(log.modified / 30)])]);
       if (signature === state.listed) return;
       state.listed = signature;
       const lanes = [...new Set(logs.map(log => log.lane).filter(lane => lane && lane !== "rerun"))]
@@ -173,29 +178,36 @@ QK.panel("logs", {
       for (const log of logs) {
         if (log.name === "worker.log") continue;
         if (!log.round) { other.push(log); continue; }
-        const key = log.round + "-" + log.commit;
-        if (!groups.has(key)) groups.set(key, { round: log.round, commit: log.commit, logs: [] });
+        const key = log.repository + "\n" + log.round + "-" + log.commit;
+        if (!groups.has(key)) groups.set(key, { round: log.round, commit: log.commit, repository: log.repository, logs: [] });
         groups.get(key).logs.push(log);
       }
       const failed = log => typeof log.status === "number" && log.status !== 0 && log.status !== 3;
       const shown = log => (state.filter === "All" || (state.filter === "Failed" ? failed(log) : log.lane === state.filter))
-        && (!state.search || log.name.toLowerCase().includes(state.search));
-      const worker = logs.find(log => log.name === "worker.log");
-      const rows = [worker && state.filter === "All" && (!state.search || "worker.log".includes(state.search)) ? row(worker, h("b", null, "worker.log")) : null];
+        && (!state.search || log.name.toLowerCase().includes(state.search) || (all && log.repository.toLowerCase().includes(state.search)));
+      const workers = state.filter === "All" ? logs.filter(log => log.name === "worker.log" && (!state.search || "worker.log".includes(state.search)
+        || (all && log.repository.toLowerCase().includes(state.search)))) : [];
+      // Every repository has a worker.log: where all are shown they fold into one row, open while searching or when one is chosen.
+      const open = !all || workers.length < 3 || state.workers || !!state.search || workers.some(same);
+      const rows = all && workers.length >= 3 ? [h("button", { type: "button", class: "reruns", "aria-expanded": String(open), onclick: () => {
+        state.workers = !open; state.listed = null; browse(state.logs || []); } }, (open ? "▾ " : "▸ ") + QK.count(workers.length, "worker log"))] : [];
+      if (open) rows.push(workers.map(worker => row(worker, [h("b", null, "worker.log"), all ? " " : null, tag(worker.repository)], all && workers.length >= 3 ? "indent" : null)));
       let heading = null;
-      for (const group of groups.values()) {
+      // Newest round first, whichever repository it is in.
+      for (const group of [...groups.values()].sort((a, b) => b.round.localeCompare(a.round))) {
         const reruns = group.logs.filter(log => log.lane === "rerun").sort((a, b) => a.test - b.test || a.attempt - b.attempt);
         const main = group.logs.filter(log => log.lane !== "rerun" && shown(log))
           .sort((a, b) => (LANES.indexOf(a.lane) + 1 || 99) - (LANES.indexOf(b.lane) + 1 || 99) || a.lane.localeCompare(b.lane));
         if (!main.length) continue;
         const at = when(group.round), title = at ? day(at) : "";
         if (title !== heading) { heading = title; rows.push(h("div", { class: "day label" }, title)); }
-        rows.push(h("div", { class: "roundhead" }, h("span", { class: "tnum" }, at ? hhmm(at) : group.round), h("span", { class: "mono sub" }, group.commit)));
+        rows.push(h("div", { class: "roundhead" }, h("span", { class: "tnum" }, at ? hhmm(at) : group.round), tag(group.repository),
+          h("span", { class: "mono sub" }, group.commit)));
         for (const log of main) {
           const own = log.lane === "gate" ? reruns : null;
           rows.push(row(log, log.lane, null, own));
           if (!own || !own.length) continue;
-          const key = group.round + group.commit, open = state.rounds.has(key) || own.some(rerun => rerun.name === state.name);
+          const key = group.repository + group.round + group.commit, open = state.rounds.has(key) || own.some(same);
           const passed = own.filter(rerun => rerun.status === 0).length, tests = new Set(own.map(rerun => rerun.test)).size;
           rows.push(h("button", { type: "button", class: "reruns", "aria-expanded": String(open), onclick: () => {
             if (state.rounds.has(key)) state.rounds.delete(key); else state.rounds.add(key);
@@ -207,7 +219,8 @@ QK.panel("logs", {
         }
       }
       const others = other.filter(shown);
-      if (others.length) rows.push(h("div", { class: "day label" }, "Other logs"), others.map(log => row(log, log.name)));
+      if (others.length) rows.push(h("div", { class: "day label" }, "Other logs"), others.map(log => row(log, [log.name, all ? " " : null, tag(log.repository)])));
+      for (const one of data.unread || []) rows.push(h("p", { class: "sub warning wrap" }, one.repository + " cannot be read: " + one.error));
       if (rows.filter(Boolean).length === 0) rows.push(h("p", { class: "sub" }, "No log matches."));
       QK.fill(state.list, rows);
     }
@@ -219,6 +232,7 @@ QK.panel("logs", {
       const tests = index && index.summary ? /(\d+) tests? \((\d+) skipped\)/.exec(index.summary) : null;
       const failures = index ? unique(index.failures).length : 0;
       const facts = [
+        all && state.repository ? ["Repository", state.repository] : null,
         at ? ["Round", day(at) + " " + hhmm(at)] : null, log.commit ? ["Commit", log.commit] : null,
         log.lane && log.lane !== "rerun" && typeof log.status === "number" ? ["Mac", log.mac || "this Mac"] : null,
         typeof log.seconds === "number" ? ["Took", QK.span(log.seconds)] : null,
@@ -379,12 +393,12 @@ QK.panel("logs", {
     // The answer.
     state.logs = data.logs || [];
     browse(state.logs);
-    if (!state.logs.length && !state.name) { QK.fill(state.list, h("p", { class: "sub" }, "The queue has no logs yet.")); return; }
+    if (!state.logs.length && !state.name) { QK.fill(state.list, h("p", { class: "sub" }, all ? "No queue has logs yet." : "The queue has no logs yet.")); return; }
     if (!state.name) {
-      const gate = state.logs.find(log => log.lane === "gate");
-      return choose(context.query.name || (gate || state.logs[0]).name);
+      const gate = state.logs.find(log => log.lane === "gate") || state.logs[0];
+      return context.query.name ? choose(context.query.name, context.query.repository) : choose(gate.name, gate.repository);
     }
-    if (data.name !== state.name || data.ask !== String(state.ask)) return;
+    if (data.name !== state.name || (all && data.repository !== state.repository) || data.ask !== String(state.ask)) return;
     Object.assign(state, { size: data.size, path: data.path, log: data.log, reruns: data.reruns, flaky: data.flaky });
     if (data.index) state.index = data.index;
     if (data.found) state.found = data.found;

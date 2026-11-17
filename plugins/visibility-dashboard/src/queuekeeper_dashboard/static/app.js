@@ -1,6 +1,7 @@
 // The dashboard's page: the header, the routes, and the loop that asks a panel's data and has the panel draw it.
 // A panel's script calls QK.panel(NAME, {render(element, data, context), query(context)}) and draws with QK.h, which
-// only ever sets text, so nothing the queue or a log says is read as markup.
+// only ever sets text, so nothing the queue or a log says is read as markup. The page opens on every repository at
+// once, at / and /all/TAB, where context.repository is null; the header's picker narrows it to one, at /r/NAME/TAB.
 (function () {
   "use strict";
   const QK = window.QK = { panels: {}, POLL: 2000 };
@@ -22,9 +23,12 @@
     }
     return element;
   };
+  // An entry as a row. Where every repository is shown, the entry carries its repository's name, which the row
+  // shows with that repository's hue (options.hues, from QK.hues), and its links go to that repository's pages.
   QK.entry = function (found, context, options = {}) {
     const h = QK.h, short = commit => commit ? String(commit).slice(0, 12) : "";
-    const log = name => name ? h("a", { href: QK.href(context.repository, "logs", { name }) }, "log") : null;
+    const repository = found.repository || context.repository;
+    const log = name => name ? h("a", { href: QK.logHref(context, repository, name) }, "log") : null;
     const settled = typeof found.settled === "number";
     const facts = options.compact ? found.id : [found.id, found.branch, found.commits > 1 ? QK.count(found.commits, "commit") : null, found.note,
       found.front ? "front of the queue" : null, found.noGate ? "no gate" : null,
@@ -33,9 +37,10 @@
     return h("li", null,
       h("span", { class: "pill " + found.state }, found.state),
       h("span", null,
-        h("a", { class: "entry-title ellipsis", href: QK.href(context.repository, "queue", { entry: found.id }) }, found.subject || found.id,
+        h("a", { class: "entry-title ellipsis", href: QK.href(repository, "queue", { entry: found.id }) }, found.subject || found.id,
           !options.compact && found.landedAs ? h("span", { class: "muted mono" }, " → " + short(found.landedAs)) : null),
-        h("div", { class: "sub mono wrap" }, facts),
+        h("div", { class: "sub mono wrap" }, found.repository && !context.repository
+          ? QK.tag(found.repository, (options.hues || {})[found.repository]) : null, facts),
         !options.compact && found.why ? h("div", { class: "sub wrap" }, found.why, " ", log(found.log)) : null),
       h("span", { class: "muted" }, settled ? QK.ago(found.settled) : QK.since(found.submitted)));
   };
@@ -189,9 +194,25 @@
     return bytes < 1024 ? bytes + " B" : bytes < 1048576 ? (bytes / 1024).toFixed(0) + " KB"
       : bytes < 1073741824 ? (bytes / 1048576).toFixed(1) + " MB" : (bytes / 1073741824).toFixed(1) + " GB";
   };
+  // A tab's address: one repository's, or every repository's when repository is null, / for their Queue.
   QK.href = function (repository, tab, query) {
     const text = query ? new URLSearchParams(query).toString() : "";
-    return "/r/" + encodeURIComponent(repository) + "/" + tab + (text ? "?" + text : "");
+    if (!repository && tab === "queue" && !text) return "/";
+    return (repository ? "/r/" + encodeURIComponent(repository) + "/" : "/all/") + tab + (text ? "?" + text : "");
+  };
+  // A log's address in the Logs tab where the page is: one repository's, or every repository's, where a log is
+  // named with its repository's name too.
+  QK.logHref = function (context, repository, name) {
+    return context.repository ? QK.href(context.repository, "logs", { name }) : QK.href(null, "logs", { repository, name });
+  };
+  // Each repository's hue, by the header's list, so that a repository keeps its color from tab to tab.
+  QK.repositoryHues = function (names) {
+    return QK.hues([...state.repositories.map(one => one.name), ...(names || [])]);
+  };
+  // A repository's name as a small tag in its hue, linking to its own Queue.
+  QK.tag = function (repository, hue, extra, title) {
+    return QK.h("a", { class: "tag", href: QK.href(repository, "queue"), title: title || "Only " + repository },
+      QK.h("i", { class: "dot " + (hue || "other") }), repository, extra ? QK.h("span", { class: "good" }, extra) : null);
   };
   QK.panel = function (name, panel) { QK.panels[name] = panel; };
   QK.go = function (href, replace) {
@@ -209,32 +230,38 @@
   function route() {
     const parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
     const query = Object.fromEntries(new URLSearchParams(location.search));
-    return parts[0] === "r" && parts[1] ? { repository: parts[1], tab: parts[2] === "home" ? "queue" : parts[2] || "queue", query } : { query };
+    const tab = name => name === "home" || !name ? "queue" : name;
+    if (parts[0] === "r" && parts[1]) return { repository: parts[1], tab: tab(parts[2]), query };
+    return { repository: null, tab: tab(parts[0] === "all" ? parts[1] : null), query };
   }
+  // The panels with a tab where the route is: every panel for one repository, those that draw every repository for all.
+  function tabbed(current) { return state.panels.filter(panel => current.repository || panel.everywhere); }
 
   function live(ok) {
     const element = document.getElementById("live");
     QK.fill(element, QK.h("span", { class: "dot " + (ok ? "active" : "danger") }), ok ? " Live" : " The server is not answering");
   }
 
+  // The picker keeps the tab: All repositories shows every repository's, a repository's name that one's alone.
   function header() {
-    const picker = document.getElementById("repository"), name = document.getElementById("repository-name");
-    const tabs = document.getElementById("tabs"), current = state.route;
-    const many = state.repositories.length > 1;
-    picker.hidden = !many;
-    name.hidden = many || !current.repository;
-    name.textContent = current.repository || "";
-    if (many) {
-      const marks = { active: "● ", warning: "▲ ", danger: "▲ ", idle: "" };
-      QK.fill(picker, QK.h("option", { value: "" }, "All repositories"), state.repositories.map(one =>
-        QK.h("option", { value: one.name, selected: one.name === current.repository }, (marks[one.level] || "") + one.name)));
-      picker.value = current.repository || "";
-      picker.onchange = () => QK.go(picker.value ? QK.href(picker.value, current.tab || "queue") : "/");
-    }
-    QK.fill(tabs, current.repository ? state.panels.map(panel => QK.h("a", {
+    const picker = document.getElementById("repository"), tabs = document.getElementById("tabs"), current = state.route;
+    picker.hidden = !state.repositories.length && !current.repository;
+    const marks = { active: "● ", warning: "▲ ", danger: "▲ ", idle: "" };
+    const names = state.repositories.map(one => one.name);
+    if (current.repository && !names.includes(current.repository)) names.push(current.repository);
+    QK.fill(picker, QK.h("option", { value: "" }, "All repositories"), names.map(name => {
+      const one = state.repositories.find(found => found.name === name) || {};
+      return QK.h("option", { value: name, selected: name === current.repository }, (marks[one.level] || "") + name);
+    }));
+    picker.value = current.repository || "";
+    picker.onchange = () => {
+      const to = picker.value || null, kept = tabbed({ repository: to }).some(panel => panel.name === current.tab);
+      QK.go(QK.href(to, kept ? current.tab : "queue"));
+    };
+    QK.fill(tabs, tabbed(current).map(panel => QK.h("a", {
       href: QK.href(current.repository, panel.name), class: panel.name === current.tab ? "on" : null,
-      "aria-current": panel.name === current.tab ? "page" : null }, panel.title)) : []);
-    document.title = (current.repository ? current.repository + " · " : "") + "Queuekeeper";
+      "aria-current": panel.name === current.tab ? "page" : null }, panel.title)));
+    document.title = (current.repository || "All repositories") + " · Queuekeeper";
   }
 
   function script(name) {
@@ -259,17 +286,9 @@
     return selection && !selection.isCollapsed && main.contains(selection.anchorNode);
   }
 
-  function all() {
-    if (!state.repositories.length) {
-      return QK.fill(main, QK.h("div", { class: "card hero" }, QK.h("h1", null, "No repository yet"),
-        QK.h("p", null, "Queue a commit with qk land, or start qk serve inside a repository.")));
-    }
-    QK.fill(main, QK.h("div", { class: "card" }, QK.h("h2", null, "All repositories"),
-      QK.h("ul", { class: "rows lines repositories" }, state.repositories.map(one => QK.h("li", null, QK.h("a", {
-        class: "row", href: QK.href(one.name, "queue") },
-        QK.h("span", { class: "repository-label" }, QK.h("span", { class: "dot " + one.level }), QK.h("b", null, one.name)),
-        QK.h("span", { class: "ellipsis" }, one.headline, QK.h("span", { class: "muted" }, " " + one.detail)),
-        QK.h("span", { class: "muted" }, "›")))))));
+  function none() {
+    QK.fill(main, QK.h("div", { class: "card hero" }, QK.h("h1", null, "No repository yet"),
+      QK.h("p", null, "Queue a commit with qk land, or start qk serve inside a repository.")));
   }
 
   async function tick(generation) {
@@ -279,20 +298,16 @@
       if (generation !== state.generation) return;
       live(true);
       header();
-      if (!current.repository) {
-        if (state.repositories.length === 1) return QK.go(QK.href(state.repositories[0].name, "queue"), true);
-        if (!selecting()) all();
-        return;
-      }
-      const known = state.panels.find(panel => panel.name === current.tab);
+      if (!current.repository && !state.repositories.length) return none();
+      const known = tabbed(current).find(panel => panel.name === current.tab);
       if (!known) return fault("No such section", "This dashboard has no section named " + current.tab + ".");
       if (known.error) return fault(known.title, "This panel did not load: " + known.error);
       await script(current.tab);
       const panel = QK.panels[current.tab];
       if (!panel) throw new Error("its script defined no panel");
       const query = panel.query ? panel.query(context) : current.query;
-      const data = await ask("/api/r/" + encodeURIComponent(current.repository) + "/panel/" + encodeURIComponent(current.tab)
-        + "?" + new URLSearchParams(query || {}));
+      const data = await ask((current.repository ? "/api/r/" + encodeURIComponent(current.repository) : "/api/all")
+        + "/panel/" + encodeURIComponent(current.tab) + "?" + new URLSearchParams(query || {}));
       if (generation !== state.generation || (selecting() && !context.fresh)) return;
       panel.render(main, data, context);
       context.fresh = false;
@@ -323,7 +338,7 @@
     const link = event.target.closest && event.target.closest("a[href]");
     if (!link || event.defaultPrevented || event.button || event.metaKey || event.ctrlKey || event.shiftKey) return;
     const href = link.getAttribute("href");
-    if (href !== "/" && !href.startsWith("/r/")) return;
+    if (href !== "/" && !href.startsWith("/r/") && !href.startsWith("/all/")) return;
     event.preventDefault();
     QK.go(href);
   });

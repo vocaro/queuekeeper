@@ -1,4 +1,5 @@
-"""The Queue tab: the round's gates and every entry waiting, then the last ones settled."""
+"""The Queue tab: the round's gates and every entry waiting, then the last ones settled; and, as the page's first
+view, every repository's at once (everywhere), each repository's own answer combined (combine)."""
 import json
 from pathlib import Path
 import re
@@ -7,6 +8,7 @@ import threading
 import time
 
 from queuekeeper import health, lane_wait, merge_queue, remote
+from . import each
 
 TITLE, ORDER = "Queue", 10
 ENTRY = ("id", "state", "subject", "note", "branch", "submitted", "settled", "landedAs", "why", "front", "noGate")
@@ -182,3 +184,164 @@ def summary(repository):
         return {"title": "Came back", "level": "warning", "at": last,
                 "text": f"{len(back)} {'entry' if len(back) == 1 else 'entries'} came back within the hour"}
     return None
+
+
+def split(found):
+    """(the entries of a repository's Queue answer found that are being tested, those waiting for a round)."""
+    current = found.get("round") or {}
+    inside = set(current.get("entries") or []) | {one for gate_ in current.get("gates") or [] for one in gate_.get("entries") or []}
+    active = [one for one in found.get("waiting") or [] if one.get("id") in inside or one.get("state") in ("testing", "passed")]
+    return active, [one for one in found.get("waiting") or [] if one not in active]
+
+
+def plural(count, noun, nouns=None):
+    return f"{count} {noun if count == 1 else nouns or noun + 's'}"
+
+
+SHARED = ("macs", "devices")  # the signs that are every repository's, since the Macs and devices are
+
+
+def verdict(parts):
+    """The health of every repository's queue at once: a sentence naming each repository that needs a look for a
+    reason of its own, held, stopped or its own worst sign, then what the Macs and devices say and what could not
+    be checked, said once since they are every repository's; the worst level of all that; each sign the worst of
+    that sign's; and the latest forecast."""
+    rank = lambda level: health.RANK.get(level, 0)
+    read = [(name, found["health"]) for name, found, _ in parts if found and found.get("health")]
+    unread = [(name, why) for name, found, why in parts if found is None]
+    if not read and not unread: return None
+    own = lambda one: max((sign_ for sign_ in one.get("signs") or [] if sign_["name"] not in SHARED),
+                          key=lambda sign_: rank(sign_["level"]), default=None)
+    def trouble_of(one):
+        """(level, label, reason) of a repository's own trouble, or None."""
+        if one["verdict"] in ("held", "stopped"): return one["level"], one["label"], one["sentence"].split(". ")[0].rstrip(".")
+        worst = own(one)
+        if worst and rank(worst["level"]) > rank(health.UNKNOWN):
+            return worst["level"], "Stuck" if worst["level"] == health.DANGER else "Slower than usual", worst["short"]
+        if one.get("findings"): return health.WARNING, "Needs a look", f"doctor has {plural(len(one['findings']), 'finding')}"
+        return None
+    trouble = sorted([(name, found) for name, one in read if (found := trouble_of(one))], key=lambda item: -rank(item[1][0]))
+    signs_ = [sign_ for _, one in read for sign_ in one.get("signs") or []]
+    shared = {}
+    for sign_ in signs_:
+        if sign_["name"] in SHARED and rank(sign_["level"]) > rank(shared.get(sign_["name"], {}).get("level", health.IDLE)):
+            shared[sign_["name"]] = sign_
+    shared_bad = [sign_ for sign_ in shared.values() if rank(sign_["level"]) > rank(health.UNKNOWN)]
+    unknown = list(dict.fromkeys(sign_["text"] for sign_ in signs_ if sign_["level"] == health.UNKNOWN))
+    said, fine = [], len(read) - len(trouble)
+    if trouble:
+        said.append(f"{len(trouble)} of {len(parts)} {'needs' if len(trouble) == 1 else 'need'} a look: "
+                    + "; ".join(f"{name}, {why[:1].lower() + why[1:]}" for name, (_, _, why) in trouble) + ".")
+    for name, why in unread: said.append(f"{name} cannot be read: {why}.")
+    said += [health.upper(sign_["text"]) + "." for sign_ in shared_bad]
+    if unknown: said.append("What could not be checked: " + "; ".join(unknown) + ".")
+    if trouble or unread:
+        if fine: said.append(f"The other {fine} are fine." if fine > 1 else "The other one is fine.")
+    elif any(one["verdict"] != "quiet" for _, one in read):
+        said.insert(0, f"Every queue is moving normally{'' if len(read) == 1 else f', all {len(read)} of them'}.")
+    else:
+        said.insert(0, "Nothing is waiting in " + ("the one repository." if len(read) == 1 else f"any of the {len(read)} repositories."))
+    levels = [found[0] for _, found in trouble] + [sign_["level"] for sign_ in shared_bad] \
+        + ([health.UNKNOWN] if unknown or unread else [])
+    level = max(levels, key=rank, default=health.OK if any(one["verdict"] != "quiet" for _, one in read) else health.IDLE)
+    if trouble: label = trouble[0][1][1]
+    elif shared_bad: label = "Stuck" if level == health.DANGER else "Needs a look"
+    elif unknown or unread: label = "Can't tell"
+    else: label = "All good" if level == health.OK else "All quiet"
+    sentence = " ".join(said)
+    signs = []
+    for title in health.SIGNS:
+        found = [(name, sign_) for name, one in read for sign_ in one.get("signs") or [] if sign_["name"] == title]
+        if not found: continue
+        found.sort(key=lambda item: -rank(item[1]["level"]))
+        name, worst = found[0]
+        shorts = {sign_["short"] for _, sign_ in found}
+        bad = [item for item in found if item[1]["level"] not in (health.OK, health.IDLE)]
+        if len(shorts) == 1 or len(found) == 1: short, text = worst["short"], worst["text"]
+        elif not bad: short = text = f"Fine in all {len(found)}"
+        else:
+            more = f" (and {len(bad) - 1} more)" if len(bad) > 1 else ""
+            short, text = f"{name}: {worst['short']}{more}", "; ".join(f"{one}: {sign_['text']}" for one, sign_ in bad)
+        signs.append({**worst, "short": short, "text": text})
+    casts = [one["forecast"] for _, one in read if one.get("forecast")]
+    forecast = {"waiting": sum(cast["waiting"] for cast in casts), "clearsAt": max(cast["clearsAt"] for cast in casts)} if casts else None
+    return {"level": level, "label": label, "sentence": sentence, "signs": signs, "forecast": forecast}
+
+
+def combine(parts, now=None):
+    """Every repository's Queue at once, from parts, [(name, its Queue answer (data), None)] or (name, None, why
+    it cannot be read): its health, the day's numbers summed, what needs the owner in any of them, a row for each
+    repository, the rounds being tested, the entries in progress and waiting oldest first, and the flow map's
+    queues, agents and Macs. An entry or gate carries its repository's name."""
+    now = time.time() if now is None else now
+    read = [(name, found) for name, found, _ in parts if found]
+    total = lambda key: sum(found["overview"]["counts"].get(key) or 0 for _, found in read)
+    def summed(key):
+        series = [found["overview"].get("trend", {}).get(key) or [] for _, found in read]
+        return [sum(values) for values in zip(*series)] if series and all(series) else []
+    rows, lines, rounds, active, pending, queues, counts, back = [], [], [], [], [], [], {}, None
+    farm_line = None
+    for name, found, why in parts:
+        if found is None:
+            rows.append({"name": name, "level": "warning", "headline": "Cannot be read", "detail": why, "error": why})
+            lines.append({"title": "Cannot read", "text": why, "level": "warning", "panel": "queue", "repository": name})
+            continue
+        overview, current = found["overview"], found.get("round")
+        mine, waiting = split(found)
+        tag = lambda entries: [{**one, "repository": name} for one in entries]
+        active += tag(mine)
+        pending += tag(waiting)
+        median = (overview.get("trend") or {}).get("medianGateSeconds")
+        if current:
+            rounds.append({**current, "repository": name, "medianGateSeconds": median,
+                           "gates": [{**one, "repository": name} for one in current.get("gates") or []]})
+        rows.append({"name": name, "level": overview["level"], "headline": overview["headline"], "detail": overview["detail"],
+                     "health": {key: (found.get("health") or {}).get(key) for key in ("level", "label", "verdict")},
+                     "worker": found.get("worker"), "held": found.get("held"), "counts": overview["counts"],
+                     "landedTrend": (overview.get("trend") or {}).get("landed") or [], "medianGateSeconds": median,
+                     "testing": len(mine), "gates": len((current or {}).get("gates") or [])})
+        for line in overview.get("lines") or []:
+            if line.get("level") not in ("danger", "warning"): continue
+            if line.get("panel") == "farm": farm_line = farm_line or line
+            else: lines.append({**line, "repository": name})
+        queues.append({"name": name, "waiting": len(waiting), "testing": len(mine), "held": bool(found.get("held")),
+                       "worker": bool(found.get("worker"))})
+        for one, testing in [*((one, True) for one in mine), *((one, False) for one in waiting)]:
+            agent_ = counts.setdefault(agent(one.get("branch")), {"waiting": 0, "testing": 0, "queues": []})
+            agent_["testing" if testing else "waiting"] += 1
+            if name not in agent_["queues"]: agent_["queues"].append(name)
+        for one in found.get("recent") or []:
+            if one.get("state") in ("failed", "conflict") and now - (one.get("settled") or 0) < NEWS \
+                    and (back is None or one["settled"] > back["settled"]):
+                back = {"agent": agent(one.get("branch")), "id": one.get("id"), "subject": one.get("subject"),
+                        "state": one.get("state"), "settled": one.get("settled"), "repository": name}
+    if farm_line: lines.append(farm_line)
+    lines.sort(key=lambda line: line.get("level") != "danger")
+    ranked = sorted(counts.items(), key=lambda item: (-(item[1]["waiting"] + item[1]["testing"]), item[0]))
+    agents = [{"name": name, **one} for name, one in ranked[:AGENTS]]
+    if ranked[AGENTS:]:
+        rest = [one for _, one in ranked[AGENTS:]]
+        agents.append({"name": f"{len(rest)} more", "waiting": sum(one["waiting"] for one in rest), "more": True,
+                       "testing": sum(one["testing"] for one in rest),
+                       "queues": list(dict.fromkeys(queue_ for one in rest for queue_ in one["queues"]))})
+    macs_ = []
+    for _, found in read:
+        for mac in (found.get("flow") or {}).get("macs") or []:
+            if not any(kept["name"] == mac["name"] for kept in macs_): macs_.append({**mac, "gates": []})
+    for name, found in read:
+        for mac in (found.get("flow") or {}).get("macs") or []:
+            kept = next(kept for kept in macs_ if kept["name"] == mac["name"])
+            kept["gates"] += [{"repository": name, "role": role} for role in mac.get("gates") or []]
+    submitted = lambda one: one.get("submitted") or 0
+    return {"health": verdict(parts),
+            "counts": {"waiting": total("waiting"), "landed": total("landed"), "cameBack": total("cameBack"),
+                       "testing": len(active)},
+            "trend": {key: summed(key) for key in ("waiting", "landed", "cameBack")},
+            "worker": any(found.get("worker") for _, found in read),
+            "repositories": rows, "lines": lines, "rounds": rounds,
+            "active": sorted(active, key=submitted), "pending": sorted(pending, key=submitted),
+            "flow": {"queues": queues, "agents": agents, "macs": macs_, "back": back}}
+
+
+def everywhere(repositories, query):
+    return combine(each(repositories, lambda repository: data(repository, {})))

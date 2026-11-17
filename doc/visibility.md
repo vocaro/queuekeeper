@@ -121,7 +121,8 @@ A rule is an entry in `rules.py`; a channel is a module of its own in `notify/ch
 
 ## The dashboard feature
 
-`qk serve` serves a read-only web page of the queue at `http://localhost:8750/`.
+`qk serve` serves a read-only web page of the queue at `http://localhost:8750/`. It opens on
+every repository at once, and the picker in its header narrows any tab to one repository.
 
 ```sh
 qk visibility enable dashboard
@@ -132,20 +133,20 @@ qk serve ../other-project # show another repository too
 
 | Tab | What it shows |
 |---|---|
-| Queue (home) | Daily totals and alerts, the round's gates, entries in progress, and entries up next; Testing ahead means new arrivals tested on top of the current batch. Compact rows link to entry and gate details |
+| Queue (home) | Every queue's health in one verdict, naming each repository that needs a look, with daily totals summed; a row for each repository, quiet ones folded into one line; the flow from agents through each repository's queue and gates to the Macs; every round being tested; and every entry in progress and up next, oldest first, each tagged with its repository. For one repository: its own verdict, the round's gates, entries in progress and up next; Testing ahead means new arrivals tested on top of the current batch. Compact rows link to entry and gate details |
 | Farm | Each Mac's admission slots, what holds them and what waits, for every project, with its CPU's busy share against its limit, its load, its memory pressure and whether its screen is locked; recorded physical iOS reservations, owners and expected release, with connection status and transport from Xcode. Running and waiting requests link to admission details; persistent human-friendly IDs appear below their labels |
-| History | Recent settled changes, why each came back, the day's totals and the journal's last two hundred events |
-| Logs | The queue's logs by round, newest first, each with how its run ended, and one of them read with its failing tests and their reruns, a bar of the whole log that marks failures and goes to them, passing suites folded, and a search of the whole file; it follows new lines while you are at the bottom |
+| History | The day's totals against yesterday's, a row for each repository with its own totals and its passing gates' times on one scale, lane runs on each Mac, landings by day and hour, recent settled changes and why each came back, and the journals' last two hundred events. A gate's time is its repository's own, so no median is taken across repositories; one repository's History charts its gate durations instead |
+| Logs | Every repository's logs by round, newest first, each tagged with its repository and with how its run ended (the worker logs folded into one row), and one of them read with its failing tests and their reruns, a bar of the whole log that marks failures and goes to them, passing suites folded, and a search of the whole file; it follows new lines while you are at the bottom |
 
 The page asks for its tab's data every two seconds, so it follows the queue without being
 reloaded.
 
 **Repositories.** The page shows the repository `qk serve` was started in, those given on
 its command line, and every repository whose queue has journaled an event while the feature was
-on. With more than one, a picker in the header switches between them, and its first entry lists
-them all with a line each. Each repository's pages have addresses of their own, such as
-`/r/NAME/queue`. The Farm tab is the same for every repository, since admission is a Mac's and not
-a project's.
+on. It opens on all of them at once, at `/` and `/all/TAB`. The picker in the header narrows the
+tab shown to one repository, at `/r/NAME/TAB`, and its first entry, All repositories, widens it
+again; either way the tab is kept. The Farm tab is the same either way, since admission is a
+Mac's and not a project's. A repository that cannot be read is said so beside the others.
 
 **What it cannot do.** The server reads and never writes: it answers no request but GET, and the
 page has no button that changes the queue. Removing an entry or clearing a hold stays on the
@@ -156,9 +157,12 @@ only a request that asks for this Mac by name, so a page on another site cannot 
 through your browser. `--bind ADDRESS` serves another address, and warns that every machine able
 to reach it can then read the queue and its logs: there is no sign-in.
 
-**Panels.** Each tab is a panel: `panels/NAME.py`, with a `TITLE`, an `ORDER` and a
-`data(repository, query)`, and `panels/NAME.js`, which draws what `data` returns. A `summary`
-function gives the panel a line on Home. A panel is found by its name, so adding one changes no
+**Panels.** Each tab is a panel: `panels/NAME.py`, with a `TITLE`, an `ORDER`, a
+`data(repository, query)` and an `everywhere(repositories, query)`, and `panels/NAME.js`, which
+draws what either returns. `everywhere` answers for every repository at once; Queue and History
+build theirs by combining each repository's own `data`, so the two views cannot drift apart. A
+panel without `everywhere` has no tab where every repository is shown. A `summary` function gives
+the panel a line on Home. A panel is found by its name, so adding one changes no
 other file, and one that fails shows its fault in its own tab while the others go on.
 
 **Limits.**
