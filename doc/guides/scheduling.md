@@ -145,12 +145,9 @@ hold the mechanism.
 | 16 | A Mac has room by its own admission's rules: a free guaranteed slot at any CPU reading, a slot beyond them under that Mac's `busyLimit`, and none while whole-host or exclusive work runs or is queued ahead there. | An offer sent where admission would hold it costs a checkout and a wait. | [ve#186], [ve#191], [ve#201]; 2026-11-07 |
 | 17 | Exclusive work sent to another Mac is offered to start at once, and joins that Mac's queue only after 900 s of declined offers. | A queued exclusive request idles the Mac while it waits; the bound keeps it from waiting forever. | [placement][placement] |
 | 18 | A Mac that cannot be reached is passed over and the work runs here. One that is set up wrongly runs nothing and stops for the owner. | Busy or away is ordinary; a different Xcode gives results that cannot be compared. | 2026-10-27, 2026-10-28 |
-| 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot. A locked screen holds back only work that declares the need, and a bisect's older half goes to the farm while this Mac's screen is locked. | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
+| 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot. A locked screen holds back only work that declares the need: a bisect's older half that needs one is offered to the farm while this Mac's screen is locked. | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
 | 20 | One holder of a Mac's foreground, only on Macs marked for it, taken before admission. | The screen is the owner's. A waiter holds no slot, and builds go on beside a foreground run. | [foreground][foreground] |
 | 21 | Devices and pool simulators have one holder each, in turn, under a reservation. The owner's phone needs his word first. | A device is one thing, and some are the owner's own. | 2026-11-06, [devices][devices] |
-
-Rule 19's second sentence was decided on 2026-11-17 and is being implemented as this guide is
-written. Until it lands, a bisect's older half stays on this Mac whatever its screen reads.
 
 ### In a merge queue
 
@@ -329,7 +326,7 @@ which holds the code references. What it changes:
 | --- | --- |
 | Other Macs are offered work first, and this Mac is the fallback; it is not in the farm's list (rule 14). | This Mac is a member of the list, and the choice is D5's. |
 | A request waits in this Mac's queue, and other Macs get only offers to start at once (rules 6 and 17). | A place in the queue of each Mac that can run it (D6, option B). |
-| A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. Rule 19's change to the older half is the first step. |
+| A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. Rule 19's offer of the older half is the first step. |
 | Foreground work never comes to this Mac by itself, and goes to the first listed Mac when none is marked (rule 20). | The foreground mark alone, on any Mac. |
 | Another Mac's slots beyond the guaranteed count as room when the farm has several Macs; this Mac's do not (rule 16). | One test of room for every Mac. |
 | Every Mac has the same default limits, and no command writes a limits file. | Setup writes this Mac's file, with its lower `busyLimit`. |
