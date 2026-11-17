@@ -1,0 +1,339 @@
+# Scheduling
+
+What Queuekeeper's scheduling is for. This guide states the goals the schedule serves and their
+order, the resources it shares out and the work that needs them, the rules in force with the
+decision that set each, and the decisions still open. It is where a change of policy is weighed
+against stated goals instead of against the latest incident. It changes no behavior. How each
+mechanism works, with its messages and measurements, stays in the guides this one cites:
+[heavy-work admission][admission], [which Mac runs a lane][placement] and
+[the merge queue][queue].
+
+Here `#N` is an issue of vocaro/queuekeeper and `ve#N` one of vocaro-engineering, where these rules
+were decided before Queuekeeper had a repository of its own. A date beside a rule is the day it was
+decided, or the day of the incident that led to it; the cited guide or issue says which, and whose
+decision it was. "This Mac" is the Mac that work starts on, the owner's workstation, and "another
+Mac" is one of [the farm's][farm] others.
+
+## Goals, in order
+
+The owner's direction, 2026-11-17: "optimize for throughput without starving jobs", "the
+scheduling should take into account the CPU load limits that are defined per host", and "the
+scheduler should try to balance the load where possible".
+
+The order below is a reading of that direction and of the decisions under
+[Policies in force](#policies-in-force). The owner has not confirmed it as an order, and confirming
+or changing it is the first of the [open decisions](#open-decisions). Where two goals conflict, the
+earlier one wins.
+
+1. **A verdict is true.** A pass, a failure or a timing says something about the commits, never
+   about what else the Mac was doing. Work that could not be measured ends unmeasured and runs
+   again; it is neither passed nor sent back. This is why a gate keeps its Mac to itself ([ve#196]),
+   why a timed measurement waits for a quiet Mac ([#121]), and why a run with no verdict blames no
+   entry.
+2. **Each Mac stays within its own limits.** A Mac's limits file says how much runs there at once
+   and how busy its CPU may read before more is added. The limits exist because ten unbounded
+   builds panicked a Mac (2026-10-14), and they differ by Mac because this Mac is also the owner's
+   workstation (2026-11-07).
+3. **Nothing waits without bound.** Requests are served in arrival order. A request that has
+   waited is not passed again and again by later or lighter work ([ve#200], [ve#174], [#160]).
+4. **Landings flow, and no Mac idles while work waits.** This is the objective that the first
+   three bound: entries landed per hour, across every project's queue. Work goes to a Mac that has
+   room ([ve#168]), spread across the Macs where it can run on more than one (2026-11-17), and a
+   queue does in parallel whatever it safely can ([ve#241]).
+5. **A session's own run starts soon.** The latency of a hand-run lane matters least. It is served
+   by spare capacity and by shortcuts that cost nobody a place, never by priority ([ve#200]).
+
+One rule stands beside the order: **the owner is not the scheduler.** Queuekeeper chooses the Mac
+and the moment, a session never asks him which Mac to use ([ve#168]), and a queue holds for him only
+over a cause that only he can fix.
+
+Read as one sentence: land as much as the Macs can verify truthfully, within each Mac's limits, in
+arrival order with bounded waits, and only then make a single run start sooner. The rules in force
+fall short of this in two places, both under [open decisions](#open-decisions): a Mac's CPU limit
+bounds less of its load than goal 2 says, and placement orders the Macs without balancing them.
+
+## Resources
+
+Each row is something only so much work can have at once. The first five are one Mac's
+[admission][admission]; the rest are taken beside it.
+
+| Resource | Counted per | How much | Who takes it |
+| --- | --- | --- | --- |
+| Guaranteed slot | Mac | `slots`, 3 by default | any admitted work, whatever the CPU reads |
+| Slot beyond the guaranteed | Mac | up to `slotsMax`, half the cores by default | one-slot work, one at a time, while the CPU's busy share is under that Mac's `busyLimit`, memory pressure is normal, and `settleSeconds` (30) have passed since the last admission |
+| Whole host | Mac | one lane | a whole-host lane: every guaranteed slot, and nothing else admitted while it runs |
+| Exclusive host | Mac | one request | exclusive work: every slot up to `slotsMax` and the model, started once the CPU reads quiet (under 25%) or after 300 s |
+| Model and GPU | Mac | one run | a model run, with one slot ([model admission][model]) |
+| Unlocked screen | Mac | a state, not a lock | a lane that says `"unlockedScreen": true` ([screen state][screen]) |
+| Foreground | Mac marked for it | one holder | a foreground lane, taken before admission ([foreground][foreground]) |
+| Physical device | this Mac | one holder each, in turn | a device lane, which says `here` ([devices][devices]) |
+| Pool simulator | project and Mac | the pool's members | a simulator lane ([simulator pool](simulator-pool.md)) |
+| Checkout | project, on another Mac | four | any run sent there |
+| Mac | farm | those listed, reachable and not paused | every lane that does not say `here` |
+| `main` | repository | one worker, one batch gating, one more gate beside it | a queue's entries ([the merge queue][queue]) |
+
+**Each Mac's limits are its own.** `slots`, `slotsMax`, `busyLimit` and `settleSeconds` come from
+that Mac's `admission-limits.json`, and a key it leaves out keeps the default. The values live on
+each Mac and are not copied here: `qk admissions limits` prints one Mac's with where each comes
+from, and `qk admissions usage` prints every Mac's beside its reading now. Since 2026-11-07 the
+owner sets another Mac's CPU limit higher than this Mac's.
+
+**What the CPU limit bounds today, and what it does not.** `busyLimit` decides three things: whether
+a slot beyond the guaranteed ones opens, whether placement counts such a slot as room, and when a
+queue's worker runs a lane again after a run with no verdict. It does not bound a Mac's load. A
+guaranteed slot admits work at any reading (2026-11-07), a whole-host lane starts on free
+guaranteed slots at any reading ([#12]), each slot holds a lane however many processes it starts
+([#170]), and work that never asks admission is not counted at all
+([load the queue cannot see][unseen]). On 2026-11-17 `qk admissions usage` read this Mac 92% busy
+against its limit of 70% and another Mac 100% busy against its 90%, with every guaranteed slot of
+both held. [D4](#d4-does-a-macs-cpu-limit-bound-every-admission) is the decision this leaves.
+
+## Work classes
+
+| Work | Declared by | Needs |
+| --- | --- | --- |
+| Preflight check, docs check | `queue.preflight`; the queue's own | nothing when the worker or `qk land` runs it, for up to a minute; one slot as a lane |
+| One-slot lane or command | `"resource": "heavy"` or none; `qk admit` | one slot |
+| Model run | `"model": true`; `qk admit --model` | one slot and the model |
+| Whole-host gate | `"wholeHost": true` | the whole host |
+| Timed measurement | `"resource": "exclusive"`; `qk admit --exclusive` | the exclusive host, read quiet |
+| Self lane | `"resource": "self"` | nothing itself: its script admits each part, all on one Mac |
+| Screen-reading lane | `"unlockedScreen": true` | its slots, on a Mac whose screen reads unlocked |
+| Foreground lane | `"foreground": true` | a Mac's foreground, then its slots |
+| Device lane | `"here": "REASON"` and a reservation | the device and one slot, on this Mac |
+| Queue round | `queue.lanes` | what its lanes need, and the worker's checkout |
+
+Admission knows a request's kind, its arrival and its label. It does not know who asks: a queue's
+gate and a session's hand-run lane are requests alike, and two one-slot requests count the same
+whether one uses 3% of a core or every core. Both facts matter under
+[open decisions](#open-decisions).
+
+## Policies in force
+
+Each rule has the reason it was made and the decision or incident that set it. The cited guides
+hold the mechanism.
+
+### On one Mac
+
+| # | Rule | Why | Set by |
+| --- | --- | --- | --- |
+| 1 | All heavy work asks one queue per Mac. A private pool is a second queue and is not allowed. | Ten unbounded builds panicked a Mac, and a private pool ran the load to 764. | 2026-10-14 |
+| 2 | First come, first served, with no class by size: a short check waits as a gate does. | A class that goes first starves what it passes, and admission cannot tell how long work will run. | [ve#200], 2026-11-07; [ve#305] |
+| 3 | Three guaranteed slots admit at any CPU reading. Slots beyond them open one at a time under the Mac's `busyLimit`. | A fixed three left a Mac idle; no limit overloaded it; the load average misread a Mac running simulators. | [ve#200], 2026-11-06 |
+| 4 | Each Mac sets its own limits. To load a Mac more, raise `slotsMax` and `busyLimit`, not `slots`. | Another Mac is to be loaded most and this Mac a little less. Each guaranteed slot added makes a Mac worse for gates. | 2026-11-07 |
+| 5 | One whole-host lane per Mac, and nothing else admitted while it runs. | A gate's load dips between phases; work admitted on a dip left a gate unmeasured after 1,116 s. | [ve#196], 2026-11-05 |
+| 6 | A whole-host lane that waits keeps the guaranteed slots from later arrivals, which run only beyond them. | Sessions' lanes took each slot as it freed, and a gate could wait out its 5,400 s. | [ve#174], 2026-11-05 |
+| 7 | An older one-slot request holds back a later whole-host or exclusive request. One-slot requests share with each other. | Arrival order holds across kinds, so large requests do not pass a small one that waits. | [ve#200]'s order; open as [D2](#d2-may-a-gate-pass-one-slot-work-queued-ahead-of-it) |
+| 8 | Exclusive work takes every slot and the model, one request at a time in arrival order, holds back every later request, and starts once the CPU reads quiet or after 300 s. | A timing is void beside other work, and beside the trailing reading of work that just ended. | [#121], 2026-11-13 |
+| 9 | Only a timed part is exclusive. A gate suite never is, and a check that voids itself on a busy Mac does not belong in a shared gate. | An exclusive gate held another Mac for 33 minutes; a self-voiding check held mpm's queue for an afternoon. | 2026-11-12, [#28] |
+| 10 | One model or GPU run per Mac, with one slot and not the host. | The hardware runs one; exclusive admission would hold back builds that need not wait. | [model admission][model] |
+| 11 | A request keeps its arrival and its place while it is offered to other Macs. A place not renewed for 180 s holds nothing back. | A gate away on an offer lost its turn twice in 45 minutes. | [#160], 2026-11-15 |
+| 12 | Nothing is preempted. Admission judges a Mac when work starts and not after. A wait ends at 5,400 s with nothing run. | Stopping admitted work loses it. The cost is [#28]: work admitted later can void a run. | [admission][admission] |
+| 13 | An owner that has ended, or cannot be confirmed running, holds nothing. | One stranded entry refused every session's heavy work. | [#23], 2026-11-13 |
+
+### Across the Macs
+
+| # | Rule | Why | Set by |
+| --- | --- | --- | --- |
+| 14 | Queuekeeper chooses the Mac: another Mac first, in the farm's order; this Mac when no other has room; otherwise whichever admits first. | The Macs are for work, and this Mac is the owner's workstation. | [ve#168], 2026-11-04 |
+| 15 | Every lane is offered unless it says `here` with a reason: a device, a measurement tied to this Mac's hardware, a self lane's parts. | A lane's first run elsewhere is its check; a difference between Macs is a defect to fix. | 2026-10-28, 2026-11-07 |
+| 16 | A Mac has room by its own admission's rules: a free guaranteed slot at any CPU reading, a slot beyond them under that Mac's `busyLimit`, and none while whole-host or exclusive work runs or is queued ahead there. | An offer sent where admission would hold it costs a checkout and a wait. | [ve#186], [ve#191], [ve#201]; 2026-11-07 |
+| 17 | Exclusive work sent to another Mac is offered to start at once, and joins that Mac's queue only after 900 s of declined offers. | A queued exclusive request idles the Mac while it waits; the bound keeps it from waiting forever. | [placement][placement] |
+| 18 | A Mac that cannot be reached is passed over and the work runs here. One that is set up wrongly runs nothing and stops for the owner. | Busy or away is ordinary; a different Xcode gives results that cannot be compared. | 2026-10-27, 2026-10-28 |
+| 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot. A locked screen holds back only work that declares the need, and a bisect's older half goes to the farm while this Mac's screen is locked. | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
+| 20 | One holder of a Mac's foreground, only on Macs marked for it, taken before admission. | The screen is the owner's. A waiter holds no slot, and builds go on beside a foreground run. | [foreground][foreground] |
+| 21 | Devices and pool simulators have one holder each, in turn, under a reservation. The owner's phone needs his word first. | A device is one thing, and some are the owner's own. | 2026-11-06, [devices][devices] |
+
+Rule 19's second sentence was decided on 2026-11-17 and is being implemented as this guide is
+written. Until it lands, a bisect's older half stays on this Mac whatever its screen reads.
+
+### In a merge queue
+
+| # | Rule | Why | Set by |
+| --- | --- | --- | --- |
+| 22 | One worker per repository takes everything waiting, oldest first, as one batch with one gate. | A gate's time is paid once for the batch. | [the merge queue][queue] |
+| 23 | A failed batch gets the cheap explanations first: failed tests alone, then one entry the failure points at, then a bisect. | A bisect costs about a gate for each halving. | [when a batch fails][fails] |
+| 24 | A bisect's halves gate at once: the older on this Mac, the newer on another Mac if it can start now. | Each halving then costs one gate's time, not two. | [ve#241], 2026-11-07 |
+| 25 | Entries that arrive during a gate are gated on top of its tip, on another Mac, one such gate at a time. | The next round's gate is under way before this one lands. | [ve#241], 2026-11-07 |
+| 26 | A docs-only entry never rides a code gate. It lands first or beside the gate, and passes an older entry only when the two change no path in common. | Documents need no code gate, and the order of entries that share a path never changes. | [ve#394], 2026-11-11 |
+| 27 | The worker runs preflight lanes and the docs check without admission. One that does not end in a minute runs again admitted. | Two checks of a few seconds each waited 43 minutes for slots. | [#169], 2026-11-15 |
+| 28 | A run with no verdict blames nobody and runs again once the Mac has settled. Three in a row hold the queue. A run a locked screen voided does not count, up to five. | A cause in the Mac says nothing about the commits; a cause that does not clear needs a person. | [ve#293], 2026-11-08; open as [#24] |
+| 29 | `--front` and `--no-gate` are for emergencies, with the reason recorded. | A fix every queued entry needs should not wait behind them. | [ve#163], 2026-11-04 |
+
+Rules 26, 27 and 29 are the exceptions to rule 2. Each lets short work go first where it takes no
+slot or changes no order that matters, and none is a class of work with priority in admission.
+
+## Open decisions
+
+Each is the owner's. An option marked *suggested* is this guide's reading of the goals above, not
+a decision.
+
+### D1: Is the order of goals right?
+
+Everything below leans on it. The order puts a bounded wait (3) above throughput (4), which is how
+[ve#174] and [ve#200] were decided, and puts each Mac's limits (2) above both, which the rules in
+force do not yet do ([D4](#d4-does-a-macs-cpu-limit-bound-every-admission)). [#84] records the
+owner's view of 2026-11-11 that slots and the heavy and light kinds should go, with work admitted
+by each Mac's measured headroom. That is a change of mechanism under the same goals, and D3 to D5
+are steps toward it or away from it.
+
+### The measurement behind D2 and D3
+
+[#171] asks both questions. Its [latest comment][171-split] replays six whole-host gates' waits on
+this Mac for 2026-11-15, second by second, 14 h 34 min in all:
+
+| What the gate waited for | Time | Share | Decision |
+| --- | --- | --- | --- |
+| Another whole-host lane holding the Mac | 5 h 39 min | 39% | D6 |
+| Another whole-host lane queued ahead | 4 h 08 min | 28% | D6 |
+| Guaranteed slots busy, with nothing queued ahead | 3 h 21 min | 23% | D3 |
+| One-slot work queued ahead | 1 h 10 min | 8% | D2 |
+| Exclusive work | 15 min | 2% | |
+
+The replay has three limits. It is one day on one Mac. It counts only the seconds a gate waited
+here, not its offers to another Mac. And "guaranteed slots busy" includes one-slot work that was
+queued ahead of the gate, was then admitted, and went on holding a slot, so part of the 23% is rule
+7's cost and not rule 3's. The replay does not separate the two.
+
+### D2: May a gate pass one-slot work queued ahead of it?
+
+*Today (rule 7).* A one-slot request at the head of the line waits when every guaranteed slot is
+held and none beyond them may open. A whole-host gate queued behind it waits for it. The gate
+already keeps the guaranteed slots from work that arrives after it (rule 6), so the only work it
+yields to is work older than itself. When a slot frees, the older request takes it, and the gate
+then also waits for that work to end.
+
+| Option | Gains | Costs |
+| --- | --- | --- |
+| A. Keep arrival order. *Suggested.* | No request is ever passed by a later one. | The 8% above, and the unknown part of the 23%. |
+| B. The gate keeps the guaranteed slots from older one-slot work too, which runs only beyond them. | At most that 8% and that part. | Older work is passed by a gate, and then by each gate behind it. Nothing is admitted beside a running gate (rule 5), and gates ran or queued back to back for two thirds of the measured wait, so one-slot work on that Mac could wait for the whole chain. |
+| C. As B, for a bounded time or one gate, after which the older request holds its place as today. | Most of B's gain. | A second timer, as rule 17 has, and a wait that is harder to explain in one line. |
+
+A is suggested because goal 3 outranks goal 4 and the measured gain is small. If the owner chooses
+B, C's bound is what keeps goal 3.
+
+### D3: May hand-run lanes hold guaranteed slots while a gate waits?
+
+*Today.* Admission does not know who asks. Once a gate is queued, later arrivals cannot take a
+guaranteed slot (rule 6). The slots that keep it waiting are held by work admitted before it
+arrived: sessions' lanes of 25 minutes to two hours on 2026-11-15, and in [#84] one device run at
+3% CPU that kept a gate waiting more than 39 minutes at a load of 4.6.
+
+| Option | Gains | Costs |
+| --- | --- | --- |
+| A. Keep. | Nothing changes; a hand-run lane is admitted as any work is. | Up to the 23% above. |
+| B. Hand-run work runs only beyond the guaranteed slots, which are kept for queues' gates. | The gate finds its slots free more often. | Admission must learn who asks, which makes the first priority class since [ve#200] removed them. Hand-run work then starts only under `busyLimit`, and on 2026-11-17 both Macs read over theirs: goal 5 could become starvation, against goal 3. The guaranteed slots idle when no gate waits. |
+| C. A gate stands in: it takes the free guaranteed slots, and slots beyond them for the ones that are held, while the Mac's CPU reads under its `busyLimit` and no other whole-host or exclusive work runs. *Suggested.* | A light holder, such as [#84]'s, no longer keeps a gate out, and nobody loses a place. The Mac's own CPU limit decides, as the owner asked on 2026-11-17. | The gate runs beside the holders, so its time is no longer the Mac's alone ([ve#196]), and a busy holder still keeps it out, as it should. |
+| D. Only long or device-bound work runs beyond the guaranteed slots. | Narrower than B. | Work must declare its length, and B's cost applies to what does. |
+
+C is [#84]'s first interim change. How much of the 23% it would recover is not measured: the
+admission log keeps the CPU's busy share at each refusal, so the replay can split those 3 h 21 min
+by whether the Mac read under its limit. That split is worth having before choosing between A and
+C.
+
+### D4: Does a Mac's CPU limit bound every admission?
+
+The owner's direction is that scheduling takes each host's CPU limit into account.
+[Resources](#resources) lists what the limit does and does not bound today. One cost of the gap is
+recorded: three admitted lanes drove another Mac's load into the hundreds, and Queuekeeper's own
+gate ran to its 2,400 s limit twice ([#170]). Another is not measured: [#12] asks whether a
+whole-host gate should start on a Mac whose CPU reads over its limit, and the readings there proved
+to be mostly the gate's own load.
+
+| Option | Gains | Costs |
+| --- | --- | --- |
+| A. Keep: the limit throttles only slots beyond the guaranteed. | Three requests always start, so no reading can starve them. | A Mac runs over its limit whenever three wide lanes hold its slots. |
+| B. The limit bounds every admission but the first: a guaranteed slot opens over the limit only while nothing admitted runs there. *Suggested.* | The limit means what its name says. An over-limit Mac takes no more, and placement sends the work to a Mac with room. | It reverses 2026-11-07's rule that a free guaranteed slot is room at any reading, made when another Mac declined work at 93% against 90% and this Mac took it. Load that never asks, such as the owner's own work, can then delay the second admission; the first is kept so that it can never stop all work. |
+| C. Count a lane's width: a lane that starts many processes takes more than one slot. | Slots mean something again. | Each lane must declare or be measured for its width. |
+| D. Admit by headroom alone, with no slots ([#84]). | One measure for every admission. | The largest change, and with no guaranteed slot the bound of goal 3 has to be rebuilt in the queue's order. |
+
+B is suggested as the smallest change that makes the limit binding, and it is safe only together
+with D5: without balance, an over-limit Mac that refuses work pushes it all to this Mac.
+
+### D5: How is load balanced across the Macs?
+
+The owner's direction is to balance where possible. Rule 14 orders the Macs; it does not balance
+them. One-slot work fills another Mac's guaranteed slots first. A gate, which needs all of them
+free, then seldom finds room there and runs on this Mac. On 2026-11-06 another Mac was 97% busy
+with three or four jobs for 48% of three hours while this Mac ran one gate for 84% of them. On the
+morning of 2026-11-17, over three hours, 40 of this Mac's 47 admissions had first been offered to
+another Mac and declined there.
+
+| Option | Gains | Costs |
+| --- | --- | --- |
+| A. Keep the farm's order. | This Mac stays free whenever another has room, which was the reason for "another Mac first". | The Macs fill unevenly, and gates gather on this Mac. |
+| B. Among the Macs that can run the work, choose the one with the most headroom against its own limit, and use the farm's order for ties. *Suggested.* | Load spreads, and each Mac's limit carries the owner's preference: this Mac's lower limit makes it the last choice at equal load. | A reading is a 15 s window and a gate's load dips, so several placements can choose the same quiet Mac. Leaving a warm checkout costs a colder build. |
+| C. Balance among the other Macs only, with this Mac last as today. | Keeps this Mac for the owner. | With one other Mac it changes nothing, and the farm has run with more than one only in tests ([#207]). |
+
+"Where possible" has fixed edges that no option moves. A lane that says `here`, a device, a marked
+foreground, an unlocked screen and a lane's `chips` each name the Macs that can run it, and balance
+chooses only among those.
+
+### D6: Gates wait mostly for other gates
+
+Two thirds of the measured wait was one whole-host gate behind another, which neither D2 nor D3
+touches. Rule 5 allows one per Mac, and six projects' whole-host gates shared two Macs. There are
+three ways out. More Macs ([cloud gate runners](cloud-gate-runners.md)). Gates that bound their own
+width and take one slot, which is honest only under D4's option C. Or two gates on one Mac while
+its CPU allows, which undoes rule 5: on 2026-11-04 two gates on a 10-core Mac ran at a load of 719,
+and 8 of 12 gates there that day gave no verdict. D3's option C and D5's option B help at the edges
+and add no capacity.
+
+### Smaller questions with issues of their own
+
+- **Work admitted later can void a run** (rule 12, [#28]). The owner's expectation of 2026-11-12 is
+  that an entry waits for capacity and then runs to a verdict. Timed parts now go exclusive (rule
+  9). Whether a queue's gate should outrank sessions' runs is D3.
+- **A hold after three runs with no verdict** (rule 28, [#24]). The owner's objection of 2026-11-12
+  is that a cause which clears by itself should alert, not stop a queue. That is goal 4 against the
+  need for a person where retrying cannot help.
+- **What the log can say.** The admission log records the same refusal kind for a gate behind
+  one-slot work and a gate short of free slots, which is why the table above took a replay
+  ([#171]). A kind for each would let `qk admissions` report this split every day.
+
+## Weighing a change
+
+A proposal to change a rule says which goal it serves, which it costs, and what bounds the cost. It
+then shows the reading that would prove it wrong. Two readings exist today: `qk admissions usage`
+for each Mac's capacity, limits and share of time at each count of admitted jobs, and each Mac's
+admission log for every wait, with its reason and the load and busy share it saw
+([admission log][log]). Once the owner decides, the decision goes into the table above with its
+date, and the mechanism's guide says how it works.
+
+[admission]: shared-host.md#heavy-work-admission
+[placement]: shared-host.md#which-mac-runs-a-lane
+[farm]: shared-host.md#the-farms-macs
+[model]: shared-host.md#model-admission
+[screen]: shared-host.md#screen-state
+[unseen]: shared-host.md#load-the-queue-cannot-see
+[log]: shared-host.md#admission-log
+[devices]: shared-host.md#device-reservations
+[foreground]: foreground.md#waiting-for-the-foreground
+[queue]: maintenance.md#the-merge-queue
+[fails]: ../merge_queue.md#when-a-batch-fails
+[171-split]: https://github.com/vocaro/queuekeeper/issues/171#issuecomment-6954024828
+[#12]: https://github.com/vocaro/queuekeeper/issues/12
+[#23]: https://github.com/vocaro/queuekeeper/issues/23
+[#24]: https://github.com/vocaro/queuekeeper/issues/24
+[#28]: https://github.com/vocaro/queuekeeper/issues/28
+[#84]: https://github.com/vocaro/queuekeeper/issues/84
+[#121]: https://github.com/vocaro/queuekeeper/issues/121
+[#160]: https://github.com/vocaro/queuekeeper/issues/160
+[#169]: https://github.com/vocaro/queuekeeper/issues/169
+[#170]: https://github.com/vocaro/queuekeeper/issues/170
+[#171]: https://github.com/vocaro/queuekeeper/issues/171
+[#205]: https://github.com/vocaro/queuekeeper/issues/205
+[#207]: https://github.com/vocaro/queuekeeper/issues/207
+[ve#163]: https://github.com/vocaro/vocaro-engineering/issues/163
+[ve#168]: https://github.com/vocaro/vocaro-engineering/issues/168
+[ve#174]: https://github.com/vocaro/vocaro-engineering/issues/174
+[ve#185]: https://github.com/vocaro/vocaro-engineering/issues/185
+[ve#186]: https://github.com/vocaro/vocaro-engineering/issues/186
+[ve#191]: https://github.com/vocaro/vocaro-engineering/issues/191
+[ve#196]: https://github.com/vocaro/vocaro-engineering/issues/196
+[ve#200]: https://github.com/vocaro/vocaro-engineering/issues/200
+[ve#201]: https://github.com/vocaro/vocaro-engineering/issues/201
+[ve#241]: https://github.com/vocaro/vocaro-engineering/issues/241
+[ve#293]: https://github.com/vocaro/vocaro-engineering/issues/293
+[ve#305]: https://github.com/vocaro/vocaro-engineering/issues/305
+[ve#394]: https://github.com/vocaro/vocaro-engineering/issues/394

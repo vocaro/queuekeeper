@@ -206,6 +206,8 @@ its results are valid on. A lane whose output differs by GPU lists its chips, su
 
 The guides hold the detail, with the measurements and decisions behind each rule:
 
+- [Scheduling](doc/guides/scheduling.md): the goals the schedule serves, the rules in force with the
+  decision behind each, and the decisions still open
 - [Maintenance](doc/guides/maintenance.md): operating the merge queue, and the legacy spelling check
 - [Shared host](doc/guides/shared-host.md): admission, another Mac, disk cleanup, device reservations
   and process supervision

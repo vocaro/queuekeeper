@@ -80,3 +80,4 @@ first five frames of the crashed thread. Unreadable reports are notes too. These
 also appear as readable strings in `notes`. They never change the doctor's verdict and do not stop processes or remove reports.
 
 See also [The merge queue](merge_queue.md) and [The build farm](build_farm.md).
+[Scheduling](guides/scheduling.md) states the goals these rules serve and the decisions still open.
