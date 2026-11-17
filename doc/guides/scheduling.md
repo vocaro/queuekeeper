@@ -22,9 +22,8 @@ should try to balance the load where possible", and "the scheduler/admitter shou
 as equivalent except for per-node configs".
 
 The order below is a reading of that direction and of the decisions under
-[Policies in force](#policies-in-force). The owner has not confirmed it as an order, and confirming
-or changing it is the first of the [open decisions](#open-decisions). Where two goals conflict, the
-earlier one wins.
+[Policies in force](#policies-in-force), and the owner confirmed it on 2026-11-17
+([D1](#d1-is-the-order-of-goals-right)). Where two goals conflict, the earlier one wins.
 
 1. **A verdict is true.** A pass, a failure or a timing says something about the commits, never
    about what else the Mac was doing. Work that could not be measured ends unmeasured and runs
@@ -53,9 +52,9 @@ may run (2026-11-17). The rules in force do not yet do this
 
 Read as one sentence: land as much as the Macs can verify truthfully, within each Mac's limits, in
 arrival order with bounded waits, and only then make a single run start sooner. The rules in force
-fall short of this in three places, all under [open decisions](#open-decisions): a Mac's CPU limit
-bounds less of its load than goal 2 says, placement orders the Macs without balancing them, and
-several rules name this Mac.
+fall short of this in three places: a Mac's CPU limit bounds less of its load than goal 2 says,
+placement orders the Macs without balancing them, and several rules name this Mac. Each is decided
+under [decisions](#decisions) and waits to be built.
 
 ## Resources
 
@@ -110,8 +109,7 @@ both held. [D4](#d4-does-a-macs-cpu-limit-bound-every-admission) is the decision
 
 Admission knows a request's kind, its arrival and its label. It does not know who asks: a queue's
 gate and a session's hand-run lane are requests alike, and two one-slot requests count the same
-whether one uses 3% of a core or every core. Both facts matter under
-[open decisions](#open-decisions).
+whether one uses 3% of a core or every core. Both facts matter under [decisions](#decisions).
 
 ## Policies in force
 
@@ -165,14 +163,28 @@ hold the mechanism.
 Rules 26, 27 and 29 are the exceptions to rule 2. Each lets short work go first where it takes no
 slot or changes no order that matters, and none is a class of work with priority in admission.
 
-## Open decisions
+## Decisions
 
-Each is the owner's. An option marked *suggested* is this guide's reading of the goals above, not
-a decision.
+Each is the owner's, made on 2026-11-17 against the goals above. A decision that changes behavior
+is not in force until it is built, and [Policies in force](#policies-in-force) changes when it is.
+
+| | Decision | Outcome | In force |
+| --- | --- | --- | --- |
+| D1 | The order of goals | Confirmed | Yes |
+| D2 | A gate passing one-slot work queued ahead | No: arrival order stays | Yes, unchanged |
+| D3 | Hand-run lanes holding guaranteed slots | Yes: the rule stays | Yes, unchanged |
+| D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Not built, [#211] |
+| D5 | Balancing across the Macs | By headroom against each Mac's own limit | Not built, [#211] |
+| D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Not built, [#211] |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Not built, [#211]; the kinds setting is open |
 
 ### D1: Is the order of goals right?
 
-Everything below leans on it. The order puts a bounded wait (3) above throughput (4), which is how
+**Confirmed, 2026-11-17.** One consequence is accepted with it: with limits (2) above bounded waits
+(3), a Mac kept over its limit by work that never asks admission delays everything but the one job
+D4 always allows, and a request there can end its 5,400 s wait with nothing run.
+
+Everything below leans on the order. It puts a bounded wait (3) above throughput (4), which is how
 [ve#174] and [ve#200] were decided, and puts each Mac's limits (2) above both, which the rules in
 force do not yet do ([D4](#d4-does-a-macs-cpu-limit-bound-every-admission)). [#84] records the
 owner's view of 2026-11-11 that slots and the heavy and light kinds should go, with work admitted
@@ -259,6 +271,9 @@ holders prove common on other days.
 
 ### D4: Does a Mac's CPU limit bound every admission?
 
+**Decided, 2026-11-17: yes, but the first (option B).** A Mac over its limit takes no more work,
+except one job where nothing admitted runs. Not built: it lands with D5 or after it, never before.
+
 The owner's direction is that scheduling takes each host's CPU limit into account.
 [Resources](#resources) lists what the limit does and does not bound today. One cost of the gap is
 recorded: three admitted lanes drove another Mac's load into the hundreds, and Queuekeeper's own
@@ -269,14 +284,17 @@ to be mostly the gate's own load.
 | Option | Gains | Costs |
 | --- | --- | --- |
 | A. Keep: the limit throttles only slots beyond the guaranteed. | Three requests always start, so no reading can starve them. | A Mac runs over its limit whenever three wide lanes hold its slots. |
-| B. The limit bounds every admission but the first: a guaranteed slot opens over the limit only while nothing admitted runs there. *Suggested.* | The limit means what its name says. An over-limit Mac takes no more, and placement sends the work to a Mac with room. | It reverses 2026-11-07's rule that a free guaranteed slot is room at any reading, made when another Mac declined work at 93% against 90% and this Mac took it. Load that never asks, such as the owner's own work, can then delay the second admission; the first is kept so that it can never stop all work. |
+| B. The limit bounds every admission but the first: a guaranteed slot opens over the limit only while nothing admitted runs there. **Chosen.** | The limit means what its name says. An over-limit Mac takes no more, and placement sends the work to a Mac with room. | It reverses 2026-11-07's rule that a free guaranteed slot is room at any reading, made when another Mac declined work at 93% against 90% and this Mac took it. Load that never asks, such as the owner's own work, can then delay the second admission; the first is kept so that it can never stop all work. |
 | C. Count a lane's width: a lane that starts many processes takes more than one slot. | Slots mean something again. | Each lane must declare or be measured for its width. |
 | D. Admit by headroom alone, with no slots ([#84]). | One measure for every admission. | The largest change, and with no guaranteed slot the bound of goal 3 has to be rebuilt in the queue's order. |
 
-B is suggested as the smallest change that makes the limit binding, and it is safe only together
+B was chosen as the smallest change that makes the limit binding, and it is safe only together
 with D5: without balance, an over-limit Mac that refuses work pushes it all to this Mac.
 
 ### D5: How is load balanced across the Macs?
+
+**Decided, 2026-11-17: by headroom against each Mac's own limit (option B).** It takes the place of
+"another Mac first" (rule 14). Not built: it is step 3 of [#211].
 
 The owner's direction is to balance where possible. Rule 14 orders the Macs; it does not balance
 them. One-slot work fills another Mac's guaranteed slots first. A gate, which needs all of them
@@ -288,7 +306,7 @@ another Mac and declined there.
 | Option | Gains | Costs |
 | --- | --- | --- |
 | A. Keep the farm's order. | This Mac stays free whenever another has room, which was the reason for "another Mac first". | The Macs fill unevenly, and gates gather on this Mac. |
-| B. Among the Macs that can run the work, choose the one with the most headroom against its own limit, and use the farm's order for ties. *Suggested.* | Load spreads, and each Mac's limit carries the owner's preference: this Mac's lower limit makes it the last choice at equal load. | A reading is a 15 s window and a gate's load dips, so several placements can choose the same quiet Mac. Leaving a warm checkout costs a colder build. |
+| B. Among the Macs that can run the work, choose the one with the most headroom against its own limit, and use the farm's order for ties. **Chosen.** | Load spreads, and each Mac's limit carries the owner's preference: this Mac's lower limit makes it the last choice at equal load. | A reading is a 15 s window and a gate's load dips, so several placements can choose the same quiet Mac. Leaving a warm checkout costs a colder build. |
 | C. Balance among the other Macs only, with this Mac last as today. | Keeps this Mac for the owner. | With one other Mac it changes nothing, and the farm has run with more than one only in tests ([#207]). |
 
 "Where possible" has fixed edges that no option moves. A lane that says `here`, a device, a marked
@@ -324,8 +342,10 @@ after a run with no verdict, each of which holds a Mac again ([#170], [#24]).
 
 The owner's direction is that no admission or scheduling decision is written for a special primary
 Mac. Setup is the one exception, by design: it takes the Mac it runs on to be the owner's and gives
-it a lower CPU limit than an added Mac's default. The direction is given; building it is [#211],
-which holds the code references. What it changes:
+it a lower CPU limit than an added Mac's default: 70% for the Mac setup runs on, and 90% as the
+default for a Mac that is added (decided 2026-11-17; the code's default is 75% for every Mac today,
+and no command writes a limits file). Building it is [#211], which holds the code references. What
+it changes:
 
 | Today's rule that names this Mac | In its place |
 | --- | --- |
@@ -340,8 +360,8 @@ One setting is missing: nothing says which kinds of lane a Mac may run, apart fr
 mark and a lane's `chips`. With it, keeping gates off the owner's workstation is his setting and
 not a rule. What stays is what follows from where a command starts: work that names this checkout's
 ignored files, a local path, a pool simulator or a device attached here runs here, and results come
-back to the Mac that sent the work. Open for the owner: the two CPU limits setup uses, and the
-setting's vocabulary.
+back to the Mac that sent the work. Open for the owner: the setting's vocabulary, by kind of work
+or by lane.
 
 ### Smaller questions with issues of their own
 
