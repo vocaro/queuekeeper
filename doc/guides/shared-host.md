@@ -152,7 +152,7 @@ strings -n 1 .build/SCRATCH/out/Intermediates.noindex/XCBuildData/*.xcbuilddata/
 
 While no exclusive or whole-host request waits, HEAVY_SLOTS jobs (3) are always admitted. Beyond them one job
 at a time is admitted, up to HEAVY_SLOTS_MAX (half the CPU count), while the CPU's busy share is
-below HEAVY_BUSY_LIMIT (75, percent of the CPU's time), macOS reports normal memory pressure
+below HEAVY_BUSY_LIMIT (90, percent of the CPU's time, or what the Mac's limits file sets), macOS reports normal memory pressure
 (`kern.memorystatus_vm_pressure_level` is 1), and no slot was taken in the last
 HEAVY_SETTLE_SECONDS (30) for the CPU to show. The busy share is the part of the CPU's time spent
 outside idle over about the last 15 seconds, from the kernel's tick counters; every process on the
@@ -238,6 +238,27 @@ loaded as much as possible and this Mac a little less, so another Mac's file set
 on each Mac, outside the repository, so this guide does not copy their values:
 `qk admissions usage` shows each Mac's limits as they stand, and `qk admissions limits` one
 Mac's with where each comes from.
+
+Setup writes one limit. `python3 tools/install-checkout.py` takes the Mac it runs on to be its
+owner's workstation and writes `"busyLimit": 70` into that Mac's limits file, beside whatever the
+file sets already; it says `this Mac's CPU limit is now 70% (busyLimit in PATH), below the default
+of 90% that a Mac added with qk farm add keeps`. The default is 90, so a Mac added to the farm,
+where setup never ran, keeps 90 with no file at all. Nothing in admission or placement names the
+workstation: its lower limit is its setting, and the only thing that says it is to be loaded less
+(the owner's decision, 2026-11-17,
+[vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211)). Until then the
+default was 75 for every Mac and no command wrote the file. Setup never changes a file that sets
+`busyLimit`, whatever it sets (`this Mac's CPU limit stays 90%, which PATH sets already`), adds no
+other key, and leaves a file admission cannot read as it is, reporting it and exiting 1.
+`python3 tools/install-checkout.py --check` prints the limit in force and where it comes from, and
+`--remove` leaves the file. Three cases take a hand:
+
+- A Mac that ran Queuekeeper before 2026-11-17 with no `busyLimit` in its file had 75 and now has
+  the default of 90. Run setup there again for 70, or write the value wanted into its file.
+- Setup run on a Mac that only takes work writes 70 there too. Write that Mac's `busyLimit` by
+  hand, before or after, when it should differ.
+- `qk farm add` writes nothing on the Mac it adds: that Mac's limit is the default until its file
+  says otherwise.
 
 To load a Mac more, raise its `slotsMax` and `busyLimit`, not its `slots`. A whole-host lane needs
 every guaranteed slot of a Mac free before it starts there, so each guaranteed slot added makes
@@ -376,7 +397,7 @@ limit, when it was the Mac's, from its limits file, and not the default this gui
 | --- | --- |
 | `slots` | `all 3 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=9 (…)`, or `… and HEAVY_SLOTS_MAX=3 (…) allows none beyond them`; for a whole-host lane, `a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=3) free, and 1 is busy`; for exclusive work, `exclusive work needs every slot up to HEAVY_SLOTS_MAX=9 (…) free, and 2 are busy` |
 | `settle` | `all 3 guaranteed slots are busy and the CPU does not yet show the job admitted 12s ago, within HEAVY_SETTLE_SECONDS=30`, or `… and the CPU has been read over 2s, short of the 5s a reading spans` |
-| `cpu` | `all 3 guaranteed slots are busy and the CPU is 91% busy, at or above HEAVY_BUSY_LIMIT=75% (this Mac's limit, the default, since PATH does not set it)`, or `… the CPU's busy share, which HEAVY_BUSY_LIMIT=75% (…) bounds, is unavailable`; a toolkit older than vocaro-engineering#200 logged `load` for the load average |
+| `cpu` | `all 3 guaranteed slots are busy and the CPU is 91% busy, at or above HEAVY_BUSY_LIMIT=90% (this Mac's limit, the default, since PATH does not set it)`, or `… the CPU's busy share, which HEAVY_BUSY_LIMIT=90% (…) bounds, is unavailable`; a toolkit older than vocaro-engineering#200 logged `load` for the load average |
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |

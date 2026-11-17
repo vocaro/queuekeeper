@@ -1,4 +1,6 @@
-"""The setup script (tools/install-checkout.py), run as a process with a home, a user site and a PATH of the test's."""
+"""The setup script (tools/install-checkout.py), run as a process with a home, a user site, a PATH and an admission
+namespace of the test's: the script writes its Mac's CPU limit, and the host's limits file is never a test's."""
+import json
 import os
 from pathlib import Path
 import shutil
@@ -10,6 +12,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper.checkout import source_paths
 import host_isolation  # noqa: F401 -- first, as every test module
+from queuekeeper import resources
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools/install-checkout.py"
@@ -22,10 +25,15 @@ class Setup(unittest.TestCase):
         self.local = self.home / ".local/bin"
         self.local.mkdir(parents=True)
         self.path = [self.local]
+        # The namespace whose limits file the script writes: without it the script would write the host's, which is
+        # found by the account and not by HOME.
+        self.slots = self.home / "slots"
+        self.limits = self.slots / resources.LIMITS
 
     def run_script(self, *arguments):
         environment = {"HOME": str(self.home), "PYTHONUSERBASE": str(self.home / "userbase"),
-                       "PATH": os.pathsep.join([*map(str, self.path), "/usr/bin", "/bin"])}
+                       "PATH": os.pathsep.join([*map(str, self.path), "/usr/bin", "/bin"]),
+                       "HEAVY_SLOT_DIR": str(self.slots)}
         return subprocess.run([sys.executable, str(SCRIPT), *arguments], capture_output=True, text=True, env=environment,
                               timeout=host_isolation.stretched(60))
 
@@ -124,6 +132,55 @@ class Setup(unittest.TestCase):
         done = self.run_script("--check")
         self.assertEqual(done.returncode, 1)
         self.assertIn("missing", done.stdout)
+
+    def test_it_gives_the_mac_it_runs_on_a_cpu_limit_below_the_default(self):
+        # The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): 70% for the Mac setup runs on, and a default of
+        # 90% for a Mac that is added, which no file has to say.
+        self.assertFalse(self.limits.exists())
+        done = self.run_script()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(self.limits.read_text()), {"busyLimit": 70})
+        self.assertIn(f"this Mac's CPU limit is now 70% (busyLimit in {self.limits}), below the default of 90%", done.stdout)
+        checked = self.run_script("--check")
+        self.assertEqual(checked.returncode, 0, checked.stdout)
+        self.assertIn(f"{self.limits}: this Mac's CPU limit is 70% (set in {self.limits})", checked.stdout)
+        # Removing the install leaves the Mac's setting.
+        self.assertEqual(self.run_script("--remove").returncode, 0)
+        self.assertEqual(json.loads(self.limits.read_text()), {"busyLimit": 70})
+
+    def test_a_limits_file_that_sets_the_cpu_limit_is_never_changed(self):
+        self.slots.mkdir()
+        for text in ('{"busyLimit": 90}', '{"busyLimit":   55.5,\n "slots": 4}', '{"busyLimit": {"perCore": 4}}'):
+            self.limits.write_text(text)
+            done = self.run_script()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(self.limits.read_text(), text)
+            self.assertIn("this Mac's CPU limit stays ", done.stdout)
+            self.assertIn(f"which {self.limits} sets already", done.stdout)
+        self.assertEqual([path.name for path in self.slots.iterdir()], [resources.LIMITS])
+
+    def test_a_limits_file_without_a_cpu_limit_gains_it_and_keeps_its_other_limits(self):
+        self.slots.mkdir()
+        self.limits.write_text('{"slots": 4, "slotsMax": {"perCore": 0.5}}')
+        done = self.run_script()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(self.limits.read_text()), {"slots": 4, "slotsMax": {"perCore": 0.5}, "busyLimit": 70})
+        # No key but busyLimit is ever added: an older copy of the toolkit refuses a file with a key it does not know.
+        self.assertEqual(set(json.loads(self.limits.read_text())) - {"slots", "slotsMax"}, {"busyLimit"})
+        self.assertEqual([path.name for path in self.slots.iterdir()], [resources.LIMITS])
+
+    def test_a_limits_file_admission_cannot_read_is_left_and_reported(self):
+        self.slots.mkdir()
+        for text, said in (("{not json", "is not JSON"), ('{"loadLimit": 7.5}', "names loadLimit"), ("[70]", "holds no JSON object")):
+            self.limits.write_text(text)
+            done = self.run_script()
+            self.assertEqual(done.returncode, 1, text)
+            self.assertIn("queuekeeper: this Mac's CPU limit is not set: Invalid resource limits:", done.stderr)
+            self.assertIn(said, done.stderr)
+            self.assertEqual(self.limits.read_text(), text)
+            # The command and the package are installed all the same.
+            self.assertTrue((self.local / "qk").is_file())
+            self.assertIn("Invalid resource limits", self.run_script("--check").stdout)
 
     def test_a_mistaken_command_line_prints_the_usage(self):
         for arguments in (["--nope"], ["--check", "--remove"], ["--bin"]):

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Set this checkout up for the Python that runs this script: put the `qk` command on the PATH, and make the
 `queuekeeper` package importable by every program that interpreter runs, since a project's own scripts import
-Queuekeeper's modules (`from queuekeeper import processes`).
+Queuekeeper's modules (`from queuekeeper import processes`). Installing also gives this Mac its CPU limit.
 
-    python3 tools/install-checkout.py              install both
+    python3 tools/install-checkout.py              install both, and set this Mac's CPU limit if it has none
     python3 tools/install-checkout.py --check      exit 0 when both name this checkout, 1 otherwise
-    python3 tools/install-checkout.py --remove     remove both
+    python3 tools/install-checkout.py --remove     remove both; the CPU limit stays
     python3 tools/install-checkout.py --bin DIR    put the command in DIR instead; with --check and --remove too
 
 The command is a two-line script, `qk`, that runs this checkout's bin/qk with the interpreter that ran this
@@ -16,7 +16,14 @@ did not write is left alone and reported.
 The packages are this checkout's core and plugin source roots, one per line in a .pth file in the interpreter's user site folder, as
 `pip install --editable` would write. Run the script once on each Mac with the interpreter that runs Queuekeeper
 there. A process that names another copy in QUEUEKEEPER_ROOT and runs it through scripts/qk still runs that copy,
-since the launcher puts it first."""
+since the launcher puts it first.
+
+The CPU limit is `busyLimit` in this Mac's admission limits file (doc/guides/shared-host.md, Heavy-work admission).
+The script takes the Mac it runs on to be its owner's workstation and writes 70 there, below the default of 90 that
+a Mac added to the farm with `qk farm add` keeps, so that this Mac is loaded less than the Macs that only take work.
+A file that sets `busyLimit` already is left as it is, and so is one admission cannot read, which the script
+reports. Run on a Mac that only takes work, the script writes 70 there too: set `busyLimit` in that Mac's file to
+what it should be, before or after."""
 import os
 from pathlib import Path
 import shlex
@@ -30,6 +37,7 @@ if sys.version_info < (3, 14):
 CHECKOUT = Path(__file__).resolve().parents[1]
 SOURCE = CHECKOUT / "src/python"
 sys.path.insert(0, str(SOURCE))
+from queuekeeper import resources
 from queuekeeper.checkout import source_paths
 
 COMMAND = "qk"
@@ -64,6 +72,32 @@ def ours(path):
     except OSError: return False
 
 
+def limit_set():
+    """Give this Mac its CPU limit (resources.setup_limits) and say what was done: 0, or 1 when its limits file could
+    not be read or written, which leaves the file as it is."""
+    path = resources.limits_path()
+    try:
+        wrote, limit = resources.setup_limits(path)
+    except (ValueError, OSError) as error:
+        print(f"queuekeeper: this Mac's CPU limit is not set: {error}", file=sys.stderr)
+        return 1
+    if wrote:
+        print(f"this Mac's CPU limit is now {limit:g}% (busyLimit in {path}), below the default of "
+              f"{resources.LIMIT_KEYS['busyLimit'][2](1, 1)[0]:g}% that a Mac added with `qk farm add` keeps")
+    else:
+        print(f"this Mac's CPU limit stays {limit:g}%, which {path} sets already")
+    return 0
+
+
+def limit_line():
+    """This Mac's CPU limit in force and where it comes from, for --check, which it does not decide."""
+    try:
+        limit, source = resources.limits()["busyLimit"]
+    except ValueError as error:
+        return str(error)
+    return f"{resources.limits_path()}: this Mac's CPU limit is {limit:g}% ({resources.limit_source(source, resources.limits_path())})"
+
+
 def main(arguments):
     folder = None
     if "--bin" in arguments:
@@ -81,6 +115,7 @@ def main(arguments):
         print(f"{package}: {imported or 'missing'}")
         print(f"{command}: {'runs this checkout' if right[1] else 'missing' if current is None else 'runs something else'}"
               + ("" if found else f", and {folder} is not on the PATH"))
+        print(limit_line())
         return 0 if all(right) and found else 1
     if arguments == ["--remove"]:
         package.unlink(missing_ok=True)
@@ -94,6 +129,7 @@ def main(arguments):
     package.parent.mkdir(parents=True, exist_ok=True)
     package.write_text("".join(f"{path}\n" for path in source_paths(CHECKOUT)))
     print(f"{sys.executable} now imports queuekeeper from {SOURCE} ({package})")
+    limited = limit_set()
     if (command.exists() or command.is_symlink()) and not ours(command):
         print(f"queuekeeper: {command} is a command this script did not write, so it is left as it is: remove it, or "
               f"name another folder with --bin", file=sys.stderr)
@@ -107,7 +143,7 @@ def main(arguments):
     if not found:
         print(f"{folder} is not on the PATH, so a shell does not find `{COMMAND}` yet: add this line to ~/.zshrc and "
               f"open a new shell:\n    export PATH=\"{folder}:$PATH\"")
-    return 0
+    return limited
 
 
 def usage():

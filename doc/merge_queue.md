@@ -151,7 +151,7 @@ without the entry, so that a session whose entry cannot pass alone looks for the
 A lane ends as passed, failed or unmeasured. A timeout, a lost connection, a Mac too busy to admit
 the lane, a misconfigured host and a screen that locked during a UI test are all unmeasured: they
 say nothing about the commits, so nobody's entry is sent back. The worker waits for the Mac to
-settle (CPU busy share under 75%, normal memory pressure) and runs the lane again.
+settle (CPU busy share under the Mac's CPU limit, normal memory pressure) and runs the lane again.
 
 After three runs in a row with no verdict, the queue holds with every entry still waiting. A hold
 states its reason and who can clear it: an agent for most causes, the owner only for causes an agent

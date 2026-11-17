@@ -667,14 +667,14 @@ as [a hold says whom it is for](#the-merge-queue) below. Nothing fails over to a
 
 Each retry waits first for the host to settle, by the test heavy-work admission applies before it takes
 a slot beyond the guaranteed ones (`resources.pressure`; [heavy-work admission](shared-host.md#heavy-work-admission)):
-a CPU busy share below `HEAVY_BUSY_LIMIT`, 75% by default, and memory pressure at level 1 (normal); the
+a CPU busy share below `HEAVY_BUSY_LIMIT`, 90% by default and 70% where setup wrote it, and memory pressure at level 1 (normal); the
 one-minute load average judged it until vocaro-engineering#200. A retry that started at once met the load that voided the run it repeated:
 on mpm's queue, two gate runs of about an hour each passed every row but voided a timing anchor at loads
 of 84 to 222, and the queue held until a manual resume once the load had fallen
 ([#124](https://github.com/vocaro/vocaro-engineering/issues/124)). The worker looks every 15 seconds
 (`SETTLE_POLL`) for up to an hour (`SETTLE_LIMIT`), no longer than the gate run the wait may save. Past
 that it holds, with every entry waiting, whatever runs the bound has left, and the hold names the
-reason it last read, such as `the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75% (this Mac's limit, the
+reason it last read, such as `the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=90% (this Mac's limit, the
 default, since PATH does not set it)`, which says whose limit it is and where it comes from: the Mac's limits file
 by its path, the environment, or the default (vocaro/queuekeeper#29). Its log names the
 reason when the wait starts, again every ten minutes or when the reason changes, and at the end how long it waited, how many
@@ -694,7 +694,7 @@ on, since a lane that another Mac ran left its load there
 lane's dispatch, which `qk run` files under `.build/queuekeeper/remote/.dispatches/LANE/` in the
 queue's checkout: one that started during the run and reached another Mac, rather than only
 preparing, names it. Each look asks another Mac over SSH, as `qk doctor` does, for its
-CPU busy share, the `HEAVY_BUSY_LIMIT` it sets there (75% by default) and where it sets it, its one-minute
+CPU busy share, the `HEAVY_BUSY_LIMIT` it sets there (90% by default) and where it sets it, its one-minute
 load, which the log records, and its memory pressure, and judges them as admission does; the log and the hold
 name that Mac, and its limit as that Mac's (`HEAVY_BUSY_LIMIT=90% (build-host's limit, set in PATH)`). A second
 Mac that cannot be reached, or does not answer with its reading, gives this Mac's reading for that look

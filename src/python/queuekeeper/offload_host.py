@@ -97,7 +97,7 @@ QUEUE, PLACE_SECONDS = "exclusive-queue.json", 180
 LIMIT_KEYS = {
     "slots": ("HEAVY_SLOTS", True, lambda cores, slots: 3),
     "slotsMax": ("HEAVY_SLOTS_MAX", True, lambda cores, slots: max(slots, cores // 2)),
-    "busyLimit": ("HEAVY_BUSY_LIMIT", False, lambda cores, slots: 75.0),
+    "busyLimit": ("HEAVY_BUSY_LIMIT", False, lambda cores, slots: 90.0),
     "settleSeconds": ("HEAVY_SETTLE_SECONDS", False, lambda cores, slots: 30.0),
 }
 # The simulators' devices, relative to the home: a booted device's processes name its directory.
@@ -3462,7 +3462,7 @@ def advertise(repository):
 
 def pressure():
     """This Mac's CPU's busy share in percent, None when unavailable (cpuBusy); the limit at or above which its
-    heavy-work admission finds no spare capacity, HEAVY_BUSY_LIMIT, the host's limits file or 75, as
+    heavy-work admission finds no spare capacity, HEAVY_BUSY_LIMIT, the host's limits file or 90, as
     resources.busy_limit sets it (limits); its memory pressure level, None when unread; and its one-minute load,
     which the merge queue logs. The merge queue judges them as admission does (resources.judged) before it runs
     again a lane that ran here and gave no verdict (doc/guides/maintenance.md, The merge queue)."""

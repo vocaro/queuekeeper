@@ -80,7 +80,9 @@ Each row is something only so much work can have at once. The first five are one
 that Mac's `admission-limits.json`, and a key it leaves out keeps the default. The values live on
 each Mac and are not copied here: `qk admissions limits` prints one Mac's with where each comes
 from, and `qk admissions usage` prints every Mac's beside its reading now. Since 2026-11-07 the
-owner sets another Mac's CPU limit higher than this Mac's.
+owner sets another Mac's CPU limit higher than this Mac's. Setup does the same for a new
+installation: it writes a `busyLimit` of 70 for the Mac it runs on, and the default, which a Mac
+added to the farm keeps, is 90 (2026-11-17, [D7](#d7-no-mac-is-special)).
 
 **What the CPU limit bounds today, and what it does not.** `busyLimit` decides three things: whether
 a slot beyond the guaranteed ones opens, whether placement counts such a slot as room, and when a
@@ -123,7 +125,7 @@ hold the mechanism.
 | 1 | All heavy work asks one queue per Mac. A private pool is a second queue and is not allowed. | Ten unbounded builds panicked a Mac, and a private pool ran the load to 764. | 2026-10-14 |
 | 2 | First come, first served, with no class by size or by who asks: a short check waits as a gate does, and a session's lane may hold a guaranteed slot while a queue's gate waits. | A class that goes first starves what it passes, and admission cannot tell how long work will run. | [ve#200], 2026-11-07; [ve#305]; 2026-11-17, [D3](#d3-may-hand-run-lanes-hold-guaranteed-slots-while-a-gate-waits) |
 | 3 | Three guaranteed slots admit at any CPU reading. Slots beyond them open one at a time under the Mac's `busyLimit`. | A fixed three left a Mac idle; no limit overloaded it; the load average misread a Mac running simulators. | [ve#200], 2026-11-06 |
-| 4 | Each Mac sets its own limits. To load a Mac more, raise `slotsMax` and `busyLimit`, not `slots`. | Another Mac is to be loaded most and this Mac a little less. Each guaranteed slot added makes a Mac worse for gates. | 2026-11-07 |
+| 4 | Each Mac sets its own limits. To load a Mac more, raise `slotsMax` and `busyLimit`, not `slots`. Setup writes a `busyLimit` of 70 for the Mac it runs on and never changes one that is set; the default, which an added Mac keeps, is 90. | Another Mac is to be loaded most and this Mac a little less, by each Mac's setting and by no rule that names a Mac. Each guaranteed slot added makes a Mac worse for gates. | 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 5 | One whole-host lane per Mac, and nothing else admitted while it runs. | A gate's load dips between phases; work admitted on a dip left a gate unmeasured after 1,116 s. | [ve#196], 2026-11-05 |
 | 6 | A whole-host lane that waits keeps the guaranteed slots from later arrivals, which run only beyond them. | Sessions' lanes took each slot as it freed, and a gate could wait out its 5,400 s. | [ve#174], 2026-11-05 |
 | 7 | An older one-slot request holds back a later whole-host or exclusive request. One-slot requests share with each other. | Arrival order holds across kinds, so large requests do not pass a small one that waits. | [ve#200]'s order; kept 2026-11-17, [D2](#d2-may-a-gate-pass-one-slot-work-queued-ahead-of-it) |
@@ -176,7 +178,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Not built, [#211] |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Not built, [#211] |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Not built, [#211] |
-| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Not built, [#211] |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits: yes (rule 4). The other rules that name this Mac, and the settings for kinds and labels: not built, [#211] |
 
 ### D1: Is the order of goals right?
 
@@ -343,9 +345,10 @@ after a run with no verdict, each of which holds a Mac again ([#170], [#24]).
 The owner's direction is that no admission or scheduling decision is written for a special primary
 Mac. Setup is the one exception, by design: it takes the Mac it runs on to be the owner's and gives
 it a lower CPU limit than an added Mac's default: 70% for the Mac setup runs on, and 90% as the
-default for a Mac that is added (decided 2026-11-17; the code's default is 75% for every Mac today,
-and no command writes a limits file). Building it is [#211], which holds the code references. What
-it changes:
+default for a Mac that is added. That part is in force (decided 2026-11-17; rule 4): the setup
+script writes the 70 into its Mac's limits file unless the file sets a CPU limit already, and the
+code's default is 90. Until then the default was 75% for every Mac and no command wrote a limits
+file. Building the rest is [#211], which holds the code references. What it changes:
 
 | Today's rule that names this Mac | In its place |
 | --- | --- |
@@ -354,7 +357,7 @@ it changes:
 | A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. Rule 19's offer of the older half is the first step. |
 | Foreground work never comes to this Mac by itself, and goes to the first listed Mac when none is marked (rule 20). | The foreground mark alone, on any Mac. |
 | Another Mac's slots beyond the guaranteed count as room when the farm has several Macs; this Mac's do not (rule 16). | One test of room for every Mac. |
-| Every Mac has the same default limits, and no command writes a limits file. | Setup writes this Mac's file, with its lower `busyLimit`. |
+| Every Mac has the same default limits, and no command writes a limits file. | Setup writes this Mac's file, with its lower `busyLimit`. In force. |
 
 One setting is missing: nothing says which kinds of lane a Mac may run, apart from the foreground
 mark and a lane's `chips`. With it, keeping gates off the owner's workstation is his setting and

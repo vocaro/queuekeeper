@@ -34,6 +34,13 @@ the folder it used, `~/.local/bin` unless another on your PATH can be written, i
 yet. `python3 tools/install-checkout.py --check` says whether both are in place, and `--remove`
 takes them out. Updating Queuekeeper is `git pull` in the checkout.
 
+The script also gives this Mac its CPU limit: it writes `"busyLimit": 70` into the Mac's limits
+file, so that work beyond its three guaranteed slots starts only while its CPU is under 70% busy.
+It takes the Mac it runs on to be the one you work at. A Mac you add later keeps the default of
+90%, so the Macs that only take work are loaded more than yours. A limits file that sets
+`busyLimit` already is left as it is
+([the limits file](guides/shared-host.md#heavy-work-admission)).
+
 Check that it runs:
 
 ```sh

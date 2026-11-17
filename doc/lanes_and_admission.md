@@ -50,7 +50,8 @@ meaningless. Every lane, and any command run through `qk admit -- COMMAND`, ther
 the Mac for a slot first, in one first-come, first-served queue for the whole machine.
 
 - Three slots are always available. Further slots, up to half the cores, open one at a time while
-  the CPU busy share is under 75% and memory pressure is normal.
+  the CPU busy share is under the Mac's CPU limit and memory pressure is normal. The limit is 90% unless
+  the Mac's limits file sets another, and setup writes 70% for the Mac it runs on.
 - A lane can ask for the whole host, for work that starts its own parallel jobs, or for exclusive
   use, for timing measurements. One lane at a time may use an on-device model or the GPU.
 - Exclusive work, once admitted, waits up to five minutes for the CPU to read quiet before its

@@ -1017,8 +1017,62 @@ class ResourceTests(unittest.TestCase):
             with self.subTest(cores=cores), patch.object(resources.os, "cpu_count", return_value=cores):
                 admission = resources.Admission("default")
                 self.assertEqual((admission.slots, admission.maximum, admission.busy_limit, admission.settle),
-                                 (3, max(3, cores // 2), 75.0, 30.0))
+                                 (3, max(3, cores // 2), 90.0, 30.0))
                 self.assertTrue(all(source.startswith("default") for _value, source in resources.limits().values()))
+                # The reading placement takes of a Mac defaults as that Mac's admission does.
+                from queuekeeper import offload_host
+                self.assertEqual(offload_host.limits(), {key: value for key, (value, _source) in resources.limits().items()})
+
+    def test_setup_gives_its_mac_a_cpu_limit_below_the_default_and_never_changes_one_that_is_set(self):
+        # The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): 70% for the Mac setup runs on, and 90% as the
+        # default, which a Mac added to the farm keeps. Until then the default was 75% and no command wrote the file.
+        path = resources.limits_path()
+        self.assertEqual(resources.busy_limit(), 90.0)
+        self.assertEqual(resources.setup_limits(), (True, 70.0))
+        self.assertEqual(json.loads(path.read_text()), {"busyLimit": 70})
+        self.assertEqual(resources.limits()["busyLimit"], (70.0, str(path)))
+        self.assertEqual(resources.setup_limits(), (False, 70.0))
+        for text, limit in (('{"busyLimit": 90}', 90.0), ('{"slots": 2, "busyLimit": 12.5}', 12.5), ('{"busyLimit": 0}', 0.0)):
+            with self.subTest(text):
+                path.write_text(text)
+                self.assertEqual(resources.setup_limits(), (False, limit))
+                self.assertEqual(path.read_text(), text)
+        # A file with other limits gains the one key, and keeps the others as they were written.
+        path.write_text('{"slotsMax": {"perCore": 0.5}, "settleSeconds": 5}')
+        self.assertEqual(resources.setup_limits(), (True, 70.0))
+        self.assertEqual(json.loads(path.read_text()), {"slotsMax": {"perCore": 0.5}, "settleSeconds": 5, "busyLimit": 70})
+        self.assertEqual(set(json.loads(path.read_text())) - set(resources.LIMIT_KEYS), set())
+        # One admission cannot read is its owner's to fix, and is not replaced.
+        for text in ("{", '{"loadLimit": 30}', '{"slots": 2.5}'):
+            with self.subTest(text):
+                path.write_text(text)
+                with self.assertRaisesRegex(ValueError, re.escape(str(path))): resources.setup_limits()
+                self.assertEqual(path.read_text(), text)
+        self.assertEqual([entry.name for entry in path.parent.iterdir() if entry.name.startswith(".")], [])
+
+    def test_setup_leaves_a_limits_file_that_appears_while_it_writes(self):
+        path = resources.limits_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        real_read, real_link = resources.host_limits, os.link
+
+        def read_then_written(*arguments, **options):
+            # The file is absent when setup checks it, and its owner writes one before setup reads it to add its key.
+            found = real_read(*arguments, **options)
+            if not path.exists(): path.write_text('{"busyLimit": 85}')
+            return found
+        with patch.object(resources, "host_limits", side_effect=read_then_written):
+            self.assertEqual(resources.setup_limits(), (False, 85.0))
+        self.assertEqual(path.read_text(), '{"busyLimit": 85}')
+        path.unlink()
+
+        def written_then_linked(source, target):
+            # Or its owner writes one after setup read none, before setup's own is in place: a link never replaces.
+            if not path.exists(): path.write_text('{"busyLimit": 80, "slots": 2}')
+            return real_link(source, target)
+        with patch.object(resources.os, "link", side_effect=written_then_linked):
+            self.assertEqual(resources.setup_limits(), (False, 80.0))
+        self.assertEqual(path.read_text(), '{"busyLimit": 80, "slots": 2}')
+        self.assertEqual([entry.name for entry in path.parent.iterdir() if entry.name.startswith(".")], [])
 
     def test_a_hosts_limits_file_sets_its_limits_as_numbers_or_shares_of_the_cores(self):
         for name in ["HEAVY_SLOTS", "HEAVY_SLOTS_MAX"]: os.environ.pop(name)

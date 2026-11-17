@@ -475,7 +475,7 @@ LIMITS = "admission-limits.json"
 LIMIT_KEYS = {
     "slots": ("HEAVY_SLOTS", True, lambda cores, slots: (3, "3")),
     "slotsMax": ("HEAVY_SLOTS_MAX", True, lambda cores, slots: (max(slots, cores // 2), "half the cores, at least HEAVY_SLOTS")),
-    "busyLimit": ("HEAVY_BUSY_LIMIT", False, lambda cores, slots: (75.0, "75, percent of the CPU's time")),
+    "busyLimit": ("HEAVY_BUSY_LIMIT", False, lambda cores, slots: (90.0, "90, percent of the CPU's time")),
     "settleSeconds": ("HEAVY_SETTLE_SECONDS", False, lambda cores, slots: (30.0, "30")),
 }
 
@@ -484,6 +484,48 @@ def limits_path():
     """The host's limits file. An isolated HEAVY_SLOT_DIR namespace keeps its own beside its slots, as it keeps its
     log, so that a test never reads the host's."""
     return log_path().with_name(LIMITS)
+
+
+# The CPU limit setup writes for the Mac it runs on, which it takes to be its owner's workstation: lower than the
+# default of LIMIT_KEYS, which a Mac added to the farm keeps. No rule of admission or placement names that Mac; its
+# limits file alone says it is to be loaded less (the owner's decision, 2026-11-17, vocaro/queuekeeper#211). Until
+# then every Mac's default was 75, and no command wrote a limits file.
+SETUP_BUSY_LIMIT = 70
+
+
+def setup_limits(path=None):
+    """Give the Mac that setup runs on (tools/install-checkout.py) its CPU limit: busyLimit, SETUP_BUSY_LIMIT, written
+    into its limits file beside whatever the file sets already. A file that sets busyLimit is its owner's and is
+    left as it is, whatever it sets. Returns (whether the file was written, the busyLimit it now sets).
+
+    A file admission cannot read raises ValueError naming it, as host_limits does, and is left for its owner. Only
+    busyLimit is ever added: a key an older copy of the toolkit does not know makes that copy refuse all its work
+    (doc/guides/shared-host.md, Heavy-work admission). The file appears whole or not at all, since every admission
+    on the Mac reads it: a new one is linked into place, which fails rather than replace one made meanwhile."""
+    path = limits_path() if path is None else Path(path)
+    host_limits(path)
+    try:
+        data, existed = json.loads(path.read_text()), True
+    except FileNotFoundError:
+        data, existed = {}, False
+    if not isinstance(data, dict) or "busyLimit" in data:
+        # What was just read, which may be newer than what was checked above: read as admission reads it.
+        return False, host_limits(path)["busyLimit"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        staged.write_text(json.dumps({**data, "busyLimit": SETUP_BUSY_LIMIT}, indent=2) + "\n")
+        if existed:
+            os.replace(staged, path)
+        else:
+            try:
+                os.link(staged, path)
+            except FileExistsError:
+                # Its owner wrote one between the read and the write: theirs is read again, as any file is.
+                return setup_limits(path)
+    finally:
+        staged.unlink(missing_ok=True)
+    return True, float(SETUP_BUSY_LIMIT)
 
 
 def host_limits(path=None, cores=None):
@@ -560,7 +602,7 @@ def limits():
 
 def busy_limit():
     """The CPU's busy share, in percent, at or above which the host has no spare capacity: HEAVY_BUSY_LIMIT, or the
-    host's limits file, or 75."""
+    host's limits file, or 90."""
     return float(limits()["busyLimit"][0])
 
 
