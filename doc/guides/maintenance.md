@@ -507,6 +507,15 @@ say so, so that the author knows the comparison is incomplete. On 2026-11-11 two
 send-backs said only that the log had no `qk unittest` summary, although one gate had named both of
 its failed tests. Reruns of failed tests remain for `qk unittest` lanes alone.
 
+**A send-back for a quick check says whether `origin/main` fails it too.** When the failed lane is
+one the round runs unadmitted, a preflight lane or the docs check, the worker runs that check once
+more on `origin/main` alone, in the queue's checkout, and the reason ends saying that `origin/main`
+passes it, or fails it too, with how many of its `PATH:LINE:` findings the entry's run printed as
+well, and the path of that run's log
+([vocaro/queuekeeper#180](https://github.com/vocaro/queuekeeper/issues/180)). On 2026-11-15 two
+StudyWright entries each fixed the lane the other failed on a `main` broken from outside, and five
+failed over about four hours before a session saw that neither could pass alone.
+
 **A gate `qk unittest` refused sends back the one entry that brings the refusal.** When the failed
 lane is `qk unittest`, its log has no summary, and it printed a refusal ending `nothing ran`, nothing
 was tested, and the same tree would be refused again, so the worker reruns nothing (owner's decision,

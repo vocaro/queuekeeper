@@ -2225,6 +2225,10 @@ class Follow:
         return f"heartbeat: {self.identifier} {words}" + (f"; {facts}" if facts else "")
 
 
+# A line of a check's output that names what it found by PATH:LINE:, as qk spelling's do (Worker.main_fails).
+FINDING = re.compile(r"^\S+:\d+:")
+
+
 def refused_modules(line):
     """The test modules a refusal of qk unittest's names (parallel.refusals), by file name, whatever checkout it
     was printed in."""
@@ -3634,19 +3638,8 @@ class Worker:
         DOCS_CHECK_LIMIT, which qk run then runs admitted as before. With no lane of that name, the toolkit's check
         runs as qk run would run it (implicit). A set cancel stops it as it stops any lane (gate): None then too, and
         the admitted run that follows stops at once and says why."""
-        try: checkout = load(self.checkout)
-        except (OSError, ValueError): return None
-        # Main's preflight lanes, as gate's quick says, that the batch's own configuration lists too.
-        if lane != DOCS and lane not in preflighted(checkout): return None
-        configured = checkout.get("lanes", {}).get(lane)
-        if configured is None:
-            if lane != DOCS and lane != SPELLING: return None
-            command = self.implicit(lane)
-        elif lane == DOCS and configured.get("command") != IMPLICIT_DOCS: return None
-        elif not isinstance(configured, dict) or any(configured.get(key) for key in (*NOT_PREFLIGHT, *extensions.LANE_KEYS)):
-            return None
-        else: command = configured.get("command")
-        if not (isinstance(command, list) and command): return None
+        command = self.quick_command(lane)
+        if command is None: return None
         try:
             status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT, cancel=cancel,
                                     env={**self.environment, PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
@@ -3668,6 +3661,57 @@ class Worker:
             return None
         self.say(f"{lane} exited {status_} in the queue's checkout, unadmitted, as a check that takes seconds")
         return status_
+
+    def quick_command(self, lane):
+        """The command by which quick runs lane in the checkout as it is, or None when quick does not run it."""
+        try: checkout = load(self.checkout)
+        except (OSError, ValueError): return None
+        # Main's preflight lanes, as gate's quick says, that the batch's own configuration lists too.
+        if lane != DOCS and lane not in preflighted(checkout): return None
+        configured = checkout.get("lanes", {}).get(lane)
+        if configured is None:
+            if lane != DOCS and lane != SPELLING: return None
+            command = self.implicit(lane)
+        elif lane == DOCS and configured.get("command") != IMPLICIT_DOCS: return None
+        elif not isinstance(configured, dict) or any(configured.get(key) for key in (*NOT_PREFLIGHT, *extensions.LANE_KEYS)):
+            return None
+        else: command = configured.get("command")
+        return command if isinstance(command, list) and command else None
+
+    def main_fails(self, base, log, config):
+        """A sentence saying whether origin/main, base, fails the failed lane too without the entry the gate sent back,
+        when that lane is a check that takes seconds, one of main's config's quick_lanes that quick runs, so that a session whose entry cannot pass alone,
+        because main fails the same lane, looks for the fix main needs instead of adding the entry again: on 2026-11-15
+        two of StudyWright's entries each fixed the lane the other failed, and five failed over four hours before a
+        session saw that main failed both (vocaro/queuekeeper#180). It runs the lane's command at base in this
+        checkout, unadmitted as quick does, and leaves the checkout at the head it found. "" when the lane is no such
+        check, or the gate ran on base itself."""
+        lane, head = self.failed_lane, self.head()
+        if not lane or not base or head == base or lane not in quick_lanes(config, code=True) \
+                or self.quick_command(lane) is None: return ""
+        output = log.with_name(f"{log.stem}-origin-main.log")
+        try:
+            self.reset(base)
+            command = self.quick_command(lane)
+            if command is None: return ""
+            status_ = processes.run(command, cwd=self.checkout, log_path=output, timeout=DOCS_CHECK_LIMIT,
+                                    env={**self.environment, PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
+        except (OSError, processes.TimedOut, subprocess.SubprocessError) as error:
+            return f" Whether origin/main at {base[:12]} fails {lane} too could not be determined: {error}."
+        finally: self.reset(head)
+        self.say(f"{lane} exited {status_} on origin/main at {base[:12]}, without the entry sent back")
+        if not status_: return f" origin/main at {base[:12]} passes {lane} without this entry."
+        # A finding is a line that starts PATH:LINE:, as qk spelling's and qk docs check's do.
+        try:
+            printed = set(log.read_text(errors="replace").splitlines())
+            found = [line for line in output.read_text(errors="replace").splitlines() if FINDING.match(line)]
+        except OSError: found = []
+        same = sum(line in printed for line in found)
+        count = f"{len(found)} finding{'' if len(found) == 1 else 's'}"
+        words = ("" if not found else f", with the same {count}" if same == len(found)
+                 else f", with {count}, {same} of them this entry's too")
+        return (f" origin/main at {base[:12]} fails {lane} too, without this entry{words}: main may need a fix first, "
+                f"perhaps another entry's, before this entry can land alone; see {output}.")
 
     def read_group(self, lane, folder, log, *, include_swift=False):
         """For a lane that is a group, whose own output gives only the end of a failed lane's log: add its qk unittest
@@ -4424,16 +4468,20 @@ class Worker:
         return words or (f"This entry changes no file of the failed tests {named}: only the files they failed in are "
                          "compared, not the code they test")
 
-    def rejection_facts(self, entry, log, config):
+    def rejection_facts(self, entry, log, config, base=None):
         """The sentences a rejection of entry adds after its reason, so that its author can tell a change that broke
-        the lane from a load-sensitive test (vocaro-engineering#273): the load during the failed lane, and whether
-        entry changes a file of the failed tests. Only information: what it cannot read it says so, and nothing it
-        raises reaches the rejection."""
+        the lane from a load-sensitive test (vocaro-engineering#273): the load during the failed lane, whether
+        entry changes a file of the failed tests, and, for a check that takes seconds, whether origin/main, base,
+        fails it too (main_fails). Only information: what it cannot read it says so, and nothing it raises reaches the
+        rejection."""
         load = self.failed_load or "The load during the failed lane could not be determined"
         try: touched = self.touched_words(entry, log, config)
         except Exception as error:  # noqa: BLE001
             touched = f"Whether this entry changes a file of the failed tests could not be determined: {error}"
-        return f" {load}. {touched}"
+        try: main = self.main_fails(base, log, config)
+        except Exception as error:  # noqa: BLE001
+            main = f" Whether origin/main fails {self.failed_lane} too could not be determined: {error}."
+        return f" {load}. {touched}" + (f".{main}" if main else "")
 
     def settle_failure(self, entry, log, why, runner=None):
         """Keep only the dispatch of the gate that actually rejected this entry."""
@@ -4800,14 +4848,14 @@ class Worker:
             if not flakes:
                 blamed = runner.blame(applied)
                 if blamed:
-                    self.send_back(applied, log, *blamed, runner.rejection_facts(blamed[0], log, config), runner=runner)
+                    self.send_back(applied, log, *blamed, runner.rejection_facts(blamed[0], log, config, base), runner=runner)
                     if not self.alone: self.limit, self.suspects = None, 0
                     self.blamed = True
                     return FAILED
                 if runner.unblamed and runner.unblamed["key"] in before:
                     return self.refused_again(applied, runner.unblamed["line"], before[runner.unblamed["key"]], log)
                 if runner.unblamed: self.refusals[runner.unblamed["key"]] = "the gate before it"
-                self.failed(applied, log, runner.rejection_facts(applied[0], log, config) if len(applied) == 1 else "",
+                self.failed(applied, log, runner.rejection_facts(applied[0], log, config, base) if len(applied) == 1 else "",
                             runner=runner)
                 return FAILED
         # An entry removed during the gate was part of what passed, so what is left has not been tested.
@@ -5429,10 +5477,10 @@ class Beside(Worker):
                     self.outcome = QUEUED
                     return
                 if blamed:
-                    self.send_back(self.newer, log, *blamed, self.rejection_facts(blamed[0], log, config))
+                    self.send_back(self.newer, log, *blamed, self.rejection_facts(blamed[0], log, config, base))
                     self.outcome = FAILED
                 elif len(self.newer) == 1:
-                    self.failed(self.newer, log, self.rejection_facts(self.newer[0], log, config))
+                    self.failed(self.newer, log, self.rejection_facts(self.newer[0], log, config, base))
                     self.outcome = FAILED
                 else:
                     self.say(f"{len(self.newer)} commits fail together here too: they bisect once the older half has")

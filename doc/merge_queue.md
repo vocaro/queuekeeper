@@ -111,7 +111,9 @@ runner. A failure in any other kind of lane goes straight to the bisect.
 
 An entry sent back is told the load during the failed lane, the failed tests, and whether its
 commits change their files. For a lane other than `qk unittest`, such as a Swift gate, the tests and
-the files they failed in come from the summary that ends the lane's `qk run`.
+the files they failed in come from the summary that ends the lane's `qk run`. When the failed lane is a
+preflight lane or the docs check, the reason also says whether `origin/main` fails that lane
+without the entry, so that a session whose entry cannot pass alone looks for the fix `main` needs.
 
 ## While a gate runs
 

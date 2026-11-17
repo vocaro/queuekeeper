@@ -4142,6 +4142,31 @@ class ImplicitSpelling(Fixture):
         self.assertNotIn("fix", self.main_files())
         self.assertIn(configuration.IMPLICIT_SPELLING, started)
         self.assertNotIn(self.RUN, started)
+        # The check ran once more, on origin/main alone, which passes it: the entry is what fails (#180).
+        self.assertEqual(started.count(configuration.IMPLICIT_SPELLING), 2)
+        self.assertRegex(self.state(identifier)["why"], r"\. origin/main at \w{12} passes spelling without this entry\.$")
+
+    def test_a_failure_origin_main_has_too_is_named_in_the_entrys(self):
+        """vocaro/queuekeeper#180: main took a British spelling past the queue, so a clean entry fails the spelling
+        lane on top of it, and can never pass alone. Its failure says that origin/main fails the lane too, with the
+        same finding, so that its session looks for main's fix instead of adding it again."""
+        run(self.repo, "git", "checkout", "-q", "main")
+        (self.repo / "old").write_text(BRITISH)
+        run(self.repo, "git", "add", "old")
+        run(self.repo, "git", "commit", "-qm", "Past the queue")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("other", "other", content="a labeled point\n")
+        [identifier] = self.add("other", checked=False)
+        said = self.rounds()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed")
+        self.assertEqual(self.gates(), 0)
+        self.assertRegex(entry["why"], r"is unknown\. origin/main at \w{12} fails spelling too, without this entry, "
+                                       r"with the same 1 finding: main may need a fix first")
+        main_log = entry["why"].rsplit("; see ", 1)[1].rstrip(".")
+        self.assertTrue(main_log.endswith("-spelling-origin-main.log"), main_log)
+        self.assertIn("old", Path(main_log).read_text())
+        self.assertTrue(any(words.startswith("spelling exited 1 on origin/main at") for words in said), said)
 
     def test_turned_off_the_gate_alone_decides(self):
         config = json.loads((self.repo / "queuekeeper.json").read_text())
