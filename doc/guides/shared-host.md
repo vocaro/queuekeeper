@@ -312,6 +312,52 @@ older exclusive request holds later requests back while the slots it needs drain
 guaranteed slots for itself. Jobs already running finish normally. Each request still needs its own resources: admission order does not
 create a free checkout, unlock a screen, or release a model lock.
 
+A whole-host lane that waits takes a place in the queue of every Mac that can run it, and runs on
+the first to admit it (the owner's decision, 2026-11-17, [vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211)). Until then it waited in this
+Mac's queue alone, where the guaranteed slots drain toward it, while another Mac was only offered
+it, to start at once or not at all, so that nothing drained there: on 2026-11-15 a whole-host lane
+held this Mac for 40% of the day and another Mac for 11%, and two thirds of six gates' 14 h 34 min
+of waiting on this Mac was one gate behind another. Now, once a whole-host lane's first wait here
+ends unadmitted, `qk run` starts a holder on each other Mac of the farm that may run the lane, and
+says `queuekeeper: gate holds a place in studio's queue while it waits, so that its guaranteed
+slots drain toward it: it runs on whichever Mac admits it first`.
+
+- **What a place is.** A queued whole-host request in that Mac's `exclusive-queue.json`, with the
+  lane's arrival, carried as its age and translated to that Mac's clock, and the label
+  `LABEL (waiting, sent by NAME)`. Its owner is the holder, a small process the sending Mac starts
+  there over SSH. It claims no checkout, runs no `provision` lane and holds no slot. Admission
+  there, of any toolkit, treats it as it treats a gate that waits there: later arrivals take no
+  guaranteed slot, work older than it still goes first, and a later whole-host or exclusive request
+  waits its turn behind it.
+- **How it is kept.** The sending process writes a word to each holder every third of
+  HEAVY_PLACE_SECONDS while the lane still waits, and each word renews the place. When the sender
+  ends, however it ends, its connections close and each holder takes its place out at once. A
+  sender that falls silent with the connection open, asleep or cut off, renews nothing: the place
+  holds nothing back HEAVY_PLACE_SECONDS after its last word, and the holder takes it out and ends
+  after twice that. A holder that is killed leaves a record whose process has ended, which
+  admission drops as it drops any such request. A Mac that cannot be reached holds no place, which
+  is said once (`has no place in studio's queue, and is offered to it as before`), and the holder
+  is tried again at each renewal.
+- **How the lane starts.** While it holds places, the sending process reads the Macs every 30 s at
+  most (`PLACED_WAIT`), where offers that send something stay up to two minutes apart. A reading
+  names the lane's place, so that a Mac does not count the lane's own place as a request queued
+  ahead of it; once that Mac has room, the lane is offered to it as before, and the run sent there
+  names the place too (`QUEUEKEEPER_ADMISSION_PLACE`), so that its `provision` lane and the lane
+  itself are admitted past it. What the lane's command starts does not inherit that name.
+- **It never runs twice.** One process starts the lane, in one place at a time: it waits in this
+  Mac's queue or it offers the lane to another Mac, never both at once. No Mac starts the lane by
+  itself, since a place is only a record. Admitted here, the lane gives up its other places before
+  its command starts; started on another Mac, it gives them up within one renewal, as its record
+  says that Mac has started it, and this Mac's own place lapses as before.
+- **What it costs.** While a gate waits, every Mac keeps its guaranteed slots from later one-slot
+  work, which runs only beyond them, under each Mac's CPU limit. The effect to read is each Mac's
+  share of time held by a whole-host lane in `qk admissions usage`, and one-slot work's wait.
+- **What takes no place.** Exclusive work, which holds every later request back where it queues
+  and joins another Mac's queue only after 900 s of declined offers; a lane that needs an unlocked
+  screen, for which a place would keep slots on a Mac whose screen may be locked; one-slot work;
+  and work asked once with `--if-free`. A lane that stays here is never offered. Each of these
+  waits as before.
+
 `qk run` and `qk admit` retain one place across local waits between remote offers, for every
 request kind. A remote dispatch carries elapsed request age, which the receiving Mac translates
 to its own clock. A declined offer releases its checkout and queue record; a later offer restores

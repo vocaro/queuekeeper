@@ -3926,6 +3926,169 @@ class RemoteTests(unittest.TestCase):
             self.assertEqual(remote_receipt("suites")["ranOn"], "fake")
             self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
 
+    def places_there(self):
+        """The requests queued in another Mac's admission queue, as its queue file records them."""
+        try: return json.loads((Path(os.environ["FAKE_SLOTS"]) / resources.QUEUE).read_text())["waiters"]
+        except FileNotFoundError: return []
+
+    def until(self, condition, what):
+        deadline = time.monotonic() + stretched(60)
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, what)
+            time.sleep(0.05)
+
+    def quick_places(self):
+        """Give the toolkit that sends the lane a short wait between its readings of the Macs while it holds places
+        there, so that a test does not wait out PLACED_WAIT. A wait no longer found fails the test here."""
+        path = self.toolkit / "src/python/queuekeeper/remote.py"
+        source, fixed = path.read_text(), f"PLACED_WAIT = {remote.PLACED_WAIT}\n"
+        self.assertIn(fixed, source)
+        path.write_text(source.replace(fixed, "PLACED_WAIT = 1\n"))
+        commit_all(self.toolkit)
+
+    def test_the_places_of_a_waiting_lane_are_taken_renewed_and_given_up_on_the_farm_mac(self):
+        """remote.Places against another Mac's own queue (vocaro/queuekeeper#211): a holder there, started over ssh,
+        keeps a queued whole-host request of the lane's arrival, which this Mac's words renew."""
+        identity = uuid.uuid4().hex
+        with patch("sys.stderr", new_callable=StringIO) as said:
+            places = remote.Places("suites", identity, "Example suites", time.time() - 90, ("fake",), every=0.2)
+            self.addCleanup(places.leave)
+            places.hold()
+            self.until(self.places_there, "no place was taken on another Mac")
+            [place] = self.places_there()
+            self.assertEqual((place["identity"], place["wholeHost"], place["heldFor"]),
+                             (identity, True, offload_host.mac_name()))
+            self.assertEqual(place["label"], f"Example suites (waiting, sent by {offload_host.mac_name()})")
+            self.assertAlmostEqual(place["queuedAt"], time.time() - 90, delta=stretched(30))
+            # It is a queued request there and nothing else: no slot, no checkout, and none in this Mac's queue.
+            self.assertFalse((Path(os.environ["FAKE_GATE"] + ".warm-push-guard")).exists())
+            self.assertFalse((self.home / remote.ROOT / "checkouts").exists())
+            self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
+            # The keeper's words renew it.
+            self.until(lambda: self.places_there() and self.places_there()[0]["seen"] > place["seen"], "the place was not renewed")
+            # Away on an offer, the places are kept only while the lane's record says that no Mac has started it.
+            with places.offering(), patch.object(remote.lane_wait, "taken_there", return_value=True):
+                self.until(lambda: not self.places_there(), "the place outlived the lane's start on a Mac")
+            # Still waiting after all, the lane takes its place again, at its arrival.
+            self.until(lambda: places.hold() or self.places_there(), "the place was not taken again")
+            self.assertEqual(self.places_there()[0]["queuedAt"] // 60, place["queuedAt"] // 60)
+            places.leave()
+            self.assertEqual(self.places_there(), [])
+            self.assertEqual(places.holders, {})
+        self.assertIn("queuekeeper: suites holds a place in fake's queue while it waits, so that its guaranteed slots drain "
+                      "toward it: it runs on whichever Mac admits it first", said.getvalue())
+        # A Mac that cannot be reached holds none, which is said once, and stops nothing.
+        with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}), patch("sys.stderr", new_callable=StringIO) as said:
+            places = remote.Places("suites", identity, "Example suites", time.time(), ("fake",), every=0.1)
+            self.addCleanup(places.leave)
+            places.hold()
+            self.until(lambda: "has no place" in said.getvalue(), "nothing said the place was not taken")
+            time.sleep(0.5)
+            places.leave()
+        self.assertEqual(said.getvalue().count("queuekeeper: suites has no place in fake's queue, and is offered to it as "
+                                               "before: it could not be reached, or its holder said nothing"), 1)
+        self.assertEqual(self.places_there(), [])
+
+    def test_a_place_that_cannot_be_given_up_does_not_change_how_the_work_ended(self):
+        places = remote.Places("suites", uuid.uuid4().hex, "Example suites", time.time(), ("fake",), every=0)
+        with patch.object(places, "_release", side_effect=RuntimeError("the holder would not end")):
+            places.leave()
+        self.assertTrue(places.ended.is_set())
+        offered = remote.Offer("suites", "`qk run --here suites`", lambda host, sent: 0, whole_host=True)
+        offered.hosts, offered.host, offered.busy = ("fake",), "fake", "every checkout is in use"
+        offered.place, offered.label = resources.Place(), "Example suites"
+        with patch.object(remote.Places, "hold"), patch.object(remote.Places, "_release", side_effect=RuntimeError("no")), \
+                patch.object(offered, "again", return_value=0), contextlib.redirect_stderr(StringIO()):
+            self.assertEqual(remote.overflow(offered, lambda seconds: None, timeout=60), 0)
+
+    def test_only_a_whole_host_lane_that_waits_takes_places_on_the_other_macs(self):
+        place = resources.Place()
+        def offered(**need):
+            offer = remote.Offer("suites", "`qk run --here suites`", lambda host, sent: 0, **need)
+            offer.hosts, offer.place, offer.label = ("fake", "studio"), place, "Example suites"
+            return offer
+        found = remote.places_for(offered(whole_host=True), False)
+        self.assertEqual((found.identity, found.hosts, found.started), (place.identity, ("fake", "studio"), place.started))
+        # Not an ordinary lane, exclusive work, a lane that needs an unlocked screen or work asked once; nor a farm
+        # with no Mac to ask, or work this Mac's admission gave no place or label.
+        for need in ({}, {"exclusive": True}, {"whole_host": True, "exclusive": True}, {"whole_host": True, "screen": True}):
+            self.assertIsNone(remote.places_for(offered(**need), False), need)
+        self.assertIsNone(remote.places_for(offered(whole_host=True), True))
+        for missing in ("hosts", "place", "label"):
+            offer = offered(whole_host=True)
+            setattr(offer, missing, None)
+            self.assertIsNone(remote.places_for(offer, False), missing)
+
+    def test_a_whole_host_lane_that_waits_takes_a_place_on_the_farm_mac_and_runs_there_once_its_slots_drain(self):
+        """The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): a gate that waits takes a place in the queue of
+        each Mac that can run it and runs on the first to admit it. Until then it waited in this Mac's queue alone."""
+        self.quick_places()
+        remote_receipt = lambda lane: json.loads((self.project / ".build/queuekeeper/remote" / lane / "source.json").read_text())
+        seen = {}
+        with contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            # Exclusive work holds this Mac, and one heavy job a guaranteed slot of another Mac, which a whole-host
+            # lane needs free: it waits for both.
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_mac(kind=None))
+            def release():
+                seen["places"] = self.places_there()
+                there.close()
+            status, output = self.waits_there("suites", "holds a place in fake's queue while it waits", release)
+        self.assertEqual(status, 0, output)
+        # While it waited, its place was a whole-host request in another Mac's queue, named for where it waits.
+        [place] = seen["places"]
+        self.assertEqual((place["wholeHost"], place["heldFor"]), (True, offload_host.mac_name()))
+        self.assertIn("suites", place["label"])
+        self.assertIn(f"(waiting, sent by {offload_host.mac_name()})", place["label"])
+        # Its slots free, another Mac's reading did not count the lane's own place as a request queued ahead, and the
+        # run sent there, its provision lane and then the lane, was admitted past that place.
+        self.assertNotIn("kept for a whole-host lane queued ahead", output.split("holds a place in fake's queue")[1])
+        self.assertEqual(remote_receipt("suites")["ranOn"], "fake")
+        self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
+        # It ran once, and left no place behind.
+        self.assertEqual(self.places_there(), [])
+        self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
+
+    def test_a_waiting_lane_admitted_here_gives_up_its_place_on_the_farm_mac_before_it_runs(self):
+        self.quick_places()
+        seen = {}
+        with contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_mac(kind=None))
+            def release():
+                seen["places"] = self.places_there()
+                here.close()
+            status, output = self.waits_there("suites", "holds a place in fake's queue while it waits", release)
+            # Another Mac's holder still runs: the lane ran here, and nothing is queued there for it any more.
+            self.assertEqual(self.places_there(), [])
+        self.assertEqual(status, 0, output)
+        self.assertEqual(len(seen["places"]), 1)
+        self.assertEqual(self.ran_here("suites")["ranOn"], "this Mac")
+        self.assertFalse((self.project / ".build/queuekeeper/remote/suites").exists())
+
+    def test_a_waiting_lane_whose_process_is_killed_leaves_no_place_on_the_farm_mac(self):
+        self.quick_places()
+        log = Path(self.temp.name) / "dispatch.log"
+        with contextlib.ExitStack() as busy:
+            busy.enter_context(self.busy_here())
+            busy.enter_context(self.busy_mac(kind=None))
+            with log.open("w") as output:
+                dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
+                                               "run", "suites"], stdout=output, stderr=subprocess.STDOUT)
+            try:
+                self.until(lambda: "holds a place in fake's queue" in log.read_text() or dispatcher.poll() is not None,
+                           "the lane took no place on another Mac")
+                self.assertIsNone(dispatcher.poll(), log.read_text())
+                self.assertEqual(len(self.places_there()), 1)
+                # Killed, it says nothing more: its connection ends, and the holder takes the place out.
+                dispatcher.kill()
+                dispatcher.wait()
+                self.until(lambda: not self.places_there(), "the place outlived the process that held it")
+            finally:
+                if dispatcher.poll() is None:
+                    dispatcher.kill()
+                    dispatcher.wait()
+
     def test_while_both_macs_are_busy_the_lane_runs_on_whichever_admits_it_first(self):
         waiting = "waits for whichever Mac admits it first"
         with self.subTest("another Mac"), contextlib.ExitStack() as here, contextlib.ExitStack() as there:

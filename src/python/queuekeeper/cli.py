@@ -420,8 +420,9 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     refused, said = [], []
     place = resources.Place()
     if offered is not None: place.started = getattr(offered, "started", place.started)
-    # Its own place is no request queued ahead of it when queuekeeper reads this Mac's capacity for it (#186).
-    if offered is not None: offered.place = place
+    # Its own place is no request queued ahead of it when queuekeeper reads this Mac's capacity for it (#186); its
+    # label names the places it takes in the other Macs' queues while it waits (remote.Places).
+    if offered is not None: offered.place, offered.label = place, label
 
     def admit(seconds):
         if space:

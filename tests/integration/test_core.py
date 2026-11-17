@@ -19,7 +19,7 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
-from queuekeeper import cli, config, lane_results, processes, resources
+from queuekeeper import cli, config, lane_results, place_holder, processes, resources
 from queuekeeper_apple import devices
 from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import display, foreground
@@ -1270,6 +1270,84 @@ class ResourceTests(unittest.TestCase):
             self.assertIsNone(request._over_limit(state))
             request.stranded = {}
             self.assertIn("admitted work runs here", request._over_limit(state))
+
+    def place(self, label="Example gate (waiting, sent by studio)", age=60.0):
+        """A waiting whole-host lane's place in this queue as its sender's holder keeps it (place_holder.hold_place),
+        owned here by this process: its identity."""
+        from queuekeeper import offload_host
+        identity = uuid.uuid4().hex
+        place_holder.place_held(identity, {"identity": identity, "pid": os.getpid(), "start": resources.process_start(os.getpid()),
+                                           "label": label, "queuedAt": time.time() - age, "wholeHost": True,
+                                           "heldFor": "studio"})
+        return identity
+
+    def queued(self):
+        return [waiter["identity"] for waiter in json.loads((resources.slot_directory() / resources.QUEUE).read_text())["waiters"]]
+
+    def test_a_place_held_for_a_gate_that_waits_on_another_mac_keeps_the_guaranteed_slots_and_its_own_run_passes_it(self):
+        """vocaro/queuekeeper#211: a waiting gate takes a place in each Mac's queue. Here it is a queued whole-host
+        request, so the guaranteed slots drain toward it; the run its sender then offers names it, and is not held
+        back by its own place."""
+        os.environ["HEAVY_SLOTS_MAX"] = "2"
+        identity = self.place()
+        held = "a whole-host lane queued ahead of it: Example gate (waiting, sent by studio)"
+        with contextlib.redirect_stderr(StringIO()):
+            # Later work takes no guaranteed slot, and a later gate waits its turn.
+            with self.assertRaisesRegex(TimeoutError, re.escape(f"a guaranteed slot is free but kept for {held}")):
+                with resources.Admission("later", timeout=0): pass
+            with self.assertRaisesRegex(TimeoutError, re.escape(f"it waits behind {held}")):
+                with resources.Admission("another gate", whole_host=True, timeout=0): pass
+            # The run sent for the place: its provision lane, one slot, and then the gate, each admitted past it.
+            with patch.dict(os.environ, {resources.PLACE: identity}):
+                with resources.Admission("provision", timeout=0) as provision:
+                    self.assertEqual([slot for slot, _fd in provision.descriptors], [0])
+                    # What a command starts does not pass the place its lane was sent for.
+                    with resources.child_requests():
+                        self.assertNotIn(resources.PLACE, os.environ)
+                    self.assertEqual(os.environ[resources.PLACE], identity)
+                os.environ.pop(resources.TOKEN, None)
+                with resources.Admission("Example gate", whole_host=True, timeout=0) as gate:
+                    self.assertEqual([slot for slot, _fd in gate.descriptors], [0, 1])
+                    # The place is its holder's to take out, not the run's.
+                    self.assertEqual(self.queued(), [identity])
+                os.environ.pop(resources.TOKEN, None)
+            # Another run's place is not this run's: it holds this one back.
+            with patch.dict(os.environ, {resources.PLACE: uuid.uuid4().hex}):
+                with self.assertRaisesRegex(TimeoutError, re.escape(f"it waits behind {held}")):
+                    with resources.Admission("another gate", whole_host=True, timeout=0): pass
+            # Work older than the place still goes first, the run's own included behind it.
+            older = uuid.uuid4().hex
+            from queuekeeper import offload_host
+            place_holder.place_held(older, {"identity": older, "pid": os.getpid(), "start": resources.process_start(os.getpid()),
+                                            "label": "an older gate", "queuedAt": time.time() - 600, "wholeHost": True})
+            self.assertEqual(self.queued(), [older, identity])
+            with patch.dict(os.environ, {resources.PLACE: identity}):
+                with self.assertRaisesRegex(TimeoutError, "it waits behind a whole-host lane queued ahead of it: an older gate"):
+                    with resources.Admission("Example gate", whole_host=True, timeout=0): pass
+            place_holder.place_held(older)
+            # A place its sender has not renewed within HEAVY_PLACE_SECONDS holds nothing back.
+            with patch.dict(os.environ, {"HEAVY_PLACE_SECONDS": "0"}):
+                with resources.Admission("later", timeout=0) as later:
+                    self.assertEqual([slot for slot, _fd in later.descriptors], [0])
+                os.environ.pop(resources.TOKEN, None)
+
+    def test_a_reading_of_this_mac_does_not_count_the_asking_works_own_place_as_queued_ahead(self):
+        from queuekeeper import offload_host, remote
+        identity = self.place()
+        reading = offload_host.capacity()
+        self.assertEqual(reading["kept"], "Example gate (waiting, sent by studio)")
+        self.assertIn("which the lane would wait behind", remote.spare({**reading, "screen": None}, "this Mac", whole_host=True))
+        for own in (offload_host.capacity(own=identity), offload_host.answer({"capacity": True, "own": identity})):
+            self.assertIsNone(own["kept"])
+            self.assertIsNone(remote.spare({**own, "screen": None}, "this Mac", whole_host=True))
+        # The sender names it in each reading it asks of another Mac while it offers the work.
+        with resources.request_order(time.time() - 60, identity), patch.object(remote, "ask", return_value=reading) as ask:
+            remote.capacity_there("fake")
+        self.assertEqual(ask.call_args.args[1]["own"], identity)
+        self.assertIsNone(resources.request_place())
+        with patch.object(remote, "ask", return_value=reading) as ask:
+            remote.capacity_there("fake")
+        self.assertNotIn("own", ask.call_args.args[1])
 
     def test_eng_admissions_limits_prints_each_limit_and_its_source(self):
         path = self.write_limits({"busyLimit": 80})
@@ -2609,6 +2687,182 @@ class ResourceTests(unittest.TestCase):
                 self.assertFalse(guard.exists())
                 with contextlib.redirect_stderr(StringIO()):
                     with resources.Admission("next", timeout=0): pass
+
+
+class HeldPlaceTests(unittest.TestCase):
+    """place_holder.hold_place: a waiting whole-host lane's place in this Mac's queue, held by a process of its own for
+    the Mac that sent it and renewed by that Mac's words on its standard input (vocaro/queuekeeper#211)."""
+
+    # The holder runs its file by itself, as another Mac is sent it: nothing of the toolkit is on its path.
+    HOLD = str(Path(place_holder.__file__))
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.env = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(root / "slots"), "HEAVY_SLOTS": "2", "HEAVY_SLOTS_MAX": "2",
+                                           "HEAVY_POLL_SECONDS": "0.01", "QUEUEKEEPER_GATE_LOCK_FILE": str(root / "gate")})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        os.environ.pop(resources.TOKEN, None)
+        self.identity = uuid.uuid4().hex
+
+    def holder(self, identity=..., age=60.0, label="Example gate (waiting, sent by studio)", **variables):
+        """A holder of the place, and what it first said."""
+        request = {"identity": self.identity if identity is ... else identity, "label": label, "age": age, "from": "studio"}
+        holder = subprocess.Popen([sys.executable, "-I", self.HOLD, json.dumps(request)], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  preexec_fn=host_isolation.default_signals, env={**os.environ, **variables})
+        def end():
+            if holder.poll() is None: holder.kill()
+            holder.wait()
+            for stream in (holder.stdin, holder.stdout, holder.stderr):
+                with contextlib.suppress(OSError, ValueError): stream.close()
+        self.addCleanup(end)
+        return holder, json.loads(holder.stdout.readline() or "null")
+
+    def waiters(self):
+        """The live queued requests, as admission reads them."""
+        directory = resources.slot_directory()
+        with (directory / "coordination.lock").open("a+") as bridge:
+            fcntl.flock(bridge, fcntl.LOCK_EX)
+            return resources.queued_requests(directory / resources.QUEUE)
+
+    def ended(self, holder):
+        holder.wait(timeout=stretched(30))
+        return holder.returncode
+
+    def until(self, condition, what):
+        deadline = time.monotonic() + stretched(30)
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, what)
+            time.sleep(0.02)
+
+    def test_the_holders_file_stands_alone_and_names_the_queue_as_admission_does(self):
+        # It is sent to another Mac by itself, so it imports nothing of the toolkit; and it stays out of
+        # offload_host.py, which every dispatch carries within what one ssh packet holds.
+        import ast
+        from queuekeeper import offload_host, remote
+        source = Path(place_holder.__file__).read_text()
+        imported = {(node.module if isinstance(node, ast.ImportFrom) else alias.name).split(".")[0]
+                    for node in ast.walk(ast.parse(source)) if isinstance(node, (ast.Import, ast.ImportFrom))
+                    for alias in node.names}
+        self.assertLessEqual(imported, set(sys.stdlib_module_names))
+        self.assertNotIn("hold_place", Path(offload_host.__file__).read_text())
+        self.assertLess(len(remote.login(remote.host_command(source, json.dumps({"label": "x" * 400}))).encode()), 16 * 1024)
+        self.assertEqual((place_holder.QUEUE, place_holder.PLACE_SECONDS, place_holder.SLOTS),
+                         (resources.QUEUE, resources.PLACE_SECONDS, offload_host.SLOTS))
+        self.assertEqual(place_holder.slot_directory(), resources.slot_directory())
+        self.assertEqual(place_holder.slot_directory(), offload_host.slot_directory())
+        with patch.dict(os.environ):
+            os.environ.pop("HEAVY_SLOT_DIR")
+            self.assertEqual(place_holder.slot_directory(), offload_host.slot_directory())
+        self.assertEqual(offload_host.PLACE_VARIABLE, resources.PLACE)
+
+    def test_it_takes_the_place_at_the_lanes_arrival_as_a_request_admission_knows(self):
+        from queuekeeper import offload_host
+        mine = {"pid": os.getpid(), "start": resources.process_start(os.getpid())}
+        for name, age in (("older", 600), ("newer", 5)):
+            place_holder.place_held(name * 8, {**mine, "identity": name * 8, "label": name, "queuedAt": time.time() - age,
+                                               "ordinary": True})
+        before = time.time()
+        holder, said = self.holder(age=60.0)
+        self.assertEqual((said["place"], said["pid"]), ("held", holder.pid))
+        waiters = self.waiters()
+        self.assertEqual([waiter["label"] for waiter in waiters], ["older", "Example gate (waiting, sent by studio)", "newer"])
+        place = waiters[1]
+        self.assertEqual((place["identity"], place["pid"], place["wholeHost"], place["heldFor"]),
+                         (self.identity, holder.pid, True, "studio"))
+        self.assertNotIn("ordinary", place)
+        # Its arrival is the lane's, by this Mac's clock; and admission of any toolkit finds its owner running.
+        self.assertAlmostEqual(place["queuedAt"], before - 60.0, delta=stretched(15))
+        self.assertTrue(resources.running(place))
+        self.assertLessEqual(time.time() - place["seen"], stretched(15))
+        # Admission keeps the guaranteed slots for it, and a reading says so, except to the work it is held for.
+        with contextlib.redirect_stderr(StringIO()):
+            with self.assertRaisesRegex(TimeoutError, "kept for a whole-host lane queued ahead of it: Example gate"):
+                with resources.Admission("later", timeout=0): pass
+        self.assertEqual(offload_host.capacity()["kept"], "Example gate (waiting, sent by studio)")
+        self.assertIsNone(offload_host.capacity(own=self.identity)["kept"])
+        # It holds no slot, no checkout and no admission.
+        self.assertEqual(offload_host.capacity()["busy"], [])
+        self.assertFalse(resources.guard_path(os.environ).exists())
+
+    def test_the_senders_word_renews_it_and_puts_back_a_place_that_was_dropped(self):
+        from queuekeeper import offload_host
+        holder, _said = self.holder()
+        first = self.waiters()[0]["seen"]
+        time.sleep(0.05)
+        holder.stdin.write("still\n")
+        holder.stdin.flush()
+        self.until(lambda: self.waiters() and self.waiters()[0]["seen"] > first, "the place was not renewed")
+        arrived = self.waiters()[0]["queuedAt"]
+        # Dropped, as by a queue admission could not read and began again: the next word puts it back as it arrived.
+        place_holder.place_held(self.identity)
+        self.assertEqual(self.waiters(), [])
+        holder.stdin.write("still\n")
+        holder.stdin.flush()
+        self.until(lambda: self.waiters(), "the place was not put back")
+        self.assertEqual((self.waiters()[0]["identity"], self.waiters()[0]["queuedAt"]), (self.identity, arrived))
+        self.assertIsNone(holder.poll())
+
+    def test_the_senders_leave_its_end_and_a_stop_each_take_the_place_out_at_once(self):
+        def leave(holder):
+            holder.stdin.write("leave\n")
+            holder.stdin.flush()
+        for name, how in (("leave", leave), ("the connection's end", lambda holder: holder.stdin.close()),
+                          ("SIGTERM", lambda holder: holder.terminate()),
+                          ("SIGHUP", lambda holder: holder.send_signal(signal.SIGHUP))):
+            with self.subTest(name):
+                holder, _said = self.holder()
+                self.assertEqual(len(self.waiters()), 1)
+                how(holder)
+                self.assertEqual(self.ended(holder), 0, holder.stderr.read())
+                self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
+
+    def test_a_holder_that_is_killed_leaves_a_place_admission_drops(self):
+        holder, _said = self.holder()
+        holder.kill()
+        holder.wait()
+        # Its record is still written, and holds nothing: admission drops a request whose process has ended.
+        self.assertEqual(json.loads((resources.slot_directory() / resources.QUEUE).read_text())["waiters"][0]["identity"],
+                         self.identity)
+        self.assertEqual(self.waiters(), [])
+        with contextlib.redirect_stderr(StringIO()), resources.Admission("later", timeout=0) as later:
+            self.assertEqual([slot for slot, _fd in later.descriptors], [0])
+
+    def test_a_silent_sender_lets_the_place_lapse_and_then_the_holder_takes_it_out(self):
+        from queuekeeper import offload_host
+        # The connection stays open and says nothing, as a sender asleep leaves it.
+        holder, _said = self.holder(HEAVY_PLACE_SECONDS="1")
+        self.assertEqual(offload_host.capacity()["kept"], "Example gate (waiting, sent by studio)")
+        with patch.dict(os.environ, {"HEAVY_PLACE_SECONDS": "1"}):
+            # Within HEAVY_PLACE_SECONDS of its last word it holds nothing back, though its holder still runs.
+            self.until(lambda: offload_host.capacity()["kept"] is None, "the place went on holding work back")
+            with contextlib.redirect_stderr(StringIO()), resources.Admission("later", timeout=0) as later:
+                self.assertEqual([slot for slot, _fd in later.descriptors], [0])
+        self.assertEqual(self.ended(holder), 0, holder.stderr.read())
+        self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
+
+    def test_a_second_holder_of_the_same_place_replaces_the_first_ones_record(self):
+        first, _said = self.holder()
+        second, said = self.holder()
+        self.assertEqual(said["place"], "held")
+        self.assertEqual([waiter["pid"] for waiter in self.waiters()], [second.pid])
+        # The first one's end takes out the record of that identity, and the second's next word puts it back.
+        first.stdin.close()
+        self.ended(first)
+        second.stdin.write("still\n")
+        second.stdin.flush()
+        self.until(lambda: [waiter["pid"] for waiter in self.waiters()] == [second.pid], "the place was not put back")
+
+    def test_a_request_with_no_identity_of_a_place_is_refused(self):
+        for identity in ("", "not-hex", "A" * 32, None, 7):
+            with self.subTest(identity=identity):
+                holder, said = self.holder(identity=identity)
+                self.assertIn("a place needs an identity of 32 hex digits", said["error"])
+                self.assertEqual(self.ended(holder), 2)
+                self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
 
 
 class CpuBusyTests(unittest.TestCase):

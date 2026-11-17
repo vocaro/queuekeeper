@@ -1848,6 +1848,11 @@ def capacity(own=None, *, diagnostic=False, before=None):
             **({"blockers": blockers} if diagnostic else {})}
 
 
+# The variable by which work sent here names the place it belongs to in this Mac's queue, as resources.PLACE has it:
+# its own admissions here are not held back by that place, which its sender holds while it waits (place_holder).
+PLACE_VARIABLE = "QUEUEKEEPER_ADMISSION_PLACE"
+
+
 def admission_log(since):
     """The lines of this Mac's admission log, both generations, oldest first, written at or after since, an epoch
     time, for `qk admissions usage` on the sending Mac (resources.read_entry reads them there). A line whose time
@@ -3517,6 +3522,8 @@ def answer(request):
     if "capacity" in request:
         options = ({"before": request["requestStarted"]} if "requestStarted" in request else
                    {"before": time.time() - request["requestAge"]} if "requestAge" in request else {})
+        # The place the asking work holds in this Mac's queue (place_holder) is no request queued ahead of it.
+        if isinstance(request.get("own"), str): options["own"] = request["own"]
         return capacity(diagnostic=request["capacity"] == "diagnostic", **options)
     if "admissionLog" in request: return admission_log(request["admissionLog"])
     if "admissionsNow" in request:
@@ -4484,6 +4491,8 @@ def main(plan):
         if "siblings" in plan: environment[PIN_VARIABLE] = json.dumps(pins)
         if "requestAge" in plan:
             environment["QUEUEKEEPER_ADMISSION_REQUEST_STARTED"] = str(result["requestStarted"])
+        # The place the work holds in this Mac's queue while it waits (place_holder), which its admissions here pass.
+        if isinstance(plan.get("heldPlace"), str): environment[PLACE_VARIABLE] = plan["heldPlace"]
         if plan.get("deviceRecord"): defer_devices(kit, plan["deviceRecord"], plan.get("deviceSetup", []), toolkit)
         # The reservations, held in the sending Mac's record, that this run may use (devices.LEASE).
         if plan.get("lease"): environment["QUEUEKEEPER_DEVICE_LEASE"] = json.dumps(plan["lease"])

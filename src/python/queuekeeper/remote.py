@@ -66,7 +66,7 @@ import time
 import uuid
 import zlib
 
-from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, processes, resources, git_state
+from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
 from . import window_placement
 from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, sibling_variables, unlocked_screen
 from . import farm
@@ -1999,6 +1999,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     plan["requestAge"] = max(0, time.time() - resources.request_started())
     if sent is not None and "requestStarted" in sent:
         plan["requestStarted"] = sent["requestStarted"]
+    # The place the work holds in that Mac's queue while it waits (Places), which its admissions there pass.
+    if resources.request_place(): plan["heldPlace"] = resources.request_place()
     command = [*SSH, *moved(host), host, login(host_command(source, json.dumps(plan)))]
     stopping = None
     record = remember_dispatch(journal, host) if detached is not None else None
@@ -3138,6 +3140,8 @@ class Offer:
         # This Mac's queue place of the work while it waits here (resources.Place), set by
         # its admission here: this Mac's capacity reading does not count it as a request queued ahead (#186).
         self.place = None
+        # The work's label in this Mac's admission, set with its place: what its places on other Macs are called.
+        self.label = None
 
     @property
     def sent(self):
@@ -3188,7 +3192,8 @@ class Offer:
         stops it (Misconfigured), and so does this process's loss of the local network. An offer that never runs here,
         to a farm of one Mac, reads no capacity."""
         if self.refused is not None: raise Unavailable(self.refused)
-        with processes.forwarding_signals(), resources.request_order(self.started):
+        with processes.forwarding_signals(), \
+                resources.request_order(self.started, getattr(self.place, "identity", None)):
             failures, full, said, reached = [], [], [], False
             # The Macs with spare capacity: how far each reads under its limit, its place in the order, the Mac, as
             # an SSH destination or None for this Mac, and its name.
@@ -3379,6 +3384,167 @@ UNREACHABLE_AFTER = 2
 OVERFLOW_TIMEOUT = 5400
 
 
+# Seconds at most between readings of the Macs while the work holds a place in the other Macs' queues (Places): a
+# reading sends nothing, and a Mac whose guaranteed slots have drained toward the work should not stand idle for the
+# two minutes that offers which send something are kept apart.
+PLACED_WAIT = 30
+# Seconds a place holder on another Mac is given to end once it is told to leave, before its connection is ended.
+PLACE_LEAVE = 5
+
+
+class Places:
+    """The places a waiting whole-host lane holds in the admission queues of the farm's other Macs.
+
+    A gate that waits takes a place in the queue of each Mac that can run it, runs on the first to admit it and gives
+    up the others (the owner's decision, 2026-11-17, vocaro/queuekeeper#211). Until then it waited in this Mac's queue
+    alone, where the guaranteed slots drain toward it, and other Macs were only offered it to start at once or not at
+    all, so nothing drained there: on 2026-11-15 a whole-host lane held this Mac for 40% of the day and another Mac
+    for 11%, and two thirds of six gates' waiting was one gate behind another.
+
+    A place there is a holder, a process on that Mac that keeps a queued whole-host request of the lane's arrival in
+    its queue (place_holder.hold_place). It claims no checkout and runs nothing. A keeper thread here writes to each
+    holder every third of HEAVY_PLACE_SECONDS while the lane still waits, which renews the place, and starts a
+    holder again where one has ended. This process's end closes each holder's connection, which takes its place out
+    at once, and a sender that only falls silent lets it lapse within HEAVY_PLACE_SECONDS.
+
+    The lane never runs twice. This process alone starts it, in one place at a time: it waits in this Mac's queue
+    or offers the lane to another Mac, never both at once (overflow), and an offer names the place (identity), so
+    that the Mac's reading does not count it as a request queued ahead and the run's own admissions there pass it.
+    The places are given up before a command admitted here starts, and within one keeper's turn of another Mac
+    starting the lane, as the lane's record says it (unplaced)."""
+
+    def __init__(self, name, identity, label, started, hosts, every=None):
+        self.name, self.identity, self.started, self.hosts = name, identity, started, tuple(hosts)
+        self.label = f"{label} (waiting, sent by {offload_host.mac_name()})"
+        if every is None:
+            try: every = float(os.environ.get("HEAVY_PLACE_SECONDS", str(resources.PLACE_SECONDS))) / 3
+            except ValueError: every = resources.PLACE_SECONDS / 3
+        self.every = every
+        # Each Mac's holder, the Macs said to hold a place or to have none, and whether no Mac has taken the work.
+        self.holders, self.said, self.unplaced = {}, {}, lambda: True
+        self.lock, self.ended, self.keeper = threading.Lock(), threading.Event(), None
+
+    def hold(self):
+        """Take a place on each Mac, or keep the ones held, from a keeper thread, so that a Mac that is slow to
+        answer never keeps this Mac's admission waiting. It changes nothing while the keeper runs."""
+        if self.every <= 0 or (self.keeper is not None and self.keeper.is_alive()): return
+        self.ended.clear()
+        self.keeper = threading.Thread(target=self._keep, daemon=True)
+        self.keeper.start()
+
+    def _keep(self):
+        # Nothing here may stop the work: a failure ends the keeping, and the places lapse.
+        with contextlib.suppress(Exception):
+            while self.unplaced() is True:
+                with self.lock:
+                    if self.ended.is_set(): return
+                    for host in self.hosts: self._renew(host)
+                if self.ended.wait(self.every): return
+        self._release()
+
+    def _renew(self, host):
+        """Say to host's holder that the lane still waits, or start one where none runs. The caller holds the lock."""
+        holder = self.holders.get(host)
+        if holder is not None and holder.poll() is None:
+            try:
+                holder.stdin.write(b"still\n")
+                holder.stdin.flush()
+                return
+            except OSError:
+                pass
+        if holder is not None: self._close(holder)
+        request = {"identity": self.identity, "label": self.label, "from": offload_host.mac_name(),
+                   "age": max(0.0, time.time() - self.started)}
+        # The holder's own file, sent by itself: it needs nothing of offload_host.py, which every dispatch carries.
+        command = [*SSH, *moved(host), host, login(host_command(Path(place_holder.__file__).read_text(), json.dumps(request)))]
+        try:
+            holder = subprocess.Popen(command, env=environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL)
+        except OSError as error:
+            self._say(host, f"has no place in {called(host)}'s queue: ssh could not start: {error}")
+            self.holders.pop(host, None)
+            return
+        self.holders[host] = holder
+        threading.Thread(target=self._answered, args=(host, holder), daemon=True).start()
+
+    def _answered(self, host, holder):
+        """Say once what host's holder answered: that it holds the place, or why the lane has none there."""
+        with contextlib.suppress(Exception):
+            answer = None
+            # Its answer is a line of JSON; whatever that Mac's login shell prints before it is passed over.
+            for line in iter(holder.stdout.readline, b""):
+                try: found = json.loads(line)
+                except ValueError: continue
+                if isinstance(found, dict) and ("place" in found or "error" in found):
+                    answer = found
+                    break
+            if answer is not None and answer.get("place") == "held":
+                self._say(host, f"holds a place in {called(host)}'s queue while it waits, so that its guaranteed slots "
+                                "drain toward it: it runs on whichever Mac admits it first")
+            elif self.holders.get(host) is holder and not self.ended.is_set():
+                # A holder this process let go, or replaced, ended as it was told to, and says nothing of that Mac.
+                why = answer["error"] if answer is not None and answer.get("error") else \
+                    "it could not be reached, or its holder said nothing"
+                self._say(host, f"has no place in {called(host)}'s queue, and is offered to it as before: {why}")
+
+    def _say(self, host, words):
+        if self.said.get(host) == words: return
+        self.said[host] = words
+        print(f"queuekeeper: {self.name} {words}", file=sys.stderr, flush=True)
+
+    @staticmethod
+    def _close(holder):
+        """Tell a holder to leave, which takes its place out of that Mac's queue, and end its connection."""
+        with contextlib.suppress(OSError, ValueError):
+            holder.stdin.write(b"leave\n")
+            holder.stdin.flush()
+        with contextlib.suppress(OSError, ValueError): holder.stdin.close()
+
+    def _release(self):
+        with self.lock:
+            holders, self.holders = list(self.holders.values()), {}
+            for holder in holders: self._close(holder)
+            deadline = time.monotonic() + PLACE_LEAVE
+            for holder in holders:
+                try:
+                    holder.wait(timeout=max(deadline - time.monotonic(), 0))
+                except subprocess.TimeoutExpired:
+                    # Its connection ends, which hangs the holder up: the place goes with it.
+                    holder.kill()
+                    with contextlib.suppress(Exception): holder.wait(timeout=PLACE_LEAVE)
+                with contextlib.suppress(OSError, ValueError): holder.stdout.close()
+
+    def leave(self):
+        """Give up every place: before a command admitted here starts, once another Mac ran the work, or when the
+        work stops waiting for any other reason."""
+        self.ended.set()
+        # Nothing here may stop the work or change how it ended: a holder this could not end loses its connection
+        # when this process ends, and its place lapses before that.
+        with contextlib.suppress(Exception):
+            if self.keeper is not None and self.keeper.is_alive(): self.keeper.join(resources.KEEPER_JOIN)
+            self._release()
+
+    @contextlib.contextmanager
+    def offering(self):
+        """While the work is away on an offer, the places are kept only while its record says that no Mac has started
+        it (lane_wait.taken_there), as this Mac's own place is (resources.Place.kept)."""
+        self.unplaced = lambda: lane_wait.taken_there() is False
+        try: yield
+        finally: self.unplaced = lambda: True
+
+
+def places_for(offered, once):
+    """The Places a waiting offer is to hold on the other Macs, or None: for a whole-host lane that waits here for
+    whichever Mac admits it first. Not for exclusive work, which holds every later request back where it queues and
+    has its own bound (exclusive_offers); nor a lane that needs an unlocked screen, which a place would keep slots for
+    on a Mac whose screen may be locked; nor work asked once (--if-free); nor work whose label this Mac's admission
+    did not give."""
+    place, label = getattr(offered, "place", None), getattr(offered, "label", None)
+    if once or place is None or not label or not offered.whole_host or offered.exclusive or offered.screen: return None
+    hosts = tuple(offered.hosts or ())
+    return Places(offered.name, place.identity, label, place.started, hosts) if hosts else None
+
+
 def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     """This Mac's admission of work another Mac declined as busy, the work's status when another Mac
     took it after all or its configuration stopped it, or BUSY when no Mac admitted it in timeout
@@ -3399,37 +3565,58 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     later work back only for HEAVY_PLACE_SECONDS after its last local attempt (#360), so during each offer
     the place is kept holding while the lane's record says that another Mac has not started it
     (Place.kept, lane_wait.taken_there): an offer can take longer than that, and a later whole-host gate
-    then took the slots a waiting one had arrived first for (vocaro/queuekeeper#160). With once, as
+    then took the slots a waiting one had arrived first for (vocaro/queuekeeper#160). A whole-host lane whose first
+    wait here ends unadmitted also takes a place in each other Mac's queue, kept while it waits and given up when
+    it is admitted here, when another Mac runs it and when it stops waiting (Places, vocaro/queuekeeper#211); the
+    Macs are then read again every PLACED_WAIT seconds at most. With once, as
     for --if-free, each Mac is asked once. refused holds why each of this Mac's waits ended unadmitted,
     the last of which the give-up line says (vocaro-engineering#270)."""
     deadline, window, said = time.monotonic() + timeout, FREE_WAIT, None
-    while True:
-        # Once another Mac can no longer take it, this Mac's queue alone, for the rest of the time.
-        bound = window if offered.busy is not None else deadline - time.monotonic()
-        # An offer that could not reach another Mac is followed soon by another (Offer.reprobe).
-        if offered.busy is not None and offered.failed: bound = min(bound, offered.reprobe())
-        if offered.away is not None:
-            lane_wait.waiting(lane_wait.UNREACHABLE, offered.away, probes=offered.probes())
-        elif offered.busy is not None: lane_wait.waiting(lane_wait.OVERFLOW, offered.busy)
-        admission = admit(max(min(bound, deadline - time.monotonic()), 0))
-        if admission is not None: return admission
-        if once or time.monotonic() >= deadline:
-            who = "no Mac" if offered.several() else "no Mac"
-            print(f"queuekeeper: {offered.name} not run: {who} admitted it {'now' if once else f'in {timeout:g}s'}"
-                  + (f"; {offered.remote_macs} cannot be reached: {offered.away}" if offered.away
-                     else f"; {offered.busy}" if offered.busy else "")
-                  + (f"; this Mac's last wait: {refused[-1]}" if refused else ""), file=sys.stderr, flush=True)
-            return BUSY
-        if offered.busy is not None and offered.away is None and offered.busy != said:
-            print(f"queuekeeper: {offered.name} waits for whichever Mac admits it first, {offered.remote_macs} asked again every "
-                  f"{OVERFLOW_WAIT_MAX}s or sooner: {offered.busy}, and this Mac has not admitted it",
-                  file=sys.stderr, flush=True)
-            said = offered.busy
-        place = getattr(offered, "place", None)
-        with place.kept(lambda: lane_wait.taken_there() is False) if place is not None else contextlib.nullcontext():
-            status = offered.again()
-        if status is not None: return status
-        window = min(max(2 * window, OVERFLOW_WAIT), OVERFLOW_WAIT_MAX)
+    # The work's places in the other Macs' queues, once its first wait here has ended unadmitted (Places).
+    places = None
+    try:
+        while True:
+            # Once another Mac can no longer take it, this Mac's queue alone, for the rest of the time.
+            bound = window if offered.busy is not None else deadline - time.monotonic()
+            # An offer that could not reach another Mac is followed soon by another (Offer.reprobe).
+            if offered.busy is not None and offered.failed: bound = min(bound, offered.reprobe())
+            if places is not None:
+                if offered.busy is not None and offered.away is None:
+                    # The Macs are read again soon: one whose slots drained toward the work is offered it then.
+                    places.hold()
+                    bound = min(bound, PLACED_WAIT)
+                else:
+                    # No other Mac can take the work now, so nothing is kept for it there.
+                    places.leave()
+            if offered.away is not None:
+                lane_wait.waiting(lane_wait.UNREACHABLE, offered.away, probes=offered.probes())
+            elif offered.busy is not None: lane_wait.waiting(lane_wait.OVERFLOW, offered.busy)
+            admission = admit(max(min(bound, deadline - time.monotonic()), 0))
+            if admission is not None:
+                # Admitted here, it gives up the others before its command starts.
+                if places is not None: places.leave()
+                return admission
+            if once or time.monotonic() >= deadline:
+                who = "no Mac" if offered.several() else "no Mac"
+                print(f"queuekeeper: {offered.name} not run: {who} admitted it {'now' if once else f'in {timeout:g}s'}"
+                      + (f"; {offered.remote_macs} cannot be reached: {offered.away}" if offered.away
+                         else f"; {offered.busy}" if offered.busy else "")
+                      + (f"; this Mac's last wait: {refused[-1]}" if refused else ""), file=sys.stderr, flush=True)
+                return BUSY
+            if offered.busy is not None and offered.away is None and offered.busy != said:
+                print(f"queuekeeper: {offered.name} waits for whichever Mac admits it first, {offered.remote_macs} asked again every "
+                      f"{OVERFLOW_WAIT_MAX}s or sooner: {offered.busy}, and this Mac has not admitted it",
+                      file=sys.stderr, flush=True)
+                said = offered.busy
+            if places is None: places = places_for(offered, once)
+            place = getattr(offered, "place", None)
+            with place.kept(lambda: lane_wait.taken_there() is False) if place is not None else contextlib.nullcontext(), \
+                    places.offering() if places is not None else contextlib.nullcontext():
+                status = offered.again()
+            if status is not None: return status
+            window = min(max(2 * window, OVERFLOW_WAIT), OVERFLOW_WAIT_MAX)
+    finally:
+        if places is not None: places.leave()
 
 
 def ask(host, request, timeout=SURVEY_TIMEOUT, unsent=False):
@@ -3492,6 +3679,8 @@ def capacity_there(host, *, diagnostic=False, started=None):
     a run does, and one that does not answer with a reading Unavailable: the work then runs on this Mac, saying so. One whose admission limits cannot
     be read refuses every request there, which is its owner's to fix (Misconfigured)."""
     request = {"capacity": "diagnostic" if diagnostic else True}
+    # The place the asking work holds in that Mac's queue (Places) is no request queued ahead of it.
+    if resources.request_place(): request["own"] = resources.request_place()
     if started is not None:
         request["requestStarted"] = started
     elif resources._request_started.get() is not None:

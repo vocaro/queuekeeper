@@ -813,6 +813,11 @@ def sweep_waits(folder):
 
 REQUEST_STARTED = "QUEUEKEEPER_ADMISSION_REQUEST_STARTED"
 _request_started = contextvars.ContextVar("admission_request_started", default=None)
+# The place in this Mac's queue that work sent here belongs to: the one its sender holds for it while it waits
+# (place_holder.hold_place), by its identity. The sender's own offers carry it in _request_place, for each Mac's
+# reading and dispatch (remote.capacity_there, remote.execute).
+PLACE = "QUEUEKEEPER_ADMISSION_PLACE"
+_request_place = contextvars.ContextVar("admission_request_place", default=None)
 
 
 def request_started():
@@ -826,10 +831,19 @@ def request_started():
 
 
 @contextlib.contextmanager
-def request_order(started):
-    token = _request_started.set(started)
+def request_order(started, place=None):
+    """Carry a request's arrival, and the identity of the place it holds in other Macs' queues if it holds any, to
+    what the block asks of them."""
+    token, held = _request_started.set(started), _request_place.set(place)
     try: yield
-    finally: _request_started.reset(token)
+    finally:
+        _request_started.reset(token)
+        _request_place.reset(held)
+
+
+def request_place():
+    """The identity of the place the asking work holds in other Macs' queues, or None."""
+    return _request_place.get()
 
 
 @contextlib.contextmanager
@@ -839,13 +853,17 @@ def child_requests():
     A leaf command can request independent work, including each part of a self lane. Such new
     requests must not reuse their ancestor's arrival. The parent keeps its input until it ends.
     """
-    before = os.environ.pop(REQUEST_STARTED, None)
-    token = _request_started.set(None)
+    before, place = os.environ.pop(REQUEST_STARTED, None), os.environ.pop(PLACE, None)
+    token, held = _request_started.set(None), _request_place.set(None)
     try: yield
     finally:
         _request_started.reset(token)
+        _request_place.reset(held)
         if before is None: os.environ.pop(REQUEST_STARTED, None)
         else: os.environ[REQUEST_STARTED] = before
+        # Nor does what the command starts pass the place its lane was sent for.
+        if place is None: os.environ.pop(PLACE, None)
+        else: os.environ[PLACE] = place
 
 
 class Place:
@@ -1000,6 +1018,9 @@ class Admission:
         self.place = place
         self.ordered = place.started if place is not None else request_started()
         self.queued_as = place.identity if place is not None else self.identity
+        # The place its sender holds for it in this queue while it waited on that Mac (PLACE), if it was sent here
+        # for one: a whole-host request queued for this very work, which therefore holds none of its admissions back.
+        self.kin = os.environ.get(PLACE) or None
         # What supervision in this process sees of each command, for the entry's recovery, and
         # whether a line failed to reach it, which ends recording. Lane groups supervise in threads.
         self.process_record = record_path(self.guard, self.identity)
@@ -1433,9 +1454,12 @@ class Admission:
             if state is None:
                 return False
             reserved, model_counted = self._count_stranded()
-            # The first request queued ahead of this one that holds it back now, if any.
-            ahead = next((waiter for waiter in waiters if waiter["identity"] == self.queued_as or self._holds(waiter)), None)
-            if ahead is not None and ahead["identity"] == self.queued_as:
+            # The first request queued ahead of this one that holds it back now, if any. Its own record ends the
+            # search, and so does the place its sender holds here for it: what is queued behind either holds nothing
+            # back from it (vocaro/queuekeeper#211).
+            own = (self.queued_as, self.kin)
+            ahead = next((waiter for waiter in waiters if waiter["identity"] in own or self._holds(waiter)), None)
+            if ahead is not None and ahead["identity"] in own:
                 ahead = None
             # An exclusive request cannot be admitted while a stranded entry is counted as any slot, nor a whole-host
             # one while it is counted as a guaranteed slot, so one queued ahead then holds nothing back: work within
