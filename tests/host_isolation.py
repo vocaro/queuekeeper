@@ -139,6 +139,9 @@ os.environ.pop('QUEUEKEEPER_KEYCHAIN_UNLOCKED', None)
 # Nor does a test run as a trial because the suite was started inside one (vocaro/queuekeeper#34): every cli.main a test
 # calls would move its namespaces there. A test of a trial sets it itself.
 os.environ.pop(cli.trial.VARIABLE, None)
+# Nor does a test start as a process that restarted itself because the suite was started by one
+# (restartable.RESTARTED): `qk serve` would not open its page. A test of a restart sets it itself.
+os.environ.pop("QUEUEKEEPER_RESTARTED", None)
 # Nor does a test read what a dispatch, an admission, a device pass or the merge queue tells the command it starts, which
 # the suite inherits whenever it is that command (vocaro/queuekeeper#46): the sending Mac's origin and arrival, which
 # every admission a test takes would report as its own; the file where a declined offer's reason goes; what exclusive

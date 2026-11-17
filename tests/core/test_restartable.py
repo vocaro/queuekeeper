@@ -9,6 +9,7 @@ import threading
 import unittest
 
 import host_isolation  # noqa: F401 -- first, as every test module
+from host_isolation import stretched
 
 from queuekeeper import restartable
 
@@ -54,10 +55,10 @@ class Restartable(unittest.TestCase):
     def test_the_watcher_calls_once_the_head_has_moved_and_not_before(self):
         moved, done = [], threading.Event()
         restartable.watch(self.repo, lambda old, new: (moved.append((old, new)), done.set()), poll=0.05, settle=0.05)
-        self.assertFalse(done.wait(0.3))
+        self.assertFalse(done.wait(0.3))  # wall-clock: no move happens, so any short wait shows none was seen
         first = git(self.repo, "rev-parse", "HEAD")
         self.commit("second")
-        self.assertTrue(done.wait(10))
+        self.assertTrue(done.wait(stretched(10)))
         self.assertEqual(moved, [(first, git(self.repo, "rev-parse", "HEAD"))])
 
     def test_a_process_whose_checkout_moves_replaces_itself_with_the_same_command(self):
@@ -73,7 +74,7 @@ class Restartable(unittest.TestCase):
         self.addCleanup(process.kill)
         first = process.stdout.readline().split()
         self.commit("second")
-        out, _ = process.communicate(timeout=30)
+        out, _ = process.communicate(timeout=stretched(30))
         self.assertEqual(first[0], "started")
         self.assertIn(f"restarted {first[1]}", out)
         self.assertIn("the toolkit moved; restarting from it", out)
