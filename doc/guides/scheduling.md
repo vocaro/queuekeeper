@@ -176,7 +176,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Not built, [#211] |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Not built, [#211] |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Not built, [#211] |
-| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Not built, [#211]; how a device is matched to a Mac is open |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Not built, [#211] |
 
 ### D1: Is the order of goals right?
 
@@ -367,9 +367,14 @@ back to the Mac that sent the work.
 which labels it has, such as a license; a lane says which labels it needs. A lane is not named in
 a Mac's settings. A device is the case labels do not fit. An iPad or iPhone paired over Wi-Fi is
 reachable from every Mac, and one kept to a USB cable from one Mac only, so it belongs to no Mac.
-Suggested, and open: a device is a resource of the farm with one reservation record, each Mac
-reports the paired devices it reaches and whether by cable or network, a device lane goes to a Mac
-that reaches its device now, and a device's entry may say that only a cable counts ([#211]).
+
+**A device is declared, and its reach is read (decided 2026-11-17).** A device is a resource of the
+farm with one reservation record. The owner declares each device: the ways a Mac may reach it, in
+his order of preference, such as a cable first and then the network, and what it means when no Mac
+reaches it, an error or a device that is away. Each Mac reports which declared devices it reaches
+now and how. Placement chooses among the declared ways only, and what was read never adds a device
+to the farm or takes one out: a device that must always be reachable and is not is reported as an
+error, and one that may be away is offline and no error. The settings' names are for [#211].
 
 ### Smaller questions with issues of their own
 
