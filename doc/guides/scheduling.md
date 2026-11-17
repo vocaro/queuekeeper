@@ -17,8 +17,9 @@ Mac" is one of [the farm's][farm] others.
 ## Goals, in order
 
 The owner's direction, 2026-11-17: "optimize for throughput without starving jobs", "the
-scheduling should take into account the CPU load limits that are defined per host", and "the
-scheduler should try to balance the load where possible".
+scheduling should take into account the CPU load limits that are defined per host", "the scheduler
+should try to balance the load where possible", and "the scheduler/admitter should treat all nodes
+as equivalent except for per-node configs".
 
 The order below is a reading of that direction and of the decisions under
 [Policies in force](#policies-in-force). The owner has not confirmed it as an order, and confirming
@@ -43,14 +44,18 @@ earlier one wins.
 5. **A session's own run starts soon.** The latency of a hand-run lane matters least. It is served
    by spare capacity and by shortcuts that cost nobody a place, never by priority ([ve#200]).
 
-One rule stands beside the order: **the owner is not the scheduler.** Queuekeeper chooses the Mac
+Two rules stand beside the order. **The owner is not the scheduler.** Queuekeeper chooses the Mac
 and the moment, a session never asks him which Mac to use ([ve#168]), and a queue holds for him only
-over a cause that only he can fix.
+over a cause that only he can fix. **No Mac is special.** Admission and placement treat every Mac
+alike, and Macs differ only by their own settings: their CPU limits and which kinds of lane each
+may run (2026-11-17). The rules in force do not yet do this
+([D7](#d7-no-mac-is-special)).
 
 Read as one sentence: land as much as the Macs can verify truthfully, within each Mac's limits, in
 arrival order with bounded waits, and only then make a single run start sooner. The rules in force
-fall short of this in two places, both under [open decisions](#open-decisions): a Mac's CPU limit
-bounds less of its load than goal 2 says, and placement orders the Macs without balancing them.
+fall short of this in three places, all under [open decisions](#open-decisions): a Mac's CPU limit
+bounds less of its load than goal 2 says, placement orders the Macs without balancing them, and
+several rules name this Mac.
 
 ## Resources
 
@@ -313,6 +318,29 @@ each Mac's share of time held by a whole-host lane in `qk admissions usage`. C f
 still queue once both Macs take them. Not measured: how many of the day's gate runs were reruns
 after a run with no verdict, each of which holds a Mac again ([#170], [#24]).
 
+### D7: No Mac is special
+
+The owner's direction is that no admission or scheduling decision is written for a special primary
+Mac. Setup is the one exception, by design: it takes the Mac it runs on to be the owner's and gives
+it a lower CPU limit than an added Mac's default. The direction is given; building it is [#211],
+which holds the code references. What it changes:
+
+| Today's rule that names this Mac | In its place |
+| --- | --- |
+| Other Macs are offered work first, and this Mac is the fallback; it is not in the farm's list (rule 14). | This Mac is a member of the list, and the choice is D5's. |
+| A request waits in this Mac's queue, and other Macs get only offers to start at once (rules 6 and 17). | A place in the queue of each Mac that can run it (D6, option B). |
+| A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. Rule 19's change to the older half is the first step. |
+| Foreground work never comes to this Mac by itself, and goes to the first listed Mac when none is marked (rule 20). | The foreground mark alone, on any Mac. |
+| Another Mac's slots beyond the guaranteed count as room when the farm has several Macs; this Mac's do not (rule 16). | One test of room for every Mac. |
+| Every Mac has the same default limits, and no command writes a limits file. | Setup writes this Mac's file, with its lower `busyLimit`. |
+
+One setting is missing: nothing says which kinds of lane a Mac may run, apart from the foreground
+mark and a lane's `chips`. With it, keeping gates off the owner's workstation is his setting and
+not a rule. What stays is what follows from where a command starts: work that names this checkout's
+ignored files, a local path, a pool simulator or a device attached here runs here, and results come
+back to the Mac that sent the work. Open for the owner: the two CPU limits setup uses, and the
+setting's vocabulary.
+
 ### Smaller questions with issues of their own
 
 - **Work admitted later can void a run** (rule 12, [#28]). The owner's expectation of 2026-11-12 is
@@ -358,6 +386,7 @@ date, and the mechanism's guide says how it works.
 [#171]: https://github.com/vocaro/queuekeeper/issues/171
 [#205]: https://github.com/vocaro/queuekeeper/issues/205
 [#207]: https://github.com/vocaro/queuekeeper/issues/207
+[#211]: https://github.com/vocaro/queuekeeper/issues/211
 [ve#163]: https://github.com/vocaro/vocaro-engineering/issues/163
 [ve#168]: https://github.com/vocaro/vocaro-engineering/issues/168
 [ve#174]: https://github.com/vocaro/vocaro-engineering/issues/174
