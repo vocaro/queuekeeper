@@ -336,11 +336,13 @@ class Summary(unittest.TestCase):
         suite = self.root / "suite"
         suite.mkdir()
         (suite / "test_a.py").write_text("import unittest\nclass Quick(unittest.TestCase):\n    def test_quick(self): pass\n")
-        (suite / "test_b.py").write_text("import time, unittest\nclass Hung(unittest.TestCase):\n"
-                                         "    def test_hung(self): time.sleep(600)\n")
         launcher = [sys.executable, str(SOURCE.parents[1] / "scripts/qk")]
-        # Room for discovery and the quick module on a loaded Mac; the hung test sleeps far past it.
+        # Room for discovery and the quick module on a loaded Mac; the hung test sleeps far past it, by a sleep that
+        # follows the limit: a one-minute load read at 60 or more per core stretched the limit past a fixed 600 s,
+        # and the hung test finished and passed before the timeout came (vocaro/queuekeeper#202).
         limit = round(stretched(10))
+        (suite / "test_b.py").write_text("import time, unittest\nclass Hung(unittest.TestCase):\n"
+                                         f"    def test_hung(self): time.sleep({10 * limit + 600})\n")
         self.configure(lane={"command": [*launcher, "unittest", "-s", str(suite), "-j", "1"], "timeout": limit})
         status, lines = self.qk("lane")
         self.assertEqual(status, lane_results.UNMEASURED, lines)
