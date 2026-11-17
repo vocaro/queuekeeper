@@ -23,6 +23,10 @@ from host_isolation import stretched
 from queuekeeper import config, offload_host, processes, remote, resources
 
 
+# cpu_use itself, which Namespace replaces for every reading so that the host's load cannot make one partial.
+CPU_USE = offload_host.cpu_use
+
+
 def tree(root):
     """Every file under root with its bytes, to show a reading changed nothing."""
     return {str(path.relative_to(root)): path.read_bytes() for path in sorted(Path(root).rglob("*")) if path.is_file()}
@@ -45,7 +49,11 @@ class Namespace(unittest.TestCase):
         self.addCleanup(lambda: os.environ.__setitem__(resources.TOKEN, saved) if saved else os.environ.pop(resources.TOKEN, None))
         for patcher in [patch.object(resources, "cpu_busy", return_value=(10.0, 15.0)),
                         patch.object(resources, "memory_level", return_value=1),
-                        patch.object(offload_host, "cpu_busy", return_value=10.0)]:
+                        patch.object(offload_host, "cpu_busy", return_value=10.0),
+                        # What each holder costs the CPU is read by one ps of every process on the Mac, which a loaded
+                        # host can time out or fail: a reading here would turn partial on the host's load, not on
+                        # what a test sets up (vocaro/queuekeeper#210). The tests of cpu_use call it directly.
+                        patch.object(offload_host, "cpu_use", side_effect=lambda pids: {pid: 1.5 for pid in pids})]:
             patcher.start()
             self.addCleanup(patcher.stop)
         self.start = resources.process_start(os.getpid())
@@ -102,7 +110,7 @@ class HoldersTests(Namespace):
         listing = subprocess.CompletedProcess([], 0, f"{os.getpid()} 1 0.5\n 900001 {os.getpid()} 40,0\n900002 900001 2.5\n"
                                                      "900003 1 99.0\n", "")
         with patch.object(offload_host.subprocess, "run", return_value=listing):
-            self.assertEqual(offload_host.cpu_use([os.getpid(), 123]), {os.getpid(): 43.0})
+            self.assertEqual(CPU_USE([os.getpid(), 123]), {os.getpid(): 43.0})
         # A ps that cannot say leaves it unknown, and the reading partial, never idle.
         with patch.object(offload_host, "cpu_use", return_value=None):
             reading = self.read()
