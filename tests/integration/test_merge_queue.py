@@ -9878,6 +9878,17 @@ class RoundAccount(Fixture):
         run_progress.Tracker(folder, ["qk", "unittest", "-s", "tests"]).started("test_a")
         self.assertAlmostEqual(self.gate_after_look(queue, watch)["moved"], time.time(), delta=30)
 
+    def test_a_gate_record_says_when_its_lanes_log_last_changed(self):
+        # A lane's command, such as `swift test` or a script, writes to its lane's log, not to the gate's (#185).
+        queue, watch = self.watch(began=time.time() - 1800)
+        from queuekeeper import run_progress
+        log = watch.checkout / run_progress.LANES / "gate/lanes/swift-tests.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("Test Case passed\n")
+        written = time.time() - 60
+        os.utime(log, (written, written))
+        self.assertAlmostEqual(self.gate_after_look(queue, watch)["moved"], written, delta=1)
+
     def test_a_gate_record_follows_the_lanes_wait_record(self):
         queue, watch = self.watch()
         mq.lane_wait.waiting(mq.lane_wait.UNREACHABLE, "ssh: connect to host build-host port 22: No route to host",

@@ -83,6 +83,23 @@ class Tracking(Folder):
         tracker.end(0)
         self.assertIsNone(run_progress.moved(self.root, before))
 
+    def test_a_lanes_logs_say_when_its_command_last_wrote(self):
+        # A lane's command writes to its lane's log, not to the gate's, which says only that it began and ended (#185).
+        self.assertIsNone(run_progress.logs_moved(self.root))
+        before = time.time()
+        lanes = self.root / run_progress.LANES
+        logs = {"own": lanes / "gate/run.log", "member": lanes / "gate/lanes/swift-tests.log",
+                "beside": lanes / ".runs/gate/20261116T000000Z-42/run.log",
+                "beside's member": lanes / ".runs/gate/20261116T000000Z-42/lanes/docs.log"}
+        for offset, (name, log) in enumerate(logs.items()):
+            with self.subTest(name):
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text("a line\n")
+                os.utime(log, (before - 300 + offset, before - 300 + offset))
+                self.assertEqual(run_progress.logs_moved(self.root, before - 600), before - 300 + offset)
+        # A log last written before the gate began is an earlier run's.
+        self.assertIsNone(run_progress.logs_moved(self.root, before))
+
     def test_a_process_a_stop_kept_from_starting_is_not_counted(self):
         tracker = run_progress.Tracker(run_progress.new_folder(), ["qk", "unittest"])
         tracker.planned(1, 1, 1)

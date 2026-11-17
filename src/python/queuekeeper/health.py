@@ -25,7 +25,8 @@ SLOW = 1.5         # a gate past this many times its usual time is slow
 WAIT_LONG = 600    # seconds a gate or round may wait for a Mac, an unlocked screen or admission before it is slow
 SILENT = 900       # seconds a running gate may show no movement before it is stuck: its log unchanged, which a
                    # remote gate's heartbeat changes every 300 seconds, and its run here not moved, which a
-                   # `qk unittest` says in its own folder (run_progress.moved) while the log stays as it was
+                   # `qk unittest` says in its own folder (run_progress.moved) and a lane's command in its lane's
+                   # log (run_progress.logs_moved) while the gate's log stays as it was
 STARTING = 300     # seconds the worker may take between rounds while entries wait
 STALE = 90         # seconds after which a Mac's reading no longer says how it is now
 CAME_BACK = 6      # the settled entries the came-back sign counts over
@@ -97,28 +98,30 @@ def progress(state, journal, usual, now, modified):
         else: found.append((OK, "the round is starting"))
     for role, gate in gates:
         lane, mac = gate.get("lane") or "lane", gate.get("mac") or "a Mac not yet chosen"
+        # A lane named gate is the gate once: not "the gate gate".
+        the = "the gate" if lane == "gate" else f"the {lane} gate"
         if gate.get("stuck"):
-            found.append((DANGER, f"the {lane} gate is {gate['stuck']}"))
+            found.append((DANGER, f"{the} is {gate['stuck']}"))
             continue
         since = gate.get("waitingSince")
         if gate.get("waiting") and isinstance(since, (int, float)):
             level = WARNING if now - since >= WAIT_LONG else OK
-            found.append((level, f"the {lane} gate has waited {span(now - since)} for {gate['waiting']}",
+            found.append((level, f"{the} has waited {span(now - since)} for {gate['waiting']}",
                           f"Waiting {span(now - since)} for a Mac"))
             continue
         began = gate.get("began")
         if not isinstance(began, (int, float)):
-            found.append((UNKNOWN, f"when the {lane} gate began was not recorded"))
+            found.append((UNKNOWN, f"when {the} began was not recorded"))
             continue
         elapsed = now - began
         changed = modified(gate.get("log"))
         if changed is None:
-            found.append((UNKNOWN, f"the {lane} gate's log cannot be read"))
+            found.append((UNKNOWN, f"{the}'s log cannot be read"))
             continue
         moved = gate.get("moved")
         if isinstance(moved, (int, float)) and math.isfinite(moved): changed = max(changed, min(moved, now))
         if now - changed >= SILENT:
-            found.append((DANGER, f"the {lane} gate on {mac} has written nothing for {span(now - changed)}",
+            found.append((DANGER, f"{the} on {mac} has written nothing for {span(now - changed)}",
                           f"Silent for {span(now - changed)}"))
             continue
         if lane != "gate":

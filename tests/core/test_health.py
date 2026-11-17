@@ -89,6 +89,9 @@ class Verdict(unittest.TestCase):
         found = assess(state({"began": NOW - 300}), readings=None, log_changed=NOW - health.SILENT - 60)
         self.assertEqual((found["verdict"], found["exitStatus"], levels(found)["progress"]), ("stuck", health.ATTENTION, "danger"))
         self.assertIn("has written nothing for 16m", found["sentence"])
+        # A lane named gate is the gate once (#185).
+        self.assertIn("The gate on build-host has written nothing", found["sentence"])
+        self.assertNotIn("gate gate", found["sentence"])
         self.assertIn("What could not be checked: no Mac's reading was made", found["sentence"])
 
     def test_a_gate_whose_log_is_unchanged_while_its_run_moves_is_not_stuck(self):

@@ -200,7 +200,8 @@ gate now, without running one.
 waiting should land. It judges five signs:
 
 - **Progress**: each running gate against the median of the gate's last 20 passing runs, and
-  whether its log is still growing.
+  whether it is still moving: its log, its lanes' logs on this Mac, or a `qk unittest` run's
+  progress. One that shows none of these for 15 minutes is stuck.
 - **Pace**: how long since an entry last landed.
 - **Macs**: whether each Mac answers now and has the memory to work.
 - **Devices**: whether a device a gate waits for is connected.

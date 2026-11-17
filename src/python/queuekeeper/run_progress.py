@@ -124,6 +124,28 @@ def moved(base, since=None):
     return latest
 
 
+# Where a lane run here keeps its command's output, below base's LANES (cli.lane_directory, parallel.lanes): LANE/run.log,
+# a group's members' LANE/lanes/NAME.log, and the same below .runs/LANE/RUN/ when another run of the lane held its own.
+LANES = ".build/queuekeeper"
+LANE_LOGS = ("*/run.log", "*/lanes/*.log", ".runs/*/*/run.log", ".runs/*/*/lanes/*.log")
+
+
+def logs_moved(base, since=None):
+    """When a lane's log under base last changed, the latest, or None when none has: a lane that runs here writes its
+    command's output there, not to the log of the `qk run` that runs it, which says only that the lane began and how
+    it ended. So a gate of `swift test`, a script, or a group of lanes moves here and not in the gate's log
+    (vocaro/queuekeeper#185). A log last changed before since is an earlier run's."""
+    latest = None
+    for pattern in LANE_LOGS:
+        try: paths = list((Path(base) / LANES).glob(pattern))
+        except OSError: continue
+        for path in paths:
+            try: changed = path.stat().st_mtime
+            except OSError: continue
+            if since is None or changed >= since: latest = max(latest or 0, changed)
+    return latest
+
+
 def started_record(command):
     return {"pid": os.getpid(), "host": socket.gethostname(), "command": command, "cwd": os.getcwd(),
             "started": time.time(), "ended": None, "status": None}

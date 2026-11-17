@@ -1346,10 +1346,16 @@ def stuck(gate, at=None):
             "Lock reclamation)")
 
 
+def latest(*times):
+    """The latest of times that are known, or None when none is."""
+    return max((at for at in times if at is not None), default=None)
+
+
 class GateWatch:
     """The record of a running gate lane in the round's account (Queue.note): where it runs and what it waits for,
     by the lane's wait record (lane_wait) and its dispatch's record (remote.dispatched), and when its run here last
-    moved (run_progress.moved), which a run of `qk unittest` says in its own folder and not in the gate's log, read
+    moved, which a run of `qk unittest` says in its own folder (run_progress.moved) and a lane's command in its lane's
+    log (run_progress.logs_moved), and neither in the gate's log, read
     every WATCH_POLL seconds. It says only that: the record is no verdict, which the lane's exit and receipt alone give. Nothing it
     reads or fails to read may end the gate."""
     def __init__(self, worker, lane, began, log):
@@ -1382,7 +1388,8 @@ class GateWatch:
         self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingKind=record.get("kind") if waiting else None,
                              waitingOn=record.get("mac") if waiting else None, waitingSince=since, stranded=stranded,
                              progress=lane_progress.current(lane_wait.path_of(self.checkout, self.lane), self.began),
-                             moved=run_progress.moved(self.checkout, self.began))
+                             moved=latest(run_progress.moved(self.checkout, self.began),
+                                          run_progress.logs_moved(self.checkout, self.began)))
 
     def every(self):
         while not self.stopped.wait(WATCH_POLL):
