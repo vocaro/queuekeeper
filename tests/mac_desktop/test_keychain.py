@@ -325,7 +325,7 @@ class RecoverTests(unittest.TestCase):
                       shlex.join(["python3", "scripts/qk", "remote", "admit", "--", "python3", "scripts/qk", "keychain",
                                   "check", "--keychain", LOGIN, "--identity", NAME]),
                       # An unlock in a Terminal does not reach a run, so it says what does.
-                      "never an qk remote run", "`python3 scripts/qk keychain keep-unlocked`"]:
+                      "never an qk remote run", f"`python3 scripts/qk keychain keep-unlocked --target {SECOND}`"]:
             self.assertIn(words, said)
 
     def test_on_the_farm_mac_it_gives_the_local_command_and_never_the_alias(self):
@@ -552,7 +552,7 @@ class KeepUnlockedTests(unittest.TestCase):
             with self.subTest(said), self.assertRaises(offload_host.Refusal) as refused:
                 keychain.unlock_for_run(self.root, unlock)
             self.assertIn(said, str(refused.exception))
-            self.assertIn("`python3 scripts/qk keychain keep-unlocked`", refused.exception.fix)
+            self.assertIn("`python3 scripts/qk keychain keep-unlocked --target ", refused.exception.fix)
             self.assertFalse(refused.exception.busy)
         self.login.unlink()
         unlock = Unlocks()
@@ -590,7 +590,7 @@ class KeepUnlockedTests(unittest.TestCase):
             with self.assertRaises(extensions.Unavailable) as unavailable: keychain.unlock_run(self.root, {})
             self.assertNotIn(keychain.UNLOCKED, os.environ)
         self.assertIn("does not unlock", str(unavailable.exception))
-        self.assertIn("`python3 scripts/qk keychain keep-unlocked`", str(unavailable.exception))
+        self.assertIn("`python3 scripts/qk keychain keep-unlocked --target ", str(unavailable.exception))
 
     def test_the_desktop_extension_unlocks_before_a_lane_s_command(self):
         from queuekeeper import extensions
@@ -704,6 +704,33 @@ class KeepUnlockedTests(unittest.TestCase):
         self.assertEqual((status, commands, requests), (0, [], [{"root": remote.ROOT, "mac": SECOND}]), said)
         self.assertIn(f"from {WORKSTATION}, as qk remote runs work on {SECOND}", said)
 
+    def test_among_several_macs_it_keeps_the_password_of_the_one_the_target_names(self):
+        names = {"build-host": SECOND, "rented": THIRD}
+
+        def present(mac):
+            return {"mac": mac, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
+
+        def keep(target):
+            lines, commands = [], []
+            with farm_fixture.only("build-host", farm_fixture.mac("rented", "Loft")), \
+                    patch.object(host_context, "this_mac", return_value=WORKSTATION), \
+                    patch.object(host_context, "farm_mac", side_effect=lambda destination=None: view(destination, f"{destination}.local")), \
+                    patch.object(host_context, "session", return_value=GUI), patch.object(remote, "reachable"):
+                status = keychain.keep_unlocked(
+                    None, lines.append, lambda destination, request: present(names[destination]),
+                    lambda command: commands.append(command) or 0, target=target)
+            return status, commands, "\n".join(lines)
+        for target, alias, mac in [("Loft", "rented", THIRD), (THIRD, "rented", THIRD), (None, "build-host", SECOND)]:
+            with self.subTest(target):
+                status, commands, said = keep(target)
+                self.assertEqual((status, len(commands)), (0, 1), said)
+                self.assertEqual(commands[0][-2], alias)
+                request = json.loads(shlex.split(shlex.split(commands[0][-1])[-1])[-1])
+                self.assertEqual(request, {"keepUnlocked": {"root": remote.ROOT, "mac": mac}})
+        # A name none of the farm's Macs has is refused, and nothing is asked for.
+        status, commands, said = keep("nowhere")
+        self.assertEqual((status, commands), (2, []), said)
+
     def test_a_wrong_host_is_refused_before_anything_is_asked(self):
         # The last: an alias that reaches the workstation itself, which is no other Mac.
         present = {"mac": WORKSTATION, "home": HOME, "path": LOGIN, "exists": True, "keychains": [LOGIN]}
@@ -730,7 +757,9 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(recovering.call_args.args[:3], (keychain.DEFAULT, SECOND, None))
         with patch.object(keychain, "keep_unlocked", return_value=1) as keeping:
             self.assertEqual(cli.main(["--project", str(empty), "keychain", "keep-unlocked", "--identity", NAME]), 1)
-            self.assertEqual(keeping.call_args.args[:1], (NAME,))
+            self.assertEqual((keeping.call_args.args[:1], keeping.call_args.kwargs), ((NAME,), {"target": None}))
+            cli.main(["--project", str(empty), "keychain", "keep-unlocked", "--target", "Loft"])
+            self.assertEqual(keeping.call_args.kwargs, {"target": "Loft"})
 
     def test_a_check_in_this_session_runs_nothing_that_could_prompt_when_it_can_show_a_dialog(self):
         # This Mac's own session, read for real: a session with graphic access runs no security command.

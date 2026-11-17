@@ -167,8 +167,8 @@ def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
         out(f"  {where}:\n    {command}")
     if location.where == "farm Mac" or sender:
         out(f"An unlock in a Terminal reaches that Terminal's session only, never an qk remote run. For every run on "
-            f"{location.mac} to unlock its login keychain itself, run `python3 scripts/qk keychain keep-unlocked` "
-            "once instead.")
+            f"{location.mac} to unlock its login keychain itself, run `python3 scripts/qk keychain keep-unlocked "
+            f"--target {location.mac}` once instead.")
     return 0
 
 
@@ -182,9 +182,10 @@ def keep_command(location):
             *remote.moved(location.destination), location.destination, remote.login(script)]
 
 
-def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):
-    """qk keychain keep-unlocked, the owner's, once: on another Mac, ask for its login password at
-    another Mac's own prompt in this Terminal, keep it there for each qk remote run to unlock the
+def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None, target=None):
+    """qk keychain keep-unlocked, the owner's, once for each of the farm's Macs: on another Mac, target as
+    find finds it or the farm's first with none, ask for its login password at
+    that Mac's own prompt in this Terminal, keep it there for each qk remote run to unlock the
     login keychain in its own session, and stop that keychain locking on a timer or on sleep
     (offload_host.keep_unlocked). From the Mac that sends work there it goes through the alias with
     `ssh -t`; on another Mac it runs in this process. Exit as offload_host.keep_unlocked does, or 2
@@ -192,7 +193,7 @@ def keep_unlocked(identity=None, out=print, ask=None, interact=None, keep=None):
     offload_host.keep_unlocked here; both are for tests."""
     interact = interact or (lambda command: subprocess.run(command, env=remote.environment()).returncode)
     keep = keep or (lambda request: offload_host.keep_unlocked(request, out=out))
-    here, view, location, info = find(DEFAULT, None, ask, out)
+    here, view, location, info = find(DEFAULT, target, ask, out)
     if location is None: return 2
     if location.where == "here" and not view["deferredTo"]:
         # The owner's decision covers another Mac only, which holds no sensitive data.
@@ -323,7 +324,7 @@ def execute(args, out=print):
     if args.operation == "recover":
         return recover(args.keychain, args.target, args.identity, out)
     if args.operation == "keep-unlocked":
-        return keep_unlocked(args.identity, out)
+        return keep_unlocked(args.identity, out, target=args.target)
     record = check(args.keychain, args.identity, args.timeout)
     out(json.dumps(record, indent=2))
     return {PASSED: 0, FAILED: 1}.get(record["outcome"], lane_results.UNMEASURED)
@@ -338,7 +339,8 @@ def unlock_for_run(root, unlock=None):
     kept = root / offload_host.KEYCHAIN_PASSWORD
     if not kept.is_file(): return None
     path = Path.home() / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
-    fix = (f"on the Mac that sends work here, run `python3 scripts/qk keychain keep-unlocked` and type this Mac's "
+    fix = (f"on the Mac that sends work here, run `python3 scripts/qk keychain keep-unlocked --target "
+           f"{offload_host.mac_name()}` and type this Mac's "
            f"login password at its prompt, or delete {kept} to send work without the unlock "
            "(doc/guides/shared-host.md, Keychains on the right Mac)")
     if not path.is_file(): raise offload_host.Refusal(f"{kept} holds the password of {path}, which is not there", fix)
@@ -388,9 +390,11 @@ def add_arguments(parser):
     recover_parser.add_argument("--target", metavar="MAC", help="the Mac whose keychain the work needs, by its "
         "name in `qk farm list` or its LocalHostName (default: the farm's first Mac that takes work now)")
     recover_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")
-    keep_parser = operations.add_parser("keep-unlocked", help="once, on another Mac: ask for its login password "
+    keep_parser = operations.add_parser("keep-unlocked", help="once for each of the farm's Macs, on another Mac: ask for its login password "
         "at its own prompt in this Terminal, keep it there, readable only by its account, for every qk remote run to "
         "unlock the login keychain in its own session, and stop that keychain locking on a timer or on sleep")
+    keep_parser.add_argument("--target", metavar="MAC", help="the Mac whose login password to keep, by its "
+        "name in `qk farm list` or its LocalHostName (default: the farm's first Mac that takes work now)")
     keep_parser.add_argument("--identity", help="the signing identity the check is to use; only printed")
     check_parser = operations.add_parser("check", help="where the automation runs, record the session, the "
         "keychain's status, whether the identity is there and whether signing with it succeeds, without anything "

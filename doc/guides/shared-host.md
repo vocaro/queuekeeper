@@ -1951,8 +1951,8 @@ The owner prepares another Mac once:
    ```
 
 8. For work that signs, keep another Mac's login keychain unlocked for `qk remote`'s runs:
-   from this Mac, in your own Terminal, run `python3 scripts/qk keychain keep-unlocked` once and
-   type another Mac's login password at its prompt
+   from this Mac, in your own Terminal, run `python3 scripts/qk keychain keep-unlocked --target MAC`
+   once and type that Mac's login password at its prompt
    ([keeping it unlocked](#keeping-another-macs-keychain-unlocked)).
 
 The project's commits reach another Mac over SSH without a GitHub credential. A heavy lane's
@@ -2072,12 +2072,14 @@ once can serve the runs: each run unlocks the keychain itself, in its own sessio
 Mac's login password, which the owner gives once.
 
 ```sh
-python3 scripts/qk keychain keep-unlocked [--identity NAME]
+python3 scripts/qk keychain keep-unlocked [--target MAC] [--identity NAME]
 ```
 
 The owner runs it in their own Terminal, on the Mac that sends work to another Mac or in a shell
 on another Mac. It establishes the Mac and the target as `recover` does and refuses as
-`recover` does, then, on another Mac, through `ssh -t` and the alias from the sending Mac or
+`recover` does: `--target` names one of the farm's Macs, by its name in `qk farm list` or its
+LocalHostName, and without it the target is the farm's first Mac that takes work now. Run it once
+for each of the farm's Macs whose runs sign. Then, on another Mac, through `ssh -t` and the alias from the sending Mac or
 directly there:
 
 - refuses, having asked for nothing, on any Mac but the one the sending Mac reached, without a
