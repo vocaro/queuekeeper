@@ -53,8 +53,8 @@ class Fixture(test_merge_queue.Fixture):
             reading = patch.object(farm, name, value)
             reading.start()
             self.addCleanup(reading.stop)
-        self.addCleanup(farm.STATE.update, reading=None, detail={}, at=0.0, busy=False, error=None)
-        farm.STATE.update(reading=None, detail={}, at=0.0, busy=False, error=None)
+        self.addCleanup(farm.STATE.update, reading=None, detail={}, at=0.0, busy=False, error=None, samples=[])
+        farm.STATE.update(reading=None, detail={}, at=0.0, busy=False, error=None, samples=[])
         self.one = repository.Repository("project", self.repo)
 
     def settle(self, branch, state=mq.FAILED, **fields):

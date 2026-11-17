@@ -104,9 +104,56 @@
       svg("line", { class: "tick", x1: 32 + 20 * Math.cos(tick), y1: 32 + 20 * Math.sin(tick), x2: 32 + 31 * Math.cos(tick), y2: 32 + 31 * Math.sin(tick) }),
       svg("text", { x: 32, y: 36, "text-anchor": "middle" }, Math.round(100 * seconds / median) + "%"));
   };
+  // A half-circle gauge of a share from 0 to 100, with the part past its limit shaded and a tick at the limit: amber
+  // at or past the limit. caption is the line under the share.
+  QK.gauge = function (share, limit, caption) {
+    const svg = QK.svg, at = value => Math.PI + Math.max(0, Math.min(100, value)) / 100 * Math.PI * 0.9999;
+    const hasLimit = typeof limit === "number", over = hasLimit && share >= limit;
+    return svg("svg", { class: "gauge" + (over ? " over" : ""), viewBox: "0 0 150 92", role: "img",
+      "aria-label": Math.round(share) + "% " + caption },
+      svg("path", { class: "track", d: QK.arc(75, 78, 60, Math.PI, 2 * Math.PI - 0.0001) }),
+      hasLimit ? svg("path", { class: "beyond", d: QK.arc(75, 78, 60, at(limit), 2 * Math.PI - 0.0001) }) : null,
+      share > 0 ? svg("path", { class: "fill", d: QK.arc(75, 78, 60, Math.PI, at(Math.max(0.5, share))) }) : null,
+      hasLimit ? svg("line", { class: "tick", x1: 75 + 50 * Math.cos(at(limit)), y1: 78 + 50 * Math.sin(at(limit)),
+        x2: 75 + 70 * Math.cos(at(limit)), y2: 78 + 70 * Math.sin(at(limit)) }) : null,
+      svg("text", { class: "middle", x: 75, y: 70, "text-anchor": "middle" }, Math.round(share) + "%"),
+      svg("text", { class: "caption", x: 75, y: 89, "text-anchor": "middle" }, caption));
+  };
+  // Each name's hue, p1 to p5 in sorted order and "other" past five, so one name keeps its color across a page.
+  QK.hues = function (names) {
+    const hues = {};
+    [...new Set(names.filter(Boolean))].sort((a, b) => a.localeCompare(b)).forEach((name, index) => { hues[name] = index < 5 ? "p" + (index + 1) : "other"; });
+    return hues;
+  };
+  // A stacked area of layers over time: times is each column's time in seconds, layers [{name, values, hue}] bottom
+  // first, and ceiling the most the stack may reach, drawn as a dashed line. span is the seconds the x axis covers,
+  // ending at the last time; a gap longer than gap seconds between two columns is left empty.
+  QK.stack = function (times, layers, ceiling, span, gap) {
+    const svg = QK.svg, width = 1000, height = 150, pad = 18, end = times[times.length - 1], top = Math.max(ceiling || 0, 1);
+    const x = at => (1 - (end - at) / span) * width, y = value => height - pad - Math.min(top, value) / top * (height - pad - 6);
+    const runs = [];  // spans of columns with no gap longer than gap between them
+    times.forEach((at, index) => { if (!index || at - times[index - 1] > gap) runs.push([]); runs[runs.length - 1].push(index); });
+    const base = times.map(() => 0);
+    const shapes = layers.flatMap(layer => {
+      const low = base.slice(), high = base.map((value, index) => value + (layer.values[index] || 0));
+      high.forEach((value, index) => { base[index] = value; });
+      return runs.filter(run => run.length > 1).map(run => svg("polygon", { class: "layer " + layer.hue,
+        points: run.map(index => `${x(times[index]).toFixed(1)},${y(high[index]).toFixed(1)}`).concat(
+          run.slice().reverse().map(index => `${x(times[index]).toFixed(1)},${y(low[index]).toFixed(1)}`)).join(" ") },
+        svg("title", null, layer.name)));
+    });
+    return svg("svg", { class: "stack", viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "none", role: "img",
+      "aria-label": "Slots in use by project" },
+      shapes,
+      ceiling ? svg("line", { class: "ceiling", x1: 0, x2: width, y1: y(ceiling), y2: y(ceiling) }) : null,
+      svg("line", { class: "base", x1: 0, x2: width, y1: height - pad, y2: height - pad }));
+  };
   // A number tile: its label, its value, and the sparkline and caption beneath it when there is a trend to draw.
-  QK.number = function (label, value, chart, caption) {
-    return QK.h("div", { class: "number" }, QK.h("span", { class: "label" }, label), QK.h("b", null, value),
+  // change, when given, is a chip beside the value: {text, tone} with tone good, bad or flat.
+  QK.number = function (label, value, chart, caption, change) {
+    return QK.h("div", { class: "number" }, QK.h("span", { class: "label" }, label,
+      change ? QK.h("span", { class: "change " + (change.tone || "flat"), title: change.title || null }, change.text) : null),
+      QK.h("b", null, value),
       chart || null, chart && caption ? QK.h("span", { class: "sub" }, caption) : null);
   };
   // The queue's overview numbers, as Queue and Home show them, each with the last day's trend behind it.

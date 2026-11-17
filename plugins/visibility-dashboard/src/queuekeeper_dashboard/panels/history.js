@@ -1,28 +1,116 @@
 QK.panel("history", {
   render(element, data, context) {
-    const h = QK.h, today = data.today;
-    const number = (label, value) => QK.number(label, value);
+    const h = QK.h, svg = QK.svg, today = data.today, yesterday = data.yesterday || {};
+    // The change from yesterday to the same time of day, colored by whether it is good: more landed is good, more
+    // flaky tests or a slower gate is not, and rounds are neither.
+    function change(now, then, better, seconds) {
+      if (typeof now !== "number" || typeof then !== "number") return null;
+      const by = now - then, text = seconds ? QK.span(Math.abs(by)) : String(Math.abs(by));
+      if (!by) return { text: "same", tone: "flat", title: "The same as yesterday at this time" };
+      return { text: (by > 0 ? "▲ " : "▼ ") + text, tone: !better ? "flat" : (by > 0) === (better === "more") ? "good" : "bad",
+        title: (seconds ? QK.span(then) : then) + " yesterday at this time" };
+    }
+    const number = (label, value, key, better, seconds) => QK.number(label, value, null, null, change(today[key], yesterday[key], better, seconds));
     // What settled today, as a donut with a key: landed, failed, conflicted or removed from the queue.
     function settled() {
       const parts = [{ label: "Landed", value: today.landed, tone: "good" }, { label: "Failed", value: today.failed || 0, tone: "danger" },
         { label: "Conflict", value: today.conflict || 0, tone: "warning" }, { label: "Removed", value: today.removed || 0, tone: "muted" }];
       const total = parts.reduce((sum, part) => sum + part.value, 0);
+      const landed = change(today.landed, yesterday.landed, "more");
       return h("div", { class: "settled" }, QK.donut(parts, total, "settled"),
         h("ul", { class: "keys" }, parts.map(part => h("li", null, h("i", { class: part.tone }), h("span", null, part.label),
-          h("b", null, part.value), h("span", { class: "muted" }, total ? Math.round(100 * part.value / total) + "%" : "")))));
+          h("b", null, part.value), h("span", { class: "muted" }, total ? Math.round(100 * part.value / total) + "%" : ""))),
+          landed ? h("li", { class: "versus" }, h("span", { class: "sub" }, "Landed vs yesterday at this time"),
+            h("span", { class: "change " + landed.tone, title: landed.title }, landed.text)) : null));
     }
+    // Today's lane runs as bars on a lane per Mac: green passed, red failed, purple unmeasured; a bar opens its log.
+    function swimlanes() {
+      const runs = data.gates || [];
+      if (!runs.length) return h("p", { class: "sub" }, "No lane has finished today.");
+      const macs = [...new Set(runs.map(run => run.mac || "this Mac"))].sort((a, b) => (b === "this Mac") - (a === "this Mac") || a.localeCompare(b));
+      const first = Math.min(...runs.map(run => run.began)), last = Math.max(Date.now() / 1000, ...runs.map(run => run.ended));
+      const from = Math.floor(first / 3600) * 3600, to = Math.ceil(last / 3600) * 3600, hours = Math.max(1, (to - from) / 3600);
+      const W = 960, left = 170, lane = 34, H = macs.length * lane + 26, x = at => left + (at - from) / (to - from) * (W - left - 8);
+      const step = hours > 12 ? 3 : hours > 6 ? 2 : 1;
+      return h("div", { class: "chart-scroll" }, svg("svg", { class: "swim", viewBox: `0 0 ${W} ${H}`, role: "img",
+        "aria-label": QK.count(runs.length, "lane run") + " today on " + QK.count(macs.length, "Mac") },
+        Array.from({ length: hours + 1 }, (_, index) => from + index * 3600).map((at, index) => [
+          svg("line", { class: "grid", x1: x(at), x2: x(at), y1: 2, y2: H - 20 }),
+          index % step ? null : svg("text", { class: "axis", x: x(at), y: H - 5, "text-anchor": "middle" },
+            new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }))]),
+        macs.map((mac, row) => [svg("text", { class: "name", x: 0, y: row * lane + 21 }, mac.length > 22 ? mac.slice(0, 21) + "…" : mac, svg("title", null, mac)),
+          runs.filter(run => (run.mac || "this Mac") === mac).map(run => {
+            const tone = run.status === 0 ? "good" : run.status === 3 ? "unknown" : "danger";
+            const bar = svg("rect", { class: "run " + tone + (run.lane === "gate" ? "" : " minor"), x: x(run.began), y: row * lane + 8 + (run.lane === "gate" ? 0 : 5),
+              width: Math.max(2, x(run.ended) - x(run.began)), height: run.lane === "gate" ? 18 : 8, rx: 3 },
+              svg("title", null, run.lane + " " + (run.status === 0 ? "passed" : run.status === 3 ? "unmeasured" : "exited " + run.status)
+                + " · " + QK.span(run.ended - run.began) + " · ended " + QK.clock(run.ended)));
+            return run.log ? svg("a", { href: QK.href(context.repository, "logs", { name: run.log }) }, bar) : bar;
+          })])));
+    }
+    // Landings by day and hour, a darker cell for more.
+    function heatmap() {
+      const days = data.landings || [];
+      if (!days.length) return h("p", { class: "sub" }, "Nothing has landed yet.");
+      const most = Math.max(1, ...days.flatMap(day => day.hours)), cell = 22, left = 54, W = left + 24 * cell, H = days.length * cell + 18;
+      return svg("svg", { class: "heat", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Landings by day and hour" },
+        days.map((day, row) => [svg("text", { class: "axis", x: 0, y: row * cell + 15 },
+          new Date(day.day * 1000).toLocaleDateString([], { weekday: "short", day: "numeric" })),
+          day.hours.map((count, hour) => svg("rect", { class: "cell" + (count ? " level" + Math.min(4, Math.ceil(4 * count / most)) : ""),
+            x: left + hour * cell + 1, y: row * cell + 1, width: cell - 3, height: cell - 3, rx: 3 },
+            svg("title", null, QK.count(count, "landed", "landed") + ", " + String(hour).padStart(2, "0") + ":00")))]),
+        [0, 6, 12, 18, 23].map(hour => svg("text", { class: "axis", x: left + hour * cell + cell / 2, y: H - 2, "text-anchor": "middle" },
+          String(hour).padStart(2, "0"))));
+    }
+    // How long passing gates take, as bins with the median marked.
+    function durations() {
+      const runs = data.gateSeconds || [];
+      if (runs.length < 3) return h("p", { class: "sub" }, "Too few passing gate runs to chart yet.");
+      const sorted = runs.slice().sort((a, b) => a - b), median = sorted[Math.floor(sorted.length / 2)];
+      const minutes = sorted.map(seconds => seconds / 60), low = Math.floor(minutes[0]), high = Math.ceil(minutes[minutes.length - 1]) + 1;
+      const width = Math.max(1, Math.ceil((high - low) / 12)), bins = [];
+      for (let from = low; from < high; from += width) bins.push({ from, count: minutes.filter(value => value >= from && value < from + width).length });
+      const most = Math.max(...bins.map(bin => bin.count)), W = 480, H = 150, pad = 20, slot = (W - 8) / bins.length;
+      const x = value => 4 + (value - low) / (bins.length * width) * (W - 8), y = count => H - pad - count / most * (H - pad - 14);
+      return svg("svg", { class: "hist", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Passing gate durations, median " + QK.span(median) },
+        bins.map(bin => svg("rect", { class: "bin", x: x(bin.from) + 1, y: y(bin.count), width: Math.max(1, slot - 3), height: H - pad - y(bin.count), rx: 2 },
+          svg("title", null, QK.count(bin.count, "run") + " of " + bin.from + "–" + (bin.from + width) + " min"))),
+        svg("line", { class: "base", x1: 0, x2: W, y1: H - pad, y2: H - pad }),
+        svg("line", { class: "median", x1: x(median / 60), x2: x(median / 60), y1: 4, y2: H - pad }),
+        svg("text", { class: "axis strong", x: Math.min(W - 70, x(median / 60) + 4), y: 12 }, "median " + QK.span(median)),
+        bins.filter((_, index) => index % Math.ceil(bins.length / 6) === 0).map(bin =>
+          svg("text", { class: "axis", x: x(bin.from), y: H - 5 }, bin.from + "m")));
+    }
+    // The events as a timeline, an hour's heading before each hour's events.
+    function timeline() {
+      let hour = null;
+      return h("ul", { class: "timeline" }, data.events.flatMap(event => {
+        const at = typeof event.time === "number" ? new Date(event.time * 1000) : null;
+        const key = at ? at.toDateString() + at.getHours() : null, heading = key !== hour;
+        hour = key;
+        return [heading && at ? h("li", { class: "hour label" }, QK.clock(Math.floor(event.time / 3600) * 3600).replace(/:00$/, "")) : null,
+          h("li", { class: event.level },
+            h("span", { class: "muted mono" }, at ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : ""),
+            h("span", { class: "wrap" + (event.level === "plain" ? "" : " " + event.level) }, event.text))];
+      }));
+    }
+    const runs = data.gateSeconds || [];
     QK.fill(element,
-      h("div", { class: "card" }, h("h2", null, "Today"),
+      h("div", { class: "card" }, h("h2", null, "Today", h("span", { class: "muted" }, "Changes are against yesterday at this time")),
         h("div", { class: "today" }, settled(),
-          h("div", { class: "numbers" }, number("Flaky tests", today.flaky), number("Rounds", today.rounds),
-            number("Median gate", today.medianGateSeconds === null ? "–" : QK.span(today.medianGateSeconds))))),
+          h("div", { class: "numbers" }, number("Flaky tests", today.flaky, "flaky", "fewer"), number("Rounds", today.rounds, "rounds"),
+            number("Median gate", today.medianGateSeconds === null ? "–" : QK.span(today.medianGateSeconds), "medianGateSeconds", "fewer", true)))),
+      h("div", { class: "card" }, h("h2", null, "Lane runs", h("span", { class: "muted" }, "Today, by Mac")), swimlanes(),
+        (data.gates || []).length ? h("div", { class: "legend sub" }, h("span", null, h("i", { class: "dot good" }), "passed"),
+          h("span", null, h("i", { class: "dot danger" }), "failed"), h("span", null, h("i", { class: "dot unknown" }), "unmeasured"),
+          h("span", null, "Thin bars are lanes other than the gate. A bar opens its log.")) : null),
+      h("div", { class: "columns" },
+        h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "By day and hour")), heatmap()),
+        h("div", { class: "card" }, h("h2", null, "Gate duration", h("span", { class: "muted" }, runs.length ? "Last " + QK.count(runs.length, "passing run") : "")), durations())),
       data.recent.length ? h("div", { class: "card" }, h("h2", null, "Recent changes", h("span", { class: "muted" }, "Newest first")),
         h("ul", { class: "rows entries" }, data.recent.map(found => QK.entry(found, context)))) : null,
       h("div", { class: "card" }, h("h2", null, "Events", h("span", { class: "muted" },
         data.total > data.events.length ? "The last " + data.events.length + " of " + data.total : "Newest first")),
-        data.events.length ? h("ul", { class: "rows events" }, data.events.map(event => h("li", null,
-          h("span", { class: "muted mono" }, QK.clock(event.time)),
-          h("span", { class: "wrap " + (event.level === "plain" ? "" : event.level) }, event.text))))
-          : h("p", { class: "sub" }, "The journal is empty.")));
+        data.events.length ? timeline() : h("p", { class: "sub" }, "The journal is empty.")));
   },
 });

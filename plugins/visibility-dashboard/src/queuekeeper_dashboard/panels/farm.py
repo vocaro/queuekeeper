@@ -3,7 +3,9 @@ judges the Mac by: its CPU's busy share, its load, its memory pressure and wheth
 
 Reading another Mac takes a second or more over SSH for each question, so the readings are made in a thread of
 their own and kept: a request is answered at once with the last ones, and ones older than FRESH seconds start
-others."""
+others. The last hour's readings are kept too, as samples (see sample), so the tab can draw each Mac's load and
+the farm's slots by project over that hour; readings are made only while the tab is asked, so the hour may have
+gaps."""
 import json
 import os
 import subprocess
@@ -15,7 +17,8 @@ from .. import admission_ids
 
 TITLE, ORDER = "Farm", 20
 FRESH = 10.0
-STATE = {"reading": None, "detail": {}, "at": 0.0, "busy": False, "error": None}
+STATE = {"reading": None, "detail": {}, "at": 0.0, "busy": False, "error": None, "samples": []}
+KEPT = 3600.0  # the seconds of samples kept
 LOCK = threading.Lock()
 MEMORY = {1: "normal", 2: "warning", 4: "critical"}
 
@@ -71,6 +74,28 @@ def read_devices():
     """Read the active device provider, or an empty inventory without one."""
     return extensions.DEVICES.observations()
 
+def project_of(found):
+    """The project a holder's or waiter's work is for, by its origin, or None when it names none."""
+    origin = found.get("origin") if isinstance(found.get("origin"), dict) else {}
+    return origin.get("repository") if isinstance(origin.get("repository"), str) and origin.get("repository") else None
+
+
+def sample(reading, detail, at):
+    """What one reading says for the last hour's charts: each read Mac's CPU busy share and load by its role, and
+    the slots held across the farm by project, work that names none counted as "other", and how many slots the
+    read Macs have."""
+    macs, projects = {}, {}
+    for found in (reading or {}).get("hosts", []):
+        if found.get("state") != "observed": continue
+        load = (detail or {}).get(found.get("role")) or {}
+        macs[found.get("role")] = {"cpuBusy": load.get("cpuBusy"), "load": load.get("load")}
+        for holder in found.get("holders") or []:
+            name = project_of(holder) or "other"
+            projects[name] = projects.get(name, 0) + len(holder.get("slots") or [])
+    most = sum(len(found.get("slots") or []) for found in (reading or {}).get("hosts", []) if found.get("state") == "observed")
+    return {"at": round(at, 1), "macs": macs, "projects": projects, "most": most}
+
+
 def refresh():
     try: reading, error = read(), None
     except Exception as failure:  # noqa: BLE001
@@ -83,7 +108,10 @@ def refresh():
         STATE["devices"] = devices
         if reading is not None: STATE["reading"] = reading
         if detail is not None: STATE["detail"] = detail
-        STATE.update(at=time.time(), busy=False, error=error)
+        now = time.time()
+        if reading is not None:
+            STATE["samples"] = [kept for kept in STATE["samples"] if kept["at"] > now - KEPT] + [sample(reading, STATE["detail"], now)]
+        STATE.update(at=now, busy=False, error=error)
 
 
 def current():
@@ -101,14 +129,18 @@ def host(found, names=None):
     slots = found.get("slots") or []
     limits = found.get("limits") or {}
     with LOCK: detail = STATE["detail"].get(found.get("role"))
+    projects = {holder.get("identity"): project_of(holder) for holder in found.get("holders") or []}
     return {"name": found.get("name"), "role": found.get("role"), "state": found.get("state"),
             "reasons": found.get("reasons") or [], "load": detail,
+            # Each slot in order: whether it is held, the project of the work holding it, and whether it is guaranteed.
+            "cells": [{"held": bool(slot.get("holder")), "project": projects.get(slot.get("holder")),
+                       "guaranteed": bool(slot.get("guaranteed"))} for slot in slots],
             "slots": {"used": sum(1 for slot in slots if slot.get("holder")), "guaranteed": limits.get("slots"),
                       "most": limits.get("slotsMax") or len(slots)},
-            "holders": [{"id": names.get(holder.get("identity"), holder.get("identity")), "label": holder.get("label"), "heldSeconds": holder.get("heldSeconds"),
+            "holders": [{"id": names.get(holder.get("identity"), holder.get("identity")), "label": holder.get("label"), "heldSeconds": holder.get("heldSeconds"), "project": project_of(holder),
                          "slots": len(holder.get("slots") or []), "wholeHost": bool(holder.get("wholeHost")),
                          "exclusive": bool(holder.get("exclusive"))} for holder in found.get("holders") or []],
-            "waiters": [{"id": names.get(waiter.get("request") or waiter.get("identity"), waiter.get("request") or waiter.get("identity")), "label": waiter.get("label"), "waitedSeconds": waiter.get("waitedSeconds"),
+            "waiters": [{"id": names.get(waiter.get("request") or waiter.get("identity"), waiter.get("request") or waiter.get("identity")), "label": waiter.get("label"), "waitedSeconds": waiter.get("waitedSeconds"), "project": project_of(waiter),
                          "reason": waiter.get("reason")} for waiter in found.get("waiters") or []]}
 
 
@@ -135,8 +167,8 @@ def admission(reading, role, identifier, names=None):
 def data(repository, query):
     reading, at, error = current()
     names = admission_ids.names_for(reading)
-    with LOCK: devices = STATE.get("devices")
-    return {"deviceRecord": devices, "readAt": at if reading else None, "error": error,
+    with LOCK: devices, samples = STATE.get("devices"), list(STATE["samples"])
+    return {"deviceRecord": devices, "samples": samples, "readAt": at if reading else None, "error": error,
             **({"admission": admission(reading, query.get("host"), query["admission"], names)} if query.get("admission") else {}),
             "hosts": [host(found, names) for found in (reading or {}).get("hosts", [])] if reading else None}
 

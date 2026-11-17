@@ -119,18 +119,24 @@ PANELS = {
              "load": {"cpuBusy": 38, "busyLimit": 85, "load": 6.4, "memory": "normal", "screen": "unlocked", "error": None,
                       "hardware": {"model": "Mac15,9", "kind": "laptop"}},
              "slots": {"used": 1, "guaranteed": 1, "most": 4},
+             "cells": [{"held": True, "project": "orbit-game", "guaranteed": True},
+                       {"held": False, "project": None, "guaranteed": False}, {"held": False, "project": None, "guaranteed": False},
+                       {"held": False, "project": None, "guaranteed": False}],
              "holders": [
-                 {"id": "qk4156-orbit-game-gate", "label": "orbit-game · gate", "heldSeconds": 431,
+                 {"id": "qk4156-orbit-game-gate", "label": "orbit-game · gate", "heldSeconds": 431, "project": "orbit-game",
                   "slots": 1, "wholeHost": False, "exclusive": False}],
              "waiters": []},
             {"name": "studio.local", "role": "second", "state": "observed", "reasons": [],
              "load": {"cpuBusy": 90, "busyLimit": 85, "load": 14.2, "memory": "normal", "screen": "unlocked", "error": None,
                       "hardware": {"model": "Mac14,13", "kind": "desktop"}},
              "slots": {"used": 2, "guaranteed": 2, "most": 4},
+             "cells": [{"held": True, "project": "lumen-ios", "guaranteed": True}, {"held": True, "project": "lumen-ios", "guaranteed": True},
+                       {"held": False, "project": None, "guaranteed": False}, {"held": False, "project": None, "guaranteed": False}],
              "holders": [
-                 {"id": "qk8237-lumen-ios-gate", "label": "lumen-ios · gate lane", "heldSeconds": 252, "slots": 2, "wholeHost": True, "exclusive": False}],
+                 {"id": "qk8237-lumen-ios-gate", "label": "lumen-ios · gate lane", "heldSeconds": 252, "project": "lumen-ios",
+                  "slots": 2, "wholeHost": True, "exclusive": False}],
              "waiters": [
-                 {"id": "qk1948-fieldnotes-sync-tests", "label": "fieldnotes · simulator tests", "waitedSeconds": 37,
+                 {"id": "qk1948-fieldnotes-sync-tests", "label": "fieldnotes · simulator tests", "waitedSeconds": 37, "project": "fieldnotes",
                   "reason": "The Mac's CPU is near its busy limit."}]},
         ],
     },
@@ -155,6 +161,21 @@ gate: 212 of 340 tests passed, 0 failed
 """
 PANELS["queue"]["overview"] = PANELS.pop("home")
 PANELS["history"]["recent"] = PANELS["queue"]["recent"]
+# The farm's last hour, a reading every 10 seconds: each Mac's load drifting, and the slots by project.
+PANELS["farm"]["samples"] = [
+    {"at": ago(3600 - 10 * step), "most": 8,
+     "macs": {"here": {"cpuBusy": 38, "load": round(5 + 2 * ((step * 7) % 11) / 11, 1)},
+              "second": {"cpuBusy": 90, "load": round(11 + 4 * ((step * 5) % 13) / 13, 1)}},
+     "projects": {"orbit-game": 1 + (step // 90) % 2, "lumen-ios": 2 if step > 120 else (step // 40) % 3, "fieldnotes": 1 if 150 < step < 260 else 0}}
+    for step in range(361)]
+# Today's lane runs on each Mac, landings over the last week, and the last passing gates' seconds.
+PANELS["history"].update(
+    yesterday={"landed": 9, "cameBack": 1, "failed": 1, "conflict": 0, "removed": 0, "flaky": 1, "rounds": 7, "medianGateSeconds": 281},
+    gates=[{"began": ago(3600 * back + 260), "ended": ago(3600 * back), "lane": "gate", "status": 3 if back == 5 else 0,
+            "mac": None if back % 2 else "studio.local", "round": None, "log": None} for back in (7, 6, 5, 4, 3, 2, 1)],
+    landings=[{"day": time.mktime(time.localtime(NOW - 86400 * back)[:3] + (0, 0, 0, 0, 0, -1)),
+               "hours": [((hour * 7 + back * 3) % 5 if 8 <= hour <= 19 else 0) // 2 for hour in range(24)]} for back in range(6, -1, -1)],
+    gateSeconds=[230 + (step * 37) % 90 for step in range(40)])
 PANELS["farm"]["deviceRecord"] = {"devices": [
     {"name": "iPhone", "kind": "iphone", "model": "iPhone 17 Pro", "state": "held", "owner": "release-tests",
      "purpose": "Release checks",

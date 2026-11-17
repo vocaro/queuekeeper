@@ -139,6 +139,77 @@ h3.label { margin-top: 12px; }
 .device-icon .badge.good { background: var(--good); } .device-icon .badge.bad { background: var(--bad); }
 .device-icon .badge.warning { background: var(--mark); color: #141821; } .device-icon .badge.reserved { background: var(--accent); }
 .rows.pairs.devices > li { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
+/* The Farm tab's Mac cards: slots as cells in their project's hue, a CPU gauge, the load's last hour and chips.
+   Projects take p1 to p5 in name order (QK.hues); past five, and work naming none, are "other". */
+.machead .macname { flex: 1; min-width: 0; }
+.machead .slotcount { font-size: var(--text-small); white-space: nowrap; }
+.slots { display: flex; gap: 5px; margin: 4px 0 8px; }
+.slot { flex: 1; height: 26px; border-radius: 6px; border: 1.5px dashed var(--line); position: relative; }
+.slot.held { border: 0; background: var(--muted); }
+.slot.always::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: -6px; height: 2px; border-radius: 1px; background: var(--muted); opacity: 0.6; }
+.slot.p1, .dot.p1 { background: var(--p1); } .slot.p2, .dot.p2 { background: var(--p2); } .slot.p3, .dot.p3 { background: var(--p3); }
+.slot.p4, .dot.p4 { background: var(--p4); } .slot.p5, .dot.p5 { background: var(--p5); }
+.dot.good { background: var(--good); } .dot.unknown { background: var(--note); }
+.macgrid { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 14px; align-items: center; margin-top: 12px; }
+.macside { min-width: 0; }
+.macside .spark { height: 40px; }
+.signals { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.pill.flag { background: var(--warn-bg); color: var(--warn); }
+.spark.warning { color: var(--mark); }
+.gauge { display: block; width: 150px; height: 92px; }
+.gauge .track { fill: none; stroke: var(--soft); stroke-width: 12; }
+.gauge .beyond { fill: none; stroke: var(--bad-bg); stroke-width: 12; }
+.gauge .fill { fill: none; stroke: var(--good); stroke-width: 12; } .gauge.over .fill { stroke: var(--mark); }
+.gauge .tick { stroke: var(--text); stroke-width: 2; }
+.gauge .middle { fill: var(--text); font-size: 22px; font-weight: 600; } .gauge.over .middle { fill: var(--warn); }
+.gauge .caption { fill: var(--muted); font-size: 10.5px; }
+.rows.pairs.work > li { grid-template-columns: 10px minmax(0, 1fr) auto; }
+.rows.work .dot { width: 9px; height: 9px; }
+.rows.work .dot.other { background: var(--muted); }
+.work-why { display: block; }
+.stack { display: block; width: 100%; height: 150px; }
+.stack .layer { fill: var(--muted); fill-opacity: 0.85; stroke: none; }
+.stack .layer.p1 { fill: var(--p1); } .stack .layer.p2 { fill: var(--p2); } .stack .layer.p3 { fill: var(--p3); }
+.stack .layer.p4 { fill: var(--p4); } .stack .layer.p5 { fill: var(--p5); }
+.stack .ceiling { stroke: var(--muted); stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
+.stack .base { stroke: var(--line); vector-effect: non-scaling-stroke; }
+.axis { display: flex; justify-content: space-between; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+.legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.legend .dot { width: 9px; height: 9px; }
+/* The History tab: a change chip beside a number, lane runs per Mac, landings by day and hour, gate durations and
+   the events as a timeline. */
+.change { margin-left: 8px; font-size: var(--text-micro); font-weight: 600; padding: 0 6px; border-radius: 5px; letter-spacing: 0;
+  text-transform: none; background: var(--soft); color: var(--muted); white-space: nowrap; }
+.change.good { background: var(--good-bg); color: var(--good); } .change.bad { background: var(--bad-bg); color: var(--bad); }
+.keys li.versus { grid-template-columns: minmax(0, 1fr) auto; margin-top: 4px; }
+.keys li.versus .change { margin: 0; }
+.chart-scroll { overflow-x: auto; }
+.swim { display: block; width: 100%; min-width: 600px; height: auto; }
+.swim .grid { stroke: var(--line); }
+.swim text, .heat text, .hist text { fill: var(--muted); font-size: 11px; }
+.swim text.name { fill: var(--text); font-size: 12px; font-weight: 600; }
+.swim .run { fill: var(--muted); } .swim .run.good { fill: var(--good); } .swim .run.danger { fill: var(--bad); } .swim .run.unknown { fill: var(--note); }
+.swim .run.minor { fill-opacity: 0.6; }
+.swim a:hover .run, .swim a:focus-visible .run { stroke: var(--text); stroke-width: 1.5; }
+.heat { display: block; width: 100%; height: auto; }
+.heat .cell { fill: var(--soft); }
+.heat .cell.level1 { fill: var(--good); fill-opacity: 0.25; } .heat .cell.level2 { fill: var(--good); fill-opacity: 0.5; }
+.heat .cell.level3 { fill: var(--good); fill-opacity: 0.75; } .heat .cell.level4 { fill: var(--good); }
+.hist { display: block; width: 100%; height: auto; }
+.hist .bin { fill: var(--accent); fill-opacity: 0.7; }
+.hist .base { stroke: var(--line); } .hist .median { stroke: var(--text); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.hist text.strong { fill: var(--text); font-weight: 600; }
+.timeline { list-style: none; margin: 0; padding: 0 0 0 18px; position: relative; }
+.timeline::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 2px; background: var(--line); }
+.timeline li { position: relative; display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 10px; padding: 4px 0; font-size: var(--text-small); }
+.timeline li::before { content: ""; position: absolute; left: -17px; top: 10px; width: 10px; height: 10px; border-radius: 50%; background: var(--card); border: 2px solid var(--muted); box-sizing: border-box; }
+.timeline li.success::before { border-color: var(--good); background: var(--good); }
+.timeline li.danger::before { border-color: var(--bad); background: var(--bad); }
+.timeline li.warning::before { border-color: var(--mark); }
+.timeline li.plain > span:last-child { color: var(--muted); }
+.timeline li.hour { display: block; padding-top: 10px; }
+.timeline li.hour::before { display: none; }
 .credit { margin: 8px 2px 0; }
 .pill.failed, .pill.conflict { background: var(--bad-bg); color: var(--bad); }
 .pill.queued::before { content: "○ "; } .pill.testing::before { content: "◐ "; } .pill.passed::before { content: "● "; }
@@ -194,6 +265,8 @@ pre.log { margin: 0; background: var(--soft); border-radius: 8px; padding: 10px 
   .rows.entries > li > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
   .card > h2 { flex-wrap: wrap; overflow-wrap: anywhere; }
   .rows.events > li { grid-template-columns: minmax(0, 1fr); }
+  .timeline li { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .macgrid { grid-template-columns: 1fr; justify-items: start; }
   .rows.repositories { grid-template-columns: minmax(0, 1fr) auto; }
   .rows.lines > li { grid-template-columns: minmax(0, 1fr) auto; }
   .rows.lines > li > a > :first-child { grid-column: 1 / -1; }

@@ -30,31 +30,45 @@ QK.panel("farm", {
               [h("dt", { class: "muted" }, label), h("dd", { class: "wrap" }, value)]))),
         ]);
     }
+    const samples = data.samples || [];
+    // One hue per project across the page, from the slots held now and over the last hour.
+    const hues = QK.hues([...(data.hosts || []).flatMap(found => [...(found.cells || []).map(cell => cell.project),
+      ...found.holders.map(one => one.project), ...found.waiters.map(one => one.project)]),
+      ...samples.flatMap(one => Object.keys(one.projects || {}).filter(name => name !== "other"))]);
+    const hue = project => project ? hues[project] || "other" : "other";
     function work(one, host, running) {
-      const content = [h("span", { class: "work-label" },
+      const content = [h("i", { class: "dot " + hue(one.project), title: one.project || "No project recorded" }),
+        h("span", { class: "work-label" },
         h("span", { class: "ellipsis work-title" }, one.label || "Unnamed work"),
-        h("span", { class: "sub mono wrap work-id" }, one.id || "ID unavailable")),
+        h("span", { class: "sub mono wrap work-id" }, [one.project, one.id || "ID unavailable"].filter(Boolean).join(" · ")),
+        !running && one.reason ? h("span", { class: "sub wrap warning work-why" }, "Waiting: " + one.reason) : null),
         h("span", { class: "muted" }, typeof (running ? one.heldSeconds : one.waitedSeconds) === "number"
           ? QK.span(running ? one.heldSeconds : one.waitedSeconds) : "–")];
       return h("li", null, one.id ? h("a", { class: "row", href: QK.href(context.repository, "farm", {
         host: host.role, admission: one.id }) }, ...content) : content);
     }
-    // What admission judges the Mac by. A share at or above its limit opens no further slot.
-    function load(found) {
+    // What admission judges the Mac by: its CPU's busy share as a gauge with its limit, a share at or above which
+    // opens no further slot; its load over the last hour; and load, memory and screen as chips, amber when they hold
+    // work back.
+    function load(found, role) {
       if (!found) return null;
       if (found.error) return h("p", { class: "sub wrap" }, "Its load could not be read: " + found.error);
       const busy = typeof found.cpuBusy === "number", over = busy && typeof found.busyLimit === "number"
         && found.cpuBusy >= found.busyLimit;
-      const facts = [typeof found.load === "number" ? "load " + found.load.toFixed(1) : null,
-        found.memory ? "memory " + found.memory : null].filter(Boolean).join(" · ");
+      const loads = samples.map(one => (one.macs[role] || {}).load).filter(value => typeof value === "number");
       return [
-        busy ? h("div", { class: "bar" }, h("i", { class: over ? "over" : null, width: Math.min(100, Math.round(found.cpuBusy)) + "%" })) : null,
-        h("div", { class: "sub" + (over || found.memory === "critical" ? " warning" : "") },
-          (busy ? "CPU " + Math.round(found.cpuBusy) + "% busy" + (typeof found.busyLimit === "number"
-            ? ", limit " + Math.round(found.busyLimit) + "%" : "") : "CPU busy share not read") + (facts ? " · " + facts : "")),
-        h("div", { class: "sub" + (found.screen === "locked" ? " warning" : "") },
-          found.screen === "locked" ? "Screen locked: lanes that need an unlocked screen wait"
-            : found.screen === "unlocked" ? "Screen unlocked" : "Screen state not read"),
+        h("div", { class: "macgrid" },
+          busy ? QK.gauge(found.cpuBusy, found.busyLimit, "CPU busy" + (typeof found.busyLimit === "number"
+            ? " · limit " + Math.round(found.busyLimit) + "%" : "")) : h("p", { class: "sub" }, "CPU busy share not read"),
+          h("div", { class: "macside" },
+            loads.length > 1 ? [h("span", { class: "label" }, "Load, last " + QK.span(samples[samples.length - 1].at - samples[0].at)),
+              QK.spark(loads, { tone: over ? "warning" : null, title: "Load average at each reading, oldest first" })] : null,
+            h("div", { class: "signals" },
+              typeof found.load === "number" ? h("span", { class: "pill" + (over ? " flag" : "") }, "load " + found.load.toFixed(1)) : null,
+              found.memory ? h("span", { class: "pill" + (found.memory === "normal" ? "" : " flag") }, "memory " + found.memory) : null,
+              h("span", { class: "pill" + (found.screen === "locked" ? " flag" : ""), title: found.screen === "locked"
+                ? "Lanes that need an unlocked screen wait" : null },
+                found.screen === "locked" ? "screen locked" : found.screen === "unlocked" ? "screen unlocked" : "screen not read")))),
         found.health ? h("p", { class: "sub wrap warning" }, found.health) : null,
       ];
     }
@@ -71,24 +85,46 @@ QK.panel("farm", {
       const over = typeof load.cpuBusy === "number" && typeof load.busyLimit === "number" && load.cpuBusy >= load.busyLimit;
       return over || ["warning", "critical"].includes(load.memory) || load.health || load.screen === "locked" ? "warning" : "good";
     }
+    // Each slot as a cell, filled in its project's hue when held and underlined when guaranteed.
+    function cells(found) {
+      return h("div", { class: "slots" }, (found.cells || []).map(cell => h("span", {
+        class: "slot" + (cell.held ? " held " + hue(cell.project) : "") + (cell.guaranteed ? " always" : ""),
+        title: (cell.held ? (cell.project || "Work with no project") + " holds this slot" : "Free")
+          + (cell.guaranteed ? ", always open" : "") })));
+    }
     function host(found) {
       const slots = found.slots, read = found.state === "observed";
       const hardware = (found.load || {}).hardware || {}, kinds = { laptop: "laptop", desktop: "desktop" };
-      return h("div", { class: "card" },
+      return h("div", { class: "card mac" },
         h("div", { class: "machead" }, icon(hardware.kind, macBadge(found), (kinds[hardware.kind] || "Mac") + ", " + macBadge(found)),
-          h("div", null, h("h2", null, found.name, read ? null : h("span", { class: "warning" }, found.state)),
-            hardware.model ? h("span", { class: "sub mono" }, hardware.model) : null)),
-        read ? [
-          h("div", { class: "bar" }, h("i", { width: Math.round(100 * slots.used / Math.max(1, slots.most)) + "%" })),
-          h("div", { class: "sub" }, slots.used + " of " + slots.most + " slots in use"
-            + (slots.guaranteed ? ", " + slots.guaranteed + " always open" : "")),
-        ] : found.reasons.map(reason => h("p", { class: "sub wrap" }, reason)),
-        load(found.load),
+          h("div", { class: "macname" }, h("h2", null, found.name, read ? null : h("span", { class: "warning" }, found.state)),
+            hardware.model ? h("span", { class: "sub mono" }, hardware.model) : null),
+          read ? h("span", { class: "muted slotcount" }, slots.used + " of " + slots.most + " slots") : null),
+        read ? [cells(found), h("div", { class: "sub" }, slots.guaranteed ? slots.guaranteed + " always open, underlined" : null)]
+          : found.reasons.map(reason => h("p", { class: "sub wrap" }, reason)),
+        load(found.load, found.role),
         found.holders.length ? [h("h3", { class: "label" }, "Running"), h("ul", { class: "rows pairs work" },
           found.holders.map(one => work(one, found, true)))] : null,
         found.waiters.length ? [h("h3", { class: "label" }, "Waiting"), h("ul", { class: "rows pairs work" },
           found.waiters.map(one => work(one, found, false)))] : null,
         read && !found.holders.length && !found.waiters.length ? h("p", { class: "sub" }, "Nothing is running or waiting.") : null);
+    }
+    // The farm's slots in use by project over the last hour, against how many slots the read Macs have.
+    function usage() {
+      if (samples.length < 2) return null;
+      const times = samples.map(one => one.at), names = [...new Set(samples.flatMap(one => Object.keys(one.projects || {})))]
+        .sort((a, b) => (a === "other") - (b === "other") || a.localeCompare(b));
+      const most = Math.max(...samples.map(one => one.most || 0));
+      const layers = names.map(name => ({ name, hue: name === "other" ? "other" : hue(name),
+        values: samples.map(one => (one.projects || {})[name] || 0) }));
+      const covered = times[times.length - 1] - times[0];
+      return h("div", { class: "card" }, h("h2", null, "Slots in use", h("span", { class: "muted" },
+          "Last " + QK.span(covered) + " · " + QK.count(most, "slot") + " across the farm")),
+        QK.stack(times, layers, most, Math.max(covered, 60), 120),
+        h("div", { class: "axis sub" }, h("span", null, QK.span(covered) + " ago"), h("span", null, "now")),
+        names.length ? h("div", { class: "legend sub" }, layers.map(layer => h("span", null, h("i", { class: "dot " + layer.hue }),
+          layer.name === "other" ? "No project recorded" : layer.name))) : h("p", { class: "sub" }, "No slot was held."),
+        h("p", { class: "sub" }, "Read while this page is open, so a stretch with it closed is left blank."));
     }
     const record = data.deviceRecord;
     const connectionNames = { connected: "Connected", disconnected: "Disconnected", connecting: "Connecting",
@@ -98,6 +134,7 @@ QK.panel("farm", {
     QK.fill(element, data.hosts ? h("div", { class: "columns" }, data.hosts.map(host))
         : h("div", { class: "card" }, h("h2", null, "Macs"),
           h("p", { class: data.error ? "danger wrap" : "muted" }, data.error || "Reading the Macs…")),
+      usage(),
       h("div", { class: "card" }, h("h2", null, "iOS devices",
         record && record.checkedAt ? h("span", { class: "muted" }, "Checked " + QK.ago(record.checkedAt)) : null),
         h("p", { class: "sub" }, "Connection status on this Mac and reservations for physical devices."),

@@ -344,15 +344,74 @@ class Panels(Fixture):
         found = farm.data(self.one, {})
         here, second = found["hosts"]
         self.assertEqual(here["slots"], {"used": 2, "guaranteed": 3, "most": 7})
-        self.assertEqual(here["holders"], [{"id": "holder-1", "label": "project gate", "heldSeconds": 90.0, "slots": 1, "wholeHost": True,
-                                           "exclusive": False}])
-        self.assertEqual(here["waiters"], [{"id": "request-1", "label": "other unit", "waitedSeconds": 12.5, "reason": "every slot is busy"}])
+        self.assertEqual(here["holders"], [{"id": "holder-1", "label": "project gate", "heldSeconds": 90.0, "project": None, "slots": 1,
+                                           "wholeHost": True, "exclusive": False}])
+        self.assertEqual(here["waiters"], [{"id": "request-1", "label": "other unit", "waitedSeconds": 12.5, "project": None,
+                                           "reason": "every slot is busy"}])
         self.assertEqual((second["state"], second["reasons"]), ("unknown", ["ssh could not reach build"]))
         self.assertEqual((here["load"], second["load"]), (LOADS["here"], None))
         self.assertEqual(farm.summary(self.one), {
             "title": "Farm", "level": "warning",
             "text": "1 Mac read, 2 of 7 slots in use, 1 waiting; the screen of this Mac (desk) is locked; "
                     "build could not be read"})
+
+    def test_each_slot_names_the_project_holding_it_and_the_last_hour_is_kept_as_samples(self):
+        reading = {"hosts": [
+            {"name": "this Mac", "role": "here", "state": "observed", "limits": {"slots": 2, "slotsMax": 3},
+             "slots": [{"slot": 0, "guaranteed": True, "holder": "a"}, {"slot": 1, "guaranteed": True, "holder": "b"},
+                       {"slot": 2, "guaranteed": False, "holder": None}],
+             "holders": [{"identity": "a", "slots": [0], "origin": {"repository": "EPUBLib"}},
+                         {"identity": "b", "slots": [1], "origin": None}],
+             "waiters": [{"identity": "w", "origin": {"repository": "queuekeeper"}}]},
+            {"name": "build", "role": "build", "state": "unknown", "slots": [{"slot": 0, "holder": "z"}]}]}
+        here = farm.host(reading["hosts"][0])
+        self.assertEqual(here["cells"], [{"held": True, "project": "EPUBLib", "guaranteed": True},
+                                         {"held": True, "project": None, "guaranteed": True},
+                                         {"held": False, "project": None, "guaranteed": False}])
+        self.assertEqual(([one["project"] for one in here["holders"]], here["waiters"][0]["project"]), (["EPUBLib", None], "queuekeeper"))
+        # A Mac not read counts neither its slots nor its load; work naming no project is "other".
+        self.assertEqual(farm.sample(reading, {"here": {"cpuBusy": 40.0, "load": 3.5}}, 100.04),
+                         {"at": 100.0, "macs": {"here": {"cpuBusy": 40.0, "load": 3.5}}, "projects": {"EPUBLib": 1, "other": 1}, "most": 3})
+        # A reading adds a sample, and one older than the hour kept goes.
+        with farm.LOCK: farm.STATE["samples"] = [{"at": time.time() - farm.KEPT - 1}, {"at": time.time() - 60}]
+        self.read_farm()
+        samples = farm.data(self.one, {})["samples"]
+        self.assertEqual(len(samples), 2)
+        self.assertEqual((samples[-1]["macs"], samples[-1]["most"]), ({"here": {"cpuBusy": 68.0, "load": 3.2}}, 3))
+        # A reading that fails adds none.
+        farm.STATE["at"] = 0.0
+        with patch.object(farm, "read", side_effect=RuntimeError("no slot directory")):
+            self.read_farm()
+        self.assertEqual(len(farm.data(self.one, {})["samples"]), 2)
+
+    def test_history_compares_with_yesterday_and_charts_lane_runs_landings_and_gate_times(self):
+        now = time.mktime((2026, 11, 16, 15, 0, 0, 0, 0, -1))
+        today, yesterday = history.midnight(now), history.midnight(now) - 86400 + 3600
+        journal = [{"kind": "entry.queued", "time": today - 3 * 86400},
+                   {"kind": "entry.landed", "time": yesterday + 3600},  # 02:00 yesterday
+                   {"kind": "entry.landed", "time": yesterday + 20 * 3600},  # 21:00 yesterday, after this time of day
+                   {"kind": "test.flaky", "time": yesterday + 3600},
+                   {"kind": "gate.ended", "lane": "gate", "status": 0, "seconds": 600, "time": yesterday + 7200},
+                   {"kind": "entry.landed", "time": today + 9 * 3600 + 60},
+                   {"kind": "gate.ended", "lane": "gate", "status": 0, "seconds": 900, "time": today + 3600, "round": "r1",
+                    "mac": "the second Mac (build-host)", "log": "/x/logs/r1-gate.log"},
+                   {"kind": "gate.ended", "lane": "gate", "status": 3, "seconds": 300, "time": today + 7200, "mac": "this Mac (desk)"},
+                   {"kind": "gate.ended", "lane": "spelling", "status": 0, "time": today + 7300}]
+        self.assertEqual((history.totals(journal, now)["landed"], history.totals(journal, now - 86400)["landed"],
+                          history.totals(journal, now - 86400)["flaky"]), (1, 1, 1))
+        with patch.object(history.farm, "read", return_value=[{"ssh": "build-host", "name": "studio"}]):
+            runs = history.gate_runs(journal, now)
+        self.assertEqual(runs, [
+            {"began": today + 2700, "ended": today + 3600, "lane": "gate", "status": 0, "mac": "studio", "round": "r1", "log": "r1-gate.log"},
+            {"began": today + 6900, "ended": today + 7200, "lane": "gate", "status": 3, "mac": None, "round": None, "log": None}])
+        days = history.landings(journal, now)
+        # The journal began three days ago, so the days before it are left out.
+        self.assertEqual([day["day"] for day in days], [history.midnight(today - back * 86400 + 3600) for back in (3, 2, 1, 0)])
+        self.assertEqual((days[-2]["hours"][2], days[-2]["hours"][21], days[-1]["hours"][9], sum(days[0]["hours"])), (1, 1, 1, 0))
+        self.assertEqual(history.gate_seconds(journal), [600, 900])
+        self.assertEqual([history.mac_name(said, {"build-host": "studio"}) for said in
+                          ("this Mac (desk)", "the second Mac (build-host)", "studio", "", None)], [None, "studio", "studio", None, None])
+        self.assertEqual(set(history.data(self.one, {})) >= {"today", "yesterday", "gates", "landings", "gateSeconds"}, True)
 
     def test_a_mac_short_of_memory_makes_the_farms_line_a_warning(self):
         self.read_farm()
