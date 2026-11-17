@@ -1,5 +1,6 @@
 """The History tab: the day's totals beside yesterday's to the same hour, today's gate runs on each Mac, when work
-has landed by day and hour, how long passing gates take, and the journal's last events, newest first."""
+has landed by day and hour, how long passing gates take, the last events that need attention, and the journal's
+last events, newest first."""
 import os
 import re
 import statistics
@@ -15,9 +16,17 @@ LEVELS = {"entry.failed": "danger", "entry.conflict": "danger", "queue.held": "w
 STAMP = len("2026-11-12 09:30:19 ")
 
 
+# The kinds that need someone's attention, which the tab lists apart from the rest, and how many of the last.
+ATTENTION, NOTED = {kind for kind, level in LEVELS.items() if level in ("danger", "warning")}, 10
+
+
 def shown(event):
-    return {"time": event.get("time"), "kind": event["kind"], "text": events.words(event)[STAMP:],
-            "level": LEVELS.get(event["kind"], "plain")}
+    """An event as the page lists it, with the entry it is of and the name of the log it wrote, when it has them."""
+    found = {"time": event.get("time"), "kind": event["kind"], "text": events.words(event)[STAMP:],
+             "level": LEVELS.get(event["kind"], "plain")}
+    if isinstance(event.get("entry"), str): found["entry"] = event["entry"]
+    if isinstance(event.get("log"), str): found["log"] = os.path.basename(event["log"])
+    return found
 
 
 def midnight(now):
@@ -97,6 +106,8 @@ def data(repository, query):
             # Yesterday from its midnight to this time of day, for the change beside each of today's totals.
             "yesterday": totals(journal, now - 86400), "gates": gate_runs(journal, now), "landings": landings(journal, now),
             "gateSeconds": gate_seconds(journal), "events": [shown(event) for event in reversed(found[-MOST:])],
+            # The last events that need attention, from the whole journal, newest first.
+            "attention": [shown(event) for event in reversed([event for event in journal if event["kind"] in ATTENTION][-NOTED:])],
             "total": len(found)}
 
 

@@ -32,13 +32,15 @@ def read():
 def load_of(pressure, screen, where="this Mac"):
     """What a Mac's pressure answer (offload_host.pressure) and its screen reading (offload_host.screen) say, as
     the page shows it. What either lacks is None. health is the warning of a Mac short of memory that the pressure
-    answer's health reading gives (host_health.warnings), where naming the Mac, or None."""
+    answer's health reading gives (host_health.warnings), where naming the Mac, or None, and shortage the same
+    reading's parts for the page to lay out (host_health.shortage)."""
     pressure, screen = (found if isinstance(found, dict) else {} for found in (pressure, screen))
     number = lambda value: value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
     return {"cpuBusy": number(pressure.get("cpuBusy")), "busyLimit": number(pressure.get("busyLimit")),
             "load": number(pressure.get("load")), "memory": MEMORY.get(pressure.get("memory")),
             "screen": screen.get("state") if screen.get("state") in ("locked", "unlocked") else "unknown",
             "error": pressure.get("error"), "health": (host_health.warnings(pressure.get("health"), where) or [None])[0],
+            "shortage": host_health.shortage(pressure.get("health")),
             "hardware": hardware_of(pressure.get("hardware"))}
 
 

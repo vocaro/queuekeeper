@@ -81,18 +81,50 @@ QK.panel("history", {
         bins.filter((_, index) => index % Math.ceil(bins.length / 6) === 0).map(bin =>
           svg("text", { class: "axis", x: x(bin.from), y: H - 5 }, bin.from + "m")));
     }
-    // The events as a timeline, an hour's heading before each hour's events.
-    function timeline() {
+    // The events as a timeline, an hour's heading before each hour's events. An event links to its entry, or to
+    // the log its lane wrote.
+    function said(event) {
+      const text = h("span", { class: "wrap" + (event.level === "plain" ? "" : " " + event.level) }, event.text);
+      if (event.log) return h("a", { class: "plainlink", href: QK.href(context.repository, "logs", { name: event.log }) }, text);
+      if (event.entry) return h("a", { class: "plainlink", href: QK.href(context.repository, "queue", { entry: event.entry }) }, text);
+      return text;
+    }
+    function timeline(list, hours) {
       let hour = null;
-      return h("ul", { class: "timeline" }, data.events.flatMap(event => {
+      const today = new Date().toDateString();
+      return h("ul", { class: "timeline" }, list.flatMap(event => {
         const at = typeof event.time === "number" ? new Date(event.time * 1000) : null;
-        const key = at ? at.toDateString() + at.getHours() : null, heading = key !== hour;
+        const key = at ? at.toDateString() + at.getHours() : null, heading = hours && key !== hour;
         hour = key;
-        return [heading && at ? h("li", { class: "hour label" }, QK.clock(Math.floor(event.time / 3600) * 3600).replace(/:00$/, "")) : null,
+        const clock = at ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: hours ? "2-digit" : undefined, hour12: false }) : "";
+        return [heading && at ? h("li", { class: "hour label" }, (at.toDateString() === today ? "" : at.toLocaleDateString([], { weekday: "short", day: "numeric" }) + " ")
+            + QK.clock(Math.floor(event.time / 3600) * 3600).replace(/:00$/, "")) : null,
           h("li", { class: event.level },
-            h("span", { class: "muted mono" }, at ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : ""),
-            h("span", { class: "wrap" + (event.level === "plain" ? "" : " " + event.level) }, event.text))];
+            h("span", { class: "muted mono" }, !hours && at && at.toDateString() !== today ? at.toLocaleDateString([], { weekday: "short" }) + " " + clock : clock),
+            said(event))];
       }));
+    }
+    // The kinds of event each filter of the whole journal shows; a kind ending in a dot names each that begins so.
+    const KINDS = { "Landed": ["entry.landed", "batch.pushed", "batch.passed"], "Came back": ["entry.failed", "entry.conflict", "entry.removed"],
+      "Held": ["queue."], "Flaky": ["test.flaky"], "Gates": ["gate."], "Rounds": ["round.", "entries.", "entry.queued"] };
+    function journal() {
+      const state = context.state, chosen = state.kind || "All", kinds = KINDS[chosen];
+      const list = kinds ? data.events.filter(event => kinds.some(kind => kind.endsWith(".") ? event.kind.startsWith(kind) : event.kind === kind)) : data.events;
+      return [h("div", { class: "chips" }, ["All", ...Object.keys(KINDS)].map(name => h("button", { type: "button", "aria-pressed": String(chosen === name),
+          onclick: () => { state.kind = name; context.refresh(); } }, name))),
+        list.length ? timeline(list, true) : h("p", { class: "sub" }, data.events.length ? "None of the last " + data.events.length + " events is of this kind." : "The journal is empty.")];
+    }
+    // The last events that need attention, and the whole journal behind a button.
+    function events() {
+      const state = context.state, attention = data.attention || [];
+      const toggle = h("button", { type: "button", class: "more", "aria-expanded": String(!!state.all),
+        onclick: () => { state.all = !state.all; context.refresh(); } },
+        state.all ? "Hide the journal" : "Show all events" + (data.total ? " (" + data.total.toLocaleString() + ")" : ""));
+      return h("div", { class: "card" }, h("h2", null, "Needs attention", h("span", { class: "muted" }, "Holds, stuck gates, flaky tests and entries that came back")),
+        attention.length ? timeline(attention, false) : h("p", { class: "sub" }, "Nothing in the journal has needed attention."),
+        h("div", { class: "actions" }, toggle),
+        state.all ? [h("h3", { class: "label" }, data.total > data.events.length ? "The last " + data.events.length + " of " + data.total.toLocaleString() + " events" : "Every event, newest first"),
+          journal()] : null);
     }
     const runs = data.gateSeconds || [];
     QK.fill(element,
@@ -109,8 +141,6 @@ QK.panel("history", {
         h("div", { class: "card" }, h("h2", null, "Gate duration", h("span", { class: "muted" }, runs.length ? "Last " + QK.count(runs.length, "passing run") : "")), durations())),
       data.recent.length ? h("div", { class: "card" }, h("h2", null, "Recent changes", h("span", { class: "muted" }, "Newest first")),
         h("ul", { class: "rows entries" }, data.recent.map(found => QK.entry(found, context)))) : null,
-      h("div", { class: "card" }, h("h2", null, "Events", h("span", { class: "muted" },
-        data.total > data.events.length ? "The last " + data.events.length + " of " + data.total : "Newest first")),
-        data.events.length ? timeline() : h("p", { class: "sub" }, "The journal is empty.")));
+      events());
   },
 });

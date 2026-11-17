@@ -154,6 +154,25 @@ h3.label { margin-top: 12px; }
 .macside { min-width: 0; }
 .macside .spark { height: 40px; }
 .signals { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+/* A Mac short of memory: a lead line, swap as a meter, the largest processes as rows, and what to free. */
+.shortage { display: grid; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--warn-bg); border-left: 4px solid var(--mark); font-size: var(--text-small); }
+.shortage p { margin: 0; }
+.shortage .lead { display: flex; gap: 4px 10px; flex-wrap: wrap; align-items: baseline; }
+.shortage .lead b { color: var(--warn); }
+.shortage .swap { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; }
+.shortage .swap .meter { grid-column: 1 / -1; height: 8px; }
+.shortage .pill.flag { box-shadow: inset 0 0 0 1px var(--mark); }
+.shortage .meter { display: block; height: 6px; border-radius: 3px; background: var(--card); overflow: hidden; }
+.shortage .fill { display: block; height: 100%; border-radius: 3px; background: var(--mark); }
+.shortage .procs .fill { background: var(--muted); } .shortage .procs .outsized .fill { background: var(--mark); }
+.shortage .fill.share0 { width: 0; } .shortage .fill.share1 { width: 10%; } .shortage .fill.share2 { width: 20%; } .shortage .fill.share3 { width: 30%; }
+.shortage .fill.share4 { width: 40%; } .shortage .fill.share5 { width: 50%; } .shortage .fill.share6 { width: 60%; } .shortage .fill.share7 { width: 70%; }
+.shortage .fill.share8 { width: 80%; } .shortage .fill.share9 { width: 90%; } .shortage .fill.share10 { width: 100%; }
+.shortage .procs { list-style: none; margin: -4px 0 0; padding: 0; display: grid; gap: 3px; }
+.shortage .procs li { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(40px, 1fr) 4.2rem 5.2rem; gap: 8px; align-items: center; }
+.shortage .procs li.outsized > :first-child { font-weight: 600; }
+.shortage .procs .tnum { text-align: right; }
+.shortage code { font-family: var(--mono); font-size: 0.8125rem; background: var(--card); padding: 0 4px; border-radius: 4px; }
 .pill.flag { background: var(--warn-bg); color: var(--warn); }
 .spark.warning { color: var(--mark); }
 .gauge { display: block; width: 150px; height: 92px; }
@@ -208,6 +227,14 @@ h3.label { margin-top: 12px; }
 .timeline li.danger::before { border-color: var(--bad); background: var(--bad); }
 .timeline li.warning::before { border-color: var(--mark); }
 .timeline li.plain > span:last-child { color: var(--muted); }
+.timeline .plainlink { color: inherit; text-decoration: none; } .timeline .plainlink:hover { text-decoration: underline; }
+.timeline li.plain > .plainlink { color: var(--muted); }
+.card > .actions { display: flex; gap: 8px; margin-top: 10px; }
+.card button.more, .card .chips button { font: inherit; font-size: var(--text-small); color: var(--accent); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.card .chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0 10px; }
+.card .chips button { font-size: var(--text-micro); color: inherit; border-radius: 12px; padding: 0 9px; }
+.card .chips button[aria-pressed=true] { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+.card button.more:focus-visible, .card .chips button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .timeline li.hour { display: block; padding-top: 10px; }
 .timeline li.hour::before { display: none; }
 .credit { margin: 8px 2px 0; }
@@ -343,6 +370,7 @@ pre.log { margin: 0; background: var(--soft); border-radius: 8px; padding: 10px 
   .rows.events > li { grid-template-columns: minmax(0, 1fr); }
   .timeline li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .macgrid { grid-template-columns: 1fr; justify-items: start; }
+  .shortage .procs li { grid-template-columns: minmax(0, 1fr) 4.2rem 5.2rem; } .shortage .procs .meter { display: none; }
   .rows.repositories { grid-template-columns: minmax(0, 1fr) auto; }
   .rows.lines > li { grid-template-columns: minmax(0, 1fr) auto; }
   .rows.lines > li > a > :first-child { grid-column: 1 / -1; }

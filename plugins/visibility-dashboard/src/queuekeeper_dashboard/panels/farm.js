@@ -50,7 +50,7 @@ QK.panel("farm", {
     // What admission judges the Mac by: its CPU's busy share as a gauge with its limit, a share at or above which
     // opens no further slot; its load over the last hour; and load, memory and screen as chips, amber when they hold
     // work back.
-    function load(found, role) {
+    function load(found, role, where) {
       if (!found) return null;
       if (found.error) return h("p", { class: "sub wrap" }, "Its load could not be read: " + found.error);
       const busy = typeof found.cpuBusy === "number", over = busy && typeof found.busyLimit === "number"
@@ -65,12 +65,37 @@ QK.panel("farm", {
               QK.spark(loads, { tone: over ? "warning" : null, title: "Load average at each reading, oldest first" })] : null,
             h("div", { class: "signals" },
               typeof found.load === "number" ? h("span", { class: "pill" + (over ? " flag" : "") }, "load " + found.load.toFixed(1)) : null,
-              found.memory ? h("span", { class: "pill" + (found.memory === "normal" ? "" : " flag") }, "memory " + found.memory) : null,
+              found.memory && !found.shortage ? h("span", { class: "pill" + (found.memory === "normal" ? "" : " flag") }, "memory " + found.memory) : null,
               h("span", { class: "pill" + (found.screen === "locked" ? " flag" : ""), title: found.screen === "locked"
                 ? "Lanes that need an unlocked screen wait" : null },
                 found.screen === "locked" ? "screen locked" : found.screen === "unlocked" ? "screen unlocked" : "screen not read")))),
-        found.health ? h("p", { class: "sub wrap warning" }, found.health) : null,
+        found.shortage ? shortage(found.shortage, where, found.health) : found.health ? h("p", { class: "sub wrap warning" }, found.health) : null,
       ];
+    }
+    // A Mac short of memory: its swap against its total with macOS's pressure, its largest processes by memory,
+    // and what to free; the whole warning, as qk doctor says it, is the panel's title.
+    function shortage(found, where, said) {
+      const swap = found.swap, largest = found.largest || [], most = Math.max(1, ...largest.map(one => one.residentBytes));
+      const free = (found.free || []).map(one => one.restarted
+        ? h("span", null, "Run ", h("code", null, "sudo killall " + one.name), " on " + where + " to free " + QK.size(one.residentBytes)
+          + "; launchd starts it again, so nothing is lost.")
+        : h("span", null, "Quit " + one.name + " to free " + QK.size(one.residentBytes) + ", or restart " + where + "."));
+      return h("div", { class: "shortage", title: said || null },
+        h("p", { class: "lead" }, h("b", null, "Short of memory"), h("span", { class: "sub" }, "Runs slow, and a lane's tests may time out unreached")),
+        swap ? h("div", { class: "swap" }, h("span", { class: "label" }, "Swap"),
+          h("span", { class: "tnum" }, QK.size(swap.usedBytes) + " of " + QK.size(swap.totalBytes) + " · " + Math.round(100 * swap.share) + "%"),
+          h("span", { class: "pill flag" }, "pressure " + swap.pressure),
+          h("span", { class: "meter", role: "img", "aria-label": Math.round(100 * swap.share) + "% of swap used" },
+            h("i", { class: "fill share" + Math.min(10, Math.round(10 * swap.share)) }))) : null,
+        largest.length ? [h("span", { class: "label" }, "Largest processes"),
+          h("ul", { class: "procs" }, largest.map(one => h("li", { class: one.outsized ? "outsized" : null,
+            title: "PID " + one.pid + (one.outsized ? ", more than a quarter of this Mac's memory" : "") },
+            h("span", { class: "ellipsis" }, one.name),
+            h("span", { class: "meter" }, h("i", { class: "fill share" + Math.max(1, Math.round(10 * one.residentBytes / most)) })),
+            h("span", { class: "tnum" }, QK.size(one.residentBytes)),
+            h("span", { class: "sub tnum" }, typeof one.seconds === "number" ? "up " + QK.span(one.seconds) : ""))))] : null,
+        free.length ? h("p", { class: "free" }, free) : null,
+        h("p", { class: "sub" }, "Queuekeeper stops nothing itself, since that takes the owner's password."));
     }
     // A Mac's or device's icon, by its kind, with a badge for its state: good, bad (faded), warning or reserved.
     const BADGES = { good: "✓", bad: "✕", warning: "!", reserved: "" };
@@ -102,7 +127,7 @@ QK.panel("farm", {
           read ? h("span", { class: "muted slotcount" }, slots.used + " of " + slots.most + " slots") : null),
         read ? [cells(found), h("div", { class: "sub" }, slots.guaranteed ? slots.guaranteed + " always open, underlined" : null)]
           : found.reasons.map(reason => h("p", { class: "sub wrap" }, reason)),
-        load(found.load, found.role),
+        load(found.load, found.role, found.role === "here" ? "this Mac" : found.name),
         found.holders.length ? [h("h3", { class: "label" }, "Running"), h("ul", { class: "rows pairs work" },
           found.holders.map(one => work(one, found, true)))] : null,
         found.waiters.length ? [h("h3", { class: "label" }, "Waiting"), h("ul", { class: "rows pairs work" },

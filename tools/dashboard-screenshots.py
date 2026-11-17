@@ -34,7 +34,7 @@ CHECKOUT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CHECKOUT / "src/python"))
 from queuekeeper.checkout import activate
 activate(Path(__file__).resolve().parents[1])
-from queuekeeper import health  # noqa: E402
+from queuekeeper import health, host_health  # noqa: E402
 from queuekeeper.remote import DISPATCHER  # noqa: E402
 from queuekeeper_dashboard import panels, server  # noqa: E402
 
@@ -47,6 +47,11 @@ MEASURE = """setInterval(() => { document.documentElement.dataset.height = docum
   document.documentElement.dataset.fault = document.querySelector("main p.danger") ? "yes" : "no"; }, 100);"""
 
 NOW = time.time()
+# The second Mac's memory: swap nearly full under pressure, and its largest processes (host_health.shortage).
+SHORT = {"memoryBytes": 32 << 30, "swapUsedBytes": 14 << 30, "swapTotalBytes": 15 << 30, "memoryLevel": 2,
+         "largest": [{"pid": 41661, "name": "Xcode", "residentBytes": 6 << 30, "seconds": 41580},
+                     {"pid": 58763, "name": "swift-frontend", "residentBytes": 640 << 20, "seconds": 40},
+                     {"pid": 312, "name": "mds_stores", "residentBytes": 410 << 20, "seconds": 9 * 86400}]}
 ago = lambda seconds: NOW - seconds
 SUBMITTED = {"0406": 4300, "0407": 3960, "0408": 3900, "0409": 2700, "0410": 1560, "0411": 1500, "0412": 410, "0413": 365,
              "0414": 290, "0415": 120, "0416": 45}
@@ -117,6 +122,7 @@ PANELS = {
         "hosts": [
             {"name": "This Mac", "role": "here", "state": "observed", "reasons": [],
              "load": {"cpuBusy": 38, "busyLimit": 85, "load": 6.4, "memory": "normal", "screen": "unlocked", "error": None,
+                      "health": None, "shortage": None,
                       "hardware": {"model": "Mac15,9", "kind": "laptop"}},
              "slots": {"used": 1, "guaranteed": 1, "most": 4},
              "cells": [{"held": True, "project": "orbit-game", "guaranteed": True},
@@ -127,7 +133,8 @@ PANELS = {
                   "slots": 1, "wholeHost": False, "exclusive": False}],
              "waiters": []},
             {"name": "studio.local", "role": "second", "state": "observed", "reasons": [],
-             "load": {"cpuBusy": 90, "busyLimit": 85, "load": 14.2, "memory": "normal", "screen": "unlocked", "error": None,
+             "load": {"cpuBusy": 90, "busyLimit": 85, "load": 14.2, "memory": "warning", "screen": "unlocked", "error": None,
+                      "health": host_health.warnings(SHORT, "studio.local")[0], "shortage": host_health.shortage(SHORT),
                       "hardware": {"model": "Mac14,13", "kind": "desktop"}},
              "slots": {"used": 2, "guaranteed": 2, "most": 4},
              "cells": [{"held": True, "project": "lumen-ios", "guaranteed": True}, {"held": True, "project": "lumen-ios", "guaranteed": True},
@@ -144,6 +151,10 @@ PANELS = {
         "today": {"landed": 12, "cameBack": 0, "failed": 0, "conflict": 0, "removed": 1, "flaky": 0, "rounds": 6,
                   "medianGateSeconds": 252},
         "total": 2,
+        "attention": [
+            {"time": ago(2900), "kind": "test.flaky", "level": "warning",
+             "text": "flaky: lumen.test_sync.Tests.test_a_note_edited_offline_merges at d02f6a88"},
+            {"time": ago(86400 + 3000), "kind": "queue.held", "level": "warning", "text": "held because the gate timed out twice"}],
         "events": [
             {"time": ago(252), "kind": "round.began", "level": "plain", "text": "Round " + ROUND + " began with 1 entry."},
             {"time": ago(540), "kind": "entry.landed", "level": "success",

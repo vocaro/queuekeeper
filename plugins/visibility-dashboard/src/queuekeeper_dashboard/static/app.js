@@ -16,7 +16,7 @@
       else if (name.startsWith("on")) element.addEventListener(name.slice(2), value);
       else element.setAttribute(name, value === true ? "" : value);
     }
-    for (const child of children.flat()) {
+    for (const child of children.flat(Infinity)) {
       if (child === null || child === undefined || child === false) continue;
       element.append(child instanceof Node ? child : document.createTextNode(String(child)));
     }
@@ -168,7 +168,7 @@
       QK.number("Median gate", typeof trend.medianGateSeconds === "number" ? QK.span(trend.medianGateSeconds) : "–",
         QK.spark(gates, { title: "Seconds of each passing gate run, oldest first" }), "last " + QK.count(gates.length, "passing run")));
   };
-  QK.fill = function (element, ...children) { element.replaceChildren(...children.flat().filter(Boolean)); };
+  QK.fill = function (element, ...children) { element.replaceChildren(...children.flat(Infinity).filter(Boolean)); };
   QK.span = function (seconds) {
     seconds = Math.max(0, Math.round(seconds || 0));
     for (const [unit, size, below, part] of [["d", 86400, "h", 3600], ["h", 3600, "m", 60], ["m", 60, "s", 1]]) {
@@ -186,7 +186,8 @@
   };
   QK.count = function (number, noun, plural) { return number + " " + (number === 1 ? noun : plural || noun + "s"); };
   QK.size = function (bytes) {
-    return bytes < 1024 ? bytes + " B" : bytes < 1048576 ? (bytes / 1024).toFixed(0) + " KB" : (bytes / 1048576).toFixed(1) + " MB";
+    return bytes < 1024 ? bytes + " B" : bytes < 1048576 ? (bytes / 1024).toFixed(0) + " KB"
+      : bytes < 1073741824 ? (bytes / 1048576).toFixed(1) + " MB" : (bytes / 1073741824).toFixed(1) + " GB";
   };
   QK.href = function (repository, tab, query) {
     const text = query ? new URLSearchParams(query).toString() : "";

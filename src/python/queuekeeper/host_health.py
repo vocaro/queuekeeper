@@ -47,11 +47,13 @@ def number(value):
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-def assessed(reading, where):
-    """(diagnosis, remedy) for a Mac whose host_health reading, reading, shows swap at or over SWAP_SHARE of its total
-    while macOS reports memory pressure at a PRESSED level, or a process over PROCESS_SHARE of physical memory, or
-    None. where names the Mac, as `this Mac` or its host. A reading that is missing or unread says nothing: it is
-    no warning, and neither is swap whose reading has no pressure level, as one from an older toolkit."""
+def shortage(reading):
+    """What makes a Mac short of memory, as data, or None: its memory, its swap (used, total, its share used and
+    the pressure level's name) when swap is at or over SWAP_SHARE of its total while macOS reports memory pressure
+    at a PRESSED level, else None; its largest NAMED processes by resident memory, each with its share of memory
+    and whether it holds an outsized one (over PROCESS_SHARE); and what to free, each named with whether launchd
+    starts it again. host_health reading, reading: a reading that is missing or unread says nothing, and neither
+    does swap whose reading has no pressure level, as one from an older toolkit."""
     if not isinstance(reading, dict): return None
     memory, used, total = (number(reading.get(key)) for key in ("memoryBytes", "swapUsedBytes", "swapTotalBytes"))
     largest = [one for one in reading.get("largest") or [] if isinstance(one, dict)
@@ -62,20 +64,34 @@ def assessed(reading, where):
     swapping = bool(total) and used is not None and used >= SWAP_SHARE * total and level in PRESSED
     outsized = [one for one in largest if memory and one["residentBytes"] > PROCESS_SHARE * memory]
     if not (swapping or outsized): return None
-    found = []
-    if swapping:
-        found.append(f"swap is {size(used)} of {size(total)} used ({round(100 * used / total)}%) while macOS reports "
-                     f"memory pressure at level {level} ({PRESSED[level]})")
-    found += [f"{one['name']} holds {size(one['residentBytes'])} of its {size(memory)} of memory "
-              f"({round(100 * one['residentBytes'] / memory)}%)" for one in outsized]
-    named = ", ".join(f"{one['name']} (PID {one['pid']}, up {uptime(number(one.get('seconds')))}, "
-                      f"{size(one['residentBytes'])})" for one in largest[:NAMED])
-    diagnosis = (f"{where} is short of memory, so its runs slow and a lane's tests may time out unreached: "
-                 f"{'; '.join(found)}. Its largest processes by resident memory are {named or 'unread'}")
+    shown = lambda one: {"name": one["name"], "pid": one["pid"], "residentBytes": one["residentBytes"],
+                         "seconds": number(one.get("seconds")), "share": one["residentBytes"] / memory if memory else None,
+                         "outsized": one in outsized, "restarted": one["name"] in RESTARTED}
     # What to free: each process over its share, or with swap alone nearly full under pressure, the largest.
+    return {"memoryBytes": memory,
+            "swap": {"usedBytes": used, "totalBytes": total, "share": used / total, "pressure": PRESSED[level]} if swapping else None,
+            "largest": [shown(one) for one in largest[:NAMED]], "free": [shown(one) for one in outsized or largest[:1]]}
+
+
+def assessed(reading, where):
+    """(diagnosis, remedy) for a Mac whose host_health reading, reading, shows it short of memory (shortage), or
+    None. where names the Mac, as `this Mac` or its host."""
+    found = shortage(reading)
+    if not found: return None
+    swap, memory, reasons = found["swap"], found["memoryBytes"], []
+    if swap:
+        level = next(key for key, name in PRESSED.items() if name == swap["pressure"])
+        reasons.append(f"swap is {size(swap['usedBytes'])} of {size(swap['totalBytes'])} used ({round(100 * swap['share'])}%) "
+                       f"while macOS reports memory pressure at level {level} ({swap['pressure']})")
+    reasons += [f"{one['name']} holds {size(one['residentBytes'])} of its {size(memory)} of memory "
+                f"({round(100 * one['share'])}%)" for one in found["largest"] if one["outsized"]]
+    named = ", ".join(f"{one['name']} (PID {one['pid']}, up {uptime(one['seconds'])}, {size(one['residentBytes'])})"
+                      for one in found["largest"])
+    diagnosis = (f"{where} is short of memory, so its runs slow and a lane's tests may time out unreached: "
+                 f"{'; '.join(reasons)}. Its largest processes by resident memory are {named or 'unread'}")
     advice = []
-    for one in outsized or largest[:1]:
-        if one["name"] in RESTARTED:
+    for one in found["free"]:
+        if one["restarted"]:
             advice.append(f"{one['name']} is a system daemon that launchd starts again, so the owner can run "
                           f"`sudo killall {one['name']}` on {where}, which is safe and frees its memory at once")
         else:

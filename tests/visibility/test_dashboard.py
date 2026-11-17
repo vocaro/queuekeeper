@@ -423,10 +423,10 @@ class Panels(Fixture):
     def test_a_macs_load_is_what_its_pressure_and_screen_readings_say(self):
         self.assertEqual(farm.load_of({"cpuBusy": 91.4, "busyLimit": 75, "load": 12.08, "memory": 4}, {"state": "unlocked"}),
                          {"cpuBusy": 91.4, "busyLimit": 75, "load": 12.08, "memory": "critical", "screen": "unlocked",
-                          "error": None, "health": None, "hardware": {"model": None, "kind": "other"}})
+                          "error": None, "health": None, "shortage": None, "hardware": {"model": None, "kind": "other"}})
         self.assertEqual(farm.load_of({"cpuBusy": None, "memory": None, "busyLimit": True}, {"state": "asleep"}),
                          {"cpuBusy": None, "busyLimit": None, "load": None, "memory": None, "screen": "unknown",
-                          "error": None, "health": None, "hardware": {"model": None, "kind": "other"}})
+                          "error": None, "health": None, "shortage": None, "hardware": {"model": None, "kind": "other"}})
         self.assertEqual(farm.load_of({"error": "no slot directory"}, None)["error"], "no slot directory")
         self.assertEqual(farm.load_of("nonsense", [])["screen"], "unknown")
 
@@ -449,6 +449,12 @@ class Panels(Fixture):
             self.assertIsNone(found["here"]["health"])
             self.assertIn("build is short of memory", found["build"]["health"])
             self.assertIn("`sudo killall fseventsd` on build", found["build"]["health"])
+            shortage = found["build"]["shortage"]
+            self.assertIsNone(shortage["swap"])  # its reading names no pressure level, as from an older toolkit
+            self.assertEqual(shortage["largest"], shortage["free"])
+            self.assertEqual(shortage["free"], [{"name": "fseventsd", "pid": 312, "residentBytes": 34 * GB, "seconds": 15 * 86400,
+                                                 "share": 34 / 64, "outsized": True, "restarted": True}])
+            self.assertIsNone(found["here"]["shortage"])
             with patch.object(farm.remote, "screen_there", side_effect=farm.remote.Unavailable("build is asleep")):
                 self.assertEqual(READ_DETAIL()["build"]["error"], "build is asleep")
             with farm_fixture.only():
@@ -613,7 +619,10 @@ class Panels(Fixture):
         self.assertEqual([settled[key] for key in ("landed", "failed", "conflict", "removed", "cameBack")], [1, 1, 2, 1, 3])
         self.assertEqual(found["total"], 10)
         self.assertEqual(found["events"][1], {"time": found["events"][1]["time"], "kind": "entry.landed",
-                                             "text": "b landed as 0123456789ab", "level": "success"})
+                                             "text": "b landed as 0123456789ab", "level": "success", "entry": "b"})
+        # What needs attention: entries that came back and flaky tests, newest first, from the whole journal.
+        self.assertEqual([(event["kind"], event.get("entry")) for event in found["attention"]],
+                         [("entry.failed", "a"), ("test.flaky", None)])
         self.assertEqual([event["level"] for event in found["events"][2:4]], ["danger", "warning"])
         self.assertEqual([event["kind"] for event in history.data(self.one, {"kind": "entry."})["events"]],
                          ["entry.landed", "entry.landed", "entry.failed"])
@@ -624,6 +633,12 @@ class Panels(Fixture):
         for number in range(history.MOST + 5): events.emit(directory, "queue.resumed", was=str(number))
         found = history.data(self.one, {})
         self.assertEqual((len(found["events"]), found["total"]), (history.MOST, history.MOST + 5))
+        self.assertEqual(found["attention"], [])
+        for number in range(history.NOTED + 2): events.emit(directory, "queue.held", why=str(number))
+        events.emit(directory, "gate.ended", lane="gate", status=1, log="/x/logs/r1-gate.log")
+        found = history.data(self.one, {})
+        self.assertEqual([event["text"] for event in found["attention"]][:2], [f"held {history.NOTED + 1}", f"held {history.NOTED}"])
+        self.assertEqual((len(found["attention"]), found["events"][0]["log"]), (history.NOTED, "r1-gate.log"))
         self.assertIsNone(history.summary(self.one))
 
 
