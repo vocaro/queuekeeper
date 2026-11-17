@@ -812,6 +812,8 @@ class ResourceTests(unittest.TestCase):
             "HEAVY_SLOTS_MAX": "3", "HEAVY_POLL_SECONDS": "0.01", "QUEUEKEEPER_GATE_LOCK_FILE": str(root / "gate")})
         self.env.start()
         self.saved = os.environ.pop(resources.TOKEN, None)
+        # The CPU limit is the default, or a limits file's, unless a test sets it (host_isolation sets one for all).
+        os.environ.pop("HEAVY_BUSY_LIMIT", None)
         # The CPU reads as mostly idle unless a test says otherwise: no test depends on the host's real reading, and
         # none waits for a reading of its own (resources.cpu_busy, offload_host.cpu_busy; vocaro-engineering#200).
         from queuekeeper import offload_host
@@ -1180,11 +1182,11 @@ class ResourceTests(unittest.TestCase):
                         self.assertEqual(resources.pressure(), ("cpu", "the CPU is 90% busy, at or above HEAVY_BUSY_LIMIT=40% "
                                                                        f"(this Mac's limit, set in {resources.limits_path()})"))
 
-    def test_the_files_guaranteed_slots_admit_at_any_load_and_no_more(self):
+    def test_the_files_guaranteed_slots_admit_under_the_cpu_limit_and_no_more(self):
         for name in ["HEAVY_SLOTS", "HEAVY_SLOTS_MAX"]: os.environ.pop(name)
         self.hold(0, 1)
         self.write_limits({"slots": 3, "slotsMax": 3})
-        with patch.object(resources, "cpu_busy", return_value=(100.0, 15.0)), contextlib.redirect_stderr(StringIO()):
+        with patch.object(resources, "cpu_busy", return_value=(89.9, 15.0)), contextlib.redirect_stderr(StringIO()):
             with resources.Admission("third", timeout=0) as admission:
                 self.assertEqual([slot for slot, _fd in admission.descriptors], [2])
             self.write_limits({"slots": 2, "slotsMax": 2})
@@ -1192,6 +1194,82 @@ class ResourceTests(unittest.TestCase):
                     "all 2 guaranteed slots are busy and "
                     f"{mine('HEAVY_SLOTS_MAX=2', f'set in {resources.limits_path()}')} allows none")):
                 with resources.Admission("refused", timeout=0): pass
+
+    def test_over_its_cpu_limit_a_mac_admits_only_its_first_job(self):
+        """The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): a Mac's CPU limit bounds every admission but the
+        first. It reversed 2026-11-07's rule that a guaranteed slot admits at any reading."""
+        path = self.write_limits({"busyLimit": 70, "settleSeconds": 0})
+        over = ("the CPU is 92% busy, at or above " + mine("HEAVY_BUSY_LIMIT=70%", f"set in {path}")
+                + ", and admitted work runs here: over its CPU limit a Mac admits only its first job")
+        busy = lambda share: patch.object(resources, "cpu_busy", return_value=(share, 15.0))
+        with busy(92.0), patch.object(resources, "memory_level", return_value=1), contextlib.redirect_stderr(StringIO()):
+            # Nothing admitted runs here, so one job is admitted whatever the CPU reads: load that never asks
+            # admission can delay work, and never stop all of it.
+            with resources.Admission("first", timeout=0) as first, patch.dict(os.environ):
+                self.assertEqual([slot for slot, _fd in first.descriptors], [0])
+                os.environ.pop(resources.TOKEN)
+                # A second finds a guaranteed slot free, and the Mac over its limit with work running.
+                with self.assertRaisesRegex(TimeoutError, re.escape(over)) as refused:
+                    with resources.Admission("second", timeout=0): self.fail("admitted over the limit beside work")
+                self.assertIn("Resource queue busy on", str(refused.exception))
+                waited = resources.Admission("second", timeout=0)
+                self.assertFalse(waited._attempt())
+                self.assertEqual((waited.refusal, waited.waiting), ("cpu", over))
+                self.assertEqual(waited.descriptors, [])
+                waited._withdraw(TimeoutError())
+                # A model run is held back the same way, and keeps neither a slot nor the model.
+                with self.assertRaisesRegex(TimeoutError, re.escape(over)):
+                    with resources.Admission("generate", model=True, timeout=0): pass
+                with busy(10.0), resources.Admission("generate", model=True, timeout=0) as model:
+                    self.assertIsNotNone(model.held_model)
+                # At the limit is over it; under it, the slot opens; and a share that cannot be read, or spans too
+                # little yet, refuses nothing, as before.
+                with busy(70.0), self.assertRaisesRegex(TimeoutError, "the CPU is 70% busy, at or above "):
+                    with resources.Admission("second", timeout=0): pass
+                for share in ((69.9, 15.0), (None, None), (None, 2.0)):
+                    with self.subTest(share=share), patch.object(resources, "cpu_busy", return_value=share):
+                        with resources.Admission("second", timeout=0) as second:
+                            self.assertEqual([slot for slot, _fd in second.descriptors], [1])
+                        os.environ.pop(resources.TOKEN, None)
+            os.environ.pop(resources.TOKEN, None)
+            # A slot held with no guard entry, as by a caller of the old slot API, is work that runs here too.
+            self.hold(1)
+            with self.assertRaisesRegex(TimeoutError, re.escape(over)):
+                with resources.Admission("beside an old holder", timeout=0): pass
+
+    def test_a_whole_host_lane_waits_out_a_mac_over_its_limit_and_starts_on_one_with_nothing_admitted(self):
+        self.write_limits({"busyLimit": 70, "settleSeconds": 0})
+        with patch.object(resources, "memory_level", return_value=1), contextlib.redirect_stderr(StringIO()):
+            # Work beyond the guaranteed slots leaves them all free, which a whole-host lane needs, and still runs.
+            self.hold(2)
+            with patch.object(resources, "cpu_busy", return_value=(92.0, 15.0)):
+                with self.assertRaisesRegex(TimeoutError, "the CPU is 92% busy, at or above .*admitted work runs here"):
+                    with resources.Admission("gate", whole_host=True, timeout=0): pass
+            with patch.object(resources, "cpu_busy", return_value=(50.0, 15.0)), patch.dict(os.environ):
+                with resources.Admission("gate", whole_host=True, timeout=0) as gate:
+                    self.assertEqual([slot for slot, _fd in gate.descriptors], [0, 1])
+
+    def test_a_mac_with_nothing_admitted_starts_a_whole_host_lane_or_exclusive_work_at_any_reading(self):
+        self.write_limits({"busyLimit": 70, "settleSeconds": 0})
+        with patch.object(resources, "cpu_busy", return_value=(100.0, 15.0)), \
+                patch.object(resources, "memory_level", return_value=4), contextlib.redirect_stderr(StringIO()):
+            for need in ({"whole_host": True}, {"exclusive": True}, {}):
+                with self.subTest(need=need), patch.dict(os.environ):
+                    with resources.Admission("alone", timeout=0, **need) as alone:
+                        self.assertTrue(alone.descriptors)
+
+    def test_an_entry_recovery_left_whose_owner_ended_is_not_work_that_keeps_an_over_limit_mac_shut(self):
+        # Counted as the slot it held, it must not also count as running work: over the limit it would then hold
+        # every request back until someone removed it.
+        self.write_limits({"busyLimit": 70, "settleSeconds": 0})
+        request = resources.Admission("beside a stranded entry", timeout=0)
+        state = {"vocaroEngineering": 1, "owners": {"dead": {"pid": 1, "start": "never", "label": "gone"}}}
+        with patch.object(resources, "cpu_busy", return_value=(95.0, 15.0)):
+            request.busy = resources.cpu_busy(request.directory)
+            request.stranded = {"dead": (state["owners"]["dead"], "its processes could not be checked")}
+            self.assertIsNone(request._over_limit(state))
+            request.stranded = {}
+            self.assertIn("admitted work runs here", request._over_limit(state))
 
     def test_eng_admissions_limits_prints_each_limit_and_its_source(self):
         path = self.write_limits({"busyLimit": 80})
@@ -3376,9 +3454,9 @@ class UsageTests(unittest.TestCase):
                          "0 of 3 guaranteed, 9 at most | 4 of 3 guaranteed, 9 at most (slots 0, 1, 2, 3)")
         self.assertIn("5% (limit 75%) | 97% (limit 75%)", rows["CPU"])
         self.assertIn("normal | warning", rows["memory"])
-        # With every guaranteed slot busy, a heavy lane needs one beyond them, which that Mac's CPU limit withholds.
-        self.assertIn("spare capacity | every guaranteed slot of build-host is busy (HEAVY_SLOTS=3), and build-host is "
-                      "busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%)", rows["heavy"])
+        # Over its CPU limit with admitted work running, that Mac takes no more (vocaro/queuekeeper#211).
+        self.assertIn("spare capacity | build-host is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%) and "
+                      "admitted work runs there, so it takes no more", rows["heavy"])
         self.assertIn("spare capacity | a whole-host lane needs every guaranteed slot of build-host (HEAVY_SLOTS=3) "
                       "free, and 3 are busy", lines[9])
         self.assertIn("  this Mac (Here): 5 admitted; time at N heavy jobs: 0 6%, 1 87%, 2 7%; mean 1.0; "

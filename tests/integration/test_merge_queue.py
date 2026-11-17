@@ -2739,6 +2739,8 @@ class FarmMacReading(unittest.TestCase):
                 self.assertEqual(mq.remote.pressure_there("fake-mac"), (expected, answer["load"]))
                 ask.assert_called_once_with("fake-mac", {"pressure": True}, timeout=mq.remote.CENSUS_TIMEOUT)
 
+    NO_MORE = " and admitted work runs there, so it takes no more"
+
     def test_a_macs_capacity_is_judged_by_its_slots_its_cpu_and_what_runs_there(self):
         """remote.spare, which qk run judges the Macs by before it chooses one (vocaro-engineering#168)."""
         idle = {"slots": 3, "slotsMax": 5, "busy": [], "load": 2.0, "cpuBusy": 20.0, "busyLimit": 75.0, "wholeHost": [],
@@ -2752,19 +2754,27 @@ class FarmMacReading(unittest.TestCase):
             ({**idle, "busy": [0, 1, 2, 3]}, {}, None),
             ({**idle, "busy": [0, 1, 2, 3, 4]}, {}, "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
             ({**idle, "busy": [0, 1, 2], "cpuBusy": 75.0}, {},
-             "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3), and another Mac is busy (CPU 75% busy, at or "
-             "above its HEAVY_BUSY_LIMIT=75%)"),
+             "another Mac is busy (CPU 75% busy, at or above its HEAVY_BUSY_LIMIT=75%)" + self.NO_MORE),
+            ({**idle, "busy": [0, 1, 2], "cpuBusy": None}, {},
+             "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3), and the CPU busy share of another Mac, which "
+             "HEAVY_BUSY_LIMIT=75% (another Mac's limit) bounds, is unavailable"),
             ({**idle, "busy": [3, 4]}, {}, None),
-            # A free guaranteed slot is spare capacity however busy the CPU, as admission admits work into one
-            # (owner's decision, 2026-11-07): another Mac at 93% against its 90% with two of four slots free.
+            # A Mac with nothing admitted has room for one job however busy its CPU, as its admission admits the
+            # first (the owner's decision, 2026-11-17, vocaro/queuekeeper#211).
             ({**idle, "cpuBusy": 75.0}, {}, None),
             ({**idle, "cpuBusy": 99.6}, {}, None),
             ({**idle, "cpuBusy": None}, {}, None),
-            ({**idle, "slots": 4, "busy": [0, 1], "cpuBusy": 93.0, "busyLimit": 90.0}, {}, None),
-            # The negative control: with every guaranteed slot busy, the CPU does bound the slot beyond them.
+            # With admitted work running there it takes no more at or over its limit, with guaranteed slots free or
+            # not: the case of 2026-11-07, another Mac at 93% against its 90% with two of four slots free, which then
+            # counted as room. Under the limit, or with a share that cannot be read, a free guaranteed slot is room.
+            ({**idle, "slots": 4, "busy": [0, 1], "cpuBusy": 93.0, "busyLimit": 90.0}, {},
+             "another Mac is busy (CPU 93% busy, at or above its HEAVY_BUSY_LIMIT=90%)" + self.NO_MORE),
+            ({**idle, "slots": 4, "busy": [0, 1], "cpuBusy": 89.9, "busyLimit": 90.0}, {}, None),
+            ({**idle, "slots": 4, "busy": [0, 1], "cpuBusy": None, "busyLimit": 90.0}, {}, None),
+            ({**idle, "busy": [3], "cpuBusy": 80.0}, {"whole_host": True},
+             "another Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%)" + self.NO_MORE),
             ({**idle, "busy": [0, 1, 2], "cpuBusy": 99.6}, {},
-             "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3), and another Mac is busy (CPU 100% busy, at or "
-             "above its HEAVY_BUSY_LIMIT=75%)"),
+             "another Mac is busy (CPU 100% busy, at or above its HEAVY_BUSY_LIMIT=75%)" + self.NO_MORE),
             # The case of vocaro-engineering#200: a load of 40 against the old limit of 7.5, with the CPU half idle.
             ({**idle, "load": 40.0, "cpuBusy": 52.0}, {}, None),
             ({**idle, "busy": [0, 1, 2], "wholeHost": ["EPUBLib gate"]}, {},

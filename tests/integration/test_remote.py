@@ -3705,11 +3705,12 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
         self.assertTrue((self.project / ".build/queuekeeper/remote/gate/source.json").exists())
 
-    def test_a_farm_mac_over_its_cpu_limit_still_takes_a_lane_into_a_free_guaranteed_slot(self):
-        """The owner's rule (2026-11-07): another Mac is loaded as much as possible, so a free guaranteed slot
-        there is spare capacity however busy its CPU, as its admission admits work into one. Until then another Mac
-        at or above its HEAVY_BUSY_LIMIT sent the lane to this Mac with guaranteed slots free there (#168, #200)."""
-        # Both Macs over their limits, this Mac by further: another Mac has room and the more headroom, and takes it.
+    def test_a_farm_mac_over_its_cpu_limit_takes_one_job_where_nothing_admitted_runs_and_no_more(self):
+        """The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): a Mac's CPU limit bounds every admission but its
+        first. From 2026-11-07 until then a free guaranteed slot there was spare capacity however busy its CPU, and
+        before that another Mac at or above its HEAVY_BUSY_LIMIT sent every lane to this Mac (#168, #200)."""
+        # Both Macs over their limits with nothing admitted on either: each has room for one job, and another Mac,
+        # over by less, the more headroom.
         with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0", "HEAVY_BUSY_LIMIT": "-1000"}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
@@ -3732,8 +3733,26 @@ class RemoteTests(unittest.TestCase):
                                   r"its CPU limit: fake [\d.]+ points over its CPU limit$")
         self.assertIn(f"queuekeeper: trying gate on this Mac: {because}", error)
         self.assertFalse((self.project / ".build/queuekeeper/remote/gate").exists())
-        # The negative control: another Mac with no spare capacity by its slots sends the lane here.
+        # Over its limit with admitted work running there, another Mac takes no more, though two of its guaranteed
+        # slots are free: the lane goes to this Mac's queue, and nothing is offered.
         shutil.rmtree(self.project / ".build/queuekeeper/gate")
+        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}), self.busy_mac(kind=None):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        because = self.ran_here()["hereBecause"]
+        self.assertRegex(because, r"^fake is busy \(CPU \d+% busy, at or above its HEAVY_BUSY_LIMIT=0%, set in the "
+                                  r"environment\) and admitted work runs there, so it takes no more$")
+        self.assertIn(f"queuekeeper: trying gate on this Mac: {because}", error)
+        self.assertNotIn("remote: sending", error)
+        # The positive control: under its limit beside the same work, it takes the lane.
+        shutil.rmtree(self.project / ".build/queuekeeper/gate")
+        with self.busy_mac(kind=None):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("remote: sending", error)
+        self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
+                         "fake")
+        # The negative control: another Mac with no spare capacity by its slots sends the lane here.
         with self.busy_farm_mac():
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
@@ -5012,8 +5031,8 @@ exec {shlex.quote(real)} "$@"
         self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds fake: "), receipt)
         self.assertIn("queuekeeper: trying the command on this Mac: exclusive work holds fake: ", error)
         self.assertNotIn("remote: sending", error)
-        # Another Mac over its CPU limit with a guaranteed slot free takes the command (owner's decision, 2026-11-07),
-        # here with more headroom than this Mac, which is over its own by further.
+        # Another Mac over its CPU limit with nothing admitted takes the command, as its first job (the owner's
+        # decision, 2026-11-17), here with more headroom than this Mac, which is over its own by further.
         shutil.rmtree(self.project / ".build/queuekeeper/admit")
         with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0", "HEAVY_BUSY_LIMIT": "-1000"}):
             status, output, error = self.admit_in(self.project / "pkg", "--verify", "--", *probe)
@@ -5927,8 +5946,8 @@ class KeptSlotsTests(unittest.TestCase):
             ({**self.IDLE, "kept": None, "busy": [0, 1, 2, 3, 4]}, {},
              "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
             ({**self.IDLE, "kept": None, "busy": [0, 1, 2], "cpuBusy": 80.0}, {},
-             "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3), and another Mac is busy (CPU 80% busy, at or "
-             "above its HEAVY_BUSY_LIMIT=75%)"),
+             "another Mac is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=75%) and admitted work runs there, so "
+             "it takes no more"),
         ]
         for reading, need, expected in cases:
             with self.subTest(reading=reading, need=need):
@@ -8652,8 +8671,8 @@ class GateHostPoolTests(unittest.TestCase):
             self.assertIsNone(remote.spare(capacity, mac))
             self.assertIn("whole-host lane", remote.spare(capacity, mac, whole_host=True))
         refused = {"every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1)": {"busy": [0, 1]},
-                   "every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1), and gate-03 is busy (CPU 80% busy, at or "
-                   "above its HEAVY_BUSY_LIMIT=70%)": {"cpuBusy": 80},
+                   "gate-03 is busy (CPU 80% busy, at or above its HEAVY_BUSY_LIMIT=70%) and admitted work runs there, "
+                   "so it takes no more": {"cpuBusy": 80},
                    "every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1), and the CPU busy share of gate-03, which "
                    "HEAVY_BUSY_LIMIT=70% (gate-03's limit) bounds, is unavailable": {"cpuBusy": None},
                    "every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1), and the CPU of gate-03 does not yet show "

@@ -158,6 +158,12 @@ resources.GATE_LOCK = offload_host.GATE_LOCK = GATE
 # this process too, for a test that clears the environment. A test of the settle sets its own.
 os.environ["HEAVY_QUIET_SECONDS"] = "0"
 resources.QUIET_SECONDS = 0
+# Nor does any admission a test takes depend on how busy this Mac's CPU reads (vocaro/queuekeeper#211). At or above
+# its CPU limit a Mac admits only its first job, and the suite runs inside a gate that keeps the CPU busy: a test's
+# second admission would wait for a reading under the limit, and Macs that read one CPU would be chosen by its noise.
+# So the limit is one no reading reaches. A test of the limit sets its own, and one of the default or of a limits
+# file removes this, since a limit's variable overrides both.
+os.environ["HEAVY_BUSY_LIMIT"] = "1000"
 # Nor does any lane or admitted command a test runs wait for, or stop for, this Mac's free disk space
 # (vocaro/queuekeeper#162): the suite runs on whatever this Mac has free, which says nothing of the code it tests. A test
 # of either floor sets its own.
@@ -208,7 +214,7 @@ cli.fix_hosts = unfixed
 
 # What this module sets in the environment, which every process a test starts carries when it inherits that environment.
 ISOLATION = {name: os.environ[name] for name in (
-    "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS", "QUEUEKEEPER_START_FREE_GB",
+    "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS", "HEAVY_BUSY_LIMIT", "QUEUEKEEPER_START_FREE_GB",
     "QUEUEKEEPER_RUN_FREE_GB",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
     "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD)}
@@ -225,7 +231,7 @@ OWNER_LIMIT = "the owner's override of an admission limit or interval, which no 
 OWNER_PATH = "a path the owner or a test names, which no run sets for the commands it starts"
 OWNER_SWITCH = "the owner's own switch, which no run sets for the commands it starts"
 INHERITED = {
-    **dict.fromkeys(("HEAVY_SLOTS", "HEAVY_SLOTS_MAX", "HEAVY_BUSY_LIMIT", "HEAVY_SETTLE_SECONDS", "HEAVY_QUIET_LIMIT",
+    **dict.fromkeys(("HEAVY_SLOTS", "HEAVY_SLOTS_MAX", "HEAVY_SETTLE_SECONDS", "HEAVY_QUIET_LIMIT",
                      "HEAVY_POLL_SECONDS", "HEAVY_RECOVER_SECONDS", "HEAVY_PLACE_SECONDS"), OWNER_LIMIT),
     **dict.fromkeys(("QUEUEKEEPER_APP_STORE", "QUEUEKEEPER_DEVICE_RECORD", "QUEUEKEEPER_SCREEN_IOREG"), OWNER_PATH),
     **dict.fromkeys(("QUEUEKEEPER_VISIBILITY", "QUEUEKEEPER_PREPUSH", "QUEUEKEEPER_UNITY_OPEN", "QUEUEKEEPER_UNITY_QUIET"),

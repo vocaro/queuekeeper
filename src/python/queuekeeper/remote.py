@@ -3567,9 +3567,11 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
     whole-host lane and every slot up to the maximum for exclusive work, no whole-host lane or exclusive work
     running there, and no exclusive work queued ahead there (queuedExclusive), behind which admission holds every
-    later request (vocaro-engineering#191). A free guaranteed slot is spare capacity however busy the Mac's CPU
-    is, as admission admits work into one: the owner wants another Mac loaded as much as possible, never idle
-    beside a loaded Mac (owner's decision, 2026-11-07). While the
+    later request (vocaro-engineering#191). A Mac whose CPU reads at or above its own HEAVY_BUSY_LIMIT while
+    admitted work runs there, read as a busy slot, has none: its limit bounds every admission but its first, as
+    admission rules (resources.Admission._over_limit; the owner's decision, 2026-11-17, vocaro/queuekeeper#211).
+    From 2026-11-07 until then a free guaranteed slot was spare capacity however busy the CPU. A Mac with nothing
+    admitted has room for one job at any reading, and a reading with no busy share refuses nothing by it. While the
     Mac's admission keeps the guaranteed slots for a whole-host lane queued ahead (kept), a whole-host or
     exclusive lane waits its turn behind it and other work needs a slot beyond them free, as admission rules
     (vocaro-engineering#174, #186), and that slot only as admission takes one: while the CPU busy share is under
@@ -3620,7 +3622,16 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
         held = f"every guaranteed slot of {mac} is busy (HEAVY_SLOTS={slots})"
         if len(busy) >= maximum: return held
         crowded = f"{held}, and "
-    # A guaranteed slot is admitted whatever the CPU and memory read, so they bound only a slot beyond them.
+    found, limit = reading.get("cpuBusy"), reading["busyLimit"]
+    busy_share = found if isinstance(found, (int, float)) and not isinstance(found, bool) else None
+    # The Mac's CPU limit bounds every admission but its first: at or over it, a Mac with admitted work running, read
+    # as a busy slot, takes no more, as its admission rules (resources.Admission._over_limit, vocaro/queuekeeper#211).
+    if busy and busy_share is not None and busy_share >= limit:
+        whence = limit_whence(reading, "busyLimit")
+        return (f"{mac} is busy (CPU {busy_share:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%"
+                f"{', ' + whence if whence else ''}) and admitted work runs there, so it takes no more")
+    # Under its limit, or with nothing admitted, a guaranteed slot is admitted; memory and the settling time bound
+    # only a slot beyond them.
     if held is None:
         return None
     # An older toolkit's reading has no sinceAdmission or settle, and withholds nothing by them.
@@ -3629,13 +3640,12 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
             and since < settle:
         return (f"{held}, and the CPU of {mac} does not yet show the job admitted {int(since)}s ago, within "
                 f"HEAVY_SETTLE_SECONDS={settle:g}")
-    found, limit = reading.get("cpuBusy"), reading["busyLimit"]
-    busy = found if isinstance(found, (int, float)) and not isinstance(found, bool) else None
+    busy = busy_share
     if busy is None:
         return f"{crowded}the CPU busy share of {mac}, which {said('busyLimit', limit)} bounds, is unavailable"
     if busy >= limit:
         whence = limit_whence(reading, "busyLimit")
-        return (f"{crowded}{mac} is busy (CPU {busy:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%"
+        return (f"{mac} is busy (CPU {busy:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%"
                 f"{', ' + whence if whence else ''})")
     # Beyond the guaranteed slots, memory pressure that is not normal, or cannot be read, withholds the slot, judged
     # as admission judges it; an older toolkit's reading has no memory, and withholds nothing by it.

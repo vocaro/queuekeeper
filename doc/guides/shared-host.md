@@ -150,9 +150,25 @@ strings -n 1 .build/SCRATCH/out/Intermediates.noindex/XCBuildData/*.xcbuilddata/
   | grep -A1 -- '^-num-threads$'
 ```
 
-While no exclusive or whole-host request waits, HEAVY_SLOTS jobs (3) are always admitted. Beyond them one job
+While no exclusive or whole-host request waits, HEAVY_SLOTS jobs (3) are admitted while the CPU's
+busy share is below HEAVY_BUSY_LIMIT (90, percent of the CPU's time, or what the Mac's limits file
+sets), and the first of them whatever it reads. A Mac's CPU limit bounds every admission but its
+first: at or above it, a guaranteed slot opens only while nothing admitted runs there, and a
+request that finds one free waits with `the CPU is 92% busy, at or above HEAVY_BUSY_LIMIT=70%
+(this Mac's limit, set in PATH), and admitted work runs here: over its CPU limit a Mac admits only
+its first job` (the owner's decision, 2026-11-17, [vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211)). The first job is kept so that load
+which never asks admission, such as the owner's own work on his workstation, can delay admitted
+work and never stop all of it. A whole-host lane is bound the same way: with every guaranteed
+slot free it still waits while work runs beyond them and the CPU reads over the limit, and it
+starts at any reading on a Mac with nothing admitted, as exclusive work does. Work runs on a Mac
+while its guard records an admission or a slot is held; an entry recovery left whose owner has
+ended is neither. Only a reading refuses: while the busy share cannot be read, or spans too little
+yet, a guaranteed slot opens as before. From 2026-11-07 until this rule a guaranteed slot admitted
+at any reading, which let three wide lanes hold a Mac over its limit: on 2026-11-17 this Mac read
+92% busy against 70% and another Mac 100% against 90%, with every guaranteed slot of both held.
+Beyond the guaranteed slots one job
 at a time is admitted, up to HEAVY_SLOTS_MAX (half the CPU count), while the CPU's busy share is
-below HEAVY_BUSY_LIMIT (90, percent of the CPU's time, or what the Mac's limits file sets), macOS reports normal memory pressure
+below HEAVY_BUSY_LIMIT, macOS reports normal memory pressure
 (`kern.memorystatus_vm_pressure_level` is 1), and no slot was taken in the last
 HEAVY_SETTLE_SECONDS (30) for the CPU to show. The busy share is the part of the CPU's time spent
 outside idle over about the last 15 seconds, from the kernel's tick counters; every process on the
@@ -397,7 +413,7 @@ limit, when it was the Mac's, from its limits file, and not the default this gui
 | --- | --- |
 | `slots` | `all 3 guaranteed slots are busy and so is every slot up to HEAVY_SLOTS_MAX=9 (…)`, or `… and HEAVY_SLOTS_MAX=3 (…) allows none beyond them`; for a whole-host lane, `a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=3) free, and 1 is busy`; for exclusive work, `exclusive work needs every slot up to HEAVY_SLOTS_MAX=9 (…) free, and 2 are busy` |
 | `settle` | `all 3 guaranteed slots are busy and the CPU does not yet show the job admitted 12s ago, within HEAVY_SETTLE_SECONDS=30`, or `… and the CPU has been read over 2s, short of the 5s a reading spans` |
-| `cpu` | `all 3 guaranteed slots are busy and the CPU is 91% busy, at or above HEAVY_BUSY_LIMIT=90% (this Mac's limit, the default, since PATH does not set it)`, or `… the CPU's busy share, which HEAVY_BUSY_LIMIT=90% (…) bounds, is unavailable`; a toolkit older than vocaro-engineering#200 logged `load` for the load average |
+| `cpu` | `the CPU is 92% busy, at or above HEAVY_BUSY_LIMIT=90% (this Mac's limit, the default, since PATH does not set it), and admitted work runs here: over its CPU limit a Mac admits only its first job`, for a request that found a guaranteed slot free; `all 3 guaranteed slots are busy and the CPU is 91% busy, at or above HEAVY_BUSY_LIMIT=90% (…)`, or `… the CPU's busy share, which HEAVY_BUSY_LIMIT=90% (…) bounds, is unavailable`; a toolkit older than vocaro-engineering#200 logged `load` for the load average |
 | `memory` | `all 3 guaranteed slots are busy and memory pressure is level 2 (warning), not 1 (normal)`, or `… memory pressure, which must be level 1 (normal), cannot be read` |
 | `model` | `the on-device model, one run at a time, is held by LABEL` |
 | `exclusive` | `it waits behind exclusive work queued ahead of it: LABEL`, or `… holding the host: LABEL` |
@@ -949,7 +965,8 @@ the owner's (the owner's decisions, 2026-10-28 and 2026-11-04,
 [vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). Before it
 offers the lane, `qk run` reads each Mac's capacity for it: a Mac has spare capacity while a
 guaranteed slot is free there, every guaranteed slot for a whole-host lane and every slot up to
-HEAVY_SLOTS_MAX for an exclusive one, its CPU's busy share is under its own HEAVY_BUSY_LIMIT, and
+HEAVY_SLOTS_MAX for an exclusive one, its CPU's busy share is under its own HEAVY_BUSY_LIMIT or
+nothing admitted runs there, and
 no whole-host lane or exclusive work runs there. On 2026-11-04 another Mac, 10 cores, ran two
 EPUBLib gates side by side at a load of 719 while this Mac, 18 cores, idled at 3, since its three
 guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates there that day
@@ -1027,19 +1044,22 @@ whose admission then held it back for as long as the exclusive work waited and r
    being that Mac's limits file, else the
    whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
    kept for a whole-host lane queued there, or exclusive work queued there. The CPU limit counts
-   only when the lane would need a slot beyond the guaranteed ones: a free guaranteed slot is
-   spare capacity however busy the CPU, as admission admits work into one. Until 2026-11-07 the
-   reading refused a Mac whose CPU was over its limit even with guaranteed slots free, so another
-   Mac declined work it would have admitted, at 93% busy against its 90% with two of four
-   guaranteed slots free, and this Mac's queue took it; the owner wants another Mac loaded as
-   much as possible, never the other way round. A second
+   on a Mac where admitted work runs, as in admission: at or above it such a Mac has no spare
+   capacity, with guaranteed slots free or not, and says `studio is busy (CPU 93% busy, at or
+   above its HEAVY_BUSY_LIMIT=90%, set in PATH) and admitted work runs there, so it takes no
+   more`. A Mac with nothing admitted has room for one job at any reading. From 2026-11-07 to
+   2026-11-17 a free guaranteed slot was spare capacity however busy the CPU, as admission then
+   admitted work into one; the rule was made when another Mac declined work at 93% busy against
+   its 90% with two of four guaranteed slots free and this Mac's queue took it, and it was
+   reversed once placement chose by headroom, so that a Mac over its limit sends work to a Mac
+   with room and not all of it to this Mac ([vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211)). A second
    Mac whose reading shows capacity may still decline the lane as busy once it is offered, as
    when every checkout of the project there is in use or the model is held: this Mac's own
    admission then gets the same five seconds, and the lane runs here if it admits it, the receipt
    recording that another Mac was busy. Busy is no configuration problem.
 3. While no Mac's reading shows spare capacity, `queuekeeper: no Mac has spare capacity for
    LANE now (…), so it goes to whichever admits it first, NAME asked first` says so, and
-   the lane is offered to another Mac, whose guaranteed slots admit it however busy its CPU. While
+   the lane is offered to another Mac, whose admission takes it if it can by then. While
    both decline it, the lane waits for whichever admits it first. It waits in this Mac's queue,
    15 s at first, doubling to 120 s, and between those waits the Macs are read again and the lane
    is offered to another Mac again when the reading allows, so another Mac is asked at least

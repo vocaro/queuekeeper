@@ -8,7 +8,9 @@ PDF slot. A deadline is never a release. An owner whose process has ended, or th
 cannot confirm still runs, loses its entry and its slots at the next attempt, which stops what is
 left of it first (vocaro/queuekeeper#23).
 
-HEAVY_SLOTS jobs are always admitted while no exclusive request waits. More, up to
+HEAVY_SLOTS jobs are admitted while no exclusive request waits and the CPU's busy share is under
+the host's limit, and the first of them whatever it reads, so that a host with nothing admitted
+always admits one (Admission._over_limit, vocaro/queuekeeper#211). More, up to
 HEAVY_SLOTS_MAX, are admitted one at a time while the CPU's busy share and memory pressure show
 spare capacity: a fixed count left the host idle behind jobs waiting on simulators, while ten
 unqueued builds starved watchdogd until the kernel panicked (2026-10-14). The busy share is the
@@ -1241,6 +1243,43 @@ class Admission:
             return "settle", f"the CPU has been read over {seconds:g}s, short of the {BUSY_MINIMUM:g}s a reading spans"
         return judged(busy, self.busy_limit, memory_level, self.said["busyLimit"])
 
+    def _over_limit(self, state):
+        """Why this Mac admits no more work into a guaranteed slot now, or None: its CPU reads at or above its limit
+        while work admitted here runs. A Mac's CPU limit bounds every admission but the first: over it, a guaranteed
+        slot opens only while nothing admitted runs here, so that load which never asks admission can delay work but
+        never stop all of it (the owner's decision, 2026-11-17, vocaro/queuekeeper#211). It reversed the rule of
+        2026-11-07 that a guaranteed slot admits at any reading, under which three wide lanes held a Mac over its
+        limit. Only a reading refuses: a busy share that cannot be read, or that spans too little yet, admits as
+        before. Work runs here while the guard records an admission, or another slot is held, as by a caller of the
+        old slot API. An entry recovery left whose owner has ended is neither, since it could then hold every request
+        back for good; it is counted as the slots it held, as before. The caller holds the coordination lock and has
+        taken this request's slots."""
+        busy = self.busy[0]
+        if busy is None or busy < self.busy_limit:
+            return None
+        if not any(identity not in self.stranded for identity in state["owners"]) and not self._others_hold():
+            return None
+        return (f"the CPU is {busy:.0f}% busy, at or above {self.said['busyLimit']}, and admitted work runs here: over "
+                "its CPU limit a Mac admits only its first job")
+
+    def _others_hold(self):
+        """Whether a slot this request did not take is held now: probed and let go at once, under the coordination
+        lock."""
+        mine = {slot for slot, _fd in self.descriptors}
+        for slot in range(self.maximum):
+            if slot in mine: continue
+            try:
+                fd = os.open(self.directory / f"slot{slot}", os.O_RDWR)
+            except FileNotFoundError:
+                continue
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            finally:
+                os.close(fd)
+        return False
+
     def _take_model(self):
         """The model lock's descriptor, or None with its holder named. The caller holds the coordination lock,
         under which every holder writes its identity, so the lock's holder is the one its file names."""
@@ -1445,6 +1484,14 @@ class Admission:
                     self._release()
                     return self._held_back(state)
                 self.descriptors.append(taken)
+            # The CPU limit bounds a guaranteed slot too, unless this is the Mac's first admission. A slot beyond them
+            # was judged as it was taken (_extra_refusal), and exclusive work is admitted only with nothing running.
+            over = None if self.exclusive or not any(slot < self.slots for slot, _fd in self.descriptors) else \
+                self._over_limit(state)
+            if over is not None:
+                self._release()
+                self.refusal, self.waiting = "cpu", over
+                return self._held_back(state)
             born = process_start(os.getpid())
             if born is None:
                 self._release()

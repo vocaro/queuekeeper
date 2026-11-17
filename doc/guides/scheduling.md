@@ -52,10 +52,10 @@ may run (2026-11-17). The rules in force do this only in part
 
 Read as one sentence: land as much as the Macs can verify truthfully, within each Mac's limits, in
 arrival order with bounded waits, and only then make a single run start sooner. The rules in force
-fall short of this in two places: a Mac's CPU limit bounds less of its load than goal 2 says, and
-several rules still name this Mac. Each is decided under [decisions](#decisions) and waits to be
-built. A third, placement that ordered the Macs without balancing them, ended on 2026-11-17 (rule
-14).
+fall short of this in one place: several rules still name this Mac. That is decided under
+[decisions](#decisions) and waits to be built. Two others ended on 2026-11-17: placement that
+ordered the Macs without balancing them (rule 14), and a CPU limit that bounded only the slots
+beyond the guaranteed ones (rule 3).
 
 ## Resources
 
@@ -64,9 +64,9 @@ Each row is something only so much work can have at once. The first five are one
 
 | Resource | Counted per | How much | Who takes it |
 | --- | --- | --- | --- |
-| Guaranteed slot | Mac | `slots`, 3 by default | any admitted work, whatever the CPU reads |
+| Guaranteed slot | Mac | `slots`, 3 by default | any admitted work while the CPU's busy share is under that Mac's `busyLimit`, and the first job on a Mac with nothing admitted whatever it reads |
 | Slot beyond the guaranteed | Mac | up to `slotsMax`, half the cores by default | one-slot work, one at a time, while the CPU's busy share is under that Mac's `busyLimit`, memory pressure is normal, and `settleSeconds` (30) have passed since the last admission |
-| Whole host | Mac | one lane | a whole-host lane: every guaranteed slot, and nothing else admitted while it runs |
+| Whole host | Mac | one lane | a whole-host lane: every guaranteed slot, under the same CPU limit, and nothing else admitted while it runs |
 | Exclusive host | Mac | one request | exclusive work: every slot up to `slotsMax` and the model, started once the CPU reads quiet (under 25%) or after 300 s |
 | Model and GPU | Mac | one run | a model run, with one slot ([model admission][model]) |
 | Unlocked screen | Mac | a state, not a lock | a lane that says `"unlockedScreen": true` ([screen state][screen]) |
@@ -85,16 +85,18 @@ owner sets another Mac's CPU limit higher than this Mac's. Setup does the same f
 installation: it writes a `busyLimit` of 70 for the Mac it runs on, and the default, which a Mac
 added to the farm keeps, is 90 (2026-11-17, [D7](#d7-no-mac-is-special)).
 
-**What the CPU limit bounds today, and what it does not.** `busyLimit` decides four things: whether
-a slot beyond the guaranteed ones opens, whether placement counts such a slot as room, which of the
-Macs with room placement chooses (rule 14), and when a queue's worker runs a lane again after a run
-with no verdict. It does not bound a Mac's load. A
-guaranteed slot admits work at any reading (2026-11-07), a whole-host lane starts on free
-guaranteed slots at any reading ([#12]), each slot holds a lane however many processes it starts
-([#170]), and work that never asks admission is not counted at all
-([load the queue cannot see][unseen]). On 2026-11-17 `qk admissions usage` read this Mac 92% busy
-against its limit of 70% and another Mac 100% busy against its 90%, with every guaranteed slot of
-both held. [D4](#d4-does-a-macs-cpu-limit-bound-every-admission) is the decision this leaves.
+**What the CPU limit bounds, and what it does not.** `busyLimit` decides whether a Mac admits more
+work: any slot, guaranteed or beyond, opens only under it, except for the first job on a Mac with
+nothing admitted (rule 3, [D4](#d4-does-a-macs-cpu-limit-bound-every-admission)). It decides the
+same for placement: whether a Mac has room, and which of the Macs with room is chosen (rules 14 and
+16). And it decides when a queue's worker runs a lane again after a run with no verdict. It bounds
+when work starts and not what it does afterward: each slot holds a lane however many processes it
+starts ([#170]), nothing is preempted (rule 12), and work that never asks admission is not counted
+at all ([load the queue cannot see][unseen]), though its load now delays every admission but the
+first. Until 2026-11-17 a guaranteed slot admitted work at any reading and a whole-host lane
+started on free guaranteed slots at any reading ([#12]): that day `qk admissions usage` read this
+Mac 92% busy against its limit of 70% and another Mac 100% busy against its 90%, with every
+guaranteed slot of both held.
 
 ## Work classes
 
@@ -126,7 +128,7 @@ hold the mechanism.
 | --- | --- | --- | --- |
 | 1 | All heavy work asks one queue per Mac. A private pool is a second queue and is not allowed. | Ten unbounded builds panicked a Mac, and a private pool ran the load to 764. | 2026-10-14 |
 | 2 | First come, first served, with no class by size or by who asks: a short check waits as a gate does, and a session's lane may hold a guaranteed slot while a queue's gate waits. | A class that goes first starves what it passes, and admission cannot tell how long work will run. | [ve#200], 2026-11-07; [ve#305]; 2026-11-17, [D3](#d3-may-hand-run-lanes-hold-guaranteed-slots-while-a-gate-waits) |
-| 3 | Three guaranteed slots admit at any CPU reading. Slots beyond them open one at a time under the Mac's `busyLimit`. | A fixed three left a Mac idle; no limit overloaded it; the load average misread a Mac running simulators. | [ve#200], 2026-11-06 |
+| 3 | A Mac's `busyLimit` bounds every admission but its first. Three guaranteed slots admit under it, and slots beyond them open one at a time under it once the Mac has settled and while its memory pressure is normal. At or over it, a Mac admits one job, and only while nothing admitted runs there. | A fixed three left a Mac idle; no limit overloaded it; the load average misread a Mac running simulators; guaranteed slots that admitted at any reading let three wide lanes hold a Mac over its limit. The first job is kept so that load which never asks cannot stop all work. | [ve#200], 2026-11-06; 2026-11-17, [D4](#d4-does-a-macs-cpu-limit-bound-every-admission) |
 | 4 | Each Mac sets its own limits. To load a Mac more, raise `slotsMax` and `busyLimit`, not `slots`. Setup writes a `busyLimit` of 70 for the Mac it runs on and never changes one that is set; the default, which an added Mac keeps, is 90. | Another Mac is to be loaded most and this Mac a little less, by each Mac's setting and by no rule that names a Mac. Each guaranteed slot added makes a Mac worse for gates. | 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 5 | One whole-host lane per Mac, and nothing else admitted while it runs. | A gate's load dips between phases; work admitted on a dip left a gate unmeasured after 1,116 s. | [ve#196], 2026-11-05 |
 | 6 | A whole-host lane that waits keeps the guaranteed slots from later arrivals, which run only beyond them. | Sessions' lanes took each slot as it freed, and a gate could wait out its 5,400 s. | [ve#174], 2026-11-05 |
@@ -144,7 +146,7 @@ hold the mechanism.
 | --- | --- | --- | --- |
 | 14 | Queuekeeper chooses the Mac: of the Macs with room, this Mac among them, the one with the most headroom, which is its CPU limit less its CPU's busy share; the farm's order between equals, this Mac after the Macs it lists; and whichever admits first when none has room. | The Macs are for work. Each Mac's own limit says how much it is to be loaded, so load spreads and the workstation's lower limit makes it the later choice at equal load. "Another Mac first" filled one Mac's slots and sent gates to this one. | [ve#168], 2026-11-04; 2026-11-17, [D5](#d5-how-is-load-balanced-across-the-macs) |
 | 15 | Every lane is offered unless it says `here` with a reason: a device, a measurement tied to this Mac's hardware, a self lane's parts. | A lane's first run elsewhere is its check; a difference between Macs is a defect to fix. | 2026-10-28, 2026-11-07 |
-| 16 | A Mac has room by its own admission's rules: a free guaranteed slot at any CPU reading, a slot beyond them under that Mac's `busyLimit`, and none while whole-host or exclusive work runs or is queued ahead there. The test is one for every Mac, the Mac that chooses included. | An offer sent where admission would hold it costs a checkout and a wait. A Mac with a test of its own is a special Mac. | [ve#186], [ve#191], [ve#201]; 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
+| 16 | A Mac has room by its own admission's rules: a free slot, guaranteed or beyond, under that Mac's `busyLimit`; room for one job at any reading while nothing admitted runs there; and none while whole-host or exclusive work runs or is queued ahead there. The test is one for every Mac, the Mac that chooses included. | An offer sent where admission would hold it costs a checkout and a wait. A Mac with a test of its own is a special Mac. | [ve#186], [ve#191], [ve#201]; 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 17 | Exclusive work sent to another Mac is offered to start at once, and joins that Mac's queue only after 900 s of declined offers. | A queued exclusive request idles the Mac while it waits; the bound keeps it from waiting forever. | [placement][placement] |
 | 18 | A Mac that cannot be reached is passed over and the work runs here. One that is set up wrongly runs nothing and stops for the owner. | Busy or away is ordinary; a different Xcode gives results that cannot be compared. | 2026-10-27, 2026-10-28 |
 | 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot. A locked screen holds back only work that declares the need: a bisect's older half that needs one is offered to the farm while this Mac's screen is locked. | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
@@ -177,7 +179,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D1 | The order of goals | Confirmed | Yes |
 | D2 | A gate passing one-slot work queued ahead | No: arrival order stays | Yes, unchanged |
 | D3 | Hand-run lanes holding guaranteed slots | Yes: the rule stays | Yes, unchanged |
-| D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Not built, [#211] |
+| D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Yes (rules 3 and 16) |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Yes (rule 14) |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Not built, [#211] |
 | D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room and this Mac as a candidate like any other: yes (rules 4, 14 and 16). The other rules that name this Mac, and the settings for kinds and labels: not built, [#211] |
@@ -190,7 +192,7 @@ D4 always allows, and a request there can end its 5,400 s wait with nothing run.
 
 Everything below leans on the order. It puts a bounded wait (3) above throughput (4), which is how
 [ve#174] and [ve#200] were decided, and puts each Mac's limits (2) above both, which the rules in
-force do not yet do ([D4](#d4-does-a-macs-cpu-limit-bound-every-admission)). [#84] records the
+force did not do until [D4](#d4-does-a-macs-cpu-limit-bound-every-admission) was built. [#84] records the
 owner's view of 2026-11-11 that slots and the heavy and light kinds should go, with work admitted
 by each Mac's measured headroom. That is a change of mechanism under the same goals, and D3 to D5
 are steps toward it or away from it.
@@ -276,7 +278,8 @@ holders prove common on other days.
 ### D4: Does a Mac's CPU limit bound every admission?
 
 **Decided, 2026-11-17: yes, but the first (option B).** A Mac over its limit takes no more work,
-except one job where nothing admitted runs. Not built: it lands with D5 or after it, never before.
+except one job where nothing admitted runs. In force as rules 3 and 16, built after D5 as the
+decision required.
 
 The owner's direction is that scheduling takes each host's CPU limit into account.
 [Resources](#resources) lists what the limit does and does not bound today. One cost of the gap is
