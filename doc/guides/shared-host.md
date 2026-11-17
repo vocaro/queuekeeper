@@ -38,7 +38,7 @@ Queuekeeper's own test runners are admitted the same way when nothing admitted t
 names, and inside a lane or `qk admit` they run in its admission. Started by themselves they once
 took no slot and ran on this Mac beside whatever else ran there. Now such a runner is admitted and placed
 first, as `qk admit -- COMMAND` would run it: `python3 scripts/qk unittest -s tests` waits for a
-slot, on another Mac first. In a folder with no `queuekeeper.json` it waits for a slot on this Mac.
+slot, on whichever Mac placement chooses. In a folder with no `queuekeeper.json` it waits for a slot on this Mac.
 `--unadmitted`, written after the runner's name, runs it with no admission on this Mac, which a test of
 the runner itself needs:
 
@@ -61,7 +61,7 @@ among them ([long-running measurements](https://github.com/vocaro/vocaro-enginee
 run is exclusive: build, install and set up first under `qk admit --here`, beside other sessions'
 work, then admit the timed run alone with `qk admit --here --exclusive`, as a separate command, such
 as `xcodebuild build-for-testing` and then `test-without-building`. Both take `--here`: each
-`qk admit` chooses its Mac on its own, another Mac first, so without it the build and the
+`qk admit` chooses its Mac on its own, so without it the build and the
 timed run of what it built can land on different Macs (a `self` lane's parts stay together
 without it). Setup, recovery and a functional
 run whose seconds are not meant as figures are heavy work. An exclusive request inside heavy
@@ -189,8 +189,8 @@ the maximum, is admitted one request at a time in arrival order once the work ru
 has ended, and holds every later request back until it ends. It is for a timed measurement that
 needs a quiet host and nothing else. A whole-host lane cannot be exclusive,
 since exclusive admission holds the host already. In the choice of Mac the two count alike: a Mac
-running either has no spare capacity for any heavy lane, which goes to another Mac first and is
-offered to both, to share where admission allows, only when neither has capacity
+running either has no spare capacity for any heavy lane, which goes to a Mac that has and is
+offered to each, to share where admission allows, only when none has capacity
 ([which Mac runs a lane](#which-mac-runs-a-lane)).
 
 Holding the host is not the same as a host that reads quiet. Exclusive work is admitted the moment
@@ -727,14 +727,19 @@ Admission reads the load before it admits and cannot account for work that never
 
 ## Another Mac
 
-The Macs are for work. Heavy work goes to whichever Mac has spare capacity for it now, another
-Mac first: this Mac takes what has to run here, what another Mac cannot run, and heavy
-work while another Mac has no spare capacity and this Mac has, and while neither has, the work
-goes to whichever admits it first. When one Mac is busy and the other idle, work starts on the idle
-one, and a session never asks the owner which Mac to use (the owner's decision, 2026-11-04,
-[vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). This Mac is the
+The Macs are for work. Heavy work goes to a Mac that has spare capacity for it now, and of
+those to the one with the most headroom against its own CPU limit, this Mac being a candidate as
+each of the others is: this Mac also takes what has to run here and what another Mac cannot run,
+and while no Mac has spare capacity, the work goes to whichever admits it first. When one Mac is
+busy and the other idle, work starts on the idle one, and a session never asks the owner which
+Mac to use (the owner's decision, 2026-11-04,
+[vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). Until
+2026-11-17 the rule was "another Mac first": this Mac took work only when no other Mac had room
+([vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211), step 3). This Mac is the
 owner's workstation, busy with work the queue never sees, while another Mac is otherwise idle
-and has more memory and disk; its screen stays the owner's, which is a separate rule
+and has more memory and disk. What keeps it less loaded now is its own lower CPU limit, which
+setup writes ([heavy-work admission](#heavy-work-admission)), and no rule of placement. Its
+screen stays the owner's, which is a separate rule
 ([attended Mac sessions](#attended-mac-sessions)). queuekeeper, not the session, chooses the Mac;
 configuration calls sending work there offloading it. Another Mac runs work under its own heavy-work
 admission: each host's queue sees that host's load, so another Mac is no private slot pool.
@@ -744,10 +749,10 @@ host. Records made until then, measurements among them, keep that name, and queu
 configuration's earlier names ([earlier names](#earlier-names)).
 
 ```sh
-python3 scripts/qk run LANE [-- ARGUMENTS]            # a heavy lane: whichever Mac has spare capacity, another Mac first
+python3 scripts/qk run LANE [-- ARGUMENTS]            # a heavy lane: the Mac with spare capacity and the most headroom
 python3 scripts/qk run --here LANE                    # this Mac
 python3 scripts/qk run --offload-only LANE            # another Mac if it can start it now, never here
-python3 scripts/qk admit -- COMMAND                   # any other heavy command: another Mac first, as a lane goes
+python3 scripts/qk admit -- COMMAND                   # any other heavy command: placed as a lane is
 python3 scripts/qk admit --here -- COMMAND            # this Mac: a command whose products the session uses here
 python3 scripts/qk remote run LANE [-- ARGUMENTS]     # any lane, on another Mac
 python3 scripts/qk remote admit [--exclusive | --model] -- COMMAND
@@ -758,10 +763,10 @@ python3 scripts/qk remote setup --runtimes [--check]     # each Mac's simulator 
 
 ### Which Mac runs a lane
 
-Every lane in queuekeeper.json, a short check as much as a gate, goes to another Mac first
-unless it says why it stays on this Mac, as `"here": "REASON"`, which configuration validation
-requires to be a nonempty reason, and runs on this Mac when another Mac is at capacity (the
-owner's decision, 2026-11-07). A lane says `here` when it needs a physical device, or a measurement
+Every lane in queuekeeper.json, a short check as much as a gate, is placed among the Macs,
+this Mac and the farm's others alike, unless it says why it stays on this Mac, as
+`"here": "REASON"`, which configuration validation requires to be a nonempty reason (the
+owner's decisions, 2026-11-07 and 2026-11-17). A lane says `here` when it needs a physical device, or a measurement
 tied to this Mac's hardware, such as goldens rendered on this Mac's GPU. A `self` lane runs where
 it starts, and its script's `qk admit` commands run there: its parts share build products, a build
 and then an exclusive timed run of what was built, so `qk run` sets `QUEUEKEEPER_SELF_LANE` to the
@@ -812,28 +817,44 @@ Workers started from Terminal, Codex, or the signed LaunchAgent read the same fi
 An explicit `HEAVY_SLOT_DIR` namespace reads its own `farm.json` from that directory. A farm with
 no Mac that takes work keeps every lane on this Mac.
 
-Every Mac that takes work is offered a lane or an admitted command, in the list's order, and this
-Mac is the local fallback. Each Mac that can be reached is read for its capacity, and the first
-with spare capacity for the work is sent it: a whole-host lane passes over a Mac with a guaranteed
-slot busy and starts at once on an idle Mac later in the list. A Mac that is unreachable, or
-declines before the work starts, is passed over for the next. When no Mac of the list has spare
-capacity, the work takes this Mac's admission while this Mac has, and otherwise goes to whichever
-admits it first, the first Mac reached asked first, with the list read again while it waits. A
-misconfigured host stops the offer with its diagnosis, and an interrupted connection to a run
-that may have started yields no verdict.
+Every Mac that may run a lane or an admitted command is a candidate for it: each Mac of the
+list that takes work, and this Mac. Each that can be reached is read for its capacity, and of
+those with spare capacity for the work, the one with the most headroom takes it. A Mac's headroom
+is its CPU limit less its CPU's busy share, in percent of its CPU's time: a Mac 40% busy against
+a limit of 90% has 50 points, and one 40% busy against 70% has 30. Between Macs with the same
+headroom the list's order decides, and this Mac, which the list does not hold, comes after the
+Macs it lists; so does a Mac whose busy share cannot be read. Another Mac is sent the work; when
+this Mac is the choice, the work takes this Mac's admission and nothing is offered, and
+`queuekeeper: trying LANE on this Mac: this Mac has the most headroom of the Macs with spare
+capacity, 50 points under its CPU limit: studio 12 points under its CPU limit` says so. A
+whole-host lane passes over a Mac with a guaranteed slot busy and starts at once on an idle Mac
+later in the list. A Mac that is unreachable, or declines before the work starts, is passed over
+for the one with the next most headroom. When no Mac has spare capacity, the work goes to
+whichever admits it first, the first Mac reached asked first, with the Macs read again while it
+waits. A misconfigured host stops the offer with its diagnosis, and an interrupted connection to
+a run that may have started yields no verdict.
+
+The limit is each Mac's own, so headroom carries what its owner wants of it: the workstation's
+lower limit makes it the later choice at equal load, and a Mac that reads over its limit is the
+last. This took the place of "another Mac first, this Mac when no other has room" (the owner's
+decision, 2026-11-17, [vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211), step 3). That rule ordered the Macs
+and did not balance them: one-slot work filled another Mac's guaranteed slots first, and a gate,
+which needs all of them free, then ran on this Mac. On the morning of 2026-11-17, 40 of this
+Mac's 47 admissions in three hours had first been offered to another Mac and declined there. The
+costs are the ones the decision accepted: a reading spans about 15 seconds and a gate's load dips
+between its phases, so several placements can choose the same quiet Mac, and work that leaves a
+warm checkout for a Mac with more headroom builds colder.
 
 Every Mac is read by one test of room, this Mac as each of the others: what its own admission
-would admit now. In a farm with more than one other Mac, ordinary work also has room in a slot
-beyond the guaranteed ones where admission would open one, on a Mac that has settled since its
-last admission, with its CPU under its own limit and its memory pressure normal. With one other
-Mac only a free guaranteed slot is room, on either Mac. Until 2026-11-17 such a slot counted on
-the farm's other Macs and never on this Mac, which was read as full while it had one, so that
-work was offered to a Mac with nothing free
-([vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211), step 2). The merge
-queue's wait before a retry reads the Macs by the same test.
+would admit now. Ordinary work also has room in a slot beyond the guaranteed ones where admission
+would open one, on a Mac that has settled since its last admission, with its CPU under its own
+limit and its memory pressure normal. Until 2026-11-17 such a slot counted only on the farm's
+other Macs, and only when the farm had more than one of them
+([vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211), steps 2 and 3). `qk admissions usage` and `qk queue placement` apply the same test,
+and so does the merge queue's wait before a retry, which reads the Mac the choice would make.
 
-A lane that only some Macs may run, such as one whose `chips` list some Macs' chips, is offered
-to those Macs alone, in the list's order.
+A lane that only some Macs may run, such as one whose `chips` list some Macs' chips, is placed
+among those Macs alone.
 
 A foreground lane takes a Mac's screen, so it goes only to a Mac the owner marked for it with
 `qk farm foreground NAME`: the first marked Mac that takes work now and can be reached, where it
@@ -922,8 +943,8 @@ which places it as `"unlockedScreen": true` does, on an undeclared lane too
 `qk run` sends the lane to the Mac that has spare capacity for it, whole or filtered
 (`qk run LANE -- FILTER`), over the working tree as it is: a tree with uncommitted changes or new
 files goes as a snapshot commit ([how a run reaches another Mac](#how-a-run-reaches-another-mac)),
-so a session's iteration over its edits runs there too. The Macs are for work, another Mac
-first, and the choice is queuekeeper's, by what each Mac's admission would admit, never the session's or
+so a session's iteration over its edits runs there too. The Macs are for work,
+and the choice is queuekeeper's, by what each Mac's admission would admit and each Mac's headroom, never the session's or
 the owner's (the owner's decisions, 2026-10-28 and 2026-11-04,
 [vocaro-engineering#168](https://github.com/vocaro/vocaro-engineering/issues/168)). Before it
 offers the lane, `qk run` reads each Mac's capacity for it: a Mac has spare capacity while a
@@ -934,13 +955,14 @@ EPUBLib gates side by side at a load of 719 while this Mac, 18 cores, idled at 3
 guaranteed slots admitted the second gate whatever the load, and 8 of 12 gates there that day
 ended with no verdict; the rule above is what that cost.
 
-"Another Mac first" orders the offer; it does not keep work off this Mac. Some work is never
+Placement keeps work off no Mac. Some work is never
 offered: `qk admit --here`, `self` lanes and the `qk admit` parts their scripts run, `--here` runs,
 foreground work and lanes that say why they stay here run where they start, and the receipt's
 `hereBecause` says so. Light lanes and `qk admit` without `--verify` were never offered until
-2026-11-07; they are now, as every lane is (the owner's decision, 2026-11-07). Offered work fills
-another Mac's guaranteed slots first, so a whole-host lane, such as a gate, which needs all of
-them free, seldom finds them free there and starts on this Mac instead. On 2026-11-06 this
+2026-11-07; they are now, as every lane is (the owner's decision, 2026-11-07). Until 2026-11-17
+offered work went to another Mac first and filled
+its guaranteed slots, so a whole-host lane, such as a gate, which needs all of
+them free, seldom found them free there and started on this Mac instead. On 2026-11-06 this
 Mac's fan ran while another Mac's stayed quiet, yet another Mac was 97% busy and had run
 three or four heavy jobs for 48% of the previous three hours, while this Mac ran one, a whole-host
 gate, for 84% of them; it took hand scripting to show it. Judge a Mac's use by its reading, not by
@@ -949,7 +971,8 @@ room for a heavy and for a whole-host lane, the share of the last 3 hours (`--si
 set another period) each Mac spent at each count of admitted heavy jobs, and this Mac's admissions
 by why they ran here: never offered (`qk admit --here`, a self lane's part, foreground work,
 `qk run --here`, a lane that says `here`, nested work, and in lines from before 2026-11-07
-`qk admit` without `--verify`) or offered and declined, with another Mac's reason. Admission lines
+`qk admit` without `--verify`), placed here as the Mac with the most headroom of those with room,
+or offered and declined, with another Mac's reason. Admission lines
 record their placement from 2026-11-07 on, and older ones count as unrecorded under their labels.
 A `self` lane takes no admission of its own and is not counted; the parts its script admits are.
 
@@ -991,12 +1014,15 @@ whole-host request that asks is that request's turn, read as the slots kept for 
 vocaro-engineering#191 the reading did not report such a request, and queuekeeper offered a lane to a Mac
 whose admission then held it back for as long as the exclusive work waited and ran.
 
-1. Another Mac runs the lane when its reading shows spare capacity and it can start the lane
+1. Another Mac runs the lane when its reading shows spare capacity, no Mac with spare capacity
+   has more headroom, and it can start the lane
    now: its queue admits the lane within five seconds (`qk run --if-free` there, which exits 75
    without running otherwise) and one of the project's four checkouts there is free.
-2. When another Mac's reading shows no spare capacity and this Mac's shows some, the lane goes
+2. When this Mac's reading shows spare capacity and no other Mac's shows spare capacity with more
+   headroom, the lane goes
    to this Mac's queue at once, and nothing is offered: `queuekeeper: trying LANE on this Mac:` says why,
-   and the receipt's `hereBecause` records it, naming another Mac's CPU when that is it, as
+   and the receipt's `hereBecause` records it: the headroom of each Mac with spare capacity, or why
+   another Mac has none, naming its CPU when that is it, as
    `studio is busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%, set in PATH)`, for a Mac named studio, PATH
    being that Mac's limits file, else the
    whole-host lane or exclusive work running there, its guaranteed slots all busy, or those slots
@@ -1213,11 +1239,11 @@ sets it from its own checkout of the extension's folder, in place of any value t
 set, so a path of this Mac's never reaches another Mac
 ([vocaro/queuekeeper#97](https://github.com/vocaro/queuekeeper/issues/97)).
 
-`qk admit -- COMMAND` goes as a lane does, at HEAD or a snapshot commit: to whichever Mac has
-spare capacity for it, another Mac first, to this Mac while another Mac has none or cannot
-be reached, and while neither has to whichever admits it first, within its `--timeout`;
-`--if-free` asks each once (the owner's decision, 2026-11-07: all work first come, first served,
-another Mac first; until then only `qk admit --verify` was offered, and `--verify` is still
+`qk admit -- COMMAND` goes as a lane does, at HEAD or a snapshot commit: to the Mac with spare
+capacity for it and the most headroom, this Mac among them, and while none has to whichever
+admits it first, within its `--timeout`;
+`--if-free` asks each once (the owner's decision, 2026-11-07: all work first come, first served;
+until then only `qk admit --verify` was offered, and `--verify` is still
 accepted, meaning the same). The Macs share gigabit Ethernet, and a dispatch prepares and sends
 in about 4 s. The command runs in the directory of another Mac's checkout that matches the
 current one, and its output and receipt come back to `.build/queuekeeper/remote/admit/`. queuekeeper keeps

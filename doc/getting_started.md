@@ -124,8 +124,8 @@ Do this once you have landed changes on one Mac.
 Add more Macs the same way. `qk farm list` shows them in the order work is offered to them, and
 [the build farm](build_farm.md#adding-and-removing-macs) covers renaming, pausing and removing one.
 
-From then on, lanes are offered to the farm's other Macs first and run on the first Mac when none
-has room. [The build farm](build_farm.md) explains how the choice is made and how the code gets
+From then on, each lane runs on the Mac with room for it and the most headroom under its own CPU
+limit, the first Mac included. [The build farm](build_farm.md) explains how the choice is made and how the code gets
 there.
 
 ## Keep the queue running

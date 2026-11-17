@@ -769,7 +769,7 @@ def retired(lanes):
 
 
 def place(name, lane):
-    """Every admitted lane goes to another Mac first unless "here" says why it stays on this Mac, such as
+    """Every admitted lane is placed among the Macs unless "here" says why it stays on this Mac, such as
     a physical device or a measurement tied to this Mac's hardware, like goldens rendered on its GPU
     (doc/guides/shared-host.md, Which Mac runs a lane)."""
     if "here" not in lane: return

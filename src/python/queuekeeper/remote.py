@@ -14,16 +14,16 @@ the repository's Git directory, where every worktree of the repository can find 
 whole lane's run on this Mac at a commit with no working changes (keep_here); a snapshot's is not,
 and queuekeeper says so when it sends one.
 
-`qk run` sends every admitted lane to whichever Mac has spare capacity for it now,
-another Mac first, unless the lane says why it stays on this Mac, and `qk admit` a
+`qk run` sends every admitted lane to the Mac that has spare capacity for it now and the most
+headroom under its own CPU limit, unless the lane says why it stays on this Mac, and `qk admit` a
 command the same way, unless `--here` or its paths and devices keep it on this Mac; what the command
 changed in the checkout's files that Git does not ignore comes back as a patch and is applied here
 (brought_back), while its build products stay there (the owner's decision, 2026-11-07). Before it
-offers the work it reads each Mac's capacity (offload_host.capacity, spare): another Mac runs the work when it has a guaranteed
-slot free, all of them for a whole-host lane, its CPU's busy share is under its limit and no whole-host lane
-or exclusive work holds it, and then only if it can start the work now; when it has no spare
-capacity and this Mac has, this Mac takes the work at once, with another Mac's reason in the
-receipt (Loaded); and while neither has, the work goes to whichever admits it first, offered to
+offers the work it reads each Mac's capacity (offload_host.capacity, spare), this Mac's among them: a Mac has spare
+capacity when it has a guaranteed slot free, all of them for a whole-host lane, or a slot beyond them that its
+admission would open, and no whole-host lane or exclusive work holds it. Of the Macs with spare capacity the one with
+the most headroom takes the work (Offer.attempt, headroom): another Mac if it can start the work now, and this Mac at
+once, with why in the receipt (Loaded); and while none has, the work goes to whichever admits it first, offered to
 another Mac again and again (overflow). The Macs are for work, and a session never asks the
 owner which (the owner's decisions, 2026-10-28 and 2026-11-04, vocaro-engineering#168). First it
 checks, within seconds, that another Mac can be reached. When it cannot, because its name does not resolve, as when
@@ -3169,30 +3169,31 @@ class Offer:
         """Why mac, read as reading, has no spare capacity for the work now, or None while it has: the one test of
         room, which judges this Mac as it judges every other (spare). Until vocaro/queuekeeper#211 a slot beyond the
         guaranteed ones counted as room on another Mac of several and never on this Mac."""
-        return spare(reading, mac, self.whole_host, self.exclusive, self.screen, extra=self.several())
-
-    def spare_there(self, host):
-        """Why the Mac at host has no spare capacity for the work now, by its own reading, or None while it has."""
-        kept = self.sents.get(host, {})
-        options = {"started": kept["requestStarted"]} if "requestStarted" in kept else {}
-        return self.room(capacity_there(host, **options), self.called(host))
+        return spare(reading, mac, self.whole_host, self.exclusive, self.screen)
 
     def attempt(self):
-        """Offer the work once, to the farm's Macs in order: its status on the one that took it, or Busy, Unreachable
-        or Unavailable raised when none did.
+        """Offer the work once: its status on the Mac that took it, or Busy, Unreachable or Unavailable raised when
+        none did.
 
-        Each Mac that can be reached is read for its capacity (spare), and the first with spare capacity is sent the
-        work; one that declines it as busy, or cannot be reached, is passed over for the next, so work goes at once to
-        an idle Mac behind a loaded one. When no Mac has spare capacity, the work goes to this Mac's queue while this
-        Mac has (Loaded, with nothing offered); and when this Mac has none either, or never runs the work
-        (--offload-only), to whichever admits it first, the first Mac reached asked first, as before the choice
-        existed. Every Mac is for work: a session uses one with capacity and never asks the owner which
-        (vocaro-engineering#168). A Mac whose configuration stops the work stops it (Misconfigured), and so does this
-        process's loss of the local network. An offer that never runs here, to a farm of one Mac, reads no capacity."""
+        Every Mac that may run the work is a candidate, this Mac among them unless the work never runs here
+        (--offload-only). Each is read for its capacity (room), and of those with spare capacity the one with the
+        most headroom against its own CPU limit takes the work (headroom), the farm's order deciding between equals
+        and this Mac, which the farm does not list, coming after the Macs it lists: another Mac is sent the work, and
+        for this Mac the work goes to this Mac's queue (Loaded, with nothing offered). One that declines it as busy
+        is passed over for the next. This took the place of "another Mac first, this Mac when no other has room"
+        (the owner's decision, 2026-11-17, vocaro/queuekeeper#211): each Mac's limit says how much it is to be loaded,
+        and no rule names a Mac. When no Mac has spare capacity, the work goes to whichever admits it first, the
+        first Mac reached asked first, as before the choice existed. Every Mac is for work: a session uses one with
+        capacity and never asks the owner which (vocaro-engineering#168). A Mac whose configuration stops the work
+        stops it (Misconfigured), and so does this process's loss of the local network. An offer that never runs here,
+        to a farm of one Mac, reads no capacity."""
         if self.refused is not None: raise Unavailable(self.refused)
         with processes.forwarding_signals(), resources.request_order(self.started):
             failures, full, said, reached = [], [], [], False
-            for host in self.hosts:
+            # The Macs with spare capacity: how far each reads under its limit, its place in the order, the Mac, as
+            # an SSH destination or None for this Mac, and its name.
+            roomy = []
+            for order, host in enumerate(self.hosts):
                 try:
                     # A Mac that cannot be reached costs seconds here, and nothing is sent to it.
                     reachable(host)
@@ -3201,23 +3202,44 @@ class Offer:
                     if not reached and self.away is not None and self.busy is not None:
                         lane_wait.waiting(lane_wait.OVERFLOW, self.busy)
                     reached = True
-                    reason = self.spare_there(host) if self.choosing or self.several() else None
-                    if reason is None: return self.offer(host)
-                    full.append(host)
-                    said.append(reason)
+                    if not (self.choosing or self.several()): return self.offer(host)
+                    kept = self.sents.get(host, {})
+                    reading = capacity_there(host, **({"started": kept["requestStarted"]} if "requestStarted" in kept else {}))
+                    reason = self.room(reading, self.called(host))
+                    if reason is None:
+                        roomy.append((headroom(reading), order, host, self.called(host)))
+                    else:
+                        full.append(host)
+                        said.append(reason)
+                except (NoLocalNetwork, Misconfigured):
+                    raise
+                except Unavailable as error:
+                    failures.append(error)
+                    said.append(self.words(error))
+            here = None
+            if self.choosing and (roomy or full):
+                reading = offload_host.capacity(own=self.place.identity if self.place is not None else None,
+                                                before=self.started)
+                here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
+                        else self.room(reading, HERE))
+                if here is None: roomy.append((headroom(reading), len(self.hosts), None, HERE))
+            roomy.sort(key=most_headroom)
+            for at, (_under, _order, host, _name) in enumerate(roomy):
+                if host is None:
+                    # This Mac's queue takes it; the Macs with less headroom, if any, are asked again from there.
+                    # One Mac alone that had more and declined says so itself, as before the choice was by headroom.
+                    if not roomy[at + 1:] and not full and len(failures) == 1 and isinstance(failures[0], Busy):
+                        raise failures[0]
+                    raise Loaded("; ".join(said + ([headroom_words(roomy[at:])] if roomy[at + 1:] else [])))
+                try:
+                    return self.offer(host)
                 except (NoLocalNetwork, Misconfigured):
                     raise
                 except Unavailable as error:
                     failures.append(error)
                     said.append(self.words(error))
             if full:
-                if self.choosing:
-                    reading = offload_host.capacity(own=self.place.identity if self.place is not None else None,
-                                                    before=self.started)
-                    here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
-                            else self.room(reading, HERE))
-                    if here is None: raise Loaded("; ".join(said))
-                    said.append(here)
+                if self.choosing: said.append(here)
                 host = full[0]
                 if self.neither != tuple(said):
                     print(f"queuekeeper: no Mac has spare capacity for {self.name} "
@@ -3540,7 +3562,7 @@ def screen_refusal(found, mac):
     return f"the lane needs an unlocked screen, and {mac}'s is {found['state']} ({offload_host.screen_line(found)})"
 
 
-def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extra=False):
+def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
     whole-host lane and every slot up to the maximum for exclusive work, no whole-host lane or exclusive work
@@ -3557,9 +3579,10 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
     Mac and, for its CPU, the busy share read and the limit, and the request queued ahead; the receipt's hereBecause
     carries it. With screen, for a lane
     that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal).
-    With extra, a pool may also offer ordinary work to a Mac with an eligible slot beyond the guaranteed ones. A
-    choice among Macs passes the same extra for each of them, the Mac that chooses included (Offer.room,
-    retry_macs): no Mac has a test of room of its own (vocaro/queuekeeper#211)."""
+    Ordinary work whose Mac has every guaranteed slot busy has room in a slot beyond them where admission would
+    open one, by the same settle, CPU and memory tests. That is so on every Mac, the Mac that chooses included: no
+    Mac has a test of room of its own, and none depends on how many Macs the farm has (vocaro/queuekeeper#211).
+    Until then such a slot counted only on another Mac of several."""
     if screen:
         refused = screen_refusal(reading.get("screen"), mac)
         if refused is not None: return refused
@@ -3591,9 +3614,12 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
     if whole_host and taken:
         return (f"a whole-host lane needs every guaranteed slot of {mac} (HEAVY_SLOTS={slots}) free, and {len(taken)} "
                 f"{'is' if len(taken) == 1 else 'are'} busy")
+    # Whether the work needs a slot beyond the guaranteed ones because they are all busy, which its reason then says.
+    crowded = ""
     if not exclusive and not whole_host and kept is None and len(taken) >= slots:
         held = f"every guaranteed slot of {mac} is busy (HEAVY_SLOTS={slots})"
-        if not extra or len(busy) >= maximum: return held
+        if len(busy) >= maximum: return held
+        crowded = f"{held}, and "
     # A guaranteed slot is admitted whatever the CPU and memory read, so they bound only a slot beyond them.
     if held is None:
         return None
@@ -3606,10 +3632,10 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
     found, limit = reading.get("cpuBusy"), reading["busyLimit"]
     busy = found if isinstance(found, (int, float)) and not isinstance(found, bool) else None
     if busy is None:
-        return f"the CPU busy share of {mac}, which {said('busyLimit', limit)} bounds, is unavailable"
+        return f"{crowded}the CPU busy share of {mac}, which {said('busyLimit', limit)} bounds, is unavailable"
     if busy >= limit:
         whence = limit_whence(reading, "busyLimit")
-        return (f"{mac} is busy (CPU {busy:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%"
+        return (f"{crowded}{mac} is busy (CPU {busy:.0f}% busy, at or above its HEAVY_BUSY_LIMIT={limit:g}%"
                 f"{', ' + whence if whence else ''})")
     # Beyond the guaranteed slots, memory pressure that is not normal, or cannot be read, withholds the slot, judged
     # as admission judges it; an older toolkit's reading has no memory, and withholds nothing by it.
@@ -3619,6 +3645,35 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
         if refused is not None:
             return f"{held}, and on {mac} {refused[1]}"
     return None
+
+
+def headroom(reading):
+    """How far under its own CPU limit a Mac reads (offload_host.capacity): its HEAVY_BUSY_LIMIT less its CPU's busy
+    share, in percent of its CPU's time, or None when the reading has no busy share. Among the Macs with spare
+    capacity for work, the one with the most takes it (Offer.attempt; the owner's decision, 2026-11-17,
+    vocaro/queuekeeper#211). The limit is each Mac's own, so a Mac whose owner set a lower one is the later choice at
+    equal load, by its setting and by no rule that names it."""
+    busy, limit = reading.get("cpuBusy"), reading.get("busyLimit")
+    if not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (busy, limit)): return None
+    return round(limit - busy, 1)
+
+
+def most_headroom(candidate):
+    """The order of the Macs with spare capacity, each as (headroom, place in the farm's order, ...): the most headroom
+    first, a Mac whose busy share is unavailable after those that gave one, and the farm's order between equals."""
+    under, order = candidate[:2]
+    return (under is None, -(under or 0.0), order)
+
+
+def headroom_words(candidates):
+    """Why the first of candidates, ordered by most_headroom and each ending in its Mac's name, was chosen over the
+    rest: each Mac's headroom, for the line and the receipt that say where work runs."""
+    def said(under):
+        return ("its CPU unread" if under is None else f"{under:g} points under its CPU limit" if under >= 0
+                else f"{-under:g} points over its CPU limit")
+    (under, *_rest, name), others = candidates[0], candidates[1:]
+    return (f"{name} {resources.MOST_HEADROOM}, {said(under)}: "
+            + ", ".join(f"{other} {said(less)}" for less, *_rest, other in others))
 
 
 def limit_from(reading, key):
@@ -3644,31 +3699,37 @@ def retry_macs(hosts, lanes, lane, screen=False):
     """([each Mac, one of the farm's by its SSH destination and this Mac as None], why them, to follow "next on")
     that a run of lanes' lane, about to start, could use, by each Mac's capacity now as Offer.attempt reads it: the
     merge queue's settle wait before a retry reads these (vocaro-engineering#253). hosts are the farm's Macs the lane
-    may go to, in order. The Mac cannot be known for certain beforehand, since it is chosen as the run starts: the
-    first of the farm's Macs with spare capacity for the lane, this Mac when only it has, and whichever admits the
-    lane first when none has, so then each could take it. Even a Mac's spare capacity is only its reading, and it can
+    may go to, in order. The Mac cannot be known for certain beforehand, since it is chosen as the run starts: of the
+    Macs with spare capacity for the lane, this Mac among them, the one with the most headroom against its own CPU
+    limit (headroom), and whichever admits the lane first when none has, so then each could take it. Even a Mac's spare capacity is only its reading, and it can
     still decline the offer: then another takes the run. screen says the lane needs an unlocked screen, for this run
     if not by its configuration."""
     settings = lanes[lane]
     needs = bool(settings.get("wholeHost")), settings.get("resource") == "exclusive", screen or unlocked_screen(lanes, lane)
     hosts = (hosts,) if isinstance(hosts, str) else tuple(hosts)
-    # One test of room for every Mac, this one included, as Offer.room applies it.
-    room = lambda reading, mac: spare(reading, mac, *needs, extra=len(hosts) > 1)
-    full, said = [], []
-    for host in hosts:
+    full, said, roomy = [], [], []
+    for order, host in enumerate(hosts):
         name = farm.named(host)
-        try: reason = room(capacity_there(host), name)
+        try: reading = capacity_there(host)
         except Unavailable as away:
             said.append(f"{name}'s capacity cannot be read: {getattr(away, 'problem', away)}")
             continue
-        if reason is None: return [host], f"{name}, which has spare capacity for {lane} and is asked first"
-        full.append(host)
-        said.append(reason)
-    if not full: return [None], f"this Mac, since {'; '.join(said) or NO_MAC}"
+        reason = spare(reading, name, *needs)
+        if reason is None:
+            roomy.append((headroom(reading), order, host, name))
+        else:
+            full.append(host)
+            said.append(reason)
+    if not full and not roomy: return [None], f"this Mac, since {'; '.join(said) or NO_MAC}"
     reading = offload_host.capacity()
     here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
-            else room(reading, HERE))
-    if here is None: return [None], f"this Mac, the one with spare capacity for {lane}: {'; '.join(said)}"
+            else spare(reading, HERE, *needs))
+    if here is None: roomy.append((headroom(reading), len(hosts), None, HERE))
+    roomy.sort(key=most_headroom)
+    if len(roomy) > 1:
+        return [roomy[0][2]], f"{roomy[0][3]}, where {lane} would go: {headroom_words(roomy)}"
+    if roomy and roomy[0][2] is None: return [None], f"this Mac, the one with spare capacity for {lane}: {'; '.join(said)}"
+    if roomy: return [roomy[0][2]], f"{roomy[0][3]}, the one with spare capacity for {lane}: {'; '.join([*said, here])}"
     return [*full, None], (f"whichever Mac admits {lane} first, since none has spare capacity for it "
                            f"({'; '.join(said)}; {here}), so each must settle")
 

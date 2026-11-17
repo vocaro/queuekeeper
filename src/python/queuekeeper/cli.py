@@ -314,8 +314,8 @@ def placement(reason):
 
 
 def admission_placement(offered, reason):
-    """What a run's admission line says of its placement, which `qk admissions usage` counts: whether queuekeeper offered it
-    to another Mac first (offered) and why it runs here (because), or the Mac that sent it (remote.DISPATCHER)."""
+    """What a run's admission line says of its placement, which `qk admissions usage` counts: whether queuekeeper placed it
+    among the Macs (offered) and why it runs here (because), or the Mac that sent it (remote.DISPATCHER)."""
     sender = os.environ.get(remote.DISPATCHER)
     if sender: return {"dispatchedFrom": sender}
     # With no other Mac configured, Offer.make gives that reason before checking local eligibility.
@@ -747,7 +747,7 @@ def patch_environment(values):
 
 
 def admit(root, args, config=None, *, device_window=None):
-    # A command goes to whichever Mac has spare capacity for it, another Mac first, as a lane does, and runs there
+    # A command goes to the Mac with spare capacity for it and the most headroom, as a lane does, and runs there
     # in the checkout's directory that matches the current one; what it changed in the checkout's files that Git does
     # not ignore comes back (remote.brought_back). --here, its paths and devices, nested and foreground work, and a
     # self lane's parts keep it here (doc/guides/shared-host.md, Which Mac runs a lane).
@@ -776,7 +776,7 @@ def admit(root, args, config=None, *, device_window=None):
     reason = here_because(args, inherited)
     offered = None
     if reason is None:
-        # Whichever Mac has spare capacity for it, another Mac first (remote.first_command, admitted_here).
+        # The Mac with spare capacity for it and the most headroom (remote.first_command, admitted_here).
         offered = remote.first_command(root, config, command, kind)
         if not isinstance(offered.status, str): return offered.status
         reason = offered.status
@@ -1122,8 +1122,8 @@ def perform(argv, report):
     hook.add_argument("remote", nargs="*", help="the remote's name and URL, as Git gives a pre-push hook")
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] [--repeat N [--erase|--template] [--only TEST]] "
         "lane [-- ARGUMENTS ...]",
-        help="run a configured lane, admitting a heavy or exclusive one, on whichever Mac has spare capacity for "
-        "it now, the farm's other Macs first, and on this Mac while another Mac has none or cannot be reached, unless "
+        help="run a configured lane, admitting a heavy or exclusive one, on the Mac that has spare capacity for "
+        "it now and the most headroom under its own CPU limit, this Mac or one of the farm's, unless "
         "the lane says why it stays on this Mac: qk run LANE [-- ARGUMENTS], which appends the arguments, such as "
         "a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests, skipped and "
@@ -1174,8 +1174,8 @@ def perform(argv, report):
         "unittest's processes finished, failed and running, and when it last moved, or an admitted runner's output; "
         "qk progress [--all] [RUN ...]")
     admission =commands.add_parser("admit", help="run any other heavy command (a build, swift test, xcodebuild "
-        "test, a simulator run, a gate suite) through heavy-work admission on whichever Mac has spare capacity for "
-        "it, the farm's other Macs first, as qk run places a lane: qk admit -- COMMAND; what it changes in the "
+        "test, a simulator run, a gate suite) through heavy-work admission on the Mac that has spare capacity for "
+        "it and the most headroom, as qk run places a lane: qk admit -- COMMAND; what it changes in the "
         "checkout's files that Git does not ignore comes back and is applied here, while its build products stay "
         "on the Mac that ran it. Add --here for a command whose products this session uses here afterwards, "
         "--model for a generative-model run, and --exclusive only for work that needs the host to itself")
@@ -1197,16 +1197,16 @@ def perform(argv, report):
     placed = admission.add_mutually_exclusive_group()
     placed.add_argument("--here", action="store_true", help="run the command on this Mac, never offering it to "
         "another Mac: for a command whose products this session uses here afterwards, such as build output, derived "
-        "data, files Git ignores or an app it then launches. Without it, the command goes to the farm's other Macs first, "
+        "data, files Git ignores or an app it then launches. Without it, the command may go to one of the farm's Macs, "
         "to run in its checkout's directory that matches this one, at HEAD or a snapshot commit, and stays here when "
         "its directory is outside the checkout or one Git ignores, it names this checkout's path, an existing file "
         "Git ignores (such as a scratch script under .build, which the commit sent lacks), a simulator or "
-        "device, it is nested in an admission or a self lane's part, or another Mac has no spare capacity or "
-        f"cannot be reached. What it changed there in files Git does not ignore is applied here; exit {remote.UNAPPLIED} "
+        "device, it is nested in an admission or a self lane's part, or no other Mac has spare capacity and more "
+        f"headroom, or can be reached. What it changed there in files Git does not ignore is applied here; exit {remote.UNAPPLIED} "
         "says it could not be, and names the patch kept")
     # The default since the owner's decision of 2026-11-07, still accepted from callers that pass it.
-    placed.add_argument("--verify", action="store_true", help="what qk admit does without --here: offer the "
-        "command to the farm's other Macs first")
+    placed.add_argument("--verify", action="store_true", help="what qk admit does without --here: place the "
+        "command among this Mac and the farm's")
     admission.add_argument("--if-free", action="store_true", help=f"run only if heavy-work admission admits the "
         f"command within {FREE_WAIT}s, on another Mac or here; otherwise exit {BUSY} without running it")
     admission.add_argument("--timeout", type=float, default=5400, help="seconds to wait for admission (default 5400)")
@@ -1559,7 +1559,7 @@ def perform(argv, report):
                 print(f"queuekeeper: {args.lane} runs on this Mac: {unsent}", file=sys.stderr, flush=True)
             offered = None
             if reason is None:
-                # Whichever Mac has spare capacity for the lane, another Mac first, and while neither has,
+                # The Mac with spare capacity for the lane and the most headroom, and while none has,
                 # whichever admits the lane first (remote.first, admitted_here).
                 offered = remote.first(root, config, args.lane, extra, args.expect, queue_gate=queue_gate,
                                        exclude=exclude, hosts=only)

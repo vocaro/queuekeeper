@@ -27,12 +27,17 @@ qk farm foreground NAME [--off]         # let lanes that take a Mac's screen use
 
 ## Which Mac runs a lane
 
-A lane is offered to the farm's other Macs in their order, starts on the first with room, and runs on the
-starting Mac when none of them has room. When no Mac has room, it runs on whichever admits it first. The tool decides, by reading each Mac's free
+A lane runs on the Mac that has room for it and the most headroom: how far its CPU's busy share
+is under that Mac's own CPU limit. The starting Mac is a candidate like every other Mac of the
+farm, and the farm's order decides between Macs with the same headroom. When no Mac has room, it
+runs on whichever admits it first. The tool decides, by reading each Mac's free
 slots, CPU busy share and memory pressure. The agent does not.
 
-- **Any number of Macs.** Lanes, admitted commands and the queue's gates use every Mac of the farm, tried
-  in order. A rented Mac with SSH can be one of them.
+- **Any number of Macs.** Lanes, admitted commands and the queue's gates use every Mac of the farm
+  and the starting Mac. A rented Mac with SSH can be one of them.
+- **Each Mac's limit is its own.** Setup gives the Mac you work at a CPU limit of 70%, and a Mac
+  you add keeps the default of 90%, so at equal load the added Mac has more headroom and takes
+  the work. Change a Mac's `busyLimit` to load it more or less.
 - **Exclusive work.** Exclusive work sent to another Mac is offered until it can start there at once,
   and takes a place in that Mac's queue only after 15 minutes. A queued exclusive request holds every
   later request back, so queuing it from the start left a Mac idle while it waited. A heavy lane's own

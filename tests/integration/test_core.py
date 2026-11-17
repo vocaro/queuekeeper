@@ -3358,6 +3358,15 @@ class UsageTests(unittest.TestCase):
                     + self.job("e", 175, 178, label="Beta suite", placement={"offered": True,
                                "because": "build-host is busy (CPU 91% busy, at or above its HEAVY_BUSY_LIMIT=75%)"})
                     + self.job("o", 10, 20, label="Gamma gate"))
+        # Work placed here because this Mac had the most headroom is no decline by another Mac (vocaro/queuekeeper#211).
+        chosen = [resources.placed(entry) for headroom in ("41.5", "38")
+                  for entry in self.job("c", 0, 1, placement={"offered": True, "because":
+                      f"this Mac has the most headroom of the Macs with spare capacity, {headroom} points under its CPU "
+                      "limit: build-host 12 points under its CPU limit"})[:1]]
+        self.assertEqual(set(chosen), {("chosen", "this Mac has the most headroom of the Macs with spare capacity, N "
+                                                  "points under its CPU limit: build-host N points under its CPU limit")})
+        self.assertEqual(resources.placed(self.job("d", 0, 1, placement={"offered": True, "because": "build-host is busy"})[0]),
+                         ("declined", "build-host is busy"))
         there_log = [entry for index in range(4) for entry in self.job(f"t{index}", 0, 180 if index < 3 else 90,
                      placement={"dispatchedFrom": "Here"})]
         lines = self.report(self.IDLE, busy, here_log, there_log)
@@ -3367,7 +3376,9 @@ class UsageTests(unittest.TestCase):
                          "0 of 3 guaranteed, 9 at most | 4 of 3 guaranteed, 9 at most (slots 0, 1, 2, 3)")
         self.assertIn("5% (limit 75%) | 97% (limit 75%)", rows["CPU"])
         self.assertIn("normal | warning", rows["memory"])
-        self.assertIn("spare capacity | every guaranteed slot of build-host is busy (HEAVY_SLOTS=3)", rows["heavy"])
+        # With every guaranteed slot busy, a heavy lane needs one beyond them, which that Mac's CPU limit withholds.
+        self.assertIn("spare capacity | every guaranteed slot of build-host is busy (HEAVY_SLOTS=3), and build-host is "
+                      "busy (CPU 97% busy, at or above its HEAVY_BUSY_LIMIT=75%)", rows["heavy"])
         self.assertIn("spare capacity | a whole-host lane needs every guaranteed slot of build-host (HEAVY_SLOTS=3) "
                       "free, and 3 are busy", lines[9])
         self.assertIn("  this Mac (Here): 5 admitted; time at N heavy jobs: 0 6%, 1 87%, 2 7%; mean 1.0; "

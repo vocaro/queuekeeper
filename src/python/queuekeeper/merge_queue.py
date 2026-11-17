@@ -2514,7 +2514,7 @@ def placement(root, name=None, as_json=False):
             row.update(status="unavailable", reason=reading["error"])
             continue
         slots = reading["slots"]
-        reason = remote.spare(reading, mac, whole_host, exclusive, screen, extra=True)
+        reason = remote.spare(reading, mac, whole_host, exclusive, screen)
         row.update(guaranteedSlots=slots, maximumSlots=reading["slotsMax"], busySlots=reading["busy"],
                    blockers=reading.get("blockers", []), status="waiting" if reason else "eligible", reason=reason)
         if (foreground or model) and reason is None:

@@ -47,14 +47,15 @@ Two rules stand beside the order. **The owner is not the scheduler.** Queuekeepe
 and the moment, a session never asks him which Mac to use ([ve#168]), and a queue holds for him only
 over a cause that only he can fix. **No Mac is special.** Admission and placement treat every Mac
 alike, and Macs differ only by their own settings: their CPU limits and which kinds of lane each
-may run (2026-11-17). The rules in force do not yet do this
+may run (2026-11-17). The rules in force do this only in part
 ([D7](#d7-no-mac-is-special)).
 
 Read as one sentence: land as much as the Macs can verify truthfully, within each Mac's limits, in
 arrival order with bounded waits, and only then make a single run start sooner. The rules in force
-fall short of this in three places: a Mac's CPU limit bounds less of its load than goal 2 says,
-placement orders the Macs without balancing them, and several rules name this Mac. Each is decided
-under [decisions](#decisions) and waits to be built.
+fall short of this in two places: a Mac's CPU limit bounds less of its load than goal 2 says, and
+several rules still name this Mac. Each is decided under [decisions](#decisions) and waits to be
+built. A third, placement that ordered the Macs without balancing them, ended on 2026-11-17 (rule
+14).
 
 ## Resources
 
@@ -84,9 +85,10 @@ owner sets another Mac's CPU limit higher than this Mac's. Setup does the same f
 installation: it writes a `busyLimit` of 70 for the Mac it runs on, and the default, which a Mac
 added to the farm keeps, is 90 (2026-11-17, [D7](#d7-no-mac-is-special)).
 
-**What the CPU limit bounds today, and what it does not.** `busyLimit` decides three things: whether
-a slot beyond the guaranteed ones opens, whether placement counts such a slot as room, and when a
-queue's worker runs a lane again after a run with no verdict. It does not bound a Mac's load. A
+**What the CPU limit bounds today, and what it does not.** `busyLimit` decides four things: whether
+a slot beyond the guaranteed ones opens, whether placement counts such a slot as room, which of the
+Macs with room placement chooses (rule 14), and when a queue's worker runs a lane again after a run
+with no verdict. It does not bound a Mac's load. A
 guaranteed slot admits work at any reading (2026-11-07), a whole-host lane starts on free
 guaranteed slots at any reading ([#12]), each slot holds a lane however many processes it starts
 ([#170]), and work that never asks admission is not counted at all
@@ -140,7 +142,7 @@ hold the mechanism.
 
 | # | Rule | Why | Set by |
 | --- | --- | --- | --- |
-| 14 | Queuekeeper chooses the Mac: another Mac first, in the farm's order; this Mac when no other has room; otherwise whichever admits first. | The Macs are for work, and this Mac is the owner's workstation. | [ve#168], 2026-11-04 |
+| 14 | Queuekeeper chooses the Mac: of the Macs with room, this Mac among them, the one with the most headroom, which is its CPU limit less its CPU's busy share; the farm's order between equals, this Mac after the Macs it lists; and whichever admits first when none has room. | The Macs are for work. Each Mac's own limit says how much it is to be loaded, so load spreads and the workstation's lower limit makes it the later choice at equal load. "Another Mac first" filled one Mac's slots and sent gates to this one. | [ve#168], 2026-11-04; 2026-11-17, [D5](#d5-how-is-load-balanced-across-the-macs) |
 | 15 | Every lane is offered unless it says `here` with a reason: a device, a measurement tied to this Mac's hardware, a self lane's parts. | A lane's first run elsewhere is its check; a difference between Macs is a defect to fix. | 2026-10-28, 2026-11-07 |
 | 16 | A Mac has room by its own admission's rules: a free guaranteed slot at any CPU reading, a slot beyond them under that Mac's `busyLimit`, and none while whole-host or exclusive work runs or is queued ahead there. The test is one for every Mac, the Mac that chooses included. | An offer sent where admission would hold it costs a checkout and a wait. A Mac with a test of its own is a special Mac. | [ve#186], [ve#191], [ve#201]; 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 17 | Exclusive work sent to another Mac is offered to start at once, and joins that Mac's queue only after 900 s of declined offers. | A queued exclusive request idles the Mac while it waits; the bound keeps it from waiting forever. | [placement][placement] |
@@ -176,9 +178,9 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D2 | A gate passing one-slot work queued ahead | No: arrival order stays | Yes, unchanged |
 | D3 | Hand-run lanes holding guaranteed slots | Yes: the rule stays | Yes, unchanged |
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Not built, [#211] |
-| D5 | Balancing across the Macs | By headroom against each Mac's own limit | Not built, [#211] |
+| D5 | Balancing across the Macs | By headroom against each Mac's own limit | Yes (rule 14) |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Not built, [#211] |
-| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits and the one test of room: yes (rules 4 and 16). The other rules that name this Mac, and the settings for kinds and labels: not built, [#211] |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room and this Mac as a candidate like any other: yes (rules 4, 14 and 16). The other rules that name this Mac, and the settings for kinds and labels: not built, [#211] |
 
 ### D1: Is the order of goals right?
 
@@ -295,12 +297,12 @@ with D5: without balance, an over-limit Mac that refuses work pushes it all to t
 
 ### D5: How is load balanced across the Macs?
 
-**Decided, 2026-11-17: by headroom against each Mac's own limit (option B).** It takes the place of
-"another Mac first" (rule 14). Not built: it is step 3 of [#211].
+**Decided, 2026-11-17: by headroom against each Mac's own limit (option B).** It took the place of
+"another Mac first" and is in force as rule 14, built as step 3 of [#211].
 
-The owner's direction is to balance where possible. Rule 14 orders the Macs; it does not balance
-them. One-slot work fills another Mac's guaranteed slots first. A gate, which needs all of them
-free, then seldom finds room there and runs on this Mac. On 2026-11-06 another Mac was 97% busy
+The owner's direction is to balance where possible. Rule 14 as it stood ordered the Macs; it did
+not balance them. One-slot work filled another Mac's guaranteed slots first. A gate, which needs
+all of them free, then seldom found room there and ran on this Mac. On 2026-11-06 another Mac was 97% busy
 with three or four jobs for 48% of three hours while this Mac ran one gate for 84% of them. On the
 morning of 2026-11-17, over three hours, 40 of this Mac's 47 admissions had first been offered to
 another Mac and declined there.
@@ -325,7 +327,7 @@ touches. Rule 5 allows one per Mac, and six projects' whole-host gates shared tw
 they shared little more than one: on 2026-11-15 a whole-host lane held this Mac for 40% of the day
 and another Mac for 11%. A gate waits in this Mac's queue, where rule 6 drains the guaranteed slots
 toward it. Another Mac is only offered the gate, to start at once or not at all, so nothing drains
-there, and rule 14 sends one-slot work there first, which keeps its guaranteed slots held.
+there, and rule 14 as it then stood sent one-slot work there first, which kept its guaranteed slots held.
 
 | Option | Gains | Costs |
 | --- | --- | --- |
@@ -352,7 +354,7 @@ file. Building the rest is [#211], which holds the code references. What it chan
 
 | Today's rule that names this Mac | In its place |
 | --- | --- |
-| Other Macs are offered work first, and this Mac is the fallback; it is not in the farm's list (rule 14). | This Mac is a member of the list, and the choice is D5's. |
+| Other Macs are offered work first, and this Mac is the fallback; it is not in the farm's list (rule 14). | This Mac is a member of the list, and the choice is D5's. In force: this Mac is a candidate for every offer it may take, and `farm.json` still lists only the others, so it comes after them between equals. |
 | A request waits in this Mac's queue, and other Macs get only offers to start at once (rules 6 and 17). | A place in the queue of each Mac that can run it (D6, decided). |
 | A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. Rule 19's offer of the older half is the first step. |
 | Foreground work never comes to this Mac by itself, and goes to the first listed Mac when none is marked (rule 20). | The foreground mark alone, on any Mac. |

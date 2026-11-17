@@ -61,7 +61,9 @@ ADVERTISED = remote.advertised
 # QUEUEKEEPER_SCREEN_IOREG never reaches it (offload_host.SCREEN_RECORDING).
 # FAKE_HOMES names a directory in which a host with a directory of its own name is a Mac apart: that is its home, and
 # beside it are its heavy-work queue, its temporary directory and its device record, so that a farm of several Macs
-# has one of each for each Mac. A host with none there is the one Mac FAKE_HOME gives.
+# has one of each for each Mac. A host with none there is the one Mac FAKE_HOME gives. A file HOST.busy-limit there
+# sets that Mac's HEAVY_BUSY_LIMIT apart from the others', which all read this Mac's one real CPU: the Mac with the
+# highest has the most headroom, and is the choice among those with room.
 FAKE_SSH = """#!/bin/sh
 if [ "$1" = -G ]; then
     case " fake $FAKE_ALIASES " in
@@ -92,6 +94,9 @@ fi
 if [ -n "$FAKE_HOMES" ] && [ -d "$FAKE_HOMES/$1" ]; then
     FAKE_HOME="$FAKE_HOMES/$1" FAKE_SLOTS="$FAKE_HOMES/$1.slots" FAKE_GATE="$FAKE_HOMES/$1.gate"
     FAKE_TMPDIR="$FAKE_HOMES/$1.tmp" FAKE_DEVICE_RECORD="$FAKE_HOMES/$1.device-handoff.json"
+fi
+if [ -n "$FAKE_HOMES" ] && [ -f "$FAKE_HOMES/$1.busy-limit" ]; then
+    FAKE_BUSY_LIMIT=$(cat "$FAKE_HOMES/$1.busy-limit")
 fi
 shift
 cd "$FAKE_HOME" || exit 255
@@ -605,7 +610,10 @@ class RemoteTests(unittest.TestCase):
             "QUEUEKEEPER_GATE_LOCK_FILE": str(base / "gate"), "HEAVY_POLL_SECONDS": "0.01",
             # The Macs have spare capacity by their CPU whatever this Mac's real reading, so that queuekeeper's choice of a
             # Mac is the test's to set: FAKE_BUSY_LIMIT loads another Mac, HEAVY_BUSY_LIMIT this Mac (#168, #200).
-            "HEAVY_BUSY_LIMIT": "1000",
+            # Of Macs with spare capacity the one with the most headroom under its own limit takes the work
+            # (vocaro/queuekeeper#211), and both Macs here read one real CPU, so another Mac's limit is the higher by
+            # more than any reading: it is the choice while it has room, as a Mac added to a farm is at equal load.
+            "HEAVY_BUSY_LIMIT": "1000", "FAKE_BUSY_LIMIT": "2000",
             "FAKE_SLOTS": str(base / "second-mac-slots"), "FAKE_GATE": str(base / "second-mac-gate"),
             "FAKE_TMPDIR": str(base / "second-mac-tmp"), devices.OVERRIDE: str(self.record_here),
             "FAKE_DEVICE_RECORD": str(self.record_there),
@@ -624,7 +632,6 @@ class RemoteTests(unittest.TestCase):
             os.environ.pop(name, None)
         os.environ.pop("QUEUEKEEPER_RESOURCE_TOKEN", None)
         os.environ.pop("DEVELOPER_DIR", None)
-        os.environ.pop("FAKE_BUSY_LIMIT", None)
         # A run on the real Mac of the farm hands its git the credential file through these.
         for key in [key for key in os.environ if key.startswith("GIT_CONFIG_") and key != "GIT_CONFIG_GLOBAL"]:
             del os.environ[key]
@@ -3702,7 +3709,8 @@ class RemoteTests(unittest.TestCase):
         """The owner's rule (2026-11-07): another Mac is loaded as much as possible, so a free guaranteed slot
         there is spare capacity however busy its CPU, as its admission admits work into one. Until then another Mac
         at or above its HEAVY_BUSY_LIMIT sent the lane to this Mac with guaranteed slots free there (#168, #200)."""
-        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
+        # Both Macs over their limits, this Mac by further: another Mac has room and the more headroom, and takes it.
+        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0", "HEAVY_BUSY_LIMIT": "-1000"}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("on this Mac", error)
@@ -3711,16 +3719,21 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
         self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
                          "fake")
-        # With the Macs over their limits, another Mac still takes it at once: no wait for whichever admits first.
+        # Over its limit while this Mac is under its own, another Mac still has room, and less headroom: the Mac
+        # with the most takes the lane, which is this Mac, with nothing offered (vocaro/queuekeeper#211, step 3).
         shutil.rmtree(self.project / ".build/queuekeeper/remote/gate")
-        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0", "HEAVY_BUSY_LIMIT": "0"}):
+        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("no Mac has spare capacity", error)
-        self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
-                         "fake")
+        self.assertNotIn("remote: sending", error)
+        because = self.ran_here()["hereBecause"]
+        self.assertRegex(because, r"^this Mac has the most headroom of the Macs with spare capacity, [\d.]+ points under "
+                                  r"its CPU limit: fake [\d.]+ points over its CPU limit$")
+        self.assertIn(f"queuekeeper: trying gate on this Mac: {because}", error)
+        self.assertFalse((self.project / ".build/queuekeeper/remote/gate").exists())
         # The negative control: another Mac with no spare capacity by its slots sends the lane here.
-        shutil.rmtree(self.project / ".build/queuekeeper/remote/gate")
+        shutil.rmtree(self.project / ".build/queuekeeper/gate")
         with self.busy_farm_mac():
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
@@ -3816,6 +3829,10 @@ class RemoteTests(unittest.TestCase):
             (root / name).mkdir()
             (root / f"{name}.tmp").mkdir()
         farm_fixture.write("fake", farm_fixture.mac("mini", "Mini"), "rented")
+        # The three read one real CPU, so each has a limit of its own: with room on all, the first has the most
+        # headroom, as the first Mac of a farm whose Macs are equally busy has by the farm's order.
+        for name, limit in (("fake", 4000), ("mini", 3000), ("rented", 2000)):
+            (root / f"{name}.busy-limit").write_text(str(limit))
         of = lambda home: home / remote.ROOT / "checkouts/example/0/example"
         with patch.dict(os.environ, {"FAKE_HOMES": str(root), "FAKE_ALIASES": "mini rented",
                                      "MINI_SLOTS": str(root / "mini.slots"), "MINI_GATE": str(root / "mini.gate")}), \
@@ -4995,9 +5012,10 @@ exec {shlex.quote(real)} "$@"
         self.assertTrue(receipt["hereBecause"].startswith("exclusive work holds fake: "), receipt)
         self.assertIn("queuekeeper: trying the command on this Mac: exclusive work holds fake: ", error)
         self.assertNotIn("remote: sending", error)
-        # Another Mac over its CPU limit with a guaranteed slot free takes the command (owner's decision, 2026-11-07).
+        # Another Mac over its CPU limit with a guaranteed slot free takes the command (owner's decision, 2026-11-07),
+        # here with more headroom than this Mac, which is over its own by further.
         shutil.rmtree(self.project / ".build/queuekeeper/admit")
-        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
+        with patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0", "HEAVY_BUSY_LIMIT": "-1000"}):
             status, output, error = self.admit_in(self.project / "pkg", "--verify", "--", *probe)
         self.assertEqual(status, 0, output + error)
         self.assertIn("remote: sending", error)
@@ -5900,13 +5918,17 @@ class KeptSlotsTests(unittest.TestCase):
             (kept, {"whole_host": True}, f"{self.HELD}, which the lane would wait behind"),
             (kept, {"exclusive": True}, f"{self.HELD}, which the lane would wait behind"),
             # The negative controls: a reading that keeps nothing, an older toolkit's without kept and a malformed
-            # one judge the slots as before, every guaranteed one busy refusing a lighter lane.
+            # one judge the slots as before, a lighter lane with every guaranteed one busy needing one beyond them.
             ({**self.IDLE, "kept": None}, {"whole_host": True}, None),
             (self.IDLE, {"whole_host": True}, None),
             ({**self.IDLE, "kept": ""}, {"exclusive": True}, None),
             ({**self.IDLE, "kept": 7, "busy": [3, 4]}, {}, None),
-            ({**self.IDLE, "kept": None, "busy": [0, 1, 2]}, {},
+            ({**self.IDLE, "kept": None, "busy": [0, 1, 2]}, {}, None),
+            ({**self.IDLE, "kept": None, "busy": [0, 1, 2, 3, 4]}, {},
              "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
+            ({**self.IDLE, "kept": None, "busy": [0, 1, 2], "cpuBusy": 80.0}, {},
+             "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3), and another Mac is busy (CPU 80% busy, at or "
+             "above its HEAVY_BUSY_LIMIT=75%)"),
         ]
         for reading, need, expected in cases:
             with self.subTest(reading=reading, need=need):
@@ -8622,15 +8644,42 @@ class GateHostPoolTests(unittest.TestCase):
         with farm_fixture.only(farm_fixture.mac("studio", state="paused"), "mini"):
             self.assertEqual((remote.configured(), farm.destinations()), ("mini", ("mini",)))
 
-    def test_the_pool_can_use_an_extra_slot_when_admission_limits_allow_it(self):
+    def test_a_mac_has_room_in_a_slot_beyond_the_guaranteed_ones_when_its_admission_would_open_one(self):
+        # On every Mac, whatever the farm holds (vocaro/queuekeeper#211): until then only on another Mac of several.
         capacity = {"slots": 1, "slotsMax": 2, "busy": [0], "cpuBusy": 10, "busyLimit": 70,
                     "sinceAdmission": 15, "settle": 5, "memory": 1}
-        self.assertIsNone(remote.spare(capacity, "gate-03", extra=True))
-        self.assertIn("guaranteed slot", remote.spare(capacity, "gate-03"))
-        self.assertIn("whole-host lane", remote.spare(capacity, "gate-03", whole_host=True, extra=True))
-        for changed in ({"busy": [0, 1]}, {"cpuBusy": 80}, {"sinceAdmission": 2}, {"memory": 2}):
+        for mac in ("gate-03", "this Mac"):
+            self.assertIsNone(remote.spare(capacity, mac))
+            self.assertIn("whole-host lane", remote.spare(capacity, mac, whole_host=True))
+        refused = {"every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1)": {"busy": [0, 1]},
+                   "every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1), and gate-03 is busy (CPU 80% busy, at or "
+                   "above its HEAVY_BUSY_LIMIT=70%)": {"cpuBusy": 80},
+                   "every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1), and the CPU busy share of gate-03, which "
+                   "HEAVY_BUSY_LIMIT=70% (gate-03's limit) bounds, is unavailable": {"cpuBusy": None},
+                   "every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1), and the CPU of gate-03 does not yet show "
+                   "the job admitted 2s ago, within HEAVY_SETTLE_SECONDS=5": {"sinceAdmission": 2},
+                   "every guaranteed slot of gate-03 is busy (HEAVY_SLOTS=1), and on gate-03 memory pressure is level 2 "
+                   "(warning), not 1 (normal)": {"memory": 2}}
+        for expected, changed in refused.items():
             with self.subTest(changed=changed):
-                self.assertIsNotNone(remote.spare({**capacity, **changed}, "gate-03", extra=True))
+                self.assertEqual(remote.spare({**capacity, **changed}, "gate-03"), expected)
+
+    def test_headroom_is_a_macs_limit_less_its_busy_share_and_the_most_comes_first(self):
+        self.assertEqual(remote.headroom({"cpuBusy": 40.0, "busyLimit": 90.0}), 50.0)
+        self.assertEqual(remote.headroom({"cpuBusy": 40.0, "busyLimit": 70}), 30.0)
+        self.assertEqual(remote.headroom({"cpuBusy": 93.4, "busyLimit": 90.0}), -3.4)
+        for unread in ({"busyLimit": 90.0}, {"cpuBusy": None, "busyLimit": 90.0}, {"cpuBusy": True, "busyLimit": 90.0},
+                       {"cpuBusy": 10.0}):
+            self.assertIsNone(remote.headroom(unread))
+        # The most first; equals in the farm's order, this Mac after the Macs the farm lists; an unread CPU last.
+        candidates = [(30.0, 0, "studio", "studio"), (None, 1, "mini", "mini"), (50.0, 2, "rented", "rented"),
+                      (-5.0, 3, "old", "old"), (50.0, 4, None, "this Mac")]
+        ordered = sorted(candidates, key=remote.most_headroom)
+        self.assertEqual([name for *_rest, name in ordered], ["rented", "this Mac", "studio", "old", "mini"])
+        self.assertEqual(remote.headroom_words(ordered),
+                         "rented has the most headroom of the Macs with spare capacity, 50 points under its CPU limit: "
+                         "this Mac 50 points under its CPU limit, studio 30 points under its CPU limit, old 5 points "
+                         "over its CPU limit, mini its CPU unread")
 
     def test_a_later_mac_takes_the_gate_and_preparation_stays_with_its_mac(self):
         attempts = []
@@ -8646,21 +8695,24 @@ class GateHostPoolTests(unittest.TestCase):
         free = {"slots": 1, "slotsMax": 1, "busy": [], "busyLimit": 70}
         busy = {**free, "wholeHost": ["another gate"]}
         with patch.object(remote, "reachable") as reachable, \
-                patch.object(remote, "capacity_there", side_effect=[busy, free, busy, busy, busy, free, free]), \
+                patch.object(remote, "capacity_there", side_effect=[busy, free, busy, busy, busy, free, free, busy]), \
                 patch.object(remote.offload_host, "capacity", return_value=free), \
                 contextlib.redirect_stderr(StringIO()):
+            # Every Mac is read before one is chosen. No reading gives a busy share, so the farm's order decides
+            # among the Macs with room, and this Mac, which has room too, comes after the Macs the farm lists.
             self.assertEqual(offer.make(), "build-host is running a whole-host lane: another gate; "
-                             "another gate took the slot; gate-04 is running a whole-host lane: another gate; "
-                             "unused is running a whole-host lane: another gate")
+                             "gate-04 is running a whole-host lane: another gate; "
+                             "unused is running a whole-host lane: another gate; another gate took the slot")
             self.assertEqual(offer.again(), 5)
         self.assertEqual(attempts, [("gate-03", {}), ("gate-03", {"prepared": "gate-03"}), ("gate-04", {})])
-        self.assertEqual(reachable.call_count, 7)
+        self.assertEqual(reachable.call_count, 8)
 
     def test_a_lost_dispatch_or_bad_configuration_never_starts_another_copy(self):
         free = {"slots": 1, "slotsMax": 1, "busy": [], "busyLimit": 70}
         for error in (remote.Lost("run may still be alive"), remote.Misconfigured("bad Xcode", "match Xcode")):
             with self.subTest(error=type(error).__name__), patch.object(remote, "reachable") as reachable, \
                     patch.object(remote, "capacity_there", return_value=free), \
+                    patch.object(remote.offload_host, "capacity", return_value=free), \
                     patch.object(remote, "execute", side_effect=error), \
                     farm_fixture.only("gate-03", "gate-04"), contextlib.redirect_stderr(StringIO()):
                 if isinstance(error, remote.Lost):
@@ -8697,8 +8749,8 @@ class FanOutTests(unittest.TestCase):
             # The negative control: ordinary work, which a free guaranteed slot serves, goes to another Mac.
             self.assertEqual(self.offer(taken).make(), 0)
         self.assertEqual((taken, offered.host), (["studio", "mini"], "studio"))
-        # A Mac with spare capacity took it, so this Mac's was never read.
-        local.assert_not_called()
+        # This Mac is a candidate as each of them is, so it was read for each offer, and had no room.
+        self.assertEqual(local.call_count, 2)
 
     def test_a_mac_that_declines_or_is_away_is_passed_over_for_the_next(self):
         away = remote.Unreachable("mini cannot be reached", "wake it")
@@ -8710,7 +8762,8 @@ class FanOutTests(unittest.TestCase):
             return 0
         with farm_fixture.only("mini", "studio", "rented"), \
                 patch.object(remote, "reachable", side_effect=lambda host: (_ for _ in ()).throw(away) if host == "mini" else None), \
-                patch.object(remote, "capacity_there", return_value=self.FREE), contextlib.redirect_stderr(StringIO()):
+                patch.object(remote, "capacity_there", return_value=self.FREE), \
+                patch.object(remote.offload_host, "capacity", return_value=self.FREE), contextlib.redirect_stderr(StringIO()):
             offered = remote.Offer("the command", "`qk admit --here`", send)
             self.assertEqual(offered.make(), 0)
         self.assertEqual((taken, offered.host), (["rented"], "rented"))
@@ -8735,9 +8788,9 @@ class FanOutTests(unittest.TestCase):
         self.assertEqual(offered.busy, offered.status)
 
     def test_this_mac_is_judged_for_room_as_every_other_mac_is(self):
-        """One test of room (vocaro/queuekeeper#211, step 2). In a farm of several Macs a slot beyond the guaranteed
-        ones, where admission would take one, counts as room; it counted on the others and never on this Mac, which
-        was read as full and the work offered to a Mac with nothing free."""
+        """One test of room (vocaro/queuekeeper#211, steps 2 and 3). A slot beyond the guaranteed ones, where
+        admission would take one, counts as room; it counted on the others of a farm of several and never on this
+        Mac, which was read as full and the work offered to a Mac with nothing free."""
         beyond = {**self.FREE, "busy": [0, 1, 2], "cpuBusy": 10.0, "sinceAdmission": 60.0, "settle": 30.0, "memory": 1}
         full = {**self.FREE, "busy": [0, 1, 2, 3, 4, 5]}
         taken = []
@@ -8768,8 +8821,8 @@ class FanOutTests(unittest.TestCase):
                 self.assertEqual(self.offer(taken).make(), 0)
                 self.assertEqual(taken, ["mini"])
                 self.assertIn("no Mac has spare capacity for gate now", error.getvalue())
-        # With one other Mac neither Mac's slots beyond the guaranteed count, as before: the two are judged alike.
-        for here, there, expected in ((beyond, beyond, ["mini"]), (self.FREE, beyond, [])):
+        # With one other Mac the test is the same one: whichever Mac has such a slot has room.
+        for here, there, expected in ((full, beyond, ["mini"]), (beyond, full, [])):
             with self.subTest(here=here["busy"]), farm_fixture.only("mini"), patch.object(remote, "reachable"), \
                     patch.object(remote, "capacity_there", return_value=there), \
                     patch.object(remote.offload_host, "capacity", return_value=here), contextlib.redirect_stderr(StringIO()):
@@ -8786,7 +8839,12 @@ class FanOutTests(unittest.TestCase):
             macs, why = remote.retry_macs(("mini", "studio"), lanes, "unit")
             self.assertEqual(macs, [None])
             self.assertIn("this Mac, the one with spare capacity for unit", why)
-            # One other Mac: no slot beyond the guaranteed counts, on either.
+            # One other Mac: the same test.
+            macs, why = remote.retry_macs(("mini",), lanes, "unit")
+            self.assertEqual(macs, [None])
+            self.assertIn("this Mac, the one with spare capacity for unit: every guaranteed slot of mini is busy", why)
+        with farm_fixture.only("mini"), patch.object(remote, "capacity_there", return_value=full), \
+                patch.object(remote.offload_host, "capacity", return_value=full):
             macs, why = remote.retry_macs(("mini",), lanes, "unit")
             self.assertEqual(macs, ["mini", None])
             self.assertIn("every guaranteed slot of this Mac is busy (HEAVY_SLOTS=3)", why)
@@ -8814,10 +8872,28 @@ class FanOutTests(unittest.TestCase):
         with farm_fixture.only(farm_fixture.mac("studio.local", "studio"), "mini", "rented"):
             hosts = ("studio.local", "mini", "rented")
             with patch.object(remote, "capacity_there", side_effect=read({"studio.local": busy, "mini": away, "rented": self.FREE})), \
-                    patch.object(remote.offload_host, "capacity") as here:
-                self.assertEqual(remote.retry_macs(hosts, lanes, "gate"),
-                                 (["rented"], "rented, which has spare capacity for gate and is asked first"))
-                here.assert_not_called()
+                    patch.object(remote.offload_host, "capacity", return_value=busy):
+                macs, why = remote.retry_macs(hosts, lanes, "gate")
+                self.assertEqual(macs, ["rented"])
+                self.assertTrue(why.startswith("rented, the one with spare capacity for gate: a whole-host lane needs "
+                                               "every guaranteed slot of studio (HEAVY_SLOTS=3) free"), why)
+                self.assertIn("a whole-host lane needs every guaranteed slot of this Mac (HEAVY_SLOTS=3) free", why)
+            # Of the Macs with room, this Mac among them, the one with the most headroom under its own limit.
+            under = lambda busy, limit: {**self.FREE, "cpuBusy": busy, "busyLimit": limit}
+            several = read({"studio.local": under(60.0, 90), "mini": away, "rented": under(85.0, 90)})
+            for here, chosen, said in ((under(30.0, 70), None, "this Mac, where gate would go: this Mac has the most "
+                                        "headroom of the Macs with spare capacity, 40 points under its CPU limit: "
+                                        "studio 30 points under its CPU limit, rented 5 points under its CPU limit"),
+                                       (under(45.0, 70), "studio.local", "studio, where gate would go: studio has the "
+                                        "most headroom of the Macs with spare capacity, 30 points under its CPU limit: "
+                                        "this Mac 25 points under its CPU limit, rented 5 points under its CPU limit"),
+                                       # Equal headroom: the Mac the farm lists comes before this Mac.
+                                       (under(40.0, 70), "studio.local", "studio, where gate would go: studio has the "
+                                        "most headroom of the Macs with spare capacity, 30 points under its CPU limit: "
+                                        "this Mac 30 points under its CPU limit, rented 5 points under its CPU limit")):
+                with self.subTest(here=here["cpuBusy"]), patch.object(remote, "capacity_there", side_effect=several), \
+                        patch.object(remote.offload_host, "capacity", return_value=here):
+                    self.assertEqual(remote.retry_macs(hosts, lanes, "gate"), ([chosen], said))
             loaded = read({"studio.local": busy, "mini": away, "rented": busy})
             with patch.object(remote, "capacity_there", side_effect=loaded), \
                     patch.object(remote.offload_host, "capacity", return_value=self.FREE):

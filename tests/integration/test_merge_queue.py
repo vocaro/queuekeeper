@@ -2604,7 +2604,9 @@ class FarmMacSettle(Fixture):
         self.assertEqual(asked, [(self.HOST, {"pressure": True})] * 2)
         self.assertEqual(self.pressure.call_count, 0)
         log = said.getvalue()
-        self.assertIn(f"the lanes run next on {self.HOST}, which has spare capacity for gate and is asked first", log)
+        # Both Macs have room and neither reading gives a busy share, so the farm's Mac comes before this Mac.
+        self.assertIn(f"the lanes run next on {self.HOST}, where gate would go: {self.HOST} has the most headroom of "
+                      "the Macs with spare capacity, its CPU unread: this Mac its CPU unread", log)
         self.assertIn(f"the lanes run again once {self.HOST} settles", log)
 
     def test_a_loaded_this_mac_the_retry_would_use_is_waited_for_though_the_farm_mac_voided_the_run(self):
@@ -2744,8 +2746,14 @@ class FarmMacReading(unittest.TestCase):
         cases = [
             (idle, {}, None),
             ({**idle, "busy": [0, 1]}, {}, None),
-            ({**idle, "busy": [0, 1, 2]}, {}, "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
-            ({**idle, "busy": [0, 1, 2, 3]}, {}, "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
+            # With every guaranteed slot busy, a slot beyond them is room where admission would open one
+            # (vocaro/queuekeeper#211): under the Mac's CPU limit, and none once every slot is busy.
+            ({**idle, "busy": [0, 1, 2]}, {}, None),
+            ({**idle, "busy": [0, 1, 2, 3]}, {}, None),
+            ({**idle, "busy": [0, 1, 2, 3, 4]}, {}, "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
+            ({**idle, "busy": [0, 1, 2], "cpuBusy": 75.0}, {},
+             "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3), and another Mac is busy (CPU 75% busy, at or "
+             "above its HEAVY_BUSY_LIMIT=75%)"),
             ({**idle, "busy": [3, 4]}, {}, None),
             # A free guaranteed slot is spare capacity however busy the CPU, as admission admits work into one
             # (owner's decision, 2026-11-07): another Mac at 93% against its 90% with two of four slots free.
@@ -2753,8 +2761,10 @@ class FarmMacReading(unittest.TestCase):
             ({**idle, "cpuBusy": 99.6}, {}, None),
             ({**idle, "cpuBusy": None}, {}, None),
             ({**idle, "slots": 4, "busy": [0, 1], "cpuBusy": 93.0, "busyLimit": 90.0}, {}, None),
-            # The negative control: with every guaranteed slot busy, the Mac still refuses, whatever its CPU.
-            ({**idle, "busy": [0, 1, 2], "cpuBusy": 10.0}, {}, "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3)"),
+            # The negative control: with every guaranteed slot busy, the CPU does bound the slot beyond them.
+            ({**idle, "busy": [0, 1, 2], "cpuBusy": 99.6}, {},
+             "every guaranteed slot of another Mac is busy (HEAVY_SLOTS=3), and another Mac is busy (CPU 100% busy, at or "
+             "above its HEAVY_BUSY_LIMIT=75%)"),
             # The case of vocaro-engineering#200: a load of 40 against the old limit of 7.5, with the CPU half idle.
             ({**idle, "load": 40.0, "cpuBusy": 52.0}, {}, None),
             ({**idle, "busy": [0, 1, 2], "wholeHost": ["EPUBLib gate"]}, {},

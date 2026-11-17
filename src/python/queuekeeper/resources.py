@@ -927,8 +927,8 @@ class Admission:
         # names no command ended before its first, and recovery checks its owner's process group instead (#315). A
         # caller that runs its own commands, which may record none, leaves it False.
         self.supervised = supervised
-        # Why the work is asking this Mac, for its admitted and withdrawn lines, or None: whether queuekeeper offered it to
-        # another Mac first and why it is here (offered, because), or the Mac that sent it (dispatchedFrom).
+        # Why the work is asking this Mac, for its admitted and withdrawn lines, or None: whether queuekeeper placed it
+        # among the Macs and why it is here (offered, because), or the Mac that sent it (dispatchedFrom).
         # `qk admissions usage` counts it.
         self.placement = placement
         # Exclusive work holds the host, the model with it.
@@ -1986,10 +1986,16 @@ def occupancy(entries, since, until):
     return {count: value for count, value in seconds.items() if value > 0}, whole_seconds, dead
 
 
+# What a placement's reason says of the Mac that was chosen among those with spare capacity (remote.headroom_words).
+MOST_HEADROOM = "has the most headroom of the Macs with spare capacity"
+
+
 def placed(entry):
-    """Where an admitted line's work stands with another Mac, as (group, reason): never offered to it, offered and
+    """Where an admitted line's work stands with another Mac, as (group, reason): never offered to it, chosen for this
+    Mac, which had the most headroom of the Macs with room (vocaro/queuekeeper#211), offered and
     declined by it, sent from another Mac, or unrecorded, for a line that names no placement, which an older toolkit
-    and admission's other callers write. A declined reason's numbers read as N, so that like reasons count together."""
+    and admission's other callers write. A chosen or declined reason's numbers read as N, so that like reasons count
+    together."""
     placement = entry.get("placement")
     if not isinstance(placement, dict):
         return "unrecorded", "a lane" if LANE_LABEL.fullmatch(entry["label"]) else "a command"
@@ -1997,7 +2003,7 @@ def placed(entry):
     because = str(placement.get("because") or "no reason given")
     if placement.get("offered") and not any(
             because.startswith(prefix) and because.endswith(suffix) for prefix, suffix in LEGACY_LOCAL_PATH_REASONS):
-        return "declined", re.sub(r"\d+(?:\.\d+)?", "N", because)
+        return ("chosen" if f"this Mac {MOST_HEADROOM}" in because else "declined"), re.sub(r"\d+(?:\.\d+)?", "N", because)
     return "never", next((name for prefix, name in NOT_OFFERED if because.startswith(prefix)), because)
 
 
@@ -2035,11 +2041,13 @@ def placement_lines(entries, since, until):
         counted[1] += max(held, 0)
         # An unrecorded line says only its label, so the labels that held the longest stand in for the reason.
         counted[2][admitted["label"]] += max(held, 0)
-    heads = {"never": "never offered to another Mac", "declined": "offered to another Mac and declined",
+    heads = {"never": "never offered to another Mac",
+             "chosen": "placed here, the Mac with the most headroom of those with room",
+             "declined": "offered to another Mac and declined",
              "sent": "sent here by another Mac", "unrecorded": "placement unrecorded (an older toolkit's line, or a "
              "caller's own admission, such as qk admit's before it logged placement)"}
     out = []
-    for group in ["never", "declined", "sent", "unrecorded"]:
+    for group in ["never", "chosen", "declined", "sent", "unrecorded"]:
         if group not in groups: continue
         reasons = groups[group]
         out.append(f"  {heads[group]}: {sum(each[0] for each in reasons.values())}, held "
