@@ -8734,6 +8734,63 @@ class FanOutTests(unittest.TestCase):
                                          "every guaranteed slot of studio is busy (HEAVY_SLOTS=3)")
         self.assertEqual(offered.busy, offered.status)
 
+    def test_this_mac_is_judged_for_room_as_every_other_mac_is(self):
+        """One test of room (vocaro/queuekeeper#211, step 2). In a farm of several Macs a slot beyond the guaranteed
+        ones, where admission would take one, counts as room; it counted on the others and never on this Mac, which
+        was read as full and the work offered to a Mac with nothing free."""
+        beyond = {**self.FREE, "busy": [0, 1, 2], "cpuBusy": 10.0, "sinceAdmission": 60.0, "settle": 30.0, "memory": 1}
+        full = {**self.FREE, "busy": [0, 1, 2, 3, 4, 5]}
+        taken = []
+        with farm_fixture.only("mini", "studio"), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", return_value=full), \
+                patch.object(remote.offload_host, "capacity", return_value=beyond), \
+                patch("sys.stderr", new_callable=StringIO) as error:
+            offered = self.offer(taken)
+            offered.make()
+        # This Mac has room, so the work goes to its queue and nothing is offered.
+        self.assertEqual(taken, [])
+        self.assertEqual(offered.busy, "every guaranteed slot of mini is busy (HEAVY_SLOTS=3); "
+                                       "every guaranteed slot of studio is busy (HEAVY_SLOTS=3)")
+        self.assertIn("trying gate on this Mac", error.getvalue())
+        # The same reading is room on another Mac of the same farm, as it was.
+        with farm_fixture.only("mini", "studio"), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=lambda host, **options: beyond if host == "studio" else full), \
+                patch.object(remote.offload_host, "capacity", return_value=full), contextlib.redirect_stderr(StringIO()):
+            self.assertEqual(self.offer(taken).make(), 0)
+        self.assertEqual(taken, ["studio"])
+        # Whatever withholds that slot from admission withholds it here too, on this Mac as on another.
+        for changed in ({"cpuBusy": 80.0}, {"sinceAdmission": 2.0}, {"memory": 2}, {"busy": [0, 1, 2, 3, 4, 5]}):
+            with self.subTest(changed=changed), farm_fixture.only("mini", "studio"), patch.object(remote, "reachable"), \
+                    patch.object(remote, "capacity_there", return_value=full), \
+                    patch.object(remote.offload_host, "capacity", return_value={**beyond, **changed}), \
+                    patch("sys.stderr", new_callable=StringIO) as error:
+                taken.clear()
+                self.assertEqual(self.offer(taken).make(), 0)
+                self.assertEqual(taken, ["mini"])
+                self.assertIn("no Mac has spare capacity for gate now", error.getvalue())
+        # With one other Mac neither Mac's slots beyond the guaranteed count, as before: the two are judged alike.
+        for here, there, expected in ((beyond, beyond, ["mini"]), (self.FREE, beyond, [])):
+            with self.subTest(here=here["busy"]), farm_fixture.only("mini"), patch.object(remote, "reachable"), \
+                    patch.object(remote, "capacity_there", return_value=there), \
+                    patch.object(remote.offload_host, "capacity", return_value=here), contextlib.redirect_stderr(StringIO()):
+                taken.clear()
+                self.offer(taken).make()
+                self.assertEqual(taken, expected)
+
+    def test_a_retry_reads_this_mac_for_room_as_it_reads_the_others(self):
+        lanes = {"unit": {"command": ["true"], "resource": "heavy"}}
+        beyond = {**self.FREE, "busy": [0, 1, 2], "cpuBusy": 10.0, "sinceAdmission": 60.0, "settle": 30.0, "memory": 1}
+        full = {**self.FREE, "busy": [0, 1, 2, 3, 4, 5]}
+        with farm_fixture.only("mini", "studio"), patch.object(remote, "capacity_there", return_value=full), \
+                patch.object(remote.offload_host, "capacity", return_value=beyond):
+            macs, why = remote.retry_macs(("mini", "studio"), lanes, "unit")
+            self.assertEqual(macs, [None])
+            self.assertIn("this Mac, the one with spare capacity for unit", why)
+            # One other Mac: no slot beyond the guaranteed counts, on either.
+            macs, why = remote.retry_macs(("mini",), lanes, "unit")
+            self.assertEqual(macs, ["mini", None])
+            self.assertIn("every guaranteed slot of this Mac is busy (HEAVY_SLOTS=3)", why)
+
     def test_work_that_runs_on_no_other_mac_waits_on_the_first_with_room_else_the_first_reached(self):
         away = remote.Unreachable("mini cannot be reached", "wake it")
         full = {**self.FREE, "busy": [0, 1, 2]}

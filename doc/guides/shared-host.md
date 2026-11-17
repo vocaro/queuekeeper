@@ -822,6 +822,16 @@ admits it first, the first Mac reached asked first, with the list read again whi
 misconfigured host stops the offer with its diagnosis, and an interrupted connection to a run
 that may have started yields no verdict.
 
+Every Mac is read by one test of room, this Mac as each of the others: what its own admission
+would admit now. In a farm with more than one other Mac, ordinary work also has room in a slot
+beyond the guaranteed ones where admission would open one, on a Mac that has settled since its
+last admission, with its CPU under its own limit and its memory pressure normal. With one other
+Mac only a free guaranteed slot is room, on either Mac. Until 2026-11-17 such a slot counted on
+the farm's other Macs and never on this Mac, which was read as full while it had one, so that
+work was offered to a Mac with nothing free
+([vocaro/queuekeeper#211](https://github.com/vocaro/queuekeeper/issues/211), step 2). The merge
+queue's wait before a retry reads the Macs by the same test.
+
 A lane that only some Macs may run, such as one whose `chips` list some Macs' chips, is offered
 to those Macs alone, in the list's order.
 

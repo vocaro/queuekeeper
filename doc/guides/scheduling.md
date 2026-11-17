@@ -142,7 +142,7 @@ hold the mechanism.
 | --- | --- | --- | --- |
 | 14 | Queuekeeper chooses the Mac: another Mac first, in the farm's order; this Mac when no other has room; otherwise whichever admits first. | The Macs are for work, and this Mac is the owner's workstation. | [ve#168], 2026-11-04 |
 | 15 | Every lane is offered unless it says `here` with a reason: a device, a measurement tied to this Mac's hardware, a self lane's parts. | A lane's first run elsewhere is its check; a difference between Macs is a defect to fix. | 2026-10-28, 2026-11-07 |
-| 16 | A Mac has room by its own admission's rules: a free guaranteed slot at any CPU reading, a slot beyond them under that Mac's `busyLimit`, and none while whole-host or exclusive work runs or is queued ahead there. | An offer sent where admission would hold it costs a checkout and a wait. | [ve#186], [ve#191], [ve#201]; 2026-11-07 |
+| 16 | A Mac has room by its own admission's rules: a free guaranteed slot at any CPU reading, a slot beyond them under that Mac's `busyLimit`, and none while whole-host or exclusive work runs or is queued ahead there. The test is one for every Mac, the Mac that chooses included. | An offer sent where admission would hold it costs a checkout and a wait. A Mac with a test of its own is a special Mac. | [ve#186], [ve#191], [ve#201]; 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 17 | Exclusive work sent to another Mac is offered to start at once, and joins that Mac's queue only after 900 s of declined offers. | A queued exclusive request idles the Mac while it waits; the bound keeps it from waiting forever. | [placement][placement] |
 | 18 | A Mac that cannot be reached is passed over and the work runs here. One that is set up wrongly runs nothing and stops for the owner. | Busy or away is ordinary; a different Xcode gives results that cannot be compared. | 2026-10-27, 2026-10-28 |
 | 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot. A locked screen holds back only work that declares the need: a bisect's older half that needs one is offered to the farm while this Mac's screen is locked. | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
@@ -178,7 +178,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Not built, [#211] |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Not built, [#211] |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Not built, [#211] |
-| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits: yes (rule 4). The other rules that name this Mac, and the settings for kinds and labels: not built, [#211] |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits and the one test of room: yes (rules 4 and 16). The other rules that name this Mac, and the settings for kinds and labels: not built, [#211] |
 
 ### D1: Is the order of goals right?
 
@@ -356,7 +356,7 @@ file. Building the rest is [#211], which holds the code references. What it chan
 | A request waits in this Mac's queue, and other Macs get only offers to start at once (rules 6 and 17). | A place in the queue of each Mac that can run it (D6, decided). |
 | A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. Rule 19's offer of the older half is the first step. |
 | Foreground work never comes to this Mac by itself, and goes to the first listed Mac when none is marked (rule 20). | The foreground mark alone, on any Mac. |
-| Another Mac's slots beyond the guaranteed count as room when the farm has several Macs; this Mac's do not (rule 16). | One test of room for every Mac. |
+| Another Mac's slots beyond the guaranteed count as room when the farm has several Macs; this Mac's do not (rule 16). | One test of room for every Mac. In force. |
 | Every Mac has the same default limits, and no command writes a limits file. | Setup writes this Mac's file, with its lower `busyLimit`. In force. |
 
 One setting is missing: nothing says which kinds of lane a Mac may run, apart from the foreground

@@ -3165,12 +3165,17 @@ class Offer:
         self.host = host
         return self.send(host, self.sents.setdefault(host, {}))
 
+    def room(self, reading, mac):
+        """Why mac, read as reading, has no spare capacity for the work now, or None while it has: the one test of
+        room, which judges this Mac as it judges every other (spare). Until vocaro/queuekeeper#211 a slot beyond the
+        guaranteed ones counted as room on another Mac of several and never on this Mac."""
+        return spare(reading, mac, self.whole_host, self.exclusive, self.screen, extra=self.several())
+
     def spare_there(self, host):
         """Why the Mac at host has no spare capacity for the work now, by its own reading, or None while it has."""
         kept = self.sents.get(host, {})
         options = {"started": kept["requestStarted"]} if "requestStarted" in kept else {}
-        return spare(capacity_there(host, **options), self.called(host), self.whole_host, self.exclusive, self.screen,
-                     extra=self.several())
+        return self.room(capacity_there(host, **options), self.called(host))
 
     def attempt(self):
         """Offer the work once, to the farm's Macs in order: its status on the one that took it, or Busy, Unreachable
@@ -3210,7 +3215,7 @@ class Offer:
                     reading = offload_host.capacity(own=self.place.identity if self.place is not None else None,
                                                     before=self.started)
                     here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
-                            else spare(reading, HERE, self.whole_host, self.exclusive, self.screen))
+                            else self.room(reading, HERE))
                     if here is None: raise Loaded("; ".join(said))
                     said.append(here)
                 host = full[0]
@@ -3552,7 +3557,9 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False, *, extr
     Mac and, for its CPU, the busy share read and the limit, and the request queued ahead; the receipt's hereBecause
     carries it. With screen, for a lane
     that needs an unlocked screen, a Mac whose screen is locked or unknown has none (screen_refusal).
-    With extra, a pool may also offer ordinary work to a Mac with an eligible slot beyond the guaranteed ones."""
+    With extra, a pool may also offer ordinary work to a Mac with an eligible slot beyond the guaranteed ones. A
+    choice among Macs passes the same extra for each of them, the Mac that chooses included (Offer.room,
+    retry_macs): no Mac has a test of room of its own (vocaro/queuekeeper#211)."""
     if screen:
         refused = screen_refusal(reading.get("screen"), mac)
         if refused is not None: return refused
@@ -3645,10 +3652,12 @@ def retry_macs(hosts, lanes, lane, screen=False):
     settings = lanes[lane]
     needs = bool(settings.get("wholeHost")), settings.get("resource") == "exclusive", screen or unlocked_screen(lanes, lane)
     hosts = (hosts,) if isinstance(hosts, str) else tuple(hosts)
+    # One test of room for every Mac, this one included, as Offer.room applies it.
+    room = lambda reading, mac: spare(reading, mac, *needs, extra=len(hosts) > 1)
     full, said = [], []
     for host in hosts:
         name = farm.named(host)
-        try: reason = spare(capacity_there(host), name, *needs, extra=len(hosts) > 1)
+        try: reason = room(capacity_there(host), name)
         except Unavailable as away:
             said.append(f"{name}'s capacity cannot be read: {getattr(away, 'problem', away)}")
             continue
@@ -3658,7 +3667,7 @@ def retry_macs(hosts, lanes, lane, screen=False):
     if not full: return [None], f"this Mac, since {'; '.join(said) or NO_MAC}"
     reading = offload_host.capacity()
     here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
-            else spare(reading, HERE, *needs))
+            else room(reading, HERE))
     if here is None: return [None], f"this Mac, the one with spare capacity for {lane}: {'; '.join(said)}"
     return [*full, None], (f"whichever Mac admits {lane} first, since none has spare capacity for it "
                            f"({'; '.join(said)}; {here}), so each must settle")
