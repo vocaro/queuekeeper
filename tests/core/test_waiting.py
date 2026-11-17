@@ -224,14 +224,20 @@ class ProbeTests(unittest.TestCase):
             worker = subprocess.Popen([sys.executable, str(script), str(marker), "30"])
             try:
                 busy, idle, excluded = waiting.cpu(marker), waiting.cpu("sleep 30"), waiting.cpu(marker, exclude=["work.py"])
+                # Until macOS can read a new process's arguments, ps names it by its executable alone, as "(sleep)",
+                # so a look just after the start can miss either process; wait for both to be listed by command.
+                def listed(probe, process):
+                    return [entry for entry in probe() if entry[0] == str(process.pid)]
+                self.assertTrue(waiting.wait_until(lambda: listed(busy, worker) and listed(idle, sleeper),
+                                                   stall=10, interval=0.05), "Both processes are listed.")
                 first = busy()
                 self.assertEqual([pid for pid, _ in first], [str(worker.pid)])
                 self.assertTrue(waiting.wait_until(lambda: busy() != first, stall=10, interval=0.05),
                                 "A process at work uses CPU between looks.")
                 self.assertEqual(excluded(), [])
-                asleep = [entry for entry in idle() if entry[0] == str(sleeper.pid)]
+                asleep = listed(idle, sleeper)
                 time.sleep(0.5)
-                self.assertEqual([entry for entry in idle() if entry[0] == str(sleeper.pid)], asleep,
+                self.assertEqual(listed(idle, sleeper), asleep,
                                  "A sleeping process uses no CPU.")
             finally:
                 for process in (sleeper, worker):
