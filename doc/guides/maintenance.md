@@ -354,7 +354,12 @@ on main, and `git rebase --skip` passes one it stops at whose change main holds 
 beside the older half, in a second checkout, `~/Development/queuekeeper-workers/NAME/NAME-beside`, on the same
 `origin/main` (owner's decision, 2026-11-07, [#241](https://github.com/vocaro/vocaro-engineering/issues/241)).
 The older half runs on this Mac (`qk run --here`) and the newer on another Mac
-(`qk run --offload-only`), which runs it only if it can start it now. Whichever half passes lands,
+(`qk run --offload-only`), which runs it only if it can start it now. A lane of the older half that
+needs an unlocked screen, while this Mac's screen does not read unlocked and the farm has another Mac,
+is placed as an ordinary gate's lane instead: the first Mac with room and an unlocked screen takes it,
+and this Mac takes it only once its screen reads unlocked (owner's decision, 2026-11-17,
+[#205](https://github.com/vocaro/queuekeeper/issues/205)). On 2026-11-17 an older half had waited 67
+minutes for this Mac's locked screen while the other Mac read unlocked and had finished the newer half. Whichever half passes lands,
 so a newer half that passes can land before the older one. When both pass, the older half lands first,
 and the newer one lands on top of it only if its result carries over; otherwise it gates again. When
 both halves fail, the older one is bisected first. The newer half instead waits behind the older one,
@@ -369,7 +374,8 @@ as before, when:
 Under #231 the rerun-alone check runs on each failed half, so the failure that splits a half is a
 real one, and a half whose real failure blames one entry sends it back instead of splitting (below).
 With [two farm Macs or more](shared-host.md#the-farms-macs), the newer half uses the
-first listed Mac that can start it. The older half runs on this Mac.
+first listed Mac that can start it. The older half runs on this Mac, but for a lane that a locked screen
+here keeps from starting (above).
 
 **Entries that arrive during a gate gate on top of it.** While a batch gates, the worker checks every
 `STACK_POLL` (30 s) for entries that have arrived behind it. A docs-only entry among them is never

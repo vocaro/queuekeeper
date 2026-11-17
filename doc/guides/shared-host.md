@@ -847,8 +847,12 @@ unlocked, `locked` and `unknown` alike counting as no room for it, and its place
 HH:MM:SS)`. Another Mac declines such a lane before it takes a checkout while its screen is not
 unlocked, and this Mac does not admit it while its own is not, so when no Mac reads unlocked
 the lane waits, offered to another Mac again as any waiting lane is, instead of running
-unmeasured and using up the merge queue's no-verdict runs. A lane that does not declare it is placed
-as before, whatever either screen reads. `"display": true` is no substitute: it wakes the display and
+unmeasured and using up the merge queue's no-verdict runs. A gate waits for the screen before it
+starts, holding no slot. A bisect's older half, which otherwise stays on this Mac, is offered to
+the farm's Macs like any gate while this Mac's screen does not read unlocked
+([maintenance](maintenance.md), *A bisect's two halves gate at once*). A lane that does not declare it is placed
+as before, whatever either screen reads: a locked screen blocks only the work that needs it unlocked
+(owner's decision, 2026-11-17, [#205](https://github.com/vocaro/queuekeeper/issues/205)). `"display": true` is no substitute: it wakes the display and
 keeps it on, behind a lock too, but unlocks nothing, so a `"display": true` lane whose tests report a
 locked screen as unmeasured also says `"unlockedScreen": true`, and so does each group that runs it.
 Without it, on 2026-11-07, the merge queue sent EPUBLib's gate to a locked Mac three times in a row,

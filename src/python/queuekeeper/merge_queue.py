@@ -3580,7 +3580,9 @@ class Worker:
                     return status_, log
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
-            self.lane_now = (lane, began, tuple(where))
+            # The older half of a bisect leaves this Mac when a locked screen here keeps its lane from starting (#205).
+            placed = self.screen_placement(lane, where)
+            self.lane_now = (lane, began, tuple(placed))
             admission = Admission(self.checkout, lane, began).start() if lane == budgets.GATE else None
             sampler = BusySampler(self.checkout, lane, began, admission).start() if lane == budgets.GATE else None
             loads = LoadSampler(self.checkout, lane, began).start()
@@ -3590,7 +3592,7 @@ class Worker:
             if screen: self.say(f"{lane}: only on a Mac whose screen reads unlocked, since a locked screen left its "
                                 "last run without a verdict")
             # The project's launcher, or the toolkit's own qk where it has none (vocaro/queuekeeper#108).
-            command = toolkit_command(self.checkout, ["run", *where, *screen, lane], self.toolkit_root())
+            command = toolkit_command(self.checkout, ["run", *placed, *screen, lane], self.toolkit_root())
             if lane in (SPELLING, DOCS) and not self.has_lane(lane):
                 self.say(f"{lane}: the project has no {lane} lane, so qk run runs the toolkit's: "
                          f"{shlex.join(self.implicit(lane))}")
@@ -3800,6 +3802,31 @@ class Worker:
         other heavy work. One that cannot be read says nothing, so no."""
         try: return load(self.checkout).get("lanes", {}).get(lane, {}).get("wholeHost") is True
         except (OSError, ValueError, AttributeError): return False
+
+    def needs_screen(self, lane):
+        """Whether the checkout's own queuekeeper.json says lane needs an unlocked screen (config.unlocked_screen). One
+        that cannot be read says nothing, so no."""
+        try: return unlocked_screen(load(self.checkout).get("lanes", {}), lane)
+        except (OSError, ValueError, AttributeError): return False
+
+    def screen_placement(self, lane, where):
+        """qk run's placement for lane, where, unless where is HERE, for a bisect's older half, while lane needs an
+        unlocked screen (needs_screen, or the worker sends it only to an unlocked Mac, #293), this Mac's screen does not
+        read unlocked and the farm has another Mac: then none, so that qk run offers the lane to the farm's Macs as it
+        does an ordinary gate's, the first with room and an unlocked screen taking it, and this Mac taking it only once
+        its screen reads unlocked. The owner's decision of 2026-11-17 (vocaro/queuekeeper#205): a locked screen blocks
+        only the work that needs it unlocked, and while this Mac can run the half it stays here, as
+        vocaro-engineering#241 decided. On 2026-11-17 an older half waited 67 minutes for this Mac's locked screen while
+        the farm's other Mac read unlocked and had finished the newer half."""
+        if tuple(where) != HERE or not (lane in self.unlocked or self.needs_screen(lane)): return where
+        found = offload_host.screen()
+        if found["state"] == "unlocked": return where
+        try: hosts = farm.destinations()
+        except (OSError, ValueError): hosts = ()
+        if not hosts: return where
+        self.say(f"{lane}: offered to the farm's Macs rather than kept on this Mac, since it needs an unlocked screen "
+                 f"and {offload_host.screen_line(found, 'this Mac')}")
+        return ()
 
     def toolkit_root(self):
         """The toolkit this worker runs the project's lanes with: the copy that QUEUEKEEPER_ROOT names in its

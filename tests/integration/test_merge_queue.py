@@ -1837,6 +1837,50 @@ class NoVerdict(Fixture):
         worker.sent_unlocked = True
         self.assertTrue(worker.began_unlocked("gate", log, {}))
 
+    def test_a_bisects_older_half_leaves_this_mac_only_while_its_locked_screen_keeps_a_lane_that_needs_it(self):
+        """vocaro/queuekeeper#205, the owner's decision of 2026-11-17: the older half, HERE, goes to the farm's Macs as
+        an ordinary gate does while this Mac's screen does not read unlocked and its lane needs it unlocked; otherwise
+        it stays here (vocaro-engineering#241), and a lane that does not need the screen is never moved by it."""
+        worker = mq.Worker(mq.Queue(self.repo))
+        screens = Path(__file__).resolve().parents[1] / "mac_desktop/fixtures/ScreenState"
+        recording = self.base / "screen.plist"
+        declared = {"lanes": {"gate": {"unlockedScreen": True}, "checks": {}}}
+        def placed(state, lane="gate", where=mq.HERE, hosts=("far",)):
+            shutil.copy(screens / f"this-mac-{state}.plist", recording)
+            with patch.dict(os.environ, {offload_host.SCREEN_RECORDING: str(recording)}), \
+                    patch.object(mq, "load", return_value=declared), \
+                    patch.object(mq.farm, "destinations", return_value=hosts), \
+                    contextlib.redirect_stdout(io.StringIO()) as said:
+                return worker.screen_placement(lane, where), said.getvalue()
+        moved, said = placed("locked-idle")
+        self.assertEqual(moved, ())
+        self.assertIn("gate: offered to the farm's Macs rather than kept on this Mac, since it needs an unlocked screen "
+                      "and screen: locked", said)
+        self.assertEqual(placed("unlocked"), (mq.HERE, ""))
+        # A lane that does not need the screen stays, and so does every lane while the farm has no other Mac.
+        self.assertEqual(placed("locked-idle", lane="checks"), (mq.HERE, ""))
+        self.assertEqual(placed("locked-idle", hosts=()), (mq.HERE, ""))
+        # The newer half, and an ordinary round, keep their own placement.
+        self.assertEqual(placed("locked-idle", where=mq.BESIDE), (mq.BESIDE, ""))
+        self.assertEqual(placed("locked-idle", where=()), ((), ""))
+        # A lane the worker sends only to an unlocked Mac (#293) moves though main does not declare it.
+        worker.unlocked.add("checks")
+        self.assertEqual(placed("locked-idle", lane="checks")[0], ())
+
+    def test_each_lane_of_a_gate_is_placed_by_whether_it_needs_an_unlocked_screen(self):
+        """The gate asks screen_placement for each lane's qk run placement and runs the lane with it."""
+        self.commit("a", "a")
+        self.add("a")
+        asked = []
+        def placed(worker, lane, where):
+            asked.append((lane, tuple(where)))
+            return where
+        with patch.object(mq.Worker, "screen_placement", placed), self.commands() as ran, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        self.assertIn(("gate", ()), asked)
+        self.assertEqual(self.lane_runs(ran), [["python3", "scripts/qk", "run", "gate"]])
+
     def test_a_worker_that_takes_over_keeps_its_count_of_locked_runs(self):
         queue = mq.Queue(self.repo)
         self.assertNotIn("locked_screens", mq.Worker(queue).progress())
