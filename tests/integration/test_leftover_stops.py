@@ -297,17 +297,19 @@ class LaunchesTests(Fixture):
         (self.checkouts / f"1.{offload_host.LAUNCHED}").unlink()
         del self.table[LEFTOVER]
         launches = self.launches()
+        # One reading of the clock, so that a second passing between the fixture and the check changes nothing.
+        after = ago(7100)
         other = str(self.checkouts / "2") + self.appex[len(str(self.slot)):]
-        self.process(LEFTOVER, 1, self.appex, start=ago(7100))
-        self.process(LEFTOVER + 1, 1, other, start=ago(7100))                       # another slot's
+        self.process(LEFTOVER, 1, self.appex, start=after)
+        self.process(LEFTOVER + 1, 1, other, start=after)                       # another slot's
         self.process(LEFTOVER + 2, 1, self.appex, start=ago(7300))                  # before the claim
-        self.process(LEFTOVER + 3, 1, self.appex, start=ago(7100), uid=self.uid + 1)  # another account's
-        self.process(LEFTOVER + 4, RUN, self.appex, start=ago(7100))                # the run's own child
-        self.process(LEFTOVER + 5, 1, f"/usr/bin/true {self.slot}", start=ago(7100))  # no bundle executable
+        self.process(LEFTOVER + 3, 1, self.appex, start=after, uid=self.uid + 1)  # another account's
+        self.process(LEFTOVER + 4, RUN, self.appex, start=after)                # the run's own child
+        self.process(LEFTOVER + 5, 1, f"/usr/bin/true {self.slot}", start=after)  # no bundle executable
         launches.sample()
         launches.sample()
         [line] = self.lines()
-        self.assertEqual((line["pid"], line["start"], line["args"]), (LEFTOVER, ago(7100), self.appex))
+        self.assertEqual((line["pid"], line["start"], line["args"]), (LEFTOVER, after, self.appex))
         self.assertEqual(line["run"], {"pid": RUN, "start": self.run_start})
         self.assertEqual(line["claimed"], self.claimed)
 
