@@ -2,9 +2,15 @@
 each panel gives its script, so that a panel which changes is noticed here and not in a picture.
 
 No browser is run here: the pictures themselves are looked at when they are retaken."""
+from contextlib import redirect_stderr
 import importlib.util
+import io
+import os
 from pathlib import Path
 import sys
+import tempfile
+import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
@@ -52,3 +58,15 @@ class MadeUpData(test_dashboard.Fixture):
         for found in [*self.script.WAITING, *self.script.RECENT]: self.assertLessEqual(set(found), shown)
         for found in self.script.PANELS["queue"]["round"]["gates"]:
             self.assertLessEqual(set(found), {*queue.GATE, "role", "log", "phase"})
+
+
+class SentToAnotherMac(unittest.TestCase):
+    def test_it_refuses_where_admission_sent_it_and_starts_no_browser(self):
+        script = loaded()
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.dict(os.environ, {"QUEUEKEEPER_DISPATCHED_FROM": "Sender"}), \
+                patch.object(script, "serve") as serve, redirect_stderr(io.StringIO()) as said:
+            self.assertEqual(script.main(["--out", str(Path(folder) / "shots")]), 2)
+            self.assertFalse((Path(folder) / "shots").exists())
+        serve.assert_not_called()
+        self.assertIn("not through qk admit", said.getvalue())

@@ -1284,7 +1284,14 @@ python3 tools/dashboard-screenshots.py
 
 It writes `assets/dashboard-home.png` (the Queue home view) and `dashboard-farm.png`, with compact sample data
 in the dark theme, and needs
-Google Chrome. The made-up data is in the script. `tests/visibility/test_dashboard_screenshots.py` fails when a panel's data
+Google Chrome. The made-up data is in the script.
+
+Run it directly on this Mac, as shown, not through `qk admit`. The rule that every test or build takes
+admission does not cover it: it starts one headless Chrome for a few seconds, it needs this Mac's Chrome,
+and it writes into this checkout. `qk admit` may send it to another Mac, which may have no Chrome and would
+keep the pictures in its own checkout, so there the script refuses with exit 2
+([#172](https://github.com/vocaro/queuekeeper/issues/172)). Its test still runs through admission, as
+every test does. `tests/visibility/test_dashboard_screenshots.py` fails when a panel's data
 no longer has the fields the script makes up, which is when to change the script.
 
 ## Spelling check

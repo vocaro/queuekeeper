@@ -14,8 +14,14 @@ tall as its tab.
 
 The pictures are taken by Google Chrome, headless, at twice the page's 1000 points. Name another Chromium browser
 with --chrome. When a panel's data changes shape, change PANELS here to match: a tab that then draws a fault is
-refused, not saved."""
+refused, not saved.
+
+Run it directly on this Mac, as above, not through `qk admit`. It needs this Mac's Chrome, it writes into this
+checkout, and it is light: one headless Chrome for a few seconds, which admission is not for. `qk admit` may send it
+to another Mac, which may have no Chrome and would keep the pictures in its own checkout; there it refuses
+(vocaro/queuekeeper#172)."""
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -29,6 +35,7 @@ sys.path.insert(0, str(CHECKOUT / "src/python"))
 from queuekeeper.checkout import activate
 activate(Path(__file__).resolve().parents[1])
 from queuekeeper import health  # noqa: E402
+from queuekeeper.remote import DISPATCHER  # noqa: E402
 from queuekeeper_dashboard import panels, server  # noqa: E402
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -252,6 +259,11 @@ def main(argv):
                         help="where the pictures go (default: this checkout's assets)")
     parser.add_argument("--chrome", default=CHROME, metavar="PATH", help="the Chromium browser to take them with")
     args = parser.parse_args(argv)
+    if os.environ.get(DISPATCHER):
+        print(f"dashboard-screenshots: sent to this Mac by {os.environ[DISPATCHER]}, whose checkout the pictures "
+              "belong in; run python3 tools/dashboard-screenshots.py directly there, not through qk admit",
+              file=sys.stderr)
+        return 2
     if not Path(args.chrome).is_file():
         print(f"dashboard-screenshots: no browser at {args.chrome}; name one with --chrome", file=sys.stderr)
         return 2
