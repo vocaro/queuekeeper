@@ -136,6 +136,9 @@ for variable in (cli.parallel.RESULTS_VARIABLE, "QUEUEKEEPER_STALE_MODULES_ROOT"
 # Nor does a dispatch a test sends count the keychain as unlocked because the dispatch that runs the suite on the second
 # Mac unlocked the real one: it would unlock nothing, and a test of a kept password that cannot unlock would pass the run.
 os.environ.pop('QUEUEKEEPER_KEYCHAIN_UNLOCKED', None)
+# Nor does a test run as a trial because the suite was started inside one (vocaro/queuekeeper#34): every cli.main a test
+# calls would move its namespaces there. A test of a trial sets it itself.
+os.environ.pop(cli.trial.VARIABLE, None)
 # Nor does a test read what a dispatch, an admission, a device pass or the merge queue tells the command it starts, which
 # the suite inherits whenever it is that command (vocaro/queuekeeper#46): the sending Mac's origin and arrival, which
 # every admission a test takes would report as its own; the file where a declined offer's reason goes; what exclusive

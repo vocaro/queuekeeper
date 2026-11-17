@@ -15,7 +15,7 @@ import time
 import traceback
 
 from . import pins, __version__, budgets, checkout, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
-    parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling
+    parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling, trial
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_spelling_warning, legacy_unread_warning, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
@@ -33,7 +33,11 @@ def fix_hosts(root, hosts):
     (remote.update_there, vocaro-engineering#203). On the same connection it asks which folder beside the project
     that its extensions load from another Mac has no checkout of, each an error naming the clone that makes it,
     which it leaves to the owner; unchecked when another Mac is not reached (vocaro/queuekeeper#117).
-    tests/host_isolation.py replaces it, so that no test changes any Mac."""
+    tests/host_isolation.py replaces it, so that no test changes any Mac. A trial fixes nothing, and says so
+    (trial.py, vocaro/queuekeeper#34)."""
+    if trial.active():
+        hosts.pop("runtimesDiffer", None)
+        return {**hosts, "reaped": [], "deletedDefaults": []}
     for fix in extensions.HOST_FIXES: hosts = fix(root, hosts)
     siblings = sibling_folders(root)
     # Another Mac's own toolkit checkout, which it fast-forwards to origin/main when it can; one it must
@@ -946,6 +950,8 @@ def main(argv=None):
         # The project's extensions first: they add commands, and what they add to a command's environment, such as
         # the host-local path XcodeGen expands before generating a project (#373), is read once they are loaded.
         try:
+            # A trial's own namespaces first, before anything reads one (trial.py, vocaro/queuekeeper#34).
+            trial.apply()
             compose_checkout()
             refused = pin_run(argv)
             if refused is not None: return refused
@@ -1435,6 +1441,7 @@ def perform(argv, report):
             # is an error, and a Mac that cannot be reached is unchecked. A farm with none compares this Mac with none.
             compared = [fix_hosts(root, remote.compare_hosts(host)) for host in farm.destinations()] \
                 or [fix_hosts(root, remote.compare_hosts())]
+            if trial.active(): warnings.append(f"{trial.refusal('the fixes')}; its state is under {trial.folder()}")
             for check in extensions.DOCTOR: warnings += check(root, config)
             # Each Mac short of memory, with what holds it (host_health); another Mac's rides on its survey.
             warnings += host_health.warnings((compared[0].get("local") or {}).get("hostHealth")

@@ -2149,6 +2149,18 @@ as the Mac is added.
 Records made before a rename, measurements, logs and receipts among them, and the guides' dated
 observations, keep their words.
 
+## Trial runs
+
+To try Queuekeeper without reaching the live system, set `QUEUEKEEPER_TRIAL` to a folder, by its
+full path, and run in a throwaway clone. Every `qk` command then keeps its state in that folder:
+its admission (slots, log, limits and `farm.json`), the admission guard, the device record, the
+store of kept app builds, its pinned checkouts and the crash-dialog record. The processes it starts
+inherit the same. A trial's farm has no Mac, so no lane, comparison or fix reaches another Mac, and
+`qk farm` refuses to change one. A heavy run reaps nothing first, and `qk doctor` applies none of
+its fixes to this Mac's simulators or devices or to another Mac's checkout, and says so in its
+warnings. A queue's entries live in its repository's Git directory, so a trial's queue is its
+clone's own; its pushes go to that clone's `origin` (vocaro/queuekeeper#34).
+
 ## Reclaiming disk space
 
 The rules above slow growth; they do not recover what crashed or finished sessions left behind.

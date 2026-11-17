@@ -19,7 +19,7 @@ import os
 import re
 import sys
 
-from . import offload_host
+from . import offload_host, trial
 
 FILE = "farm.json"
 VERSION = 1
@@ -39,7 +39,8 @@ def path():
 def read():
     """The farm's Macs, in the order they are tried: each {"id", "name", "ssh", "state", "added"}, and
     "pausedBecause" while paused. No file is no Mac. A file that is not a farm stops whatever reads it, with what is
-    wrong, rather than sending work past the Macs it names."""
+    wrong, rather than sending work past the Macs it names. A trial's farm has no Mac (trial.py)."""
+    if trial.active(): return []
     try:
         found = json.loads(path().read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -241,6 +242,7 @@ def main(argv):
             else:
                 for mac in macs: print(line(mac))
             return 0
+        if trial.active(): raise ValueError(trial.refusal(f"qk farm {args.operation}"))
         if args.operation == "add":
             mac, found = add(args.ssh, args.name, join=remote.join, here=offload_host.hardware_id())
             print(f"Added {line(mac)}")

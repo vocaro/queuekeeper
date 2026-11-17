@@ -1268,6 +1268,8 @@ def recorded_builds():
     but cannot be read. A record that is not JSON is taken whole, word by word."""
     paths = list(dict.fromkeys([record_path(), Path(pwd.getpwuid(os.getuid()).pw_dir) / DEVICE_RECORD]))
     paths += sorted(Path(path) for path in glob.glob(LEGACY_RECORDS))
+    # A trial reads its own record alone (trial.py, which this file cannot import).
+    if os.environ.get("QUEUEKEEPER_TRIAL", "").strip(): paths = [record_path()]
     found = set()
     for path in paths:
         if not path.exists(): continue
