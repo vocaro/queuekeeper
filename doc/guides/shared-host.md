@@ -265,9 +265,13 @@ gate queued after it waits for it, and does not pass it by draining the guarante
 owner's decision, 2026-11-17, [vocaro/queuekeeper#171](https://github.com/vocaro/queuekeeper/issues/171)).
 On 2026-11-15 that order cost six gates 1 h 10 min of their 14 h 34 min of waiting on this Mac, and
 passing it would let each gate queued behind pass it too
-([scheduling](scheduling.md#d2-may-a-gate-pass-one-slot-work-queued-ahead-of-it)). Whether hand-run
-lanes may hold guaranteed slots while a gate waits is still open there. An older exclusive request
-holds later requests back while the slots it needs drain. A whole-host request similarly keeps the
+([scheduling](scheduling.md#d2-may-a-gate-pass-one-slot-work-queued-ahead-of-it)). A session's
+hand-run lane may also hold a guaranteed slot while a queue's gate waits: admission keeps no slot
+for gates and knows no class of request by who asks (the owner's decision, 2026-11-17, the same
+issue). While slots kept a gate out on 2026-11-15, this Mac read at or over its CPU limit for
+4 h 22 min and under it for 19 to 53 minutes, so the holders were using the Mac
+([scheduling](scheduling.md#d3-may-hand-run-lanes-hold-guaranteed-slots-while-a-gate-waits)). An
+older exclusive request holds later requests back while the slots it needs drain. A whole-host request similarly keeps the
 guaranteed slots for itself. Jobs already running finish normally. Each request still needs its own resources: admission order does not
 create a free checkout, unlock a screen, or release a model lock.
 
