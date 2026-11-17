@@ -1855,6 +1855,7 @@ class NotificationWatchTests(unittest.TestCase):
         starter = subprocess.Popen([sys.executable, "-c", script, TABLET], stdout=subprocess.PIPE, text=True,
                                    env={**os.environ, device_notifications.WATCH: ""})
         self.addCleanup(lambda: starter.poll() is None and starter.kill())
+        self.addCleanup(starter.stdout.close)
         directory, *guards = starter.stdout.readline().split()
         self.assertTrue(Path(directory).is_dir())
         starter.kill()
