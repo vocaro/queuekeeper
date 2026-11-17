@@ -260,9 +260,15 @@ and where each comes from. Waiting messages name a limit by its variable whateve
 
 All requests record their arrival in `exclusive-queue.json` in the slot directory. An older
 ordinary request runs before a later exclusive or whole-host request; ordinary requests can still
-share slots with each other. An older exclusive request holds later requests back while the slots
-it needs drain. A whole-host request similarly keeps the guaranteed slots for itself. Jobs already
-running finish normally. Each request still needs its own resources: admission order does not
+share slots with each other. That holds for a one-slot request that cannot start yet: a whole-host
+gate queued after it waits for it, and does not pass it by draining the guaranteed slots first (the
+owner's decision, 2026-11-17, [vocaro/queuekeeper#171](https://github.com/vocaro/queuekeeper/issues/171)).
+On 2026-11-15 that order cost six gates 1 h 10 min of their 14 h 34 min of waiting on this Mac, and
+passing it would let each gate queued behind pass it too
+([scheduling](scheduling.md#d2-may-a-gate-pass-one-slot-work-queued-ahead-of-it)). Whether hand-run
+lanes may hold guaranteed slots while a gate waits is still open there. An older exclusive request
+holds later requests back while the slots it needs drain. A whole-host request similarly keeps the
+guaranteed slots for itself. Jobs already running finish normally. Each request still needs its own resources: admission order does not
 create a free checkout, unlock a screen, or release a model lock.
 
 `qk run` and `qk admit` retain one place across local waits between remote offers, for every

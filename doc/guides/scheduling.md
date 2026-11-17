@@ -123,7 +123,7 @@ hold the mechanism.
 | 4 | Each Mac sets its own limits. To load a Mac more, raise `slotsMax` and `busyLimit`, not `slots`. | Another Mac is to be loaded most and this Mac a little less. Each guaranteed slot added makes a Mac worse for gates. | 2026-11-07 |
 | 5 | One whole-host lane per Mac, and nothing else admitted while it runs. | A gate's load dips between phases; work admitted on a dip left a gate unmeasured after 1,116 s. | [ve#196], 2026-11-05 |
 | 6 | A whole-host lane that waits keeps the guaranteed slots from later arrivals, which run only beyond them. | Sessions' lanes took each slot as it freed, and a gate could wait out its 5,400 s. | [ve#174], 2026-11-05 |
-| 7 | An older one-slot request holds back a later whole-host or exclusive request. One-slot requests share with each other. | Arrival order holds across kinds, so large requests do not pass a small one that waits. | [ve#200]'s order; open as [D2](#d2-may-a-gate-pass-one-slot-work-queued-ahead-of-it) |
+| 7 | An older one-slot request holds back a later whole-host or exclusive request. One-slot requests share with each other. | Arrival order holds across kinds, so large requests do not pass a small one that waits. | [ve#200]'s order; kept 2026-11-17, [D2](#d2-may-a-gate-pass-one-slot-work-queued-ahead-of-it) |
 | 8 | Exclusive work takes every slot and the model, one request at a time in arrival order, holds back every later request, and starts once the CPU reads quiet or after 300 s. | A timing is void beside other work, and beside the trailing reading of work that just ended. | [#121], 2026-11-13 |
 | 9 | Only a timed part is exclusive. A gate suite never is, and a check that voids itself on a busy Mac does not belong in a shared gate. | An exclusive gate held another Mac for 33 minutes; a self-voiding check held mpm's queue for an afternoon. | 2026-11-12, [#28] |
 | 10 | One model or GPU run per Mac, with one slot and not the host. | The hardware runs one; exclusive admission would hold back builds that need not wait. | [model admission][model] |
@@ -195,9 +195,27 @@ here, not its offers to another Mac. And "guaranteed slots busy" includes one-sl
 queued ahead of the gate, was then admitted, and went on holding a slot, so part of the 23% is rule
 7's cost and not rule 3's. The replay does not separate the two.
 
+A second reading of the same log, made for this guide, asks how busy this Mac was while those gates
+waited for slots with no whole-host lane holding it. Each wait the log records is a window of up to
+two minutes, with the CPU's busy share at its end and the highest during it, set here against this
+Mac's limit of 70%:
+
+| While a gate waited for slots | Time | Share of all waits |
+| --- | --- | --- |
+| The CPU read at or over the limit | 4 h 22 min | 30% |
+| The CPU read under the limit only at the window's end | 34 min | 4% |
+| The CPU read under the limit for the whole window | 19 min | 2% |
+
+So for most of the time that slots kept a gate out, the Mac was as busy as its limit allows, whoever
+held the slots. That day a whole-host lane held this Mac for 40% of the 24 hours and another Mac
+for 11%, by `qk admissions usage`, while another Mac ran three or more jobs 48% of the time.
+
 ### D2: May a gate pass one-slot work queued ahead of it?
 
-*Today (rule 7).* A one-slot request at the head of the line waits when every guaranteed slot is
+**Decided, 2026-11-17 ([#171]): no. Arrival order stays (option A).** What was weighed is kept
+below.
+
+*The rule (rule 7).* A one-slot request at the head of the line waits when every guaranteed slot is
 held and none beyond them may open. A whole-host gate queued behind it waits for it. The gate
 already keeps the guaranteed slots from work that arrives after it (rule 6), so the only work it
 yields to is work older than itself. When a slot frees, the older request takes it, and the gate
@@ -205,12 +223,12 @@ then also waits for that work to end.
 
 | Option | Gains | Costs |
 | --- | --- | --- |
-| A. Keep arrival order. *Suggested.* | No request is ever passed by a later one. | The 8% above, and the unknown part of the 23%. |
+| A. Keep arrival order. **Chosen.** | No request is ever passed by a later one. | The 8% above, and the unknown part of the 23%. |
 | B. The gate keeps the guaranteed slots from older one-slot work too, which runs only beyond them. | At most that 8% and that part. | Older work is passed by a gate, and then by each gate behind it. Nothing is admitted beside a running gate (rule 5), and gates ran or queued back to back for two thirds of the measured wait, so one-slot work on that Mac could wait for the whole chain. |
 | C. As B, for a bounded time or one gate, after which the older request holds its place as today. | Most of B's gain. | A second timer, as rule 17 has, and a wait that is harder to explain in one line. |
 
-A is suggested because goal 3 outranks goal 4 and the measured gain is small. If the owner chooses
-B, C's bound is what keeps goal 3.
+A was chosen because goal 3 outranks goal 4 and the measured gain is small. Should B be wanted
+later, C's bound is what keeps goal 3.
 
 ### D3: May hand-run lanes hold guaranteed slots while a gate waits?
 
@@ -221,15 +239,19 @@ arrived: sessions' lanes of 25 minutes to two hours on 2026-11-15, and in [#84] 
 
 | Option | Gains | Costs |
 | --- | --- | --- |
-| A. Keep. | Nothing changes; a hand-run lane is admitted as any work is. | Up to the 23% above. |
+| A. Keep. *Suggested.* | Nothing changes; a hand-run lane is admitted as any work is. | Up to the 23% above, most of it time the Mac was at its CPU limit. |
 | B. Hand-run work runs only beyond the guaranteed slots, which are kept for queues' gates. | The gate finds its slots free more often. | Admission must learn who asks, which makes the first priority class since [ve#200] removed them. Hand-run work then starts only under `busyLimit`, and on 2026-11-17 both Macs read over theirs: goal 5 could become starvation, against goal 3. The guaranteed slots idle when no gate waits. |
-| C. A gate stands in: it takes the free guaranteed slots, and slots beyond them for the ones that are held, while the Mac's CPU reads under its `busyLimit` and no other whole-host or exclusive work runs. *Suggested.* | A light holder, such as [#84]'s, no longer keeps a gate out, and nobody loses a place. The Mac's own CPU limit decides, as the owner asked on 2026-11-17. | The gate runs beside the holders, so its time is no longer the Mac's alone ([ve#196]), and a busy holder still keeps it out, as it should. |
+| C. A gate stands in: it takes the free guaranteed slots, and slots beyond them for the ones that are held, while the Mac's CPU reads under its `busyLimit` and no other whole-host or exclusive work runs. | A light holder, such as [#84]'s, no longer keeps a gate out, and nobody loses a place. The Mac's own CPU limit decides, as the owner asked on 2026-11-17. | The gate runs beside the holders, so its time is no longer the Mac's alone ([ve#196]), and a busy holder still keeps it out, as it should. |
 | D. Only long or device-bound work runs beyond the guaranteed slots. | Narrower than B. | Work must declare its length, and B's cost applies to what does. |
 
-C is [#84]'s first interim change. How much of the 23% it would recover is not measured: the
-admission log keeps the CPU's busy share at each refusal, so the replay can split those 3 h 21 min
-by whether the Mac read under its limit. That split is worth having before choosing between A and
-C.
+C is [#84]'s first interim change, and this guide first suggested it. The second table under
+[the measurement](#the-measurement-behind-d2-and-d3) changed that. On 2026-11-15, C would have
+started a gate sooner during 19 to 53 minutes of 14 h 34 min, 2% to 6%, because the Mac read at or
+over its limit for the rest of the time slots kept a gate out. B would have started gates sooner
+only by running them on a Mac already at its limit, against goal 2. So A is suggested: on this
+evidence the slots' holders were using the Mac, and the wait is a shortage of Macs for gates, which
+is D6. C stays a small, safe change for a light holder such as [#84]'s, worth making only if such
+holders prove common on other days.
 
 ### D4: Does a Mac's CPU limit bound every admission?
 
@@ -272,12 +294,24 @@ chooses only among those.
 ### D6: Gates wait mostly for other gates
 
 Two thirds of the measured wait was one whole-host gate behind another, which neither D2 nor D3
-touches. Rule 5 allows one per Mac, and six projects' whole-host gates shared two Macs. There are
-three ways out. More Macs ([cloud gate runners](cloud-gate-runners.md)). Gates that bound their own
-width and take one slot, which is honest only under D4's option C. Or two gates on one Mac while
-its CPU allows, which undoes rule 5: on 2026-11-04 two gates on a 10-core Mac ran at a load of 719,
-and 8 of 12 gates there that day gave no verdict. D3's option C and D5's option B help at the edges
-and add no capacity.
+touches. Rule 5 allows one per Mac, and six projects' whole-host gates shared two Macs. In effect
+they shared little more than one: on 2026-11-15 a whole-host lane held this Mac for 40% of the day
+and another Mac for 11%. A gate waits in this Mac's queue, where rule 6 drains the guaranteed slots
+toward it. Another Mac is only offered the gate, to start at once or not at all, so nothing drains
+there, and rule 14 sends one-slot work there first, which keeps its guaranteed slots held.
+
+| Option | Gains | Costs |
+| --- | --- | --- |
+| A. Keep. | This Mac is the gates' Mac and another Mac the one-slot work's, which always has somewhere to run. | Gates queue for one Mac while another ran none for 89% of that day. |
+| B. A gate that waits takes a place in each Mac's queue that can run it, runs on the first to admit it, and gives up the others. *Suggested.* | Rule 6 then drains every Mac toward a waiting gate, so every Mac takes gates and not one, with no new hardware and no new kind of priority. It is what rule 17 does for exclusive work after 900 s. | One-slot work that arrives while gates wait runs only beyond the guaranteed slots on every Mac, so under each Mac's CPU limit. Work older than the gate still goes first (D2). |
+| C. More Macs ([cloud gate runners](cloud-gate-runners.md)). | Capacity that no rule can add. | Money, and a farm with more than one other Mac has run only in tests ([#207]). |
+| D. Two gates on one Mac while its CPU allows. | Uses a Mac's idle cores between a gate's phases. | Undoes rule 5: on 2026-11-04 two gates on a 10-core Mac ran at a load of 719, and 8 of 12 gates there that day gave no verdict. |
+| E. Gates that bound their own width and take one slot. | Several run on one Mac. | Honest only if a slot counts a lane's width (D4's option C); otherwise it is [#170]. |
+
+B is suggested first because it costs nothing but code and its effect can be read the next day, as
+each Mac's share of time held by a whole-host lane in `qk admissions usage`. C follows only if gates
+still queue once both Macs take them. Not measured: how many of the day's gate runs were reruns
+after a run with no verdict, each of which holds a Mac again ([#170], [#24]).
 
 ### Smaller questions with issues of their own
 
