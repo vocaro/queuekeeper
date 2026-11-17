@@ -5509,6 +5509,38 @@ class LaggingCheckout(Fixture):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("fix", self.main_files())
 
+    def test_project_names_a_checkout_behind_the_commit_that_added_its_configuration(self):
+        """--project takes such a checkout for the queue's commands too, which read origin/main (#204)."""
+        worktree = self.base / "session"
+        run(self.repo, "git", "worktree", "add", "-q", "-b", "fix", str(worktree), "origin/main")
+        (worktree / "fix").write_text("x")
+        run(worktree, "git", "add", "fix")
+        run(worktree, "git", "commit", "-qm", "Add fix")
+        run(self.repo, "git", "checkout", "-q", "--orphan", "before")
+        run(self.repo, "git", "rm", "-rqf", ".")
+        run(self.repo, "git", "commit", "-q", "--allow-empty", "-m", "Before Queuekeeper")
+        self.assertFalse((self.repo / "queuekeeper.json").exists())
+        project = ["python3", str(ROOT / "scripts/qk"), "--project", str(self.repo)]
+        for words in (["queue", "status", "--json"], ["queue", "doctor", "--json"], ["queue", "health", "--json"],
+                      ["queue", "placement", "gate", "--json"], ["queue", "events", "--json"]):
+            done = subprocess.run([*project, *words], cwd=self.base, capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, f"{words}: {done.stdout}{done.stderr}")
+        # A command that runs what the working tree holds says why it cannot, not only that the file is missing.
+        for words in (["run", "gate"], ["doctor"]):
+            done = subprocess.run([*project, *words], cwd=self.base, capture_output=True, text=True)
+            self.assertEqual(done.returncode, 2, f"{words}: {done.stdout}{done.stderr}")
+            self.assertIn("the checkout is behind the commit that added it", done.stderr)
+            self.assertNotIn("Traceback", done.stderr)
+        done = subprocess.run([*project, "land", "fix", "--wait", "--json", "--limit", str(stretched(120))],
+                              cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("fix", self.main_files())
+        identifier = json.loads(done.stdout)["id"]
+        for words in (["queue", "result", identifier, "--json"], ["queue", "wait", identifier, "--json"],
+                      ["queue", "logs", identifier, "--json"]):
+            done = subprocess.run([*project, *words], cwd=self.base, capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, f"{words}: {done.stdout}{done.stderr}")
+
     def test_a_checkout_too_old_for_this_toolkit_stops_no_worker(self):
         """The worker's --project is the main checkout, whose configuration must not even be checked."""
         worktree = self.session({"schemaVersion": 1, "name": "fixture", "hostedRepositories": []})

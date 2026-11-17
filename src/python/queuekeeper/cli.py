@@ -1052,6 +1052,17 @@ def unsendable(lane):
             f"does not hold, which another Mac cannot fetch; push it to run {lane} there")
 
 
+def working_configuration(root):
+    """The queuekeeper.json of the working tree at root, which every command but land's and the queue's reads, as they
+    run what that tree holds. A checkout behind the commit that added the file is told so, and not only that the file
+    is missing: land and the queue, which read origin/main, take such a checkout as it stands (#188, #204)."""
+    if not (root / CONFIG_FILE).is_file() and merge_queue.has_config(root, merge_queue.MAIN):
+        raise ValueError(f"{root} has no {CONFIG_FILE} in its working tree, but its origin/main has one: the checkout "
+                         "is behind the commit that added it, and this command runs what the working tree holds. "
+                         "Update the checkout to origin/main, or give a checkout that is up to date")
+    return load(root)
+
+
 def load_extensions(argv):
     """Load the extensions of the project argv names: its folder is --project's when that comes first, as a launcher
     gives it, else the current one, and a linked worktree's extensions are found from its main checkout."""
@@ -1361,7 +1372,7 @@ def perform(argv, report):
         # The store is the repository's, named by any checkout of it, and qk disk runs this for every project.
         if args.action == "remote" and args.operation == "prune-results":
             return remote.prune_results_main(args.checkout or root, args.dry_run)
-        config = load(root)
+        config = working_configuration(root)
         if args.action in {"run", "admit"} or (args.action == "remote" and args.operation in {"run", "admit"}):
             for check in extensions.BEFORE_LANE: check(root, config)
         if args.action in extensions.PARSED_COMMANDS: return extensions.PARSED_COMMANDS[args.action][2](root, args, config)
