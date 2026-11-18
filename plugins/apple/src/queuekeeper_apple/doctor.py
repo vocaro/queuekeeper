@@ -113,8 +113,19 @@ def required_commands(config):
     return {"xcrun", "xcodebuild"} if config.get("simulatorPool") or config.get("app") else set()
 
 
+def declared_devices(root, config):
+    """(errors, warnings) of the devices the owner declared, as each Mac reads them now (reach.findings): a device
+    declared always reachable that no Mac has reached for the settle time is an error."""
+    from queuekeeper import offload_host
+    from . import reach
+    try: return reach.findings(offload_host.record_path())
+    except (OSError, ValueError, RuntimeError) as error:
+        return [], [f"the declared devices could not be read: {error} (doc/guides/devices.md, Declared devices)"]
+
+
 def register():
     """Add these checks and fixes to `doctor`."""
+    if declared_devices not in extensions.DOCTOR_CHECKS: extensions.DOCTOR_CHECKS.append(declared_devices)
     if required_commands not in extensions.REQUIRED_COMMANDS: extensions.REQUIRED_COMMANDS.append(required_commands)
     if fix_hosts not in extensions.HOST_FIXES: extensions.HOST_FIXES.append(fix_hosts)
     if simulator_warnings not in extensions.DOCTOR: extensions.DOCTOR.append(simulator_warnings)

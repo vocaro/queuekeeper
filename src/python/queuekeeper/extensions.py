@@ -27,6 +27,9 @@ PREPARE_LANE = []
 POLICY = []
 # Each (root, config) -> [warning]: checks `doctor` adds to its own.
 DOCTOR = []
+# Each (root, config) -> (errors, warnings): checks `doctor` adds whose errors fail it, as a difference between the
+# Macs does.
+DOCTOR_CHECKS = []
 # Each (root, config) -> [warning]: what a landing warns of after its result, beside the gate's budget.
 LANDING_WARNINGS = []
 # Each (config) -> the commands doctor requires on this Mac for the project, beside its own.
@@ -79,8 +82,12 @@ class Devices:
     device_owner = "the agent session"
 
     def observations(self):
-        """Device information contributed to visibility, empty without a device provider."""
-        return {"devices": [], "deferredTo": None, "error": None, "connectionError": None, "checkedAt": None}
+        """Device information contributed to visibility, empty without a device provider. Its declared lists each
+        device the owner declared, as {"name", "state", "absent", "since", "text"}: state is reached, settling,
+        unknown or unreachable, and absent says whether an unreachable one is an error or offline; declaredError says
+        why they could not be judged."""
+        return {"devices": [], "deferredTo": None, "error": None, "connectionError": None, "checkedAt": None,
+                "declared": [], "declaredError": None}
 
     def remote_setup(self, mac):
         """Python arguments for plugin setup on a receiving Mac, or none. Its command exits 2 when the record it

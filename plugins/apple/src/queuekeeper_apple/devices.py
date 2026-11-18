@@ -1020,7 +1020,7 @@ def status(record, macs=None):
     # Which Macs reach each device, and how, as each lists it now, beside what the owner declared (reach.py).
     found = reach.readings(macs=macs)
     names = [reach.mac_here(), *(name for name, _host in macs)]
-    for line in reach.lines(reach.survey(value, found, names), value.get(DEFERRED)): print(line)
+    for line in reach.lines(reach.judged(value, record.path, found, names), value.get(DEFERRED)): print(line)
     imported = {item.get("sha256") for item in value.get("imports", [])}
     for legacy in sorted(glob.glob(LEGACY)):
         try:

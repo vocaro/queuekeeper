@@ -208,6 +208,25 @@ class QueueDoctor(unittest.TestCase):
         self.assertNotIn("offload", shown)
         self.assertTrue(any(warning.startswith("mini is short of memory") for warning in shown["warnings"]))
 
+    def test_an_extension_s_doctor_check_fails_doctor_by_its_errors_and_warns_by_its_warnings(self):
+        # Such as the Apple extension's declared devices, one declared always reachable that no Mac reaches
+        # (vocaro/queuekeeper#211).
+        report = {"host": None, "errors": [], "unchecked": [], "pythonCrashes": {}}
+        for found, expected in (((["iPad is reached by no Mac"], ["careful"]), 1), (([], ["careful"]), 0)):
+            with self.subTest(found=found), tempfile.TemporaryDirectory() as directory, farm_fixture.only(), \
+                    patch.object(remote, "compare_hosts", return_value=report), \
+                    patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
+                    patch.object(cli, "source_identity", return_value={}), \
+                    patch.object(offload_host, "host_health", return_value=reading()), \
+                    patch.object(cli.extensions, "DOCTOR_CHECKS", [lambda root, config, found=found: found]), \
+                    contextlib.redirect_stdout(StringIO()) as output:
+                Path(directory, "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                    "integration": "direct-main", "lanes": {"gate": {"command": ["true"], "timeout": 60}}}))
+                status = cli.main(["--project", directory, "doctor"])
+            shown = json.loads(output.getvalue())
+            self.assertEqual((status, shown["errors"]), (expected, found[0]))
+            self.assertIn("careful", shown["warnings"])
+
     def test_a_farm_mac_without_the_reading_is_unknown_and_one_away_is_too(self):
         with patch.object(remote, "reading_there", return_value=({"load": 1.0}, 10.0)) as there:
             self.assertIsNone(merge_queue.health_of("build"))

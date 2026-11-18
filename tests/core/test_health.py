@@ -151,6 +151,31 @@ class Verdict(unittest.TestCase):
         # With no device recorded, or the devices managed on another Mac, the sign stands aside.
         self.assertEqual(levels(assess(state({"began": NOW - 60}), record={**DEVICES, "devices": []}))["devices"], "idle")
 
+    def test_a_declared_device_no_mac_reaches_is_an_error_only_when_declared_always_reachable(self):
+        # vocaro/queuekeeper#211: the owner's declaration says what absence means, after the settle time.
+        def record(*declared, error=None):
+            return {**DEVICES, "declared": [dict(zip(("name", "state", "absent", "since", "text"), item))
+                                            for item in declared], "declaredError": error}
+        gone = ("iPad", "unreachable", "error", "2026-11-18T09:00:00+00:00",
+                "iPad, declared always reachable, is reached by no Mac since 2026-11-18T09:00:00+00:00: tried network")
+        found = assess(state({"began": NOW - 60}), record=record(gone))
+        self.assertEqual(levels(found)["devices"], "danger")
+        self.assertIn("Pad, declared always reachable, is reached by no Mac", found["sentence"])
+        # Away, it is offline, said with since when, and no problem.
+        away = ("iPhone", "unreachable", "offline", "2026-11-18T08:00:00+00:00", "iPhone is offline")
+        found = assess(state({"began": NOW - 60}), record=record(away))
+        self.assertEqual(levels(found)["devices"], "ok")
+        sign = next(item for item in found["signs"] if item["name"] == "devices")
+        self.assertIn("iPhone offline since 2026-11-18T08:00:00+00:00", sign["text"])
+        # Unreached within the settle time, or reached, it is no problem; not known for want of a Mac's reading, or not
+        # judged at all, the sign cannot say it is well.
+        for item in (("iPad", "settling", "error", None, "settling"), ("iPad", "reached", "error", None, "reached")):
+            self.assertEqual(levels(assess(state({"began": NOW - 60}), record=record(item)))["devices"], "ok")
+        unknown = ("iPad", "unknown", "error", None, "whether any Mac reaches iPad is not known")
+        self.assertEqual(levels(assess(state({"began": NOW - 60}), record=record(unknown)))["devices"], "unknown")
+        self.assertEqual(levels(assess(state({"began": NOW - 60}), record=record(away, error="boom")))["devices"],
+                         "unknown")
+
     def test_a_mac_short_of_memory_is_slow_and_one_at_critical_pressure_stops_it(self):
         short = {"signal": "short of memory", "mac": "build-host",
                  "diagnosis": "build-host has swap 97% full; fseventsd holds 34 GB"}

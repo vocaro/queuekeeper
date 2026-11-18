@@ -254,5 +254,115 @@ class Recorded(unittest.TestCase):
                       "Max, named 'iPhone'). Read: studio by network", output)
 
 
+class Absence(Recorded):
+    """The settle time and the absence rule, read over time in an isolated record (vocaro/queuekeeper#211, step 2)."""
+
+    T0 = 1_800_000_000.0
+
+    def declare(self, **declarations):
+        self.write(self.entries(), declarations=declarations)
+        return self.record.load()
+
+    def readings(self, here, there):
+        """This Mac's and the other's readings, either one an error to stand for a Mac not read."""
+        def one(name, host, listing):
+            if isinstance(listing, Exception): return {"mac": name, "host": host, "readAt": 0, "error": str(listing)}
+            return {"mac": name, "host": host, "readAt": 0, "devices": reach.listed(listing), "seconds": 0.1}
+        return [one("owner-mac", None, here), one(*OTHER, there)]
+
+    def judge(self, value, here, there, at):
+        answer = reach.judged(value, self.path, self.readings(here, there), ["owner-mac", "studio"], now=self.T0 + at)
+        return {item["key"]: item.get("absence") for item in answer["devices"]}, answer
+
+    def test_a_device_declared_always_reachable_is_an_error_only_once_missing_for_the_settle_time(self):
+        value = self.declare(iPad={"reach": ["cable", "network"], "cableOn": "owner-mac", "absent": "error"})
+        written = self.path.read_bytes()
+        found, _answer = self.judge(value, CABLE, NETWORK, 0)
+        self.assertEqual(found["iPad"]["state"], "reached")
+        self.assertIsNone(found["iPhone"])  # undeclared, so not judged
+        gone = (without(CABLE, TABLET), without(NETWORK, TABLET))
+        found, answer = self.judge(value, *gone, 60)
+        self.assertEqual((found["iPad"]["state"], found["iPad"]["since"]), ("settling", reach.stamp(self.T0 + 60)))
+        self.assertIn("unreachable after 300s", reach.lines(answer)[0])
+        # Just short of the settle time, then at it.
+        self.assertEqual(self.judge(value, *gone, 60 + reach.SETTLE - 1)[0]["iPad"]["state"], "settling")
+        found, answer = self.judge(value, *gone, 60 + reach.SETTLE)
+        self.assertEqual(found["iPad"]["state"], "unreachable")
+        # The error names the device, the ways tried and each Mac's reading.
+        self.assertIn("iPad, declared always reachable, is reached by no Mac since "
+                      f"{reach.stamp(self.T0 + 60)}, last reached {reach.stamp(self.T0)}: tried cable on owner-mac, "
+                      "then network; read: owner-mac not listed; studio not listed", found["iPad"]["text"])
+        self.assertIn("Error: reached by no Mac since", reach.lines(answer)[0])
+        # The device stays in the record and its reservation stands: judging wrote nothing to the record.
+        self.assertEqual(self.path.read_bytes(), written)
+        # Reached again by any declared way, it is reached, and the next miss starts the settle time afresh.
+        self.assertEqual(self.judge(value, without(CABLE, TABLET), NETWORK, 400)[0]["iPad"]["state"], "reached")
+        self.assertEqual(self.judge(value, *gone, 401)[0]["iPad"]["state"], "settling")
+
+    def test_one_that_may_be_away_is_offline_with_since_when_and_no_error(self):
+        value = self.declare(iPhone={"reach": ["cable", "network"], "absent": "offline"})
+        gone = (without(CABLE, PHONE), without(NETWORK, PHONE))
+        self.judge(value, CABLE, NETWORK, 0)
+        self.judge(value, *gone, 10)
+        found, answer = self.judge(value, *gone, 10 + reach.SETTLE)
+        self.assertEqual((found["iPhone"]["state"], found["iPhone"]["absent"]), ("unreachable", "offline"))
+        self.assertIn(f"Offline since {reach.stamp(self.T0 + 10)}, last reached {reach.stamp(self.T0)}, which is no "
+                      "error", "\n".join(reach.lines(answer)))
+        with patch.object(reach, "readings", return_value=self.readings(*gone)), \
+                patch.object(reach.time, "time", return_value=self.T0 + 20 + reach.SETTLE):
+            self.assertEqual(reach.findings(self.path), ([], []))
+            self.assertEqual([(item["name"], item["state"], item["absent"]) for item in reach.health(self.path)],
+                             [("iPhone", "unreachable", "offline")])
+
+    def test_doctor_says_the_error_and_a_mac_not_read_leaves_reach_unknown_not_missing(self):
+        value = self.declare(iPad={"reach": ["network"], "absent": "error"})
+        gone = (without(CABLE, TABLET), without(NETWORK, TABLET))
+        self.judge(value, CABLE, NETWORK, 0)
+        self.judge(value, *gone, 10)
+        with patch.object(reach, "readings", return_value=self.readings(*gone)), \
+                patch.object(reach.time, "time", return_value=self.T0 + 10 + reach.SETTLE):
+            errors, warnings = reach.findings(self.path)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("iPad, declared always reachable, is reached by no Mac", errors[0])
+        self.assertEqual(warnings, [])
+        # A cable is no declared way of this iPad's: a Mac that reaches it only so does not reach it.
+        found, _answer = self.judge(value, CABLE, without(NETWORK, TABLET), 20 + reach.SETTLE)
+        self.assertEqual(found["iPad"]["state"], "unreachable")
+        # The other Mac not read: whether it reaches the iPad is not known, which is no error and starts no clock.
+        history = json.loads(reach.history_path(self.path).read_text())["devices"][TABLET]
+        found, answer = self.judge(value, without(CABLE, TABLET), RuntimeError("no route"), 30 + reach.SETTLE)
+        self.assertEqual(found["iPad"]["state"], "unknown")
+        self.assertIn("studio was not read", found["iPad"]["text"])
+        self.assertIn("Whether a Mac reaches it is not known: studio not read", "\n".join(reach.lines(answer)))
+        self.assertEqual(json.loads(reach.history_path(self.path).read_text())["devices"][TABLET]["missingSince"],
+                         history["missingSince"])
+        with patch.object(reach, "readings", return_value=self.readings(without(CABLE, TABLET), RuntimeError("x"))):
+            errors, warnings = reach.findings(self.path)
+        self.assertEqual((errors, len(warnings)), ([], 1))
+
+    def test_each_way_on_each_mac_is_remembered_and_a_record_that_declares_nothing_is_not_read(self):
+        value = self.declare(iPad={"reach": ["cable", "network"], "absent": "error"})
+        self.judge(value, CABLE, NETWORK, 0)
+        self.judge(value, without(CABLE, TABLET), NETWORK, 30)
+        ways = json.loads(reach.history_path(self.path).read_text())["devices"][TABLET]["ways"]
+        self.assertEqual(ways["owner-mac/cable"], {"seenAt": self.T0, "missingSince": self.T0 + 30})
+        self.assertEqual(ways["studio/network"], {"seenAt": self.T0 + 30, "missingSince": None})
+        self.assertEqual(ways["owner-mac/network"], {"seenAt": None, "missingSince": self.T0})
+        # A record with no declaration, or one that defers physical devices, has nothing judged and no Mac read.
+        self.write(self.entries())
+        with patch.object(reach, "readings") as read:
+            self.assertEqual(reach.findings(self.path), ([], []))
+            self.assertEqual(reach.health(self.path), [])
+            self.write({}, physicalDevicesRecordedOn="owner-mac", declarations={"iPad": {}})
+            self.assertEqual(reach.findings(self.path), ([], []))
+        read.assert_not_called()
+        # A wrong declaration is a warning, and is not judged.
+        self.write(self.entries(), declarations={"iPad": {"reach": ["wifi"], "absent": "error"}})
+        with patch.object(reach, "readings", return_value=self.readings(CABLE, NETWORK)):
+            errors, warnings = reach.findings(self.path)
+        self.assertEqual(errors, [])
+        self.assertIn("iPad's device declaration is wrong", warnings[0])
+
+
 if __name__ == "__main__":
     unittest.main()

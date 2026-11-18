@@ -200,6 +200,17 @@ def devices(record, state):
     if record is None: return sign("devices", UNKNOWN, "the devices were not read")
     if record.get("error"): return sign("devices", UNKNOWN, f"the devices could not be read: {record['error']}")
     if record.get("deferredTo"): return sign("devices", IDLE, f"managed on {record['deferredTo']}")
+    # A device the owner declared always reachable that no Mac has reached for the settle time is an error; one that
+    # may be away is offline, which is said and alerts no one (doc/guides/devices.md, Declared devices).
+    declared = record.get("declared") or []
+    errors = [device["text"] for device in declared if device.get("state") == "unreachable" and device.get("absent") == "error"]
+    if errors: return sign("devices", DANGER, "; ".join(errors))
+    if record.get("declaredError"):
+        return sign("devices", UNKNOWN, f"the declared devices could not be judged: {record['declaredError']}")
+    unknown = [device["text"] for device in declared if device.get("state") == "unknown" and device.get("absent") == "error"]
+    if unknown: return sign("devices", UNKNOWN, "; ".join(unknown))
+    offline = "".join(f"; {device['name']} offline since {device.get('since')}" for device in declared
+                      if device.get("state") == "unreachable" and device.get("absent") == "offline")
     found = record.get("devices") or []
     if not found: return sign("devices", IDLE, "none recorded")
     waits = " ".join(str(gate.get("waiting") or "") for gate in ((state.get("round") or {}).get("gates") or {}).values()
@@ -216,7 +227,7 @@ def devices(record, state):
     recovering = [device["name"] for device in found if device.get("state") == "needs recovery"]
     if recovering: return sign("devices", WARNING, f"{', '.join(recovering)} needs recovery: `qk devices recover`")
     connected = sum(1 for device in found if device.get("connection") == "connected")
-    return sign("devices", OK, f"{connected} of {len(found)} connected")
+    return sign("devices", OK, f"{connected} of {len(found)} connected{offline}")
 
 
 def came_back(journal):

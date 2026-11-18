@@ -3,6 +3,7 @@ import json
 import subprocess
 import time
 from queuekeeper import offload_host
+from . import reach
 
 def connections_of(answer):
     """Physical devices by hardware UDID, from current or older Xcode devicectl JSON.
@@ -64,8 +65,15 @@ def read_devices():
                           **connections.get(str(entry["device"]).upper(), {
                               "connection": "notDetected" if checked is not None else "unknown", "transport": None,
                               "kind": "other", "model": None})})
+        # Each declared device's absence, judged from every Mac's reading after the settle time (reach.py).
+        declared, declared_error = [], None
+        try:
+            declared = reach.health(offload_host.record_path())
+        except (OSError, ValueError, RuntimeError) as error:
+            declared_error = str(error)
         return {"devices": sorted(found, key=lambda item: item["name"]),
                 "deferredTo": record.get(offload_host.DEFERRED), "error": None,
-                "connectionError": connection_error, "checkedAt": checked}
+                "connectionError": connection_error, "checkedAt": checked,
+                "declared": declared, "declaredError": declared_error}
     except Exception as error:  # noqa: BLE001
         return {"devices": [], "deferredTo": None, "error": str(error), "connectionError": None, "checkedAt": None}

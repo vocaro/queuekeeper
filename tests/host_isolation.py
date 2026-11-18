@@ -178,10 +178,18 @@ os.environ['QUEUEKEEPER_QUIT_OPENED_APPS'] = "off"
     "defaults": [1, "", "Error: Could not find key 'AppleShowScrollBars' in domain 'kCFPreferencesAnyApplication'.\n"],
     "ioreg": [0, "", ""]}))
 os.environ[offload_host.SCROLL_BARS_RECORDING] = str(ROOT / "scroll-bars.json")
-# Nor does any `devices status` a test runs list this Mac's devices with devicectl (vocaro/queuekeeper#211): it reads
-# that this Mac lists none. A test of the reading names its own recorded listing.
+# Nor does any `devices status`, `doctor` or health reading a test makes list this Mac's devices with devicectl, or
+# read the owner's device record and write what it read beside it (vocaro/queuekeeper#211): it reads that this Mac
+# lists none, in a record of its own that holds nothing. A test of the reading or the record names its own.
 (ROOT / "device-listing.json").write_text(json.dumps({"result": {"devices": []}}))
 os.environ["QUEUEKEEPER_DEVICE_LISTING"] = str(ROOT / "device-listing.json")
+# The record refuses a place a restart empties, which ROOT is when TMPDIR is /private/tmp.
+RECORDS = ROOT
+if RECORDS == Path("/private/tmp") or Path("/private/tmp") in RECORDS.parents:
+    RECORDS = Path(tempfile.mkdtemp(prefix="queuekeeper-test-devices-", dir=subprocess.check_output(
+        ["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], text=True).strip())).resolve()
+    atexit.register(lambda owner=os.getpid(), kept=RECORDS: os.getpid() == owner and shutil.rmtree(kept, True))
+os.environ["QUEUEKEEPER_DEVICE_RECORD"] = str(RECORDS / "devices" / "device-handoff.json")
 
 
 FIX_HOSTS = cli.fix_hosts
@@ -236,7 +244,7 @@ ISOLATION = {name: os.environ[name] for name in (
     "QUEUEKEEPER_RUN_FREE_GB",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
     "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD,
-    remote.RESPONSIBLE, "QUEUEKEEPER_DEVICE_LISTING")}
+    remote.RESPONSIBLE, "QUEUEKEEPER_DEVICE_LISTING", "QUEUEKEEPER_DEVICE_RECORD")}
 
 
 # The prefixes of the toolkit's variables, and those of them this module lets a test inherit, each with why that is
@@ -252,7 +260,7 @@ OWNER_SWITCH = "the owner's own switch, which no run sets for the commands it st
 INHERITED = {
     **dict.fromkeys(("HEAVY_SLOTS", "HEAVY_SLOTS_MAX", "HEAVY_SETTLE_SECONDS", "HEAVY_QUIET_LIMIT",
                      "HEAVY_POLL_SECONDS", "HEAVY_RECOVER_SECONDS", "HEAVY_PLACE_SECONDS"), OWNER_LIMIT),
-    **dict.fromkeys(("QUEUEKEEPER_APP_STORE", "QUEUEKEEPER_DEVICE_RECORD", "QUEUEKEEPER_SCREEN_IOREG"), OWNER_PATH),
+    **dict.fromkeys(("QUEUEKEEPER_APP_STORE", "QUEUEKEEPER_SCREEN_IOREG"), OWNER_PATH),
     **dict.fromkeys(("QUEUEKEEPER_VISIBILITY", "QUEUEKEEPER_PREPUSH", "QUEUEKEEPER_UNITY_OPEN", "QUEUEKEEPER_UNITY_QUIET"),
                     OWNER_SWITCH),
     cli.parallel.SHARD_VARIABLE: "qk unittest's mark on the test processes it starts, which this module reads above to "

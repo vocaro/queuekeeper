@@ -2874,7 +2874,8 @@ keys, and the helper takes only a canonical uppercase UDID, never a name or `boo
 `release` and `recover` refuse until each has exited. The record also holds `mac-foreground`,
 the owner's screen, as [attended Mac sessions](#attended-mac-sessions) describe, and beside its
 entries the owner's declaration of each physical device, which `devices declare` changes without
-touching any entry ([declared devices](devices.md#declared-devices)).
+touching any entry. What each Mac reads of a declared device is remembered beside the record, in
+`device-reach.json`, never in it ([declared devices](devices.md#declared-devices)).
 
 Sessions used to keep ad hoc records in `/private/tmp`. In October 2026 two were live at once,
 so two sessions could reserve one device in different files; unlocked read-modify-write could

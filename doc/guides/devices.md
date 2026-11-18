@@ -271,7 +271,7 @@ Mac, and one kept to a cable from one Mac only. So the owner declares what shoul
 device, Queuekeeper reads from each Mac what is, and what is read never adds a device to the farm or
 takes one out (the owner's decision, 2026-11-17, [#211](https://github.com/vocaro/queuekeeper/issues/211);
 [scheduling D7](scheduling.md#d7-no-mac-is-special)). Nothing is placed by a declaration yet: a device
-lane runs where it did before, under its reservation.
+lane runs where it did before, under its reservation, and what is read only reports.
 
 ### The declaration
 
@@ -341,4 +341,51 @@ iPhone: not declared. Read: workstation by cable; build-host by network
 
 On another Mac, whose record defers physical devices, status says that devices are declared in the
 record that holds them, and lists what that Mac alone reads.
+
+### When no Mac reaches it
+
+Each reading of a declared device, by `qk devices status`, `qk doctor` or `qk queue health` (and the
+dashboard's Farm refresh, which reads the same), is remembered beside the record, in
+`device-reach.json`: when a Mac last reached the device by a declared way, since when none has, and the
+same for each way on each Mac. A Mac that could not be read changes nothing there. Nothing is written to
+the record itself, and a record that declares no device is not read at all.
+
+A declared device is then one of:
+
+- **Reached**, by a declared way on some Mac.
+- **Unreached, settling**: reached by no Mac, for less than the [settle time](#the-settle-time).
+  `status` says for how long; nothing else does.
+- **Unreachable**: reached by no Mac for the settle time or longer, measured from the first reading
+  that missed it. What follows is the declaration's `absent`:
+  - `error`: an error in `qk doctor` (its `errors`, and exit 1), in `qk queue health`'s Devices sign
+    (danger) and in `qk devices status`, naming the device, the ways tried and each Mac's reading.
+  - `offline`: `status` and the Devices sign say it is offline and since when. It is no error, no
+    warning and no alert.
+- **Not known**: reached by no Mac that was read, while another Mac was not read. `doctor` warns,
+  and the Devices sign is unknown, for a device declared always reachable; the clock does not start.
+
+Either way the device stays in the record, its reservation stands, and its entry is unchanged. A way
+the declaration does not list counts for nothing: an iPad declared `network` and attached only by a
+cable is reached by no Mac.
+
+### The settle time
+
+A device counts as unreachable only after it has been missing for **300 seconds**, by one way on one
+Mac or by every declared way on every Mac (`reach.SETTLE`). One drop is not a decision.
+
+On 2026-11-17, read every 15 seconds on both Macs for 20 minutes, no device lost or changed its way,
+and no listing failed: the readings bound how long a listing takes, not how long a drop lasts. A
+listing took 0.38 s at the median and 3 s at most on the owner's workstation, and 0.66 s and 1.6 s on
+the other Mac over SSH, inside `devicectl`'s own 10 s wait. The way does change by itself over hours
+(above). So the settle time is chosen to be:
+
+- far longer than any one reading, and than a few missed ones, so a slow or dropped listing, a device's
+  Wi-Fi joining again after sleep or a cable moved to another port is not an absence;
+- shorter than the 600 seconds after which `qk queue health` calls a gate's wait slow, so a device a
+  gate needs is named as unreachable before the wait is.
+
+A device that comes back within the settle time is reached again, and its next miss starts the time
+afresh. A device last read long ago is not taken as missing since then: its time starts at the first
+reading that misses it, so a single `qk doctor` after a quiet night says it is settling, and the error
+comes once a later reading, at least 300 seconds on, still misses it.
 

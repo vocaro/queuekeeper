@@ -11,6 +11,9 @@ Reach is `connectionProperties.transportType`: `wired` is a cable and `localNetw
 as `sameMachine` and is left out. `tunnelState` is not reach: on 2026-11-17 it read `disconnected` for a device
 plainly attached by cable."""
 import concurrent.futures
+import contextlib
+from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -37,6 +40,14 @@ KEYS = ("reach", "cableOn", "absent", "declaredBy", "declaredAt")
 LISTING = "QUEUEKEEPER_DEVICE_LISTING"
 # The listing, read-only. devicectl's own --timeout bounds its wait for devices to answer.
 COMMAND = ("xcrun", "devicectl", "list", "devices", "--quiet", "--timeout", "10", "--json-output", "-")
+# Seconds a device may go unreached before it counts as unreachable: by one way on one Mac, or by every declared way on
+# every Mac, after which its absence counts, as an error or as offline. One drop is not a decision: a momentary loss
+# of Wi-Fi, a device's sleep or a cable moved from one port to another neither raises the error nor, once placement
+# reads it, causes a fallback (doc/guides/devices.md, The settle time).
+SETTLE = 300
+# The file beside the record where each Mac's readings of the declared devices are remembered, so that a device's
+# absence is measured from the first reading that missed it.
+HISTORY = "device-reach.json"
 # Seconds one Mac's listing may take, over SSH included. On 2026-11-17 it took 0.17 to 0.42 s here and 0.56 s from
 # another Mac over SSH.
 TIMEOUT = 30
@@ -238,7 +249,9 @@ def lines(found, deferred=None):
             when = f" at {declaration['declaredAt']}" if declaration.get("declaredAt") else ""
             head = f"{item['key']}: declared{who}{when}: reach {ways_text(declaration)}; reached by no Mac means {means}"
         seen = seen_text(item["seen"])
-        said.append(f"{head}. Read: {seen}" if seen else head)
+        line = f"{head}. Read: {seen}" if seen else head
+        if item.get("absence") and item["absence"]["state"] != "reached": line += f". {item['absence']['said']}"
+        said.append(line)
     for item in found["unknown"]:
         named = ", ".join(str(part) for part in (item["kind"], item["model"], item["name"] and f"named {item['name']!r}")
                           if part)
@@ -248,3 +261,150 @@ def lines(found, deferred=None):
     for item in found["unread"]:
         said.append(f"{item['mac']}'s devices were not read: {item['error']}")
     return said
+
+
+def history_path(record):
+    """Where the readings of the record at path record are remembered: beside it."""
+    return Path(record).with_name(HISTORY)
+
+
+@contextlib.contextmanager
+def _locked(path):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path.with_name(path.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _read_history(path):
+    try: value = json.loads(path.read_text())
+    except (OSError, ValueError): return {"version": 1, "devices": {}}
+    if not isinstance(value, dict) or not isinstance(value.get("devices"), dict): return {"version": 1, "devices": {}}
+    return value
+
+
+def remember(path, found, now=None):
+    """Fold survey's answer found into the history at path, under its lock, and return each declared device's
+    history by UDID: when a Mac last reached it by a declared way (reachedAt) and since when none has
+    (missingSince), and the same for each way on each Mac, keyed "MAC/WAY". A Mac that was not read changes nothing
+    of its own ways, and leaves a device no read Mac reaches as it was: whether it is missing is not known."""
+    now = time.time() if now is None else now
+    with _locked(path):
+        value = _read_history(path)
+        for item in found["devices"]:
+            declaration = item["declaration"]
+            if declaration is None or item["problems"] or not item["device"]: continue
+            kept = value["devices"].setdefault(item["device"], {"reachedAt": None, "missingSince": None, "ways": {}})
+            for seen in item["seen"]:
+                if seen["state"] == "unread": continue
+                for way in declaration["reach"]:
+                    mark = kept["ways"].setdefault(f"{seen['mac']}/{way}", {"seenAt": None, "missingSince": None})
+                    if seen["state"] == "reached" and seen["way"] == way:
+                        mark.update(seenAt=now, missingSince=None)
+                    elif mark["missingSince"] is None:
+                        mark["missingSince"] = now
+            if any(seen["state"] == "reached" for seen in item["seen"]):
+                kept.update(reachedAt=now, missingSince=None)
+            elif not any(seen["state"] == "unread" for seen in item["seen"]) and kept["missingSince"] is None:
+                kept["missingSince"] = now
+        staged = path.with_name(f".{path.name}.{os.getpid()}")
+        staged.write_text(json.dumps(value, indent=2) + "\n")
+        os.replace(staged, path)
+        return value["devices"]
+
+
+def stamp(moment):
+    """A remembered time as ISO 8601, to the second, or None."""
+    return None if moment is None else datetime.fromtimestamp(moment, timezone.utc).isoformat(timespec="seconds")
+
+
+def absence(item, kept, now=None, settle=SETTLE):
+    """What the absence rule says of one declared device, item of survey's answer, given its history kept:
+    {"key", "absent", "state", "since", "reachedAt", "text"}. state is reached; settling, unreached by every Mac
+    for less than settle seconds; unreachable, for settle seconds or more, which its declaration's absent makes an
+    error or offline; or unknown, unreached by every Mac read while another was not read. Either way the device
+    stays in the record and its reservation stands."""
+    now = time.time() if now is None else now
+    declaration, kept = item["declaration"], kept or {}
+    found = {"key": item["key"], "absent": declaration["absent"], "since": stamp(kept.get("missingSince")),
+             "reachedAt": stamp(kept.get("reachedAt"))}
+    seen = "; ".join(f"{each['mac']} {each['detail']}" for each in item["seen"])
+    tried = f"tried {ways_text(declaration)}; read: {seen}"
+    if any(each["state"] == "reached" for each in item["seen"]):
+        return {**found, "state": "reached", "since": None, "text": f"{item['key']} is reached", "said": "Reached"}
+    unread = [each["mac"] for each in item["seen"] if each["state"] == "unread"]
+    if unread:
+        return {**found, "state": "unknown",
+                "text": f"whether any Mac reaches {item['key']} is not known: no Mac read reaches it, and "
+                        f"{', '.join(unread)} {'was' if len(unread) == 1 else 'were'} not read; {tried}",
+                "said": f"Whether a Mac reaches it is not known: {', '.join(unread)} not read"}
+    missing = now - kept["missingSince"] if kept.get("missingSince") is not None else 0
+    last = f", last reached {found['reachedAt']}" if found["reachedAt"] else ""
+    if missing < settle:
+        return {**found, "state": "settling",
+                "text": f"{item['key']} has been reached by no Mac for {missing:.0f}s (since {found['since']}{last}); "
+                        f"it counts as unreachable after {settle}s; {tried}",
+                "said": f"Reached by no Mac for {missing:.0f}s, since {found['since']}{last}; unreachable after {settle}s"}
+    if declaration["absent"] == "offline":
+        return {**found, "state": "unreachable",
+                "text": f"{item['key']} is offline since {found['since']}{last}, which its declaration allows: "
+                        f"no error; {tried}",
+                "said": f"Offline since {found['since']}{last}, which is no error"}
+    return {**found, "state": "unreachable",
+            "text": f"{item['key']}, declared always reachable, is reached by no Mac since {found['since']}{last}: "
+                    f"{tried} (doc/guides/devices.md, Declared devices)",
+            "said": f"Error: reached by no Mac since {found['since']}{last}, and declared always reachable"}
+
+
+def judged(value, record, found=None, macs=None, now=None, settle=SETTLE):
+    """survey's answer for the record value, kept at path record, with each usable declaration's absence (absence)
+    under "absence", after remembering this reading beside the record. found are the Macs' readings, read now
+    when not given; macs are the names a cable may name."""
+    found = readings() if found is None else found
+    if macs is None: macs = [reading["mac"] for reading in found]
+    answer = survey(value, found, macs)
+    if any(item["declaration"] is not None and not item["problems"] for item in answer["devices"]):
+        kept = remember(history_path(record), answer, now)
+        for item in answer["devices"]:
+            if item["declaration"] is not None and not item["problems"] and item["device"]:
+                item["absence"] = absence(item, kept.get(item["device"]), now, settle)
+    return answer
+
+
+def declared_value(record):
+    """The record at path record, when it holds physical devices and declares any; else None, and nothing is read."""
+    try: value = json.loads(Path(record).read_text())
+    except (OSError, ValueError): return None
+    if not isinstance(value, dict) or value.get(offload_host.DEFERRED) or not value.get(DECLARATIONS): return None
+    return value
+
+
+def findings(record):
+    """What `doctor` says of the declared devices in the record at path record: (errors, warnings). A device
+    declared always reachable that no Mac has reached for the settle time is an error; one whose reach is not known
+    because a Mac was not read, and a declaration that is wrong, are warnings. An offline device is neither."""
+    value = declared_value(record)
+    if value is None: return [], []
+    answer = judged(value, record)
+    errors, warnings = [], []
+    for item in answer["devices"]:
+        if item["declaration"] is not None and item["problems"]:
+            warnings.append(f"{item['key']}'s device declaration is wrong, so it is taken as undeclared: "
+                            f"{'; '.join(item['problems'])} (doc/guides/devices.md, Declared devices)")
+        found = item.get("absence")
+        if not found or found["absent"] != "error": continue
+        if found["state"] == "unreachable": errors.append(found["text"])
+        elif found["state"] == "unknown": warnings.append(found["text"])
+    return errors, warnings
+
+
+def health(record):
+    """What the health sign reads of the declared devices in the record at path record: each one's name, state,
+    absent and text (absence), or none when the record declares none."""
+    value = declared_value(record)
+    if value is None: return []
+    return [{"name": item["key"], **{name: item["absence"][name] for name in ("state", "absent", "since", "text")}}
+            for item in judged(value, record)["devices"] if "absence" in item]

@@ -1467,6 +1467,11 @@ def perform(argv, report):
                 or [fix_hosts(root, remote.compare_hosts())]
             if trial.active(): warnings.append(f"{trial.refusal('the fixes')}; its state is under {trial.folder()}")
             for check in extensions.DOCTOR: warnings += check(root, config)
+            errors = []
+            for check in extensions.DOCTOR_CHECKS:
+                found, said = check(root, config)
+                errors += found
+                warnings += said
             # Each Mac short of memory, with what holds it (host_health); another Mac's rides on its survey.
             warnings += host_health.warnings((compared[0].get("local") or {}).get("hostHealth")
                                              or offload_host.host_health(), "this Mac")
@@ -1479,10 +1484,10 @@ def perform(argv, report):
             warnings += lane_coverage.doctor_warnings(test_lanes)
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "extensions": list(extensions.LOADED),
-                "missingCommands": missing, "warnings": warnings,
+                "missingCommands": missing, "errors": errors, "warnings": warnings,
                 "notes": list(dict.fromkeys(note for hosts in compared for note in remote.python_crash_notes(hosts))),
                 "testLanes": test_lanes, "farm": compared}, indent=2))
-            return int(bool(missing or any(hosts["errors"] for hosts in compared)))
+            return int(bool(missing or errors or any(hosts["errors"] for hosts in compared)))
         elif args.action == "pre-push": return pre_push.main(root, config, args.remote)
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)
         elif args.action == "remote": return remote.main(root, config, args)
