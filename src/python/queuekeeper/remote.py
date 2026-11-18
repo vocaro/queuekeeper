@@ -379,15 +379,28 @@ LOST_FIX = ("start the process again from a live Claude session, or from Termina
 PYTHON = re.compile(r"^[Pp]ython(\d+(\.\d+)*)?$")
 
 
+# What responsible_for answers in place of asking macOS: `PID PATH`, or any other text for what macOS does not say.
+# For tests, whose suite sets it for every queuekeeper it starts (tests/host_isolation.py), so that what a test finds
+# does not depend on which process tree runs the suite. Run by a queue worker whose session had ended, each lane a
+# test offered to a Mac that is not there read that its own process had lost the local network, and eight tests of
+# the merge queue failed so in the queue's gate on this Mac on 2026-11-17 (vocaro/queuekeeper#220).
+RESPONSIBLE = "QUEUEKEEPER_RESPONSIBLE_PROCESS"
+
+
 def responsible_for(pid):
     """The PID that macOS holds responsible for pid, by whose app its privacy grants, Local Network access among
-    them, are judged, and that app's executable, as (PID, path); None where macOS does not say.
+    them, are judged, and that app's executable, as (PID, path); None where macOS does not say. RESPONSIBLE names
+    an answer to give instead of asking.
 
     The Claude app starts each session's claude through its disclaimer helper, which makes that claude responsible for
     everything it starts, a detached process too (start_new_session). Once that claude exits, macOS holds the process
     responsible for itself, a Python, which no grant covers: its every connection on the local network then fails with
     EHOSTUNREACH, while the session's own processes still connect (vocaro-engineering#282, 2026-11-07). A launchd agent
     that runs a Python is held responsible for itself too, and is denied the same way."""
+    recorded = os.environ.get(RESPONSIBLE)
+    if recorded is not None:
+        held, _, path = recorded.partition(" ")
+        return (int(held), path) if held.isdigit() and int(held) > 0 else None
     try:
         system = ctypes.CDLL(None)
         find, path_of = system.responsibility_get_pid_responsible_for_pid, system.proc_pidpath

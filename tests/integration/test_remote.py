@@ -4579,6 +4579,35 @@ class RemoteTests(unittest.TestCase):
                 if said is None: self.assertIsNone(lost)
                 else: self.assertIn(said, lost)
 
+    def test_a_recorded_answer_stands_in_for_macos_in_every_queuekeeper_a_test_starts(self):
+        """vocaro/queuekeeper#220: the suite's own process is kept from asking macOS (host_isolation), and so is each
+        queuekeeper it starts, by remote.RESPONSIBLE. Run by a queue worker a Python is held responsible for, a lane
+        a test offered to a Mac that is not there read that it had lost the local network, and the test failed."""
+        self.assertEqual(os.environ[remote.RESPONSIBLE], "unsaid")
+        self.assertIn(remote.RESPONSIBLE, host_isolation.ISOLATION)
+        python = "/opt/homebrew/bin/python3.14"
+        asked = "import json, os; from queuekeeper import remote; " \
+                "print(json.dumps([remote.responsible_for(os.getpid()), remote.local_network_lost()]))"
+        def child(recorded):
+            ran = subprocess.run([sys.executable, "-c", asked], capture_output=True, text=True, timeout=stretched(60),
+                                 env={**os.environ, "PYTHONPATH": host_isolation.pythonpath(), remote.RESPONSIBLE: recorded})
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            return json.loads(ran.stdout)
+        # As the suite sets it, and as any text that names no process: macOS does not say, so nothing is lost.
+        for unsaid in ("unsaid", "", "0 /usr/bin/python3", "-4 x"):
+            self.assertEqual(child(unsaid), [None, None], unsaid)
+        # A recorded process is the answer, and a Python among them reads as the local network lost.
+        found, lost = child(f"41 {python}")
+        self.assertEqual(found, [41, python])
+        self.assertIn(f"macOS holds PID 41, {python}, responsible for this process", lost)
+        self.assertEqual(child("41 /Applications/Claude.app/Contents/MacOS/Claude"),
+                         [[41, "/Applications/Claude.app/Contents/MacOS/Claude"], None])
+        # In this process the call itself answers so, once host_isolation's stand-in is out of the way.
+        with patch.object(remote, "responsible_for", host_isolation.ASKED_OF_MACOS):
+            self.assertIsNone(remote.responsible_for(os.getpid()))
+            with patch.dict(os.environ, {remote.RESPONSIBLE: f"7 {python}"}):
+                self.assertEqual(remote.responsible_for(os.getpid()), (7, python))
+
     @unittest.skipUnless(sys.platform == "darwin", "macOS's responsibility")
     def test_macos_names_a_live_process_and_its_executable_as_responsible(self):
         """Against the real call: this process's responsible process is alive and has an executable, and a child

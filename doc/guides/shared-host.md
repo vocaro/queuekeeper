@@ -1797,6 +1797,16 @@ The worker reads that as no verdict and exits as it does before a round, without
 `queue.noVerdictRuns`. Only the `qk run` a queue worker starts for a gate's lane does this: a session's own `qk run`
 keeps its fallback, as does another Mac that is only away (vocaro-engineering#300).
 
+Queuekeeper's own tests never ask macOS which process is responsible for them, so that what they find does not
+depend on which process tree runs the suite. `QUEUEKEEPER_RESPONSIBLE_PROCESS` names an answer to give instead,
+`PID PATH`, or any other text for what macOS does not say, and the suite sets it for every `qk` it starts
+(`tests/host_isolation.py`). On 2026-11-17 a worker whose session had ended ran Queuekeeper's gate on its own Mac,
+since the other Mac read over its CPU limit. Each lane a test offered to a Mac that is not there then read that its
+own process had lost the local network, eight tests of the merge queue failed, and the entry was sent back for a
+cause in the worker, not in its commits
+([vocaro/queuekeeper#220](https://github.com/vocaro/queuekeeper/issues/220)). No run sets the variable for the
+commands it starts.
+
 ### Extension folders beside a project
 
 A project's extension may load from a folder beside the project, named in `queuekeeper.json` as

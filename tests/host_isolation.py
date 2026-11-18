@@ -185,8 +185,21 @@ FIX_HOSTS = cli.fix_hosts
 # Nor does any reach check a test makes in this process ask macOS which process is responsible for it
 # (remote.responsible_for): run by a queue worker whose session ended, every test of an unreachable second Mac would
 # read that its own process has lost Local Network access (vocaro-engineering#282). A test of it calls RESPONSIBLE_FOR.
-RESPONSIBLE_FOR = remote.responsible_for
+# Nor does one in a queuekeeper a test starts, such as the qk run of a lane a test's queue worker gates: it reads an
+# answer that macOS does not say (remote.RESPONSIBLE). Asked of macOS there, eight tests of the merge queue failed in
+# the queue's own gate on 2026-11-17, which a worker whose session had ended ran on its own Mac
+# (vocaro/queuekeeper#220).
+def RESPONSIBLE_FOR(pid):
+    """What macOS answers of pid, whatever this module set for the queuekeepers a test starts."""
+    kept = os.environ.pop(remote.RESPONSIBLE, None)
+    try: return ASKED_OF_MACOS(pid)
+    finally:
+        if kept is not None: os.environ[remote.RESPONSIBLE] = kept
+
+
+ASKED_OF_MACOS = remote.responsible_for
 remote.responsible_for = lambda pid: None
+os.environ[remote.RESPONSIBLE] = "unsaid"
 
 # Nor does any queuekeeper a test runs, in this process or a child, start the evidence offload's background retry,
 # which would offer this Mac's real evidence archives to the real Mac of the farm (vocaro-engineering#157). A test
@@ -218,7 +231,8 @@ ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS", "HEAVY_BUSY_LIMIT", "QUEUEKEEPER_START_FREE_GB",
     "QUEUEKEEPER_RUN_FREE_GB",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
-    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD)}
+    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD,
+    remote.RESPONSIBLE)}
 
 
 # The prefixes of the toolkit's variables, and those of them this module lets a test inherit, each with why that is
