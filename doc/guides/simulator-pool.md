@@ -26,7 +26,11 @@ per run.
    state for a qualification record: the template's data holds a finished first boot and
    VoiceOver's and the voices' first uses, and nothing installed.
 3. Boot it to `bootstatus -b` under a time limit. A boot past its limit leaves the work
-   unmeasured, never failed.
+   unmeasured, never failed. When the boot fails or reaches its limit, release the member with that
+   outcome and take another free member of the kind, or create one, once ([#166](https://github.com/vocaro/queuekeeper/issues/166)): one member that
+   does not boot no longer decides the run. The failed member is passed over only by that take.
+   `qk simulator-pool take --boot-attempts N` and `pool.member(..., attempts=N)` change the number
+   of members tried, 2 by default; when every one fails, the take exits or raises as for one.
 4. Pass its canonical uppercase UDID to `xcodebuild` as `id=` and to any simulator tool as its
    device.
 5. Copy evidence off before shutting it down: the next session may erase it. Shut it down, confirm

@@ -94,6 +94,11 @@ DEVICES = Path.home() / "Library/Developer/CoreSimulator/Devices"
 CLONE_NOFOLLOW = 0x0001
 # What a take records when the caller asked for an erase in place of the reset.
 ERASE_ASKED = "asked for with --erase"
+# How many members a take that boots tries before it gives up: a member whose boot fails or reaches its limit is
+# released with that outcome and another free member of the kind is taken, or a new one created, once (#166; #65
+# saw one fresh member's boot fail under load while its sibling booted). The failed member is passed over only
+# by that take; a later take may choose it again.
+BOOT_ATTEMPTS = 2
 # How much of simctl's error text a failed boot logs: more than the few lines an error of its takes.
 BOOT_ERROR_SHOWN = 2000
 # The simulator's setting that has the system load UIKit's and SwiftUI's own accessibility into every app
@@ -839,20 +844,22 @@ class Pool:
         return entry["revision"]
 
     def take(self, device_type, runtime, *, purpose, label=None, preservation=None, prune=True, keep_state=False,
-             erase=False):
+             erase=False, exclude=()):
         """A free member of the kind, reserved and reset from the kind's warmed template, or erased when no
         settled template can be copied, or a new one; the caller boots it.
 
         erase erases the member as before this reset existed, for a lane that wants pristine data, and the
         record says it was asked for. keep_state reserves the member without resetting or erasing it, for a
         lane that needs no fresh installation: it keeps what earlier holders left, their apps and data among
-        it, and boots without the first boot's data migration. Its preservation note says so."""
+        it, and boots without the first boot's data migration. Its preservation note says so. A member whose UDID
+        is in exclude is passed over, as take_booted passes over one whose boot it saw fail."""
         device_type, runtime = qualified(DEVICE_TYPE, device_type), qualified(RUNTIME, runtime)
         if prune: self.prune(device_type, runtime)
         listing = self.listing()
         record = self.record.load()
         for member in self.members(listing):
             if member.kind != (device_type, runtime) or member.state != "Shutdown" or not member.available: continue
+            if member.udid in exclude: continue
             if any(device_record.condition(entry) != "released" for entry in entries_for(member, record).values()):
                 continue
             details = {"preservation": preservation or (KEPT_STATE if keep_state else PRESERVATION)}
@@ -1169,26 +1176,58 @@ class ReleaseUnconfirmed(RuntimeError):
     """A member's shutdown could not be confirmed, so its reservation is kept for recovery."""
 
 
+def take_booted(pool, device_type, runtime, *, purpose, boot_timeout, stopped, failed, attempts=BOOT_ATTEMPTS,
+                label=None, keep_state=False, erase=False, app_accessibility=False):
+    """Take a member (Pool.take) and boot it (boot), trying up to attempts members: (lease, None) when one booted,
+    else (lease, status) of the last one tried. Each member whose boot fails or reaches its limit is released
+    with failed(status) as its outcome and passed over by the next attempt, which takes another free member of
+    the kind or creates one. A stop while booting releases the member with stopped as its outcome."""
+    if attempts < 1:
+        raise ValueError(f"a take tries at least one member, not {attempts}")
+    tried = set()
+    for attempt in range(1, attempts + 1):
+        lease = pool.take(device_type, runtime, purpose=purpose, label=label, keep_state=keep_state, erase=erase,
+                          exclude=tried)
+        try:
+            status = boot(pool, lease, boot_timeout, app_accessibility=app_accessibility)
+        except BaseException:
+            pool.release(lease, outcome=stopped)
+            raise
+        if status is None:
+            return lease, None
+        pool.release(lease, outcome=failed(status))
+        tried.add(lease.udid)
+        if attempt < attempts:
+            pool.log(f"{lease.key} did not finish booting (status {status}), so another member is taken "
+                     f"(attempt {attempt + 1} of {attempts})")
+    return lease, status
+
+
 @contextlib.contextmanager
 def member(name, device_type, runtime, *, purpose, owner=None, boot_timeout=600, log=None, keep_state=False,
-           erase=False, app_accessibility=False):
+           erase=False, app_accessibility=False, attempts=BOOT_ATTEMPTS):
     """A booted member of the pool for the block, then shut down and released however it ends; keep_state
     takes it without resetting or erasing it, erase erases it in place of the reset (Pool.take), and
     app_accessibility switches UIKit's and SwiftUI's own accessibility on in its app processes (boot).
+    A member whose boot fails or reaches its limit is released with that outcome and another is taken or
+    created, up to attempts members in all (take_booted).
 
-    It raises BootTimedOut when the boot reaches its limit, RuntimeError when it fails, and
+    It raises BootTimedOut when the last member's boot reaches its limit, RuntimeError when it fails, and
     ReleaseUnconfirmed after a block that ended normally when the release cannot confirm shutdown."""
     pool = Pool(name, owner=owner or default_owner() or f"{name}-{uuid.uuid4()}", log=log, alone=True)
-    lease = pool.take(device_type, runtime, purpose=purpose, keep_state=keep_state, erase=erase)
+    def ended(status):
+        return "the boot reached its limit" if status == lane_results.UNMEASURED else \
+            f"the boot failed with status {status}"
+    lease, booted = take_booted(pool, device_type, runtime, purpose=purpose, boot_timeout=boot_timeout,
+                                stopped=f"{purpose}: stopped", failed=lambda status: f"{purpose}: {ended(status)}",
+                                attempts=attempts, keep_state=keep_state, erase=erase,
+                                app_accessibility=app_accessibility)
+    if booted == lane_results.UNMEASURED:
+        raise BootTimedOut(f"{lease.key} did not finish booting within {boot_timeout}s")
+    if booted is not None:
+        raise RuntimeError(f"{lease.key} failed to boot (status {booted})")
     status = "stopped"
     try:
-        booted = boot(pool, lease, boot_timeout, app_accessibility=app_accessibility)
-        if booted == lane_results.UNMEASURED:
-            status = "the boot reached its limit"
-            raise BootTimedOut(f"{lease.key} did not finish booting within {boot_timeout}s")
-        if booted is not None:
-            status = f"the boot failed with status {booted}"
-            raise RuntimeError(f"{lease.key} failed to boot (status {booted})")
         yield lifecycle.Simulator(lease.udid)
         status = "finished"
     finally:
@@ -1339,6 +1378,9 @@ def main(argv, project=None):
                       "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {lane_results.UNMEASURED}")
+    take.add_argument("--boot-attempts", type=int, default=BOOT_ATTEMPTS, metavar="N",
+                      help=f"members tried in all when a boot fails or reaches its limit (default {BOOT_ATTEMPTS}): "
+                           "each is released with its outcome and another free member is taken, or one created")
     take.add_argument("--hold", type=int, default=int(TAKE_HOLD.total_seconds() // 60), metavar="MINUTES",
                       help=f"minutes the member is held before reap may release it once its session has gone "
                            f"(default {int(TAKE_HOLD.total_seconds() // 60)}); `extend` moves it later")
@@ -1428,15 +1470,13 @@ def main(argv, project=None):
             # A stop runs the cleanup below rather than leaving a held, booted member.
             for number in (signal.SIGTERM, signal.SIGHUP):
                 signal.signal(number, stopped)
-            lease = pool.take(args.device, args.runtime, purpose=args.purpose, label=args.label,
-                              keep_state=args.keep_state, erase=args.erase)
-            try:
-                status = boot(pool, lease, args.boot_timeout, app_accessibility=args.app_accessibility)
-            except BaseException:
-                pool.release(lease, outcome=f"Stopped while booting before {args.purpose}")
-                raise
+            lease, status = take_booted(
+                pool, args.device, args.runtime, purpose=args.purpose, boot_timeout=args.boot_timeout,
+                stopped=f"Stopped while booting before {args.purpose}",
+                failed=lambda status: f"The boot ended with status {status} before {args.purpose}",
+                attempts=args.boot_attempts, label=args.label, keep_state=args.keep_state, erase=args.erase,
+                app_accessibility=args.app_accessibility)
             if status is not None:
-                pool.release(lease, outcome=f"The boot ended with status {status} before {args.purpose}")
                 print(f"queuekeeper simulator-pool: {lease.key} did not finish booting (status {status})" +
                       (", or its app accessibility could not be switched on (APP ACCESSIBILITY, above)"
                        if args.app_accessibility and status == 1 else ""), file=sys.stderr)

@@ -639,6 +639,67 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(self.simctl.devices[udid]["state"], "Shutdown")
         self.assertEqual(self.simctl.deleted(), [])
 
+    def test_a_member_block_runs_on_another_member_when_the_first_fails_to_boot(self):
+        first = self.simctl.add("Project Duo 1")
+        second = self.simctl.add("Project Duo 2")
+        self.simctl.fail["bootstatus"] = lambda rest: (1, "", "status 60") if rest[0] == first else (0, "", "")
+        with mock.patch.object(simulator_pool, "simctl", self.simctl):
+            with simulator_pool.member("Project", "iPhone-Duo", "iOS-27-1", purpose="Gate", owner="me",
+                                       log=self.log.append) as device:
+                self.assertEqual(device.udid, second)
+                self.assertEqual(self.simctl.devices[second]["state"], "Booted")
+        failed, used = (devices.Record(self.path).entry(f"Project Duo {number}") for number in (1, 2))
+        self.assertEqual((failed["state"], failed["run"]), ("released", "Gate: the boot failed with status 1"))
+        self.assertEqual((used["state"], used["run"]), ("released", "Gate: finished"))
+        self.assertEqual({self.simctl.devices[udid]["state"] for udid in (first, second)}, {"Shutdown"})
+        self.assertTrue(any("Project Duo 1 did not finish booting (status 1), so another member is taken "
+                            "(attempt 2 of 2)" in line for line in self.log))
+        # With no other free member, the next attempt creates one; a single attempt gives up on the first.
+        self.simctl.fail["bootstatus"] = lambda rest: (1, "", "status 60") if rest[0] in (first, second) else (0, "", "")
+        with mock.patch.object(simulator_pool, "simctl", self.simctl):
+            with self.assertRaisesRegex(RuntimeError, "Project Duo 1 failed to boot"):
+                with simulator_pool.member("Project", "iPhone-Duo", "iOS-27-1", purpose="Gate", owner="me",
+                                           log=self.log.append, attempts=1):
+                    self.fail("the block ran without a booted device")
+            self.simctl.devices[second]["state"] = "Booted"  # Not free: the retry must create a member.
+            with simulator_pool.member("Project", "iPhone-Duo", "iOS-27-1", purpose="Gate", owner="me",
+                                       log=self.log.append) as device:
+                self.assertEqual(self.simctl.devices[device.udid]["name"], "Project Duo 3")
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 3")["run"], "Gate: finished")
+        self.assertEqual(self.simctl.deleted(), [])
+
+    def test_a_member_block_fails_as_before_when_every_attempt_fails_to_boot(self):
+        self.simctl.add("Project Duo 1")
+        self.simctl.fail["bootstatus"] = lambda rest: (1, "", "status 60")
+        with mock.patch.object(simulator_pool, "simctl", self.simctl):
+            with self.assertRaisesRegex(RuntimeError, "Project Duo 2 failed to boot \\(status 1\\)"):
+                with simulator_pool.member("Project", "iPhone-Duo", "iOS-27-1", purpose="Gate", owner="me",
+                                           log=self.log.append):
+                    self.fail("the block ran without a booted device")
+        for number in (1, 2):
+            entry = devices.Record(self.path).entry(f"Project Duo {number}")
+            self.assertEqual((entry["state"], entry["run"]), ("released", "Gate: the boot failed with status 1"))
+        self.assertEqual({device["state"] for device in self.simctl.devices.values()}, {"Shutdown"})
+        with mock.patch.object(simulator_pool, "simctl", self.simctl), self.assertRaises(ValueError):
+            with simulator_pool.member("Project", "iPhone-Duo", "iOS-27-1", purpose="Gate", owner="me",
+                                       log=self.log.append, attempts=0):
+                self.fail("the block ran with no attempt")
+
+    def test_the_take_command_boots_another_member_when_the_first_fails(self):
+        first = self.simctl.add("Project Duo 1")
+        second = self.simctl.add("Project Duo 2")
+        self.simctl.fail["bootstatus"] = lambda rest: (124, "", "timed out") if rest[0] == first else (0, "", "")
+        status, output, error = self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        self.assertEqual((status, output.strip()), (0, second), error)
+        self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"],
+                         f"The boot ended with status {lane_results.UNMEASURED} before Simulator tests")
+        self.assertEqual(self.pool_command("release", second)[0], 0)
+        # One attempt leaves the command as it was: the member is released and the run is unmeasured.
+        status, _, error = self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1",
+                                             "--boot-attempts", "1")
+        self.assertEqual(status, lane_results.UNMEASURED, error)
+        self.assertIn("Project Duo 1 did not finish booting", error)
+
     def test_a_stop_before_a_lease_is_handed_back_releases_it(self):
         udid = self.simctl.add("Project Duo 1")
         def stop(rest): raise KeyboardInterrupt
@@ -916,10 +977,12 @@ class PoolTests(unittest.TestCase):
                 self.assertTrue(self.pool.release(lease, outcome="done"))
 
     def failed_take(self, action, status, stderr):
-        """A take whose simctl action fails: its exit status and what it wrote to stderr, one line each."""
+        """A take of one attempt whose simctl action fails: its exit status and what it wrote to stderr, one line
+        each."""
         self.simctl.add("Project Duo 1")
         self.simctl.fail[action] = lambda rest: (status, "", stderr)
-        code, output, error = self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1")
+        code, output, error = self.pool_command("take", "--device", "iPhone-Duo", "--runtime", "iOS-27-1",
+                                                "--boot-attempts", "1")
         self.assertEqual(output, "")
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
         return code, error.splitlines()
