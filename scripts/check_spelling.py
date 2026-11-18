@@ -500,6 +500,7 @@ def check(root, project, paths=(), out=print, commands=()):
 PROJECT = {
     "skip": {
         "LICENSE": "the Apache License 2.0, retained verbatim",
+        "assets/dashboard-home.svg": "a screenshot embedded as base64, whose letters spell nothing; tools/dashboard-screenshots.py writes it",
         "src/python/queuekeeper/spelling.py": "the built-in check this copies, with the same British controls",
         "tests/core/test_spelling.py": "plants British spellings as the check's negative controls",
         "tests/core/test_check_spelling.py": "plants British spellings as this script's negative controls",
