@@ -1,5 +1,5 @@
 import contextlib
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 import json
 import os
 from pathlib import Path
@@ -84,9 +84,11 @@ class Extended(Fixture):
         self.scratch, self.other = self.root / "tmp/scratch", self.root / "tmp/other"
         for folder in (self.scratch, self.other): folder.mkdir(parents=True)
         self.ledger = self.root / "ledger.jsonl"
+        listed = scratch_items(self.root)
         for patched in (patch.object(cli, "extensions_of", lambda *folders: []), patch.object(disk, "EXTENSION_HOSTS", []),
                         patch.object(disk, "EXTENSION_PRIMES", []),
-                        patch.object(disk, "EXTENSION_ITEMS", [scratch_items(self.root)]),
+                        patch.object(disk, "EXTENSION_ITEMS", [listed]),
+                        patch.dict(disk.EXTENSION_CATEGORIES, {listed: ["scratch"]}),
                         patch.dict(disk.CATEGORIES, {"scratch": SCRATCH, "simulator": "Simulators",
                                                      "runtime": "Simulator runtimes"})):
             patched.start()
@@ -246,6 +248,54 @@ class KeptResultsTests(Fixture):
         self.assertEqual((entry["category"], entry["outcome"]), ("kept-results", "removed"))
         # Once within the rule, a further --delete finds nothing to do.
         self.assertEqual(self.items(self.host(now=self.now), ["kept-results"])[str(self.store)].status, disk.KEPT)
+
+
+class ProgressTests(Extended):
+    """vocaro/queuekeeper#212: a run says on stderr which pass it is in and how far it has got, at most one line
+    each interval besides the forced ones, and its stdout reaches a file line by line."""
+
+    def test_progress_is_throttled_apart_from_forced_lines(self):
+        clock, lines = [0.0], []
+        progress = disk.Progress(lines.append, interval=10, clock=lambda: clock[0])
+        for second in range(31):
+            clock[0] = float(second)
+            progress(f"tick {second}")
+            if second == 15: progress("pass", force=True)
+        # The first line, one 10 s after each line written, and the forced one, which restarts the interval.
+        self.assertEqual(lines, ["tick 0", "tick 10", "pass", "tick 25"])
+
+    def test_each_pass_and_item_checked_is_reported(self):
+        lines = []
+        sizes = disk.Sizes(measure=False, progress=lambda line, force=False: lines.append((line, force)))
+        disk.inventory(self.host(), sizes)
+        self.assertIn(("Inventorying scratch.", True), lines)
+        self.assertIn((f"Inventorying scratch: 2 items checked, now {self.scratch}.", False), lines)
+
+    def test_delete_says_which_removal_it_starts_before_it_runs(self):
+        said = []
+        disk.delete(self.collect(), lambda category: self.collect(categories=[category]), self.ledger,
+                    out=said.append, progress=lambda line, force=False: said.append(line))
+        self.assertEqual(said[1:6], ["Checking the scratch candidates again.",
+                                     f"Removing 1 of 2 scratch candidates: {self.other}",
+                                     f"removed: {self.other}",
+                                     f"Removing 2 of 2 scratch candidates: {self.scratch}",
+                                     f"removed: {self.scratch}"])
+
+    def test_json_carries_no_progress_and_stdout_is_line_buffered(self):
+        stdout, stderr = TextIOWrapper(BytesIO(), encoding="utf-8"), StringIO()
+        with patch.object(disk.Host, "current", return_value=self.host()), \
+                patch.object(disk, "EXTENSION_PRIMES", [lambda host: [(self.root / "tmp", 1)]]), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(cli.main(["--project", str(self.root), "disk", "--json"]), 0)
+        self.assertTrue(stdout.line_buffering)
+        stdout.seek(0)
+        found = json.loads(stdout.read())
+        self.assertEqual({item["path"] for item in found["items"]}, {str(self.scratch), str(self.other)})
+        progress = stderr.getvalue().splitlines()
+        self.assertEqual(progress[:3], ["Listing the account's processes with lsof and ps.",
+                                        f"Measuring {self.root / 'tmp'} in one du pass, 1 of 1.",
+                                        "Inventorying kept-results."])
+        self.assertIn("Inventorying scratch.", progress)
 
 
 class CommandTests(Extended):

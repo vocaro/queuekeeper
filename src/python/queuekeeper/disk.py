@@ -15,6 +15,8 @@ the toolkit's `eng disk` (decision E of vocaro/vocaro-engineering#403). It class
 - kept: it is in use, owned, of unclear ownership, or holds work or evidence.
 
 `--dry-run` lists what `--delete` would remove. Without --delete nothing is changed.
+Progress goes to stderr (Progress), so stdout's report and --json are unchanged, and stdout is line-buffered,
+so a run whose output goes to a file or a pipe shows each line as it happens (vocaro/queuekeeper#212).
 doc/guides/shared-host.md § Reclaiming disk space has the rules.
 """
 import argparse
@@ -248,14 +250,44 @@ def described(use):
     return f"PID {process.pid} ({process.command or process.args.split(' ')[0] or '?'}) has its {how} inside"
 
 
+class Progress:
+    """Progress lines on stderr while `qk disk` works, at most one each interval apart from the forced ones, which
+    mark the start of a pass or a removal. On 2026-11-17 `eng disk --delete`, the toolkit's copy of this inventory,
+    ran for over half an hour with three lines in its log, and only its ledger showed how far it had got
+    (vocaro/queuekeeper#212)."""
+    INTERVAL = 10.0
+
+    def __init__(self, write=None, interval=INTERVAL, clock=time.monotonic):
+        self.write = write or (lambda line: print(line, file=sys.stderr, flush=True))
+        self.interval, self.clock, self.last = interval, clock, None
+
+    def __call__(self, line, force=False):
+        now = self.clock()
+        if not force and self.last is not None and now - self.last < self.interval: return
+        self.last = now
+        self.write(line)
+
+
+def quiet(line, force=False):
+    """No progress, for an inventory nobody watches."""
+
+
 class Sizes:
-    """Allocated sizes from du, primed by one pass over each large root."""
+    """Allocated sizes from du, primed by one pass over each large root. progress hears of each pass (begin), each
+    du priming pass and, throttled, each item checked."""
 
-    def __init__(self, run=subprocess.run, measure=True):
+    def __init__(self, run=subprocess.run, measure=True, progress=quiet):
         self.run, self.measure, self.known, self.unreadable = run, measure, {}, []
+        self.progress, self.stage, self.checked = progress, "", 0
 
-    def prime(self, root, depth):
+    def begin(self, stage):
+        """Start a pass of the inventory, such as a category's, whose items checked are then counted."""
+        self.stage, self.checked = stage, 0
+        self.progress(f"Inventorying {stage}.", force=True)
+
+    def prime(self, root, depth, place=""):
         if not self.measure or not os.path.isdir(root): return
+        self.progress(f"Measuring {root} in one du pass{place}.", force=True)
         result = self.run(["du", "-k", "-x", "-d", str(depth), str(root)], capture_output=True, text=True)
         self._read(result)
 
@@ -268,6 +300,8 @@ class Sizes:
                             if line.startswith("du: ") and not line.endswith("Resource deadlock avoided")]
 
     def of(self, path):
+        self.checked += 1
+        self.progress(f"Inventorying {self.stage or 'the items'}: {self.checked} items checked, now {path}.")
         if not self.measure: return 0
         key = canonical(path)
         if key not in self.known:
@@ -304,6 +338,7 @@ class Host:
 # What an extension adds to the inventory (extend): the functions that list its items, those that name the
 # folders one du pass measures, and the Host its items read.
 EXTENSION_ITEMS, EXTENSION_PRIMES, EXTENSION_HOSTS = [], [], []
+EXTENSION_CATEGORIES = {}  # each of EXTENSION_ITEMS, to the categories it lists, which its progress line names
 
 
 def extend(categories, items, prime=None, host=None):
@@ -314,6 +349,7 @@ def extend(categories, items, prime=None, host=None):
     if items in EXTENSION_ITEMS: return
     CATEGORIES.update(categories)
     EXTENSION_ITEMS.append(items)
+    EXTENSION_CATEGORIES[items] = list(categories)
     if prime: EXTENSION_PRIMES.append(prime)
     if host: EXTENSION_HOSTS.append(host)
 
@@ -475,9 +511,16 @@ def inventory(host, sizes, categories=None):
     usage = Usage(host.processes)
     wanted = set(categories or CATEGORIES)
     items = []
-    if "kept-results" in wanted: items += kept_results(host, usage, sizes)
-    if "pinned-checkouts" in wanted: items += pinned_checkouts(host, usage, sizes)
-    for listed in EXTENSION_ITEMS: items += listed(host, usage, sizes, wanted)
+    if "kept-results" in wanted:
+        sizes.begin("kept-results")
+        items += kept_results(host, usage, sizes)
+    if "pinned-checkouts" in wanted:
+        sizes.begin("pinned-checkouts")
+        items += pinned_checkouts(host, usage, sizes)
+    for listed in EXTENSION_ITEMS:
+        named = [category for category in EXTENSION_CATEGORIES.get(listed, ()) if category in wanted]
+        if named: sizes.begin(", ".join(named))
+        items += listed(host, usage, sizes, wanted)
     return items
 
 
@@ -557,10 +600,11 @@ def removal_entry(item, answered):
     return entry
 
 
-def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None):
+def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None, progress=quiet):
     """Remove the candidates category by category, each checked again first, without asking: a
     candidate is what the rules prove nobody owns (the owner's decision, 2026-11-05). approval, the
-    text given to --yes ("" when given bare), names in each ledger entry who asked for the run."""
+    text given to --yes ("" when given bare), names in each ledger entry who asked for the run.
+    progress hears of each category's check and of each removal before it starts."""
     removed = 0
     answered = None if approval is None else "--yes" + (f": {approval}" if approval else "")
     for category, title in CATEGORIES.items():
@@ -568,8 +612,10 @@ def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None):
         if not group: continue
         out(f"Removing {len(group)} {title.lower()} candidates, {human(sum(item.size for item in group))}"
             + (f", on the approval {answered}." if answered else "."))
+        progress(f"Checking the {category} candidates again.", force=True)
         current = {item.path: item for item in fresh(category)}
-        for item in group:
+        for place, item in enumerate(group, 1):
+            progress(f"Removing {place} of {len(group)} {category} candidates: {item.path}", force=True)
             now = current.get(item.path)
             entry = removal_entry(item, answered)
             if now is None or now.status != CANDIDATE or now.command != item.command:
@@ -605,23 +651,25 @@ def add_arguments(parser):
 
 def prime_items(host, sizes):
     """One du pass over each folder that holds many small items; everything else is measured alone."""
-    for prime in EXTENSION_PRIMES:
-        for root, depth in prime(host):
-            if root: sizes.prime(root, depth)
+    roots = [(root, depth) for prime in EXTENSION_PRIMES for root, depth in prime(host) if root]
+    for place, (root, depth) in enumerate(roots, 1):
+        sizes.prime(root, depth, f", {place} of {len(roots)}")
 
 
 def execute(args, run=subprocess.run, out=print):
     if args.yes is not None and not args.delete:
         print("queuekeeper disk: --yes names who asked for --delete's removals, so it needs --delete", file=sys.stderr)
         return 2
+    # A run whose output goes to a file or a pipe shows each line as it is printed, not when a block fills.
+    if callable(getattr(sys.stdout, "reconfigure", None)): sys.stdout.reconfigure(line_buffering=True)
     if args.prune_pins: return prune_pins(out)
+    progress = Progress()
     def collect(categories=None, measure=True):
         idle_hours = 24.0 if args.min_idle_hours is None else args.min_idle_hours
+        if measure: progress("Listing the account's processes with lsof and ps.", force=True)
         host = host_class().current(idle_hours * 3600, args.development, run)
-        sizes = Sizes(run, measure)
-        if measure:
-            print("Measuring the items listed.", file=sys.stderr)
-            prime_items(host, sizes)
+        sizes = Sizes(run, measure, progress if measure else quiet)
+        if measure: prime_items(host, sizes)
         return host, sizes, inventory(host, sizes, categories)
     host, sizes, items = collect()
     volume = volume_usage(DATA_VOLUME)
@@ -635,7 +683,7 @@ def execute(args, run=subprocess.run, out=print):
     if args.delete:
         ledger = ledger_path(host.home)
         delete(items, lambda category: collect([category], measure=False)[2], ledger, out=out, run=run,
-               approval=args.yes)
+               approval=args.yes, progress=progress)
     return 0
 
 

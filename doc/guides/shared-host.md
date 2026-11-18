@@ -2420,7 +2420,13 @@ It covers every project in `~/Development`, whichever project runs it, and reads
 and its plugins create on the host: the simulators and runtimes their tests use, the DerivedData and SwiftPM
 caches their builds fill, the lane results Queuekeeper keeps by commit in their Git directories, and kept app
 builds. It never surveys the home directory or the rest of the volume. It prints each item's size, the reason
-for its status and the exact command that would remove it. What agent sessions leave is the toolkit's
+for its status and the exact command that would remove it. While it works it says on stderr which pass it
+is in: the census of processes, each `du` pass over a folder of many items (n of m), each category's
+inventory with the items checked so far, and under `--delete` each category's check and each removal
+("Removing i of n") before it starts. A line starts each pass or removal, and otherwise at most one line
+every 10 seconds. Its stdout, the report or `--json`, carries none of them, and is written line by line
+even to a file or a pipe, so a run whose output is saved shows how far it has got
+([#212](https://github.com/vocaro/queuekeeper/issues/212)). What agent sessions leave is the toolkit's
 `eng disk` to list and remove, by the same rules of proof: linked worktrees, scratch builds and results under
 `/private/tmp`, kept failure records and evidence archives ([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#reclaiming-disk-space)).
 Run both when the volume runs short.
