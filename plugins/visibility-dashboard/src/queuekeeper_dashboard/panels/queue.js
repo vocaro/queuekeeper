@@ -4,7 +4,7 @@
   const hueOf = name => "p" + (1 + [...name].reduce((sum, letter) => (sum * 31 + letter.charCodeAt(0)) % 9973, 7) % QK.HUES);
   const key = gate => gate.repository + "\n" + gate.role;
 
-  // The flow map: who has entries in the queues, by branch prefix, then the queues, the rounds' gates, the Macs they
+  // The flow map: who has entries in the queues (queue.py's agent), then the queues, the rounds' gates, the Macs they
   // run on and main. model is {queues, agents, gates, macs, back, landed, moving}: a queue for each repository shown,
   // each agent with the queues it has entries in, each gate and each Mac's gates with their repository. With one
   // queue it is a column of its own; with more, a node for each, in its repository's hue (hues). Dots travel the
@@ -232,7 +232,7 @@
           QK.number("Testing now", data.counts.testing, null, null),
         )),
       attention(data.attention || [], data.lines.filter(line => line.panel !== "queue"), context, hues),
-      h("div", { class: "card" }, h("h2", null, "Flow", h("span", { class: "muted" }, "Agents by branch prefix, across every repository")),
+      h("div", { class: "card" }, h("h2", null, "Flow", h("span", { class: "muted" }, "Who queued each entry, across every repository")),
         h("div", { class: "flow-map" }, flowMap({
           queues: data.flow.queues, agents: data.flow.agents, macs: data.flow.macs, back: data.flow.back,
           gates: data.rounds.flatMap(round => round.gates.map(gate => ({ ...gate, round: round.name }))),
@@ -294,7 +294,7 @@ QK.panel("queue", {
           h("p", { class: "wrap" }, overview.detail)],
         QK.overview(overview.counts, overview.trend)),
       attention(data.attention || [], overview.lines.filter(line => line.panel !== "queue" && ["danger", "warning"].includes(line.level)), context, null),
-      data.flow ? h("div", { class: "card" }, h("h2", null, "Flow", h("span", { class: "muted" }, "Agents by branch prefix")),
+      data.flow ? h("div", { class: "card" }, h("h2", null, "Flow", h("span", { class: "muted" }, "Who queued each entry")),
         h("div", { class: "flow-map" }, flowMap({
           queues: [{ name: context.repository, waiting: pending.length, testing: round && round.gates.length ? round.entries.length : 0,
             held: !!data.held, worker: data.worker }],

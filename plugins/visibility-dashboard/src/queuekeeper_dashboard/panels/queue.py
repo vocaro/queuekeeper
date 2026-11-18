@@ -17,7 +17,7 @@ GATE = ("lane", "mac", "began", "waiting", "waitingSince", "stuck", "entries")
 NEWS = 3600
 # How far back the Queue tab's Needs attention looks for an entry that came back and a flaky test.
 OPEN = 86400
-# The busiest branch prefixes the flow map gives a node of their own; the others share one.
+# The busiest agents (agent) the flow map gives a node of their own; the others share one.
 AGENTS = 4
 
 
@@ -27,6 +27,7 @@ def entry(found):
     if found.get("commits"): shown["commits"] = len(found["commits"])
     if found.get("flakes"): shown["flakes"] = len(found["flakes"])
     if found.get("ungated"): shown["ungated"] = True
+    shown["by"] = agent(found)
     return shown
 
 
@@ -79,8 +80,10 @@ PERSON = "Person"
 def agent(entry):
     """Who submitted entry, as the flow map names them: the coding agent its submission recorded (resources.coding_agent);
     for one submitted before entries recorded it, the agent whose worktree it was submitted from; then its branch's
-    prefix, claude/fix-it being Claude's and ann/fix-it ann's; and a Person for a branch with none."""
+    prefix, claude/fix-it being Claude's and ann/fix-it ann's; and a Person for a branch with none. An entry as the page
+    is given it (entry) carries this name as "by"."""
     entry = entry or {}
+    if entry.get("by"): return entry["by"]  # named already, as entry shows it to the page
     if entry.get("agent") in AGENT_NAMES: return AGENT_NAMES[entry["agent"]]
     directory = str(entry.get("directory") or "") + "/"
     found = next((key for key, where in AGENT_WORKTREES.items() if where in directory), None)
@@ -105,7 +108,7 @@ def macs():
 
 
 def flow(state, gates, now):
-    """What the Queue tab's flow map draws: who has entries in the queue, by branch prefix, busiest first; the Macs,
+    """What the Queue tab's flow map draws: who has entries in the queue (agent), busiest first; the Macs,
     each with the roles of the round's gates that run on it; and the last entry to come back within NEWS, if one did."""
     counts, current = {}, set((state.get("round") or {}).get("entries") or [])
     for found in state.get("waiting") or []:

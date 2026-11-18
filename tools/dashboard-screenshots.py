@@ -7,8 +7,10 @@
 
 What is captured is the dashboard itself: this checkout's page, scripts and styles, served by the dashboard's own
 server. Each tab is taken where the page opens, showing every repository at once. Only the data is made up, the same
-every run: three projects, lumen-ios and orbit-game each with a round being tested and fieldnotes idle, with entries
-waiting and settled, and two Macs. Each project's answers are made up as one repository's, and the panels' own
+every run: four projects and two Macs, busy enough that the Flow map shows each of its parts. lumen-ios tests a
+batch on studio.local with a stacked round ahead of it waiting for a Mac, orbit-game tests on This Mac, fieldnotes'
+gate waits for a Mac and harbor-mac is idle. Claude, Codex and a person have entries in them, and an entry of Codex's
+came back within the hour. Each project's answers are made up as one repository's, and the panels' own
 `combine` makes every repository's from them, as the server does. Times are counted back from now, since the page shows each as how long ago it
 was. Three things differ from what `qk serve` sends: the data, the theme, which the page takes from the system and
 this script fixes, and one more script on the page, which reports the page's height so that each picture is as
@@ -71,39 +73,52 @@ REPOSITORIES = [
      "detail": "The gate lane is running on studio.local. 1 more waiting.", "waiting": 2},
     {"name": "orbit-game", "level": "active", "headline": "Testing 1 entry",
      "detail": "The gate lane is running on this Mac.", "waiting": 1},
-    {"name": "fieldnotes", "level": "idle", "headline": "Idle", "detail": "Nothing is waiting.", "waiting": 0},
+    {"name": "fieldnotes", "level": "active", "headline": "Testing 1 entry",
+     "detail": "The gate lane is waiting for a Mac.", "waiting": 0},
+    {"name": "harbor-mac", "level": "idle", "headline": "Idle", "detail": "Nothing is waiting.", "waiting": 0},
 ]
 
+# Each entry as the panel gives it, with whose it is (queue.agent) as "by".
 WAITING = [
     {"id": E["0412"], "state": "testing", "subject": "Cache decoded thumbnails between launches",
-     "branch": "agent/thumbnail-cache", "commits": 2, "submitted": ago(410)},
+     "branch": "claude/thumbnail-cache", "commits": 2, "submitted": ago(410), "by": "Claude"},
+    {"id": E["0413"], "state": "testing", "subject": "Fix the share sheet on iPad",
+     "branch": "claude/issue-42-share-sheet-ipad", "submitted": ago(365), "by": "Claude"},
     {"id": E["0415"], "state": "queued", "subject": "Add VoiceOver labels to the editor toolbar",
-     "branch": "agent/toolbar-labels", "submitted": ago(120)},
+     "branch": "toolbar-labels", "submitted": ago(120), "by": "Person"},
+    {"id": E["0416"], "state": "queued", "subject": "Show progress while a notebook imports",
+     "branch": "claude/import-progress", "submitted": ago(45), "by": "Claude"},
 ]
 
 RECENT = [
+    {"id": "qk0398-offline-merge", "state": "failed", "subject": "Merge a note edited offline",
+     "branch": "codex/offline-merge", "submitted": ago(2300), "settled": ago(1900), "by": "Codex",
+     "why": "The gate failed lumen.test_sync.Tests.test_a_note_edited_offline_merges on this commit on top of origin/main."},
     {"id": E["0411"], "state": "landed", "subject": "Keep the scroll position when a note is edited",
-     "branch": "agent/scroll-position", "landedAs": "4c9a1e7b02d3f8", "submitted": ago(1500), "settled": ago(540)},
+     "branch": "claude/scroll-position", "landedAs": "4c9a1e7b02d3f8", "submitted": ago(1500), "settled": ago(540), "by": "Claude"},
 ]
 
 PANELS = {
     "home": {
-        "level": "active", "headline": "Testing 1 entry",
-        "detail": "The gate lane is running on studio.local. 1 more waiting.", "began": ago(252),
-        "counts": {"waiting": 2, "landed": 12, "cameBack": 0},
+        "level": "active", "headline": "Testing 2 entries",
+        "detail": "The gate lane is running on studio.local. 2 more waiting.", "began": ago(252),
+        "counts": {"waiting": 2, "landed": 12, "cameBack": 1},
         "trend": {"waiting": [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 2, 1, 1, 2, 4, 3, 2, 1, 0, 1, 2, 3, 2],
                   "landed": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 0, 1, 2, 1, 1, 0, 1, 1, 0, 1, 0, 0],
-                  "cameBack": [0] * 24, "gateSeconds": [262, 248, 301, 255, 240, 236, 270, 252, 244, 238, 251, 249],
+                  "cameBack": [0] * 23 + [1], "gateSeconds": [262, 248, 301, 255, 240, 236, 270, 252, 244, 238, 251, 249],
                   "medianGateSeconds": 250},
         "lines": [],
     },
     "queue": {
         "worker": True, "held": None,
-        "round": {"name": ROUND, "base": "4c9a1e7b02d3f8", "entries": [E["0412"]], "bisect": None,
+        "round": {"name": ROUND, "base": "4c9a1e7b02d3f8", "entries": [E["0412"], E["0413"]], "bisect": None,
                   "gates": [
                       {"role": "batch", "lane": "gate", "mac": "studio.local", "began": ago(252),
                        "phase": "simulator tests, 212 of 340", "entries": [E["0412"]],
                        "log": ROUND + "-gate.log"},
+                      # Testing ahead: the batch with the next entry stacked on it, waiting for a Mac with room.
+                      {"role": "stacked", "lane": "gate", "began": ago(240), "waiting": "4 slots, which no Mac has free",
+                       "waitingSince": ago(240), "entries": [E["0412"], E["0413"]]},
                   ]},
         "waiting": WAITING, "recent": RECENT, "ungated": [],
         # What is open: one entry that came back and was not queued again, and a test found flaky (queue.attention).
@@ -116,18 +131,20 @@ PANELS = {
             {"level": "notice", "title": "Flaky", "at": ago(2900), "text": "lumen.test_sync.Tests.test_a_note_edited_offline_merges",
              "issue": "https://github.com/example/lumen/issues/41"}],
         "health": {"verdict": "good", "level": health.OK, "label": "All good",
-                   "sentence": "Testing 1 entry and 1 waits behind it, the gate about as long as its usual 4m; "
-                               "the last entry landed 9m ago, and This Mac has room.",
-                   "signs": [health.sign("progress", health.OK, "testing 1 entry, 1 waiting", "Testing 1, 1 waiting"),
+                   "sentence": "Testing 2 entries and 2 wait behind them, the gate about as long as its usual 4m; "
+                               "the last entry landed 9m ago.",
+                   "signs": [health.sign("progress", health.OK, "testing 2 entries, 2 waiting", "Testing 2, 2 waiting"),
                              health.sign("pace", health.OK, "the last entry landed 9m ago", "Last landed 9m ago"),
-                             health.sign("macs", health.OK, "This Mac has room"),
+                             health.sign("macs", health.OK, "1 slot free on This Mac"),
                              health.sign("devices", health.OK, "1 of 1 connected"),
-                             health.sign("cameBack", health.OK, "none of the last 8 came back")],
+                             health.sign("cameBack", health.OK, "1 of the last 8 came back")],
                    "forecast": {"waiting": 2, "clearsAt": ago(-540)}, "usualGateSeconds": 250, "findings": [],
                    "exitStatus": health.HEALTHY},
-        "flow": {"agents": [{"name": "agent", "waiting": 1, "testing": 1}], "back": None,
-                 "macs": [{"name": "This Mac", "role": "here", "state": "observed", "used": 1, "most": 4, "gates": []},
-                          {"name": "studio.local", "role": "second", "state": "observed", "used": 2, "most": 4, "gates": ["batch"]}]},
+        "flow": {"agents": [{"name": "Claude", "waiting": 1, "testing": 2}, {"name": "Person", "waiting": 1, "testing": 0}],
+                 "back": {"agent": "Codex", "id": "qk0398-offline-merge", "subject": "Merge a note edited offline",
+                          "state": "failed", "settled": ago(1900)},
+                 "macs": [{"name": "This Mac", "role": "here", "state": "observed", "used": 3, "most": 4, "gates": []},
+                          {"name": "studio.local", "role": "second", "state": "observed", "used": 4, "most": 4, "gates": ["batch"]}]},
     },
     "farm": {
         "readAt": ago(4), "error": None,
@@ -136,27 +153,28 @@ PANELS = {
              "load": {"cpuBusy": 38, "busyLimit": 85, "load": 6.4, "memory": "normal", "screen": "unlocked", "error": None,
                       "health": None, "shortage": None,
                       "hardware": {"model": "Mac15,9", "kind": "laptop"}},
-             "slots": {"used": 1, "guaranteed": 1, "most": 4},
-             "cells": [{"held": True, "project": "orbit-game", "guaranteed": True},
-                       {"held": False, "project": None, "guaranteed": False}, {"held": False, "project": None, "guaranteed": False},
-                       {"held": False, "project": None, "guaranteed": False}],
+             "slots": {"used": 3, "guaranteed": 1, "most": 4},
+             "cells": [{"held": True, "project": "orbit-game", "guaranteed": True}, {"held": True, "project": "orbit-game", "guaranteed": False},
+                       {"held": True, "project": "orbit-game", "guaranteed": False}, {"held": False, "project": None, "guaranteed": False}],
              "holders": [
                  {"id": "qk4156-orbit-game-gate", "label": "orbit-game · gate", "heldSeconds": 431, "project": "orbit-game",
-                  "slots": 1, "wholeHost": False, "exclusive": False}],
+                  "slots": 3, "wholeHost": False, "exclusive": False}],
              "waiters": []},
             {"name": "studio.local", "role": "second", "state": "observed", "reasons": [],
              "load": {"cpuBusy": 90, "busyLimit": 85, "load": 14.2, "memory": "warning", "screen": "unlocked", "error": None,
                       "health": host_health.warnings(SHORT, "studio.local")[0], "shortage": host_health.shortage(SHORT),
                       "hardware": {"model": "Mac14,13", "kind": "desktop"}},
-             "slots": {"used": 2, "guaranteed": 2, "most": 4},
+             "slots": {"used": 4, "guaranteed": 2, "most": 4},
              "cells": [{"held": True, "project": "lumen-ios", "guaranteed": True}, {"held": True, "project": "lumen-ios", "guaranteed": True},
-                       {"held": False, "project": None, "guaranteed": False}, {"held": False, "project": None, "guaranteed": False}],
+                       {"held": True, "project": "lumen-ios", "guaranteed": False}, {"held": True, "project": "lumen-ios", "guaranteed": False}],
              "holders": [
                  {"id": "qk8237-lumen-ios-gate", "label": "lumen-ios · gate lane", "heldSeconds": 252, "project": "lumen-ios",
-                  "slots": 2, "wholeHost": True, "exclusive": False}],
+                  "slots": 4, "wholeHost": True, "exclusive": False}],
              "waiters": [
-                 {"id": "qk1948-fieldnotes-sync-tests", "label": "fieldnotes · simulator tests", "waitedSeconds": 37, "project": "fieldnotes",
-                  "reason": "The Mac's CPU is near its busy limit."}]},
+                 {"id": "qk8240-lumen-ios-stacked", "label": "lumen-ios · gate lane, testing ahead", "waitedSeconds": 240,
+                  "project": "lumen-ios", "reason": "No Mac has 4 slots free."},
+                 {"id": "qk1948-fieldnotes-gate", "label": "fieldnotes · gate lane", "waitedSeconds": 95, "project": "fieldnotes",
+                  "reason": "No Mac has 2 slots free."}]},
         ],
     },
     "history": {
@@ -203,7 +221,8 @@ PANELS["farm"]["samples"] = [
     {"at": ago(3600 - 10 * step), "most": 8,
      "macs": {"here": {"cpuBusy": 38, "load": round(5 + 2 * ((step * 7) % 11) / 11, 1)},
               "second": {"cpuBusy": 90, "load": round(11 + 4 * ((step * 5) % 13) / 13, 1)}},
-     "projects": {"orbit-game": 1 + (step // 90) % 2, "lumen-ios": 2 if step > 120 else (step // 40) % 3, "fieldnotes": 1 if 150 < step < 260 else 0}}
+     "projects": {"orbit-game": 3 if step > 320 else 1 + (step // 90) % 2, "lumen-ios": 4 if step > 335 else 2 if step > 120 else (step // 40) % 3,
+                  "fieldnotes": 1 if 150 < step < 260 else 0}}
     for step in range(361)]
 # Today's lane runs on each Mac, landings over the last week, and the last passing gates' seconds.
 PANELS["history"].update(
@@ -244,37 +263,45 @@ LOGS = [{"name": "worker.log", "size": 48213, "modified": ago(3)},
 
 
 ORBIT = time.strftime("%Y%m%d-%H%M%S", time.localtime(ago(431))) + "-9e21b4c0"
+NOTES = time.strftime("%Y%m%d-%H%M%S", time.localtime(ago(95))) + "-51f0c3e8"
 LEVEL = {"id": "qk0420-level-select", "state": "testing", "subject": "Remember the last level played",
-         "branch": "codex/level-select", "submitted": ago(980)}
+         "branch": "codex/level-select", "submitted": ago(980), "by": "Codex"}
+HINTS = {"id": "qk0423-level-hints", "state": "queued", "subject": "Offer a hint after three failed tries",
+         "branch": "codex/level-hints", "submitted": ago(210), "by": "Codex"}
 LEVELS = {"id": "qk0381-level-timer", "state": "landed", "subject": "Pause the level timer while the game is in the background",
-          "branch": "codex/level-timer", "landedAs": "3b8e51c0d7a2f9", "submitted": ago(3900), "settled": ago(2900)}
+          "branch": "codex/level-timer", "landedAs": "3b8e51c0d7a2f9", "submitted": ago(3900), "settled": ago(2900), "by": "Codex"}
+SYNC = {"id": "qk0402-sync-conflicts", "state": "testing", "subject": "Show both versions when a sync conflicts",
+        "branch": "worktree-agent-a5181cd05a8167cb", "submitted": ago(160), "by": "Claude"}
 JOURNAL = {"id": "qk0398-journal-export", "state": "landed", "subject": "Export a journal as Markdown",
-           "branch": "agent/journal-export", "landedAs": "77c1e0d4a9b2f3", "submitted": ago(5200), "settled": ago(4100)}
+           "branch": "claude/journal-export", "landedAs": "77c1e0d4a9b2f3", "submitted": ago(5200), "settled": ago(4100), "by": "Claude"}
+DOCK = {"id": "qk0217-dock-badge", "state": "landed", "subject": "Badge the Dock icon with the unread count",
+        "branch": "dock-badge", "landedAs": "e3a90b7c51d2f4", "submitted": ago(7900), "settled": ago(6800), "by": "Person"}
 
 
 def others():
-    """orbit-game's and fieldnotes' own answers, from lumen-ios's: orbit-game testing one entry on This Mac, and
-    fieldnotes idle, having landed earlier in the day."""
-    orbit, notes = copy.deepcopy(PANELS), copy.deepcopy(PANELS)
-    for found, landed in ((orbit, 5), (notes, 7)):
+    """orbit-game's, fieldnotes' and harbor-mac's own answers, from lumen-ios's: orbit-game testing an entry on This
+    Mac with another waiting, fieldnotes' gate waiting for a Mac, and harbor-mac idle, having landed earlier in the day."""
+    orbit, notes, harbor = copy.deepcopy(PANELS), copy.deepcopy(PANELS), copy.deepcopy(PANELS)
+    for found, landed in ((orbit, 5), (notes, 7), (harbor, 4)):
         found["queue"]["overview"].update(counts={"waiting": 0, "landed": landed, "cameBack": 0}, lines=[])
         found["queue"]["overview"]["trend"].update(
             landed=[(hour * 7 + landed * 3) % 9 // 6 if 8 <= hour <= 20 else 0 for hour in range(24)],
             waiting=[(hour * 3 + landed) % 5 // 4 for hour in range(24)])
-        own = JOURNAL if found is notes else LEVELS
-        found["queue"].update(recent=[own], waiting=[], round=None)
-        found["queue"]["flow"]["agents"] = []
+        own = {id(notes): JOURNAL, id(harbor): DOCK}.get(id(found), LEVELS)
+        found["queue"].update(recent=[own], waiting=[], round=None, attention=[])
+        found["queue"]["flow"].update(agents=[], back=None)
         for mac in found["queue"]["flow"]["macs"]: mac["gates"] = []
         found["history"].update(gates=[], daily=[{**day, "landed": day["landed"] // 2, "cameBack": 0} for day in found["history"]["daily"]])
         found["activity"] = {"total": 1, "feed": [{"kind": "round", "time": own["settled"] - 300, "round": ROUND, "head": None, "flaky": [],
             "entries": [{"id": own["id"], "subject": own["subject"], "branch": own["branch"], "state": "landed", "landedAs": own["landedAs"]}],
             "lanes": [{"lane": "gate", "role": "batch", "status": 0, "seconds": 280, "log": None}]}]}
         found["history"]["gateSeconds"] = [seconds * 7 // 4 if found is orbit else seconds // 3 for seconds in found["history"]["gateSeconds"]]
+        found["queue"]["health"]["signs"][4] = health.sign("cameBack", health.OK, "none of the last 8 came back")
         found["history"]["today"].update(landed=landed, rounds=landed, removed=0,
                                          medianGateSeconds=sorted(found["history"]["gateSeconds"])[len(found["history"]["gateSeconds"]) // 2])
     orbit["queue"]["overview"].update(level="active", headline="Testing 1 entry", detail="The gate lane is running on This Mac.",
                                       began=ago(431), counts={"waiting": 1, "landed": 5, "cameBack": 0})
-    orbit["queue"].update(waiting=[LEVEL], round={"name": ORBIT, "base": "9e21b4c0f2a7d1", "entries": [LEVEL["id"]], "bisect": None,
+    orbit["queue"].update(waiting=[LEVEL, HINTS], round={"name": ORBIT, "base": "9e21b4c0f2a7d1", "entries": [LEVEL["id"]], "bisect": None,
         "gates": [{"role": "batch", "lane": "gate", "mac": "This Mac", "began": ago(431), "phase": "unit tests, 88 of 140",
                    "entries": [LEVEL["id"]], "log": ORBIT + "-gate.log"}]})
     orbit["queue"]["flow"]["agents"] = [{"name": "codex", "waiting": 0, "testing": 1}]
@@ -282,25 +309,36 @@ def others():
     orbit["queue"]["overview"]["trend"]["medianGateSeconds"] = 445
     orbit["queue"]["health"].update(sentence="Testing 1 entry, the gate about as long as its usual 7m.",
                                     forecast={"waiting": 1, "clearsAt": ago(-60)})
-    orbit["queue"]["health"]["signs"][0] = health.sign("progress", health.OK, "testing 1 entry", "Testing 1")
-    notes["queue"]["health"]["signs"][0] = health.sign("progress", health.IDLE, "nothing is waiting", "Nothing waiting")
-    notes["queue"]["health"]["signs"][1] = health.sign("pace", health.OK, "the last entry landed 1h 8m ago", "Last landed 1h 8m ago")
+    orbit["queue"]["health"]["signs"][0] = health.sign("progress", health.OK, "testing 1 entry, 1 waiting", "Testing 1, 1 waiting")
+    notes["queue"]["overview"].update(level="active", headline="Testing 1 entry", detail="The gate lane is waiting for a Mac.",
+                                      began=ago(95), counts={"waiting": 0, "landed": 7, "cameBack": 0})
+    notes["queue"].update(waiting=[SYNC], round={"name": NOTES, "base": "51f0c3e8a92d7b", "entries": [SYNC["id"]], "bisect": None,
+        "gates": [{"role": "batch", "lane": "gate", "began": ago(95), "waiting": "2 slots, which no Mac has free",
+                   "waitingSince": ago(95), "entries": [SYNC["id"]]}]})
+    notes["queue"]["health"].update(sentence="Testing 1 entry, its gate waiting 1m 35s for a Mac with room.", forecast={"waiting": 1, "clearsAt": ago(-420)})
+    notes["queue"]["health"]["signs"][0] = health.sign("progress", health.OK, "testing 1 entry", "Testing 1")
+    notes["activity"]["feed"].insert(0, {"kind": "round", "time": ago(95), "round": NOTES, "head": None, "flaky": [],
+        "entries": [{"id": SYNC["id"], "subject": SYNC["subject"], "branch": SYNC["branch"], "state": "testing"}],
+        "lanes": [{"lane": "gate", "role": "batch", "status": None, "seconds": 95, "log": None}]})
+    harbor["queue"]["health"]["signs"][0] = health.sign("progress", health.IDLE, "nothing is waiting", "Nothing waiting")
+    harbor["queue"]["health"]["signs"][1] = health.sign("pace", health.OK, "the last entry landed 1h 53m ago", "Last landed 1h 53m ago")
     orbit["activity"]["feed"].insert(0, {"kind": "round", "time": ago(431), "round": ORBIT, "head": None, "flaky": [],
         "entries": [{"id": LEVEL["id"], "subject": LEVEL["subject"], "branch": LEVEL["branch"], "state": "testing"}],
         "lanes": [{"lane": "gate", "role": "batch", "status": None, "seconds": 431, "log": ORBIT + "-gate.log"}]})
     orbit["history"]["gates"] = [{"began": ago(3600 * back + 130), "ended": ago(3600 * back), "lane": "gate", "status": 0, "mac": None,
                                   "round": None, "log": None} for back in (6.5, 4.5, 2.5)]
-    notes["queue"]["overview"].update(level="idle", headline="Idle", detail="Nothing is waiting.", began=None)
-    notes["queue"]["health"].update(verdict="quiet", level=health.IDLE, label="All quiet", forecast=None,
-                                    sentence="Nothing is waiting. The last entry landed 1h 8m ago. The Macs are ready.")
-    return {"orbit-game": orbit, "fieldnotes": notes}
+    harbor["queue"]["overview"].update(level="idle", headline="Idle", detail="Nothing is waiting.", began=None)
+    harbor["queue"]["health"].update(verdict="quiet", level=health.IDLE, label="All quiet", forecast=None,
+                                     sentence="Nothing is waiting. The last entry landed 1h 53m ago.")
+    return {"orbit-game": orbit, "fieldnotes": notes, "harbor-mac": harbor}
 
 
 MADE_UP = {REPOSITORY: PANELS, **others()}
 OTHER_LOGS = {"orbit-game": [{"name": "worker.log", "size": 20117, "modified": ago(5)},
                              {"name": ORBIT + "-gate.log", "size": 88213, "modified": ago(5), "round": ORBIT[:15], "commit": ORBIT[16:],
                               "lane": "gate", "running": True}],
-              "fieldnotes": [{"name": "worker.log", "size": 9120, "modified": ago(4100)}]}
+              "fieldnotes": [{"name": "worker.log", "size": 9120, "modified": ago(95)}],
+              "harbor-mac": [{"name": "worker.log", "size": 6342, "modified": ago(6800)}]}
 
 
 def everywhere(tab, query):

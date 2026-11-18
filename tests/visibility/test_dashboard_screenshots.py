@@ -69,7 +69,7 @@ class MadeUpData(test_dashboard.Fixture):
 
     def test_an_entry_and_a_gate_have_only_fields_the_queue_panel_shows(self):
         queue = panels.load("queue")
-        shown = {*queue.ENTRY, "log", "commits", "flakes", "ungated"}
+        shown = {*queue.ENTRY, "log", "commits", "flakes", "ungated", "by"}
         for found in [*self.script.WAITING, *self.script.RECENT]: self.assertLessEqual(set(found), shown)
         for found in self.script.PANELS["queue"]["round"]["gates"]:
             self.assertLessEqual(set(found), {*queue.GATE, "role", "log", "phase"})

@@ -295,6 +295,10 @@ class Panels(Fixture):
         self.assertEqual(queue.agent({"directory": "/u/.codex/worktrees/de6d/r", "branch": None}), "Codex")
         self.assertEqual(queue.agent({"agent": "unknown", "directory": "/r", "branch": "ann/x"}), "ann")
         self.assertEqual(queue.agent(None), "Person")
+        # The page is given an entry without where it came from, so it carries whose it is, which every repository's
+        # flow map reads.
+        shown = queue.entry({"id": "x", "agent": "claude", "directory": "/r", "branch": "worktree-agent-a5"})
+        self.assertEqual((shown["by"], "directory" in shown, queue.agent(shown)), ("Claude", False, "Claude"))
         self.assertEqual(queue.data(self.one, {})["flow"]["agents"], [])
 
     def test_each_mac_is_drawn_by_its_kind_which_a_battery_tells_and_a_model_alone_does_not(self):

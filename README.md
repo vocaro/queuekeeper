@@ -125,7 +125,7 @@ day's totals, a row for each project, every round being tested, and every entry 
 next. New arrivals tested on top of the current batch are labeled **Testing ahead**.
 
 <p align="center">
-  <img src="assets/dashboard-home.png" alt="The dashboard's Queue home view across three projects: a one-sentence health verdict with a forecast and five signs, daily totals, a row for each project, the flow from agents through each project's queue to main, two rounds being tested, two entries in progress and one up next, each tagged with its project." width="100%">
+  <img src="assets/dashboard-home.png" alt="The dashboard's Now view across four projects: a one-sentence health verdict with a forecast and five signs, daily totals, an entry that came back and a flaky test needing attention, the flow from Claude, Codex and a person through each project's queue, the rounds' gates and two Macs to main, with two gates waiting for a Mac and an arc back to the agent whose entry came back, then four gates being tested and three entries up next, each tagged with its project." width="100%">
 </p>
 
 **Farm** shows each Mac's slots, its load, and the work running and waiting on it, for every
