@@ -690,6 +690,21 @@ class BoundedRun:
         self.revisions[key] = self.record.update(key, owner=self.owner, revision=self.revisions[key],
                                                  **changes)["revision"]
 
+    def _record(self, key, **changes):
+        """Record changes to the run in key's entry, once the entry marks it active. The session that holds the
+        entry may change it meanwhile, extending its window, say, so a stale revision is read again while the
+        entry is still held by the owner with this run active, begun by this process (vocaro/queuekeeper#230)."""
+        while True:
+            try:
+                return self._update(key, **changes)
+            except Stale:
+                entry = self.record.entry(key) or {}
+                if not (entry.get("ownerChatID") == self.owner and entry.get("state") != "released"
+                        and entry.get("activeRun") and entry.get("hostProcessIdentifier") == os.getpid()
+                        and (entry.get("run") or {}).get("startedAt") == self.run["startedAt"]):
+                    raise
+                self.revisions[key] = entry.get("revision", 0)
+
     def begin(self, run):
         """Start the bound and mark each entry's run active, with this process as the run's; the bound's seconds."""
         bound = int(self.seconds())
@@ -708,7 +723,7 @@ class BoundedRun:
     def own(self, pid):
         """Record pid, which the run started, as each entry's own process: release and recovery wait for it."""
         for key in self.revisions or ():
-            self._update(key, own=[pid])
+            self._record(key, own=[pid])
 
     def expired(self):
         """Whether the bound begin started has passed, by the wall clock, which counts a sleep."""
@@ -720,7 +735,7 @@ class BoundedRun:
         self.run = {**self.run, "endedAt": now(), "outcome": outcome}
         for key in self.revisions or ():
             try:
-                self._update(key, run=self.run, **({"uncertain": True} if uncertain else {"activeRun": False}))
+                self._record(key, run=self.run, **({"uncertain": True} if uncertain else {"activeRun": False}))
             except (Refused, OSError, TimeoutError) as error:
                 print(f"devices: {key}'s entry did not record the run's end, so it shows the run orphaned until its "
                       f"owner releases or recovers it: {error}", file=sys.stderr, flush=True)

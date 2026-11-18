@@ -130,6 +130,25 @@ class DevicePass(Fixture):
             parts, code, _said = self.run_pass(["iPad"], self.command())
         self.assertEqual((code, parts["iPad"].outcome), (device_pass.UNMEASURED, "unmeasured"))
 
+    def test_a_failed_run_on_a_held_iphone_whose_entry_changed_meanwhile_ends_its_run_for_the_next_pass(self):
+        # vocaro/queuekeeper#230: the session that holds the iPhone changes its entry while the pass runs on it, as
+        # an extension of its window does, and the run fails. The run's end is still recorded, so the entry is
+        # held with no run active, and the next pass uses it rather than calling it an orphan.
+        self.hold_iphone()
+        change = ("import sys; from queuekeeper_apple import devices; record = devices.Record(); "
+                  "entry = record.entry('iPhone'); record.update('iPhone', owner='session-a', "
+                  "revision=entry['revision'], purpose='its own run, extended'); raise SystemExit(1)")
+        with patch.dict(os.environ, {"PYTHONPATH": host_isolation.pythonpath()}):
+            parts, code, said = self.run_pass(["iPhone"], [sys.executable, "-c", change])
+        self.assertEqual((code, parts["iPhone"].outcome, parts["iPhone"].took), (1, "failed", False), said)
+        entry = self.record.entry("iPhone")
+        self.assertEqual((devices.condition(entry), entry["activeRun"], entry["run"]["outcome"]),
+                         ("held", False, "exit 1"))
+        self.assertEqual(entry["purpose"], "its own run, extended")
+        parts, code, said = self.run_pass(["iPhone"], self.command())
+        self.assertEqual((code, parts["iPhone"].outcome), (0, "passed"), said)
+        self.assertIn("iPhone: session-a holds it already", said)
+
     def test_a_run_a_notification_reached_twice_is_unmeasured_and_the_device_goes_back(self):
         self.watches.seen = [BANNER, BANNER]
         parts, code, said = self.run_pass(["iPad"], self.command())

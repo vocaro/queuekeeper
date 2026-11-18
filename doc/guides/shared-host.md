@@ -3030,7 +3030,12 @@ The launcher:
   that prints no count, such as an install, keeps its status;
 - leaves a run whose end is unconfirmed active and the entry uncertain, for attended recovery;
 - updates only its own entry, naming the revision its previous change returned, so an ownership
-  change or a concurrent change is refused;
+  change or a concurrent change is refused. Once the run is marked active, a change the holding
+  session made meanwhile, such as extending its window, does not keep the run's end from being
+  recorded: the launcher reads the entry again while it is still held by the same owner with this
+  run active, and records the end there. Such a change otherwise left the run active, so that the
+  next device pass on a session's held iPhone refused the entry as an orphan
+  ([#230](https://github.com/vocaro/queuekeeper/issues/230));
 - never releases the device, changes VoiceOver, uninstalls apps or deletes data. The session's
   next change names the revision the launcher's last change returned (`devices show KEY`).
 
