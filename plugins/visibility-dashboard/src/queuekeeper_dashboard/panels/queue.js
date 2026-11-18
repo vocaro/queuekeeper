@@ -132,6 +132,30 @@
 
   // Whether the queues are healthy, as `qk queue health` says it, then what they are doing, the forecast and the
   // signs. began is when the earliest running gate began, for the forecast's bar; tab is where a sign goes.
+  // What is open and needs someone, at the top of the tab: holds, stuck gates, no worker, entries that came back and
+  // have not been queued again, flaky tests with their issues, and the other tabs' warnings, as the Farm's. Each row
+  // says what, where and when, and links to what acts on it: the entry, its log, the issue or the tab.
+  function attention(items, lines, context, hues) {
+    const h = QK.h, all = !context.repository, GLYPH = { danger: "✕", warning: "!", notice: "≈" };
+    const rows = [...items, ...lines.map(line => ({ level: line.level, title: line.title, text: line.text, at: line.at,
+      panel: line.panel, repository: line.repository }))];
+    if (!rows.length) return null;
+    const where = one => one.repository || context.repository;
+    return h("section", { class: "card attention", "aria-label": "Needs attention" },
+      h("h2", null, "Needs attention", h("span", { class: "muted" }, QK.count(rows.length, "item"))),
+      h("ul", { class: "rows needs" }, rows.map(one => h("li", { class: one.level },
+        h("span", { class: "glyph", "aria-hidden": "true" }, GLYPH[one.level] || "!"),
+        h("div", { class: "what" },
+          h("div", { class: "head" }, h("b", null, one.title), all && one.repository ? QK.tag(one.repository, hues && hues[one.repository]) : null,
+            typeof one.at === "number" ? h("span", { class: "sub" }, QK.ago(one.at)) : null),
+          h("div", { class: "wrap text" }, one.text)),
+        h("span", { class: "acts" },
+          one.entry ? h("a", { href: QK.href(where(one), "queue", { entry: one.entry }) }, "Entry") : null,
+          one.log ? h("a", { href: QK.logHref(context, where(one), one.log) }, "Log") : null,
+          one.issue ? h("a", { href: one.issue, target: "_blank", rel: "noopener" }, one.issue.replace(/^.*\/issues\//, "Issue ")) : null,
+          one.panel ? h("a", { href: QK.href(all ? null : context.repository, one.panel) }, "Open") : null)))));
+  }
+
   function verdict(found, said, began, context) {
     const h = QK.h, glyph = { ok: "✓", warning: "!", danger: "✕", unknown: "?", idle: "–" };
     const clock = at => new Date(at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -177,12 +201,7 @@
             title: "Entries that came back each hour, last 24 hours" }), hourly),
           QK.number("Testing now", data.counts.testing, null, null),
         )),
-      data.lines.length ? h("div", { class: "card" }, h("ul", { class: "rows lines tagged" }, data.lines.map(line =>
-        h("li", null, h("a", { class: "row", href: QK.href(line.repository || null,
-          line.panel === "queue" && line.title === "Came back" ? "history" : line.panel) },
-          h("b", { class: line.level === "plain" ? null : line.level }, line.title),
-          h("span", { class: "wrap" }, line.repository ? h("span", { class: "tag" }, h("i", { class: "dot " + (hues[line.repository] || "other") }), line.repository) : null, line.text),
-          h("span", { class: "muted" }, "›")))))) : null,
+      attention(data.attention || [], data.lines.filter(line => line.panel !== "queue"), context, hues),
       h("div", { class: "card" }, h("h2", null, "Repositories", h("span", { class: "muted" }, "Choose one to see it alone")),
         h("ul", { class: "rows repos" }, shown.map(one => h("li", null, h("a", { class: "row", href: QK.href(one.name, "queue") },
           h("span", { class: "repository-label" }, h("i", { class: "dot " + (hues[one.name] || "other") }), h("b", null, one.name)),
@@ -272,13 +291,11 @@ QK.panel("queue", {
           h("h1", null, h("span", { class: "dot " + overview.level }), overview.headline),
           h("p", { class: "wrap" }, overview.detail)],
         QK.overview(overview.counts, overview.trend)),
-      overview.lines.length ? h("div", { class: "card" }, h("ul", { class: "rows lines" }, overview.lines.map(line =>
+      attention(data.attention || [], overview.lines.filter(line => line.panel !== "queue" && ["danger", "warning"].includes(line.level)), context, null),
+      overview.lines.some(line => !["danger", "warning"].includes(line.level)) ? h("div", { class: "card" }, h("ul", { class: "rows lines" }, overview.lines.filter(line => !["danger", "warning"].includes(line.level)).map(line =>
         h("li", null, h("a", { class: "row", href: QK.href(context.repository, line.panel === "queue" && line.title === "Came back" ? "history" : line.panel) },
           h("b", { class: line.level === "plain" ? null : line.level }, line.title),
           h("span", { class: "wrap" }, line.text), h("span", { class: "muted" }, "›")))))) : null,
-      data.held ? h("div", { class: "banner danger" }, h("b", null, "Held "), data.held) : null,
-      !data.held && !data.worker && data.waiting.length ? h("div", { class: "banner warning" },
-        h("b", null, "No worker is running. "), "qk queue resume starts one.") : null,
       data.flow ? h("div", { class: "card" }, h("h2", null, "Flow", h("span", { class: "muted" }, "Agents by branch prefix")),
         h("div", { class: "flow-map" }, flowMap({
           queues: [{ name: context.repository, waiting: pending.length, testing: round && round.gates.length ? round.entries.length : 0,

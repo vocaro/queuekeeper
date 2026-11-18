@@ -15,6 +15,8 @@ ENTRY = ("id", "state", "subject", "note", "branch", "submitted", "settled", "la
 GATE = ("lane", "mac", "began", "waiting", "waitingSince", "stuck", "entries")
 # An entry that came back is Home's to mention for this long.
 NEWS = 3600
+# How far back the Queue tab's Needs attention looks for an entry that came back and a flaky test.
+OPEN = 86400
 # The busiest branch prefixes the flow map gives a node of their own; the others share one.
 AGENTS = 4
 
@@ -165,7 +167,43 @@ def data(repository, query):
             if current.get("round") else None,
             "waiting": [entry(found) for found in state.get("waiting") or []],
             "recent": [entry(found) for found in reversed(state.get("recent") or [])],
-            "ungated": state.get("ungated") or [], "flow": flow(state, gates, time.time())}
+            "ungated": state.get("ungated") or [], "flow": flow(state, gates, time.time()),
+            "attention": attention(state, repository.events(), time.time())}
+
+
+def attention(state, journal, now):
+    """What is open and needs someone, newest first within each level, danger first: a hold, entries waiting with no
+    worker, a gate that looks stuck, each entry that came back within OPEN and whose branch has not been queued again
+    since, and each test found flaky within OPEN with its issue. Each is {level, title, text, at} with the entry, the
+    log or the issue it is about when it has one."""
+    found = []
+    if state.get("held"): found.append({"level": "danger", "title": "Held", "text": f"The queue is held {state['held']}"})
+    if state.get("waiting") and not state.get("worker"):
+        found.append({"level": "warning", "title": "No worker", "text": f"{len(state['waiting'])} waiting with no worker; "
+                      "`qk queue resume` starts one"})
+    for role, gate_ in ((state.get("round") or {}).get("gates") or {}).items():
+        if gate_.get("stuck"):
+            found.append({"level": "warning", "title": "Stuck", "text": f"The {role} {gate_.get('lane') or 'lane'}: {gate_['stuck']}",
+                          **({"log": Path(str(gate_["log"])).name} if gate_.get("log") else {})})
+    again = {}
+    for one in [*(state.get("waiting") or []), *(state.get("recent") or [])]:
+        if one.get("branch"): again[one["branch"]] = max(again.get(one["branch"], 0), one.get("submitted") or 0)
+    for one in reversed(state.get("recent") or []):
+        settled = one.get("settled") or 0
+        if one.get("state") not in ("failed", "conflict") or now - settled > OPEN: continue
+        if one.get("branch") and again.get(one["branch"], 0) > settled: continue
+        found.append({"level": "warning", "title": "Conflict" if one["state"] == "conflict" else "Came back", "at": settled,
+                      "text": (one.get("subject") or one.get("id") or "an entry") + (f": {one['why']}" if one.get("why") else ""),
+                      "entry": one.get("id"), **({"log": Path(str(one["log"])).name} if one.get("log") else {})})
+    flaky = {}
+    for event in journal:
+        if event["kind"] == "test.flaky" and now - event.get("time", 0) <= OPEN and isinstance(event.get("test"), str):
+            flaky[event["test"]] = event
+    for test, event in sorted(flaky.items(), key=lambda item: -item[1].get("time", 0)):
+        found.append({"level": "notice", "title": "Flaky", "at": event.get("time"), "text": test,
+                      **({"issue": event["issue"]} if isinstance(event.get("issue"), str) else {})})
+    order = {"danger": 0, "warning": 1, "notice": 2}
+    return sorted(found, key=lambda one: (order[one["level"]], -(one.get("at") or now)))
 
 
 def summary(repository):
@@ -339,6 +377,8 @@ def combine(parts, now=None):
             "trend": {key: summed(key) for key in ("waiting", "landed", "cameBack")},
             "worker": any(found.get("worker") for _, found in read),
             "repositories": rows, "lines": lines, "rounds": rounds,
+            "attention": sorted(([{**one, "repository": name} for name, found in read for one in found.get("attention") or []]),
+                                key=lambda one: ({"danger": 0, "warning": 1}.get(one["level"], 2), -(one.get("at") or now))),
             "active": sorted(active, key=submitted), "pending": sorted(pending, key=submitted),
             "flow": {"queues": queues, "agents": agents, "macs": macs_, "back": back}}
 

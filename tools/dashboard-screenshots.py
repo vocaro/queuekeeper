@@ -106,6 +106,13 @@ PANELS = {
                        "log": ROUND + "-gate.log"},
                   ]},
         "waiting": WAITING, "recent": RECENT, "ungated": [],
+        # What is open: one entry that came back and was not queued again, and a test found flaky (queue.attention).
+        "attention": [
+            {"level": "warning", "title": "Came back", "at": ago(1900), "entry": "qk0398-offline-merge",
+             "text": "Merge a note edited offline: its gate failed lumen.test_sync.Tests.test_a_note_edited_offline_merges",
+             "log": BEFORE + "-gate.log"},
+            {"level": "notice", "title": "Flaky", "at": ago(2900), "text": "lumen.test_sync.Tests.test_a_note_edited_offline_merges",
+             "issue": "https://github.com/example/lumen/issues/41"}],
         "health": {"verdict": "good", "level": health.OK, "label": "All good",
                    "sentence": "Testing 1 entry and 1 waits behind it, the gate about as long as its usual 4m; "
                                "the last entry landed 9m ago, and This Mac has room.",
@@ -154,10 +161,6 @@ PANELS = {
         "today": {"landed": 12, "cameBack": 0, "failed": 0, "conflict": 0, "removed": 1, "flaky": 0, "rounds": 6,
                   "medianGateSeconds": 252},
         "total": 2,
-        "attention": [
-            {"time": ago(2900), "kind": "test.flaky", "level": "warning",
-             "text": "flaky: lumen.test_sync.Tests.test_a_note_edited_offline_merges at d02f6a88"},
-            {"time": ago(86400 + 3000), "kind": "queue.held", "level": "warning", "text": "held because the gate timed out twice"}],
         "events": [
             {"time": ago(252), "kind": "round.began", "level": "plain", "text": "Round " + ROUND + " began with 1 entry."},
             {"time": ago(540), "kind": "entry.landed", "level": "success",
@@ -244,7 +247,6 @@ def others():
         for mac in found["queue"]["flow"]["macs"]: mac["gates"] = []
         found["history"].update(recent=[own], gates=[], total=1, events=[{"time": own["settled"], "kind": "entry.landed", "level": "success",
             "text": f"{own['id']} landed as {own['landedAs'][:12]}: {own['subject']}."}])
-        found["history"]["attention"] = []
         found["history"]["gateSeconds"] = [seconds * 7 // 4 if found is orbit else seconds // 3 for seconds in found["history"]["gateSeconds"]]
         found["history"]["today"].update(landed=landed, rounds=landed, removed=0,
                                          medianGateSeconds=sorted(found["history"]["gateSeconds"])[len(found["history"]["gateSeconds"]) // 2])

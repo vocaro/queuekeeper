@@ -22,11 +22,11 @@ QK.panel("logs", {
     if (!state.built) {
       state.built = true;
       Object.assign(state, { ask: 0, want: { mode: "tail" }, text: "", follow: true, fold: true, only: false, wrap: true,
-        open: new Set(), rounds: new Set(), filter: "All", search: "", hit: -1, signatures: {} });
+        open: new Set(), rounds: new Set(), failedOnly: false, lane: "", search: "", hit: -1, signatures: {} });
       state.list = h("div", { class: "loglist" });
       state.searchBox = h("input", { type: "search", id: "log-search", placeholder: all ? "Find a repository, commit or lane" : "Find a commit or lane", "aria-label": "Find a log",
         oninput: () => { state.search = state.searchBox.value.trim().toLowerCase(); state.listed = null; browse(state.logs || []); } });
-      state.chips = h("div", { class: "chips", role: "group", "aria-label": "Show" });
+      state.chips = h("div", { class: "filters" });
       state.head = h("div", { class: "card loghead" });
       state.failures = h("div", { class: "card", hidden: true });
       state.overview = h("div", { class: "card", hidden: true });
@@ -42,7 +42,7 @@ QK.panel("logs", {
       QK.fill(element, h("div", { class: "logs" },
         h("div", { class: "card browser" }, state.searchBox, state.chips, state.list),
         h("div", { class: "viewer" }, state.head, state.failures, state.overview,
-          h("div", { class: "card" },
+          h("div", { class: "card reading" },
             h("div", { class: "findbar" }, state.findBox, state.count,
               h("button", { type: "button", "aria-label": "Previous match", onclick: () => step(-1) }, "↑"),
               h("button", { type: "button", "aria-label": "Next match", onclick: () => step(1) }, "↓"),
@@ -163,17 +163,33 @@ QK.panel("logs", {
         h("span", { class: "lane" }, label, log.mac ? h("span", { class: "sub" }, " " + log.mac) : null),
         h("span", { class: "meta" }, typeof log.seconds === "number" ? QK.span(log.seconds) : QK.size(log.size)));
     }
+    // What the queue's own lanes are for; any other lane is a project's own command, by the name it gave it.
+    const MEANING = { gate: "the tests every entry must pass", docs: "documentation checks", spelling: "spelling checks",
+      "pre-push": "the check before a push", carry: "a check after carrying a change over" };
     function browse(logs) {
-      const signature = JSON.stringify([state.name, state.repository, state.filter, state.search, [...state.rounds], state.workers,
+      const signature = JSON.stringify([state.name, state.repository, state.failedOnly, state.lane, state.search, [...state.rounds], state.workers,
         logs.map(log => [log.repository, log.name, log.status, Math.round(log.modified / 30)])]);
       if (signature === state.listed) return;
       state.listed = signature;
       const lanes = [...new Set(logs.map(log => log.lane).filter(lane => lane && lane !== "rerun"))]
         .sort((a, b) => (LANES.indexOf(a) + 1 || 99) - (LANES.indexOf(b) + 1 || 99) || a.localeCompare(b));
-      const filters = ["All", "Failed", ...lanes];
-      if (!filters.includes(state.filter)) state.filter = "All";
-      QK.fill(state.chips, filters.map(name => h("button", { type: "button", "aria-pressed": String(state.filter === name),
-        onclick: () => { state.filter = name; state.listed = null; browse(state.logs || []); } }, name)));
+      if (!lanes.includes(state.lane)) state.lane = "";
+      const again = () => { state.listed = null; browse(state.logs || []); };
+      // Which repositories have each lane, for its option; a lane is a command a project names in its queuekeeper.json.
+      const owners = lane => [...new Set(logs.filter(log => log.lane === lane).map(log => log.repository).filter(Boolean))];
+      const picker = h("select", { id: "log-lane", onchange: () => { state.lane = picker.value; again(); } },
+        h("option", { value: "" }, "Every lane"),
+        lanes.map(lane => {
+          const by = owners(lane), said = MEANING[lane] || (/^carry-\d+$/.test(lane) ? MEANING.carry : null);
+          return h("option", { value: lane, title: said || "A lane " + (by.length === 1 ? by[0] : "these projects") + " defines in its queuekeeper.json" },
+            lane + (said ? " · " + said : "") + (all && by.length ? " (" + (by.length > 2 ? by.length + " repositories" : by.join(", ")) + ")" : ""));
+        }));
+      picker.value = state.lane;
+      QK.fill(state.chips,
+        h("div", { class: "segmented", role: "group", "aria-label": "Show" },
+          [["All results", false], ["Failed only", true]].map(([label, value]) => h("button", { type: "button", "aria-pressed": String(state.failedOnly === value),
+            title: value ? "Only logs of runs that failed" : "Logs of every run, whatever its result", onclick: () => { state.failedOnly = value; again(); } }, label))),
+        h("label", { class: "lanepick", for: "log-lane" }, h("span", { class: "label" }, "Lane"), picker));
       const groups = new Map(), other = [];
       for (const log of logs) {
         if (log.name === "worker.log") continue;
@@ -183,9 +199,9 @@ QK.panel("logs", {
         groups.get(key).logs.push(log);
       }
       const failed = log => typeof log.status === "number" && log.status !== 0 && log.status !== 3;
-      const shown = log => (state.filter === "All" || (state.filter === "Failed" ? failed(log) : log.lane === state.filter))
+      const shown = log => (!state.failedOnly || failed(log)) && (!state.lane || log.lane === state.lane)
         && (!state.search || log.name.toLowerCase().includes(state.search) || (all && log.repository.toLowerCase().includes(state.search)));
-      const workers = state.filter === "All" ? logs.filter(log => log.name === "worker.log" && (!state.search || "worker.log".includes(state.search)
+      const workers = !state.failedOnly && !state.lane ? logs.filter(log => log.name === "worker.log" && (!state.search || "worker.log".includes(state.search)
         || (all && log.repository.toLowerCase().includes(state.search)))) : [];
       // Every repository has a worker.log: where all are shown they fold into one row, open while searching or when one is chosen.
       const open = !all || workers.length < 3 || state.workers || !!state.search || workers.some(same);

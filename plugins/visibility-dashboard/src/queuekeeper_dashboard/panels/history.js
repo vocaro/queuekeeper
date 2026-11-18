@@ -174,14 +174,14 @@ QK.panel("history", {
           onclick: () => { state.kind = name; context.refresh(); } }, name))),
         list.length ? timeline(list, true) : h("p", { class: "sub" }, data.events.length ? "None of the last " + data.events.length + " events is of this kind." : "The journal is empty.")];
     }
-    // The last events that need attention, and the whole journal behind a button.
+    // The journal, behind a button: what needs someone now is the Queue tab's Needs attention.
     function events() {
-      const state = context.state, attention = data.attention || [];
+      const state = context.state;
       const toggle = h("button", { type: "button", class: "more", "aria-expanded": String(!!state.all),
         onclick: () => { state.all = !state.all; context.refresh(); } },
         state.all ? "Hide the journal" : "Show all events" + (data.total ? " (" + data.total.toLocaleString() + ")" : ""));
-      return h("div", { class: "card" }, h("h2", null, "Needs attention", h("span", { class: "muted" }, "Holds, stuck gates, flaky tests and entries that came back")),
-        attention.length ? timeline(attention, false) : h("p", { class: "sub" }, "Nothing in the journal has needed attention."),
+      return h("div", { class: "card" }, h("h2", null, "Events", h("span", { class: "muted" }, "The queue's journal")),
+        h("p", { class: "sub" }, "Every round, gate, landing and hold the queue recorded. What is still open is under Needs attention on the Queue tab."),
         h("div", { class: "actions" }, toggle),
         state.all ? [h("h3", { class: "label" }, data.total > data.events.length ? "The last " + data.events.length + " of " + data.total.toLocaleString() + " events" : "Every event, newest first"),
           journal()] : null);

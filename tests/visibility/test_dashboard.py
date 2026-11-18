@@ -413,6 +413,26 @@ class Panels(Fixture):
                           ("this Mac (desk)", "the second Mac (build-host)", "studio", "", None)], [None, "studio", "studio", None, None])
         self.assertEqual(set(history.data(self.one, {})) >= {"today", "yesterday", "gates", "landings", "gateSeconds"}, True)
 
+    def test_the_queue_says_what_is_open_and_needs_someone_most_pressing_first(self):
+        now = 10_000_000.0
+        state = {"held": "for the owner: the gate timed out twice", "worker": False,
+                 "waiting": [{"id": "qk3-b", "branch": "b", "submitted": now - 60}],
+                 "round": {"gates": {"batch": {"lane": "gate", "stuck": "its log has not grown for 20m", "log": "/q/logs/r-gate.log"}}},
+                 "recent": [{"id": "qk1-a", "branch": "a", "state": "failed", "settled": now - 600, "subject": "Add a", "why": "its gate failed",
+                             "log": "/q/logs/r1-gate.log"},
+                            {"id": "qk2-b", "branch": "b", "state": "conflict", "settled": now - 300},  # queued again as qk3-b
+                            {"id": "qk0-c", "branch": "c", "state": "failed", "settled": now - 2 * queue.OPEN},  # too long ago
+                            {"id": "qk4-d", "branch": "d", "state": "landed", "settled": now - 100}]}
+        journal = [{"kind": "test.flaky", "time": now - 50, "test": "t.T.test_x", "issue": "https://x/issues/7"},
+                   {"kind": "test.flaky", "time": now - 2 * queue.OPEN, "test": "t.T.test_old"}]
+        found = queue.attention(state, journal, now)
+        self.assertEqual([(one["level"], one["title"]) for one in found],
+                         [("danger", "Held"), ("warning", "No worker"), ("warning", "Stuck"), ("warning", "Came back"), ("notice", "Flaky")])
+        back = found[3]
+        self.assertEqual((back["entry"], back["log"], back["text"]), ("qk1-a", "r1-gate.log", "Add a: its gate failed"))
+        self.assertEqual((found[2]["log"], found[4]["issue"], found[4]["text"]), ("r-gate.log", "https://x/issues/7", "t.T.test_x"))
+        self.assertEqual(queue.attention({}, [], now), [])
+
     def test_a_mac_short_of_memory_makes_the_farms_line_a_warning(self):
         self.read_farm()
         with farm.LOCK: farm.STATE["detail"] = {"here": {**LOADS["here"], "health": "this Mac is short of memory: ..."}}
@@ -620,9 +640,6 @@ class Panels(Fixture):
         self.assertEqual(found["total"], 10)
         self.assertEqual(found["events"][1], {"time": found["events"][1]["time"], "kind": "entry.landed",
                                              "text": "b landed as 0123456789ab", "level": "success", "entry": "b"})
-        # What needs attention: entries that came back and flaky tests, newest first, from the whole journal.
-        self.assertEqual([(event["kind"], event.get("entry")) for event in found["attention"]],
-                         [("entry.failed", "a"), ("test.flaky", None)])
         self.assertEqual([event["level"] for event in found["events"][2:4]], ["danger", "warning"])
         self.assertEqual([event["kind"] for event in history.data(self.one, {"kind": "entry."})["events"]],
                          ["entry.landed", "entry.landed", "entry.failed"])
@@ -633,12 +650,8 @@ class Panels(Fixture):
         for number in range(history.MOST + 5): events.emit(directory, "queue.resumed", was=str(number))
         found = history.data(self.one, {})
         self.assertEqual((len(found["events"]), found["total"]), (history.MOST, history.MOST + 5))
-        self.assertEqual(found["attention"], [])
-        for number in range(history.NOTED + 2): events.emit(directory, "queue.held", why=str(number))
         events.emit(directory, "gate.ended", lane="gate", status=1, log="/x/logs/r1-gate.log")
-        found = history.data(self.one, {})
-        self.assertEqual([event["text"] for event in found["attention"]][:2], [f"held {history.NOTED + 1}", f"held {history.NOTED}"])
-        self.assertEqual((len(found["attention"]), found["events"][0]["log"]), (history.NOTED, "r1-gate.log"))
+        self.assertEqual(history.data(self.one, {})["events"][0]["log"], "r1-gate.log")
         self.assertIsNone(history.summary(self.one))
 
 
@@ -765,13 +778,11 @@ class EveryRepository(Fixture):
                                       "gates": [{"began": at, "ended": at + 5, "lane": "gate", "status": 0, "mac": None, "round": None, "log": None}],
                                       "landings": [{"day": 100.0, "hours": [landed] + [0] * 23}],
                                       "recent": [{"id": f"e{at}", "settled": at}], "total": 1,
-                                      "events": [{"time": at, "kind": "entry.landed", "text": "x", "level": "success"}],
-                                      "attention": [{"time": at, "kind": "entry.failed", "text": "y", "level": "danger", "entry": "e"}]}
+                                      "events": [{"time": at, "kind": "entry.landed", "text": "x", "level": "success"}]}
         found = history.combine([("alpha", part(10.0, 2), None), ("beta", part(20.0, 3), None), ("gamma", None, "no queue")])
         self.assertEqual((found["today"]["landed"], found["today"]["rounds"], found["today"]["medianGateSeconds"]), (5, 4, None))
         self.assertEqual(found["landings"], [{"day": 100.0, "hours": [5] + [0] * 23}])
         self.assertEqual([one["repository"] for one in found["events"]], ["beta", "alpha"])
-        self.assertEqual([(one["repository"], one["entry"]) for one in found["attention"]], [("beta", "e"), ("alpha", "e")])
         self.assertEqual([one["repository"] for one in found["recent"]], ["beta", "alpha"])
         self.assertEqual([one["repository"] for one in found["gates"]], ["alpha", "beta"])
         self.assertEqual([row.get("error") for row in found["repositories"]], [None, None, "no queue"])

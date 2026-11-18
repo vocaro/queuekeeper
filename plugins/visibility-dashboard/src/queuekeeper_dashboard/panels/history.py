@@ -1,7 +1,7 @@
 """The History tab: the day's totals beside yesterday's to the same hour, today's gate runs on each Mac, when work
-has landed by day and hour, how long passing gates take, the last events that need attention, and the journal's
-last events, newest first; and every repository's at once (everywhere), each repository's own answer combined
-(combine)."""
+has landed by day and hour, how long passing gates take, and the journal's last events, newest first; and every
+repository's at once (everywhere), each repository's own answer combined (combine). What is open and needs someone
+is the Queue tab's (queue.attention)."""
 import os
 import re
 import statistics
@@ -18,8 +18,6 @@ LEVELS = {"entry.failed": "danger", "entry.conflict": "danger", "queue.held": "w
 STAMP = len("2026-11-12 09:30:19 ")
 
 
-# The kinds that need someone's attention, which the tab lists apart from the rest, and how many of the last.
-ATTENTION, NOTED = {kind for kind, level in LEVELS.items() if level in ("danger", "warning")}, 10
 
 
 def shown(event):
@@ -108,8 +106,6 @@ def data(repository, query):
             # Yesterday from its midnight to this time of day, for the change beside each of today's totals.
             "yesterday": totals(journal, now - 86400), "gates": gate_runs(journal, now), "landings": landings(journal, now),
             "gateSeconds": gate_seconds(journal), "events": [shown(event) for event in reversed(found[-MOST:])],
-            # The last events that need attention, from the whole journal, newest first.
-            "attention": [shown(event) for event in reversed([event for event in journal if event["kind"] in ATTENTION][-NOTED:])],
             "total": len(found)}
 
 
@@ -121,7 +117,7 @@ def combine(parts):
     """Every repository's History at once, from parts, [(name, its History answer (data), None)] or (name, None,
     why it cannot be read): the day's totals summed beside yesterday's, a row for each repository with its own day
     and gate times, every lane run on the Macs they share, landings summed by day and hour, and the settled entries,
-    events and events that need attention of all of them, newest first. A gate time is a repository's alone, so no median is taken across
+    events of all of them, newest first. A gate time is a repository's alone, so no median is taken across
     them. A run, entry or event carries its repository's name."""
     read = [(name, found) for name, found, _ in parts if found]
     def day(key):
@@ -140,7 +136,6 @@ def combine(parts):
             "landings": [{"day": at, "hours": landings[at]} for at in sorted(landings)],
             "recent": sorted(tagged("recent"), key=lambda one: -(one.get("settled") or 0))[:RECENT],
             "events": sorted(tagged("events"), key=lambda event: -(event.get("time") or 0))[:MOST],
-            "attention": sorted(tagged("attention"), key=lambda event: -(event.get("time") or 0))[:NOTED],
             "total": sum(found["total"] for _, found in read)}
 
 
