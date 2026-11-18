@@ -3470,10 +3470,15 @@ class Places:
     or offers the lane to another Mac, never both at once (overflow), and an offer names the place (identity), so
     that the Mac's reading does not count it as a request queued ahead and the run's own admissions there pass it.
     The places are given up before a command admitted here starts, and within one keeper's turn of another Mac
-    starting the lane, as the lane's record says it (unplaced)."""
+    starting the lane, as the lane's record says it (unplaced).
 
-    def __init__(self, name, identity, label, started, hosts, every=None):
+    A lane that needs an unlocked screen (screen) has a holder on each Mac too, which keeps the place only while
+    that Mac's screen reads unlocked and says each change (vocaro/queuekeeper#214): a locked Mac cannot run the
+    lane, and a place there would keep its guaranteed slots from work it can run."""
+
+    def __init__(self, name, identity, label, started, hosts, every=None, screen=False):
         self.name, self.identity, self.started, self.hosts = name, identity, started, tuple(hosts)
+        self.screen = bool(screen)
         self.label = f"{label} (waiting, sent by {offload_host.mac_name()})"
         if every is None:
             try: every = float(os.environ.get("HEAVY_PLACE_SECONDS", str(resources.PLACE_SECONDS))) / 3
@@ -3513,7 +3518,7 @@ class Places:
                 pass
         if holder is not None: self._close(holder)
         request = {"identity": self.identity, "label": self.label, "from": offload_host.mac_name(),
-                   "age": max(0.0, time.time() - self.started)}
+                   "age": max(0.0, time.time() - self.started), **({"unlockedScreen": True} if self.screen else {})}
         # The holder's own file, sent by itself: it needs nothing of offload_host.py, which every dispatch carries.
         command = [*SSH, *moved(host), host, login(host_command(Path(place_holder.__file__).read_text(), json.dumps(request)))]
         try:
@@ -3527,20 +3532,29 @@ class Places:
         threading.Thread(target=self._answered, args=(host, holder), daemon=True).start()
 
     def _answered(self, host, holder):
-        """Say once what host's holder answered: that it holds the place, or why the lane has none there."""
+        """Say what host's holder answers, each answer once: that it holds the place, that it holds none while that
+        Mac's screen does not read unlocked, for a lane that needs it unlocked, or why the lane has none there."""
         with contextlib.suppress(Exception):
             answer = None
-            # Its answer is a line of JSON; whatever that Mac's login shell prints before it is passed over.
+            # Each answer is a line of JSON; whatever that Mac's login shell prints before one is passed over. A
+            # holder for a lane that needs an unlocked screen answers again whenever its Mac's screen changes.
             for line in iter(holder.stdout.readline, b""):
                 try: found = json.loads(line)
                 except ValueError: continue
-                if isinstance(found, dict) and ("place" in found or "error" in found):
-                    answer = found
+                if not (isinstance(found, dict) and ("place" in found or "error" in found)): continue
+                answer = found
+                if answer.get("place") == "held":
+                    self._say(host, f"holds a place in {called(host)}'s queue while it waits, so that its guaranteed "
+                                    "slots drain toward it: it runs on whichever Mac admits it first")
+                elif answer.get("place") == "none":
+                    self._say(host, f"holds no place in {called(host)}'s queue while that Mac's screen is "
+                                    f"{answer.get('screen') or 'unknown'}"
+                                    + (f" ({answer['why']})" if answer.get("why") else "")
+                                    + ", since the lane needs it unlocked: it takes its place there once the screen "
+                                      "reads unlocked")
+                else:
                     break
-            if answer is not None and answer.get("place") == "held":
-                self._say(host, f"holds a place in {called(host)}'s queue while it waits, so that its guaranteed slots "
-                                "drain toward it: it runs on whichever Mac admits it first")
-            elif self.holders.get(host) is holder and not self.ended.is_set():
+            if (answer is None or answer.get("error")) and self.holders.get(host) is holder and not self.ended.is_set():
                 # A holder this process let go, or replaced, ended as it was told to, and says nothing of that Mac.
                 why = answer["error"] if answer is not None and answer.get("error") else \
                     "it could not be reached, or its holder said nothing"
@@ -3594,14 +3608,14 @@ class Places:
 
 def places_for(offered, once):
     """The Places a waiting offer is to hold on the other Macs, or None: for a whole-host lane that waits here for
-    whichever Mac admits it first. Not for exclusive work, which holds every later request back where it queues and
-    has its own bound (exclusive_offers); nor a lane that needs an unlocked screen, which a place would keep slots for
-    on a Mac whose screen may be locked; nor work asked once (--if-free); nor work whose label this Mac's admission
-    did not give."""
+    whichever Mac admits it first. A lane that needs an unlocked screen has its place on a Mac only while that Mac's
+    screen reads unlocked (vocaro/queuekeeper#214). Not for exclusive work, which holds every later request back
+    where it queues and has its own bound (exclusive_offers); nor work asked once (--if-free); nor work whose label
+    this Mac's admission did not give."""
     place, label = getattr(offered, "place", None), getattr(offered, "label", None)
-    if once or place is None or not label or not offered.whole_host or offered.exclusive or offered.screen: return None
+    if once or place is None or not label or not offered.whole_host or offered.exclusive: return None
     hosts = tuple(offered.hosts or ())
-    return Places(offered.name, place.identity, label, place.started, hosts) if hosts else None
+    return Places(offered.name, place.identity, label, place.started, hosts, screen=offered.screen) if hosts else None
 
 
 def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):

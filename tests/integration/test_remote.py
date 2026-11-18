@@ -4055,6 +4055,93 @@ class RemoteTests(unittest.TestCase):
                                                "before: it could not be reached, or its holder said nothing"), 1)
         self.assertEqual(self.places_there(), [])
 
+    def shown_there(self, name):
+        """Have another Mac's screen read as the recorded screen name from now on, whole at once: the file
+        FAKE_SCREEN_IOREG names, which this sets on first use."""
+        recording = Path(self.temp.name) / "second-mac-screen.plist"
+        staged = recording.with_name("staged-screen.plist")
+        shutil.copy(SCREENS / name, staged)
+        os.replace(staged, recording)
+        if os.environ.get("FAKE_SCREEN_IOREG") != str(recording):
+            changed = patch.dict(os.environ, {"FAKE_SCREEN_IOREG": str(recording)})
+            changed.start()
+            self.addCleanup(changed.stop)
+
+    def test_the_place_of_a_lane_that_needs_an_unlocked_screen_follows_the_farm_macs_screen(self):
+        """vocaro/queuekeeper#214: a waiting gate that needs an unlocked screen took no place on another Mac, since a
+        place on a locked Mac keeps its slots for a lane it cannot run. It has one now only while that Mac's screen
+        reads unlocked, by the holder's own reading there."""
+        identity = uuid.uuid4().hex
+        self.shown_there("second-mac-locked-idle.plist")
+        with patch("sys.stderr", new_callable=StringIO) as said:
+            places = remote.Places("suites", identity, "Example suites", time.time() - 90, ("fake",), every=0.2, screen=True)
+            self.addCleanup(places.leave)
+            places.hold()
+            none = ("queuekeeper: suites holds no place in fake's queue while that Mac's screen is locked "
+                    "(CGSSessionScreenIsLocked), since the lane needs it unlocked: it takes its place there once the "
+                    "screen reads unlocked")
+            self.until(lambda: none in said.getvalue(), "nothing said that the locked Mac holds no place")
+            # Renewed several times over, the locked Mac still holds none, and its holder still runs.
+            time.sleep(1)
+            self.assertEqual(self.places_there(), [])
+            self.assertIsNone(places.holders["fake"].poll())
+            self.assertNotIn("holds a place", said.getvalue())
+            # Unlocked, the place is taken at the keeper's next word, at the lane's arrival.
+            self.shown_there("second-mac-unlocked.plist")
+            self.until(self.places_there, "no place was taken once another Mac's screen read unlocked")
+            [place] = self.places_there()
+            self.assertEqual((place["identity"], place["wholeHost"], place["heldFor"]), (identity, True, offload_host.mac_name()))
+            self.assertAlmostEqual(place["queuedAt"], time.time() - 90, delta=stretched(30))
+            self.until(lambda: "suites holds a place in fake's queue while it waits" in said.getvalue(), "the place was not said")
+            # Locked again, it is given up, and said once more.
+            self.shown_there("second-mac-locked-by-hand.plist")
+            self.until(lambda: not self.places_there(), "the place outlived another Mac's lock")
+            self.until(lambda: "screen is locked (CGSSessionScreenIsLocked and IOConsoleLocked)" in said.getvalue(),
+                       "the lock was not said")
+            places.leave()
+            self.assertEqual(self.places_there(), [])
+        self.assertEqual(said.getvalue().count(none), 1, said.getvalue())
+        # A lane that does not need the screen keeps its place on the locked Mac, as before.
+        with contextlib.redirect_stderr(StringIO()):
+            places = remote.Places("suites", identity, "Example suites", time.time(), ("fake",), every=0.2)
+            self.addCleanup(places.leave)
+            places.hold()
+            self.until(self.places_there, "a lane that needs no screen took no place on a locked Mac")
+            places.leave()
+
+    def test_a_waiting_lane_that_needs_an_unlocked_screen_takes_its_place_when_the_farm_mac_unlocks_and_runs_there(self):
+        self.quick_places()
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"]["suites"]["unlockedScreen"] = True
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
+        self.shown_there("second-mac-locked-idle.plist")
+        seen = {}
+        # A place is renewed every third of HEAVY_PLACE_SECONDS, which is when one comes back after an unlock.
+        with patch.dict(os.environ, {"HEAVY_PLACE_SECONDS": "3"}), \
+                contextlib.ExitStack() as here, contextlib.ExitStack() as there:
+            here.enter_context(self.busy_here())
+            there.enter_context(self.busy_mac(kind=None))
+            def release():
+                # Locked, another Mac held nothing for the lane. Unlocked, the lane takes its place there, and runs
+                # there once the slot that kept it out is free.
+                seen["locked"] = self.places_there()
+                self.shown_there("second-mac-unlocked.plist")
+                self.until(self.places_there, "no place was taken once another Mac's screen read unlocked")
+                seen["unlocked"] = self.places_there()
+                there.close()
+            status, output = self.waits_there("suites", "holds no place in fake's queue while that Mac's screen is locked",
+                                              release)
+        self.assertEqual(status, 0, output)
+        self.assertEqual(seen["locked"], [])
+        [place] = seen["unlocked"]
+        self.assertEqual((place["wholeHost"], place["heldFor"]), (True, offload_host.mac_name()))
+        self.assertIn("suites holds a place in fake's queue while it waits",
+                      output.split("holds no place in fake's queue while that Mac's screen is locked")[1])
+        receipt = json.loads((self.project / ".build/queuekeeper/remote/suites/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "fake")
+        self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
+        self.assertEqual(self.places_there(), [])
+
     def test_a_place_that_cannot_be_given_up_does_not_change_how_the_work_ended(self):
         places = remote.Places("suites", uuid.uuid4().hex, "Example suites", time.time(), ("fake",), every=0)
         with patch.object(places, "_release", side_effect=RuntimeError("the holder would not end")):
@@ -4075,9 +4162,14 @@ class RemoteTests(unittest.TestCase):
             return offer
         found = remote.places_for(offered(whole_host=True), False)
         self.assertEqual((found.identity, found.hosts, found.started), (place.identity, ("fake", "studio"), place.started))
-        # Not an ordinary lane, exclusive work, a lane that needs an unlocked screen or work asked once; nor a farm
-        # with no Mac to ask, or work this Mac's admission gave no place or label.
-        for need in ({}, {"exclusive": True}, {"whole_host": True, "exclusive": True}, {"whole_host": True, "screen": True}):
+        self.assertFalse(found.screen)
+        # A lane that needs an unlocked screen takes them too, each kept only while its Mac's screen reads unlocked
+        # (vocaro/queuekeeper#214).
+        found = remote.places_for(offered(whole_host=True, screen=True), False)
+        self.assertEqual((found.identity, found.hosts, found.screen), (place.identity, ("fake", "studio"), True))
+        # Not an ordinary lane, exclusive work or work asked once; nor a farm with no Mac to ask, or work this Mac's
+        # admission gave no place or label.
+        for need in ({}, {"screen": True}, {"exclusive": True}, {"whole_host": True, "exclusive": True}):
             self.assertIsNone(remote.places_for(offered(**need), False), need)
         self.assertIsNone(remote.places_for(offered(whole_host=True), True))
         for missing in ("hosts", "place", "label"):

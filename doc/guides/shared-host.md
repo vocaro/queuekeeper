@@ -352,11 +352,25 @@ slots drain toward it: it runs on whichever Mac admits it first`.
 - **What it costs.** While a gate waits, every Mac keeps its guaranteed slots from later one-slot
   work, which runs only beyond them, under each Mac's CPU limit. The effect to read is each Mac's
   share of time held by a whole-host lane in `qk admissions usage`, and one-slot work's wait.
+- **A lane that needs an unlocked screen** has its place on a Mac only while that Mac's screen
+  reads unlocked. A locked Mac cannot run such a lane, so a place there would keep its guaranteed
+  slots from work it can run, for as long as the lane waits. The holder reads its own Mac's screen,
+  by the two keys [screen state](#screen-state) reads: as it starts, at each word from the sender,
+  and every 5 s while it holds the place. A screen that locks takes the place out within those
+  5 s. A screen that unlocks gets the place back at the sender's next word, within a third of
+  HEAVY_PLACE_SECONDS, and at the lane's arrival as before: only the sender's word ever makes a
+  place hold later work back. A screen that reads `unknown` holds no place, as placement never
+  takes an unknown screen for an unlocked one. Each change is said once: `queuekeeper: gate holds
+  no place in studio's queue while that Mac's screen is locked (CGSSessionScreenIsLocked), since
+  the lane needs it unlocked: it takes its place there once the screen reads unlocked`, and then
+  the line above when it does. Until 2026-11-17 such a lane took no place on any Mac and waited in
+  this Mac's queue alone
+  ([vocaro/queuekeeper#214](https://github.com/vocaro/queuekeeper/issues/214)). This Mac's own
+  queue treats it the same way without a holder: while this Mac's screen is locked the lane asks
+  no admission here, so its place here holds nothing back after HEAVY_PLACE_SECONDS.
 - **What takes no place.** Exclusive work, which holds every later request back where it queues
-  and joins another Mac's queue only after 900 s of declined offers; a lane that needs an unlocked
-  screen, for which a place would keep slots on a Mac whose screen may be locked; one-slot work;
-  and work asked once with `--if-free`. A lane that stays here is never offered. Each of these
-  waits as before.
+  and joins another Mac's queue only after 900 s of declined offers; one-slot work; and work asked
+  once with `--if-free`. A lane that stays here is never offered. Each of these waits as before.
 
 `qk run` and `qk admit` retain one place across local waits between remote offers, for every
 request kind. A remote dispatch carries elapsed request age, which the receiving Mac translates

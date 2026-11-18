@@ -3,16 +3,18 @@
 A gate that waits takes a place in the queue of each Mac that can run it, so that each Mac's guaranteed slots drain
 toward it, and runs on the first to admit it (the owner's decision, 2026-11-17, vocaro/queuekeeper#211). The sending
 Mac runs this file there over ssh, by itself, as it runs offload_host.py (remote.Places): `python3 -c SOURCE
-'{"identity": ..., "label": ..., "age": SECONDS, "from": NAME}'`, with its standard input the channel that keeps the
-place. It is a file of its own so that offload_host.py, which goes with every dispatch, stays within what one ssh
+'{"identity": ..., "label": ..., "age": SECONDS, "from": NAME, "unlockedScreen": BOOLEAN}'`, with its standard input
+the channel that keeps the place. It is a file of its own so that offload_host.py, which goes with every dispatch, stays within what one ssh
 packet carries, and it imports nothing of the toolkit, which that Mac may not have. What it shares with admission
 it names as resources.py and offload_host.py name it: the slot directory, the queue file and its lock, and
-HEAVY_PLACE_SECONDS."""
+HEAVY_PLACE_SECONDS. For a lane that needs an unlocked screen it reads this Mac's screen as offload_host.screen does,
+and keeps the place only while the screen reads unlocked (vocaro/queuekeeper#214)."""
 import contextlib
 import fcntl
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import select
 import signal
@@ -24,6 +26,8 @@ import time
 # As resources.QUEUE, resources.PLACE_SECONDS and offload_host.SLOTS have them. Seconds between the holder's looks
 # for a word from the Mac that sent it.
 QUEUE, PLACE_SECONDS, SLOTS, PLACE_POLL = "exclusive-queue.json", 180, "queuekeeper-heavy-slots", 5
+# A recorded `ioreg -n Root -d1 -a` to read in place of the IORegistry, for tests, as offload_host.SCREEN_RECORDING.
+SCREEN_RECORDING = "QUEUEKEEPER_SCREEN_IOREG"
 
 
 def output(command):
@@ -43,6 +47,31 @@ def slot_directory():
         raise RuntimeError(f"Cannot establish the host resource directory: getconf DARWIN_USER_TEMP_DIR answered "
                            f"{str(base)[:80]!r}, not an absolute path")
     return Path(base) / SLOTS
+
+
+def screen(found=None):
+    """(state, why) of this Mac's console screen now: `unlocked`, `locked` or `unknown`, with the keys that say
+    locked or why it is unknown, as offload_host.screen reads it, which a test holds this to: the console session's
+    CGSSessionScreenIsLocked and the root's IOConsoleLocked, either one set being locked, and no console session or
+    a reading that fails being unknown, never unlocked. found is the bytes of `ioreg -n Root -d1 -a`, read now when
+    None, from the recording SCREEN_RECORDING names when it names one."""
+    try:
+        if found is None and os.environ.get(SCREEN_RECORDING): found = Path(os.environ[SCREEN_RECORDING]).read_bytes()
+        if found is None:
+            ran = subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True, timeout=30)
+            if ran.returncode: return "unknown", f"ioreg exited {ran.returncode}"
+            found = ran.stdout
+        root = plistlib.loads(found)
+    except Exception as error:  # A command that cannot run, a file that cannot be read, a damaged property list.
+        return "unknown", f"the screen could not be read: {error}"
+    if not isinstance(root, dict) or not isinstance(root.get("IOConsoleUsers", []), list):
+        return "unknown", "ioreg's root entry is not in the expected form"
+    console = [user for user in root.get("IOConsoleUsers") or []
+               if isinstance(user, dict) and user.get("kCGSSessionOnConsoleKey") is True]
+    if not console: return "unknown", "no login session is on the console"
+    locked = [key for key, value in (("CGSSessionScreenIsLocked", console[0].get("CGSSessionScreenIsLocked")),
+                                     ("IOConsoleLocked", root.get("IOConsoleLocked"))) if value is True]
+    return ("locked", " and ".join(locked)) if locked else ("unlocked", None)
 
 
 def place_held(identity, record=None):
@@ -89,7 +118,15 @@ def hold_place(request, control=0, say=print):
     falls silent, asleep or cut off with the connection left open, renews nothing, so the place holds nothing back
     HEAVY_PLACE_SECONDS after its last word, and after twice that this process takes it out and ends. The run
     itself, offered here once this Mac has room, names the place in QUEUEKEEPER_ADMISSION_PLACE, so that its own
-    admissions are not held back by it (resources.Admission)."""
+    admissions are not held back by it (resources.Admission).
+
+    A lane that needs an unlocked screen (the request's `unlockedScreen`) has its place only while this Mac's screen
+    reads unlocked (screen): a locked Mac cannot run it, and a place there would keep that Mac's guaranteed slots
+    from work it can run (vocaro/queuekeeper#214). The screen is read as the place is taken, at each word from the
+    sender, which puts the place in or takes it out by what it reads, and every PLACE_POLL seconds while the place
+    is held, which only takes it out: a place comes back at the sender's next word after the screen unlocks. A
+    screen that reads unknown holds no place, as placement never takes an unknown screen for an unlocked one. Each
+    change is said in a line: `{"place": "held", ...}`, or `{"place": "none", "screen": STATE, "why": ...}`."""
     identity = request.get("identity")
     if not (isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{32}", identity)):
         say(json.dumps({"error": f"a place needs an identity of 32 hex digits, not {identity!r}"}), flush=True)
@@ -107,9 +144,23 @@ def hold_place(request, control=0, say=print):
     stopped = threading.Event()
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(number, lambda *_: stopped.set())
+    needs, held = request.get("unlockedScreen") is True, [None]
+
+    def keep(renew):
+        """Have the place in the queue while this Mac can run the lane, and out of it otherwise, saying each change.
+        With renew, on the sender's word, the place is put in, again if it was dropped, and so renewed; without, it
+        is only taken out, so that nothing but the sender's word makes a place hold later work back."""
+        state, why = screen() if needs else ("unlocked", None)
+        if state != "unlocked": place_held(identity)
+        elif renew: place_held(identity, record)
+        else: return
+        if held[0] != state:
+            held[0] = state
+            say(json.dumps({"place": "held", "pid": os.getpid(), "queuedAt": arrived} if state == "unlocked" else
+                           {"place": "none", "pid": os.getpid(), "screen": state, "why": why}), flush=True)
+
     try:
-        place_held(identity, record)
-        say(json.dumps({"place": "held", "pid": os.getpid(), "queuedAt": arrived}), flush=True)
+        keep(True)
         heard = time.monotonic()
         while not stopped.is_set():
             try: ready, _, _ = select.select([control], [], [], min(PLACE_POLL, max(lapse, 0.1)))
@@ -119,10 +170,13 @@ def hold_place(request, control=0, say=print):
                 except OSError: break
                 if not words or b"leave" in words: break
                 # The lane still waits: the place goes on holding later work back, and is put back if it was dropped.
-                place_held(identity, record)
+                keep(True)
                 heard = time.monotonic()
             elif time.monotonic() - heard >= 2 * lapse:
                 break
+            elif needs and held[0] == "unlocked":
+                # A screen that locked since takes the place out before the sender's next word.
+                keep(False)
     finally:
         with contextlib.suppress(OSError): place_held(identity)
     return 0

@@ -149,10 +149,10 @@ hold the mechanism.
 | 16 | A Mac has room by its own admission's rules: a free slot, guaranteed or beyond, under that Mac's `busyLimit`; room for one job at any reading while nothing admitted runs there; and none while whole-host or exclusive work runs or is queued ahead there. The test is one for every Mac, the Mac that chooses included. | An offer sent where admission would hold it costs a checkout and a wait. A Mac with a test of its own is a special Mac. | [ve#186], [ve#191], [ve#201]; 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 17 | Exclusive work sent to another Mac is offered to start at once, and joins that Mac's queue only after 900 s of declined offers. | A queued exclusive request idles the Mac while it waits; the bound keeps it from waiting forever. | [placement][placement] |
 | 18 | A Mac that cannot be reached is passed over and the work runs here. One that is set up wrongly runs nothing and stops for the owner. | Busy or away is ordinary; a different Xcode gives results that cannot be compared. | 2026-10-27, 2026-10-28 |
-| 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot. A locked screen holds back only work that declares the need: a bisect's older half that needs one is offered to the farm while this Mac's screen is locked. | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
+| 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot, and no place in the queue of a Mac whose screen is locked (rule 30). A locked screen holds back only work that declares the need: a bisect's older half that needs one is offered to the farm while this Mac's screen is locked. | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
 | 20 | One holder of a Mac's foreground, only on Macs marked for it, taken before admission. | The screen is the owner's. A waiter holds no slot, and builds go on beside a foreground run. | [foreground][foreground] |
 | 21 | Devices and pool simulators have one holder each, in turn, under a reservation. The owner's phone needs his word first. | A device is one thing, and some are the owner's own. | 2026-11-06, [devices][devices] |
-| 30 | A whole-host lane that waits takes a place in the queue of every Mac that can run it, runs on the first to admit it and gives up the others. A place holds no slot and no checkout, is renewed by the Mac that sent it and lapses within 180 s of that Mac's silence. One process starts the lane, in one place at a time, so it never runs twice. | Gates queued for one Mac while another ran none for 89% of the day: nothing drained toward a gate that was only offered there. | 2026-11-17, [D6](#d6-gates-wait-mostly-for-other-gates) |
+| 30 | A whole-host lane that waits takes a place in the queue of every Mac that can run it, runs on the first to admit it and gives up the others. A place holds no slot and no checkout, is renewed by the Mac that sent it and lapses within 180 s of that Mac's silence. One process starts the lane, in one place at a time, so it never runs twice. A lane that needs an unlocked screen has its place on a Mac only while that Mac's screen reads unlocked. | Gates queued for one Mac while another ran none for 89% of the day: nothing drained toward a gate that was only offered there. A place on a locked Mac would keep its slots for a lane it cannot run. | 2026-11-17, [D6](#d6-gates-wait-mostly-for-other-gates); [#214] |
 
 ### In a merge queue
 
@@ -182,7 +182,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D3 | Hand-run lanes holding guaranteed slots | Yes: the rule stays | Yes, unchanged |
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Yes (rules 3 and 16) |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Yes (rule 14) |
-| D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Yes (rule 30), but for a gate that needs an unlocked screen |
+| D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Yes (rule 30) |
 | D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room and this Mac as a candidate like any other: yes (rules 4, 14 and 16). The other rules that name this Mac, and the settings for kinds and labels: not built, [#211] |
 
 ### D1: Is the order of goals right?
@@ -324,8 +324,9 @@ chooses only among those.
 ### D6: Gates wait mostly for other gates
 
 **Decided, 2026-11-17: a waiting gate takes a place in each Mac's queue (option B).** In force as
-rule 30, built as step 4 of [#211]. A gate that needs an unlocked screen still waits in this Mac's
-queue alone: a place would keep a Mac's slots for a lane its locked screen cannot run.
+rule 30, built as step 4 of [#211]. A gate that needs an unlocked screen has its place on a Mac
+only while that Mac's screen reads unlocked, and gives it up when the screen locks: a place there
+would keep a Mac's slots for a lane its locked screen cannot run ([#214]).
 
 Two thirds of the measured wait was one whole-host gate behind another, which neither D2 nor D3
 touches. Rule 5 allows one per Mac, and six projects' whole-host gates shared two Macs. In effect
@@ -432,6 +433,7 @@ date, and the mechanism's guide says how it works.
 [#205]: https://github.com/vocaro/queuekeeper/issues/205
 [#207]: https://github.com/vocaro/queuekeeper/issues/207
 [#211]: https://github.com/vocaro/queuekeeper/issues/211
+[#214]: https://github.com/vocaro/queuekeeper/issues/214
 [ve#163]: https://github.com/vocaro/vocaro-engineering/issues/163
 [ve#168]: https://github.com/vocaro/vocaro-engineering/issues/168
 [ve#174]: https://github.com/vocaro/vocaro-engineering/issues/174

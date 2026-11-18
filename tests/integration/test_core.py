@@ -2707,9 +2707,10 @@ class HeldPlaceTests(unittest.TestCase):
         os.environ.pop(resources.TOKEN, None)
         self.identity = uuid.uuid4().hex
 
-    def holder(self, identity=..., age=60.0, label="Example gate (waiting, sent by studio)", **variables):
+    def holder(self, identity=..., age=60.0, label="Example gate (waiting, sent by studio)", needs_screen=False, **variables):
         """A holder of the place, and what it first said."""
-        request = {"identity": self.identity if identity is ... else identity, "label": label, "age": age, "from": "studio"}
+        request = {"identity": self.identity if identity is ... else identity, "label": label, "age": age, "from": "studio",
+                   **({"unlockedScreen": True} if needs_screen else {})}
         holder = subprocess.Popen([sys.executable, "-I", self.HOLD, json.dumps(request)], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                   preexec_fn=host_isolation.default_signals, env={**os.environ, **variables})
@@ -2855,6 +2856,108 @@ class HeldPlaceTests(unittest.TestCase):
         second.stdin.write("still\n")
         second.stdin.flush()
         self.until(lambda: [waiter["pid"] for waiter in self.waiters()] == [second.pid], "the place was not put back")
+
+    # Recorded `ioreg -n Root -d1 -a` of each Mac's screens (tests/mac_desktop).
+    SCREENS = Path(__file__).resolve().parents[1] / "mac_desktop/fixtures/ScreenState"
+
+    def show(self, recording, name):
+        """Have recording, the file a holder reads its Mac's screen from, be the recorded screen name, whole at once."""
+        staged = recording.with_name("staged.plist")
+        shutil.copy(self.SCREENS / name, staged)
+        os.replace(staged, recording)
+
+    def test_the_holder_reads_a_screen_as_placement_reads_it(self):
+        # The holder imports nothing of the toolkit, so it reads the screen itself: the two readings must agree, or a
+        # place would be kept on a Mac that placement never sends the lane to (vocaro/queuekeeper#214).
+        import plistlib
+        from queuekeeper import offload_host
+        self.assertEqual(place_holder.SCREEN_RECORDING, offload_host.SCREEN_RECORDING)
+        recordings = sorted(self.SCREENS.glob("*.plist"))
+        self.assertGreaterEqual(len(recordings), 8)
+        damaged = [b"", b"not a property list", plistlib.dumps([]), plistlib.dumps({"IOConsoleUsers": 3}),
+                   plistlib.dumps({"IOConsoleUsers": [{"kCGSSessionOnConsoleKey": True, "CGSSessionScreenIsLocked": "yes"}]}),
+                   plistlib.dumps({"IOConsoleLocked": True, "IOConsoleUsers": [{"kCGSSessionOnConsoleKey": True}]})]
+        states = set()
+        for name, found in [*((recording.name, recording.read_bytes()) for recording in recordings),
+                            *((f"damaged {index}", found) for index, found in enumerate(damaged))]:
+            state, why = place_holder.screen(found)
+            self.assertEqual(state, offload_host.screen(found)["state"], name)
+            self.assertEqual(why is None, state == "unlocked", name)
+            states.add(state)
+        self.assertEqual(states, {"unlocked", "locked", "unknown"})
+        self.assertEqual(place_holder.screen((self.SCREENS / "second-mac-locked-by-hand.plist").read_bytes()),
+                         ("locked", "CGSSessionScreenIsLocked and IOConsoleLocked"))
+        self.assertEqual(place_holder.screen((self.SCREENS / "second-mac-no-console-session.plist").read_bytes()),
+                         ("unknown", "no login session is on the console"))
+        # A recording that cannot be read is unknown to both, never unlocked.
+        with patch.dict(os.environ, {place_holder.SCREEN_RECORDING: str(Path(self.temp.name) / "missing.plist")}):
+            self.assertEqual((place_holder.screen()[0], offload_host.screen()["state"]), ("unknown", "unknown"))
+
+    def test_a_lane_that_needs_an_unlocked_screen_has_its_place_only_while_the_screen_reads_unlocked(self):
+        """vocaro/queuekeeper#214: a place on a Mac whose screen is locked would keep its guaranteed slots for a lane
+        that Mac cannot run, so such a lane took no place anywhere. Its holder now keeps the place only while its
+        Mac's screen reads unlocked."""
+        from queuekeeper import offload_host
+        recording = Path(self.temp.name) / "screen.plist"
+        # A lapse no step here outlasts, so that the holder looks at the screen every PLACE_POLL seconds.
+        reads = {place_holder.SCREEN_RECORDING: str(recording), "HEAVY_PLACE_SECONDS": "600"}
+
+        def word(holder):
+            holder.stdin.write("still\n")
+            holder.stdin.flush()
+
+        said = lambda holder: json.loads(holder.stdout.readline() or "null")
+        self.show(recording, "second-mac-locked-idle.plist")
+        holder, first = self.holder(needs_screen=True, **reads)
+        # Locked as it starts: it says so, holds no place, and keeps nothing from later work.
+        self.assertEqual(first, {"place": "none", "pid": holder.pid, "screen": "locked", "why": "CGSSessionScreenIsLocked"})
+        self.assertEqual(self.waiters(), [])
+        self.assertIsNone(offload_host.capacity()["kept"])
+        with contextlib.redirect_stderr(StringIO()), resources.Admission("later", timeout=0) as later:
+            self.assertEqual([slot for slot, _fd in later.descriptors], [0])
+        # Each word below is followed by the line it brings, so that the holder has read every word sent before
+        # the screen changes again: on a busy Mac it may read a word well after the test wrote it. A screen that
+        # cannot be told to be unlocked holds no place either, as placement never guesses one unlocked.
+        self.show(recording, "second-mac-no-console-session.plist")
+        word(holder)
+        self.assertEqual(said(holder), {"place": "none", "pid": holder.pid, "screen": "unknown",
+                                        "why": "no login session is on the console"})
+        self.assertEqual(self.waiters(), [])
+        # Unlocked, the place comes with the sender's next word and not before it, at the lane's arrival.
+        self.show(recording, "second-mac-unlocked.plist")
+        time.sleep(0.3)
+        self.assertEqual(self.waiters(), [])
+        before = time.time()
+        word(holder)
+        held = said(holder)
+        self.assertEqual((held["place"], held["pid"]), ("held", holder.pid))
+        self.until(self.waiters, "the place was not taken once the screen read unlocked")
+        [place] = self.waiters()
+        self.assertEqual((place["identity"], place["wholeHost"], place["queuedAt"]), (self.identity, True, held["queuedAt"]))
+        self.assertAlmostEqual(place["queuedAt"], before - 60.0, delta=stretched(15))
+        self.assertEqual(offload_host.capacity()["kept"], "Example gate (waiting, sent by studio)")
+        # Locked again, the place goes within the holder's own look at the screen, before any word from the sender.
+        self.show(recording, "second-mac-locked-by-hand.plist")
+        self.assertEqual(said(holder), {"place": "none", "pid": holder.pid, "screen": "locked",
+                                        "why": "CGSSessionScreenIsLocked and IOConsoleLocked"})
+        self.until(lambda: not self.waiters(), "the place outlived the lock")
+        self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
+        # Unlocked again, the next word puts it back.
+        self.show(recording, "second-mac-unlocked.plist")
+        word(holder)
+        self.assertEqual(said(holder)["place"], "held")
+        self.until(self.waiters, "the place was not taken again")
+        # It ends as any holder does, and leaves nothing.
+        holder.stdin.close()
+        self.assertEqual(self.ended(holder), 0, holder.stderr.read())
+        self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
+
+    def test_a_lane_that_needs_no_unlocked_screen_keeps_its_place_on_a_locked_mac(self):
+        recording = Path(self.temp.name) / "screen.plist"
+        self.show(recording, "second-mac-locked-by-hand.plist")
+        holder, said = self.holder(**{place_holder.SCREEN_RECORDING: str(recording)})
+        self.assertEqual(said["place"], "held")
+        self.assertEqual([waiter["identity"] for waiter in self.waiters()], [self.identity])
 
     def test_a_request_with_no_identity_of_a_place_is_refused(self):
         for identity in ("", "not-hex", "A" * 32, None, 7):
