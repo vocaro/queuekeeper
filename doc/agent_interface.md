@@ -256,6 +256,20 @@ woken by its end:
   exit 0). Main holds a landed branch's commits under other hashes, so a branch that has landed is
   queued again, and the next round records that entry as landed, since `origin/main` already
   holds its changes.
+- **Pieces that build on each other are queued together, in order**, not landed and waited for
+  one at a time (vocaro/queuekeeper#223). Give each piece a branch of its own that holds the pieces
+  before it, and run `qk land BRANCH` for each, oldest first, without waiting between them: a
+  branch landed again replaces its earlier entry, so the branches need different names. Each
+  trial says what the entry applies after (`it applies onto origin/main at COMMIT after ID, ID`),
+  and a round takes every entry waiting into one batch with one gate; one that arrives while that
+  gate runs is gated stacked on it, beside it rather than after. The worker skips a commit whose
+  change is already on top, so the earlier pieces a later branch repeats are passed over and each
+  piece lands once, as its own commit. `qk queue wait ID ID ...` follows them all, exiting 0 when
+  each has landed. A later piece holds the earlier ones' commits and is judged with them: when an
+  earlier piece comes back, a later one comes back with it from a conflict, and from a failure its
+  commits carry, since a bisect gates it with them; a later piece that lands brings those commits
+  to `origin/main` with it. On 2026-11-17 three such branches and two other entries landed as five
+  commits on one gate.
 - **Each project's launcher lands its own repository**, and refuses a current directory in
   another. A commit for another repository lands in that repository's queue, with
   `qk land --repo NAME BRANCH --wait`.

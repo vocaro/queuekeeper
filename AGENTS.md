@@ -27,6 +27,9 @@ directly and not through admission ([why](doc/guides/maintenance.md#the-readmes-
 When landing work, commit on your own branch and run `python3 scripts/qk land --wait --json` in the
 background, following it to its result. Never push directly to `main`. Exit 0 means landed,
 1 means refused or sent back, and 75 means held or still waiting at the limit.
+Pieces that build on each other ride one gate: give each a branch holding the ones before it, land
+them all in order without waiting, and follow them with `python3 scripts/qk queue wait ID ID --json`
+([Landing](doc/agent_interface.md#landing)).
 
 Interrupting the wait does not withdraw the entry. After interruption or settlement, retrieve its
 record with `python3 scripts/qk queue result ID --json`; use this record for the verdict, failures
