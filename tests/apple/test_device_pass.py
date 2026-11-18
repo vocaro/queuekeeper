@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import host_isolation  # noqa: F401  (first: keeps every test out of the host's admission)
 from queuekeeper import budgets, cli
-from queuekeeper_apple import device_notifications, device_pass, devices
+from queuekeeper_apple import core_device, device_notifications, device_pass, devices
 from test_support.devices import BANNER, Devicectl, PHONE, TABLET, Watches, approval, later, scratch
 
 SOURCE = Path(__file__).resolve().parents[2] / "src/python"
@@ -209,6 +209,36 @@ class DevicePass(Fixture):
         with self.assertRaisesRegex(ValueError, "says how it quits them"):
             self.run_pass(["iPad"], self.command(), launched=[app])
         self.assertEqual(len(self.ran()), 2)
+
+    def stuck(self):
+        """This Mac's CoreDeviceService as it was on 2026-11-17: it lists both devices and answers for neither."""
+        patchers = (patch.dict(os.environ), patch.object(core_device, "run", lambda _command: (None, "no answer within 30s")),
+                    patch.object(core_device, "listing", lambda: {TABLET: {}, PHONE: {}}))
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        os.environ.pop(core_device.PROBE)
+
+    def test_a_stuck_coredeviceservice_leaves_each_device_unmeasured_before_any_devicectl_or_xctest_work(self):
+        self.hold_iphone()
+        self.stuck()
+        launches = Devicectl()
+        with patch.object(device_notifications, "run", launches):
+            parts, code, said = self.run_pass(["iPad", "iPhone"], self.command())
+        self.assertEqual(code, device_pass.UNMEASURED, said)
+        self.assertEqual({key: part.outcome for key, part in parts.items()}, {"iPad": "unmeasured", "iPhone": "unmeasured"})
+        self.assertIn("not run: this Mac's CoreDeviceService looks stuck", parts["iPad"].detail)
+        self.assertIn("pkill -x CoreDeviceService", parts["iPhone"].detail)
+        # Neither command ran, and no shortcut was launched on either device.
+        self.assertEqual(self.ran(), [])
+        self.assertEqual(launches.commands, [])
+        # The iPad it took goes back, saying why; the iPhone the session held stays held, with no run recorded.
+        ipad = self.record.entry("iPad")
+        self.assertEqual((devices.condition(ipad), parts["iPad"].took, parts["iPad"].released), ("released", True, True))
+        self.assertIn("device pass: unmeasured (not run: this Mac's CoreDeviceService looks stuck", ipad["run"])
+        iphone = self.record.entry("iPhone")
+        self.assertEqual((devices.condition(iphone), parts["iPhone"].took), ("held", False))
+        self.assertNotIn("run", iphone)
 
     def test_on_a_mac_whose_record_defers_devices_the_pass_refuses_naming_here(self):
         self.record.defer("Trevors-MacBook-Pro")

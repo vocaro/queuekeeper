@@ -12,7 +12,9 @@ For each device named, in the order named, the pass:
    afterward; or else takes it in turn, first come first served (`devices take`), with the owner's
    notifications silenced, and releases it afterward, putting them back. A device whose turn did not come
    within --wait is not run. The pass checks no approval: a session runs it on the owner's iPhone only
-   when the owner has agreed, which is between the session and the owner (owner's decision, 2026-11-06);
+   when the owner has agreed, which is between the session and the owner (owner's decision, 2026-11-06).
+   Before any devicectl work on the device, it asks once, bounded, whether this Mac's CoreDeviceService
+   answers for it (core_device); a device it does not answer for is not run, and unmeasured (#227);
 2. runs COMMAND once on it, as `devices run` does: bounded by the reservation, refused when it names any
    other device, and watched for a notification banner, after which it runs once more. `{udid}` and
    `{key}` in COMMAND's words become the device's hardware UDID and its entry's key, and the command finds
@@ -33,7 +35,7 @@ import os
 from pathlib import Path
 import sys
 
-from . import devices
+from . import core_device, devices
 from queuekeeper import processes
 from queuekeeper.lane_results import UNMEASURED
 from queuekeeper.parallel import RESULTS_VARIABLE
@@ -89,12 +91,17 @@ def acquire(record, key, owner, *, purpose, minutes, wait, said):
     entry = value["devices"].get(key)
     if entry is not None and devices.condition(entry) == "held" and entry.get("ownerChatID") == owner:
         said(f"device-pass: {key}: {owner} holds it already, so the pass uses that reservation and leaves it held")
-        return entry, False
+        stuck = core_device.check(entry["device"], key)
+        return (Part(key, UNMEASURED_PART, f"not run: {stuck}") if stuck else entry), False
     release_by = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
     try:
         entry = record.take(key, owner=owner, purpose=purpose, release_by=release_by, timeout=wait, said=said)
     except (TimeoutError, devices.Refused, ValueError) as error:
         return Part(key, NOT_RUN, str(error)), False
+    # Before any devicectl work on it, the owner's shortcut included: a stuck service would hold each to its timeout.
+    stuck = core_device.check(entry["device"], key)
+    if stuck:
+        return Part(key, UNMEASURED_PART, f"not run: {stuck}"), True
     entry = devices.silence_notifications(record, key, owner=owner, revision=entry["revision"], said=said)
     return entry, True
 
@@ -181,6 +188,8 @@ def run(keys, command, *, owner=None, purpose="release device pass", minutes=MIN
         acquired, took = acquire(record, key, owner, purpose=purpose, minutes=minutes, wait=wait, said=said)
         if isinstance(acquired, Part):
             part = acquired
+            part.took = took
+            if took: part.released = release(record, key, owner, part, apps_quit=apps_quit, said=said)
         else:
             given = command(key, acquired["device"].upper()) if callable(command) else command
             try:

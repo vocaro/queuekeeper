@@ -87,6 +87,10 @@ The setup names the device the entry records, so a replaced device needs it agai
   interruption mid-run: to turn on Do Not Disturb himself and say when it is on. Record that
   with `devices notifications by-owner KEY --owner SESSION --revision N --by owner --at TIME`;
   he turns it off himself afterwards.
+- Each shortcut is opened only after a bounded check that this Mac's CoreDeviceService answers for
+  the device ([a stuck CoreDeviceService](#a-stuck-coredeviceservice)), so a stuck service fails
+  the silencing or restoration in about 30 s, said as a stuck service, rather than after the
+  launch's own 120 s.
 - A silencing that fails, for example on a locked device, which refuses the launch, is said
   and kept pending for restoration. Try again once the device is unlocked with
   `devices notifications silence KEY --owner SESSION --revision N`.
@@ -240,6 +244,10 @@ its receipt, so `eng release` counts a pass of it at the commit as it counts any
   arguments or `--expect` keeps the shortest bounded run. Queuekeeper reads the devices from the command's
   `--device` options. A lane whose script calls `device_pass.run` names them in
   `"devices": ["iPhone"]`. Admission preserves the lane's place in the queue.
+- Before any `devicectl` work on a device, the owner's shortcut included, it checks once that this
+  Mac's CoreDeviceService answers for it. A device it does not answer for is not run, and its
+  part is unmeasured, saying why and what fixes it
+  ([a stuck CoreDeviceService](#a-stuck-coredeviceservice)); a device the pass took goes back.
 - It runs the command once on each device as `devices run` does: bounded by the reservation,
   refused when it names another device, watched for a notification banner, and run once more
   after one ([bounded device runs](shared-host.md#bounded-device-runs)). `{udid}` and `{key}` in
@@ -263,6 +271,35 @@ its receipt, so `eng release` counts a pass of it at the commit as it counts any
   switching VoiceOver off after a session stopped part way ([VoiceOver](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover.md#physical-iphone-and-ipad)).
   A check that needs a listener or the owner's hand stays a manual step of the release, recorded
   on its tracking issue.
+
+## A stuck CoreDeviceService
+
+CoreDeviceService on the Mac can get stuck while its devices stay reachable: `devicectl list
+devices` still lists them, as `available (paired)` or `connecting`, but every command to one hangs
+until its timeout (the toolkit's [device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md#diagnosing-a-device)
+guide, Diagnosing a device). On 2026-11-17 a release's device pass found out only after XCTest's
+30-minute allowance and the pass's own bound, about 90 minutes, and putting back the owner's
+notifications then waited out its 120 s
+([#227](https://github.com/vocaro/queuekeeper/issues/227)).
+
+So the device pass, before each device's run, and each notification shortcut, before it is opened,
+first run `xcrun devicectl --timeout 30 device info details --device UDID`, read-only. On a healthy
+service it answered in 0.19 to 0.23 s for the owner's iPhone and iPad on a cable, and refused a
+device CoreDevice does not know in 0.14 s (2026-11-18, Xcode 27.2).
+
+- An answer lets the work start.
+- No answer within 30 s, or within the 15 s beyond that Queuekeeper waits for `devicectl` itself,
+  for a device this Mac's `devicectl` lists is a stuck service. The pass's part for the device,
+  or the shortcut's failure, says so and names the fix.
+- No answer for a device `devicectl` does not list, or a refusal, such as a device not unlocked
+  recently, is said as the device's, with `devicectl`'s words, and the work does not start either.
+
+The fix is to restart the service: once no other device run is in progress on that Mac, quit
+Device Hub and run `pkill -x CoreDeviceService`; launchd starts a new one at the next request.
+The restart breaks every device session on the Mac, so Queuekeeper names it and does not run it.
+Whether it should restart the service itself when no device run holds the Mac is left to the
+owner (#227), as is whether a restoration that could not reach the device should be retried once
+after a fresh connection.
 
 ## Declared devices
 

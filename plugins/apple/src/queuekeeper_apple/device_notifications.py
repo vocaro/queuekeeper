@@ -35,6 +35,8 @@ import tempfile
 import time
 from urllib.parse import quote
 
+from . import core_device
+
 # The app that runs a shortcut by URL, and the owner's two shortcuts, by the names he gives them.
 APP = "com.apple.shortcuts"
 SILENCE = "Vocaro Silence Notifications"
@@ -73,7 +75,12 @@ run = execute
 def trigger(udid, name):
     """Have the device udid run the owner's shortcut name; (whether devicectl opened Shortcuts with it, what it said).
 
-    Opening Shortcuts is all the Mac can see: whether the shortcut then changed the Focus it cannot read."""
+    Opening Shortcuts is all the Mac can see: whether the shortcut then changed the Focus it cannot read. It asks
+    first, bounded, whether this Mac's CoreDeviceService answers for the device, so that a stuck service is said
+    as one in about 30 s rather than as a launch that waited out its 120 s (core_device, vocaro/queuekeeper#227)."""
+    stuck = core_device.check(udid)
+    if stuck:
+        return False, f"devicectl did not try to open Shortcuts with {url(name)}: {stuck}"
     status, said = run(command(udid, name))
     if status == 0:
         return True, f"devicectl opened Shortcuts with {url(name)}"
