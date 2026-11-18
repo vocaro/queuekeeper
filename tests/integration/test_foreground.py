@@ -895,7 +895,10 @@ class RoutingTests(unittest.TestCase):
                                                                    "lanes": self.lanes}))
         away = remote.Unreachable("build-host cannot be reached: ssh: connect to host mac.local port 22: Host is down",
                                   "wake build-host and connect it to the network")
+        # build-host's settings take foreground work: say so, rather than read the real Mac of that name, which only
+        # some Macs that run this suite reach.
         with farm_fixture.only("build-host"), \
+                patch.object(remote, "foreground_hosts", lambda away=None: ("build-host",)), \
                 patch.object(remote, "execute", side_effect=away):
             ran = {"lane": self.qk("run", "voiceover-mac"), "remote lane": self.qk("remote", "run", "voiceover-mac"),
                    "admit": self.qk("remote", "admit", "--foreground", "--", "true")}
@@ -919,6 +922,7 @@ class RoutingTests(unittest.TestCase):
     def test_a_misconfigured_farm_mac_offers_no_window_here(self):
         stop = remote.Misconfigured("build-host could not run the toolkit", "give it a python3")
         with farm_fixture.only("build-host"), \
+                patch.object(remote, "foreground_hosts", lambda away=None: ("build-host",)), \
                 patch.object(remote, "execute", side_effect=stop):
             status, error = self.qk("remote", "admit", "--foreground", "--", "true")
         self.assertEqual(status, 2)
