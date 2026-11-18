@@ -16,4 +16,4 @@ They come from the [streamline-vectors repository](https://github.com/webalys-hq
 | `device-ipad.svg` | `computers-devices-electronics/tablet.svg` |
 | `device-other.svg` | `computers-devices-electronics/microchip-board.svg` |
 
-The Farm tab credits Streamline with a link beneath its devices, as the license asks.
+The dashboard credits Streamline, with links to Streamline and the license, on its About page, which every page links to from its header (`panels/about.py`, NOTICES).

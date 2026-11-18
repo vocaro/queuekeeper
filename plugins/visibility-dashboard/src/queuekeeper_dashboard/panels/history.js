@@ -14,19 +14,6 @@ QK.panel("history", {
       return { text: (by > 0 ? "▲ " : "▼ ") + text, tone: !better ? "flat" : (by > 0) === (better === "more") ? "good" : "bad",
         title: (seconds ? QK.span(then) : then) + " yesterday at this time" };
     }
-    const number = (label, value, key, better, seconds) => QK.number(label, value, null, null, change(today[key], yesterday[key], better, seconds));
-    // What settled today, as a donut with a key: landed, failed, conflicted or removed from the queue.
-    function settled() {
-      const parts = [{ label: "Landed", value: today.landed, tone: "good" }, { label: "Failed", value: today.failed || 0, tone: "danger" },
-        { label: "Conflict", value: today.conflict || 0, tone: "warning" }, { label: "Removed", value: today.removed || 0, tone: "muted" }];
-      const total = parts.reduce((sum, part) => sum + part.value, 0);
-      const landed = change(today.landed, yesterday.landed, "more");
-      return h("div", { class: "settled" }, QK.donut(parts, total, "settled"),
-        h("ul", { class: "keys" }, parts.map(part => h("li", null, h("i", { class: part.tone }), h("span", null, part.label),
-          h("b", null, part.value), h("span", { class: "muted" }, total ? Math.round(100 * part.value / total) + "%" : ""))),
-          landed ? h("li", { class: "versus" }, h("span", { class: "sub" }, "Landed vs yesterday at this time"),
-            h("span", { class: "change " + landed.tone, title: landed.title }, landed.text)) : null));
-    }
     // Today's lane runs as bars on a lane per Mac: green passed, red failed, purple unmeasured; a bar opens its log.
     // Where every repository is shown, a bar takes its repository's hue, a failure outlined red and a run left
     // unmeasured outlined dashed; the toggle colors them by how they ended instead (byRepository).
@@ -141,58 +128,47 @@ QK.panel("history", {
             h("td", null, typeof one.today.medianGateSeconds === "number" ? QK.span(one.today.medianGateSeconds) : "–"),
             h("td", { class: "strip-cell" }, strip(one)))))));
     }
-    // The events as a timeline, an hour's heading before each hour's events. An event links to its entry, or to
-    // the log its lane wrote, in its own repository where every repository is shown, which its tag names.
-    function said(event) {
-      const text = h("span", { class: "wrap" + (event.level === "plain" ? "" : " " + event.level) }, event.text);
-      const linked = event.log ? h("a", { class: "plainlink", href: QK.logHref(context, event.repository, event.log) }, text)
-        : event.entry ? h("a", { class: "plainlink", href: QK.href(event.repository || context.repository, "queue", { entry: event.entry }) }, text) : text;
-      return all && event.repository ? h("span", null, tag(event.repository), linked) : linked;
+    // The last 7 or 30 days, day by day, each measure against the same number of days before: what landed each day,
+    // the share of what settled that came back, gate time as a share of its usual, and flaky tests found. A gate's
+    // usual is its own repository's median, so every repository's runs can be set together.
+    function period() {
+      const state = context.state, span = state.span || 7, days = data.daily || [];
+      const now = days.slice(-span), before = days.slice(-2 * span, -span);
+      const sum = (list, key) => list.reduce((total, one) => total + one[key], 0);
+      const rate = list => { const back = sum(list, "cameBack"), settled = back + sum(list, "landed"); return settled ? 100 * back / settled : null; };
+      const median = values => { if (!values.length) return null; const sorted = values.slice().sort((a, b) => a - b); return sorted[Math.floor(sorted.length / 2)]; };
+      const share = list => median(list.flatMap(one => one.gateShares));
+      // The change, its arrow by direction and good or bad by whether lower is better.
+      function moved(value, then, lower, said) {
+        if (typeof value !== "number" || typeof then !== "number") return null;
+        const by = value - then;
+        if (Math.abs(by) < 0.005 * Math.max(1, Math.abs(then))) return { text: "same", tone: "flat", title: "The same as the " + span + " days before" };
+        return { text: (by > 0 ? "▲ " : "▼ ") + said(Math.abs(by)), tone: (by < 0) === lower ? "good" : "bad", title: "Against the " + span + " days before" };
+      }
+      const perDay = (list, key) => list.length ? sum(list, key) / list.length : null;
+      const landed = perDay(now, "landed"), backRate = rate(now), gate = share(now), flaky = sum(now, "flaky");
+      const daily = (values, options) => QK.spark(values, { title: "Each of the last " + span + " days, oldest first", ...options });
+      const last = now.length ? now[now.length - 1] : null;
+      return h("div", { class: "card" },
+        h("h2", null, h("span", null, "Over the last " + span + " days", h("span", { class: "muted" }, " against the " + span + " before")),
+          h("span", { class: "segmented", role: "group", "aria-label": "Period" }, [7, 30].map(length => h("button", { type: "button",
+            "aria-pressed": String(span === length), onclick: () => { state.span = length; context.refresh(); } }, length + " days")))),
+        h("div", { class: "numbers" },
+          QK.number("Landed per day", landed === null ? "–" : String(Math.round(landed)), daily(now.map(one => one.landed), { bars: true, tone: "good" }),
+            sum(now, "landed") + " in all", moved(landed, perDay(before, "landed"), false, value => String(Math.round(value)))),
+          QK.number("Came back", backRate === null ? "–" : Math.round(backRate) + "%",
+            daily(now.map(one => one.landed + one.cameBack ? 100 * one.cameBack / (one.landed + one.cameBack) : 0), { tone: "danger" }),
+            "of what settled", moved(backRate, rate(before), true, value => Math.round(value) + " pts")),
+          QK.number("Gate time", gate === null ? "–" : Math.round(100 * gate) + "%", daily(now.map(one => share([one]) === null ? 0 : 100 * share([one]))),
+            all ? "of each repository's usual" : "of usual" + (last && last.medianGateSeconds ? " · today " + QK.span(last.medianGateSeconds) : ""),
+            moved(gate === null ? null : 100 * gate, share(before) === null ? null : 100 * share(before), true, value => Math.round(value) + " pts")),
+          QK.number("Flaky tests", String(flaky), daily(now.map(one => one.flaky), { bars: true, tone: "warning" }), "found",
+            moved(flaky, sum(before, "flaky"), true, value => String(Math.round(value))))));
     }
-    function timeline(list, hours) {
-      let hour = null;
-      const today = new Date().toDateString();
-      return h("ul", { class: "timeline" }, list.flatMap(event => {
-        const at = typeof event.time === "number" ? new Date(event.time * 1000) : null;
-        const key = at ? at.toDateString() + at.getHours() : null, heading = hours && key !== hour;
-        hour = key;
-        const clock = at ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: hours ? "2-digit" : undefined, hour12: false }) : "";
-        return [heading && at ? h("li", { class: "hour label" }, (at.toDateString() === today ? "" : at.toLocaleDateString([], { weekday: "short", day: "numeric" }) + " ")
-            + QK.clock(Math.floor(event.time / 3600) * 3600).replace(/:00$/, "")) : null,
-          h("li", { class: event.level },
-            h("span", { class: "muted mono" }, !hours && at && at.toDateString() !== today ? at.toLocaleDateString([], { weekday: "short" }) + " " + clock : clock),
-            said(event))];
-      }));
-    }
-    // The kinds of event each filter of the whole journal shows; a kind ending in a dot names each that begins so.
-    const KINDS = { "Landed": ["entry.landed", "batch.pushed", "batch.passed"], "Came back": ["entry.failed", "entry.conflict", "entry.removed"],
-      "Held": ["queue."], "Flaky": ["test.flaky"], "Gates": ["gate."], "Rounds": ["round.", "entries.", "entry.queued"] };
-    function journal() {
-      const state = context.state, chosen = state.kind || "All", kinds = KINDS[chosen];
-      const list = kinds ? data.events.filter(event => kinds.some(kind => kind.endsWith(".") ? event.kind.startsWith(kind) : event.kind === kind)) : data.events;
-      return [h("div", { class: "chips" }, ["All", ...Object.keys(KINDS)].map(name => h("button", { type: "button", "aria-pressed": String(chosen === name),
-          onclick: () => { state.kind = name; context.refresh(); } }, name))),
-        list.length ? timeline(list, true) : h("p", { class: "sub" }, data.events.length ? "None of the last " + data.events.length + " events is of this kind." : "The journal is empty.")];
-    }
-    // The journal, behind a button: what needs someone now is the Queue tab's Needs attention.
-    function events() {
-      const state = context.state;
-      const toggle = h("button", { type: "button", class: "more", "aria-expanded": String(!!state.all),
-        onclick: () => { state.all = !state.all; context.refresh(); } },
-        state.all ? "Hide the journal" : "Show all events" + (data.total ? " (" + data.total.toLocaleString() + ")" : ""));
-      return h("div", { class: "card" }, h("h2", null, "Events", h("span", { class: "muted" }, "The queue's journal")),
-        h("p", { class: "sub" }, "Every round, gate, landing and hold the queue recorded. What is still open is under Needs attention on the Queue tab."),
-        h("div", { class: "actions" }, toggle),
-        state.all ? [h("h3", { class: "label" }, data.total > data.events.length ? "The last " + data.events.length + " of " + data.total.toLocaleString() + " events" : "Every event, newest first"),
-          journal()] : null);
-    }
+
     const runs = data.gateSeconds || [];
     QK.fill(element,
-      h("div", { class: "card" }, h("h2", null, "Today", h("span", { class: "muted" }, "Changes are against yesterday at this time")),
-        h("div", { class: "today" }, settled(),
-          h("div", { class: "numbers" }, number("Flaky tests", today.flaky, "flaky", "fewer"), number("Rounds", today.rounds, "rounds"),
-            all ? QK.number("Repositories", data.repositories.length, null, null)
-              : number("Median gate", today.medianGateSeconds === null ? "–" : QK.span(today.medianGateSeconds), "medianGateSeconds", "fewer", true)))),
+      period(),
       all ? h("div", { class: "card" }, h("h2", null, "By repository", h("span", { class: "muted" }, "Today, against yesterday at this time")),
         repositories()) : null,
       h("div", { class: "card" }, h("h2", null, "Lane runs", all ? h("span", { class: "chips", role: "group", "aria-label": "Color the runs by" },
@@ -210,9 +186,6 @@ QK.panel("history", {
       all ? h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "Every repository, by day and hour")), heatmap())
         : h("div", { class: "columns" },
           h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "By day and hour")), heatmap()),
-          h("div", { class: "card" }, h("h2", null, "Gate duration", h("span", { class: "muted" }, runs.length ? "Last " + QK.count(runs.length, "passing run") : "")), durations())),
-      data.recent.length ? h("div", { class: "card" }, h("h2", null, "Recent changes", h("span", { class: "muted" }, "Newest first")),
-        h("ul", { class: "rows entries" }, data.recent.map(found => QK.entry(found, context, { hues })))) : null,
-      events());
+          h("div", { class: "card" }, h("h2", null, "Gate duration", h("span", { class: "muted" }, runs.length ? "Last " + QK.count(runs.length, "passing run") : "")), durations())));
   },
 });

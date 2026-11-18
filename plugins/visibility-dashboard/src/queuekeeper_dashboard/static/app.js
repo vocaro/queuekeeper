@@ -241,8 +241,10 @@
     if (parts[0] === "r" && parts[1]) return { repository: parts[1], tab: tab(parts[2]), query };
     return { repository: null, tab: tab(parts[0] === "all" ? parts[1] : null), query };
   }
-  // The panels with a tab where the route is: every panel for one repository, those that draw every repository for all.
-  function tabbed(current) { return state.panels.filter(panel => current.repository || panel.everywhere); }
+  // The panels that can be shown where the route is: every panel for one repository, those that draw every repository
+  // for all; and of them, those with a tab, a page such as Logs being reached from the others' links instead.
+  function shown(current) { return state.panels.filter(panel => current.repository || panel.everywhere); }
+  function tabbed(current) { return shown(current).filter(panel => panel.tab !== false); }
 
   function live(ok) {
     const element = document.getElementById("live");
@@ -262,11 +264,13 @@
     }));
     picker.value = current.repository || "";
     picker.onchange = () => {
-      const to = picker.value || null, kept = tabbed({ repository: to }).some(panel => panel.name === current.tab);
+      const to = picker.value || null, kept = shown({ repository: to }).some(panel => panel.name === current.tab);
       QK.go(QK.href(to, kept ? current.tab : "queue"));
     };
+    // A page without a tab is under Activity, whose rounds lead to it.
+    const under = tabbed(current).some(panel => panel.name === current.tab) ? current.tab : current.tab === "logs" ? "activity" : null;
     QK.fill(tabs, tabbed(current).map(panel => QK.h("a", {
-      href: QK.href(current.repository, panel.name), class: panel.name === current.tab ? "on" : null,
+      href: QK.href(current.repository, panel.name), class: panel.name === under ? "on" : null,
       "aria-current": panel.name === current.tab ? "page" : null }, panel.title)));
     document.title = (current.repository || "All repositories") + " · Queuekeeper";
   }
@@ -276,7 +280,8 @@
       state.scripts[name] = new Promise((resolve, reject) => {
         const element = QK.h("script", { src: "/panels/" + encodeURIComponent(name) + ".js" });
         element.onload = resolve;
-        element.onerror = () => reject(new Error("its script did not load"));
+        // A script that does not load is asked for again next time; the server is likely not answering.
+        element.onerror = () => { delete state.scripts[name]; element.remove(); reject(Object.assign(new Error("its script did not load"), { down: true })); };
         document.head.append(element);
       });
     }
@@ -284,6 +289,7 @@
   }
 
   function fault(title, error) {
+    clearInterval(state.ticking);
     QK.fill(main, QK.h("div", { class: "card" }, QK.h("h2", null, title),
       QK.h("p", { class: "danger wrap" }, String(error && error.message || error))));
   }
@@ -294,19 +300,48 @@
   }
 
   function none() {
+    clearInterval(state.ticking);
     QK.fill(main, QK.h("div", { class: "card hero" }, QK.h("h1", null, "No repository yet"),
       QK.h("p", null, "Queue a commit with qk land, or start qk serve inside a repository.")));
+  }
+
+  // While the tab's first answer is awaited: the tab's shape in empty cards, and a line that says what the page is
+  // asking for and how long it has waited, so that a slow server reads as slow rather than as stuck.
+  const SHAPES = { queue: ["tall", "medium", "tall", "medium"], farm: ["pair", "medium"], history: ["medium", "tall", "medium"],
+    activity: ["short", "tall", "tall"], logs: ["short", "tall"] };
+  function waiting(current) {
+    const title = (state.panels.find(panel => panel.name === current.tab) || {}).title || "this tab";
+    const said = QK.h("p", { class: "sub waiting", role: "status" });
+    const began = Date.now();
+    function update() {
+      const seconds = Math.floor((Date.now() - began) / 1000);
+      said.textContent = state.down
+        ? "The server is not answering. Trying again every " + QK.POLL / 1000 + " seconds" + (seconds ? " (" + seconds + " s so far)" : "") + "."
+        : "Asking the server for " + (current.repository ? current.repository + "'s " : "every repository's ") + title + "…"
+          + (seconds ? " " + seconds + " s" : "") + (seconds >= 10 ? ". The server is slow to answer; the Mac it runs on may be busy." : "");
+    }
+    update();
+    clearInterval(state.ticking);
+    state.ticking = setInterval(update, 1000);
+    QK.fill(main, said, (SHAPES[current.tab] || ["medium", "tall"]).map(shape => shape === "pair"
+      ? QK.h("div", { class: "skeleton-pair" }, QK.h("div", { class: "card skeleton tall" }), QK.h("div", { class: "card skeleton tall" }))
+      : QK.h("div", { class: "card skeleton " + shape })));
   }
 
   async function tick(generation) {
     const current = state.route, context = state.context;
     try {
-      state.repositories = await ask("/api/repositories");
-      if (generation !== state.generation) return;
-      live(true);
-      header();
-      if (!current.repository && !state.repositories.length) return none();
-      const known = tabbed(current).find(panel => panel.name === current.tab);
+      // The repositories and the tab's data are asked for at once, so a slow list holds back nothing else.
+      const listed = ask("/api/repositories").then(found => {
+        if (generation !== state.generation) return found;
+        state.repositories = found;
+        state.down = false;
+        live(true);
+        header();
+        return found;
+      });
+      listed.catch(() => {});
+      const known = shown(current).find(panel => panel.name === current.tab);
       if (!known) return fault("No such section", "This dashboard has no section named " + current.tab + ".");
       if (known.error) return fault(known.title, "This panel did not load: " + known.error);
       await script(current.tab);
@@ -316,12 +351,19 @@
       const data = await ask((current.repository ? "/api/r/" + encodeURIComponent(current.repository) : "/api/all")
         + "/panel/" + encodeURIComponent(current.tab) + "?" + new URLSearchParams(query || {}));
       if (generation !== state.generation || (selecting() && !context.fresh)) return;
+      if (!current.repository && !(await listed).length) { clearInterval(state.ticking); return none(); }
+      if (generation !== state.generation) return;
+      clearInterval(state.ticking);
       panel.render(main, data, context);
       context.fresh = false;
     } catch (error) {
       if (generation !== state.generation) return;
-      if (error instanceof TypeError) live(false);
-      else fault((state.panels.find(panel => panel.name === current.tab) || {}).title || "Queuekeeper", error);
+      if (error instanceof TypeError || error.down) {
+        live(false);
+        state.down = true;
+        if (context && context.fresh && !main.querySelector(".waiting")) waiting(current);
+      }
+      else { clearInterval(state.ticking); fault((state.panels.find(panel => panel.name === current.tab) || {}).title || "Queuekeeper", error); }
       if (context) context.fresh = true;
     }
   }
@@ -332,7 +374,7 @@
     state.route = route();
     state.context = { repository: state.route.repository, tab: state.route.tab, query: state.route.query, state: {},
       fresh: true, refresh: () => { if (generation === state.generation) { clearTimeout(state.timer); loop(); } } };
-    QK.fill(main, QK.h("p", { class: "muted" }, "Loading…"));
+    waiting(state.route);
     header();
     async function loop() {
       await tick(generation);

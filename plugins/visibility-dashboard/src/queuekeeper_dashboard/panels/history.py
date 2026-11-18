@@ -1,32 +1,18 @@
-"""The History tab: the day's totals beside yesterday's to the same hour, today's gate runs on each Mac, when work
-has landed by day and hour, how long passing gates take, and the journal's last events, newest first; and every
-repository's at once (everywhere), each repository's own answer combined (combine). What is open and needs someone
-is the Queue tab's (queue.attention)."""
+"""The Trends tab, whose address is still `history`: each of the last PERIOD days, what landed, came back and was
+found flaky and how long passing gates took against their usual time, for the page to set the last 7 or 30 days
+against the ones before; today's lane runs on each Mac, when work has landed by day and hour, and how long passing
+gates take; and every repository's at once (everywhere), each repository's own answer combined (combine). What is
+happening now is the Now tab's (queue), and what happened, round by round, the Activity tab's (activity)."""
 import os
 import re
 import statistics
 import time
 
-from queuekeeper import events, farm
+from queuekeeper import farm
 from . import each
 
-TITLE, ORDER = "History", 40
-MOST = 200
-LEVELS = {"entry.failed": "danger", "entry.conflict": "danger", "queue.held": "warning", "test.flaky": "warning",
-          "gate.stuck": "warning",
-          "entry.landed": "success", "batch.pushed": "success"}
-STAMP = len("2026-11-12 09:30:19 ")
-
-
-
-
-def shown(event):
-    """An event as the page lists it, with the entry it is of and the name of the log it wrote, when it has them."""
-    found = {"time": event.get("time"), "kind": event["kind"], "text": events.words(event)[STAMP:],
-             "level": LEVELS.get(event["kind"], "plain")}
-    if isinstance(event.get("entry"), str): found["entry"] = event["entry"]
-    if isinstance(event.get("log"), str): found["log"] = os.path.basename(event["log"])
-    return found
+TITLE, ORDER = "Trends", 40
+PERIOD = 60  # the days daily covers, today last: twice the longest period the page sets against the one before
 
 
 def midnight(now):
@@ -91,6 +77,35 @@ def landings(journal, now):
     return [{"day": day, "hours": counts[day]} for day in days]
 
 
+def daily(journal, now):
+    """Each of the last PERIOD days, oldest first, as its local midnight: how many entries landed and came back,
+    how many tests were found flaky, the median of its passing gate runs' seconds, and each of those runs as a share
+    of the median of every passing gate run over the PERIOD days, which a repository's runs are measured by alone,
+    so that days, and repositories, whose gates differ in length can be set side by side. Days before the journal's
+    first event are left out, since it cannot say what happened on them."""
+    today, first = midnight(now), min((event.get("time", now) for event in journal), default=now)
+    days = [day for day in (midnight(today - 86400 * back + 3600) for back in reversed(range(PERIOD))) if day + 86400 > first]
+    found = {day: {"day": day, "landed": 0, "cameBack": 0, "flaky": 0, "gates": []} for day in days}
+    for event in journal:
+        at = event.get("time")
+        if not isinstance(at, (int, float)): continue
+        one = found.get(midnight(at))
+        if one is None: continue
+        kind = event["kind"]
+        if kind == "entry.landed": one["landed"] += 1
+        elif kind in ("entry.failed", "entry.conflict"): one["cameBack"] += 1
+        elif kind == "test.flaky": one["flaky"] += 1
+        elif kind == "gate.ended" and event.get("lane") == "gate" and event.get("status") == 0 \
+                and isinstance(event.get("seconds"), (int, float)) and event["seconds"] > 0:
+            one["gates"].append(event["seconds"])
+    usual = statistics.median([seconds for one in found.values() for seconds in one["gates"]] or [0]) or None
+    for one in found.values():
+        gates = one.pop("gates")
+        one["medianGateSeconds"] = round(statistics.median(gates)) if gates else None
+        one["gateShares"] = [round(seconds / usual, 2) for seconds in gates] if usual else []
+    return [found[day] for day in days]
+
+
 def gate_seconds(journal):
     """The seconds of the last RUNS passing runs of the gate lane, oldest first."""
     return [round(event["seconds"]) for event in journal if event["kind"] == "gate.ended" and event.get("lane") == "gate"
@@ -98,27 +113,22 @@ def gate_seconds(journal):
 
 
 def data(repository, query):
-    from . import load
     journal, now = repository.events(), time.time()
-    wanted = query.get("kind")
-    found = [event for event in journal if not wanted or event["kind"].startswith(wanted)]
-    return {"recent": [load("queue").entry(found) for found in reversed(repository.snapshot().get("recent") or [])], "today": totals(journal, now),
+    return {"today": totals(journal, now),
             # Yesterday from its midnight to this time of day, for the change beside each of today's totals.
             "yesterday": totals(journal, now - 86400), "gates": gate_runs(journal, now), "landings": landings(journal, now),
-            "gateSeconds": gate_seconds(journal), "events": [shown(event) for event in reversed(found[-MOST:])],
-            "total": len(found)}
+            "gateSeconds": gate_seconds(journal), "daily": daily(journal, now)}
 
 
-RECENT = 30  # the settled entries every repository's history lists, newest first
 SUMMED = ("landed", "cameBack", "failed", "conflict", "removed", "flaky", "rounds")
 
 
 def combine(parts):
     """Every repository's History at once, from parts, [(name, its History answer (data), None)] or (name, None,
     why it cannot be read): the day's totals summed beside yesterday's, a row for each repository with its own day
-    and gate times, every lane run on the Macs they share, landings summed by day and hour, and the settled entries,
-    events of all of them, newest first. A gate time is a repository's alone, so no median is taken across
-    them. A run, entry or event carries its repository's name."""
+    and gate times, every lane run on the Macs they share, landings summed by day and hour, and each day's counts
+    summed with every repository's gate runs as shares of its own usual time. A gate time is a repository's alone, so
+    no median of seconds is taken across them. A run carries its repository's name."""
     read = [(name, found) for name, found, _ in parts if found]
     def day(key):
         return {**{name: sum(found[key].get(name) or 0 for _, found in read) for name in SUMMED}, "medianGateSeconds": None}
@@ -131,12 +141,17 @@ def combine(parts):
             {"name": name, "today": found["today"], "yesterday": found["yesterday"], "gateSeconds": found["gateSeconds"]}
             for name, found, why in parts]
     tagged = lambda key: [{**one, "repository": name} for name, found in read for one in found[key]]
+    days = {}
+    for _, found in read:
+        for one in found["daily"]:
+            kept = days.setdefault(one["day"], {"day": one["day"], "landed": 0, "cameBack": 0, "flaky": 0,
+                                                "medianGateSeconds": None, "gateShares": []})
+            for key in ("landed", "cameBack", "flaky"): kept[key] += one[key]
+            kept["gateShares"] += one["gateShares"]
     return {"today": day("today"), "yesterday": day("yesterday"), "repositories": rows,
             "gates": sorted(tagged("gates"), key=lambda run: run["began"]),
             "landings": [{"day": at, "hours": landings[at]} for at in sorted(landings)],
-            "recent": sorted(tagged("recent"), key=lambda one: -(one.get("settled") or 0))[:RECENT],
-            "events": sorted(tagged("events"), key=lambda event: -(event.get("time") or 0))[:MOST],
-            "total": sum(found["total"] for _, found in read)}
+            "daily": [days[at] for at in sorted(days)]}
 
 
 def everywhere(repositories, query):

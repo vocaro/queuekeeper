@@ -43,7 +43,7 @@ from queuekeeper_dashboard import panels, server  # noqa: E402
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 REPOSITORY, WIDTH, SCALE = "lumen-ios", 1000, 2
-TABS = ("queue", "farm", "history", "logs")
+TABS = ("queue", "farm", "history", "activity", "logs", "about")
 # The page's own script loads a panel's and asks for its data; this long is given it, in the page's own time.
 SETTLE = 6000
 MEASURE = """setInterval(() => { document.documentElement.dataset.height = document.body.scrollHeight;
@@ -109,7 +109,9 @@ PANELS = {
         # What is open: one entry that came back and was not queued again, and a test found flaky (queue.attention).
         "attention": [
             {"level": "warning", "title": "Came back", "at": ago(1900), "entry": "qk0398-offline-merge",
-             "text": "Merge a note edited offline: its gate failed lumen.test_sync.Tests.test_a_note_edited_offline_merges",
+             "text": "Merge a note edited offline", "reason": "Its gate failed lumen.test_sync.Tests.test_a_note_edited_offline_merges.",
+             "detail": "its gate failed lumen.test_sync.Tests.test_a_note_edited_offline_merges: fix it and add it again. While gate ran "
+                       "on studio.local, the one-minute load was highest 14.2.",
              "log": BEFORE + "-gate.log"},
             {"level": "notice", "title": "Flaky", "at": ago(2900), "text": "lumen.test_sync.Tests.test_a_note_edited_offline_merges",
              "issue": "https://github.com/example/lumen/issues/41"}],
@@ -160,12 +162,6 @@ PANELS = {
     "history": {
         "today": {"landed": 12, "cameBack": 0, "failed": 0, "conflict": 0, "removed": 1, "flaky": 0, "rounds": 6,
                   "medianGateSeconds": 252},
-        "total": 2,
-        "events": [
-            {"time": ago(252), "kind": "round.began", "level": "plain", "text": "Round " + ROUND + " began with 1 entry."},
-            {"time": ago(540), "kind": "entry.landed", "level": "success",
-             "text": E["0411"] + " landed as 4c9a1e7b02d3: Keep the scroll position when a note is edited."},
-        ],
     },
 }
 
@@ -177,7 +173,31 @@ gate: simulator tests, 4 simulators from the pool
 gate: 212 of 340 tests passed, 0 failed
 """
 PANELS["queue"]["overview"] = PANELS.pop("home")
-PANELS["history"]["recent"] = PANELS["queue"]["recent"]
+PANELS["about"] = panels.load("about").answer()
+# What lumen-ios's queue did: the round being tested, a hold and its resume, and a round whose entry came back
+# and was queued again, its gate failing a test that a flaky rerun did not explain.
+PANELS["activity"] = {"total": 9, "feed": [
+    {"kind": "round", "time": ago(252), "round": ROUND, "head": None, "flaky": [],
+     "entries": [{"id": E["0412"], "subject": "Show the sync status in the toolbar", "branch": "agent/sync-status", "state": "testing"}],
+     "lanes": [{"lane": "spelling", "role": "batch", "status": 0, "seconds": 2, "log": ROUND + "-spelling.log"},
+               {"lane": "gate", "role": "batch", "status": None, "seconds": 252, "log": ROUND + "-gate.log"}]},
+    {"kind": "notice", "time": ago(900), "text": "The queue resumed after it was held for a session: the gate gave no verdict twice", "level": "plain"},
+    {"kind": "notice", "time": ago(1500), "text": "The queue was held for a session: the gate gave no verdict twice", "level": "warning"},
+    {"kind": "round", "time": ago(1900), "round": BEFORE, "head": None,
+     "flaky": [{"test": "lumen.test_sync.Tests.test_a_note_edited_offline_merges", "issue": "https://github.com/example/lumen/issues/41"}],
+     "entries": [{"id": "qk0398-offline-merge", "subject": "Merge a note edited offline", "branch": "agent/offline-merge", "state": "back",
+                  "why": "The gate failed lumen.test_sync.Tests.test_a_note_edited_offline_merges on this commit on top of origin/main."}],
+     "lanes": [{"lane": "spelling", "role": "batch", "status": 0, "seconds": 2, "log": BEFORE + "-spelling.log"},
+               {"lane": "gate", "role": "batch", "status": 1, "seconds": 288, "log": BEFORE + "-gate.log"}]},
+    {"kind": "round", "time": ago(2600), "round": "20261116-090000-4c9a1e7b", "head": None, "flaky": [],
+     "entries": [{"id": E["0411"], "subject": "Keep the scroll position when a note is edited", "branch": "agent/scroll-position",
+                  "state": "landed", "landedAs": "4c9a1e7b02d3f8"}],
+     "lanes": [{"lane": "gate", "role": "batch", "status": 0, "seconds": 251, "log": None}]}]}
+# Each of the last two weeks, oldest first, so that the last 7 days have 7 before them to be set against.
+PANELS["history"]["daily"] = [
+    {"day": time.mktime(time.localtime(NOW - 86400 * back)[:3] + (0, 0, 0, 0, 0, -1)), "landed": 9 + (back * 5) % 7 + (0 if back > 6 else 3),
+     "cameBack": (back * 3) % 4 // 2 + (1 if back > 6 else 0), "flaky": back % 3 // 2, "medianGateSeconds": 250 + (back * 13) % 40,
+     "gateShares": [round(0.85 + ((back * 7 + step) % 9) / 20, 2) for step in range(4)]} for back in range(13, -1, -1)]
 # The farm's last hour, a reading every 10 seconds: each Mac's load drifting, and the slots by project.
 PANELS["farm"]["samples"] = [
     {"at": ago(3600 - 10 * step), "most": 8,
@@ -245,8 +265,10 @@ def others():
         found["queue"].update(recent=[own], waiting=[], round=None)
         found["queue"]["flow"]["agents"] = []
         for mac in found["queue"]["flow"]["macs"]: mac["gates"] = []
-        found["history"].update(recent=[own], gates=[], total=1, events=[{"time": own["settled"], "kind": "entry.landed", "level": "success",
-            "text": f"{own['id']} landed as {own['landedAs'][:12]}: {own['subject']}."}])
+        found["history"].update(gates=[], daily=[{**day, "landed": day["landed"] // 2, "cameBack": 0} for day in found["history"]["daily"]])
+        found["activity"] = {"total": 1, "feed": [{"kind": "round", "time": own["settled"] - 300, "round": ROUND, "head": None, "flaky": [],
+            "entries": [{"id": own["id"], "subject": own["subject"], "branch": own["branch"], "state": "landed", "landedAs": own["landedAs"]}],
+            "lanes": [{"lane": "gate", "role": "batch", "status": 0, "seconds": 280, "log": None}]}]}
         found["history"]["gateSeconds"] = [seconds * 7 // 4 if found is orbit else seconds // 3 for seconds in found["history"]["gateSeconds"]]
         found["history"]["today"].update(landed=landed, rounds=landed, removed=0,
                                          medianGateSeconds=sorted(found["history"]["gateSeconds"])[len(found["history"]["gateSeconds"]) // 2])
@@ -263,6 +285,9 @@ def others():
     orbit["queue"]["health"]["signs"][0] = health.sign("progress", health.OK, "testing 1 entry", "Testing 1")
     notes["queue"]["health"]["signs"][0] = health.sign("progress", health.IDLE, "nothing is waiting", "Nothing waiting")
     notes["queue"]["health"]["signs"][1] = health.sign("pace", health.OK, "the last entry landed 1h 8m ago", "Last landed 1h 8m ago")
+    orbit["activity"]["feed"].insert(0, {"kind": "round", "time": ago(431), "round": ORBIT, "head": None, "flaky": [],
+        "entries": [{"id": LEVEL["id"], "subject": LEVEL["subject"], "branch": LEVEL["branch"], "state": "testing"}],
+        "lanes": [{"lane": "gate", "role": "batch", "status": None, "seconds": 431, "log": ORBIT + "-gate.log"}]})
     orbit["history"]["gates"] = [{"began": ago(3600 * back + 130), "ended": ago(3600 * back), "lane": "gate", "status": 0, "mac": None,
                                   "round": None, "log": None} for back in (6.5, 4.5, 2.5)]
     notes["queue"]["overview"].update(level="idle", headline="Idle", detail="Nothing is waiting.", began=None)
@@ -281,6 +306,7 @@ OTHER_LOGS = {"orbit-game": [{"name": "worker.log", "size": 20117, "modified": a
 def everywhere(tab, query):
     """What a tab is answered for every repository at once, from each one's made-up answer."""
     if tab == "farm": return PANELS["farm"]
+    if tab == "about": return panels.load("about").answer()
     if tab == "logs":
         listed = sorted(({**log, "repository": name} for name, found in ((REPOSITORY, LOGS), *OTHER_LOGS.items()) for log in found),
                         key=lambda log: (log["name"] != "worker.log", -log["modified"]))

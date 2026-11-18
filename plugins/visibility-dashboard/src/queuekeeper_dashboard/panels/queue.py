@@ -10,7 +10,7 @@ import time
 from queuekeeper import health, lane_wait, merge_queue, remote
 from . import each
 
-TITLE, ORDER = "Queue", 10
+TITLE, ORDER = "Now", 10  # the Now tab, whose address is still `queue`
 ENTRY = ("id", "state", "subject", "note", "branch", "submitted", "settled", "landedAs", "why", "front", "noGate")
 GATE = ("lane", "mac", "began", "waiting", "waitingSince", "stuck", "entries")
 # An entry that came back is Home's to mention for this long.
@@ -171,6 +171,13 @@ def data(repository, query):
             "attention": attention(state, repository.events(), time.time())}
 
 
+def reason(why):
+    """The first clause of why an entry came back, as a sentence: the queue's reasons go on with what to do, the
+    load while the lane ran and each failed test, which the page shows only when asked."""
+    first = re.split(r"(?<=[a-z0-9)])(?::\s|\.\s)", why.strip(), maxsplit=1)[0].rstrip(".")
+    return first[:1].upper() + first[1:] + "." if first else why
+
+
 def attention(state, journal, now):
     """What is open and needs someone, newest first within each level, danger first: a hold, entries waiting with no
     worker, a gate that looks stuck, each entry that came back within OPEN and whose branch has not been queued again
@@ -193,7 +200,8 @@ def attention(state, journal, now):
         if one.get("state") not in ("failed", "conflict") or now - settled > OPEN: continue
         if one.get("branch") and again.get(one["branch"], 0) > settled: continue
         found.append({"level": "warning", "title": "Conflict" if one["state"] == "conflict" else "Came back", "at": settled,
-                      "text": (one.get("subject") or one.get("id") or "an entry") + (f": {one['why']}" if one.get("why") else ""),
+                      "text": one.get("subject") or one.get("id") or "an entry",
+                      **({"reason": reason(one["why"]), "detail": one["why"]} if one.get("why") else {}),
                       "entry": one.get("id"), **({"log": Path(str(one["log"])).name} if one.get("log") else {})})
     flaky = {}
     for event in journal:

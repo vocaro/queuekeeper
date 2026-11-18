@@ -13,10 +13,16 @@
   function flowMap(model, context, hues) {
     const svg = QK.svg, W = 900, PITCH = 62, NODE = 50, TOP = 28, moving = model.moving;
     const X = { agents: [0, 168], queue: [214, 136], round: [396, 176], farm: [618, 176], main: [840, 60] };
-    const back = model.back, gates = model.gates, macs = model.macs || [], single = model.queues.length === 1;
+    const back = model.back, macs = model.macs || [], single = model.queues.length === 1;
+    // Each column follows the one to its right, so the lines between them run level rather than crossing: the rounds
+    // in the order of the Macs they run on (one waiting for a Mac last), and the queues in the order of their rounds.
+    const macOf = gate => { const at = macs.findIndex(mac => (mac.gates || []).some(one => key(one) === key(gate))); return at < 0 ? macs.length : at; };
+    const gates = model.gates.map((gate, index) => [gate, index]).sort(([a, i], [b, j]) => macOf(a) - macOf(b) || i - j).map(([gate]) => gate);
+    const roundOf = one => { const at = gates.findIndex(gate => gate.repository === one.name); return at < 0 ? gates.length : at; };
     // With more than one queue, those with nothing in them and no gate share one node.
     const busy = one => single || one.waiting || one.testing || one.held || gates.some(gate => gate.repository === one.name);
-    const quiet = model.queues.filter(one => !busy(one)), queues = model.queues.filter(busy);
+    const quiet = model.queues.filter(one => !busy(one));
+    const queues = model.queues.filter(busy).map((one, index) => [one, index]).sort(([a, i], [b, j]) => roundOf(a) - roundOf(b) || i - j).map(([one]) => one);
     if (quiet.length) queues.push({ name: QK.count(quiet.length, "idle queue"), quiet: quiet.map(one => one.name), waiting: 0, testing: 0 });
     const agents = model.agents.slice();
     if (back && !agents.some(one => one.name === back.agent)) agents.push({ name: back.agent, waiting: 0, testing: 0, back: true, queues: [] });
@@ -100,7 +106,7 @@
     });
     // Main, where what passes lands
     const mainY = TOP + body / 2 - 35;
-    nodes.push(link(QK.href(context.repository, "history"), "Landed today", box(mx, mainY, mw, 70, "main"),
+    nodes.push(link(QK.href(context.repository, "activity"), "Landed today", box(mx, mainY, mw, 70, "main"),
       text(mx + mw / 2, mainY + 18, "main", "name good", "middle"), text(mx + mw / 2, mainY + 46, model.landed, "big small", "middle"),
       text(mx + mw / 2, mainY + 62, "landed", "sub", "middle")));
     edge(macs.length ? fx + fw : rx + rw, TOP + body / 2, mx, TOP + body / 2, "land", false);
@@ -141,6 +147,14 @@
       panel: line.panel, repository: line.repository }))];
     if (!rows.length) return null;
     const where = one => one.repository || context.repository;
+    // The full reason, behind a toggle that stays open across the page's redraw every two seconds.
+    const opened = context.state.why || (context.state.why = new Set());
+    function why(one) {
+      const key = (one.repository || "") + "\n" + (one.entry || one.text);
+      const element = h("details", { open: opened.has(key) }, h("summary", null, "Why"), h("p", { class: "wrap" }, one.detail));
+      element.addEventListener("toggle", () => { if (element.open) opened.add(key); else opened.delete(key); });
+      return element;
+    }
     return h("section", { class: "card attention", "aria-label": "Needs attention" },
       h("h2", null, "Needs attention", h("span", { class: "muted" }, QK.count(rows.length, "item"))),
       h("ul", { class: "rows needs" }, rows.map(one => h("li", { class: one.level },
@@ -148,12 +162,34 @@
         h("div", { class: "what" },
           h("div", { class: "head" }, h("b", null, one.title), all && one.repository ? QK.tag(one.repository, hues && hues[one.repository]) : null,
             typeof one.at === "number" ? h("span", { class: "sub" }, QK.ago(one.at)) : null),
-          h("div", { class: "wrap text" }, one.text)),
+          h("div", { class: "text ellipsis", title: one.text }, one.text),
+          one.reason ? h("div", { class: "reason sub" }, one.reason,
+            one.detail && one.detail !== one.reason ? why(one) : null) : null),
         h("span", { class: "acts" },
           one.entry ? h("a", { href: QK.href(where(one), "queue", { entry: one.entry }) }, "Entry") : null,
           one.log ? h("a", { href: QK.logHref(context, where(one), one.log) }, "Log") : null,
           one.issue ? h("a", { href: one.issue, target: "_blank", rel: "noopener" }, one.issue.replace(/^.*\/issues\//, "Issue ")) : null,
           one.panel ? h("a", { href: QK.href(all ? null : context.repository, one.panel) }, "Open") : null)))));
+  }
+
+  // The queue in one card, front to back: the rounds being tested, each gate a tile with its ring, and the entries in
+  // them; then what waits, in the order it is taken, each in its own repository's queue where every one is shown.
+  function queueCard(rounds, active, pending, context, hues) {
+    const h = QK.h, all = !context.repository;
+    const gates = rounds.flatMap(round => round.gates.map(gate =>
+      gateTile(gate, round.medianGateSeconds, round.name, context, all ? hues[round.repository] || "other" : null)));
+    return h("div", { class: "card queue" },
+      h("h2", null, "Queue", h("span", { class: "muted" }, QK.count(active.length, "testing", "testing") + " · " + pending.length + " waiting")),
+      h("h3", { class: "label" }, "Testing"),
+      rounds.filter(round => round.bisect).map(round => h("p", { class: "sub" }, (all ? round.repository + ": " : "") + "bisecting "
+        + QK.count(round.bisect.suspects || 0, "entry", "entries") + ": older half " + (round.bisect.older || 0) + ", newer half "
+        + (round.bisect.newer || "waiting for the older"))),
+      gates.length ? h("div", { class: "gates" }, gates) : null,
+      active.length ? h("ul", { class: "rows entries" }, active.map(found => QK.entry(found, context, { compact: true, hues })))
+        : gates.length ? null : h("p", { class: "sub" }, "Nothing is being tested."),
+      h("h3", { class: "label" }, "Up next", h("span", { class: "muted" }, all ? " · oldest first, each in its own repository's queue" : " · in the order it is taken")),
+      pending.length ? h("ol", { class: "rows entries next" }, pending.map(found => QK.entry(found, context, { compact: true, hues })))
+        : h("p", { class: "sub" }, "Nothing is waiting for a round."));
   }
 
   function verdict(found, said, began, context) {
@@ -177,20 +213,14 @@
     ];
   }
 
-  // Every repository's queue at once: their health, the day's numbers, what needs the owner, a row for each
-  // repository, the flow map, every round being tested, and every entry in progress and up next, oldest first.
+  // Every repository's queue at once: their health, the day's numbers, what needs someone, the flow map, and the
+  // queue card with every round being tested and every entry in progress and up next, oldest first.
   function everywhere(element, data, context) {
     const h = QK.h, hues = QK.repositoryHues(data.repositories.map(one => one.name)), rows = data.repositories;
     const began = data.rounds.flatMap(round => round.gates).map(gate => gate.began).filter(at => typeof at === "number");
     const said = [QK.count(rows.length, "repository", "repositories"), data.counts.testing ? data.counts.testing + " testing" : null,
       data.counts.waiting + " in the queues"].filter(Boolean).join(" · ");
     const trend = data.trend || {}, hourly = "per hour, last 24 h";
-    const testing = rows.filter(one => one.gates);
-    // What needs a look first, then what is busy, in the listed order; quiet repositories fold into one line of tags.
-    const rank = one => one.error || one.held || ["danger", "warning", "unknown"].includes(one.health && one.health.level) ? 0
-      : one.testing || one.counts.waiting ? 1 : 2;
-    const shown = rows.filter(one => rank(one) < 2 || rows.length <= 4).sort((a, b) => rank(a) - rank(b));
-    const folded = rows.filter(one => !shown.includes(one));
     QK.fill(element,
       h("div", { class: "card hero" },
         data.health ? verdict(data.health, said, began.length ? Math.min(...began) : null, context) : h("h1", null, said),
@@ -202,39 +232,12 @@
           QK.number("Testing now", data.counts.testing, null, null),
         )),
       attention(data.attention || [], data.lines.filter(line => line.panel !== "queue"), context, hues),
-      h("div", { class: "card" }, h("h2", null, "Repositories", h("span", { class: "muted" }, "Choose one to see it alone")),
-        h("ul", { class: "rows repos" }, shown.map(one => h("li", null, h("a", { class: "row", href: QK.href(one.name, "queue") },
-          h("span", { class: "repository-label" }, h("i", { class: "dot " + (hues[one.name] || "other") }), h("b", null, one.name)),
-          h("span", { class: "chip " + (one.error ? "warning" : (one.health && one.health.level) || one.level) }, h("span", { class: "dot" }),
-            one.error ? "Can't read" : (one.health && one.health.label) || one.headline),
-          h("span", { class: "ellipsis" }, one.error ? h("span", { class: "muted" }, one.error)
-            : [one.headline, h("span", { class: "muted" }, " " + one.detail)]),
-          one.error ? h("span") : h("span", { class: "repo-numbers sub" },
-            h("span", { title: "Waiting" }, one.counts.waiting + " waiting"),
-            h("span", { title: "Landed today" }, one.counts.landed + " landed"),
-            one.counts.cameBack ? h("span", { class: "danger", title: "Came back today" }, one.counts.cameBack + " back") : null),
-          one.error ? h("span") : QK.spark(one.landedTrend, { bars: true, tone: "good", title: "Entries " + one.name + " landed each hour, last 24 hours" }) || h("span"),
-          h("span", { class: "muted" }, "›")))),
-          folded.length ? h("li", { class: "quiet" }, h("span", { class: "sub" }, QK.count(folded.length, "quiet repository", "quiet repositories")),
-            h("span", { class: "quiet-tags" }, folded.map(one => QK.tag(one.name, hues[one.name],
-              one.counts.landed ? "✓ " + one.counts.landed : null, one.counts.landed ? one.name + ": " + one.counts.landed + " landed today" : null)))) : null)),
       h("div", { class: "card" }, h("h2", null, "Flow", h("span", { class: "muted" }, "Agents by branch prefix, across every repository")),
         h("div", { class: "flow-map" }, flowMap({
           queues: data.flow.queues, agents: data.flow.agents, macs: data.flow.macs, back: data.flow.back,
           gates: data.rounds.flatMap(round => round.gates.map(gate => ({ ...gate, round: round.name }))),
           landed: data.counts.landed, moving: data.worker }, context, hues))),
-      testing.length ? h("div", { class: "card" }, h("h2", null, "Testing now", h("span", { class: "muted" },
-          QK.count(data.rounds.length, "round") + " · " + QK.count(data.counts.testing, "entry", "entries"))),
-        data.rounds.filter(round => round.bisect).map(round => h("p", { class: "sub" }, round.repository + ": bisecting "
-          + QK.count(round.bisect.suspects || 0, "entry", "entries") + ": older half " + (round.bisect.older || 0) + ", newer half "
-          + (round.bisect.newer || "waiting for the older"))),
-        h("div", { class: "gates" }, data.rounds.flatMap(round => round.gates.map(gate =>
-          gateTile(gate, round.medianGateSeconds, round.name, context, hues[round.repository] || "other"))))) : null,
-      data.active.length ? h("div", { class: "card" }, h("h2", null, "In progress"),
-        h("ul", { class: "rows entries" }, data.active.map(found => QK.entry(found, context, { compact: true, hues })))) : null,
-      h("div", { class: "card" }, h("h2", null, "Up next", h("span", { class: "muted" }, "Oldest first, each in its own repository's queue")),
-        data.pending.length ? h("ul", { class: "rows entries" }, data.pending.map(found => QK.entry(found, context, { compact: true, hues })))
-          : h("p", { class: "sub" }, "Nothing is waiting for a round.")));
+      queueCard(data.rounds, data.active, data.pending, context, hues));
   }
 
 QK.panel("queue", {
@@ -282,7 +285,6 @@ QK.panel("queue", {
     const activeIds = new Set((round ? round.entries : []).concat(round ? round.gates.flatMap(gate => gate.entries || []) : []));
     const active = data.waiting.filter(entry => activeIds.has(entry.id) || ["testing", "passed"].includes(entry.state));
     const pending = data.waiting.filter(entry => !active.includes(entry));
-    const gate = found => gateTile(found, data.overview.trend && data.overview.trend.medianGateSeconds, data.round.name, context);
     const began = round ? round.gates.filter(one => typeof one.began === "number").map(one => one.began) : [];
     const health = found => verdict(found, overview.headline + ". " + overview.detail, began.length ? Math.min(...began) : null, context);
     QK.fill(element,
@@ -292,10 +294,6 @@ QK.panel("queue", {
           h("p", { class: "wrap" }, overview.detail)],
         QK.overview(overview.counts, overview.trend)),
       attention(data.attention || [], overview.lines.filter(line => line.panel !== "queue" && ["danger", "warning"].includes(line.level)), context, null),
-      overview.lines.some(line => !["danger", "warning"].includes(line.level)) ? h("div", { class: "card" }, h("ul", { class: "rows lines" }, overview.lines.filter(line => !["danger", "warning"].includes(line.level)).map(line =>
-        h("li", null, h("a", { class: "row", href: QK.href(context.repository, line.panel === "queue" && line.title === "Came back" ? "history" : line.panel) },
-          h("b", { class: line.level === "plain" ? null : line.level }, line.title),
-          h("span", { class: "wrap" }, line.text), h("span", { class: "muted" }, "›")))))) : null,
       data.flow ? h("div", { class: "card" }, h("h2", null, "Flow", h("span", { class: "muted" }, "Agents by branch prefix")),
         h("div", { class: "flow-map" }, flowMap({
           queues: [{ name: context.repository, waiting: pending.length, testing: round && round.gates.length ? round.entries.length : 0,
@@ -305,18 +303,7 @@ QK.panel("queue", {
           macs: (data.flow.macs || []).map(one => ({ ...one, gates: one.gates.map(role => ({ repository: context.repository, role })) })),
           back: data.flow.back ? { ...data.flow.back, repository: context.repository } : null,
           landed: overview.counts.landed, moving: data.worker && !data.held }, context))) : null,
-      round ? h("div", { class: "card" },
-        h("h2", null, "Current round", h("span", { class: "muted" },
-          QK.count(round.entries.length, "entry", "entries"))),
-        round.bisect ? h("p", { class: "sub" }, "Bisecting " + QK.count(round.bisect.suspects || 0, "entry", "entries")
-          + ": older half " + (round.bisect.older || 0) + ", newer half " + (round.bisect.newer || "waiting for the older")) : null,
-        round.gates.length ? h("div", { class: "gates" }, round.gates.map(gate))
-          : h("p", { class: "sub" }, "No gate is running yet.")) : null,
-      active.length ? h("div", { class: "card" }, h("h2", null, "In progress"),
-        h("ul", { class: "rows entries" }, active.map(found => QK.entry(found, context, { compact: true })))) : null,
-      h("div", { class: "card" }, h("h2", null, "Up next", h("span", { class: "muted" }, "Oldest first")),
-        pending.length ? h("ul", { class: "rows entries" }, pending.map(found => QK.entry(found, context, { compact: true })))
-          : h("p", { class: "sub" }, "Nothing is waiting for a round.")));
+      queueCard(round ? [{ ...round, medianGateSeconds: data.overview.trend && data.overview.trend.medianGateSeconds }] : [], active, pending, context, {}));
   },
 });
 })();

@@ -20,8 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
 from test_support import farm as farm_fixture
 from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
+from queuekeeper import __version__ as queuekeeper_version
 from queuekeeper_dashboard import admission_ids, panels, registry, repository, server
-from queuekeeper_dashboard.panels import farm, history, home, logs, queue
+from queuekeeper_dashboard.panels import activity, farm, history, home, logs, queue
 
 READ_DEVICES = farm.read_devices
 READ_DETAIL = farm.read_detail  # the real one, which Fixture replaces so that no test asks a Mac
@@ -161,7 +162,9 @@ class QueueDetails(unittest.TestCase):
 class Panels(Fixture):
     def test_the_panels_are_found_by_name_in_tab_order_with_a_script_each(self):
         self.assertEqual([(panel["name"], panel["title"]) for panel in panels.listed()],
-                         [("queue", "Queue"), ("farm", "Farm"), ("history", "History"), ("logs", "Logs")])
+                         [("queue", "Now"), ("farm", "Farm"), ("history", "Trends"), ("activity", "Activity"), ("logs", "Logs"), ("about", "About")])
+        # Logs and About are pages reached from the others' links, not tabs of their own.
+        self.assertEqual([panel["name"] for panel in panels.listed() if not panel["tab"]], ["logs", "about"])
         for name in panels.available():
             self.assertTrue((panels.FOLDER / f"{name}.js").is_file(), name)
             self.assertIn(f'QK.panel("{name}"', (panels.FOLDER / f"{name}.js").read_text())
@@ -305,11 +308,10 @@ class Panels(Fixture):
             icon = server.STATIC / f"device-{kind}.svg"
             self.assertTrue(icon.read_text().startswith("<!--") and "CC BY 4.0" in icon.read_text().splitlines()[0], kind)
 
-    def test_queue_includes_the_overview_and_history_includes_settled_changes(self):
-        identifier = self.settle("human-readable", why="gate failed")
+    def test_queue_includes_the_overview_and_the_queues_health(self):
+        self.settle("human-readable", why="gate failed")
         found = queue.data(self.one, {})
         self.assertEqual(found["overview"]["counts"]["cameBack"], 1)
-        self.assertEqual(history.data(self.one, {})["recent"][0]["id"], identifier)
         # The queue's health is `qk queue health`'s verdict, and before the farm's first reading the Macs are unknown,
         # never well (queuekeeper.health).
         with patch.dict(farm.STATE, {"detail": {}, "devices": None}):
@@ -429,7 +431,11 @@ class Panels(Fixture):
         self.assertEqual([(one["level"], one["title"]) for one in found],
                          [("danger", "Held"), ("warning", "No worker"), ("warning", "Stuck"), ("warning", "Came back"), ("notice", "Flaky")])
         back = found[3]
-        self.assertEqual((back["entry"], back["log"], back["text"]), ("qk1-a", "r1-gate.log", "Add a: its gate failed"))
+        self.assertEqual((back["entry"], back["log"], back["text"], back["reason"], back["detail"]),
+                         ("qk1-a", "r1-gate.log", "Add a", "Its gate failed.", "its gate failed"))
+        # A long reason is cut to its first clause; the whole of it stays as the detail.
+        self.assertEqual(queue.reason("the queue's lanes fail on this commit on top of origin/main: fix it and add it again. While gate ran"),
+                         "The queue's lanes fail on this commit on top of origin/main.")
         self.assertEqual((found[2]["log"], found[4]["issue"], found[4]["text"]), ("r-gate.log", "https://x/issues/7", "t.T.test_x"))
         self.assertEqual(queue.attention({}, [], now), [])
 
@@ -619,7 +625,7 @@ class Panels(Fixture):
         with self.assertRaises(LookupError): logs.data(self.one, {"name": "gate.log", "offset": "x"})
         self.assertEqual(logs.path_of(self.one, "gate.log")[0], queue_.logs / "gate.log")
 
-    def test_history_gives_the_days_totals_and_the_events_newest_first(self):
+    def test_trends_give_the_days_totals_and_each_days_measures(self):
         directory = mq.Queue(self.repo).directory
         events.emit(directory, "round.began", round="r")
         for seconds in (600, 900, 1200): events.emit(directory, "gate.ended", lane="gate", status=0, seconds=seconds)
@@ -630,6 +636,7 @@ class Panels(Fixture):
         events.emit(directory, "entry.landed", entry="b", subject="Add b", landedAs="0123456789abcdef")
         with patch.object(events.time, "time", return_value=time.time() - 3 * 86400):
             events.emit(directory, "entry.landed", entry="old", landedAs="f" * 40)
+            events.emit(directory, "gate.ended", lane="gate", status=0, seconds=1800)
         found = history.data(self.one, {})
         self.assertEqual(found["today"], {"landed": 1, "cameBack": 1, "failed": 1, "conflict": 0, "removed": 0, "flaky": 1,
                                           "rounds": 1, "medianGateSeconds": 900})
@@ -637,25 +644,66 @@ class Panels(Fixture):
         settled = history.totals([{"time": now, "kind": kind} for kind in
                                   ("entry.landed", "entry.conflict", "entry.conflict", "entry.removed", "entry.failed")], now)
         self.assertEqual([settled[key] for key in ("landed", "failed", "conflict", "removed", "cameBack")], [1, 1, 2, 1, 3])
-        self.assertEqual(found["total"], 10)
-        self.assertEqual(found["events"][1], {"time": found["events"][1]["time"], "kind": "entry.landed",
-                                             "text": "b landed as 0123456789ab", "level": "success", "entry": "b"})
-        self.assertEqual([event["level"] for event in found["events"][2:4]], ["danger", "warning"])
-        self.assertEqual([event["kind"] for event in history.data(self.one, {"kind": "entry."})["events"]],
-                         ["entry.landed", "entry.landed", "entry.failed"])
+        # Each day from the journal's first, today last: what landed and came back, flaky tests, and each passing
+        # gate as a share of the median of every passing gate over the period (1050 s of 600, 900, 1200 and 1800).
+        days = found["daily"]
+        self.assertEqual(len(days), 4)
+        self.assertEqual([(one["landed"], one["cameBack"], one["flaky"]) for one in days], [(1, 0, 0), (0, 0, 0), (0, 0, 0), (1, 1, 1)])
+        self.assertEqual((days[0]["medianGateSeconds"], days[0]["gateShares"]), (1800, [round(1800 / 1050, 2)]))
+        self.assertEqual((days[-1]["medianGateSeconds"], days[-1]["gateShares"]), (900, [round(seconds / 1050, 2) for seconds in (600, 900, 1200)]))
         self.assertEqual(history.summary(self.one)["text"], "old")
 
-    def test_history_shows_only_the_last_events_of_a_long_journal(self):
+    def test_activity_lists_each_round_with_how_its_entries_ended_and_its_lanes(self):
+        directory, start = mq.Queue(self.repo).directory, time.time() - 600
+        def at(offset, kind, **fields):
+            with patch.object(events.time, "time", return_value=start + offset): events.emit(directory, kind, **fields)
+        at(0, "entry.queued", entry="e1", subject="Add one", branch="agent/one")
+        at(1, "entry.queued", entry="e2", subject="Add two", branch="agent/two")
+        at(10, "round.began", round="r1", entries=["e1", "e2"], head="h" * 40)
+        at(11, "gate.began", lane="spelling", round="r1", role="batch")
+        at(14, "gate.ended", lane="spelling", round="r1", role="batch", status=0, seconds=3, log="/q/logs/r1-spelling.log")
+        at(15, "gate.began", lane="gate", round="r1", role="batch")
+        at(300, "gate.ended", lane="gate", round="r1", role="batch", status=1, seconds=285, log="/q/logs/r1-gate.log")
+        at(301, "test.flaky", test="t.T.test_x", commit="h" * 40, issue="https://x/issues/7")
+        at(302, "entry.landed", entry="e1", landedAs="a" * 40)
+        at(303, "queue.held", why="for a session: a test")
+        at(304, "queue.resumed", was="for a session: a test")
+        at(310, "round.began", round="r2", entries=["e2"], head="k" * 40)
+        at(311, "gate.began", lane="gate", round="r2", role="batch")
+        feed = activity.data(self.one, {})["feed"]
+        self.assertEqual([one.get("round") or one["text"] for one in feed],
+                         ["r2", "The queue resumed after it was held for a session: a test", "The queue was held for a session: a test", "r1"])
+        r2, r1 = feed[0], feed[3]
+        self.assertEqual([(entry["id"], entry["state"]) for entry in r1["entries"]], [("e1", "landed"), ("e2", "retested")])
+        self.assertEqual((r1["entries"][0]["subject"], r1["entries"][0]["branch"], r1["entries"][0]["landedAs"]), ("Add one", "agent/one", "a" * 40))
+        self.assertEqual([(lane["lane"], lane["status"], lane["log"]) for lane in r1["lanes"]], [("spelling", 0, "r1-spelling.log"), ("gate", 1, "r1-gate.log")])
+        self.assertEqual(r1["flaky"], [{"test": "t.T.test_x", "issue": "https://x/issues/7"}])
+        self.assertEqual([(entry["id"], entry["state"]) for entry in r2["entries"]], [("e2", "testing")])
+        self.assertEqual([(lane["lane"], lane["status"], lane["log"]) for lane in r2["lanes"]], [("gate", None, "r2-gate.log")])
+        # A settled entry that came back says why, in the round it was tested in last.
+        at(400, "entry.failed", entry="e2", why="its gate failed")
+        feed = activity.data(self.one, {})["feed"]
+        self.assertEqual([feed[0]["entries"][0][key] for key in ("state", "why", "reason")], ["back", "its gate failed", "Its gate failed."])
+
+    def test_about_names_the_version_and_license_and_each_third_party_notice(self):
+        found = panels.load("about").data(self.one, {})
+        self.assertEqual((found["version"], found["license"]["name"]), (queuekeeper_version, "Apache License 2.0"))
+        # The page's notices are the works THIRD_PARTY_NOTICES.md describes, one for each of its sections.
+        notices = Path(panels.__file__).resolve().parents[3] / "THIRD_PARTY_NOTICES.md"
+        sections = [line[3:].strip() for line in notices.read_text().splitlines() if line.startswith("## ")]
+        self.assertEqual([one["name"] for one in found["notices"]], sections)
+        for one in found["notices"]:
+            self.assertTrue(one["url"].startswith("https://") and one["licenseUrl"].startswith("https://"), one["name"])
+
+    def test_activity_shows_the_last_rounds_and_more_when_asked(self):
         directory = mq.Queue(self.repo).directory
-        for number in range(history.MOST + 5): events.emit(directory, "queue.resumed", was=str(number))
-        found = history.data(self.one, {})
-        self.assertEqual((len(found["events"]), found["total"]), (history.MOST, history.MOST + 5))
-        events.emit(directory, "gate.ended", lane="gate", status=1, log="/x/logs/r1-gate.log")
-        self.assertEqual(history.data(self.one, {})["events"][0]["log"], "r1-gate.log")
+        for number in range(activity.ROUNDS + 5): events.emit(directory, "round.began", round=f"r{number}", entries=[])
+        found = activity.data(self.one, {})
+        self.assertEqual((len(found["feed"]), found["total"], found["feed"][0]["round"]), (activity.ROUNDS, activity.ROUNDS + 5, f"r{activity.ROUNDS + 4}"))
+        self.assertEqual(len(activity.data(self.one, {"rounds": str(activity.ROUNDS + 5)})["feed"]), activity.ROUNDS + 5)
+        with self.assertRaises(LookupError): activity.data(self.one, {"rounds": "x"})
         self.assertIsNone(history.summary(self.one))
 
-
-class Repositories(Fixture):
     def test_a_snapshot_serves_every_panel_for_a_moment_and_the_journal_until_it_changes(self):
         with patch.object(repository.merge_queue, "snapshot", wraps=mq.snapshot) as read:
             for _ in range(5): self.one.snapshot()
@@ -777,20 +825,24 @@ class EveryRepository(Fixture):
         def part(at, landed): return {"today": day(landed), "yesterday": day(1), "gateSeconds": [300, 310],
                                       "gates": [{"began": at, "ended": at + 5, "lane": "gate", "status": 0, "mac": None, "round": None, "log": None}],
                                       "landings": [{"day": 100.0, "hours": [landed] + [0] * 23}],
-                                      "recent": [{"id": f"e{at}", "settled": at}], "total": 1,
-                                      "events": [{"time": at, "kind": "entry.landed", "text": "x", "level": "success"}]}
+                                      "daily": [{"day": 100.0, "landed": landed, "cameBack": 1, "flaky": 0, "medianGateSeconds": 300,
+                                                 "gateShares": [1.0, at / 10]}]}
         found = history.combine([("alpha", part(10.0, 2), None), ("beta", part(20.0, 3), None), ("gamma", None, "no queue")])
         self.assertEqual((found["today"]["landed"], found["today"]["rounds"], found["today"]["medianGateSeconds"]), (5, 4, None))
         self.assertEqual(found["landings"], [{"day": 100.0, "hours": [5] + [0] * 23}])
-        self.assertEqual([one["repository"] for one in found["events"]], ["beta", "alpha"])
-        self.assertEqual([one["repository"] for one in found["recent"]], ["beta", "alpha"])
+        # Each day's counts are summed and every repository's gate shares kept; seconds are no repository's but its own.
+        self.assertEqual(found["daily"], [{"day": 100.0, "landed": 5, "cameBack": 2, "flaky": 0, "medianGateSeconds": None,
+                                           "gateShares": [1.0, 1.0, 1.0, 2.0]}])
         self.assertEqual([one["repository"] for one in found["gates"]], ["alpha", "beta"])
         self.assertEqual([row.get("error") for row in found["repositories"]], [None, None, "no queue"])
-        self.assertEqual(found["total"], 2)
+        feeds = activity.combine([("alpha", {"feed": [{"kind": "round", "time": 10.0}, {"kind": "notice", "time": 15.0}], "total": 3}, None),
+                                  ("beta", {"feed": [{"kind": "round", "time": 20.0}], "total": 1}, None), ("gamma", None, "no queue")], most=2)
+        self.assertEqual([(one["repository"], one["time"]) for one in feeds["feed"]], [("beta", 20.0), ("alpha", 15.0), ("alpha", 10.0)])
+        self.assertEqual((feeds["total"], feeds["unread"]), (4, [{"name": "gamma", "error": "no queue"}]))
 
     def test_the_real_panels_answer_for_every_repository(self):
         (mq.Queue(self.repo).logs / "r-gate.log").write_text("hello\n")
-        found = {name: panels.load(name).everywhere({"project": self.one}, {}) for name in ("queue", "farm", "history", "logs")}
+        found = {name: panels.load(name).everywhere({"project": self.one}, {}) for name in ("queue", "farm", "history", "activity", "logs", "about")}
         self.assertEqual([row["name"] for row in found["queue"]["repositories"]], ["project"])
         self.assertEqual([row["name"] for row in found["history"]["repositories"]], ["project"])
         self.assertEqual({log["repository"] for log in found["logs"]["logs"]}, {"project"})
@@ -798,7 +850,7 @@ class EveryRepository(Fixture):
         self.assertEqual((chunk["text"], chunk["repository"], chunk["log"]["repository"]), ("hello\n", "project", "project"))
         with self.assertRaises(LookupError): panels.load("logs").everywhere({"project": self.one}, {"name": "r-gate.log"})
         self.assertEqual({panel["name"]: panel["everywhere"] for panel in panels.listed()},
-                         {"queue": True, "farm": True, "history": True, "logs": True})
+                         {"queue": True, "farm": True, "history": True, "activity": True, "logs": True, "about": True})
 
 
 class Served(Fixture):
@@ -851,7 +903,7 @@ class Served(Fixture):
             self.assertNotIn("innerHTML", path.read_text(), path.name)
 
     def test_the_api_lists_the_panels_and_the_repositories(self):
-        self.assertEqual([panel["name"] for panel in self.api("/panels")[1]], ["queue", "farm", "history", "logs"])
+        self.assertEqual([panel["name"] for panel in self.api("/panels")[1]], ["queue", "farm", "history", "activity", "logs", "about"])
         status, found = self.api("/repositories")
         self.assertEqual((status, found), (200, [{"name": "project", "level": "idle", "headline": "Idle",
                                                   "detail": "Nothing is waiting.", "waiting": 0}]))

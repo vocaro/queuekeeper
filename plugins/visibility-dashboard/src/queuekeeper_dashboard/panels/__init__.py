@@ -4,6 +4,7 @@ A panel module has:
 
     TITLE     its tab's label
     ORDER     where its tab stands among the others, lowest first
+    TAB       optional: False for a page reached from the others' links rather than from a tab of its own
     data(repository, query)   what its script draws, as JSON: query is the request's, as {name: text}
     everywhere(repositories, query)   what its script draws for every repository at once, the page's first view:
                               repositories is {name: repository.Repository} in the order listed. A panel without
@@ -39,9 +40,9 @@ def listed():
             module = load(name)
             if getattr(module, "HIDDEN", False): continue
             found.append({"name": name, "title": module.TITLE, "order": module.ORDER,
-                          "everywhere": hasattr(module, "everywhere")})
+                          "everywhere": hasattr(module, "everywhere"), "tab": getattr(module, "TAB", True)})
         except Exception as error:  # noqa: BLE001
-            found.append({"name": name, "title": name.capitalize(), "order": 1000, "everywhere": True, "error": str(error)})
+            found.append({"name": name, "title": name.capitalize(), "order": 1000, "everywhere": True, "tab": True, "error": str(error)})
     return sorted(found, key=lambda panel: (panel["order"], panel["name"]))
 
 

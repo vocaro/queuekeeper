@@ -197,6 +197,17 @@ def make(given=(), port=PORT, bind=BIND):
     return server
 
 
+def warm(app):
+    """Read what the first page will ask for, in the background as the server starts: each repository's journal and
+    queue, the farm (whose reading then goes on in the background), and the Now tab for every repository. A server
+    restarts itself after each landing that moves its checkout, so a page left open would otherwise wait on all of it
+    at once, on a Mac the landing's own work may still keep busy. Whatever fails here is asked again by the page."""
+    for path in ("/repositories", "/all/panel/queue"):
+        try: app.answer(path, {})
+        except Exception:  # noqa: BLE001 - the page's own request says what went wrong
+            pass
+
+
 def stopped(number, frame):
     raise KeyboardInterrupt
 
@@ -230,6 +241,7 @@ def main(argv, project=None):
     if args.bind not in (BIND, "localhost", "::1"):
         print(f"queuekeeper: {args.bind} is not this Mac alone: every machine that can reach it can read the queue "
               "and its logs", file=sys.stderr, flush=True)
+    threading.Thread(target=warm, args=(server.app,), name="warm", daemon=True).start()
     checkout = restartable.code_checkout()
     if checkout:
         server.commit = restartable.head(checkout)

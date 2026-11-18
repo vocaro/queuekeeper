@@ -36,12 +36,29 @@ QK.panel("farm", {
       ...found.holders.map(one => one.project), ...found.waiters.map(one => one.project)]),
       ...samples.flatMap(one => Object.keys(one.projects || {}).filter(name => name !== "other"))]);
     const hue = project => project ? hues[project] || "other" : "other";
+    // Why a request waits: its first reason, then the rest (its other reasons, the limit and where it is set) behind
+    // a Why toggle that stays open across the page's redraw. The row is a link, so the toggle does not follow it.
+    const opened = context.state.why || (context.state.why = new Set());
+    function waitingWhy(one) {
+      const first = one.reason.split(/;\s+(?:and\s+)?/)[0].replace(/\s*\([^()]*\)\s*$/, "");
+      const short = "Waiting: " + first.charAt(0).toUpperCase() + first.slice(1);
+      if (first === one.reason) return h("span", { class: "sub wrap warning work-why" }, short);
+      const key = one.id || one.label, rest = h("span", { class: "work-why-rest wrap", hidden: !opened.has(key) }, one.reason);
+      const toggle = h("button", { type: "button", class: "why-toggle", "aria-expanded": String(opened.has(key)), onclick: event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (opened.has(key)) opened.delete(key); else opened.add(key);
+        rest.hidden = !opened.has(key);
+        toggle.setAttribute("aria-expanded", String(opened.has(key)));
+      } }, "Why");
+      return h("span", { class: "sub wrap warning work-why" }, short, " ", toggle, rest);
+    }
     function work(one, host, running) {
       const content = [h("i", { class: "dot " + hue(one.project), title: one.project || "No project recorded" }),
         h("span", { class: "work-label" },
         h("span", { class: "ellipsis work-title" }, one.label || "Unnamed work"),
         h("span", { class: "sub mono wrap work-id" }, [one.project, one.id || "ID unavailable"].filter(Boolean).join(" · ")),
-        !running && one.reason ? h("span", { class: "sub wrap warning work-why" }, "Waiting: " + one.reason) : null),
+        !running && one.reason ? waitingWhy(one) : null),
         h("span", { class: "muted" }, typeof (running ? one.heldSeconds : one.waitedSeconds) === "number"
           ? QK.span(running ? one.heldSeconds : one.waitedSeconds) : "–")];
       return h("li", null, one.id ? h("a", { class: "row", href: QK.href(context.repository, "farm", {
@@ -183,9 +200,6 @@ QK.panel("farm", {
               h("span", { class: "pill", title: "Reservation status" }, reservationNames[device.state] || device.state))))) : !record.error && !record.deferredTo
               ? h("p", { class: "sub" }, "No physical devices recorded yet. Devices appear after a reservation with qk devices take or qk devices reserve.") : null,
         ]),
-      // The icons' license, CC BY 4.0, asks for credit and a link (THIRD_PARTY_NOTICES.md).
-      h("p", { class: "sub credit" }, "Device icons by ", h("a", { href: "https://streamlinehq.com", rel: "noopener" }, "Streamline"),
-        ", ", h("a", { href: "https://creativecommons.org/licenses/by/4.0/", rel: "noopener license" }, "CC BY 4.0"), "."),
       data.readAt ? h("p", { class: "sub" }, "Every project's work on each Mac. Read " + QK.ago(data.readAt) + "."
         + (data.error ? " The last reading failed: " + data.error : "")) : null);
   },

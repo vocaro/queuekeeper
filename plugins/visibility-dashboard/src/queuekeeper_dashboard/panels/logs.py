@@ -14,6 +14,7 @@ from queuekeeper import farm
 from . import each
 
 TITLE, ORDER = "Logs", 100
+TAB = False  # a page reached from a lane on the Activity tab, a failure or an entry, not a tab of its own
 MOST, TAIL, CHUNK, BACK = 100, 64 << 10, 256 << 10, 8 << 10
 WORKER = "worker.log"
 INDEXED = 32 << 20  # the largest log that is indexed; a larger one is read without line numbers or marks

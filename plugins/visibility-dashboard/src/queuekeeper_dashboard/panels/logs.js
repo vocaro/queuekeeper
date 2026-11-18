@@ -27,9 +27,10 @@ QK.panel("logs", {
       state.searchBox = h("input", { type: "search", id: "log-search", placeholder: all ? "Find a repository, commit or lane" : "Find a commit or lane", "aria-label": "Find a log",
         oninput: () => { state.search = state.searchBox.value.trim().toLowerCase(); state.listed = null; browse(state.logs || []); } });
       state.chips = h("div", { class: "filters" });
-      state.head = h("div", { class: "card loghead" });
+      state.crumb = h("nav", { class: "crumb", "aria-label": "Where this log is" });
+      state.head = h("div", { class: "loghead" });
       state.failures = h("div", { class: "card", hidden: true });
-      state.overview = h("div", { class: "card", hidden: true });
+      state.overview = h("div", { class: "overview", hidden: true });
       state.findBox = h("input", { type: "search", id: "log-find", placeholder: "Find in this log", "aria-label": "Find in this log",
         oninput: () => { clearTimeout(state.typing); state.typing = setTimeout(find, 300); },
         onkeydown: event => { if (event.key === "Enter") { event.preventDefault(); step(event.shiftKey ? -1 : 1); } } });
@@ -39,10 +40,12 @@ QK.panel("logs", {
       state.pane = h("div", { class: "logtext", tabindex: 0, "aria-label": "Log text", onscroll: scrolled });
       state.latest = h("button", { class: "latest", type: "button", hidden: true, onclick: latest }, "↓ Latest");
       state.note = h("p", { class: "sub" });
-      QK.fill(element, h("div", { class: "logs" },
+      // A breadcrumb across the top; this round's logs on the left; on the right, the log's failures when it has
+      // any, then one card with its title and facts, the bar of the whole log, the find bar and the text.
+      QK.fill(element, h("div", { class: "logs" }, state.crumb,
         h("div", { class: "card browser" }, state.searchBox, state.chips, state.list),
-        h("div", { class: "viewer" }, state.head, state.failures, state.overview,
-          h("div", { class: "card reading" },
+        h("div", { class: "viewer" }, state.failures,
+          h("div", { class: "card reading" }, state.head, state.overview,
             h("div", { class: "findbar" }, state.findBox, state.count,
               h("button", { type: "button", "aria-label": "Previous match", onclick: () => step(-1) }, "↑"),
               h("button", { type: "button", "aria-label": "Next match", onclick: () => step(1) }, "↓"),
@@ -167,10 +170,18 @@ QK.panel("logs", {
     const MEANING = { gate: "the tests every entry must pass", docs: "documentation checks", spelling: "spelling checks",
       "pre-push": "the check before a push", carry: "a check after carrying a change over" };
     function browse(logs) {
-      const signature = JSON.stringify([state.name, state.repository, state.failedOnly, state.lane, state.search, [...state.rounds], state.workers,
+      const signature = JSON.stringify([state.name, state.repository, state.failedOnly, state.lane, state.search, [...state.rounds], state.workers, state.every,
         logs.map(log => [log.repository, log.name, log.status, Math.round(log.modified / 30)])]);
       if (signature === state.listed) return;
       state.listed = signature;
+      // A log of a round lists that round's logs alone, beside its repository's worker.log, until the reader asks for
+      // every log; this page is reached from a round on the Activity tab, which is where to find another.
+      const chosen = logs.find(same), scoped = !!(chosen && chosen.round) && !state.every;
+      state.searchBox.hidden = scoped;
+      if (scoped) {
+        logs = logs.filter(log => log.repository === chosen.repository && (log.name === "worker.log" || (log.round === chosen.round && log.commit === chosen.commit)));
+        QK.fill(state.chips, h("span", { class: "label" }, "This round's logs"));
+      }
       const lanes = [...new Set(logs.map(log => log.lane).filter(lane => lane && lane !== "rerun"))]
         .sort((a, b) => (LANES.indexOf(a) + 1 || 99) - (LANES.indexOf(b) + 1 || 99) || a.localeCompare(b));
       if (!lanes.includes(state.lane)) state.lane = "";
@@ -185,7 +196,7 @@ QK.panel("logs", {
             lane + (said ? " · " + said : "") + (all && by.length ? " (" + (by.length > 2 ? by.length + " repositories" : by.join(", ")) + ")" : ""));
         }));
       picker.value = state.lane;
-      QK.fill(state.chips,
+      if (!scoped) QK.fill(state.chips,
         h("div", { class: "segmented", role: "group", "aria-label": "Show" },
           [["All results", false], ["Failed only", true]].map(([label, value]) => h("button", { type: "button", "aria-pressed": String(state.failedOnly === value),
             title: value ? "Only logs of runs that failed" : "Logs of every run, whatever its result", onclick: () => { state.failedOnly = value; again(); } }, label))),
@@ -207,7 +218,7 @@ QK.panel("logs", {
       const open = !all || workers.length < 3 || state.workers || !!state.search || workers.some(same);
       const rows = all && workers.length >= 3 ? [h("button", { type: "button", class: "reruns", "aria-expanded": String(open), onclick: () => {
         state.workers = !open; state.listed = null; browse(state.logs || []); } }, (open ? "▾ " : "▸ ") + QK.count(workers.length, "worker log"))] : [];
-      if (open) rows.push(workers.map(worker => row(worker, [h("b", null, "worker.log"), all ? " " : null, tag(worker.repository)], all && workers.length >= 3 ? "indent" : null)));
+      if (open && !scoped) rows.push(workers.map(worker => row(worker, [h("b", null, "worker.log"), all ? " " : null, tag(worker.repository)], all && workers.length >= 3 ? "indent" : null)));
       let heading = null;
       // Newest round first, whichever repository it is in.
       for (const group of [...groups.values()].sort((a, b) => b.round.localeCompare(a.round))) {
@@ -216,14 +227,14 @@ QK.panel("logs", {
           .sort((a, b) => (LANES.indexOf(a.lane) + 1 || 99) - (LANES.indexOf(b.lane) + 1 || 99) || a.lane.localeCompare(b.lane));
         if (!main.length) continue;
         const at = when(group.round), title = at ? day(at) : "";
-        if (title !== heading) { heading = title; rows.push(h("div", { class: "day label" }, title)); }
-        rows.push(h("div", { class: "roundhead" }, h("span", { class: "tnum" }, at ? hhmm(at) : group.round), tag(group.repository),
+        if (!scoped && title !== heading) { heading = title; rows.push(h("div", { class: "day label" }, title)); }
+        if (!scoped) rows.push(h("div", { class: "roundhead" }, h("span", { class: "tnum" }, at ? hhmm(at) : group.round), tag(group.repository),
           h("span", { class: "mono sub" }, group.commit)));
         for (const log of main) {
           const own = log.lane === "gate" ? reruns : null;
           rows.push(row(log, log.lane, null, own));
           if (!own || !own.length) continue;
-          const key = group.repository + group.round + group.commit, open = state.rounds.has(key) || own.some(same);
+          const key = group.repository + group.round + group.commit, open = scoped || state.rounds.has(key) || own.some(same);
           const passed = own.filter(rerun => rerun.status === 0).length, tests = new Set(own.map(rerun => rerun.test)).size;
           rows.push(h("button", { type: "button", class: "reruns", "aria-expanded": String(open), onclick: () => {
             if (state.rounds.has(key)) state.rounds.delete(key); else state.rounds.add(key);
@@ -234,6 +245,9 @@ QK.panel("logs", {
           if (open) rows.push(own.map(rerun => row(rerun, "rerun " + rerun.test + "." + rerun.attempt, "indent")));
         }
       }
+      // A round's own logs first, then the queue's own log, then the way to every other log.
+      if (scoped) rows.push(workers.map(worker => row(worker, [h("b", null, "worker.log"), h("span", { class: "sub" }, " the queue's own")])),
+        h("button", { type: "button", class: "more every", onclick: () => { state.every = true; state.listed = null; browse(state.logs || []); } }, "Every log ›"));
       const others = other.filter(shown);
       if (others.length) rows.push(h("div", { class: "day label" }, "Other logs"), others.map(log => row(log, [log.name, all ? " " : null, tag(log.repository)])));
       for (const one of data.unread || []) rows.push(h("p", { class: "sub warning wrap" }, one.repository + " cannot be read: " + one.error));
@@ -247,9 +261,12 @@ QK.panel("logs", {
       const [tone, glyph, said] = mark(log, state.reruns), at = when(log.round);
       const tests = index && index.summary ? /(\d+) tests? \((\d+) skipped\)/.exec(index.summary) : null;
       const failures = index ? unique(index.failures).length : 0;
+      QK.fill(state.crumb, h("a", { href: QK.href(context.repository, "activity") }, "‹ Activity"),
+        all && state.repository ? [h("span", { class: "muted" }, "/"), tag(state.repository)] : null,
+        h("span", { class: "muted" }, "/"),
+        at ? h("span", null, "round " + day(at).toLowerCase() + " " + hhmm(at), log.commit ? h("span", { class: "mono muted" }, " · " + log.commit) : null)
+          : h("span", { class: "mono" }, log.name));
       const facts = [
-        all && state.repository ? ["Repository", state.repository] : null,
-        at ? ["Round", day(at) + " " + hhmm(at)] : null, log.commit ? ["Commit", log.commit] : null,
         log.lane && log.lane !== "rerun" && typeof log.status === "number" ? ["Mac", log.mac || "this Mac"] : null,
         typeof log.seconds === "number" ? ["Took", QK.span(log.seconds)] : null,
         tests ? ["Tests", Number(tests[1]).toLocaleString() + (failures ? ", " + failures + " failed" : "")] : null,
@@ -261,9 +278,9 @@ QK.panel("logs", {
       QK.fill(state.head,
         h("div", { class: "logtitle" }, h("h2", null, log.lane === "rerun" ? "rerun " + log.test + "." + log.attempt : log.lane || log.name),
           log.round || typeof log.status === "number" ? h("span", { class: "pill " + tone }, glyph + " " + said) : null,
-          h("span", { class: "mono sub ellipsis" }, log.name)),
-        h("dl", { class: "facts" }, facts.map(([key, value]) => h("div", null, h("dt", null, key), h("dd", null, value)))),
-        state.path && navigator.clipboard ? h("div", { class: "actions" }, copy) : null);
+          h("span", { class: "mono sub ellipsis" }, log.name),
+          state.path && navigator.clipboard ? copy : null),
+        h("dl", { class: "facts" }, facts.map(([key, value]) => h("div", null, h("dt", null, key), h("dd", null, value)))));
     }
     function unique(failures) {
       const seen = new Set();
@@ -308,10 +325,8 @@ QK.panel("logs", {
         const box = bar.getBoundingClientRect();
         go(Math.max(1, Math.round((event.clientX - box.left) / box.width * index.lines)));
       });
-      QK.fill(state.overview, h("h2", null, "Whole log", h("span", { class: "muted" }, "Click to go there")), bar,
-        h("div", { class: "axis-row sub" }, h("span", null, "line 1"), h("span", null, "line " + index.lines.toLocaleString())),
-        h("div", { class: "legend sub" }, h("span", null, h("i", { class: "key fail" }), "failure"), h("span", null, h("i", { class: "key pass" }), "suite passed"),
-          h("span", null, h("i", { class: "key beat" }), "heartbeat"), h("span", null, h("i", { class: "key window" }), "loaded")));
+      bar.prepend(svg("title", null, "The whole log: red a failure, green a suite that passed, gray a heartbeat, the box what is loaded. Click to go there."));
+      QK.fill(state.overview, bar);
     }
 
     // The text: a class for each line, runs of passing suites (or, with Failures only, of all but failures) folded.

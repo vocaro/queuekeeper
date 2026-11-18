@@ -121,6 +121,13 @@ h3.label { margin-top: 12px; }
 .rows.needs .head { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
 .rows.needs li.danger .head b { color: var(--bad); } .rows.needs li.warning .head b { color: var(--warn); }
 .rows.needs .text { font-size: var(--text-small); }
+.rows.needs .what { min-width: 0; }
+.rows.needs .reason { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
+.rows.needs details { display: contents; }
+.rows.needs details summary { cursor: pointer; color: var(--accent); list-style: none; }
+.rows.needs details summary::-webkit-details-marker { display: none; }
+.rows.needs details summary::after { content: " ▸"; } .rows.needs details[open] summary::after { content: " ▾"; }
+.rows.needs details p { flex-basis: 100%; margin: 4px 0 0; font-size: var(--text-micro); overflow-wrap: anywhere; }
 .rows.needs .acts { display: flex; gap: 10px; font-size: var(--text-small); white-space: nowrap; }
 /* Share a content-sized name column across repository rows, including each status dot. */
 /* Every repository at once: a row for each on Queue, and a tag of its name in its hue beside what it owns. */
@@ -232,6 +239,10 @@ a.tag:hover { color: var(--text); }
 .rows.work .dot { width: 9px; height: 9px; }
 .rows.work .dot.other { background: var(--muted); }
 .work-why { display: block; }
+.why-toggle { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; }
+.why-toggle::after { content: " ▸"; } .why-toggle[aria-expanded=true]::after { content: " ▾"; }
+.work-why-rest { display: block; margin-top: 2px; color: var(--muted); font-size: var(--text-micro); }
+.work-why-rest[hidden] { display: none; }
 .stack { display: block; width: 100%; height: 150px; }
 .stack .layer { fill: var(--muted); fill-opacity: 0.85; stroke: none; }
 .stack .layer.p1 { fill: var(--p1); } .stack .layer.p2 { fill: var(--p2); } .stack .layer.p3 { fill: var(--p3); } .stack .layer.p4 { fill: var(--p4); } .stack .layer.p5 { fill: var(--p5); } .stack .layer.p6 { fill: var(--p6); } .stack .layer.p7 { fill: var(--p7); } .stack .layer.p8 { fill: var(--p8); } .stack .layer.p9 { fill: var(--p9); } .stack .layer.p10 { fill: var(--p10); } .stack .layer.p11 { fill: var(--p11); } .stack .layer.p12 { fill: var(--p12); }
@@ -287,7 +298,10 @@ a.tag:hover { color: var(--text); }
 .card button.more:focus-visible, .card .chips button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .timeline li.hour { display: block; padding-top: 10px; }
 .timeline li.hour::before { display: none; }
-.credit { margin: 8px 2px 0; }
+header .corner { justify-self: end; display: flex; gap: 14px; align-items: baseline; }
+header .about { font-size: var(--text-small); color: var(--muted); text-decoration: none; }
+header .about:hover { color: var(--accent); }
+.rows.notices > li { display: grid; gap: 2px; padding: 8px 0; }
 .pill.failed, .pill.conflict { background: var(--bad-bg); color: var(--bad); }
 .pill.queued::before { content: "○ "; } .pill.testing::before { content: "◐ "; } .pill.passed::before { content: "● "; }
 .pill.landed::before { content: "✓ "; } .pill.failed::before { content: "✕ "; } .pill.conflict::before { content: "⇄ "; }
@@ -332,7 +346,17 @@ a.tag:hover { color: var(--text); }
 body:has(main > .logs) { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
 body:has(main > .logs) > header { flex: none; }
 main:has(> .logs) { max-width: 1400px; width: 100%; flex: 1; min-height: 0; display: flex; padding-bottom: 12px; }
-.logs { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 12px; }
+.logs { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 10px 12px; }
+.logs > .crumb { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: var(--text-small); }
+.logs > .crumb a { font-weight: 500; }
+.logs .browser > .filters > .label { padding: 2px 4px 0; }
+.logs .loglist button.more.every { text-align: left; padding: 10px 6px 2px; font-size: var(--text-small); }
+.reading > .loghead { margin-bottom: 8px; }
+.reading > .loghead .logtitle h2 { font-size: 1.125rem; }
+.reading > .loghead .logtitle > button { margin-left: auto; }
+.reading > .loghead dl.facts { margin-top: 4px; color: var(--muted); }
+.reading > .overview { margin-bottom: 8px; }
+.reading > .overview svg.strip { height: 18px; }
 .logs .browser { min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; padding: 12px; }
 .logs .browser input { width: 100%; }
 .logs input[type=search] { font: inherit; font-size: var(--text-small); background: var(--card); color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; min-width: 0; }
@@ -342,9 +366,53 @@ main:has(> .logs) { max-width: 1400px; width: 100%; flex: 1; min-height: 0; disp
 .logs button:focus-visible, .logs input:focus-visible, .logrow:focus-visible, .logtext:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; }
 .logs .filters { display: grid; gap: 6px; }
+/* The Now tab's Queue card: Testing, then Up next numbered by place. */
+.card.queue > h3.label { margin: 12px 0 6px; } .card.queue > h3.label:first-of-type { margin-top: 2px; }
+.card.queue > h3.label .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.card.queue > .gates { margin-bottom: 8px; }
+ol.rows.next { counter-reset: place; }
+ol.rows.next > li { counter-increment: place; position: relative; padding-left: 32px; }
+ol.rows.next > li::after { content: counter(place); position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 22px; height: 22px;
+  border-radius: 50%; display: grid; place-items: center; background: var(--soft); color: var(--muted); font-size: var(--text-micro); font-weight: 700; }
+/* A segmented switch: buttons side by side, the chosen one pressed. */
+.segmented { display: inline-flex; }
 .logs .segmented { display: grid; grid-template-columns: 1fr 1fr; }
-.logs .segmented button { border-radius: 0; } .logs .segmented button:first-child { border-radius: 6px 0 0 6px; }
-.logs .segmented button:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+.segmented button { font: inherit; font-size: var(--text-small); padding: 2px 10px; border: 1px solid var(--line); background: var(--card); color: inherit; cursor: pointer; border-radius: 0; }
+.segmented button + button { margin-left: -1px; }
+.segmented button:first-child { border-radius: 6px 0 0 6px; } .segmented button:last-child { border-radius: 0 6px 6px 0; }
+.segmented button[aria-pressed=true] { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); position: relative; }
+.segmented button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; position: relative; }
+.card > h2 .segmented { font-weight: 400; }
+/* Activity: a feed of rounds, a row each with its time, how its entries ended and a chip per lane that opens its
+   log; holds and resumes as quiet lines between them. */
+.activity .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 4px; }
+.activity input[type=search] { font: inherit; font-size: var(--text-small); flex: 1 1 220px; min-width: 0; padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: inherit; }
+.feed { list-style: none; margin: 0; padding: 0; }
+.feed > .day { padding: 14px 0 4px; }
+.feed > .round, .feed > .notice-row { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr); gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.feed > .day + li { border-top: 0; }
+.feed > .round.back { background: linear-gradient(90deg, var(--bad-bg), transparent 70%); }
+.feed .time { font-weight: 600; font-size: var(--text-small); padding-top: 2px; font-variant-numeric: tabular-nums; }
+.feed .body { min-width: 0; display: grid; gap: 6px; }
+.feed .top { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.feed .what { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.feed .what li { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; min-width: 0; }
+.feed .what .subject { color: inherit; overflow-wrap: anywhere; }
+.feed .what .why { flex-basis: 100%; font-size: var(--text-small); color: var(--bad); display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
+.feed .what .why details { display: contents; }
+.feed .what .why summary { cursor: pointer; color: var(--accent); list-style: none; }
+.feed .what .why summary::-webkit-details-marker { display: none; }
+.feed .what .why summary::after { content: " ▸"; } .feed .what .why details[open] summary::after { content: " ▾"; }
+.feed .what .why details p { flex-basis: 100%; margin: 2px 0 0; font-size: var(--text-micro); color: var(--muted); overflow-wrap: anywhere; }
+.feed > .notice-row { padding: 6px 0; border-top-style: dashed; font-size: var(--text-small); color: var(--muted); }
+.feed > .notice-row.warning .wrap { color: var(--warn); }
+.lanechips { display: flex; flex-wrap: wrap; gap: 4px; }
+.lanechip { font: var(--text-micro)/1.7 var(--mono); padding: 0 7px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); white-space: nowrap; text-decoration: none; }
+a.lanechip:hover { border-color: var(--accent); }
+.lanechip.ok::before { content: "✓ "; color: var(--good); } .lanechip.bad { border-color: var(--bad); background: var(--bad-bg); } .lanechip.bad::before { content: "✕ "; color: var(--bad); }
+.lanechip.run { border-color: var(--accent); } .lanechip.run::before { content: "◐ "; color: var(--accent); } .lanechip.unknown::before { content: "? "; color: var(--note); }
+.activity button.more { font: inherit; font-size: var(--text-small); color: var(--accent); background: none; border: 0; padding: 10px 0 0; cursor: pointer; }
+.pill.removed { background: var(--soft); color: var(--muted); }
 .logs .lanepick { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: center; }
 .logs .lanepick select { font: inherit; font-size: var(--text-small); min-width: 0; width: 100%; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: inherit; }
 .loglist { overflow-y: auto; overflow-x: hidden; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 1px; margin: 0 -4px; padding: 0 4px; }
@@ -417,6 +485,7 @@ svg.strip { display: block; width: 100%; height: 34px; cursor: pointer; }
   body:has(main > .logs) { height: auto; display: block; overflow: visible; }
   main:has(> .logs) { display: block; }
   .logs { grid-template-columns: 1fr; grid-template-rows: none; }
+  .logs > .crumb { grid-column: 1; grid-row: 1; }
   .logs .browser { max-height: 45vh; }
   .viewer { overflow: visible; }
   .viewer .failures { max-height: none; }
@@ -450,3 +519,15 @@ pre.log { margin: 0; background: var(--soft); border-radius: 8px; padding: 10px 
   .hero h1 .dot.active, .chip.ok .dot { animation: none; }
   .flow-map .moving { display: none; }
 }
+.feed .what a.subject { text-decoration: none; } .feed .what a.subject:hover { text-decoration: underline; }
+.logs .scope { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; } .logs .scope .more, .logs .backlink { font-size: var(--text-small); }
+.logs button.more { border: 0; background: none; color: var(--accent); padding: 0; cursor: pointer; }
+.logs > .card, .logs > .viewer { margin: 0; }
+/* While a tab's first answer is awaited: its shape in empty cards that shimmer, under a line saying what is awaited. */
+.waiting { margin: 4px 0 0; min-height: 1.5em; }
+.card.skeleton { background: linear-gradient(90deg, var(--card) 0%, var(--soft) 50%, var(--card) 100%); background-size: 200% 100%; animation: shimmer 1.6s ease-in-out infinite; }
+.card.skeleton.short { height: 64px; } .card.skeleton.medium { height: 150px; } .card.skeleton.tall { height: 260px; }
+.skeleton-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+.skeleton-pair > .card { margin-top: 12px; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .card.skeleton { animation: none; background: var(--soft); } }
