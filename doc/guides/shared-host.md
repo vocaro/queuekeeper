@@ -1540,6 +1540,22 @@ turned down 300 offers in a night (2026-11-12;
 [vocaro/queuekeeper#44](https://github.com/vocaro/queuekeeper/issues/44)). Once it is read, remove it with
 `git --git-dir ~/Development/queuekeeper-farm/repositories/NAME.git worktree remove --force PATH`.
 
+`offload_host.py` travels in the ssh command itself, compressed, since it runs before another Mac has
+the toolkit, and OpenSSH bounds a packet at 256 KiB. A dispatch's plan goes in the same command and
+has no fixed size: it carries the project's metadata, the pins and the leases. So a plan, and the
+connection that picks a run up again, are sent only the part of the file they run, about a third of
+it, with a blank line where each function they never reach stood, so that a traceback from another
+Mac still names the file's own lines (`remote.plan_program`). A question, such as a Mac's capacity,
+its screen or its leftover processes, is a short request and is sent the whole file. A test holds a
+plan's command, with a request of 9,550 characters, under two thirds of the 128 KiB kept for it, and
+a question's under 192 KiB. Sent whole, the file with that plan had 205 bytes left of the 128 KiB on
+2026-11-17, so that almost any addition to it failed the test
+([vocaro/queuekeeper#216](https://github.com/vocaro/queuekeeper/issues/216)); the same plan's
+command is now 66 KiB. A function a dispatch runs counts against the plan's bound and any other
+against the question's. A part with a request of its own that needs nothing of the file, as the
+holder of [a waiting gate's place](#heavy-work-admission) is, is a file of its own and is sent by
+itself (`place_holder.py`).
+
 #### A named checkout slot
 
 `qk remote run LANE --checkout-slot N` and `qk remote admit --checkout-slot N -- COMMAND` run in

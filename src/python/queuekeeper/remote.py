@@ -41,12 +41,14 @@ stops, and fast-forwards another Mac's own toolkit checkout, ~/Development/queue
 origin/main when that checkout is on main with no uncommitted changes, saying why it leaves it otherwise:
 a dispatch goes on, and `qk doctor` reports an error (offload_host.update_toolkit, vocaro-engineering#203).
 """
+import ast
 import base64
 import binascii
 import calendar
 import contextlib
 import ctypes
 import fcntl
+import functools
 import hashlib
 import json
 import math
@@ -864,6 +866,49 @@ def host_command(source, request):
     return shlex.join(["python3", "-c", program, request])
 
 
+# What offload_host.py runs for a plan and for a reattach: the two requests that are sent only their part of it.
+PLAN_ENTRIES = ("main", "reattach")
+
+
+@functools.lru_cache(maxsize=4)
+def plan_program(source, entries=PLAN_ENTRIES):
+    """The part of offload_host.py, source, that a plan or a reattach runs: the file with every function and class
+    that entries never reach left out, a blank line in place of each of its lines, so that a traceback from another
+    Mac names the file's own lines. A plan's JSON carries project metadata, pins and leases and has no fixed size,
+    and the whole file with it had 205 bytes left of the half of an ssh packet kept for the command
+    (vocaro/queuekeeper#216); a dispatch runs about a third of the file. The questions (`capacity`, `screen`,
+    `admissionsNow`, `leftovers` and the rest) are short requests and are sent the whole file (ask).
+
+    What is kept is everything at the file's top level that is not a function or a class, and each function or
+    class whose name is read, directly or through another kept one, by entries or by those statements. The file's
+    last statement, which chooses what to run by the request, is kept and is no reader: of its branches a plan and
+    a reattach take only entries'. Names are the whole of it because the file imports nothing of the toolkit and
+    looks nothing up by a computed name. A source without entries, or one Python cannot parse, goes whole."""
+    try: tree = ast.parse(source)
+    except (SyntaxError, ValueError): return source
+    named = lambda node: {part.id for part in ast.walk(node) if isinstance(part, ast.Name)}
+    definitions, wanted = {}, list(entries)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)): definitions[node.name] = node
+        elif node is not tree.body[-1] or not isinstance(node, ast.If): wanted.extend(named(node))
+    if not all(entry in definitions for entry in entries): return source
+    kept = set()
+    while wanted:
+        name = wanted.pop()
+        if name in definitions and name not in kept:
+            kept.add(name)
+            wanted.extend(named(definitions[name]))
+    lines = source.splitlines(keepends=True)
+    for name, node in definitions.items():
+        if name in kept: continue
+        first = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)])
+        # The comment directly above a function is about it, and goes with it.
+        while first > 1 and lines[first - 2].startswith("#"): first -= 1
+        for index in range(first - 1, node.end_lineno):
+            lines[index] = "\n" if lines[index].endswith("\n") else ""
+    return "".join(lines)
+
+
 def login(script):
     """Have another Mac's login shell run script, so its PATH is Terminal's, Homebrew's included."""
     return f'exec "$SHELL" -l -c {shlex.quote(script)}'
@@ -1565,7 +1610,7 @@ def stop_dead_dispatches():
         except (OSError, ValueError, KeyError, TypeError):
             continue
         if not dispatcher_dead(pid, start): continue
-        source = source or Path(offload_host.__file__).read_text()
+        source = source or plan_program(Path(offload_host.__file__).read_text())
         request = json.dumps({"reattach": {"root": ROOT, "id": journal, "stop": True}})
         try:
             done = ssh(host, host_command(source, request), stdin=subprocess.DEVNULL,
@@ -2008,7 +2053,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     started, slept = time.time(), asleep()
-    source = Path(offload_host.__file__).read_text()
+    # A plan and its reattach are sent only the part of the file they run (plan_program).
+    source = plan_program(Path(offload_host.__file__).read_text())
     plan["requestAge"] = max(0, time.time() - resources.request_started())
     if sent is not None and "requestStarted" in sent:
         plan["requestStarted"] = sent["requestStarted"]

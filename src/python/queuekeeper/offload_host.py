@@ -1,7 +1,8 @@
 """Another Mac's side of `qk remote`, sent over SSH and run there by that Mac's own Python.
 
 It imports nothing from the toolkit, because it runs before the toolkit is checked out there,
-and Python 3.9, a Mac's system Python, runs it. It claims a persistent checkout of the project,
+and Python 3.9, a Mac's system Python, runs it. It looks nothing up by a computed name either: a plan is sent
+only the functions that main reads by name (remote.plan_program). It claims a persistent checkout of the project,
 places the dispatched commits, and runs `qk run` or `qk admit` there under another Mac's
 own heavy-work admission, with its device record deferring physical devices to the sending Mac's
 and the run given the reservations it carries. Standard output carries framed lines: `O` for
@@ -4579,6 +4580,9 @@ def main(plan):
     return result
 
 
+# A plan and a reattach are sent only what main and reattach read of this file, a blank line in place of every other
+# function's (remote.plan_program, vocaro/queuekeeper#216): theirs are the only branches below that such a copy can
+# take. Every other request is sent the whole file.
 if __name__ == "__main__":
     request = json.loads(sys.argv[1])
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))

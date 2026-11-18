@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import ast
 import base64
+import builtins
 import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
@@ -18,6 +19,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import symtable
 import sys
 import tempfile
 import threading
@@ -363,8 +365,10 @@ class HostCommandTests(unittest.TestCase):
         helper = ("print('transport fixture')\n" * 400)[:9550]
         request = json.dumps({"work": ["python3", "-c", helper]})
         # OpenSSH's packet.c bounds the entire packet at 256 KiB. The former command alone exceeds it;
-        # the compressed command leaves room for the SSH channel-request fields and project metadata.
+        # the compressed command leaves room for the SSH channel-request fields and project metadata. A request
+        # this large is a plan, which is sent the part of the program it runs (remote.plan_program).
         former = remote.login(shlex.join(["python3", "-c", source, request]))
+        source = remote.plan_program(source)
         command = remote.host_command(source, request)
         self.assertGreater(len(former.encode()), 256 * 1024)
         self.assertLess(len(remote.login(command).encode()), 128 * 1024)
@@ -375,6 +379,68 @@ class HostCommandTests(unittest.TestCase):
         decoded = zlib.decompress(base64.b64decode(packed))
         self.assertEqual(decoded, source.encode("utf-8"))
         self.assertEqual(hashlib.sha256(decoded).digest(), hashlib.sha256(source.encode()).digest())
+
+    @staticmethod
+    def unresolved(program):
+        """Each name program reads at its top level, or as a global inside a function or class, that nothing at its
+        top level defines and Python does not build in, with the scopes that read it."""
+        top = symtable.symtable(program, "<host>", "exec")
+        defined = {symbol.get_name() for symbol in top.get_symbols()
+                   if symbol.is_assigned() or symbol.is_imported() or symbol.is_namespace()} | set(dir(builtins))
+        missing = {}
+
+        def visit(table):
+            for symbol in table.get_symbols():
+                if symbol.is_referenced() and (table is top or symbol.is_global()) and symbol.get_name() not in defined:
+                    missing.setdefault(symbol.get_name(), set()).add(table.get_name())
+            for child in table.get_children(): visit(child)
+
+        visit(top)
+        return missing
+
+    def test_a_plan_is_sent_only_the_part_of_the_program_it_runs_with_room_to_grow(self):
+        # vocaro/queuekeeper#216: the whole file with a large plan had 205 bytes left of the 128 KiB kept for the
+        # command, so that almost any addition to the file failed the test above.
+        source = Path(offload_host.__file__).read_text()
+        program = remote.plan_program(source)
+        helper = ("print('transport fixture')\n" * 400)[:9550]
+        request = json.dumps({"work": ["python3", "-c", helper]})
+        sent = len(remote.login(remote.host_command(program, request)).encode())
+        # A third of the 128 KiB is the room this leaves the file's dispatching part and a plan's JSON to grow by.
+        self.assertLess(sent, 128 * 1024 * 2 // 3, "a plan's command has less than a third of its 128 KiB left")
+        # The file's own lines, each as it is or blank, so that a traceback from another Mac names the file's line.
+        whole, part = source.splitlines(), program.splitlines()
+        self.assertEqual(len(part), len(whole))
+        self.assertFalse([number for number, (was, now) in enumerate(zip(whole, part), 1) if now not in (was, "")])
+        compile(program, "<host>", "exec")
+        # Everything a plan or a reattach runs is there: the only names nothing defines are the two the file's last
+        # statement reads for the other requests, which are sent the whole file.
+        self.assertEqual(self.unresolved(source), {})
+        self.assertEqual(self.unresolved(program), {"answer": {"top"}, "keep_unlocked": {"top"}})
+        kept = {node.name for node in ast.parse(program).body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+        self.assertLessEqual({"main", "reattach", "claim", "place", "step", "watch", "Journal", "screen"}, kept)
+        self.assertFalse(kept & {"answer", "admissions_now", "capacity", "leftovers", "update_toolkit", "keep_unlocked"})
+
+    def test_the_part_a_plan_is_sent_follows_what_its_entries_read(self):
+        source = ("import json\nLIMIT = helper_for_a_constant()\n\n# About unused.\n# Two lines of it.\n"
+                  "def unused():\n    return other()\n\n@decorated\ndef other(): pass\n\n"
+                  "def helper_for_a_constant(): return 1\n\nclass Kept:\n    def method(self): return deep()\n\n"
+                  "def deep(): return LIMIT\n\ndef main(plan): return Kept().method()\n\ndef reattach(request): pass\n\n"
+                  "if __name__ == '__main__':\n    unused() if False else main({})\n")
+        program = remote.plan_program(source)
+        self.assertEqual(program.splitlines()[3:10], [""] * 7)
+        self.assertEqual({node.name for node in ast.parse(program).body if hasattr(node, "name")},
+                         {"helper_for_a_constant", "Kept", "deep", "main", "reattach"})
+        # A source with no such entry, as a test's stand-in has none, and one that does not parse, go whole.
+        self.assertEqual(remote.plan_program("def main(plan): pass\n"), "def main(plan): pass\n")
+        self.assertEqual(remote.plan_program("def main(:\n"), "def main(:\n")
+
+    def test_a_question_is_sent_the_whole_program_within_the_ssh_packet(self):
+        # A question's request is short and has a fixed shape, so the whole file goes with it. Three quarters of
+        # OpenSSH's 256 KiB packet is the bound: the rest is for the request and the channel's own fields.
+        source = Path(offload_host.__file__).read_text()
+        request = json.dumps({"leftovers": remote.ROOT, "advertise": ["repository.git"] * 8, "reap": {"pool": "p" * 400}})
+        self.assertLess(len(remote.login(remote.host_command(source, request)).encode()), 192 * 1024)
 
     def test_bootstrap_preserves_main_unicode_arguments_stdin_and_exit_status(self):
         source = "import json, sys\nprint(json.dumps([__name__, 'café 漢字', sys.argv, sys.stdin.read()]))\nsys.exit(7)\n"

@@ -1,7 +1,7 @@
 """Where a system alert sits among the screen's windows, from the window list's front-to-back order and frames
 (offload_host.ORDER_SCRIPT). The window list reports a window behind five others as on screen just as it does one
 in front, as on build-host on 2026-11-12, where the owner at that Mac saw no alert (vocaro/queuekeeper#14). Kept out
-of offload_host, which travels to another Mac in each SSH command and is near that packet's bound."""
+of offload_host, which travels to another Mac in each SSH command."""
 
 import json
 
