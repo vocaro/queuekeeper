@@ -36,6 +36,12 @@ from test_support.queue import (BRITISH, LANE, GIT_ALONE, Fixture, Replaced, acc
 
 shard_by = "class"
 
+def BOTH_HERE(mac, hosts, waits):
+    """mq.apart for a fixture with no other Mac: the second gate of a pair runs on this Mac beside the first, with no
+    placement option, so that a test sees both run."""
+    return (), None, "on this Mac, as the fixture has no other"
+
+
 class EntryIdentifiers(Fixture):
     def test_branch_subject_and_explicit_issue_names_are_ref_safe(self):
         self.assertEqual(mq.entry_slug("codex/fix-share-sheet", "Fix #42"), "issue-42-fix-share-sheet")
@@ -1256,7 +1262,7 @@ class RefusedGates(UnittestGate):
         ids = self.queued("c", "d")
         with contextlib.ExitStack() as halves:
             # Both halves on this Mac, as BothHalves gates them, since the fixture has no other Mac; or one at a time.
-            for name, value in ((("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None)) if beside
+            for name, value in ((("apart", BOTH_HERE), ("BESIDE_POLL", 0.02), ("offerable", lambda config, lanes: None)) if beside
                                 else (("offerable", lambda config, lanes: "a test says so"),)):
                 halves.enter_context(patch.object(mq, name, value))
             if bisecting:
@@ -1837,49 +1843,23 @@ class NoVerdict(Fixture):
         worker.sent_unlocked = True
         self.assertTrue(worker.began_unlocked("gate", log, {}))
 
-    def test_a_bisects_older_half_leaves_this_mac_only_while_its_locked_screen_keeps_a_lane_that_needs_it(self):
-        """vocaro/queuekeeper#205, the owner's decision of 2026-11-17: the older half, HERE, goes to the farm's Macs as
-        an ordinary gate does while this Mac's screen does not read unlocked and its lane needs it unlocked; otherwise
-        it stays here (vocaro-engineering#241), and a lane that does not need the screen is never moved by it."""
-        worker = mq.Worker(mq.Queue(self.repo))
-        screens = Path(__file__).resolve().parents[1] / "mac_desktop/fixtures/ScreenState"
-        recording = self.base / "screen.plist"
-        declared = {"lanes": {"gate": {"unlockedScreen": True}, "checks": {}}}
-        def placed(state, lane="gate", where=mq.HERE, hosts=("far",)):
-            shutil.copy(screens / f"this-mac-{state}.plist", recording)
-            with patch.dict(os.environ, {offload_host.SCREEN_RECORDING: str(recording)}), \
-                    patch.object(mq, "load", return_value=declared), \
-                    patch.object(mq.farm, "destinations", return_value=hosts), \
-                    contextlib.redirect_stdout(io.StringIO()) as said:
-                return worker.screen_placement(lane, where), said.getvalue()
-        moved, said = placed("locked-idle")
-        self.assertEqual(moved, ())
-        self.assertIn("gate: offered to the farm's Macs rather than kept on this Mac, since it needs an unlocked screen "
-                      "and screen: locked", said)
-        self.assertEqual(placed("unlocked"), (mq.HERE, ""))
-        # A lane that does not need the screen stays, and so does every lane while the farm has no other Mac.
-        self.assertEqual(placed("locked-idle", lane="checks"), (mq.HERE, ""))
-        self.assertEqual(placed("locked-idle", hosts=()), (mq.HERE, ""))
-        # The newer half, and an ordinary round, keep their own placement.
-        self.assertEqual(placed("locked-idle", where=mq.BESIDE), (mq.BESIDE, ""))
-        self.assertEqual(placed("locked-idle", where=()), ((), ""))
-        # A lane the worker sends only to an unlocked Mac (#293) moves though main does not declare it.
-        worker.unlocked.add("checks")
-        self.assertEqual(placed("locked-idle", lane="checks")[0], ())
-
-    def test_each_lane_of_a_gate_is_placed_by_whether_it_needs_an_unlocked_screen(self):
-        """The gate asks screen_placement for each lane's qk run placement and runs the lane with it."""
-        self.commit("a", "a")
-        self.add("a")
-        asked = []
-        def placed(worker, lane, where):
-            asked.append((lane, tuple(where)))
-            return where
-        with patch.object(mq.Worker, "screen_placement", placed), self.commands() as ran, \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(self.work(), 0)
-        self.assertIn(("gate", ()), asked)
-        self.assertEqual(self.lane_runs(ran), [["python3", "scripts/qk", "run", "gate"]])
+    def test_a_bisects_older_half_is_placed_as_any_gate_is_and_so_leaves_a_mac_whose_locked_screen_keeps_its_lane(self):
+        """vocaro/queuekeeper#205 and #211: the older half runs with no placement option, so qk run offers it to every
+        Mac as it does an ordinary gate, and a lane that needs an unlocked screen goes to a Mac whose screen reads
+        unlocked. Until #211 it ran with --here, and left this Mac only by a rule of its own while this Mac's screen
+        was locked (Worker.screen_placement)."""
+        self.assertFalse(hasattr(mq.Worker, "screen_placement"))
+        for name in ("a", "bad", "c", "d"): self.commit(name, name)
+        self.add("a", "bad", "c", "d")
+        with patch.object(mq, "offerable", lambda config, lanes: None), self.commands() as ran, \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        runs = self.lane_runs(ran)
+        # The batch, then each older half, with no option; each newer half only where the older half's Mac is not.
+        self.assertIn(["python3", "scripts/qk", "run", "gate"], runs)
+        self.assertNotIn(["python3", "scripts/qk", "run", "--here", "gate"], runs)
+        self.assertIn(["python3", "scripts/qk", "run", "--offload-only", "gate"], runs)
+        self.assertIn("newer half: its lanes go on another Mac if it can start it now", said.getvalue())
 
     def test_a_worker_that_takes_over_keeps_its_count_of_locked_runs(self):
         queue = mq.Queue(self.repo)
@@ -9089,11 +9069,11 @@ class DeclaredFailures(unittest.TestCase):
 
 class BothHalves(Fixture):
     """A bisect's two halves gate at once, the newer beside the older, one on each Mac (vocaro-engineering#241).
-    Here both run on this Mac, as the fixture has no other Mac: HERE and BESIDE are no options, and every lane
-    may go to another Mac (offerable)."""
+    Here both run on this Mac, as the fixture has no other Mac: the newer half is not kept off the older half's Mac
+    (BOTH_HERE), and every lane may go to another Mac (offerable)."""
     def setUp(self):
         super().setUp()
-        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None)):
+        for name, value in (("apart", BOTH_HERE), ("BESIDE_POLL", 0.02), ("offerable", lambda config, lanes: None)):
             patcher = patch.object(mq, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -9186,9 +9166,30 @@ class BothHalves(Fixture):
         self.assertIn(f"the newer 1 of the bisect wait for the older half, since {why}", log)
         self.assertNotIn("newer half", log)
 
-    def test_the_lanes_each_half_runs_say_where(self):
-        """The older half runs with qk run's --here, the newer with --offload-only, which never runs it here."""
-        self.assertEqual(OFFERED, (("--here",), ("--offload-only",)))
+    def test_the_second_gate_of_a_pair_goes_to_any_mac_but_the_first_gates(self):
+        """vocaro/queuekeeper#211: the first gate of a pair, a bisect's older half or a batch, is offered as any gate
+        is, and the second is kept off whichever Mac admitted it, this Mac a candidate like every other. Until then
+        the older half ran with --here and the newer with --offload-only, and a stacked gate ran here whenever the
+        farm had one other Mac and the batch gated there."""
+        self.assertFalse(hasattr(mq, "HERE") or hasattr(mq, "BESIDE"))
+        near, far = mq.lane_wait.farm_mac("build-host"), mq.lane_wait.farm_mac("gate-03")
+        for hosts in ((), ("build-host",), ("build-host", "gate-03")):
+            # The first gate on this Mac: any other, which starts it now or not at all, whether or not it may wait,
+            # since a request waits only in the queue of the Mac its process runs on.
+            for waits in (True, False):
+                self.assertEqual(APART(mq.HERE_MAC, hosts, waits),
+                                 (("--offload-only",), None, "on another Mac if it can start them now"))
+        for hosts in (("build-host",), ("build-host", "gate-03")):
+            # On another Mac: every Mac but that one, this Mac among them. A stacked gate waits for one, as any gate
+            # does; a bisect's newer half starts now or not at all.
+            self.assertEqual(APART(near, hosts, True),
+                             ((), "build-host", f"on a Mac other than {near}, which gates the batch below them"))
+            self.assertEqual(APART(near, hosts, False),
+                             (("--if-free",), "build-host", f"on a Mac other than {near} if one can start them now"))
+        self.assertEqual(APART(far, ("build-host", "gate-03"), False)[:2], (("--if-free",), "gate-03"))
+        # A Mac the farm does not list is none to keep away from, so nothing is placed by it.
+        self.assertIsNone(APART(far, ("build-host",), True))
+        self.assertIsNone(APART("somewhere", (), False))
         self.assertEqual(OFFERABLE({"lanes": {"gate": {"command": ["x"], "resource": "heavy"}}}, ["gate"]), None)
         # A light gate, such as the toolkit's was, or one with no resource, is admitted and offered as every lane is
         # (the owner's decision, 2026-11-07), so its halves run one on each Mac; a self lane stays here.
@@ -9225,8 +9226,9 @@ class PooledStack(Fixture):
         waiting = [{"id": "new", "state": mq.QUEUED}]
         config = {"lanes": {"gate": {"resource": "heavy"}}}
         for mac, where, excluded in [
-            (mq.lane_wait.HERE, mq.BESIDE, None),
-            (mq.lane_wait.farm_mac("gate-03"), ("--if-free",), "gate-03"),
+            (mq.lane_wait.HERE, ("--offload-only",), None),
+            # Every Mac but the batch's, this Mac among them, waiting for one as any gate does.
+            (mq.lane_wait.farm_mac("gate-03"), (), "gate-03"),
         ]:
             record = {"mac": mac, "kind": None, "pid": os.getpid(), "admitted": False}
             with self.subTest(mac=mac), farm_fixture.only("build-host", "gate-03", "gate-04"), patch.object(worker.queue, "waiting", return_value=waiting), \
@@ -9251,7 +9253,7 @@ class Stacked(Fixture):
 
     def setUp(self):
         super().setUp()
-        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None),
+        for name, value in (("apart", BOTH_HERE), ("BESIDE_POLL", 0.02), ("offerable", lambda config, lanes: None),
                             ("STACK_POLL", 0.1)):
             patcher = patch.object(mq, name, value)
             patcher.start()
@@ -9314,7 +9316,7 @@ class Stacked(Fixture):
         waits = mq.lane_wait
         spelling = waits.path_of(worker.checkout, "spelling")
         gate = waits.path_of(worker.checkout, "gate")
-        with (patch.multiple(mq, HERE=("--here",), BESIDE=("--offload-only",)),
+        with (patch.object(mq, "apart", APART), farm_fixture.only("build-host"),
               patch.object(mq, "Stack") as stack,
               patch.dict(os.environ, {waits.VARIABLE: str(spelling)})):
             worker.stack(*args)
@@ -9338,7 +9340,12 @@ class Stacked(Fixture):
             waits.relayed(b'{"kind":null,"admitted":true}', "build-host")
             worker.stack(*args)
             stack.assert_called_once()
-            self.assertEqual(stack.call_args.args[-1], mq.HERE)
+            # The batch gates on the farm's one other Mac: the stacked gate is offered to every Mac but that one,
+            # which leaves this Mac, where it waits as any gate does. Until vocaro/queuekeeper#211 it ran with --here.
+            self.assertEqual(stack.call_args.args[-1], ())
+            self.assertEqual(stack.call_args.args[1].environment.get(mq.remote.QUEUE_GATE_EXCLUDE), "build-host")
+            self.assertEqual(stack.call_args.kwargs["said_where"],
+                             f"on a Mac other than {waits.farm_mac('build-host')}, which gates the batch below them")
             self.assertEqual([entry["id"] for entry in stack.call_args.args[2]], [second])
 
             worker.pending = None
@@ -9346,7 +9353,8 @@ class Stacked(Fixture):
             waits.running()
             worker.stack(*args)
             stack.assert_called_once()
-            self.assertEqual(stack.call_args.args[-1], mq.BESIDE)
+            self.assertEqual(stack.call_args.args[-1], ("--offload-only",))
+            self.assertIsNone(stack.call_args.args[1].environment.get(mq.remote.QUEUE_GATE_EXCLUDE))
 
     def test_an_entry_that_arrives_during_a_gate_lands_on_its_gate_stacked_on_the_batch(self):
         self.commit("hold", "a"); self.commit("b", "b")
@@ -9580,7 +9588,7 @@ class RemovedWhileTesting(Fixture):
 
     def setUp(self):
         super().setUp()
-        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None),
+        for name, value in (("apart", BOTH_HERE), ("BESIDE_POLL", 0.02), ("offerable", lambda config, lanes: None),
                             ("STACK_POLL", 0.1), ("REMOVAL_POLL", 0.1)):
             patcher = patch.object(mq, name, value)
             patcher.start()
@@ -9761,7 +9769,7 @@ class UngatedAheadOfARound(Fixture):
 
     def setUp(self):
         super().setUp()
-        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None),
+        for name, value in (("apart", BOTH_HERE), ("BESIDE_POLL", 0.02), ("offerable", lambda config, lanes: None),
                             ("STACK_POLL", 0.1), ("REMOVAL_POLL", 0.1)):
             patcher = patch.object(mq, name, value)
             patcher.start()
@@ -10177,7 +10185,7 @@ class RoundAccount(Fixture):
 
     def setUp(self):
         super().setUp()
-        for name, value in (("HERE", ()), ("BESIDE", ()), ("offerable", lambda config, lanes: None)):
+        for name, value in (("apart", BOTH_HERE), ("BESIDE_POLL", 0.02), ("offerable", lambda config, lanes: None)):
             patcher = patch.object(mq, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -10893,8 +10901,9 @@ class FailedGateEvidence(Fixture):
         self.assertIn(entry["log"], waited)
 
 
-# What the module says before a test's patches: each half's placement option, and which lanes may go to another Mac.
-OFFERED = (mq.HERE, mq.BESIDE)
+# What the module says before a test's patches: how the second gate of a pair is kept off the first gate's Mac, and
+# which lanes may go to another Mac.
+APART = mq.apart
 OFFERABLE = mq.offerable
 
 

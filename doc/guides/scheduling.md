@@ -52,10 +52,12 @@ may run (2026-11-17). The rules in force do this only in part
 
 Read as one sentence: land as much as the Macs can verify truthfully, within each Mac's limits, in
 arrival order with bounded waits, and only then make a single run start sooner. The rules in force
-fall short of this in one place: several rules still name this Mac. That is decided under
-[decisions](#decisions) and waits to be built. Two others ended on 2026-11-17: placement that
-ordered the Macs without balancing them (rule 14), and a CPU limit that bounded only the slots
-beyond the guaranteed ones (rule 3).
+fall short of this in one place: the foreground rule still names this Mac, and which kinds of work
+a Mac takes is not yet its setting. That is decided under
+[decisions](#decisions) and waits to be built. Three others ended on 2026-11-17: placement that
+ordered the Macs without balancing them (rule 14), a CPU limit that bounded only the slots
+beyond the guaranteed ones (rule 3), and a merge queue that kept the first gate of a pair on this
+Mac and the second off it (rules 24 and 25).
 
 ## Resources
 
@@ -149,7 +151,7 @@ hold the mechanism.
 | 16 | A Mac has room by its own admission's rules: a free slot, guaranteed or beyond, under that Mac's `busyLimit`; room for one job at any reading while nothing admitted runs there; and none while whole-host or exclusive work runs or is queued ahead there. The test is one for every Mac, the Mac that chooses included. | An offer sent where admission would hold it costs a checkout and a wait. A Mac with a test of its own is a special Mac. | [ve#186], [ve#191], [ve#201]; 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 17 | Exclusive work sent to another Mac is offered to start at once, and joins that Mac's queue only after 900 s of declined offers. | A queued exclusive request idles the Mac while it waits; the bound keeps it from waiting forever. | [placement][placement] |
 | 18 | A Mac that cannot be reached is passed over and the work runs here. One that is set up wrongly runs nothing and stops for the owner. | Busy or away is ordinary; a different Xcode gives results that cannot be compared. | 2026-10-27, 2026-10-28 |
-| 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot, and no place in the queue of a Mac whose screen is locked (rule 30). A locked screen holds back only work that declares the need: a bisect's older half that needs one is offered to the farm while this Mac's screen is locked. | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
+| 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot, and no place in the queue of a Mac whose screen is locked (rule 30). A locked screen holds back only work that declares the need, and only on its own Mac: a bisect's older half is offered to every Mac as any gate is (rule 24). | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
 | 20 | One holder of a Mac's foreground, only on Macs marked for it, taken before admission. | The screen is the owner's. A waiter holds no slot, and builds go on beside a foreground run. | [foreground][foreground] |
 | 21 | Devices and pool simulators have one holder each, in turn, under a reservation. The owner's phone needs his word first. | A device is one thing, and some are the owner's own. | 2026-11-06, [devices][devices] |
 | 30 | A whole-host lane that waits takes a place in the queue of every Mac that can run it, runs on the first to admit it and gives up the others. A place holds no slot and no checkout, is renewed by the Mac that sent it and lapses within 180 s of that Mac's silence. One process starts the lane, in one place at a time, so it never runs twice. A lane that needs an unlocked screen has its place on a Mac only while that Mac's screen reads unlocked. | Gates queued for one Mac while another ran none for 89% of the day: nothing drained toward a gate that was only offered there. A place on a locked Mac would keep its slots for a lane it cannot run. | 2026-11-17, [D6](#d6-gates-wait-mostly-for-other-gates); [#214] |
@@ -160,8 +162,8 @@ hold the mechanism.
 | --- | --- | --- | --- |
 | 22 | One worker per repository takes everything waiting, oldest first, as one batch with one gate. | A gate's time is paid once for the batch. | [the merge queue][queue] |
 | 23 | A failed batch gets the cheap explanations first: failed tests alone, then one entry the failure points at, then a bisect. | A bisect costs about a gate for each halving. | [when a batch fails][fails] |
-| 24 | A bisect's halves gate at once: the older on this Mac, the newer on another Mac if it can start now. | Each halving then costs one gate's time, not two. | [ve#241], 2026-11-07 |
-| 25 | Entries that arrive during a gate are gated on top of its tip, on another Mac, one such gate at a time. | The next round's gate is under way before this one lands. | [ve#241], 2026-11-07 |
+| 24 | A bisect's halves gate at once on two different Macs: the older is offered as any gate is, and the newer goes to any Mac but the one that admitted the older, if one can start it now. | Each halving then costs one gate's time, not two. Which Mac runs which half is placement's choice, as for any lane. | [ve#241], 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
+| 25 | Entries that arrive during a gate are gated on top of its tip, on any Mac but the one that admitted the gate, offered as any gate is, one such gate at a time. | The next round's gate is under way before this one lands. | [ve#241], 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 26 | A docs-only entry never rides a code gate. It lands first or beside the gate, and passes an older entry only when the two change no path in common. | Documents need no code gate, and the order of entries that share a path never changes. | [ve#394], 2026-11-11 |
 | 27 | The worker runs preflight lanes and the docs check without admission. One that does not end in a minute runs again admitted. | Two checks of a few seconds each waited 43 minutes for slots. | [#169], 2026-11-15 |
 | 28 | A run with no verdict blames nobody and runs again once the Mac has settled. Three in a row hold the queue. A run a locked screen voided does not count, up to five. | A cause in the Mac says nothing about the commits; a cause that does not clear needs a person. | [ve#293], 2026-11-08; open as [#24] |
@@ -183,7 +185,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Yes (rules 3 and 16) |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Yes (rule 14) |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Yes (rule 30) |
-| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room and this Mac as a candidate like any other: yes (rules 4, 14 and 16). The other rules that name this Mac, and the settings for kinds and labels: not built, [#211] |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room, this Mac as a candidate like any other and the queue's pairs: yes (rules 4, 14, 16, 24 and 25). The foreground rule that names this Mac, and the settings for kinds, labels and devices: not built, [#211] |
 
 ### D1: Is the order of goals right?
 
@@ -362,7 +364,7 @@ file. Building the rest is [#211], which holds the code references. What it chan
 | --- | --- |
 | Other Macs are offered work first, and this Mac is the fallback; it is not in the farm's list (rule 14). | This Mac is a member of the list, and the choice is D5's. In force: this Mac is a candidate for every offer it may take, and `farm.json` still lists only the others, so it comes after them between equals. |
 | A request waits in this Mac's queue, and other Macs get only offers to start at once (rules 6 and 17). | A place in the queue of each Mac that can run it (D6, decided). In force for a whole-host lane (rule 30); one-slot and exclusive work wait as before. |
-| A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. Rule 19's offer of the older half is the first step. |
+| A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. In force: the first gate of a pair is offered as any gate is, and the second goes to any Mac but the one that admitted it, this Mac among them. What is left follows from where a command starts: a request waits in the queue of the Mac its process runs on, so a second gate kept off this Mac starts on another Mac at once or not at all. |
 | Foreground work never comes to this Mac by itself, and goes to the first listed Mac when none is marked (rule 20). | The foreground mark alone, on any Mac. |
 | Another Mac's slots beyond the guaranteed count as room when the farm has several Macs; this Mac's do not (rule 16). | One test of room for every Mac. In force. |
 | Every Mac has the same default limits, and no command writes a limits file. | Setup writes this Mac's file, with its lower `busyLimit`. In force. |

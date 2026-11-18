@@ -361,19 +361,29 @@ on main, and `git rebase --skip` passes one it stops at whose change main holds 
 **A bisect's two halves gate at once.** While a bisect goes on, the newer half of its suspects gates
 beside the older half, in a second checkout, `~/Development/queuekeeper-workers/NAME/NAME-beside`, on the same
 `origin/main` (owner's decision, 2026-11-07, [#241](https://github.com/vocaro/vocaro-engineering/issues/241)).
-The older half runs on this Mac (`qk run --here`) and the newer on another Mac
-(`qk run --offload-only`), which runs it only if it can start it now. A lane of the older half that
-needs an unlocked screen, while this Mac's screen does not read unlocked and the farm has another Mac,
-is placed as an ordinary gate's lane instead: the first Mac with room and an unlocked screen takes it,
-and this Mac takes it only once its screen reads unlocked (owner's decision, 2026-11-17,
-[#205](https://github.com/vocaro/queuekeeper/issues/205)). On 2026-11-17 an older half had waited 67
-minutes for this Mac's locked screen while the other Mac read unlocked and had finished the newer half. Whichever half passes lands,
+The two run on different Macs, whichever they are (owner's direction, 2026-11-17,
+[#211](https://github.com/vocaro/queuekeeper/issues/211)). The older half is offered as any gate is
+(`qk run LANE`): to the Mac with room and the most headroom, this Mac among them, or to whichever
+admits it first. Once a Mac has admitted the older half's final lane, the newer half goes to any Mac
+but that one, this Mac a candidate like every other, and only if one can start it now: with
+`qk run --offload-only` when the older half runs on this Mac, and otherwise with `qk run --if-free`
+and that Mac left out of the offer. The worker's log says which (`newer half: its lanes go on a Mac
+other than build-host if one can start it now`). The newer half loses nothing by waiting to learn the
+older half's Mac: it runs the same lanes, so a Mac that could start it sooner would have taken the
+older half. An older half that ends before any Mac admits its final lane, as when an earlier lane
+fails, leaves the newer half with no verdict, which queues it again. Until 2026-11-17 the older half
+ran only on this Mac (`qk run --here`) and the newer never on it. A lane of the older half that needs
+an unlocked screen then waited for this Mac's screen, 67 minutes on 2026-11-17 while the other Mac
+read unlocked and had finished the newer half, until
+[#205](https://github.com/vocaro/queuekeeper/issues/205) offered it to the farm's Macs in that one
+case; offered as any gate is, it now goes to a Mac whose screen reads unlocked by the rule every lane
+follows. Whichever half passes lands,
 so a newer half that passes can land before the older one. When both pass, the older half lands first,
 and the newer one lands on top of it only if its result carries over; otherwise it gates again. When
 both halves fail, the older one is bisected first. The newer half instead waits behind the older one,
 as before, when:
 
-- another Mac declines it, or gives no verdict;
+- no Mac but the older half's can start it now, or the Mac that takes it gives no verdict;
 - a lane runs only on this Mac (a `self` lane, or one that says `here`; a light lane is offered as
   every lane is since 2026-11-07);
 - the round is docs-only, ungated or `--front`, or a newer entry was added with an option; or
@@ -381,19 +391,27 @@ as before, when:
 
 Under #231 the rerun-alone check runs on each failed half, so the failure that splits a half is a
 real one, and a half whose real failure blames one entry sends it back instead of splitting (below).
-With [two farm Macs or more](shared-host.md#the-farms-macs), the newer half uses the
-first listed Mac that can start it. The older half runs on this Mac, but for a lane that a locked screen
-here keeps from starting (above).
+With [two farm Macs or more](shared-host.md#the-farms-macs), the newer half goes to the Mac
+with room and the most headroom of those left, as any lane does.
 
 **Entries that arrive during a gate gate on top of it.** While a batch gates, the worker checks every
 `STACK_POLL` (30 s) for entries that have arrived behind it. A docs-only entry among them is never
 stacked: it lands beside the gate on the docs lanes instead (*A docs-only entry never rides a code
 gate*, below). Once the batch's final lane has secured admission,
-the worker gates those entries stacked on the batch's tip, in the other checkout and on another Mac. Earlier
-lanes can run on a different Mac, and a dispatch can be declined before admission. In the two-Mac setup, the
-stack runs on this Mac when the final lane runs on another Mac, and otherwise on another Mac if it can
-start now (owner's decision, 2026-11-07,
-[#241](https://github.com/vocaro/vocaro-engineering/issues/241)). The batch's push makes that tip
+the worker gates those entries stacked on the batch's tip, in the other checkout and on a Mac other than
+the one that admitted it (owner's decision, 2026-11-07,
+[#241](https://github.com/vocaro/vocaro-engineering/issues/241)). Earlier
+lanes can run on a different Mac, and a dispatch can be declined before admission. The stacked gate is
+offered as any gate is to every Mac but the batch's, this Mac among them
+([#211](https://github.com/vocaro/queuekeeper/issues/211)): with that Mac left out of `qk run`'s offer
+when the batch gates on another Mac, and with `qk run --offload-only` when it gates on this one. The
+worker's log says which (`testing 2 entries that arrived during the gate, at TIP, stacked on BASE, on a
+Mac other than build-host, which gates the batch below them`). It waits where any lane waits: in the
+queue of the Mac its `qk run` started on, when that Mac is a candidate, with a place in the others'
+queues if it is a whole-host lane. So in a farm with one other Mac it waits in this Mac's queue when
+the batch gates on the other, as it did before under a rule that named this Mac, and when the batch
+gates here it starts on the other Mac now or is tried again after four polls. With more Macs it now
+waits for one, where it was offered only to start at once. The batch's push makes that tip
 `origin/main`, so the next round adopts the stacked gate as its own: it gates on, and its result settles
 it as any round's would, with no gate of its own to start. Anything else throws the stacked gate away,
 canceling its lanes and queuing its entries again:
@@ -407,9 +425,7 @@ canceling its lanes and queuing its entries again:
 - the queue holds; or
 - the worker stops or moves to a newer toolkit.
 
-With [two farm Macs or more](shared-host.md#the-farms-macs), the stack can run on any
-build Mac besides the one running the primary's final lane. When that lane runs remotely, the stack
-can also run on this Mac. A gate that uses the foreground waits its turn.
+A gate that uses the foreground waits its turn once the farm has Macs to choose among.
 
 If no eligible Mac admits the stack's next lane, the worker waits two minutes before trying another stack on
 that batch. This avoids rebuilding it on each 30-second look. If the preceding batch lands before the

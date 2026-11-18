@@ -139,7 +139,7 @@ without the entry, so that a session whose entry cannot pass alone looks for the
 ## While a gate runs
 
 - **Stacked gates.** Entries that arrive during a gate are tested on top of the batch's tip, on
-  another Mac. If the batch lands, the stacked gate becomes the next round's gate and is already
+  a Mac other than the batch's. If the batch lands, the stacked gate becomes the next round's gate and is already
   under way. If it does not, the stacked gate is thrown away. Only one runs at a time.
 - **Documentation does not wait for code.** An entry that changes only Markdown documents lands
   beside a running code gate, after the documentation lanes pass. If `main` moves only by documents
