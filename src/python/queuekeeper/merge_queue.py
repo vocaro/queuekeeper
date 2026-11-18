@@ -2520,10 +2520,12 @@ def placement(root, name=None, as_json=False):
     foreground = bool(lane.get("foreground"))
     model = bool(lane.get("model"))
     whole_host, exclusive, screen = bool(lane.get("wholeHost")), lane.get("resource") == "exclusive", unlocked_screen(lanes, name)
-    # The Macs the lane may go to: none for one that stays here, those marked for a foreground lane, else all.
-    hosts = () if local else farm.foreground() if foreground else farm.destinations()
+    # The Macs the lane may go to: none for one that stays here, those that take foreground work for a foreground
+    # lane, this Mac among them when its own settings say so, else all.
+    hosts = () if local else remote.foreground_hosts() if foreground else farm.destinations()
     checked = []
-    candidates = hosts + ((None,) if local or not foreground else ())
+    here = local or not foreground or offload_host.mac_settings()["takes"]["foreground"]
+    candidates = hosts + ((None,) if here else ())
     for host in candidates:
         mac = lane_wait.farm_mac(host) if host else "this Mac"
         row = {"host": mac, **({"ssh": host} if host else {}),

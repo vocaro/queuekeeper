@@ -244,13 +244,14 @@ def close(pid, notification):
 
 
 def lease(owner=None, record=None):
-    """Refuse, with reservations.Refused, unless this is another Mac and owner, by default QUEUEKEEPER_DEVICE_OWNER,
-    holds its mac-foreground lease: queuekeeper closes the owner's notifications only on a Mac nobody works at, and only
-    for the run that holds its screen."""
+    """Refuse, with reservations.Refused, unless this Mac takes foreground work by its own settings
+    (foreground.farm_mac) and owner, by default QUEUEKEEPER_DEVICE_OWNER, holds its mac-foreground lease: queuekeeper
+    closes the owner's notifications only on a Mac nobody works at, and only for the run that holds its screen."""
     record = record or reservations.Record()
     if not foreground.farm_mac(record):
-        raise reservations.Refused("queuekeeper closes Notification Center's notifications only on another Mac, under the "
-                              f"foreground lease a run holds there; this Mac's are the owner's ({GUIDE}, {SECTION})")
+        raise reservations.Refused("queuekeeper closes Notification Center's notifications only on a Mac whose own "
+                              "settings say it takes foreground work, under the foreground lease a run holds there; "
+                              f"this Mac's are the owner's ({GUIDE}, {SECTION})")
     reservations.require_foreground(owner if owner is not None else os.environ.get(reservations.OWNER), record)
 
 

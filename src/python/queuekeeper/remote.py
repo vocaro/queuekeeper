@@ -2405,14 +2405,21 @@ def main(root, config, args):
 
 
 def foreground_lane(root, config, lane, arguments, expect):
-    """Run a foreground lane on another Mac, as `qk remote run` does, where queuekeeper waits for its foreground and
-    holds it for the run (foreground.slot). It never falls back to this Mac, the owner's workstation, whose
-    foreground needs the owner's window first and then `qk run --here`: another Mac that is not configured or
-    cannot be reached stops the lane."""
-    hosts = foreground_hosts()
+    """Run a foreground lane on a Mac of the farm that takes foreground work (foreground_hosts), as `qk remote run`
+    does, where queuekeeper waits for its foreground and holds it for the run (foreground.slot): for a lane started
+    on a Mac that takes none by its own settings, a workstation, whose foreground needs its owner's window first
+    and then `qk run --here`. It never falls back to that Mac: a Mac of the farm that is not configured or cannot
+    be reached stops the lane."""
+    away = []
+    hosts = foreground_hosts(away)
+    if not hosts and away:
+        # A Mac that may take it could not be asked: its failure says why, and what to do meanwhile.
+        def unreached(): raise away[0]
+        return offering_here(f"qk run --here {lane}", unreached)
     if not hosts:
         none = NO_MAC if not farm.destinations() else \
-            f"no Mac of the farm takes foreground work, by its settings ({offload_host.MAC_SETTINGS}) or the farm's marks"
+            (f"no Mac of the farm takes foreground work, by its own settings ({offload_host.MAC_SETTINGS}): mark one "
+             "with `qk farm foreground NAME`")
         raise ValueError(f"{lane} takes a Mac's screen, and {none}. This Mac's foreground needs a "
                          "window the owner agrees first (doc/guides/shared-host.md, Attended Mac sessions), then "
                          f"`qk run --here {lane}`")
@@ -2426,20 +2433,37 @@ def foreground_lane(root, config, lane, arguments, expect):
                              lambda: execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect))
 
 
-def foreground_hosts():
-    """The SSH destinations of the farm's Macs a foreground lane may go to, in the farm's order. A Mac whose own
-    settings say whether it takes foreground work is taken at its word (takes.foreground in its mac-settings.json,
-    as its capacity reading gives it): it is one when they say so, marked by the farm or not, and none when they say
-    it takes none (the owner's decision, 2026-11-17, vocaro/queuekeeper#211). A Mac whose settings do not say, or
-    that cannot be read now, is one as before: when the farm marks it (`qk farm foreground NAME`), or, while the
-    farm marks none, when it is the first that takes work now (farm.foreground)."""
-    marked, hosts = farm.foreground(), []
+def foreground_hosts(away=None):
+    """The SSH destinations of the farm's Macs a foreground lane may go to, in the farm's order: each that takes
+    work now and whose own settings say it takes foreground work (takes.foreground in its mac-settings.json, as its
+    capacity reading gives it), and no other: the foreground mark alone, on any Mac (the owner's decision,
+    2026-11-17, vocaro/queuekeeper#211). `qk farm foreground NAME` writes the mark there (mark_foreground). Until
+    then the farm's own file marked a Mac, and while it marked none its first Mac took foreground work. A Mac that
+    cannot be reached or read now is none, since a lane could not be sent to it either, and away, a list, is given
+    why each such Mac could not be asked."""
+    hosts = []
     for host in farm.destinations():
-        try: reading = capacity_there(host)
-        except Unavailable: reading = {}
-        says = reading.get("takes").get("foreground") if isinstance(reading.get("takes"), dict) else None
-        if says is True or (says is None and host in marked): hosts.append(host)
+        try:
+            reachable(host)
+            reading = capacity_there(host)
+        except Unavailable as error:
+            if away is not None: away.append(error)
+            continue
+        if isinstance(reading.get("takes"), dict) and reading["takes"].get("foreground") is True: hosts.append(host)
     return tuple(hosts)
+
+
+def mark_foreground(host, on=True):
+    """Have the settings of the Mac at host say that it takes foreground work, or with on false say nothing of it,
+    and return what it then takes (offload_host.mark_foreground). With host None, this Mac's own. A Mac that
+    cannot be reached raises as ask does, and settings that cannot be read there raise ValueError with what is
+    wrong."""
+    if host is None: return {"mac": offload_host.mac_name(), **offload_host.mark_foreground(on)}
+    found = ask(host, {"markForeground": bool(on)}, timeout=CENSUS_TIMEOUT)
+    if not isinstance(found, dict) or found.get("error") or not isinstance(found.get("takes"), dict):
+        why = found.get("error") if isinstance(found, dict) else None
+        raise ValueError(f"{called(host)}'s settings were not changed: {why or 'it gave no answer this toolkit reads'}")
+    return found
 
 
 def farm_mac(host):
@@ -2507,10 +2531,10 @@ def there_lane(root, config, lane, arguments, expect, why, hosts=None):
 
 
 def offering_here(here, send):
-    """send()'s status, for foreground work bound for another Mac. When another Mac cannot be reached,
-    the Unreachable it raises also says that the owner can approve a window on this Mac's foreground, within
-    which here runs the work, since foreground work never moves to this Mac by itself: without that, a
-    session read waking another Mac as the only fix and stopped without asking (2026-10-31)."""
+    """send()'s status, for foreground work bound for a Mac of the farm that takes it. When that Mac cannot be
+    reached, the Unreachable it raises also says that the owner can approve a window on this Mac's foreground, within
+    which here runs the work, since foreground work never moves by itself to a Mac whose settings do not take it:
+    without that, a session read waking another Mac as the only fix and stopped without asking (2026-10-31)."""
     try:
         return send()
     except Unreachable as away:

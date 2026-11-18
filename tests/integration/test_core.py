@@ -25,6 +25,7 @@ from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import display, foreground
 from queuekeeper_apple.simulators import pool as simulator_pool
 import host_isolation
+from test_support import farm as farm_fixture
 from host_isolation import stretched
 
 
@@ -1360,7 +1361,7 @@ class ResourceTests(unittest.TestCase):
                                  "HEAVY_SETTLE_SECONDS=30  (settleSeconds; default: 30)",
                                  # What the Mac takes, beside how much (vocaro/queuekeeper#211): every default here.
                                  "takes: whole-host gates yes (default), exclusive work yes (default), model runs yes "
-                                 "(default), foreground work as before the setting (unset); settings file "
+                                 "(default), foreground work no (default); settings file "
                                  f"{Path(path).with_name('mac-settings.json')}", "labels: none"])
 
     def test_exclusive_admission_holds_all_legacy_slots_and_nested_calls_reuse_it(self):
@@ -2993,16 +2994,16 @@ class MacSettingsTests(unittest.TestCase):
     def test_a_mac_with_no_settings_takes_every_kind_but_foreground_work_and_has_no_label(self):
         from queuekeeper import offload_host
         self.assertEqual(offload_host.mac_settings(),
-                         {"takes": {"wholeHost": True, "exclusive": True, "model": True, "foreground": None}, "set": [],
+                         {"takes": {"wholeHost": True, "exclusive": True, "model": True, "foreground": False}, "set": [],
                           "labels": [], "file": str(self.file), "ignored": []})
         # The file is beside the limits file, and is another file: an older toolkit refuses a limits key it does not know.
         self.assertEqual(self.file.parent, resources.limits_path().parent)
         self.assertNotEqual(self.file, resources.limits_path())
-        # Of foreground work the file gives no default: unset, the rules from before the setting decide, and no
-        # reading of this file reads the Mac's device record for it.
+        # Foreground work it takes only when its settings say so: a device record that defers physical devices to
+        # another Mac's, which told such a Mac until 2026-11-17, says nothing of it.
         self.record.write_text(json.dumps({"devices": {}, offload_host.DEFERRED: "studio"}))
-        self.assertIsNone(offload_host.mac_settings()["takes"]["foreground"])
-        self.assertIsNone(offload_host.capacity()["takes"]["foreground"])
+        self.assertIs(offload_host.mac_settings()["takes"]["foreground"], False)
+        self.assertIs(offload_host.capacity()["takes"]["foreground"], False)
 
     def test_its_settings_say_the_kinds_it_takes_and_its_labels(self):
         from queuekeeper import offload_host
@@ -3066,7 +3067,7 @@ class MacSettingsTests(unittest.TestCase):
         said = []
         self.assertEqual(resources.limits_main([], out=said.append), 0)
         self.assertIn(f"takes: whole-host gates no (set), exclusive work yes (default), model runs yes (default), "
-                      f"foreground work as before the setting (unset); settings file {self.file}", said)
+                      f"foreground work no (default); settings file {self.file}", said)
         self.assertIn("labels: gpu", said)
         self.assertIn("ignored: later, which this toolkit does not know", said)
         self.file.write_text("{")
@@ -5261,6 +5262,7 @@ class LaneLabelTests(unittest.TestCase):
         ready.start()
         self.addCleanup(ready.stop)
         devices.Record().defer("Trevors-MacBook-Pro-715")
+        farm_fixture.takes_foreground(self)
         return beta, ran
 
     def admit_foreground(self, root, command):

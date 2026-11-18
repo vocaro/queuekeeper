@@ -70,15 +70,6 @@ def destinations():
     return tuple(mac["ssh"] for mac in active())
 
 
-def foreground():
-    """The SSH destinations of the Macs a foreground lane, which takes a Mac's screen, may go to, in order: the Macs
-    that take work now and that the owner marked for it (`qk farm foreground NAME`), or, while none is marked, the
-    first that takes work now."""
-    found = active()
-    marked = tuple(mac["ssh"] for mac in found if mac.get("foreground"))
-    return marked or tuple(mac["ssh"] for mac in found[:1])
-
-
 def find(name, macs=None):
     """The Mac of that name, whatever its case."""
     macs = read() if macs is None else macs
@@ -180,13 +171,24 @@ def resume(name):
     return mac
 
 
-def mark_foreground(name, on=True):
-    """Mark the Mac as one whose screen a foreground lane may take, or with on False as one it may not."""
-    with changing() as macs:
-        mac = find(name, macs)
-        mac.pop("foreground", None)
-        if on: mac["foreground"] = True
-    return mac
+# What names the Mac a command runs on where a Mac of the farm is named, for a setting that is each Mac's own.
+THIS_MAC = ("here", "this")
+
+
+def mark_foreground(name, on=True, *, mark):
+    """Mark the Mac as one whose screen a foreground lane may take, or with on False as one it may not, in that Mac's
+    own settings, and return what the Mac then takes: mark(ssh, on) writes them there (remote.mark_foreground), with
+    None for the Mac this runs on, which THIS_MAC names. The mark is the Mac's and not this file's (the owner's
+    decision, 2026-11-17, vocaro/queuekeeper#211): the Mac that sends work is marked as any other is, and each Mac
+    that sends work reads the same mark. A mark an earlier toolkit left in this file is taken out, and is read by
+    nothing."""
+    if name.lower() in THIS_MAC: return None, mark(None, on)
+    mac = find(name)
+    found = mark(mac["ssh"], on)
+    if "foreground" in mac:
+        with changing() as macs:
+            find(name, macs).pop("foreground", None)
+    return mac, found
 
 
 def remove(name, *, running=lambda ssh: []):
@@ -205,7 +207,7 @@ def remove(name, *, running=lambda ssh: []):
 
 def line(mac):
     state = mac["state"] + (f" ({mac['pausedBecause']})" if mac.get("pausedBecause") else "")
-    return f"{mac['name']}  {state}  ssh {mac['ssh']}" + ("  foreground" if mac.get("foreground") else "")
+    return f"{mac['name']}  {state}  ssh {mac['ssh']}"
 
 
 def main(argv):
@@ -226,8 +228,9 @@ def main(argv):
     pausing.add_argument("--reason")
     operations.add_parser("resume", help="offer a paused Mac work again").add_argument("name")
     operations.add_parser("remove", help="take a Mac out of the farm for good").add_argument("name")
-    marking = operations.add_parser("foreground", help="let foreground lanes take a Mac's screen, or with --off not")
-    marking.add_argument("name")
+    marking = operations.add_parser("foreground", help="let foreground lanes take a Mac's screen, or with --off not: "
+                                    "written into that Mac's own settings")
+    marking.add_argument("name", help="a Mac of the farm, or `here` for the Mac this runs on")
     marking.add_argument("--off", action="store_true")
     args = parser.parse_args(argv)
     # Reaching a Mac is remote's, which reads the farm: imported here, where a command needs it.
@@ -252,6 +255,7 @@ def main(argv):
             for problem in found.get("unrepaired", []): print(f"A checkout there was not repaired: {problem}")
             if found.get("left"): print(f"Not moved there: {found['left']}")
             print(f"Next, give it the tools the lanes need: `qk remote setup --host {mac['name']}`")
+            print(f"If lanes may take its screen, say so in its settings: `qk farm foreground {mac['name']}`")
         elif args.operation == "rename":
             mac = rename(args.name, args.new)
             print(f"{args.name} is now {mac['name']}")
@@ -260,9 +264,12 @@ def main(argv):
         elif args.operation == "resume":
             print(f"Resumed {line(resume(args.name))}")
         elif args.operation == "foreground":
-            mac = mark_foreground(args.name, not args.off)
-            taken = ", ".join(named(ssh) for ssh in foreground()) or "no Mac"
-            print(f"{line(mac)}\nForeground lanes now go to: {taken}")
+            mac, found = mark_foreground(args.name, not args.off, mark=remote.mark_foreground)
+            takes = "takes foreground work" if found["takes"].get("foreground") else "takes no foreground work"
+            print(f"{mac['name'] if mac else 'This Mac'} {takes}, by its settings ({found.get('file')})")
+            taken = [named(ssh) for ssh in remote.foreground_hosts()]
+            if offload_host.mac_settings()["takes"]["foreground"]: taken.append("this Mac")
+            print(f"Foreground lanes now go to: {', '.join(taken) or 'no Mac'}")
         elif args.operation == "remove":
             mac = remove(args.name, running=remote.running_on)
             print(f"Removed {mac['name']}. Its checkouts stay on it, under ~/{remote.ROOT}, until they are deleted there")

@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation
+from test_support import farm as farm_fixture
 from host_isolation import stretched
 from queuekeeper import cli, lane_results, offload_host, remote, window_placement
 from queuekeeper_apple import devices
@@ -580,6 +581,8 @@ class LaneTests(HostTest):
             patcher.start()
             self.addCleanup(patcher.stop)
         os.environ.pop(devices.OWNER, None)
+        # In the namespace the lanes run in: this Mac takes foreground work, by its own settings.
+        farm_fixture.takes_foreground(self)
 
     def qk(self, *arguments):
         with contextlib.redirect_stderr(StringIO()) as error, contextlib.redirect_stdout(StringIO()):

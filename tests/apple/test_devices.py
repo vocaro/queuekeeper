@@ -22,6 +22,7 @@ from queuekeeper import cli, resources
 from queuekeeper_apple import device_notifications, devices
 from queuekeeper_mac_desktop import reservations
 import host_isolation
+from test_support import farm as farm_fixture
 from host_isolation import stretched
 from test_support.devices import (
     PHONE, TABLET, DUO, SANDBOX_EXEC, DENY_PS, PROBE, WRITER, later, live, approval, Later, scratch, Devicectl, LOGS, alive, Watches, BANNER, NO_TESTS, SOME_TESTS
@@ -629,7 +630,10 @@ class DeviceRecordTests(unittest.TestCase):
 
     def test_on_the_farm_mac_a_foreground_run_may_outlast_its_expected_release(self):
         # Another Mac is not a workstation: queuekeeper reserves its foreground per run and no window binds it.
+        # Which a Mac's own settings say, and no longer its device record's deferral (vocaro/queuekeeper#211).
         self.assertTrue(self.record.defer("workstation"))
+        self.assertIn(f"{devices.FOREGROUND}: free; agree a window with the owner", self.cli("status")[1])
+        farm_fixture.takes_foreground(self)
         self.assertIn(f"{devices.FOREGROUND}: free; queuekeeper reserves it for each run", self.cli("status")[1])
         self.foreground()
         with patch.object(devices, "datetime", Later), patch.object(reservations, "datetime", Later):

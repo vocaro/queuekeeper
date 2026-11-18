@@ -869,7 +869,7 @@ python3 scripts/qk farm rename NAME NEW
 python3 scripts/qk farm pause NAME [--reason WHY]      # offer it no work until it is resumed
 python3 scripts/qk farm resume NAME
 python3 scripts/qk farm remove NAME                    # take it out of the farm for good
-python3 scripts/qk farm foreground NAME [--off]        # let foreground lanes take its screen, or not
+python3 scripts/qk farm foreground NAME [--off]        # let foreground lanes take its screen, or not, in its own settings
 ```
 
 `add` reaches the Mac at DESTINATION, a host name, `USER@HOST` or an alias of `~/.ssh/config`, and
@@ -935,10 +935,10 @@ among those Macs alone, and so is one that a Mac's own settings decline
 
 A foreground lane takes a Mac's screen, so it goes only to a Mac that takes foreground work: the
 first such Mac that takes work now and can be reached, where it waits for the foreground. A Mac
-whose own settings say whether it takes foreground work is taken at its word. One whose settings do
-not say takes it as before: when the owner marked it with `qk farm foreground NAME`, and while no
-Mac is marked, when it is the first Mac that takes work now
-([what a Mac takes](#what-a-mac-takes)). Commands that act on one Mac, such as `qk remote setup`, use
+takes foreground work when its own settings say so, which `qk farm foreground NAME` writes there,
+and no Mac takes it otherwise: neither the farm's first Mac nor any other
+([what a Mac takes](#what-a-mac-takes)). While no Mac that can be reached takes it, a foreground
+lane is refused, naming that command. Commands that act on one Mac, such as `qk remote setup`, use
 the first Mac that takes work now, or the one `--host` names.
 
 #### What a Mac takes
@@ -958,7 +958,8 @@ step 6). The settings are a file on that Mac, `mac-settings.json`, beside its
 
 - **Kinds.** `takes` may say `true` or `false` for `wholeHost` (whole-host gates), `exclusive`
   (exclusive work), `model` (model runs) and `foreground` (foreground work). A kind it leaves out
-  keeps its default: a Mac takes whole-host gates, exclusive work and model runs. So a workstation
+  keeps its default: a Mac takes whole-host gates, exclusive work and model runs, and no
+  foreground work, which takes its screen. So a workstation
   that says `"wholeHost": false` runs no project's gate, by its owner's setting and by no rule that
   names it.
 - **Labels.** `labels` lists what the Mac has that a lane may need, each lowercase words joined by
@@ -966,14 +967,18 @@ step 6). The settings are a file on that Mac, `mac-settings.json`, beside its
   needs its lanes' as well as its own, and the lane runs only on a Mac that has every one. A lane
   that says `here` for a reason, or lists `chips`, can say the same with a label that only the
   Macs it suits are given; `here` and `chips` work as before.
-- **Foreground.** A Mac whose settings say `"foreground": true` has its foreground taken for a run
-  as a build Mac's is, without a window agreed beforehand, and one that says `false` is never sent
-  foreground work, marked in the farm or not. While its settings do not say, the rules from before
-  the setting still decide, and they are the one place where the Mac a command starts on is still
-  told apart: a Mac takes foreground work when its device record defers physical devices to another
-  Mac's, as every run sent to it makes it, and the Mac that sends takes the farm's marks, or its
-  first Mac. Those defaults stay because the owner's farm marks no Mac, so dropping them would stop
-  every foreground lane until one is marked.
+- **Foreground.** The foreground mark alone, on any Mac. A Mac whose settings say
+  `"foreground": true` has its foreground taken for a run, without a window agreed beforehand, and
+  is one of the Macs a foreground lane goes to. Any other Mac is a workstation: no foreground lane
+  is sent to it, and foreground work started on it needs a window its owner agreed
+  ([Attended Mac sessions](#attended-mac-sessions)). `qk farm foreground NAME` writes the mark into
+  that Mac's settings over SSH, `--off` takes it out, and `qk farm foreground here` marks the Mac
+  the command runs on, as any other. Each Mac that sends work reads the same mark. Until
+  2026-11-17 two rules that named a Mac decided instead: a Mac took foreground work when its device
+  record deferred physical devices to another Mac's, as every run sent to it makes it, so the Mac
+  that sent work never did; and the Mac that sent work took the farm's marks, kept in its own
+  `farm.json`, or its first Mac while it marked none. A mark an earlier toolkit left in `farm.json`
+  is read by nothing.
 - **Where it is read.** Each Mac reports what it takes with its capacity (`takes`, `labels` and
   `settingsFile` in the reading), so every Mac is judged alike, the Mac that chooses among them.
   A Mac that declines the work is passed over: it is not offered the work, not waited for, and
@@ -992,9 +997,9 @@ step 6). The settings are a file on that Mac, `mac-settings.json`, beside its
 - **What it does not bound.** Work nested in an admission runs inside it, a self lane's parts run
   where the lane started, and a run another Mac sent here was placed by this Mac's reading there.
 - **Reading and changing it.** `qk admissions limits` prints what the Mac takes, with whether each
-  kind is set or the default (`foreground work as before the setting (unset)` while the file does
-  not say), its labels and the file's path. The file is edited by hand, as the
-  limits file is. A key this toolkit does not know is passed over and named there (`ignored:`), so
+  kind is set or the default, its labels and the file's path. The file is edited by hand, as the
+  limits file is, but for the foreground mark, which `qk farm foreground` writes and which keeps
+  whatever else the file holds. A key this toolkit does not know is passed over and named there (`ignored:`), so
   that a later toolkit's key never stops this one's work. A file that is not JSON, or gives a known
   key a value of the wrong kind, stops placement on that Mac with what is wrong, as an unreadable
   limits file does, rather than guess what the Mac takes. It is a file of its own because an older

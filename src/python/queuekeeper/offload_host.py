@@ -1637,12 +1637,13 @@ def mac_settings():
 
     A Mac's settings say which kinds of work it takes (KINDS) and which labels it has, and a lane says which labels
     it needs; no lane is named in a Mac's settings (the owner's decision, 2026-11-17, vocaro/queuekeeper#211).
-    Returns {"takes": {each kind: True or False, or None for foreground work the file does not speak of}, "set":
-    [the kinds the file says], "labels": [its labels, sorted], "file": the file's path, "ignored": [keys of it this
-    toolkit does not know]}. A kind the file leaves out keeps its default: a Mac takes whole-host gates, exclusive
-    work and model runs. Of foreground work the default is not this file's to give: while a Mac's settings do not
-    say, the rules from before the setting decide, by its device record on the Mac itself (foreground.farm_mac) and
-    by the farm's marks on the Mac that sends (remote.foreground_hosts). No file is every default.
+    Returns {"takes": {each kind: True or False}, "set": [the kinds the file says], "labels": [its labels, sorted],
+    "file": the file's path, "ignored": [keys of it this toolkit does not know]}. A kind the file leaves out keeps
+    its default: a Mac takes whole-host gates, exclusive work and model runs, and no foreground work, which takes
+    its screen: that it takes only when its settings say so, on whichever Mac that is (the foreground mark alone;
+    `qk farm foreground NAME` writes it, mark_foreground). Until 2026-11-17 a Mac was taken to be one that takes
+    foreground work when its device record deferred physical devices to another Mac's, and the Mac that sent work
+    took the farm's first Mac when it marked none. No file is every default.
     A key this toolkit does not know is passed over and named in "ignored", so that a later toolkit's key never
     stops this one's work, as an unknown limit does (#49). A file that cannot be read, is no JSON object, or gives
     a known key a value of the wrong kind raises ValueError naming it: its owner fixes it rather than queuekeeper
@@ -1664,9 +1665,34 @@ def mac_settings():
                     "such as [\"unity-license\"]")
     ignored = sorted([key for key in data if key not in ("takes", "labels")]
                      + [f"takes.{kind}" for kind in takes if kind not in KINDS])
-    found = {kind: takes.get(kind, None if kind == "foreground" else True) for kind in KINDS}
+    found = {kind: takes.get(kind, kind != "foreground") for kind in KINDS}
     return {"takes": found, "set": sorted(kind for kind in takes if kind in KINDS), "labels": sorted(set(labels)),
             "file": str(path), "ignored": ignored}
+
+
+def mark_foreground(on):
+    """Have this Mac's own settings say that it takes foreground work, or with on false say nothing of it, which
+    is none, and return mac_settings() as it then reads: `qk farm foreground NAME [--off]`, the one command that
+    writes the file. Whatever else the file holds stays, keys this toolkit does not know among them, and the file
+    is replaced whole. A file that cannot be read as settings is left as it is, and mac_settings' ValueError says
+    what is wrong with it."""
+    mac_settings()
+    path = admission_directory() / MAC_SETTINGS
+    try: data = json.loads(path.read_text())
+    except FileNotFoundError: data = {}
+    takes = dict(data.get("takes", {}))
+    takes.pop("foreground", None)
+    if on: takes["foreground"] = True
+    data = {key: value for key, value in data.items() if key != "takes"}
+    if takes: data = {"takes": takes, **data}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = path.with_name(f".{MAC_SETTINGS}.{os.getpid()}")
+    try:
+        staged.write_text(json.dumps(data, indent=2) + "\n")
+        os.replace(staged, path)
+    finally:
+        with contextlib.suppress(OSError): staged.unlink()
+    return mac_settings()
 
 
 def limit_sources(sources):
@@ -3572,6 +3598,9 @@ def answer(request):
     if "join" in request: return join(request["join"])
     if "keychain" in request: return keychain(request["keychain"])
     if "foreground" in request: return foreground()
+    if "markForeground" in request:
+        try: return {"mac": mac_name(), **mark_foreground(request["markForeground"] is True)}
+        except (OSError, ValueError) as error: return {"mac": mac_name(), "error": str(error)}
     # The Farm tab asks for health beside pressure; the merge queue, which reads pressure between runs, does not.
     if "pressure" in request: return {**pressure(), **({"health": host_health()} if request.get("health") else {})}
     if "capacity" in request:
@@ -4642,7 +4671,8 @@ if __name__ == "__main__":
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if "reattach" in request: sys.exit(reattach(request["reattach"]))
     if {"toolchain", "join", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
-            "pressure", "capacity", "admissionLog", "admissionsNow", "screen", "toolkitCheckout"} & request.keys():
+            "pressure", "capacity", "admissionLog", "admissionsNow", "screen", "toolkitCheckout",
+            "markForeground"} & request.keys():
         print(json.dumps(answer(request)))
     else:
         main(request)

@@ -4,7 +4,7 @@ import json
 import uuid
 from unittest.mock import patch
 
-from queuekeeper import farm, remote
+from queuekeeper import farm, offload_host, remote
 
 
 def mac(host, name=None, state=farm.ACTIVE):
@@ -50,3 +50,18 @@ def choice(offered, *hosts):
         try: offered.attempt()
         except remote.Loaded as loaded: return str(loaded)
     return None
+
+
+def takes_foreground(case, on=True):
+    """Have this Mac's own settings, in the test's HEAVY_SLOT_DIR namespace, say that it takes foreground work, or
+    with on False say nothing of it, for the rest of the test case's test: what makes a Mac one whose foreground
+    queuekeeper takes for a run, in this process and in every queuekeeper the test starts (offload_host.mac_settings,
+    vocaro/queuekeeper#211). The settings are as they were after it."""
+    path = offload_host.admission_directory() / offload_host.MAC_SETTINGS
+    before = path.read_bytes() if path.exists() else None
+    def restore():
+        if before is None: path.unlink(missing_ok=True)
+        else: path.write_bytes(before)
+    case.addCleanup(restore)
+    offload_host.mark_foreground(on)
+    return path

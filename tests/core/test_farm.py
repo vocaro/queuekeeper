@@ -145,7 +145,8 @@ class CommandTests(FarmCase):
             "Added Studio  active  ssh studio.local",
             "Moved /Users/o/Development/build-host there to /Users/o/Development/queuekeeper-farm, with its checkouts",
             "Linked /Users/o/Development/build-host there to it, for build state that still names the old path",
-            "Next, give it the tools the lanes need: `qk remote setup --host Studio`"])
+            "Next, give it the tools the lanes need: `qk remote setup --host Studio`",
+            "If lanes may take its screen, say so in its settings: `qk farm foreground Studio`"])
         self.assertEqual(self.qk("add", "mini.local", "--name", "render")[0], 0)
         self.assertEqual(self.qk("rename", "render", "Render-Box"), (0, "render is now Render-Box\n", ""))
         self.assertEqual(self.qk("pause", "render-box", "--reason", "on loan")[1], "Paused Render-Box  paused (on loan)  ssh mini.local\n")
@@ -158,29 +159,65 @@ class CommandTests(FarmCase):
         self.assertIn(f"Removed Studio. Its checkouts stay on it, under ~/{remote.ROOT}", output)
         self.assertEqual(self.qk("list")[1], "Render-Box  active  ssh mini.local\n")
 
-    def test_foreground_lanes_go_to_the_macs_the_owner_marks_and_else_to_the_first_that_takes_work(self):
+    def test_the_owner_marks_a_mac_for_foreground_work_in_that_macs_own_settings(self):
+        """The foreground mark alone, on any Mac (the owner's decision, 2026-11-17, vocaro/queuekeeper#211): a Mac
+        takes foreground work when its own settings say so, which `qk farm foreground NAME` writes there. Until then
+        the mark was in this Mac's farm.json, and while it marked none the farm's first Mac took foreground work."""
         self.macs["studio.local"], self.macs["mini.local"] = STUDIO, MINI
-        self.assertEqual(farm.foreground(), ())
+        marks = {}
+
+        def ask(host, request, **options):
+            if host == "away.local": raise remote.Unreachable(f"{host} cannot be reached", f"wake {host}")
+            marks[host] = request["markForeground"]
+            return {"mac": host, "takes": {"foreground": marks[host]}, "file": f"/Users/o/{host}/mac-settings.json"}
+
+        reading = lambda host, **options: {"takes": {"foreground": marks.get(host, False)}}
         self.qk("add", "studio.local")
         self.qk("add", "mini.local")
-        # None marked: the first that takes work now, as when the farm had one Mac.
-        self.assertEqual(farm.foreground(), ("studio.local",))
-        self.qk("pause", "Studio")
-        self.assertEqual(farm.foreground(), ("mini.local",))
-        self.qk("resume", "Studio")
-        status, output, error = self.qk("foreground", "mini")
-        self.assertEqual((status, error), (0, ""))
-        self.assertEqual(output.splitlines(), [f"{MINI['name']}  active  ssh mini.local  foreground",
-                                               f"Foreground lanes now go to: {MINI['name']}"])
-        self.assertEqual(farm.foreground(), ("mini.local",))
-        self.qk("foreground", "studio")
-        self.assertEqual(farm.foreground(), ("studio.local", "mini.local"))
-        # A marked Mac that is paused takes none, and the mark comes off with --off.
-        self.qk("pause", "studio")
-        self.assertEqual(farm.foreground(), ("mini.local",))
-        self.qk("resume", "studio")
-        self.assertIn("Foreground lanes now go to: Studio\n", self.qk("foreground", "mini", "--off")[1])
-        self.assertEqual(farm.foreground(), ("studio.local",))
+        with patch.object(remote, "ask", side_effect=ask), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=reading):
+            # No Mac's settings say so: none takes foreground work, the farm's first Mac no more than another.
+            self.assertEqual(remote.foreground_hosts(), ())
+            status, output, error = self.qk("foreground", "mini")
+            self.assertEqual((status, error), (0, ""))
+            self.assertEqual(output.splitlines(), [
+                f"{MINI['name']} takes foreground work, by its settings (/Users/o/mini.local/mac-settings.json)",
+                f"Foreground lanes now go to: {MINI['name']}"])
+            self.assertEqual((marks, remote.foreground_hosts()), ({"mini.local": True}, ("mini.local",)))
+            # The mark is the Mac's, and this Mac's farm.json holds none; one an earlier toolkit left is taken out.
+            self.assertNotIn("foreground", farm.find("mini"))
+            with farm.changing() as macs: farm.find("studio", macs)["foreground"] = True
+            self.qk("foreground", "studio")
+            self.assertNotIn("foreground", farm.find("studio"))
+            self.assertEqual(remote.foreground_hosts(), ("studio.local", "mini.local"))
+            self.assertEqual(self.qk("list")[1], "Studio  active  ssh studio.local\nMini  active  ssh mini.local\n")
+            # A marked Mac that is paused takes none, and the mark comes off with --off.
+            self.qk("pause", "studio")
+            self.assertEqual(remote.foreground_hosts(), ("mini.local",))
+            self.qk("resume", "studio")
+            output = self.qk("foreground", "mini", "--off")[1]
+            self.assertIn(f"{MINI['name']} takes no foreground work, by its settings", output)
+            self.assertIn("Foreground lanes now go to: Studio\n", output)
+            # The Mac this runs on is marked as any other is, in its own settings.
+            status, output, error = self.qk("foreground", "here")
+            self.assertEqual((status, error), (0, ""))
+            here = offload_host.mac_settings()
+            self.assertEqual((here["takes"]["foreground"], here["set"]), (True, ["foreground"]))
+            self.assertEqual(output.splitlines(), [f"This Mac takes foreground work, by its settings ({here['file']})",
+                                                   "Foreground lanes now go to: Studio, this Mac"])
+            self.assertIn("Foreground lanes now go to: Studio\n", self.qk("foreground", "this", "--off")[1])
+            self.assertFalse(offload_host.mac_settings()["takes"]["foreground"])
+        # A Mac that cannot be reached is not marked, and one that is no Mac of the farm is refused.
+        self.macs["away.local"] = {"id": "AWAY-1", "name": "Away"}
+        self.qk("add", "away.local")
+        with patch.object(remote, "ask", side_effect=ask), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=reading):
+            status, output, error = self.qk("foreground", "away")
+            self.assertEqual((status, output), (2, ""))
+            self.assertIn("away.local cannot be reached", error)
+            status, output, error = self.qk("foreground", "nobody")
+            self.assertEqual(status, 2)
+            self.assertIn("the farm has no Mac named nobody", error)
 
     def test_a_refusal_says_why_and_changes_nothing(self):
         status, output, error = self.qk("add", "away.local")

@@ -976,8 +976,9 @@ def status(record):
         print(f"Physical devices are reserved in {value[DEFERRED]}'s device record; this one refuses them")
     # The owner's screen first, held or free, so a session about to take it sees who has it.
     foreground = value["devices"].get(FOREGROUND)
-    print(_describe(FOREGROUND, foreground, window=not value.get(DEFERRED)) if foreground is not None else
-          f"{FOREGROUND}: free; " + ("queuekeeper reserves it for each run" if value.get(DEFERRED) else
+    taken = reservations.takes_foreground()
+    print(_describe(FOREGROUND, foreground, window=not taken) if foreground is not None else
+          f"{FOREGROUND}: free; " + ("queuekeeper reserves it for each run" if taken else
                                      "agree a window with the owner, then reserve it until the window ends"))
     for key, entry in value["devices"].items():
         if key != FOREGROUND: print(_describe(key, entry, waiting(value, key)))

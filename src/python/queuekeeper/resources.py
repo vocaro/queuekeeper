@@ -663,10 +663,8 @@ def limits_main(argv=None, out=print):
     except ValueError as error:
         print(f"queuekeeper: {error}", file=sys.stderr)
         return 2
-    # Foreground work has no default here: unset, the device record and the farm's marks decide, as before.
-    said = lambda kind: (f"{offload_host.KINDS[kind]} "
-                         + ("as before the setting (unset)" if settings["takes"][kind] is None else
-                            f"{'yes' if settings['takes'][kind] else 'no'} ({'set' if kind in settings['set'] else 'default'})"))
+    said = lambda kind: (f"{offload_host.KINDS[kind]} {'yes' if settings['takes'][kind] else 'no'}"
+                         f" ({'set' if kind in settings['set'] else 'default'})")
     out(f"takes: {', '.join(said(kind) for kind in offload_host.KINDS)}; settings file {settings['file']}")
     out(f"labels: {', '.join(settings['labels']) or 'none'}")
     if settings["ignored"]:

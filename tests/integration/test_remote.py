@@ -2185,6 +2185,8 @@ class RemoteTests(unittest.TestCase):
         commit_all(self.toolkit)
         record = devices.Record(self.record_there)
         record.defer(offload_host.mac_name())
+        # The second Mac takes foreground work, by its own settings (vocaro/queuekeeper#211).
+        self.mac_settings("FAKE_SLOTS", takes={"foreground": True})
         marker = self.checkout(1) / ".build/foreground-command-started"
         command = [sys.executable, "-c", "from pathlib import Path; "
                    "Path('.build/foreground-command-started').touch()"]
@@ -9231,7 +9233,7 @@ class MacSettingsPlacementTests(unittest.TestCase):
     FILE = "/Users/builder/Library/Application Support/queuekeeper/mac-settings.json"
 
     def reading(self, labels=(), **takes):
-        return {**self.FREE, "takes": {"wholeHost": True, "exclusive": True, "model": True, "foreground": None, **takes},
+        return {**self.FREE, "takes": {"wholeHost": True, "exclusive": True, "model": True, "foreground": False, **takes},
                 "takesSet": sorted(takes), "labels": sorted(labels), "settingsFile": self.FILE}
 
     def offer(self, taken, **need):
@@ -9369,32 +9371,46 @@ class MacSettingsPlacementTests(unittest.TestCase):
             reached.assert_not_called()
             read.assert_not_called()
 
-    def test_foreground_work_goes_to_the_macs_whose_settings_take_it_and_otherwise_as_the_farm_marks(self):
+    def test_foreground_work_goes_only_to_the_macs_whose_own_settings_take_it(self):
+        """The foreground mark alone, on any Mac: until vocaro/queuekeeper#211 the farm's own file marked a Mac, and
+        while it marked none its first Mac took foreground work."""
         said = lambda value: self.reading(foreground=value)
         unsaid = self.reading()
+        marked = {**farm_fixture.mac("studio"), "foreground": True}
         cases = [
-            # No Mac's settings say: the farm's first, as before, or the ones it marks.
-            ((farm_fixture.mac("mini"), farm_fixture.mac("studio")), {"mini": unsaid, "studio": unsaid}, ("mini",)),
-            ((farm_fixture.mac("mini"), {**farm_fixture.mac("studio"), "foreground": True}),
-             {"mini": unsaid, "studio": unsaid}, ("studio",)),
-            # A Mac's own word counts whatever the farm marks: yes for an unmarked one, no for a marked one.
-            ((farm_fixture.mac("mini"), {**farm_fixture.mac("studio"), "foreground": True}),
-             {"mini": said(True), "studio": said(False)}, ("mini",)),
-            ((farm_fixture.mac("mini"), farm_fixture.mac("studio")), {"mini": said(False), "studio": unsaid}, ()),
-            ((farm_fixture.mac("mini"), farm_fixture.mac("studio")), {"mini": unsaid, "studio": said(True)},
+            # No Mac's settings say so: none takes it, the farm's first no more than one an earlier toolkit marked.
+            ((farm_fixture.mac("mini"), farm_fixture.mac("studio")), {"mini": unsaid, "studio": unsaid}, ()),
+            ((farm_fixture.mac("mini"), marked), {"mini": unsaid, "studio": unsaid}, ()),
+            # A Mac's own word is the whole of it, in the farm's order.
+            ((farm_fixture.mac("mini"), marked), {"mini": said(True), "studio": said(False)}, ("mini",)),
+            ((farm_fixture.mac("mini"), farm_fixture.mac("studio")), {"mini": said(True), "studio": said(True)},
              ("mini", "studio")),
+            # A reading that says nothing of what its Mac takes, as an older toolkit's, is no word that it does.
+            ((farm_fixture.mac("mini"),), {"mini": self.FREE}, ()),
         ]
         for macs, readings, expected in cases:
-            with self.subTest(expected=expected), farm_fixture.only(*macs), \
+            with self.subTest(expected=expected), farm_fixture.only(*macs), patch.object(remote, "reachable"), \
                     patch.object(remote, "capacity_there", side_effect=lambda host, **options: readings[host]):
                 self.assertEqual(remote.foreground_hosts(), expected)
-        # A Mac that cannot be read now is judged by the farm's marks, as before.
-        with farm_fixture.only("mini"), patch.object(remote, "capacity_there", side_effect=remote.Unreachable("away", "wake it")):
-            self.assertEqual(remote.foreground_hosts(), ("mini",))
-        with farm_fixture.only("mini"), patch.object(remote, "capacity_there", return_value=said(False)), \
+        # A Mac that cannot be reached now is none, since a lane could not be sent to it either; the lane then says
+        # why that Mac could not be asked, and what a session can do meanwhile, not that no Mac is marked.
+        gone = remote.Unreachable("mini cannot be reached: Host is down", "wake mini")
+        with farm_fixture.only("mini"), patch.object(remote, "reachable", side_effect=gone):
+            away = []
+            self.assertEqual((remote.foreground_hosts(away), away), ((), [gone]))
+            with self.assertRaisesRegex(remote.Unreachable, "Host is down; to fix it, wake mini; or ask the owner for a "
+                                                            "window on this Mac's foreground"):
+                remote.foreground_lane(".", {}, "screen", [], None)
+        with farm_fixture.only("mini"), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", return_value=unsaid), \
                 self.assertRaisesRegex(ValueError, "screen takes a Mac's screen, and no Mac of the farm takes foreground "
-                                                   "work, by its settings \\(mac-settings.json\\) or the farm's marks"):
+                                                   "work, by its own settings \\(mac-settings.json\\): mark one with "
+                                                   "`qk farm foreground NAME`"):
             remote.foreground_lane(".", {}, "screen", [], None)
+        # A foreground lane a Mac offers on goes only to Macs that take foreground work, as any kind does.
+        self.assertEqual(remote.unfit(unsaid, "studio", foreground=True),
+                         f"studio takes no foreground work, by its settings ({self.FILE})")
+        self.assertIsNone(remote.unfit(said(True), "studio", foreground=True))
 
 
 class FanOutTests(unittest.TestCase):

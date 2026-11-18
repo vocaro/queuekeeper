@@ -55,6 +55,7 @@ class SlotTests(unittest.TestCase):
 
     def farm_mac(self):
         self.record.defer(SECOND)
+        farm_fixture.takes_foreground(self)
 
     def slot(self, **options):
         options.setdefault("ready", lambda: [])
@@ -65,7 +66,7 @@ class SlotTests(unittest.TestCase):
 
     def test_only_the_farm_mac_takes_its_foreground_and_only_once_it_is_ready(self):
         # This Mac's foreground needs the owner's window, which the session reserves itself.
-        with self.assertRaisesRegex(devices.Refused, "only on another Mac"):
+        with self.assertRaisesRegex(devices.Refused, "only on a Mac whose own settings say it takes foreground work"):
             with self.slot(): self.fail("ran on this Mac")
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
         self.farm_mac()
@@ -76,32 +77,48 @@ class SlotTests(unittest.TestCase):
         # Nothing was taken.
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
 
-    def test_a_macs_own_settings_say_whether_its_foreground_is_queuekeepers_to_take(self):
-        """The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): a Mac's settings say whether it takes foreground
-        work, on whichever Mac that is. While they do not say, its device record tells a Mac that is sent work from
-        the owner's workstation, as before."""
+    def test_a_macs_own_settings_alone_say_whether_its_foreground_is_queuekeepers_to_take(self):
+        """The foreground mark alone, on any Mac (the owner's decision, 2026-11-17, vocaro/queuekeeper#211): a Mac's
+        own settings say whether it takes foreground work. Until then its device record told a Mac that is sent
+        work from the owner's workstation, so that the Mac that sent work never was one."""
         settings = self.root / "slots"
         settings.mkdir()
         file = settings / offload_host.MAC_SETTINGS
+        refused = "only on a Mac whose own settings say it takes foreground work \\(`qk farm foreground NAME`\\)"
         with patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(settings)}):
+            # A record that defers physical devices to another Mac's says nothing of the foreground.
+            self.record.defer(SECOND)
             self.assertFalse(foreground.farm_mac(self.record))
-            # Its settings say it takes foreground work: a run takes its foreground, though its record defers nothing.
-            file.write_text(json.dumps({"takes": {"foreground": True}}))
+            with self.assertRaisesRegex(devices.Refused, refused):
+                with self.slot(): self.fail("ran on a Mac whose settings do not say it takes foreground work")
+            # Its settings say so: a run takes its foreground, on a Mac whose record defers nothing too.
+            self.record.path.unlink()
+            self.assertTrue(offload_host.mark_foreground(True)["takes"]["foreground"])
+            self.assertEqual(json.loads(file.read_text()), {"takes": {"foreground": True}})
             self.assertTrue(foreground.farm_mac(self.record))
             with self.slot() as owner:
                 self.assertEqual(devices.require_foreground(owner)["ownerChatID"], owner)
                 self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "active")
-            # They say it takes none: no run takes it, though its record defers to another Mac's.
-            self.farm_mac()
-            file.write_text(json.dumps({"takes": {"foreground": False}}))
-            self.assertFalse(foreground.farm_mac(self.record))
-            with self.assertRaisesRegex(devices.Refused, "only on another Mac, or on one whose own settings say it takes "
-                                                         "foreground work"):
-                with self.slot(): self.fail("ran on a Mac whose settings take no foreground work")
-            # Settings that say nothing of it, or cannot be read, leave it to the record.
-            for unsaid in (json.dumps({"takes": {"wholeHost": False}}), "{"):
+            # Settings that say it takes none, say nothing of it or cannot be read are no.
+            for unsaid in (json.dumps({"takes": {"foreground": False}}), json.dumps({"takes": {"wholeHost": False}}), "{"):
                 file.write_text(unsaid)
-                self.assertTrue(foreground.farm_mac(self.record), unsaid)
+                self.assertFalse(foreground.farm_mac(self.record), unsaid)
+                with self.assertRaisesRegex(devices.Refused, refused):
+                    with self.slot(): self.fail("ran on a Mac whose settings take no foreground work")
+            # The mark keeps whatever else the file holds, and comes off with nothing else.
+            file.write_text(json.dumps({"takes": {"wholeHost": False}, "labels": ["gpu"], "later": 1}))
+            offload_host.mark_foreground(True)
+            self.assertEqual(json.loads(file.read_text()),
+                             {"takes": {"wholeHost": False, "foreground": True}, "labels": ["gpu"], "later": 1})
+            offload_host.mark_foreground(False)
+            self.assertEqual(json.loads(file.read_text()), {"takes": {"wholeHost": False}, "labels": ["gpu"], "later": 1})
+            file.write_text(json.dumps({"takes": {"foreground": True}}))
+            offload_host.mark_foreground(False)
+            self.assertEqual(json.loads(file.read_text()), {})
+            # A file that cannot be read as settings is left as it is.
+            file.write_text("{")
+            with self.assertRaisesRegex(ValueError, "Invalid Mac settings"): offload_host.mark_foreground(True)
+            self.assertEqual(file.read_text(), "{")
 
     def test_a_run_holds_the_foreground_without_asking_and_releases_it(self):
         self.farm_mac()
@@ -431,6 +448,7 @@ class OpenedAppsTests(unittest.TestCase):
         self.checkout = self.root / "checkout"
         self.record = devices.Record(self.root / "device-handoff.json")
         self.record.defer(SECOND)
+        farm_fixture.takes_foreground(self)
         self.said, self.asked, self.listings, self.running = [], [], [], set()
         environment = patch.dict(os.environ, {devices.OVERRIDE: str(self.record.path)})
         environment.start()
@@ -674,6 +692,7 @@ class DeadlineTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
         os.environ.pop(devices.OWNER, None)
         self.record.defer(SECOND)
+        farm_fixture.takes_foreground(self)
 
     def hold(self, owner, release_by, revision=0):
         return self.record.reserve(devices.FOREGROUND, owner=owner, revision=revision, purpose=f"{owner}'s tests",
@@ -731,6 +750,7 @@ class DeadlineTests(unittest.TestCase):
             with self.subTest(name):
                 self.record.path.unlink()
                 self.record.defer(SECOND)
+                farm_fixture.takes_foreground(self)
                 self.said.clear()
                 clock = Clock()
                 change(self.hold("eng 21346", clock.at(self.TIMEOUT - 60)))
@@ -908,6 +928,7 @@ class RoutingTests(unittest.TestCase):
     def test_a_foreground_lane_gets_the_longer_grace_before_sigkill_and_another_lane_does_not(self):
         from queuekeeper import processes
         self.record.defer(SECOND)
+        farm_fixture.takes_foreground(self)
         self.lanes["plain"] = {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy"}
         (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
                                                                    "lanes": self.lanes}))
@@ -937,6 +958,7 @@ class RoutingTests(unittest.TestCase):
 
     def test_on_the_farm_mac_eng_holds_its_foreground_for_the_lane_and_for_admit(self):
         self.record.defer(SECOND)
+        farm_fixture.takes_foreground(self)
         with patch.object(foreground, "problems", return_value=[]):
             status, error = self.qk("run", "--here", "voiceover-mac")
         self.assertEqual(status, 0, error)

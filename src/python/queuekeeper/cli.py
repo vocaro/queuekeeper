@@ -1530,10 +1530,11 @@ def perform(argv, report):
             # A series' lane runs N times inside its one admission, within N times its limit (doc/guides/simulator-pool.md).
             limit = parallel.lane_timeout(lane, extra)
             lane_wait.begin(root, args.lane)
-            # A foreground lane takes a Mac's screen. Another Mac's is queuekeeper's to take for the run, below; this
-            # Mac's, only the session holding mac-foreground within the owner's window runs it on, with --here.
-            # Otherwise it goes to another Mac and waits there for its foreground, never falling back to this
-            # Mac (foreground.py).
+            # A foreground lane takes a Mac's screen. A Mac whose own settings say it takes foreground work has its
+            # foreground taken for the run, below, on whichever Mac that is (vocaro/queuekeeper#211). On any other, a
+            # workstation, only the session holding mac-foreground within the owner's window runs it, with --here;
+            # otherwise it goes to a Mac of the farm that takes foreground work and waits there for its foreground,
+            # never falling back to this Mac (foreground.py).
             second = lane.get("foreground") and extensions.FOREGROUND.foreground_mac()
             # What keeps the lane from another Mac under this run's pin set, or None (--sibling).
             unsent = unsendable(args.lane)

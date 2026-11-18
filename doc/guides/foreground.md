@@ -342,9 +342,10 @@ Safari after the last session; Queuekeeper's quit is the net under it
   checkout, or when the session recorded its bundle with
   `qk devices update mac-foreground --launched BUNDLE`.
 - **What is the run's, on any other Mac.** That decision does not reach this Mac, the owner's
-  workstation, where he may open Safari or Mail while a run holds the screen. A Mac is the second
-  Mac when its device record defers physical devices to another Mac's (`foreground.farm_mac`),
-  never by its name. On any other, only an app the run is shown to own is quit: one built in the
+  workstation, where he may open Safari or Mail while a run holds the screen. A Mac is one whose
+  foreground a run takes when its own settings say it takes foreground work
+  (`reservations.takes_foreground`, [what a Mac takes](shared-host.md#what-a-mac-takes)), never by
+  its name, and since 2026-11-17 no longer by its device record. On any other, only an app the run is shown to own is quit: one built in the
   run's checkout or recorded with `--launched`. Every other new app is left running and reported
   as "this Mac is a workstation". `foreground.slot` takes the foreground only on another Mac
   today, so this holds for a record that stopped deferring during a run, and for any later route

@@ -14,7 +14,7 @@ qk farm list                            # the Macs, in the order work is offered
 qk farm rename NAME NEW
 qk farm pause NAME [--reason WHY]       # offer it no work until `qk farm resume NAME`
 qk farm remove NAME                     # take it out for good
-qk farm foreground NAME [--off]         # let lanes that take a Mac's screen use it, or not
+qk farm foreground NAME [--off]         # let lanes that take a Mac's screen use it, or not, in its own settings
 ```
 
 - **Names.** A Mac is called by its own local host name unless you give another, and you can rename

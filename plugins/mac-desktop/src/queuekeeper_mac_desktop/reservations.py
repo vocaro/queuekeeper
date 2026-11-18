@@ -22,7 +22,8 @@ call require_foreground before acting; release waits for the processes the sessi
 its own, and says whether the previous frontmost app was restored.
 
 A record that names another Mac under DEFERRED is another Mac's: every run sent there makes it so
-(offload_host.defer_devices), and what it defers to that Mac's record is the extension's to say.
+(offload_host.defer_devices), and what it defers to that Mac's record is the extension's to say. It says nothing
+of the Mac's foreground: whether queuekeeper takes that for a run is the Mac's own setting (takes_foreground).
 """
 import contextlib
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ import sys
 import tempfile
 import time
 
+from queuekeeper import offload_host
 from queuekeeper.resources import process_start
 
 SCHEMA = 1
@@ -463,27 +465,39 @@ class Record:
         return None
 
 
-def require_foreground(owner, record=None):
-    """Refuse foreground work unless owner holds mac-foreground, and on this Mac within its window.
+def takes_foreground():
+    """Whether this Mac's foreground is queuekeeper's to take for a run, without a window agreed beforehand: its own
+    settings say it takes foreground work (takes.foreground in its mac-settings.json, offload_host.mac_settings),
+    on whichever Mac that is, the one a command starts on included (the owner's decision, 2026-11-17,
+    vocaro/queuekeeper#211). Settings that do not say, or cannot be read, are no: the screen is someone's until its
+    owner says otherwise. Until then a Mac was taken to be one when its device record deferred physical devices to
+    another Mac's, which every run sent to it made it, so that the Mac that sent work never was."""
+    try: return offload_host.mac_settings()["takes"]["foreground"] is True
+    except ValueError: return False
 
-    Drivers call it before acting, on any Mac. On this Mac the window is the reservation's expected
-    release, which the session agreed with the owner. On another Mac, whose record defers physical
-    devices, queuekeeper holds the entry for the run and names it in QUEUEKEEPER_DEVICE_OWNER (foreground.slot), and
-    the run may outlast its expected release."""
+
+def require_foreground(owner, record=None):
+    """Refuse foreground work unless owner holds mac-foreground, and on a Mac that takes no foreground work by
+    itself within its window.
+
+    Drivers call it before acting, on any Mac. On a workstation the window is the reservation's expected
+    release, which the session agreed with the owner. On a Mac whose settings say it takes foreground work
+    (takes_foreground), queuekeeper holds the entry for the run and names it in QUEUEKEEPER_DEVICE_OWNER
+    (foreground.slot), and the run may outlast its expected release."""
     if not owner:
         raise Refused(f"name the session whose {FOREGROUND} reservation covers this work (--owner or {OWNER})")
     value = (record or Record()).load()
     entry = value["devices"].get(FOREGROUND)
     state = condition(entry) if entry is not None else "released"
     if state == "released":
-        raise Refused(f"nobody holds {FOREGROUND}; " + ("queuekeeper reserves it for each run" if value.get(DEFERRED) else
+        raise Refused(f"nobody holds {FOREGROUND}; " + ("queuekeeper reserves it for each run" if takes_foreground() else
                       "before foreground work, agree a window with the owner and reserve it until the window ends"))
     if entry.get("ownerChatID") != owner:
         raise Refused(f"{FOREGROUND} is held by {entry.get('ownerChatID')} for {entry.get('purpose')}, expected "
                       f"release {entry.get('expectedReleaseBy')}; wait for its release")
     if state in ("orphan", "uncertain"):
         raise Refused(f"{FOREGROUND} is {state}; it needs attended recovery before foreground work")
-    if not value.get(DEFERRED) and window_ended(entry):
+    if not takes_foreground() and window_ended(entry):
         raise Refused(f"the window agreed for {FOREGROUND} ended at {entry.get('expectedReleaseBy')}; stop, restore "
                       "the owner's settings and release")
     return require_window(FOREGROUND, entry)

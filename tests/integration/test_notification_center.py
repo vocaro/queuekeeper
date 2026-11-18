@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation
-from queuekeeper import cli, lane_results
+from test_support import farm as farm_fixture
+from queuekeeper import cli, lane_results, offload_host
 from queuekeeper_apple import devices
 from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import foreground, notification_center
@@ -79,6 +80,7 @@ class HostTest(unittest.TestCase):
         self.said = []
         self.record = devices.Record(self.root / "device-handoff.json")
         self.record.defer(SECOND)
+        farm_fixture.takes_foreground(self)
         for patcher in (patch.object(notification_center, "run", side_effect=lambda *a, **k: self.host.run(*a, **k)),
                         patch.object(notification_center, "trusted", return_value=True),
                         patch.object(notification_center, "STEP", 0.01),
@@ -183,10 +185,11 @@ class DismissTests(HostTest):
         with self.held():
             with self.assertRaisesRegex(devices.Refused, "held by queuekeeper"):
                 self.dismiss(owner="another session")
-        # Nor on a Mac that is not another Mac, the owner's workstation.
-        workstation = devices.Record(self.root / "workstation.json")
-        with self.assertRaisesRegex(devices.Refused, "only on another Mac"):
-            notification_center.dismiss(self.said.append, record=workstation, owner="anyone")
+        # Nor on a Mac whose own settings do not say it takes foreground work, a workstation, though its record
+        # defers physical devices as this one's does (vocaro/queuekeeper#211).
+        offload_host.mark_foreground(False)
+        with self.assertRaisesRegex(devices.Refused, "only on a Mac whose own settings say it takes foreground work"):
+            notification_center.dismiss(self.said.append, record=self.record, owner="anyone")
         self.assertEqual(self.host.pressed, [])
         self.assertEqual(self.host.notifications, [BANNER])
 
@@ -268,6 +271,8 @@ class LaneTests(HostTest):
                         patch.object(foreground, "problems", return_value=[])):
             patcher.start()
             self.addCleanup(patcher.stop)
+        # In the namespace the lanes run in: this Mac takes foreground work, by its own settings.
+        farm_fixture.takes_foreground(self)
 
     def qk(self, *arguments):
         with contextlib.redirect_stderr(StringIO()) as error, contextlib.redirect_stdout(StringIO()):
