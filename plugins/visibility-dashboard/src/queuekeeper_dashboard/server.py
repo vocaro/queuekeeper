@@ -17,15 +17,23 @@ server has moved.
 
 It answers GET alone, and only a request whose Host names this Mac: a page elsewhere that pointed a name of its own
 at this address would otherwise read the queue through its visitor's browser. It binds 127.0.0.1 unless told
-otherwise, and says so when it is told."""
+otherwise, and says so when it is told.
+
+A port another dashboard already serves is taken over: the server there, known by the header every answer of a
+dashboard carries, is sent SIGTERM and the new one binds once it has gone. `--no-replace` refuses instead, and a port
+some other program holds is always refused."""
 import argparse
+import errno
+import http.client
 import http.server
 import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import threading
+import time
 from urllib.parse import parse_qsl, unquote, urlsplit
 import webbrowser
 
@@ -197,6 +205,49 @@ def make(given=(), port=PORT, bind=BIND):
     return server
 
 
+def dashboard_at(bind, port):
+    """Whether a dashboard answers at bind:port: each of its answers names its commit, though the name may be empty."""
+    host = {"": BIND, "0.0.0.0": BIND, "::": "::1"}.get(bind, bind)
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        connection.request("HEAD", "/api/panels")
+        return connection.getresponse().getheader("X-Queuekeeper-Commit") is not None
+    except (OSError, http.client.HTTPException): return False
+    finally: connection.close()
+
+
+def listeners(port):
+    """The processes other than this one that listen on TCP port, as lsof finds them."""
+    try: done = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True,
+                               timeout=10)
+    except (OSError, subprocess.SubprocessError): return []
+    return sorted({int(word) for word in done.stdout.split() if word.isdigit()} - {os.getpid()})
+
+
+def replaced(given, port, bind, address, wait=10):
+    """A server bound at bind:port after the dashboard there was sent SIGTERM and let it go, or None with the reason
+    printed when no single dashboard's process listens there or it would not go in time."""
+    found = listeners(port)
+    if len(found) != 1:
+        print(f"queuekeeper: a dashboard serves {address}, but no single process of yours listens on port {port}",
+              file=sys.stderr)
+        return None
+    pid = found[0]
+    print(f"queuekeeper: stopping the dashboard already at {address} (PID {pid}); --no-replace keeps it", flush=True)
+    try: os.kill(pid, signal.SIGTERM)
+    except OSError as error:
+        print(f"queuekeeper: cannot stop PID {pid}: {error}", file=sys.stderr)
+        return None
+    deadline = time.monotonic() + wait
+    while True:
+        try: return make(given, port, bind)
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE or time.monotonic() > deadline:
+                print(f"queuekeeper: cannot serve on {bind}:{port}: {error}", file=sys.stderr)
+                return None
+        time.sleep(0.1)
+
+
 def warm(app):
     """Read what the first page will ask for, in the background as the server starts: each repository's journal and
     queue, the farm (whose reading then goes on in the background), and the Now tab for every repository. A server
@@ -221,6 +272,8 @@ def main(argv, project=None):
     parser.add_argument("--bind", default=BIND, metavar="ADDRESS", help=f"the address to serve on (default {BIND}, this "
                         "Mac alone); any other lets every machine that can reach it read the queue and its logs")
     parser.add_argument("--open", action="store_true", help="open the page in the default browser")
+    parser.add_argument("--no-replace", action="store_true", help="refuse a port another dashboard serves, rather "
+                        "than stop that dashboard and serve in its place")
     args = parser.parse_args(argv)
     roots = []
     for folder in [Path(project or "."), *args.repositories]:
@@ -233,8 +286,20 @@ def main(argv, project=None):
     for root in roots: registry.add(root)
     try: server = make(roots, args.port, args.bind)
     except OSError as error:
-        print(f"queuekeeper: cannot serve on {args.bind}:{args.port}: {error}", file=sys.stderr)
-        return 2
+        taken = f"http://{'localhost' if args.bind == BIND else args.bind}:{args.port}/"
+        ours = error.errno == errno.EADDRINUSE and dashboard_at(args.bind, args.port)
+        # A server restarting itself after a landing never stops one started since in its place.
+        if ours and not args.no_replace and not os.environ.get(restartable.RESTARTED):
+            server = replaced(roots, args.port, args.bind, taken)
+            if server is None: return 2
+        elif ours:
+            print(f"queuekeeper: a dashboard already serves {taken}; without --no-replace, qk serve stops it and "
+                  "serves in its place", file=sys.stderr)
+            return 2
+        else:
+            print(f"queuekeeper: cannot serve on {args.bind}:{args.port}: {error}"
+                  + ("; --port 0 serves on any free port" if error.errno == errno.EADDRINUSE else ""), file=sys.stderr)
+            return 2
     address = f"http://{'localhost' if args.bind == BIND else args.bind}:{server.server_address[1]}/"
     print(f"queuekeeper: serving {len(server.app.repositories)} repositor{'y' if len(server.app.repositories) == 1 else 'ies'} "
           f"at {address}; Ctrl-C stops it", flush=True)

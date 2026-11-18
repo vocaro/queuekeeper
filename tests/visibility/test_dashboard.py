@@ -3,6 +3,7 @@
 The page's scripts are not run here: test_the_page_and_every_panel_script_are_served checks that they are served,
 and the page itself is checked in a browser."""
 import http.client
+import http.server
 import io
 import json
 import os
@@ -1033,13 +1034,48 @@ class Command(Fixture):
         self.assertIn("0.0.0.0 is not this Mac alone: every machine that can reach it can read the queue and its logs",
                       errors)
 
-    def test_a_port_in_use_and_a_folder_that_is_no_checkout_are_refused(self):
+    def serving(self, made):
+        """made, serving on a thread of its own until the test ends or it is shut down."""
+        threading.Thread(target=made.serve_forever, daemon=True).start()
+        def ended():
+            made.shutdown()
+            made.server_close()
+        self.addCleanup(ended)
+        return made
+
+    def test_a_port_another_dashboard_serves_is_taken_over_unless_told_not_to(self):
         visibility.switch("dashboard", True)
         taken = server.make([self.repo], port=0)
+        port = taken.server_address[1]
+        threading.Thread(target=taken.serve_forever, daemon=True).start()
         self.addCleanup(taken.server_close)
-        status, _, errors = self.command("--port", str(taken.server_address[1]))
+        stopped = []
+        def kill(pid, number):
+            stopped.append((pid, number))
+            taken.shutdown()
+            taken.server_close()
+        with patch.object(server, "listeners", lambda port: [4242]), patch.object(server.os, "kill", kill):
+            status, _, errors = self.command("--port", str(port), "--no-replace")
+            self.assertEqual((status, stopped), (2, []))
+            self.assertIn(f"a dashboard already serves http://localhost:{port}/; without --no-replace", errors)
+            made = []
+            with patch.object(server.http.server.ThreadingHTTPServer, "serve_forever", lambda served: made.append(served)):
+                status, printed, errors = self.command("--port", str(port))
+        self.assertEqual((status, errors), (0, ""))
+        self.assertEqual(stopped, [(4242, server.signal.SIGTERM)])
+        self.assertIn(f"stopping the dashboard already at http://localhost:{port}/ (PID 4242)", printed)
+        self.assertEqual(made[0].server_address[1], port)
+        made[0].server_close()
+
+    def test_a_port_in_use_and_a_folder_that_is_no_checkout_are_refused(self):
+        visibility.switch("dashboard", True)
+        taken = self.serving(server.http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler))
+        with patch.object(server.os, "kill") as kill:
+            status, _, errors = self.command("--port", str(taken.server_address[1]))
         self.assertEqual(status, 2)
+        kill.assert_not_called()
         self.assertIn("cannot serve on 127.0.0.1", errors)
+        self.assertIn("--port 0 serves on any free port", errors)
         status, _, errors = self.command("--port", "0", str(self.base / "nowhere"))
         self.assertEqual(status, 2)
         self.assertIn("is no checkout of a repository", errors)

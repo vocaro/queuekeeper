@@ -131,6 +131,11 @@ qk serve --port 9000
 qk serve ../other-project # show another repository too
 ```
 
+A dashboard already serving the port is replaced: `qk serve` stops it and serves in its place,
+so serving again after a change, or from another checkout, needs no hunt for the old one.
+`--no-replace` refuses instead. A port some other program holds is refused, and `--port 0`
+serves on any free one.
+
 | Tab | What it shows |
 |---|---|
 | Now (home) | Every queue's health in one verdict, naming each repository that needs a look, with the day's numbers and the last 24 hours behind each; Needs attention, what is open and needs someone (a hold, a gate that looks stuck, waiting with no worker, an entry that came back and has not been queued again, a test found flaky, another tab's warning), each linked to what acts on it; the flow from agents through each repository's queue and gates to the Macs and main; and the Queue: every round being tested, each gate with a ring of how far it is into its usual time, then what waits, numbered in the order it is taken. Rows link to entry and gate details |
