@@ -467,6 +467,16 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         if place is not None: place.leave()
 
 
+def declined_everywhere(name, why):
+    """Say that name did not run because the Macs' own settings leave no Mac to run it, why, and return
+    remote.MISCONFIGURED: a cause in the Macs' settings and no verdict on any commit, which a merge queue holds for
+    and does not send back (vocaro/queuekeeper#211)."""
+    print(f"queuekeeper: {name} not run: {why}\nqueuekeeper: to fix it, have a Mac take it, in its "
+          f"{offload_host.MAC_SETTINGS} (doc/guides/shared-host.md, What a Mac takes), or change what the lane needs",
+          file=sys.stderr, flush=True)
+    return remote.MISCONFIGURED
+
+
 def declined(reason):
     """Write why admission declined the work where the Mac that sent it reads it back, when it was sent here
     (offload_host.declined_reason); otherwise nothing. Nothing written stops the decline."""
@@ -775,12 +785,25 @@ def admit(root, args, config=None, *, device_window=None):
     # Nested work runs inside the admission it inherits, here.
     inherited = bool(os.environ.get(resources.TOKEN))
     reason = here_because(args, inherited)
+    # What this Mac's own settings decline of exclusive work and model runs (remote.here_unfit, vocaro/queuekeeper#211):
+    # such a command runs only on another Mac, if one can start it now. Nested work runs inside its admission, a
+    # self lane's parts run where the lane started, and work another Mac sent here was placed by this Mac's reading
+    # there.
+    declined = remote.here_unfit(exclusive=args.exclusive, model=args.model) \
+        if (args.exclusive or args.model) and not inherited and not os.environ.get(remote.DISPATCHER) \
+        and not os.environ.get(SELF_LANE) else None
+    if declined is not None and reason is not None:
+        raise ValueError(f"the command not run: it runs on this Mac ({reason}), and {declined}")
     offered = None
     if reason is None:
         # The Mac with spare capacity for it and the most headroom (remote.first_command, admitted_here).
         offered = remote.first_command(root, config, command, kind)
         if not isinstance(offered.status, str): return offered.status
         reason = offered.status
+        if declined is not None:
+            print(f"queuekeeper: the command not run: {declined}, and no other Mac took it: {reason}", file=sys.stderr,
+                  flush=True)
+            return BUSY
     # The policy goes to stderr so that stdout carries only the command's own output.
     receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                "policy": refresh_policy(root, sys.stderr), "command": command,
@@ -1541,6 +1564,39 @@ def perform(argv, report):
             # Keep the queue's placement scope at the outer lane.
             queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
             exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
+            # What this Mac's own settings decline: a kind of work, or a lane whose labels it lacks (remote.here_unfit;
+            # the owner's decision, 2026-11-17, vocaro/queuekeeper#211). Such a lane runs only on the farm's other Macs,
+            # each judged by its own settings as it is read. Work nested in an admission runs inside it, and work
+            # another Mac sent here was placed by this Mac's reading there.
+            declined = None
+            if not unadmitted(lane) and not os.environ.get(resources.TOKEN) and not os.environ.get(remote.DISPATCHER):
+                # Not by foreground work, which this Mac runs only as its foreground allows, above.
+                declined = remote.here_unfit(bool(lane.get("wholeHost")), admission_of(lane) == "exclusive",
+                                             **{**remote.lane_needs(config["lanes"], args.lane), "foreground": False})
+            if declined is not None and not args.offload_only:
+                if args.here or args.serial:
+                    asked = "--here" if args.here else "--serial runs the serial reference here"
+                    raise ValueError(f"{args.lane} not run: it runs on this Mac ({asked}), and {declined}")
+                # The lane's own setting and the Mac's contradict each other: no verdict on any commit.
+                if reason is not None:
+                    return declined_everywhere(args.lane, f"it runs only on this Mac ({reason}), and {declined}")
+                if unsent: raise ValueError(f"{args.lane} not run: {declined}, and {unsent}")
+                # Asked to start now or not at all, as the second gate of a queue's pair is: on another Mac, once.
+                if args.if_free:
+                    return remote.first(root, config, args.lane, extra, args.expect, fallback=False,
+                                        queue_gate=queue_gate, exclude=exclude, hosts=only).status
+                others = tuple(host for host in (only if only is not None else remote.farm.destinations())
+                               if host != exclude)
+                if not others and exclude:
+                    # A queue's second gate, kept off the first gate's Mac, which is the only other that takes work.
+                    print(f"queuekeeper: {args.lane} not run: {declined}, and the farm has no Mac but the one that gates "
+                          "the batch below it", file=sys.stderr, flush=True)
+                    return BUSY
+                if not others: return declined_everywhere(args.lane, f"{declined}, and {remote.NO_MAC}")
+                try:
+                    return remote.there_lane(root, config, args.lane, extra, args.expect, declined, hosts=others)
+                except remote.Declined as error:
+                    return declined_everywhere(args.lane, str(error))
             if args.offload_only and unsent:
                 raise ValueError(f"{args.lane} not run: --offload-only never runs it here, and {unsent}")
             if args.offload_only:

@@ -46,15 +46,16 @@ The order below is a reading of that direction and of the decisions under
 Two rules stand beside the order. **The owner is not the scheduler.** Queuekeeper chooses the Mac
 and the moment, a session never asks him which Mac to use ([ve#168]), and a queue holds for him only
 over a cause that only he can fix. **No Mac is special.** Admission and placement treat every Mac
-alike, and Macs differ only by their own settings: their CPU limits and which kinds of lane each
-may run (2026-11-17). The rules in force do this only in part
+alike, and Macs differ only by their own settings: their CPU limits, which kinds of work each
+takes and which labels each has (2026-11-17). The rules in force do this but for one default
 ([D7](#d7-no-mac-is-special)).
 
 Read as one sentence: land as much as the Macs can verify truthfully, within each Mac's limits, in
 arrival order with bounded waits, and only then make a single run start sooner. The rules in force
-fall short of this in one place: the foreground rule still names this Mac, and which kinds of work
-a Mac takes is not yet its setting. That is decided under
-[decisions](#decisions) and waits to be built. Three others ended on 2026-11-17: placement that
+fall short of this in one place: while a Mac's settings do not say whether it takes foreground
+work, the rules from before the setting still tell the Mac a command starts on from the others
+(rule 20). That is decided under [decisions](#decisions), and the default waits for the owner to
+mark his Macs. Three others ended on 2026-11-17: placement that
 ordered the Macs without balancing them (rule 14), a CPU limit that bounded only the slots
 beyond the guaranteed ones (rule 3), and a merge queue that kept the first gate of a pair on this
 Mac and the second off it (rules 24 and 25).
@@ -72,11 +73,11 @@ Each row is something only so much work can have at once. The first five are one
 | Exclusive host | Mac | one request | exclusive work: every slot up to `slotsMax` and the model, started once the CPU reads quiet (under 25%) or after 300 s |
 | Model and GPU | Mac | one run | a model run, with one slot ([model admission][model]) |
 | Unlocked screen | Mac | a state, not a lock | a lane that says `"unlockedScreen": true` ([screen state][screen]) |
-| Foreground | Mac marked for it | one holder | a foreground lane, taken before admission ([foreground][foreground]) |
+| Foreground | Mac that takes foreground work | one holder | a foreground lane, taken before admission ([foreground][foreground]) |
 | Physical device | this Mac | one holder each, in turn | a device lane, which says `here` ([devices][devices]) |
 | Pool simulator | project and Mac | the pool's members | a simulator lane ([simulator pool](simulator-pool.md)) |
 | Checkout | project, on another Mac | four | any run sent there |
-| Mac | farm | those listed, reachable and not paused | every lane that does not say `here` |
+| Mac | farm | those listed, reachable and not paused, that take the work by their own settings | every lane that does not say `here` |
 | `main` | repository | one worker, one batch gating, one more gate beside it | a queue's entries ([the merge queue][queue]) |
 
 **Each Mac's limits are its own.** `slots`, `slotsMax`, `busyLimit` and `settleSeconds` come from
@@ -86,6 +87,12 @@ from, and `qk admissions usage` prints every Mac's beside its reading now. Since
 owner sets another Mac's CPU limit higher than this Mac's. Setup does the same for a new
 installation: it writes a `busyLimit` of 70 for the Mac it runs on, and the default, which a Mac
 added to the farm keeps, is 90 (2026-11-17, [D7](#d7-no-mac-is-special)).
+
+**What each Mac takes is its own too.** A Mac's `mac-settings.json`, beside its limits file, says
+which kinds of work it takes (whole-host gates, exclusive work, model runs, foreground work) and
+which labels it has; a lane says which labels it needs
+([what a Mac takes][takes], rule 31, [D7](#d7-no-mac-is-special)). `qk admissions limits` prints
+one Mac's.
 
 **What the CPU limit bounds, and what it does not.** `busyLimit` decides whether a Mac admits more
 work: any slot, guaranteed or beyond, opens only under it, except for the first job on a Mac with
@@ -111,7 +118,8 @@ guaranteed slot of both held.
 | Timed measurement | `"resource": "exclusive"`; `qk admit --exclusive` | the exclusive host, read quiet |
 | Self lane | `"resource": "self"` | nothing itself: its script admits each part, all on one Mac |
 | Screen-reading lane | `"unlockedScreen": true` | its slots, on a Mac whose screen reads unlocked |
-| Foreground lane | `"foreground": true` | a Mac's foreground, then its slots |
+| Foreground lane | `"foreground": true` | a Mac's foreground, then its slots, on a Mac that takes foreground work |
+| Labeled lane | `"labels": [...]` | its slots, on a Mac that has every label |
 | Device lane | `"here": "REASON"` and a reservation | the device and one slot, on this Mac |
 | Queue round | `queue.lanes` | what its lanes need, and the worker's checkout |
 
@@ -147,13 +155,14 @@ hold the mechanism.
 | # | Rule | Why | Set by |
 | --- | --- | --- | --- |
 | 14 | Queuekeeper chooses the Mac: of the Macs with room, this Mac among them, the one with the most headroom, which is its CPU limit less its CPU's busy share; the farm's order between equals, this Mac after the Macs it lists; and whichever admits first when none has room. | The Macs are for work. Each Mac's own limit says how much it is to be loaded, so load spreads and the workstation's lower limit makes it the later choice at equal load. "Another Mac first" filled one Mac's slots and sent gates to this one. | [ve#168], 2026-11-04; 2026-11-17, [D5](#d5-how-is-load-balanced-across-the-macs) |
-| 15 | Every lane is offered unless it says `here` with a reason: a device, a measurement tied to this Mac's hardware, a self lane's parts. | A lane's first run elsewhere is its check; a difference between Macs is a defect to fix. | 2026-10-28, 2026-11-07 |
+| 15 | Every lane is offered unless it says `here` with a reason: a device, a measurement tied to this Mac's hardware, a self lane's parts. A reason that is a property of a Mac can be a label instead (rule 31). | A lane's first run elsewhere is its check; a difference between Macs is a defect to fix. | 2026-10-28, 2026-11-07 |
 | 16 | A Mac has room by its own admission's rules: a free slot, guaranteed or beyond, under that Mac's `busyLimit`; room for one job at any reading while nothing admitted runs there; and none while whole-host or exclusive work runs or is queued ahead there. The test is one for every Mac, the Mac that chooses included. | An offer sent where admission would hold it costs a checkout and a wait. A Mac with a test of its own is a special Mac. | [ve#186], [ve#191], [ve#201]; 2026-11-07; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 17 | Exclusive work sent to another Mac is offered to start at once, and joins that Mac's queue only after 900 s of declined offers. | A queued exclusive request idles the Mac while it waits; the bound keeps it from waiting forever. | [placement][placement] |
 | 18 | A Mac that cannot be reached is passed over and the work runs here. One that is set up wrongly runs nothing and stops for the owner. | Busy or away is ordinary; a different Xcode gives results that cannot be compared. | 2026-10-27, 2026-10-28 |
 | 19 | A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, and waits holding no slot, and no place in the queue of a Mac whose screen is locked (rule 30). A locked screen holds back only work that declares the need, and only on its own Mac: a bisect's older half is offered to every Mac as any gate is (rule 24). | A gate sent to a locked Mac ran unmeasured three times; an older half waited 67 minutes on this Mac's lock while another Mac stood free and unlocked. | [ve#185], [ve#293]; [#205], 2026-11-17 |
-| 20 | One holder of a Mac's foreground, only on Macs marked for it, taken before admission. | The screen is the owner's. A waiter holds no slot, and builds go on beside a foreground run. | [foreground][foreground] |
+| 20 | One holder of a Mac's foreground, only on Macs that take foreground work, taken before admission. A Mac takes it when its own settings say so, on whichever Mac that is. While they do not say: the farm's marked Macs, or its first, and never the Mac a command starts on. | The screen is the owner's. A waiter holds no slot, and builds go on beside a foreground run. The default stays until the owner's Macs are marked, since his farm marks none. | [foreground][foreground]; 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 21 | Devices and pool simulators have one holder each, in turn, under a reservation. The owner's phone needs his word first. | A device is one thing, and some are the owner's own. | 2026-11-06, [devices][devices] |
+| 31 | A Mac takes only the kinds of work its own settings allow, and a lane runs only on a Mac that has every label it needs. A Mac that declines work is passed over: not offered it, not waited for, and given no place for it. The Mac a command starts on is judged as every other is, and a lane it declines runs only on the others. When no Mac takes a lane, nothing runs and the work stops for whoever sets what the Macs take. | Which work a Mac runs is its owner's preference, and a license or a piece of hardware is a fact about a Mac: both belong in that Mac's settings, not in a rule that names a Mac or in a Mac's list of lanes. | 2026-11-17, [D7](#d7-no-mac-is-special) |
 | 30 | A whole-host lane that waits takes a place in the queue of every Mac that can run it, runs on the first to admit it and gives up the others. A place holds no slot and no checkout, is renewed by the Mac that sent it and lapses within 180 s of that Mac's silence. One process starts the lane, in one place at a time, so it never runs twice. A lane that needs an unlocked screen has its place on a Mac only while that Mac's screen reads unlocked. | Gates queued for one Mac while another ran none for 89% of the day: nothing drained toward a gate that was only offered there. A place on a locked Mac would keep its slots for a lane it cannot run. | 2026-11-17, [D6](#d6-gates-wait-mostly-for-other-gates); [#214] |
 
 ### In a merge queue
@@ -185,7 +194,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Yes (rules 3 and 16) |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Yes (rule 14) |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Yes (rule 30) |
-| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room, this Mac as a candidate like any other and the queue's pairs: yes (rules 4, 14, 16, 24 and 25). The foreground rule that names this Mac, and the settings for kinds, labels and devices: not built, [#211] |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room, this Mac as a candidate like any other, the queue's pairs and the settings for kinds and labels: yes (rules 4, 14, 16, 24, 25 and 31). The foreground default that names this Mac while a Mac's settings do not say (rule 20), and devices: not built, [#211] |
 
 ### D1: Is the order of goals right?
 
@@ -365,20 +374,21 @@ file. Building the rest is [#211], which holds the code references. What it chan
 | Other Macs are offered work first, and this Mac is the fallback; it is not in the farm's list (rule 14). | This Mac is a member of the list, and the choice is D5's. In force: this Mac is a candidate for every offer it may take, and `farm.json` still lists only the others, so it comes after them between equals. |
 | A request waits in this Mac's queue, and other Macs get only offers to start at once (rules 6 and 17). | A place in the queue of each Mac that can run it (D6, decided). In force for a whole-host lane (rule 30); one-slot and exclusive work wait as before. |
 | A bisect's older half gates here and its newer half never here; a stacked gate is placed by where the batch's last lane ran (rules 24 and 25). | Any two different Macs with room. In force: the first gate of a pair is offered as any gate is, and the second goes to any Mac but the one that admitted it, this Mac among them. What is left follows from where a command starts: a request waits in the queue of the Mac its process runs on, so a second gate kept off this Mac starts on another Mac at once or not at all. |
-| Foreground work never comes to this Mac by itself, and goes to the first listed Mac when none is marked (rule 20). | The foreground mark alone, on any Mac. |
+| Foreground work never comes to this Mac by itself, and goes to the first listed Mac when none is marked (rule 20). | The foreground mark alone, on any Mac. In force where a Mac's own settings say (`takes.foreground`): such a Mac takes foreground work or none, whichever Mac it is. Not yet where they do not say: the old rule is the default, since the owner's farm marks no Mac and dropping it would stop every foreground lane. |
 | Another Mac's slots beyond the guaranteed count as room when the farm has several Macs; this Mac's do not (rule 16). | One test of room for every Mac. In force. |
 | Every Mac has the same default limits, and no command writes a limits file. | Setup writes this Mac's file, with its lower `busyLimit`. In force. |
 
-One setting is missing: nothing says which kinds of lane a Mac may run, apart from the foreground
-mark and a lane's `chips`. With it, keeping gates off the owner's workstation is his setting and
-not a rule. What stays is what follows from where a command starts: work that names this checkout's
+One setting was missing: nothing said which kinds of lane a Mac may run, apart from the foreground
+mark and a lane's `chips`. With it (rule 31), keeping gates off the owner's workstation is his
+setting and not a rule. What stays is what follows from where a command starts: work that names this checkout's
 ignored files, a local path, a pool simulator or a device attached here runs here, and results come
 back to the Mac that sent the work.
 
 **The setting, decided 2026-11-17: kinds plus labels.** A Mac says which kinds of work it takes
 (whole-host gates, exclusive work, model runs, foreground), which is the owner's preference, and
 which labels it has, such as a license; a lane says which labels it needs. A lane is not named in
-a Mac's settings. A device is the case labels do not fit. An iPad or iPhone paired over Wi-Fi is
+a Mac's settings. In force as rule 31: the settings are each Mac's own `mac-settings.json`
+([what a Mac takes][takes]). A device is the case labels do not fit. An iPad or iPhone paired over Wi-Fi is
 reachable from every Mac, and one kept to a USB cable from one Mac only, so it belongs to no Mac.
 
 **A device is declared, and its reach is read (decided 2026-11-17).** A device is a resource of the
@@ -412,6 +422,7 @@ date, and the mechanism's guide says how it works.
 
 [admission]: shared-host.md#heavy-work-admission
 [placement]: shared-host.md#which-mac-runs-a-lane
+[takes]: shared-host.md#what-a-mac-takes
 [farm]: shared-host.md#the-farms-macs
 [model]: shared-host.md#model-admission
 [screen]: shared-host.md#screen-state

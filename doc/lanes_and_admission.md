@@ -39,6 +39,10 @@ statement of what it needs from the machine:
   leaves the group not run with exit 75, and an unmeasured one leaves it unmeasured: the merge queue
   reads either as no verdict, not as a failure of the commits
   ([#200](https://github.com/vocaro/queuekeeper/issues/200)).
+- **Labels.** A lane that needs something of the Mac that runs it, such as a license or a piece of
+  hardware, lists it: `"labels": ["unity-license"]`. It runs only on a Mac whose own settings give
+  it every label the lane lists ([what a Mac takes](guides/shared-host.md#what-a-mac-takes)). A Mac's
+  settings name no lane, and a lane names no Mac.
 - **Budgets.** `budgetMinutes` warns when the median of the gate's own work, from its admission to its
   end, drifts past the target, and names the slowest parts, the median wait for admission and the median
   landing latency beside it.

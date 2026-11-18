@@ -980,7 +980,8 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])),
                          {"slots", "slotsMax", "busy", "load", "cpuBusy", "busyLimit", "wholeHost", "exclusive", "kept",
-                          "queuedExclusive", "sinceAdmission", "settle", "memory", "screen", "limitsFrom", "limitsFile"})
+                          "queuedExclusive", "sinceAdmission", "settle", "memory", "screen", "limitsFrom", "limitsFile",
+                          "takes", "takesSet", "labels", "settingsFile"})
 
     def test_a_busy_cpu_memory_pressure_or_an_unsettled_admission_withholds_extra_slots(self):
         self.hold(0, 1)
@@ -1356,7 +1357,11 @@ class ResourceTests(unittest.TestCase):
             self.assertEqual(resources.limits_main([], out=lines.append), 0)
         self.assertEqual(lines, [f"10 cores; limits file {path}", "HEAVY_SLOTS=2  (slots; HEAVY_SLOTS)",
                                  "HEAVY_SLOTS_MAX=3  (slotsMax; HEAVY_SLOTS_MAX)", f"HEAVY_BUSY_LIMIT=80  (busyLimit; {path})",
-                                 "HEAVY_SETTLE_SECONDS=30  (settleSeconds; default: 30)"])
+                                 "HEAVY_SETTLE_SECONDS=30  (settleSeconds; default: 30)",
+                                 # What the Mac takes, beside how much (vocaro/queuekeeper#211): every default here.
+                                 "takes: whole-host gates yes (default), exclusive work yes (default), model runs yes "
+                                 "(default), foreground work as before the setting (unset); settings file "
+                                 f"{Path(path).with_name('mac-settings.json')}", "labels: none"])
 
     def test_exclusive_admission_holds_all_legacy_slots_and_nested_calls_reuse_it(self):
         with resources.Admission("test", exclusive=True, timeout=0):
@@ -2966,6 +2971,108 @@ class HeldPlaceTests(unittest.TestCase):
                 self.assertIn("a place needs an identity of 32 hex digits", said["error"])
                 self.assertEqual(self.ended(holder), 2)
                 self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
+
+
+class MacSettingsTests(unittest.TestCase):
+    """offload_host.mac_settings: a Mac's own settings for the work it takes, mac-settings.json beside its limits file
+    (the owner's decision, 2026-11-17, vocaro/queuekeeper#211): kinds of work and labels, and no lane's name."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.record = root / "device-handoff.json"
+        self.env = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(root / "slots"), "HEAVY_SLOTS": "2", "HEAVY_SLOTS_MAX": "2",
+                                           "QUEUEKEEPER_GATE_LOCK_FILE": str(root / "gate"),
+                                           "QUEUEKEEPER_DEVICE_RECORD": str(self.record)})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        (root / "slots").mkdir()
+        self.file = root / "slots" / "mac-settings.json"
+
+    def test_a_mac_with_no_settings_takes_every_kind_but_foreground_work_and_has_no_label(self):
+        from queuekeeper import offload_host
+        self.assertEqual(offload_host.mac_settings(),
+                         {"takes": {"wholeHost": True, "exclusive": True, "model": True, "foreground": None}, "set": [],
+                          "labels": [], "file": str(self.file), "ignored": []})
+        # The file is beside the limits file, and is another file: an older toolkit refuses a limits key it does not know.
+        self.assertEqual(self.file.parent, resources.limits_path().parent)
+        self.assertNotEqual(self.file, resources.limits_path())
+        # Of foreground work the file gives no default: unset, the rules from before the setting decide, and no
+        # reading of this file reads the Mac's device record for it.
+        self.record.write_text(json.dumps({"devices": {}, offload_host.DEFERRED: "studio"}))
+        self.assertIsNone(offload_host.mac_settings()["takes"]["foreground"])
+        self.assertIsNone(offload_host.capacity()["takes"]["foreground"])
+
+    def test_its_settings_say_the_kinds_it_takes_and_its_labels(self):
+        from queuekeeper import offload_host
+        self.file.write_text(json.dumps({"takes": {"wholeHost": False, "foreground": True},
+                                         "labels": ["unity-license", "apple-m5-max", "unity-license"]}))
+        found = offload_host.mac_settings()
+        self.assertEqual(found["takes"], {"wholeHost": False, "exclusive": True, "model": True, "foreground": True})
+        self.assertEqual((found["set"], found["labels"]), (["foreground", "wholeHost"], ["apple-m5-max", "unity-license"]))
+        self.file.write_text(json.dumps({"takes": {"foreground": False}}))
+        self.assertEqual(offload_host.mac_settings()["takes"]["foreground"], False)
+        # The reading placement takes says the same, with where it is set.
+        reading = offload_host.capacity()
+        self.assertEqual((reading["takes"], reading["takesSet"], reading["labels"], reading["settingsFile"]),
+                         ({"wholeHost": True, "exclusive": True, "model": True, "foreground": False}, ["foreground"], [],
+                          str(self.file)))
+
+    def test_a_key_this_toolkit_does_not_know_is_passed_over_and_named(self):
+        from queuekeeper import offload_host
+        self.file.write_text(json.dumps({"takes": {"model": False, "gpuWork": True}, "labels": ["a"], "devices": {}}))
+        found = offload_host.mac_settings()
+        self.assertEqual((found["takes"]["model"], found["ignored"]), (False, ["devices", "takes.gpuWork"]))
+        self.assertNotIn("error", offload_host.capacity())
+
+    def test_settings_that_cannot_be_read_stop_the_reading_rather_than_guess_what_the_mac_takes(self):
+        from queuekeeper import offload_host
+        for text, wrong in (("{", "is not JSON"), ("[]", "holds no JSON object"),
+                            (json.dumps({"takes": ["wholeHost"]}), "gives takes as something other than an object"),
+                            (json.dumps({"takes": {"wholeHost": "no"}}), 'sets takes.wholeHost to "no", not true or false'),
+                            (json.dumps({"takes": {"model": 0}}), "sets takes.model to 0, not true or false"),
+                            (json.dumps({"labels": "gpu"}), "gives labels as something other than a list of labels"),
+                            (json.dumps({"labels": ["Unity License"]}), "gives labels as something other than a list")):
+            with self.subTest(text=text):
+                self.file.write_text(text)
+                with self.assertRaisesRegex(ValueError, f"Invalid Mac settings: {re.escape(str(self.file))} {re.escape(wrong)}"):
+                    offload_host.mac_settings()
+                self.assertIn(f"Invalid Mac settings: {self.file}", offload_host.capacity()["error"])
+
+    def test_a_lane_says_the_labels_it_needs_and_names_no_mac(self):
+        base = {"schemaVersion": 1, "name": "Project"}
+        parse = lambda lanes: config.parse(json.dumps({**base, "lanes": lanes}))["lanes"]
+        lanes = parse({"suite": {"command": ["true"], "resource": "heavy", "labels": ["unity-license", "gpu"]},
+                       "docs": {"command": ["true"], "labels": ["gpu", "display"]},
+                       "gate": {"parallel": ["suite", "docs"], "resource": "heavy", "labels": ["license"]}})
+        self.assertEqual(config.needed_labels(lanes, "suite"), ("unity-license", "gpu"))
+        # A group runs its lanes on one Mac, which needs what each of them needs.
+        self.assertEqual(config.needed_labels(lanes, "gate"), ("license", "unity-license", "gpu", "display"))
+        self.assertEqual(config.needed_labels(parse({"plain": {"command": ["true"]}}), "plain"), ())
+        for wrong, said in (("gpu", "must be a non-empty list of labels"), ([], "must be a non-empty list of labels"),
+                            (["Unity License"], "each lowercase words joined by hyphens"), (["gpu", "gpu"], "named once"),
+                            ([7], "must be a non-empty list of labels")):
+            with self.subTest(wrong=wrong), self.assertRaisesRegex(ValueError, f"suite.labels.*{said}"):
+                parse({"suite": {"command": ["true"], "labels": wrong}})
+        with self.assertRaisesRegex(ValueError, "suite.labels needs an admitted lane"):
+            parse({"suite": {"command": ["true"], "resource": "self", "labels": ["gpu"]}})
+        # A lane's label and a Mac's are spelled by one rule.
+        from queuekeeper import offload_host
+        self.assertEqual(config.LABEL.pattern, offload_host.LABEL.pattern)
+
+    def test_admissions_limits_prints_what_the_mac_takes_beside_how_much(self):
+        self.file.write_text(json.dumps({"takes": {"wholeHost": False}, "labels": ["gpu"], "later": 1}))
+        said = []
+        self.assertEqual(resources.limits_main([], out=said.append), 0)
+        self.assertIn(f"takes: whole-host gates no (set), exclusive work yes (default), model runs yes (default), "
+                      f"foreground work as before the setting (unset); settings file {self.file}", said)
+        self.assertIn("labels: gpu", said)
+        self.assertIn("ignored: later, which this toolkit does not know", said)
+        self.file.write_text("{")
+        with contextlib.redirect_stderr(StringIO()) as error:
+            self.assertEqual(resources.limits_main([], out=said.append), 2)
+        self.assertIn("Invalid Mac settings", error.getvalue())
 
 
 class CpuBusyTests(unittest.TestCase):

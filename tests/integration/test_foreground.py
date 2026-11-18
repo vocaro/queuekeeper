@@ -76,6 +76,33 @@ class SlotTests(unittest.TestCase):
         # Nothing was taken.
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
 
+    def test_a_macs_own_settings_say_whether_its_foreground_is_queuekeepers_to_take(self):
+        """The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): a Mac's settings say whether it takes foreground
+        work, on whichever Mac that is. While they do not say, its device record tells a Mac that is sent work from
+        the owner's workstation, as before."""
+        settings = self.root / "slots"
+        settings.mkdir()
+        file = settings / offload_host.MAC_SETTINGS
+        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(settings)}):
+            self.assertFalse(foreground.farm_mac(self.record))
+            # Its settings say it takes foreground work: a run takes its foreground, though its record defers nothing.
+            file.write_text(json.dumps({"takes": {"foreground": True}}))
+            self.assertTrue(foreground.farm_mac(self.record))
+            with self.slot() as owner:
+                self.assertEqual(devices.require_foreground(owner)["ownerChatID"], owner)
+                self.assertEqual(devices.condition(self.record.entry(devices.FOREGROUND)), "active")
+            # They say it takes none: no run takes it, though its record defers to another Mac's.
+            self.farm_mac()
+            file.write_text(json.dumps({"takes": {"foreground": False}}))
+            self.assertFalse(foreground.farm_mac(self.record))
+            with self.assertRaisesRegex(devices.Refused, "only on another Mac, or on one whose own settings say it takes "
+                                                         "foreground work"):
+                with self.slot(): self.fail("ran on a Mac whose settings take no foreground work")
+            # Settings that say nothing of it, or cannot be read, leave it to the record.
+            for unsaid in (json.dumps({"takes": {"wholeHost": False}}), "{"):
+                file.write_text(unsaid)
+                self.assertTrue(foreground.farm_mac(self.record), unsaid)
+
     def test_a_run_holds_the_foreground_without_asking_and_releases_it(self):
         self.farm_mac()
         with self.slot() as owner:

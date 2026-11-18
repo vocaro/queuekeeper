@@ -43,7 +43,14 @@ GUARDS = []
 
 
 def farm_mac(record=None):
-    """Whether this Mac is another Mac: its device record defers physical devices to another Mac's."""
+    """Whether this Mac's foreground is queuekeeper's to take for a run: its own settings say it takes foreground
+    work (takes.foreground in its mac-settings.json, offload_host.mac_settings; the owner's decision, 2026-11-17,
+    vocaro/queuekeeper#211), on whichever Mac that is. While its settings do not say, it is one when its device
+    record defers physical devices to another Mac's, as every run sent to a Mac makes it, which is how a Mac that
+    is sent work was told from the owner's workstation until then. Settings that cannot be read say nothing."""
+    try: settings = offload_host.mac_settings()
+    except ValueError: settings = None
+    if settings is not None and settings["takes"]["foreground"] is not None: return settings["takes"]["foreground"]
     return bool((record or reservations.Record()).load().get(reservations.DEFERRED))
 
 
@@ -92,7 +99,8 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     record = record or reservations.Record()
     said = said or (lambda text: print(text, file=sys.stderr, flush=True))
     if not farm_mac(record):
-        raise reservations.Refused("queuekeeper takes the foreground only on another Mac; this Mac's needs a window the owner "
+        raise reservations.Refused("queuekeeper takes the foreground only on another Mac, or on one whose own settings "
+                              "say it takes foreground work; this Mac's needs a window the owner "
                               "agreed beforehand, which the session reserves as mac-foreground itself "
                               "(doc/guides/shared-host.md, Attended Mac sessions)")
     found = (ready or problems)()

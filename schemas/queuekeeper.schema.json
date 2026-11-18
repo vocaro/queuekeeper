@@ -117,7 +117,8 @@
                 "arguments",
                 "idioms",
                 "exactTests",
-                "failedTests"
+                "failedTests",
+                "labels"
               ]
             }
           },
@@ -135,7 +136,8 @@
                 "model",
                 "budgetMinutes",
                 "wholeHost",
-                "unlockedScreen"
+                "unlockedScreen",
+                "labels"
               ]
             }
           }
@@ -298,6 +300,16 @@
           "unity": {
             "description": "The Unity extension's key, which a project gets with queuekeeper_unity. A lane whose command runs the project's Unity editor: qk run runs its command under qk unity ready --, which checks on the Mac that runs it that an editor is installed, that no editor has the project open, that no stale lock is left and that no orphaned licensing helper remains, and ends the lane unmeasured, with nothing run, when one of them does not hold. An exclusive lane also ends unmeasured while an editor on that Mac is in Play mode",
             "type": "boolean"
+          },
+          "labels": {
+            "description": "What an admitted lane needs of the Mac that runs it, such as a license or a piece of hardware: it runs only on a Mac whose own settings, mac-settings.json beside its admission limits, list every one of these labels. A Mac's settings name no lane and a lane names no Mac. A lane group needs the labels of its lanes as well as its own",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+            }
           },
           "chips": {
             "description": "The Mac hardware extension's key, which a project gets with queuekeeper_mac_hardware. The chips the lane's results are valid on, such as [\"apple-m5-max\"], for a lane whose output differs by GPU. qk run runs the lane only on a Mac with one of them, waits for that Mac when it is busy, and never runs it on another. A lane without the key runs on any Mac. qk host chip prints a Mac's",

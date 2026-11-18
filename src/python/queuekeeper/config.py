@@ -121,7 +121,7 @@ def load(root):
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms", "exactTests",
-                       "failedTests"})
+                       "failedTests", "labels"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
 EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
@@ -129,7 +129,8 @@ EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeep
                        "deviceRunMinutes": "queuekeeper_apple", "idioms": "queuekeeper_apple"}
 # The top-level keys an extension shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
 EXTENSION_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple"}
-GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen"})
+GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen",
+                        "labels"})
 
 
 
@@ -185,6 +186,7 @@ def parse(source):
             raise ValueError(f"{name}.foreground needs an admitted lane: another Mac's foreground is held inside the "
                              "run's admission, and a self lane is not admitted")
         place(name, lane)
+        labels(name, lane)
         model(name, lane)
         whole_host(name, lane)
         screen(name, lane)
@@ -780,6 +782,33 @@ def place(name, lane):
         raise ValueError(f"{name}.here keeps a lane on this Mac, and a self lane runs where it starts already")
 
 
+# A label, as a lane names it and a Mac's settings give it (offload_host.LABEL): lowercase words joined by hyphens.
+LABEL = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def labels(name, lane):
+    """A lane's "labels" are what it needs of the Mac that runs it, such as a license or a piece of hardware: it runs
+    only on a Mac whose own settings list every one (offload_host.mac_settings; the owner's decision, 2026-11-17,
+    vocaro/queuekeeper#211). A Mac's settings name no lane, and a lane names no Mac. A self lane is not placed."""
+    if "labels" not in lane: return
+    wanted = lane["labels"]
+    if not isinstance(wanted, list) or not wanted or any(not isinstance(label, str) or not LABEL.fullmatch(label)
+                                                         for label in wanted) or len(set(wanted)) != len(wanted):
+        raise ValueError(f"{name}.labels must be a non-empty list of labels a Mac's settings give it, each lowercase "
+                         "words joined by hyphens and named once, such as [\"unity-license\"]")
+    if unadmitted(lane):
+        raise ValueError(f"{name}.labels needs an admitted lane: queuekeeper places only an admitted lane on a Mac, "
+                         "and a self lane runs where it starts")
+
+
+def needed_labels(lanes, name):
+    """The labels the Mac that runs the lane name must have: its own and, for a group, which runs its lanes on one
+    Mac, those of each of its lanes, each once, in the order first named."""
+    lane = lanes.get(name, {})
+    members = [lanes.get(member, {}) for member in lane.get("parallel", [])]
+    return tuple(dict.fromkeys(label for each in [lane, *members] for label in each.get("labels", [])))
+
+
 def whole_host_lane(lanes, name):
     """Whether the lane name takes every guaranteed slot of the Mac it runs on: a lane, or a group, that says
     "wholeHost": true. A group that runs such a lane says so itself, as validation requires."""
@@ -935,6 +964,7 @@ def group(name, lane, lanes):
         if key in lane and type(lane[key]) is not bool:
             raise ValueError(f"{name}.{key} must be true or false")
     place(name, lane)
+    labels(name, lane)
     model(name, lane)
     whole_host(name, lane)
     screen(name, lane)

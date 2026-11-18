@@ -70,7 +70,7 @@ import zlib
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
 from . import window_placement
-from .config import TOOLKIT_ROOT, exclusive_refusal, sibling_folders, sibling_variables, unlocked_screen
+from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_folders, sibling_variables, unlocked_screen
 from . import farm
 from .resources import BUSY, FREE_WAIT
 
@@ -2409,9 +2409,11 @@ def foreground_lane(root, config, lane, arguments, expect):
     holds it for the run (foreground.slot). It never falls back to this Mac, the owner's workstation, whose
     foreground needs the owner's window first and then `qk run --here`: another Mac that is not configured or
     cannot be reached stops the lane."""
-    hosts = farm.foreground()
+    hosts = foreground_hosts()
     if not hosts:
-        raise ValueError(f"{lane} takes a Mac's screen, and {NO_MAC}. This Mac's foreground needs a "
+        none = NO_MAC if not farm.destinations() else \
+            f"no Mac of the farm takes foreground work, by its settings ({offload_host.MAC_SETTINGS}) or the farm's marks"
+        raise ValueError(f"{lane} takes a Mac's screen, and {none}. This Mac's foreground needs a "
                          "window the owner agrees first (doc/guides/shared-host.md, Attended Mac sessions), then "
                          f"`qk run --here {lane}`")
     host = waiting_host(hosts)
@@ -2422,6 +2424,22 @@ def foreground_lane(root, config, lane, arguments, expect):
     with processes.forwarding_signals():
         return offering_here(f"qk run --here {lane}",
                              lambda: execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect))
+
+
+def foreground_hosts():
+    """The SSH destinations of the farm's Macs a foreground lane may go to, in the farm's order. A Mac whose own
+    settings say whether it takes foreground work is taken at its word (takes.foreground in its mac-settings.json,
+    as its capacity reading gives it): it is one when they say so, marked by the farm or not, and none when they say
+    it takes none (the owner's decision, 2026-11-17, vocaro/queuekeeper#211). A Mac whose settings do not say, or
+    that cannot be read now, is one as before: when the farm marks it (`qk farm foreground NAME`), or, while the
+    farm marks none, when it is the first that takes work now (farm.foreground)."""
+    marked, hosts = farm.foreground(), []
+    for host in farm.destinations():
+        try: reading = capacity_there(host)
+        except Unavailable: reading = {}
+        says = reading.get("takes").get("foreground") if isinstance(reading.get("takes"), dict) else None
+        if says is True or (says is None and host in marked): hosts.append(host)
+    return tuple(hosts)
 
 
 def farm_mac(host):
@@ -2444,20 +2462,31 @@ def called(host):
     return farm.named(host)
 
 
-def waiting_host(hosts, lane=None):
+def waiting_host(hosts, lane=None, labels=()):
     """The one of hosts, Macs of the farm, that work which runs on no other Mac goes to and waits on: the first with
     spare capacity for lane, a lane's settings, when there are several and one has; else the first that can be
-    reached; else the first, whose failure says why."""
-    if len(hosts) == 1: return hosts[0]
-    reached = None
+    reached; else the first, whose failure says why. A Mac whose settings decline the lane, by its kind or by
+    labels, the labels it needs (unfit), is none to wait on: when every Mac reached declines it, Declined says why
+    each does."""
+    if len(hosts) == 1 and (lane is None or not (lane.get("wholeHost") or lane.get("resource") == "exclusive"
+                                                 or lane.get("model") or lane.get("foreground") or labels)):
+        return hosts[0]
+    reached, declined = None, []
     for host in hosts:
         try:
             reachable(host)
-            reached = reached or host
-            if lane is None or spare(capacity_there(host), farm.named(host), bool(lane.get("wholeHost")),
-                                     lane.get("resource") == "exclusive") is None: return host
+            if lane is None:
+                reached = reached or host
+                continue
+            reason = spare(capacity_there(host), farm.named(host), bool(lane.get("wholeHost")),
+                           lane.get("resource") == "exclusive", model=bool(lane.get("model")), labels=labels,
+                           foreground=bool(lane.get("foreground")))
+            if reason is None: return host
+            if isinstance(reason, Unfit): declined.append(reason)
+            else: reached = reached or host
         except Unavailable:
             continue
+    if reached is None and declined: raise Declined(f"no Mac takes it: {'; '.join(declined)}")
     return reached or hosts[0]
 
 
@@ -2467,7 +2496,8 @@ def there_lane(root, config, lane, arguments, expect, why, hosts=None):
     to this Mac: a Mac that cannot be reached stops the lane."""
     hosts = tuple(filter(None, [configured()])) if hosts is None else hosts
     if not hosts: raise ValueError(f"{lane} runs only on another Mac of the farm ({why}), and {NO_MAC}")
-    host = waiting_host(hosts, config.get("lanes", {}).get(lane, {}))
+    try: host = waiting_host(hosts, config.get("lanes", {}).get(lane, {}), needed_labels(config.get("lanes", {}), lane))
+    except Declined as error: raise Declined(f"it runs only on another Mac of the farm ({why}), and {error}") from None
     print(f"queuekeeper: {lane} runs only on {' or '.join(dict.fromkeys(map(called, hosts)))} ({why})", file=sys.stderr,
           flush=True)
     work = ["run", "--here", *(["--expect", str(expect)] if expect else []), lane,
@@ -3004,7 +3034,7 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
         whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
         screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate, fallback=fallback,
-        exclude=exclude if queue_gate else None, hosts=hosts)
+        exclude=exclude if queue_gate else None, hosts=hosts, **lane_needs(config.get("lanes", {}), lane))
     offered.make(fallback)
     return offered
 
@@ -3159,7 +3189,8 @@ def first_command(root, config, command, kind):
         status = execute(root, config, host, work, decline=True,
                          subdirectory=None if relative in (None, ".") else relative, sent=sent, changes=True)
         return brought_back(root, sent, status)
-    offered = Offer("the command", "`qk admit --here`", send, refused, exclusive="--exclusive" in kind)
+    offered = Offer("the command", "`qk admit --here`", send, refused, exclusive="--exclusive" in kind,
+                    model="--model" in kind)
     offered.make()
     return offered
 
@@ -3177,10 +3208,13 @@ class Offer:
     and this Mac has (Loaded); and None once it ran there or can no longer take it."""
 
     def __init__(self, name, instead, send, refused=None, whole_host=False, exclusive=False, screen=False,
-                 queue_gate=False, hosts=None, exclude=None, fallback=True):
+                 queue_gate=False, hosts=None, exclude=None, fallback=True, model=False, labels=(), foreground=False):
         self.started = resources.request_started()
         self.name, self.instead, self.send, self.refused = name, instead, send, refused
         self.whole_host, self.exclusive, self.screen = whole_host, exclusive, screen
+        # Whether the work is a model run and the labels it needs, by which a Mac's settings may decline it (unfit),
+        # and why each Mac that declines it does: such a Mac is passed over, and holds no place for the work.
+        self.model, self.labels, self.foreground, self.unfit = model, tuple(labels), foreground, {}
         self.status, self.busy, self.away = None, None, None
         # The farm's Macs to ask, in order, as SSH destinations: those given, else, read by make, every Mac that
         # takes work now but exclude. host is the one asked last, and sent what was sent to it; each Mac keeps what
@@ -3232,7 +3266,8 @@ class Offer:
         """Why mac, read as reading, has no spare capacity for the work now, or None while it has: the one test of
         room, which judges this Mac as it judges every other (spare). Until vocaro/queuekeeper#211 a slot beyond the
         guaranteed ones counted as room on another Mac of several and never on this Mac."""
-        return spare(reading, mac, self.whole_host, self.exclusive, self.screen)
+        return spare(reading, mac, self.whole_host, self.exclusive, self.screen, self.model, self.labels,
+                     self.foreground)
 
     def attempt(self):
         """Offer the work once: its status on the Mac that took it, or Busy, Unreachable or Unavailable raised when
@@ -3272,21 +3307,35 @@ class Offer:
                     reason = self.room(reading, self.called(host))
                     if reason is None:
                         roomy.append((headroom(reading), order, host, self.called(host)))
+                    elif isinstance(reason, Unfit):
+                        # It does not take the work, by its settings: no wait there would end.
+                        self.unfit[host] = reason
+                        said.append(reason)
+                        continue
                     else:
                         full.append(host)
                         said.append(reason)
+                    self.unfit.pop(host, None)
                 except (NoLocalNetwork, Misconfigured):
                     raise
                 except Unavailable as error:
                     failures.append(error)
                     said.append(self.words(error))
             here = None
-            if self.choosing and (roomy or full):
+            # This Mac is read whenever a Mac was: also when each of them declines the work by its settings.
+            if self.choosing and (roomy or full or not failures):
                 reading = offload_host.capacity(own=self.place.identity if self.place is not None else None,
                                                 before=self.started)
                 here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
                         else self.room(reading, HERE))
                 if here is None: roomy.append((headroom(reading), len(self.hosts), None, HERE))
+            if not (roomy or full or failures):
+                # Every Mac asked declines the work by its settings. This Mac's queue takes it when this Mac may
+                # run it; otherwise no Mac will, and it stops for whoever sets what the Macs take.
+                if self.choosing and not isinstance(here, Unfit): raise Loaded("; ".join(filter(None, [*said, here])))
+                raise Misconfigured(f"no Mac takes {self.name}: {'; '.join(filter(None, [*said, here]))}",
+                                    f"have a Mac take it, in its {offload_host.MAC_SETTINGS} (doc/guides/shared-host.md, "
+                                    "What a Mac takes), or change what the work needs")
             roomy.sort(key=most_headroom)
             for at, (_under, _order, host, _name) in enumerate(roomy):
                 if host is None:
@@ -3614,7 +3663,8 @@ def places_for(offered, once):
     this Mac's admission did not give."""
     place, label = getattr(offered, "place", None), getattr(offered, "label", None)
     if once or place is None or not label or not offered.whole_host or offered.exclusive: return None
-    hosts = tuple(offered.hosts or ())
+    # No place on a Mac whose settings decline the lane (Offer.unfit): it would keep slots for work it never runs.
+    hosts = tuple(host for host in offered.hosts or () if host not in getattr(offered, "unfit", {}))
     return Places(offered.name, place.identity, label, place.started, hosts, screen=offered.screen) if hosts else None
 
 
@@ -3824,7 +3874,57 @@ def screen_refusal(found, mac):
     return f"the lane needs an unlocked screen, and {mac}'s is {found['state']} ({offload_host.screen_line(found)})"
 
 
-def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
+class Unfit(str):
+    """Why a Mac does not take some work at all, by its own settings: a kind of work it declines, or a label the
+    lane needs that it lacks (unfit). No wait changes it, so placement passes such a Mac over where it waits for
+    one that is only busy."""
+
+
+class Declined(ValueError):
+    """Every Mac that could run some work declines it by its own settings (unfit): nothing runs, and no wait would
+    change it."""
+
+
+def unfit(reading, mac, whole_host=False, exclusive=False, model=False, labels=(), foreground=False):
+    """Why mac, read as reading (offload_host.capacity), does not take the work by its own settings, as an Unfit, or
+    None when it does (the owner's decision, 2026-11-17, vocaro/queuekeeper#211): a Mac's settings say which kinds
+    of work it takes, whole-host gates, exclusive work, model runs and foreground work, and which labels it has,
+    and a lane says which labels it needs (offload_host.mac_settings). A reading that says neither, as an older
+    toolkit's, declines nothing and has no label."""
+    takes = reading.get("takes") if isinstance(reading.get("takes"), dict) else {}
+    where = reading.get("settingsFile")
+    whence = f", by its settings ({where})" if isinstance(where, str) and where else ", by its settings"
+    wanted = (("exclusive", exclusive), ("wholeHost", whole_host and not exclusive), ("model", model),
+              ("foreground", foreground))
+    for kind, asked in wanted:
+        if asked and takes.get(kind) is False:
+            return Unfit(f"{mac} takes no {offload_host.KINDS[kind]}{whence}")
+    has = [label for label in reading.get("labels") or [] if isinstance(label, str)] \
+        if isinstance(reading.get("labels"), list) else []
+    missing = [label for label in labels if label not in has]
+    if missing:
+        return Unfit(f"{mac} lacks the label{'s' if len(missing) > 1 else ''} {', '.join(missing)} that the work "
+                     f"needs (its labels: {', '.join(has) or 'none'}{whence})")
+    return None
+
+
+def here_unfit(whole_host=False, exclusive=False, model=False, labels=(), foreground=False):
+    """Why this Mac does not take the work by its own settings, read now, or None when it does (unfit). Settings
+    that cannot be read raise ValueError, as a limits file admission cannot read does."""
+    found = offload_host.mac_settings()
+    return unfit({"takes": found["takes"], "labels": found["labels"], "settingsFile": found["file"]}, HERE,
+                 whole_host, exclusive, model, labels, foreground)
+
+
+def lane_needs(lanes, name):
+    """What placement must know of the lane name beyond its slots, as unfit's keywords: whether it is a model run,
+    the labels it and the lanes of its group need, and whether it takes a Mac's foreground."""
+    lane = lanes.get(name, {})
+    return {"model": bool(lane.get("model")), "labels": needed_labels(lanes, name),
+            "foreground": bool(lane.get("foreground"))}
+
+
+def spare(reading, mac, whole_host=False, exclusive=False, screen=False, model=False, labels=(), foreground=False):
     """Why mac, read as reading (offload_host.capacity), has no spare capacity now for the work, or None while
     it has (vocaro-engineering#168). The work needs a guaranteed slot free there, every guaranteed slot for a
     whole-host lane and every slot up to the maximum for exclusive work, no whole-host lane or exclusive work
@@ -3846,7 +3946,11 @@ def spare(reading, mac, whole_host=False, exclusive=False, screen=False):
     Ordinary work whose Mac has every guaranteed slot busy has room in a slot beyond them where admission would
     open one, by the same settle, CPU and memory tests. That is so on every Mac, the Mac that chooses included: no
     Mac has a test of room of its own, and none depends on how many Macs the farm has (vocaro/queuekeeper#211).
-    Until then such a slot counted only on another Mac of several."""
+    Until then such a slot counted only on another Mac of several. A Mac that does not take the work at all, by its
+    own settings, has none for it, said as an Unfit (unfit): model says the work is a model run, labels are those
+    it needs, and foreground says it takes a Mac's foreground."""
+    declined = unfit(reading, mac, whole_host, exclusive, model, labels, foreground)
+    if declined is not None: return declined
     if screen:
         refused = screen_refusal(reading.get("screen"), mac)
         if refused is not None: return refused
@@ -3978,6 +4082,7 @@ def retry_macs(hosts, lanes, lane, screen=False):
     if not by its configuration."""
     settings = lanes[lane]
     needs = bool(settings.get("wholeHost")), settings.get("resource") == "exclusive", screen or unlocked_screen(lanes, lane)
+    fits = lane_needs(lanes, lane)
     hosts = (hosts,) if isinstance(hosts, str) else tuple(hosts)
     full, said, roomy = [], [], []
     for order, host in enumerate(hosts):
@@ -3986,23 +4091,24 @@ def retry_macs(hosts, lanes, lane, screen=False):
         except Unavailable as away:
             said.append(f"{name}'s capacity cannot be read: {getattr(away, 'problem', away)}")
             continue
-        reason = spare(reading, name, *needs)
+        reason = spare(reading, name, *needs, **fits)
         if reason is None:
             roomy.append((headroom(reading), order, host, name))
         else:
-            full.append(host)
+            # A Mac whose settings decline the lane is said, and is none of those that could take it.
+            if not isinstance(reason, Unfit): full.append(host)
             said.append(reason)
     if not full and not roomy: return [None], f"this Mac, since {'; '.join(said) or NO_MAC}"
     reading = offload_host.capacity()
     here = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
-            else spare(reading, HERE, *needs))
+            else spare(reading, HERE, *needs, **fits))
     if here is None: roomy.append((headroom(reading), len(hosts), None, HERE))
     roomy.sort(key=most_headroom)
     if len(roomy) > 1:
         return [roomy[0][2]], f"{roomy[0][3]}, where {lane} would go: {headroom_words(roomy)}"
     if roomy and roomy[0][2] is None: return [None], f"this Mac, the one with spare capacity for {lane}: {'; '.join(said)}"
     if roomy: return [roomy[0][2]], f"{roomy[0][3]}, the one with spare capacity for {lane}: {'; '.join([*said, here])}"
-    return [*full, None], (f"whichever Mac admits {lane} first, since none has spare capacity for it "
+    return [*full, *([] if isinstance(here, Unfit) else [None])], (f"whichever Mac admits {lane} first, since none has spare capacity for it "
                            f"({'; '.join(said)}; {here}), so each must settle")
 
 

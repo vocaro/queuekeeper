@@ -656,6 +656,21 @@ def limits_main(argv=None, out=print):
     out(f"{os.cpu_count() or 1} cores; limits file {limits_path()}")
     for key, (value, source) in found.items():
         out(f"{LIMIT_KEYS[key][0]}={value:g}  ({key}; {source})")
+    # What this Mac takes, beside how much (offload_host.mac_settings, vocaro/queuekeeper#211).
+    from . import offload_host
+    try:
+        settings = offload_host.mac_settings()
+    except ValueError as error:
+        print(f"queuekeeper: {error}", file=sys.stderr)
+        return 2
+    # Foreground work has no default here: unset, the device record and the farm's marks decide, as before.
+    said = lambda kind: (f"{offload_host.KINDS[kind]} "
+                         + ("as before the setting (unset)" if settings["takes"][kind] is None else
+                            f"{'yes' if settings['takes'][kind] else 'no'} ({'set' if kind in settings['set'] else 'default'})"))
+    out(f"takes: {', '.join(said(kind) for kind in offload_host.KINDS)}; settings file {settings['file']}")
+    out(f"labels: {', '.join(settings['labels']) or 'none'}")
+    if settings["ignored"]:
+        out(f"ignored: {', '.join(settings['ignored'])}, which this toolkit does not know")
     return 0
 
 

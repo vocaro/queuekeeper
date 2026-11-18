@@ -59,7 +59,7 @@ from . import budgets, disk, extensions, farm, host_health, lane_results, landin
 from . import events, pre_push, recovery, restartable
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, SPELLING, TOOLKIT_ROOT, admission, implicit_command, implicit_spelling, \
-    lane_to_run, legacy_carried, legacy_spelling_warning, legacy_unread_warning, load, names_path, parse, preflight, project_checkout, \
+    lane_to_run, legacy_carried, legacy_spelling_warning, legacy_unread_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
     siblings_in, stays, toolkit_command, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
@@ -2538,7 +2538,8 @@ def placement(root, name=None, as_json=False):
             row.update(status="unavailable", reason=reading["error"])
             continue
         slots = reading["slots"]
-        reason = remote.spare(reading, mac, whole_host, exclusive, screen)
+        # By each Mac's own settings too: the kinds of work it takes and the labels the lane needs (remote.unfit).
+        reason = remote.spare(reading, mac, whole_host, exclusive, screen, model, needed_labels(lanes, name))
         row.update(guaranteedSlots=slots, maximumSlots=reading["slotsMax"], busySlots=reading["busy"],
                    blockers=reading.get("blockers", []), status="waiting" if reason else "eligible", reason=reason)
         if (foreground or model) and reason is None:

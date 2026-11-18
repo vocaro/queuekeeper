@@ -101,6 +101,15 @@ LIMIT_KEYS = {
     "busyLimit": ("HEAVY_BUSY_LIMIT", False, lambda cores, slots: 90.0),
     "settleSeconds": ("HEAVY_SETTLE_SECONDS", False, lambda cores, slots: 30.0),
 }
+# A Mac's own settings, beside its limits file: which kinds of work it takes and which labels it has
+# (mac_settings; the owner's decision of 2026-11-17, vocaro/queuekeeper#211). A file of its own, since an older
+# toolkit's admission refuses a limits file with a key it does not know.
+MAC_SETTINGS = "mac-settings.json"
+# The kinds of work a Mac's settings may decline, by their key under "takes", each with what a message calls it.
+KINDS = {"wholeHost": "whole-host gates", "exclusive": "exclusive work", "model": "model runs",
+         "foreground": "foreground work"}
+# A label, as a Mac's settings give it and a lane names it: lowercase words joined by hyphens, as a chip is named.
+LABEL = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 # The simulators' devices, relative to the home: a booted device's processes name its directory.
 DEVICES = "Library/Developer/CoreSimulator/Devices"
 DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECASE)
@@ -1621,6 +1630,45 @@ def limits(sources=None):
     return found
 
 
+def mac_settings():
+    """This Mac's own settings for the work it takes, from mac-settings.json beside its limits file:
+
+        {"takes": {"wholeHost": false, "foreground": true}, "labels": ["unity-license"]}
+
+    A Mac's settings say which kinds of work it takes (KINDS) and which labels it has, and a lane says which labels
+    it needs; no lane is named in a Mac's settings (the owner's decision, 2026-11-17, vocaro/queuekeeper#211).
+    Returns {"takes": {each kind: True or False, or None for foreground work the file does not speak of}, "set":
+    [the kinds the file says], "labels": [its labels, sorted], "file": the file's path, "ignored": [keys of it this
+    toolkit does not know]}. A kind the file leaves out keeps its default: a Mac takes whole-host gates, exclusive
+    work and model runs. Of foreground work the default is not this file's to give: while a Mac's settings do not
+    say, the rules from before the setting decide, by its device record on the Mac itself (foreground.farm_mac) and
+    by the farm's marks on the Mac that sends (remote.foreground_hosts). No file is every default.
+    A key this toolkit does not know is passed over and named in "ignored", so that a later toolkit's key never
+    stops this one's work, as an unknown limit does (#49). A file that cannot be read, is no JSON object, or gives
+    a known key a value of the wrong kind raises ValueError naming it: its owner fixes it rather than queuekeeper
+    guessing what the Mac takes."""
+    path = admission_directory() / MAC_SETTINGS
+    wrong = lambda what: ValueError(f"Invalid Mac settings: {path} {what}")
+    try: data = json.loads(path.read_text())
+    except FileNotFoundError: data = {}
+    except OSError as error: raise wrong(f"cannot be read: {error}")
+    except ValueError as error: raise wrong(f"is not JSON: {error}")
+    if not isinstance(data, dict): raise wrong("holds no JSON object")
+    takes, labels = data.get("takes", {}), data.get("labels", [])
+    if not isinstance(takes, dict): raise wrong("gives takes as something other than an object of kinds")
+    for kind, value in takes.items():
+        if kind in KINDS and not isinstance(value, bool):
+            raise wrong(f"sets takes.{kind} to {json.dumps(value)}, not true or false")
+    if not isinstance(labels, list) or any(not isinstance(label, str) or not LABEL.fullmatch(label) for label in labels):
+        raise wrong("gives labels as something other than a list of labels, each lowercase words joined by hyphens, "
+                    "such as [\"unity-license\"]")
+    ignored = sorted([key for key in data if key not in ("takes", "labels")]
+                     + [f"takes.{kind}" for kind in takes if kind not in KINDS])
+    found = {kind: takes.get(kind, None if kind == "foreground" else True) for kind in KINDS}
+    return {"takes": found, "set": sorted(kind for kind in takes if kind in KINDS), "labels": sorted(set(labels)),
+            "file": str(path), "ignored": ignored}
+
+
 def limit_sources(sources):
     """What a reading adds so that a line quoting one of this Mac's limits can say where it is set: where each
     limit comes from (limitsFrom, as limits gives sources) and this Mac's limits file (limitsFile), which a
@@ -1813,7 +1861,9 @@ def capacity(own=None, *, diagnostic=False, before=None):
     read by queued_ahead; the seconds since admission last took a slot, None when it never has (sinceAdmission),
     HEAVY_SETTLE_SECONDS (settle) and its memory pressure level, None when unread (memory), by which its admission
     withholds a slot beyond the guaranteed ones (resources.Admission._extra_refusal, vocaro-engineering#201); and
-    its console screen (screen), which a lane that needs it unlocked reads. A reading it cannot take says why, as
+    its console screen (screen), which a lane that needs it unlocked reads; and the kinds of work it takes, its
+    labels and where its settings are (takes, takesSet, labels, settingsFile; mac_settings), by which placement
+    passes over a Mac that does not take the work (remote.unfit). A reading it cannot take says why, as
     error, as pressure does. A diagnostic keeps no CPU sample and identifies blockers by admission and process,
     since their command labels can be long and need not identify the work."""
     sources = {}
@@ -1821,6 +1871,8 @@ def capacity(own=None, *, diagnostic=False, before=None):
     except ValueError as error: return {"error": str(error)}
     try: directory = slot_directory()
     except RuntimeError as error: return {"error": str(error)}
+    try: settings = mac_settings()
+    except ValueError as error: return {"error": str(error)}
     try: load = round(os.getloadavg()[0], 2)
     except OSError: load = None
     owners = guard_entries()
@@ -1846,6 +1898,8 @@ def capacity(own=None, *, diagnostic=False, before=None):
             "queuedExclusive": label(ahead, "an unnamed request") if kind == "exclusive" else None,
             "sinceAdmission": since_admission(directory, found["slotsMax"]), "settle": found["settleSeconds"],
             "memory": memory_level(), "screen": screen(), **limit_sources(sources),
+            "takes": settings["takes"], "takesSet": settings["set"], "labels": settings["labels"],
+            "settingsFile": settings["file"],
             **({"blockers": blockers} if diagnostic else {})}
 
 

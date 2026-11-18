@@ -4142,6 +4142,135 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
         self.assertEqual(self.places_there(), [])
 
+    def mac_settings(self, where, **settings):
+        """Write a Mac's own settings, or with none take them away: this Mac's ("HEAVY_SLOT_DIR") or the second Mac's
+        ("FAKE_SLOTS"), beside each one's limits file (offload_host.mac_settings)."""
+        path = Path(os.environ[where]) / offload_host.MAC_SETTINGS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if settings: path.write_text(json.dumps(settings))
+        else: path.unlink(missing_ok=True)
+        return path
+
+    def test_a_lane_runs_only_on_a_mac_whose_settings_take_its_kind(self):
+        """The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): a Mac's settings say which kinds of work it
+        takes, and placement keeps to them on every Mac, the one a command starts on included."""
+        remote_receipt = lambda lane: json.loads((self.project / ".build/queuekeeper/remote" / lane / "source.json").read_text())
+        # The second Mac takes no whole-host gates: the gate runs here, and says why; ordinary work still goes there.
+        there = self.mac_settings("FAKE_SLOTS", takes={"wholeHost": False})
+        status, output, error = self.run_here("suites")
+        self.assertEqual(status, 0, output + error)
+        declined = f"fake takes no whole-host gates, by its settings ({there})"
+        self.assertIn(declined, error)
+        self.assertNotIn("remote: sending", error)
+        self.assertIn(declined, self.ran_here("suites")["hereBecause"])
+        status, output, error = self.run_here("gate")
+        self.assertEqual((status, remote_receipt("gate")["ranOn"]), (0, "fake"), output + error)
+        shutil.rmtree(self.project / ".build/queuekeeper/suites")
+        # This Mac takes none and the second Mac does: the gate runs only there, however free this Mac is.
+        self.mac_settings("FAKE_SLOTS")
+        here = self.mac_settings("HEAVY_SLOT_DIR", takes={"wholeHost": False})
+        status, output, error = self.run_here("suites")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn(f"queuekeeper: suites runs only on fake (this Mac takes no whole-host gates, by its settings ({here}))",
+                      error)
+        self.assertEqual(remote_receipt("suites")["ranOn"], "fake")
+        self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
+        # Asked to run it here, the lane is refused rather than run against the Mac's settings.
+        status, output, error = self.run_here("--here", "suites")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn(f"suites not run: it runs on this Mac (--here), and this Mac takes no whole-host gates, by its "
+                      f"settings ({here})", error)
+        # No Mac takes it: nothing runs, and each Mac's settings are named.
+        self.mac_settings("FAKE_SLOTS", takes={"wholeHost": False})
+        status, output, error = self.run_here("suites")
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertIn("queuekeeper: suites not run: it runs only on another Mac of the farm (this Mac takes no whole-host "
+                      f"gates, by its settings ({here})), and no Mac takes it: fake takes no whole-host gates, by its "
+                      f"settings ({there})", error)
+        self.assertIn("queuekeeper: to fix it, have a Mac take it, in its mac-settings.json", error)
+        self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
+        # A lane that says `here` and a Mac that declines its kind contradict each other: no verdict, and no run.
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"]["suites"]["here"] = "its goldens come from this Mac's GPU"
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
+        status, output, error = self.run_here("suites")
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertIn("suites not run: it runs only on this Mac (the lane says: its goldens come from this Mac's GPU), "
+                      "and this Mac takes no whole-host gates", error)
+        del settings["lanes"]["suites"]["here"]
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
+        # The second gate of a queue's pair, asked to start now on a Mac other than the first gate's: on the other
+        # Mac if it takes it now, and nowhere when that Mac is the one the first gate runs on.
+        self.mac_settings("FAKE_SLOTS")
+        status, output, error = self.run_here("--if-free", "suites")
+        self.assertEqual((status, remote_receipt("suites")["ranOn"]), (0, "fake"), output + error)
+        with patch.dict(os.environ, {remote.QUEUE_GATE: "1", remote.QUEUE_GATE_EXCLUDE: "fake"}):
+            status, output, error = self.run_here("suites")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("the farm has no Mac but the one that gates the batch below it", error)
+
+    def test_exclusive_work_and_model_runs_a_mac_declines_run_only_on_another_mac_that_can_start_them_now(self):
+        here = self.mac_settings("HEAVY_SLOT_DIR", takes={"exclusive": False, "model": False})
+        said = f"import os; print('ran for', os.environ.get({remote.DISPATCHER!r}) or 'nobody', flush=True)"
+        for option, kind in (("--exclusive", "exclusive work"), ("--model", "model runs")):
+            with self.subTest(option):
+                # The other Mac takes it: the command runs there, sent by this Mac.
+                status, output, error = self.admit_in(self.project, option, "--", sys.executable, "-c", said)
+                self.assertEqual(status, 0, output + error)
+                self.assertNotIn("ran for nobody", output)
+                self.assertIn("ran for ", output)
+                # Asked to run it here, it is refused rather than run against the Mac's settings.
+                status, output, error = self.admit_in(self.project, option, "--here", "--", sys.executable, "-c", said)
+                self.assertEqual(status, 2, output + error)
+                self.assertIn(f"the command not run: it runs on this Mac (qk admit --here), and this Mac takes no {kind}, by its "
+                              f"settings ({here})", error)
+                # The other Mac cannot start it now: it is not run here, and ends as busy.
+                with self.busy_farm_mac():
+                    status, output, error = self.admit_in(self.project, option, "--", sys.executable, "-c", said)
+                self.assertEqual(status, resources.BUSY, output + error)
+                self.assertIn(f"queuekeeper: the command not run: this Mac takes no {kind}, by its settings ({here}), and "
+                              "no other Mac took it: ", error)
+                self.assertNotIn("ran for", output)
+        # Ordinary work is none of those settings', and this Mac still admits it.
+        with self.busy_farm_mac():
+            status, output, error = self.admit_in(self.project, "--", sys.executable, "-c", said)
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("queuekeeper: the command runs on this Mac", error)
+
+    def test_a_lane_runs_only_on_a_mac_that_has_the_labels_it_needs(self):
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"]["gate"]["labels"] = ["unity-license"]
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings, indent=2))
+        remote_receipt = lambda: json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
+        # Only the second Mac has the label: the lane runs there and never here.
+        self.mac_settings("FAKE_SLOTS", labels=["unity-license", "gpu"])
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("queuekeeper: gate runs only on fake (this Mac lacks the label unity-license that the work needs "
+                      "(its labels: none, by its settings (", error)
+        self.assertEqual(remote_receipt()["ranOn"], "fake")
+        self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
+        shutil.rmtree(self.project / ".build/queuekeeper/remote/gate")
+        # Only this Mac has it: the lane runs here, as one that says `here` does, and says which label kept it.
+        self.mac_settings("FAKE_SLOTS", labels=["gpu"])
+        self.mac_settings("HEAVY_SLOT_DIR", labels=["unity-license"])
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("fake lacks the label unity-license that the work needs (its labels: gpu, by its settings (", error)
+        self.assertIn("fake lacks the label unity-license", self.ran_here()["hereBecause"])
+        self.assertFalse((self.project / ".build/queuekeeper/remote/gate").exists())
+        shutil.rmtree(self.project / ".build/queuekeeper/gate")
+        # Both have it: the lane is placed as any lane is.
+        self.mac_settings("FAKE_SLOTS", labels=["unity-license"])
+        status, output, error = self.run_here("gate")
+        self.assertEqual((status, remote_receipt()["ranOn"]), (0, "fake"), output + error)
+        self.assertNotIn("lacks the label", error)
+        # Settings that cannot be read stop the lane rather than guess what the Mac takes.
+        self.mac_settings("HEAVY_SLOT_DIR", labels="unity-license")
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn("Invalid Mac settings", error)
+
     def test_a_place_that_cannot_be_given_up_does_not_change_how_the_work_ended(self):
         places = remote.Places("suites", uuid.uuid4().hex, "Example suites", time.time(), ("fake",), every=0)
         with patch.object(places, "_release", side_effect=RuntimeError("the holder would not end")):
@@ -9091,6 +9220,181 @@ class GateHostPoolTests(unittest.TestCase):
                     offer = remote.first(".", {}, "gate", [], None, queue_gate=True, exclude="gate-03")
                     self.assertEqual(offer.status, remote.MISCONFIGURED)
                 reachable.assert_called_once_with("gate-04")
+
+
+class MacSettingsPlacementTests(unittest.TestCase):
+    """A Mac's own settings say which kinds of work it takes and which labels it has, and a lane says which labels it
+    needs (the owner's decision, 2026-11-17, vocaro/queuekeeper#211): placement passes over a Mac that does not take
+    the work, this Mac as any other, and never waits for it."""
+
+    FREE = {"slots": 3, "slotsMax": 6, "busy": [], "busyLimit": 75}
+    FILE = "/Users/builder/Library/Application Support/queuekeeper/mac-settings.json"
+
+    def reading(self, labels=(), **takes):
+        return {**self.FREE, "takes": {"wholeHost": True, "exclusive": True, "model": True, "foreground": None, **takes},
+                "takesSet": sorted(takes), "labels": sorted(labels), "settingsFile": self.FILE}
+
+    def offer(self, taken, **need):
+        def send(host, sent):
+            taken.append(host)
+            return 0
+        return remote.Offer("gate", "`qk run --here gate`", send, **need)
+
+    def test_a_mac_declines_the_kinds_of_work_its_settings_say_it_takes_none_of(self):
+        whence = f", by its settings ({self.FILE})"
+        cases = [({"whole_host": True}, "wholeHost", f"studio takes no whole-host gates{whence}"),
+                 ({"exclusive": True}, "exclusive", f"studio takes no exclusive work{whence}"),
+                 ({"model": True}, "model", f"studio takes no model runs{whence}"),
+                 ({"foreground": True}, "foreground", f"studio takes no foreground work{whence}")]
+        for need, kind, expected in cases:
+            with self.subTest(kind=kind):
+                declined = remote.unfit(self.reading(**{kind: False}), "studio", **need)
+                self.assertEqual(declined, expected)
+                self.assertIsInstance(declined, remote.Unfit)
+                # The test of room says the same, before anything else it reads, and takes the work it does take.
+                room = {key: value for key, value in need.items() if key != "foreground"}
+                if room:
+                    self.assertEqual(remote.spare({**self.reading(**{kind: False}), "busy": [0, 1, 2]}, "studio", **room),
+                                     expected)
+                self.assertIsNone(remote.unfit(self.reading(**{kind: True}), "studio", **need))
+                # Work of another kind is none of that setting's.
+                self.assertIsNone(remote.unfit(self.reading(**{kind: False}), "studio"))
+        # Exclusive work is no whole-host gate, though it takes the whole host.
+        self.assertIsNone(remote.unfit(self.reading(wholeHost=False), "studio", whole_host=True, exclusive=True))
+        # A reading that says nothing of what its Mac takes, as an older toolkit's, declines nothing.
+        for older in (self.FREE, {**self.FREE, "takes": None, "labels": None}, {**self.FREE, "takes": {"wholeHost": None}}):
+            self.assertIsNone(remote.unfit(older, "studio", whole_host=True, model=True, foreground=True))
+            self.assertIsNone(remote.spare(older, "studio", whole_host=True, model=True))
+
+    def test_a_mac_takes_a_lane_only_with_every_label_the_lane_needs(self):
+        has = self.reading(labels=["apple-m5-max", "unity-license"])
+        self.assertIsNone(remote.unfit(has, "studio", labels=("unity-license",)))
+        self.assertIsNone(remote.unfit(has, "studio", labels=("unity-license", "apple-m5-max")))
+        self.assertEqual(remote.unfit(has, "studio", labels=("unity-license", "ios-device")),
+                         "studio lacks the label ios-device that the work needs (its labels: apple-m5-max, unity-license, "
+                         f"by its settings ({self.FILE}))")
+        self.assertEqual(remote.spare(self.reading(), "this Mac", labels=("a", "b")),
+                         f"this Mac lacks the labels a, b that the work needs (its labels: none, by its settings ({self.FILE}))")
+        # An older toolkit's reading has no labels, so it has none a lane needs.
+        self.assertEqual(remote.unfit(self.FREE, "studio", labels=("a",)),
+                         "studio lacks the label a that the work needs (its labels: none, by its settings)")
+
+    def test_what_a_lane_needs_is_its_kind_and_the_labels_of_its_group(self):
+        lanes = {"suite": {"command": ["x"], "labels": ["gpu"]}, "model": {"command": ["x"], "model": True},
+                 "screen": {"command": ["x"], "foreground": True, "labels": ["gpu", "display"]},
+                 "all": {"parallel": ["suite", "screen"], "labels": ["license"]}}
+        self.assertEqual(remote.lane_needs(lanes, "suite"), {"model": False, "labels": ("gpu",), "foreground": False})
+        self.assertEqual(remote.lane_needs(lanes, "model"), {"model": True, "labels": (), "foreground": False})
+        self.assertEqual(remote.lane_needs(lanes, "screen"), {"model": False, "labels": ("gpu", "display"), "foreground": True})
+        self.assertEqual(remote.lane_needs(lanes, "all")["labels"], ("license", "gpu", "display"))
+
+    def test_a_mac_that_declines_the_work_is_passed_over_and_holds_no_place_for_it(self):
+        readings = {"mini": self.reading(wholeHost=False), "studio": self.reading()}
+        taken, here = [], {**self.reading(), "busy": [0]}
+        with farm_fixture.only("mini", "studio"), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=lambda host, **options: readings[host]), \
+                patch.object(remote.offload_host, "capacity", return_value=here), \
+                patch("sys.stderr", new_callable=StringIO):
+            offered = self.offer(taken, whole_host=True)
+            self.assertEqual(offered.make(), 0)
+            self.assertEqual((taken, offered.host), (["studio"], "studio"))
+            self.assertEqual(list(offered.unfit), ["mini"])
+            # Busy, the Mac that takes it is waited for, and the one that declines it never is: not offered the
+            # lane when no Mac has room, and given no place in its queue.
+            readings["studio"] = {**self.reading(), "busy": [1]}
+            waiting = self.offer(taken, whole_host=True)
+            self.assertEqual(waiting.make(), 0)
+            self.assertEqual(taken, ["studio", "studio"])
+            waiting.place, waiting.label = resources.Place(), "Example gate"
+            self.assertEqual(remote.places_for(waiting, False).hosts, ("studio",))
+            # Ordinary work is none of that setting's, and goes to the Mac first in the farm's order.
+            ordinary = self.offer(taken)
+            self.assertEqual(ordinary.make(), 0)
+            self.assertEqual((taken[-1], ordinary.unfit), ("mini", {}))
+
+    def test_this_mac_is_judged_by_its_settings_as_every_other_is(self):
+        there, here, taken = self.reading(wholeHost=False), self.reading(), []
+        with farm_fixture.only("mini"), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", return_value=there), \
+                patch.object(remote.offload_host, "capacity", side_effect=lambda **options: here), \
+                patch("sys.stderr", new_callable=StringIO) as said:
+            # The farm's Mac declines the lane and this Mac takes it: it goes to this Mac's queue, with room or not.
+            offered = self.offer(taken, whole_host=True)
+            self.assertEqual(offered.make(), f"mini takes no whole-host gates, by its settings ({self.FILE})")
+            here = {**self.reading(), "busy": [0]}
+            offered = self.offer(taken, whole_host=True)
+            self.assertEqual(offered.make(),
+                             f"mini takes no whole-host gates, by its settings ({self.FILE}); a whole-host lane needs "
+                             "every guaranteed slot of this Mac (HEAVY_SLOTS=3) free, and 1 is busy")
+            self.assertIsNotNone(offered.busy)
+            self.assertEqual(taken, [])
+            # No Mac takes it: nothing runs anywhere, and it stops for whoever sets what the Macs take.
+            here = self.reading(wholeHost=False)
+            offered = self.offer(taken, whole_host=True)
+            self.assertEqual(offered.make(), remote.MISCONFIGURED)
+            self.assertIsNone(offered.busy)
+        self.assertEqual(taken, [])
+        self.assertIn(f"queuekeeper: gate not run: no Mac takes gate: mini takes no whole-host gates, by its settings "
+                      f"({self.FILE}); this Mac takes no whole-host gates, by its settings ({self.FILE})", said.getvalue())
+        self.assertIn("queuekeeper: to fix it, have a Mac take it, in its mac-settings.json", said.getvalue())
+
+    def test_work_that_never_runs_here_stops_when_no_other_mac_takes_it(self):
+        with farm_fixture.only("mini"), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", return_value=self.reading(labels=["a"])), \
+                patch.object(remote.offload_host, "capacity", return_value=self.reading(labels=["b"])), \
+                patch("sys.stderr", new_callable=StringIO):
+            taken = []
+            offered = self.offer(taken, labels=("b",), hosts=("mini", "studio"))
+            self.assertEqual(offered.make(fallback=False), remote.MISCONFIGURED)
+            self.assertEqual(taken, [])
+
+    def test_a_lane_that_waits_on_one_mac_waits_only_on_one_that_takes_it(self):
+        readings = {"mini": {**self.reading(model=False), "busy": [0]}, "studio": {**self.reading(), "busy": [0, 1, 2]},
+                    "rented": self.reading(labels=["gpu"])}
+        with patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=lambda host, **options: readings[host]):
+            lane = {"command": ["x"], "model": True}
+            # The first with room, else the first that takes it, and never one that declines it.
+            self.assertEqual(remote.waiting_host(("mini", "studio", "rented"), lane), "rented")
+            self.assertEqual(remote.waiting_host(("mini", "studio"), lane), "studio")
+            with self.assertRaisesRegex(remote.Declined, "no Mac takes it: mini takes no model runs, by its settings"):
+                remote.waiting_host(("mini",), lane)
+            self.assertEqual(remote.waiting_host(("mini", "rented"), {"command": ["x"]}, ("gpu",)), "rented")
+            with self.assertRaisesRegex(remote.Declined, "no Mac takes it: mini lacks the label gpu .*; studio lacks the label gpu"):
+                remote.waiting_host(("mini", "studio"), {"command": ["x"]}, ("gpu",))
+        # One Mac, and a lane that needs nothing of it: it is the one, unread, as before.
+        with patch.object(remote, "reachable") as reached, patch.object(remote, "capacity_there") as read:
+            self.assertEqual(remote.waiting_host(("mini",), {"command": ["x"]}), "mini")
+            self.assertEqual(remote.waiting_host(("mini",)), "mini")
+            reached.assert_not_called()
+            read.assert_not_called()
+
+    def test_foreground_work_goes_to_the_macs_whose_settings_take_it_and_otherwise_as_the_farm_marks(self):
+        said = lambda value: self.reading(foreground=value)
+        unsaid = self.reading()
+        cases = [
+            # No Mac's settings say: the farm's first, as before, or the ones it marks.
+            ((farm_fixture.mac("mini"), farm_fixture.mac("studio")), {"mini": unsaid, "studio": unsaid}, ("mini",)),
+            ((farm_fixture.mac("mini"), {**farm_fixture.mac("studio"), "foreground": True}),
+             {"mini": unsaid, "studio": unsaid}, ("studio",)),
+            # A Mac's own word counts whatever the farm marks: yes for an unmarked one, no for a marked one.
+            ((farm_fixture.mac("mini"), {**farm_fixture.mac("studio"), "foreground": True}),
+             {"mini": said(True), "studio": said(False)}, ("mini",)),
+            ((farm_fixture.mac("mini"), farm_fixture.mac("studio")), {"mini": said(False), "studio": unsaid}, ()),
+            ((farm_fixture.mac("mini"), farm_fixture.mac("studio")), {"mini": unsaid, "studio": said(True)},
+             ("mini", "studio")),
+        ]
+        for macs, readings, expected in cases:
+            with self.subTest(expected=expected), farm_fixture.only(*macs), \
+                    patch.object(remote, "capacity_there", side_effect=lambda host, **options: readings[host]):
+                self.assertEqual(remote.foreground_hosts(), expected)
+        # A Mac that cannot be read now is judged by the farm's marks, as before.
+        with farm_fixture.only("mini"), patch.object(remote, "capacity_there", side_effect=remote.Unreachable("away", "wake it")):
+            self.assertEqual(remote.foreground_hosts(), ("mini",))
+        with farm_fixture.only("mini"), patch.object(remote, "capacity_there", return_value=said(False)), \
+                self.assertRaisesRegex(ValueError, "screen takes a Mac's screen, and no Mac of the farm takes foreground "
+                                                   "work, by its settings \\(mac-settings.json\\) or the farm's marks"):
+            remote.foreground_lane(".", {}, "screen", [], None)
 
 
 class FanOutTests(unittest.TestCase):
