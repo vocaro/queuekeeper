@@ -5665,10 +5665,17 @@ class LaggingCheckout(Fixture):
         run(self.repo, "git", "commit", "-q", "--allow-empty", "-m", "Before Queuekeeper")
         self.assertFalse((self.repo / "queuekeeper.json").exists())
         project = ["python3", str(ROOT / "scripts/qk"), "--project", str(self.repo)]
-        for words in (["queue", "status", "--json"], ["queue", "doctor", "--json"], ["queue", "health", "--json"],
+        for words in (["queue", "status", "--json"], ["queue", "doctor", "--json"],
                       ["queue", "placement", "gate", "--json"], ["queue", "events", "--json"]):
             done = subprocess.run([*project, *words], cwd=self.base, capture_output=True, text=True)
             self.assertEqual(done.returncode, 0, f"{words}: {done.stdout}{done.stderr}")
+        # qk queue health answers by its exit status whether the Macs are healthy, and it reads the Mac this suite
+        # runs on: at a memory pressure of warning, which a gate's own load brings, it says `slow` and exits 1
+        # (vocaro/queuekeeper#221). What is checked here is that it read the project and answered, not that Mac.
+        done = subprocess.run([*project, "queue", "health", "--json"], cwd=self.base, capture_output=True, text=True)
+        self.assertIn(done.returncode, (0, 1), f"queue health: {done.stdout}{done.stderr}")
+        self.assertEqual(json.loads(done.stdout)["exitStatus"], done.returncode, done.stdout)
+        self.assertIn("verdict", json.loads(done.stdout))
         # A command that runs what the working tree holds says why it cannot, not only that the file is missing.
         for words in (["run", "gate"], ["doctor"]):
             done = subprocess.run([*project, *words], cwd=self.base, capture_output=True, text=True)
