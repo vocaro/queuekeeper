@@ -2872,7 +2872,9 @@ names. The lock covers one change, never a reservation. One device is never held
 keys, and the helper takes only a canonical uppercase UDID, never a name or `booted`.
 `update KEY … --own PID` records a process the session launched, by its PID and start time;
 `release` and `recover` refuse until each has exited. The record also holds `mac-foreground`,
-the owner's screen, as [attended Mac sessions](#attended-mac-sessions) describe.
+the owner's screen, as [attended Mac sessions](#attended-mac-sessions) describe, and beside its
+entries the owner's declaration of each physical device, which `devices declare` changes without
+touching any entry ([declared devices](devices.md#declared-devices)).
 
 Sessions used to keep ad hoc records in `/private/tmp`. In October 2026 two were live at once,
 so two sessions could reserve one device in different files; unlocked read-modify-write could

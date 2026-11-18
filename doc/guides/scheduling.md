@@ -192,7 +192,7 @@ is not in force until it is built, and [Policies in force](#policies-in-force) c
 | D4 | A Mac's CPU limit bounding every admission | Yes, but the first on a Mac with nothing admitted | Yes (rules 3 and 16) |
 | D5 | Balancing across the Macs | By headroom against each Mac's own limit | Yes (rule 14) |
 | D6 | Gates waiting for gates | A waiting gate takes a place in each Mac's queue | Yes (rule 30) |
-| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room, this Mac as a candidate like any other, the queue's pairs, the settings for kinds and labels and the foreground mark alone: yes (rules 4, 14, 16, 20, 24, 25 and 31). Devices: not built, [#211] |
+| D7 | No Mac is special | Setup writes 70% for its Mac; an added Mac's default is 90% | Setup's limits, the one test of room, this Mac as a candidate like any other, the queue's pairs, the settings for kinds and labels and the foreground mark alone: yes (rules 4, 14, 16, 20, 24, 25 and 31). Devices: declared and read, placed by nothing yet, [#211] |
 
 ### D1: Is the order of goals right?
 
@@ -395,7 +395,12 @@ his order of preference, such as a cable first and then the network, and what it
 reaches it, an error or a device that is away. Each Mac reports which declared devices it reaches
 now and how. Placement chooses among the declared ways only, and what was read never adds a device
 to the farm or takes one out: a device that must always be reachable and is not is reported as an
-error, and one that may be away is offline and no error. The settings' names are for [#211].
+error, and one that may be away is offline and no error. In force, without placement: each device's
+declaration is `reach` (`cable`, `network`, in order, with `cableOn` for the Mac a cable is expected on)
+and `absent` (`error` or `offline`), set with `qk devices declare` and kept beside the record's entries,
+and `qk devices status` lists each Mac's reading of every device, declared or not, from `devicectl`
+([declared devices](devices.md#declared-devices)). Not built: placement among the declared ways, and
+which Mac keeps the record as a setting ([#211]).
 
 ### Smaller questions with issues of their own
 

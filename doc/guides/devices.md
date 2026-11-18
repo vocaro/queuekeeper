@@ -1,7 +1,8 @@
 # Physical devices
 
 What the Apple plugin does around a run on a paired iPhone or iPad: silencing the owner's notifications,
-and the device pass that runs a project's device checks under one reservation. Reservations themselves are
+the device pass that runs a project's device checks under one reservation, and the owner's declaration of
+each device with what each Mac reads of it. Reservations themselves are
 in [shared host](shared-host.md#device-reservations); how devices behave under test is in the toolkit's
 [device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md) guide.
 
@@ -262,3 +263,82 @@ its receipt, so `eng release` counts a pass of it at the commit as it counts any
   switching VoiceOver off after a session stopped part way ([VoiceOver](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover.md#physical-iphone-and-ipad)).
   A check that needs a listener or the owner's hand stays a manual step of the release, recorded
   on its tracking issue.
+
+## Declared devices
+
+A device is a resource of the farm, not of a Mac: an iPad paired over Wi-Fi is reachable from every
+Mac, and one kept to a cable from one Mac only. So the owner declares what should be true of each
+device, Queuekeeper reads from each Mac what is, and what is read never adds a device to the farm or
+takes one out (the owner's decision, 2026-11-17, [#211](https://github.com/vocaro/queuekeeper/issues/211);
+[scheduling D7](scheduling.md#d7-no-mac-is-special)). Nothing is placed by a declaration yet: a device
+lane runs where it did before, under its reservation.
+
+### The declaration
+
+Each physical device's declaration has two settings:
+
+- **`reach`**: the ways a Mac may reach it, in the owner's order of preference: `cable`, `network`, or
+  both. A way not listed is never one to use. `cableOn` names the Mac its cable is expected on, by its
+  name in the farm or the name of the Mac that keeps the record, when `reach` lists a cable.
+- **`absent`**: what it means when no Mac reaches it: `error`, for a device that should always be
+  there, or `offline`, for one that may be away.
+
+The owner's three cases are, in order:
+
+```sh
+qk devices declare iPad --by owner --reach network --absent error
+qk devices declare iPad --by owner --reach cable,network --cable-on studio --absent error
+qk devices declare iPhone --by owner --reach cable,network --absent offline
+```
+
+A device is declared under its entry's key, and only once the entry records its hardware UDID, which
+its first reservation does. Declaring again replaces the declaration, and `--clear` removes it. A
+declaration that names a way, a value of `absent` or a Mac it does not know is refused, and nothing is
+changed.
+
+The record keeps the declarations beside its entries, in `declarations`, by key, as it keeps the
+owner's notification setup:
+
+```json
+"declarations": {
+  "iPhone": {"reach": ["cable", "network"], "absent": "offline",
+             "declaredBy": "owner", "declaredAt": "2026-11-18T09:00:00+00:00"}
+}
+```
+
+So a declaration changes no entry: a held, orphaned or uncertain entry keeps every field of its
+reservation, its revision included, and its holder's next change still names the revision it read.
+Only the record that holds physical devices declares them; another Mac's record, which defers them,
+refuses. An entry without a declaration behaves exactly as before.
+
+### What each Mac reads
+
+Each Mac lists its devices with `xcrun devicectl list devices --json-output`, read-only. Another
+Mac is read over SSH in its login shell. On 2026-11-17 the listing took 0.17 to 0.42 s on the
+owner's workstation and 0.56 s from the other Mac over SSH; each listed 67 or more simulators and
+the two physical devices.
+
+- **Reach is the transport.** `connectionProperties.transportType` is `wired` for a cable and
+  `localNetwork` for the network. A simulator is `sameMachine` (or `reality` `simulated`) and is
+  left out.
+- **The tunnel is not reach.** `tunnelState` read `disconnected` for the iPhone while it was
+  attached by cable and listed `wired`, beside the iPad's `connected`.
+- **A device's way changes by itself.** On the morning of 2026-11-17 both devices read
+  `localNetwork` on the owner's workstation; that evening they read `wired` there and
+  `localNetwork` on the other Mac, at the same moment, with nobody declaring anything.
+
+`qk devices status` lists, after the entries, each recorded physical device and each declaration,
+with what each Mac read of it now: reached by a way, by a way its declaration does not list,
+listed by no way a declaration may name, or not listed. A cable read on another Mac than the one
+its declaration expects is said. A device a Mac lists that no entry records is listed as seen, not in
+the record and not declared. A Mac that could not be read is named with why, and its devices are not
+taken as unlisted. On the owner's two Macs, before anything was declared, with their names shortened:
+
+```text
+iPad: not declared. Read: workstation by cable; build-host by network
+iPhone: not declared. Read: workstation by cable; build-host by network
+```
+
+On another Mac, whose record defers physical devices, status says that devices are declared in the
+record that holds them, and lists what that Mac alone reads.
+

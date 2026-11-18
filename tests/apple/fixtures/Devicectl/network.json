@@ -1,0 +1,100 @@
+{
+  "info": {
+    "commandType": "devicectl.list.devices",
+    "jsonVersion": 5,
+    "outcome": "success",
+    "version": "651.32"
+  },
+  "result": {
+    "devices": [
+      {
+        "identifier": "6F1C2A3B-4D5E-4F60-8172-93A4B5C6D7E8",
+        "connectionProperties": {
+          "authenticationType": "manualPairing",
+          "isMobileDeviceOnly": false,
+          "pairingState": "paired",
+          "transportType": "localNetwork",
+          "tunnelState": "disconnected",
+          "tunnelTransportProtocol": "tcp",
+          "lastConnectionDate": "2026-11-17T12:00:00.000Z"
+        },
+        "deviceProperties": {
+          "name": "iPad",
+          "osVersionNumber": "27.2"
+        },
+        "hardwareProperties": {
+          "deviceType": "iPad",
+          "marketingName": "iPad Air 13-inch (M3)",
+          "platform": "iOS",
+          "reality": "physical",
+          "udid": "00008103-000E4C1A3E90801E"
+        },
+        "visibilityClass": "default"
+      },
+      {
+        "identifier": "1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9",
+        "connectionProperties": {
+          "authenticationType": "manualPairing",
+          "isMobileDeviceOnly": false,
+          "pairingState": "paired",
+          "transportType": "localNetwork",
+          "tunnelState": "disconnected",
+          "tunnelTransportProtocol": "tcp",
+          "lastConnectionDate": "2026-11-17T12:00:00.000Z"
+        },
+        "deviceProperties": {
+          "name": "iPhone",
+          "osVersionNumber": "27.2"
+        },
+        "hardwareProperties": {
+          "deviceType": "iPhone",
+          "marketingName": "iPhone 17 Pro Max",
+          "platform": "iOS",
+          "reality": "physical",
+          "udid": "00008130-001A2C3E0C38001C"
+        },
+        "visibilityClass": "default"
+      },
+      {
+        "identifier": "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13",
+        "connectionProperties": {
+          "authenticationType": "implicit",
+          "isMobileDeviceOnly": false,
+          "pairingState": "paired",
+          "transportType": "sameMachine",
+          "tunnelState": "disconnected"
+        },
+        "deviceProperties": {
+          "name": "Simulator 1"
+        },
+        "hardwareProperties": {
+          "deviceType": "iPad",
+          "platform": "iOS",
+          "reality": "simulated",
+          "udid": "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"
+        },
+        "visibilityClass": "simulators"
+      },
+      {
+        "identifier": "7C1F7D62-3E4B-4A8C-8D2F-1B5C9E3A7F24",
+        "connectionProperties": {
+          "authenticationType": "implicit",
+          "isMobileDeviceOnly": false,
+          "pairingState": "paired",
+          "transportType": "sameMachine",
+          "tunnelState": "disconnected"
+        },
+        "deviceProperties": {
+          "name": "Simulator 2"
+        },
+        "hardwareProperties": {
+          "deviceType": "iPad",
+          "platform": "iOS",
+          "reality": "simulated",
+          "udid": "7C1F7D62-3E4B-4A8C-8D2F-1B5C9E3A7F24"
+        },
+        "visibilityClass": "simulators"
+      }
+    ]
+  }
+}

@@ -75,7 +75,7 @@ import sys
 import threading
 import time
 
-from . import device_notifications
+from . import device_notifications, reach
 from queuekeeper import offload_host, processes
 from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop.reservations import (
@@ -385,6 +385,37 @@ class Record(reservations.Record):
             record.setdefault(SETUP, {})[key] = setup
             self._replace(record)
             return setup
+
+    def declare(self, key, *, by, reach_ways=None, cable_on=None, absent=None, clear=False, macs=None):
+        """Record the owner's declaration of key's physical device: the ways a Mac may reach it, in his order, the
+        Mac its cable is expected on, and what it means when no Mac reaches it (reach.py); or with clear, remove
+        it. It is kept beside the entries, under key, so it changes no entry: a held, orphaned or uncertain entry's
+        reservation, its revision included, stays as it was. macs are the names a cable may name. Returns the
+        declaration, or None once cleared."""
+        if not by:
+            raise ValueError("a declaration records who made it: the owner")
+        declaration = None if clear else reach.declared(reach_ways or [], cable_on, absent, by=by, at=now())
+        wrong = [] if clear else reach.problems(declaration, macs)
+        if wrong:
+            raise ValueError("; ".join(wrong) + ". Nothing was changed")
+        with self._exclusive():
+            record = self.load()
+            if record.get(DEFERRED):
+                raise Refused(f"physical devices are declared in {record[DEFERRED]}'s device record, which holds them, "
+                              "not this one. Nothing was changed")
+            declarations = record.get(reach.DECLARATIONS) or {}
+            if clear:
+                if key not in declarations:
+                    raise Refused(f"{key} is not declared. Nothing was changed")
+                declarations.pop(key)
+            else:
+                if not physical((record["devices"].get(key) or {}).get("device")):
+                    raise Refused(f"{key} records no physical device, so there is none to declare; its first "
+                                  f"reservation, `devices reserve {key} --device UDID`, records it. Nothing was changed")
+                declarations[key] = declaration
+            record[reach.DECLARATIONS] = declarations
+            self._replace(record)
+            return declaration
 
     def restoration_recovered(self, key, *, owner, revision, by):
         """End the uncertainty an unverified VoiceOver restoration left in owner's live mac-foreground entry, once
@@ -968,8 +999,11 @@ def recoverable_lines(entries):
             for item in offload_host.recoverable(entries, offload_host.process_table(listed))]
 
 
-def status(record):
+def status(record, macs=None):
+    """Print every entry's condition, then each device's declaration and what each Mac reads of it now: this Mac's
+    and macs', (name, SSH destination) pairs, by default the farm's."""
     value = record.load()
+    macs = reach.farm_macs() if macs is None else macs
     source = f" (from {OVERRIDE})" if os.environ.get(OVERRIDE) else ""
     print(f"Device record {record.path}{source}: revision {value.get('revision', 0)}, updated {value.get('updatedAt', 'never')}")
     if value.get(DEFERRED):
@@ -983,6 +1017,10 @@ def status(record):
     for key, entry in value["devices"].items():
         if key != FOREGROUND: print(_describe(key, entry, waiting(value, key)))
     for line in recoverable_lines(value["devices"]): print(line)
+    # Which Macs reach each device, and how, as each lists it now, beside what the owner declared (reach.py).
+    found = reach.readings(macs=macs)
+    names = [reach.mac_here(), *(name for name, _host in macs)]
+    for line in reach.lines(reach.survey(value, found, names), value.get(DEFERRED)): print(line)
     imported = {item.get("sha256") for item in value.get("imports", [])}
     for legacy in sorted(glob.glob(LEGACY)):
         try:
@@ -1038,7 +1076,19 @@ def main(argv=None):
                                      "bounded command on a physical device it reserves.")
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("path", help="print the record's location")
-    commands.add_parser("status", help="every entry's condition, and legacy records not yet imported")
+    commands.add_parser("status", help="every entry's condition, each device's declaration and which Macs reach it "
+                        "now, and legacy records not yet imported")
+    declare = commands.add_parser("declare", help="the owner's declaration of a physical device: the ways a Mac may "
+                                  "reach it, in order, and what it means when no Mac does; it changes no entry")
+    declare.add_argument("key")
+    declare.add_argument("--by", required=True, help="who declares it: the owner")
+    declare.add_argument("--reach", metavar="WAYS", help=f"the ways, in order, comma-separated: "
+                         f"{', '.join(reach.WAYS)}, or both")
+    declare.add_argument("--cable-on", metavar="MAC", help="the Mac its cable is expected on, by its name in the farm "
+                         "or this Mac's")
+    declare.add_argument("--absent", choices=reach.ABSENT, help="reached by no Mac is an error, or the device is "
+                         "offline, which is no error")
+    declare.add_argument("--clear", action="store_true", help="remove the declaration")
     show = commands.add_parser("show", help="one entry with the revision a change must name")
     show.add_argument("key")
     reserve = commands.add_parser("reserve", help="claim a released or new entry")
@@ -1153,6 +1203,16 @@ def main(argv=None):
             print(record.path)
         elif args.action == "status":
             status(record)
+        elif args.action == "declare":
+            if args.clear and (args.reach or args.cable_on or args.absent):
+                raise ValueError("--clear removes the declaration, and takes no --reach, --cable-on or --absent")
+            if not args.clear and not (args.reach and args.absent):
+                raise ValueError("a declaration names --reach and --absent")
+            macs = [reach.mac_here(), *(name for name, _host in reach.farm_macs())]
+            declaration = record.declare(args.key, by=args.by, clear=args.clear, cable_on=args.cable_on,
+                                         absent=args.absent, macs=macs,
+                                         reach_ways=[way.strip() for way in (args.reach or "").split(",")])
+            print(json.dumps({"key": args.key, "declaration": declaration}, indent=2))
         elif args.action == "show":
             _report(args.key, record.entry(args.key))
         elif args.action == "reserve":
