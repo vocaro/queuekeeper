@@ -124,10 +124,11 @@
       svg("text", { class: "middle", x: 75, y: 70, "text-anchor": "middle" }, Math.round(share) + "%"),
       svg("text", { class: "caption", x: 75, y: 89, "text-anchor": "middle" }, caption));
   };
-  // Each name's hue, p1 to p5 in sorted order and "other" past five, so one name keeps its color across a page.
+  // Each name's hue, p1 to p12 in sorted order and "other" past twelve, so one name keeps its color across a page.
+  QK.HUES = 12;
   QK.hues = function (names) {
     const hues = {};
-    [...new Set(names.filter(Boolean))].sort((a, b) => a.localeCompare(b)).forEach((name, index) => { hues[name] = index < 5 ? "p" + (index + 1) : "other"; });
+    [...new Set(names.filter(Boolean))].sort((a, b) => a.localeCompare(b)).forEach((name, index) => { hues[name] = index < QK.HUES ? "p" + (index + 1) : "other"; });
     return hues;
   };
   // A stacked area of layers over time: times is each column's time in seconds, layers [{name, values, hue}] bottom

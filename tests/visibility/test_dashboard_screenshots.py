@@ -75,6 +75,20 @@ class MadeUpData(test_dashboard.Fixture):
             self.assertLessEqual(set(found), {*queue.GATE, "role", "log", "phase"})
 
 
+class Served(test_dashboard.Fixture):
+    def test_its_server_answers_the_page_and_the_api(self):
+        import http.client
+        script = loaded()
+        made = script.serve("dark")
+        self.addCleanup(made.server_close)
+        self.addCleanup(made.shutdown)
+        for path in ("/", "/api/panels", "/api/all/panel/queue", "/static/app.js"):
+            connection = http.client.HTTPConnection("127.0.0.1", made.server_address[1], timeout=host_isolation.stretched(20))
+            self.addCleanup(connection.close)
+            connection.request("GET", path, headers={"Host": f"localhost:{made.server_address[1]}"})
+            self.assertEqual(connection.getresponse().status, 200, path)
+
+
 class SentToAnotherMac(unittest.TestCase):
     def test_it_refuses_where_admission_sent_it_and_starts_no_browser(self):
         script = loaded()

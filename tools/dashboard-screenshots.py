@@ -357,7 +357,8 @@ class Handler(server.Handler):
 def serve(theme):
     made = server.http.server.ThreadingHTTPServer((server.BIND, 0), Handler)
     made.daemon_threads = True
-    made.app, made.bound, made.theme = App(), server.BIND, theme
+    # The commit a page is served from is none here: the page reloads only when a server says it moved.
+    made.app, made.bound, made.theme, made.commit = App(), server.BIND, theme, None
     threading.Thread(target=made.serve_forever, daemon=True).start()
     return made
 

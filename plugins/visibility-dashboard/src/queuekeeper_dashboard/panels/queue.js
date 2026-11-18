@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   const roleName = role => ({ batch: "Current batch", stacked: "Testing ahead" }[role] || role);
-  const hueOf = name => "p" + (1 + [...name].reduce((sum, letter) => (sum * 31 + letter.charCodeAt(0)) % 9973, 7) % 5);
+  const hueOf = name => "p" + (1 + [...name].reduce((sum, letter) => (sum * 31 + letter.charCodeAt(0)) % 9973, 7) % QK.HUES);
   const key = gate => gate.repository + "\n" + gate.role;
 
   // The flow map: who has entries in the queues, by branch prefix, then the queues, the rounds' gates, the Macs they

@@ -28,6 +28,9 @@ QK.panel("history", {
             h("span", { class: "change " + landed.tone, title: landed.title }, landed.text)) : null));
     }
     // Today's lane runs as bars on a lane per Mac: green passed, red failed, purple unmeasured; a bar opens its log.
+    // Where every repository is shown, a bar takes its repository's hue, a failure outlined red and a run left
+    // unmeasured outlined dashed; the toggle colors them by how they ended instead (byRepository).
+    const byRepository = all && context.state.laneColor !== "status";
     function swimlanes() {
       const runs = data.gates || [];
       if (!runs.length) return h("p", { class: "sub" }, "No lane has finished today.");
@@ -45,7 +48,8 @@ QK.panel("history", {
         macs.map((mac, row) => [svg("text", { class: "name", x: 0, y: row * lane + 21 }, mac.length > 22 ? mac.slice(0, 21) + "…" : mac, svg("title", null, mac)),
           runs.filter(run => (run.mac || "this Mac") === mac).map(run => {
             const tone = run.status === 0 ? "good" : run.status === 3 ? "unknown" : "danger";
-            const bar = svg("rect", { class: "run " + tone + (run.lane === "gate" ? "" : " minor"), x: x(run.began), y: row * lane + 8 + (run.lane === "gate" ? 0 : 5),
+            const kind = byRepository ? "repo " + (hues[run.repository] || "other") + (run.status === 0 ? "" : " " + tone) : tone;
+            const bar = svg("rect", { class: "run " + kind + (run.lane === "gate" ? "" : " minor"), x: x(run.began), y: row * lane + 8 + (run.lane === "gate" ? 0 : 5),
               width: Math.max(2, x(run.ended) - x(run.began)), height: run.lane === "gate" ? 18 : 8, rx: 3 },
               svg("title", null, (all ? run.repository + " · " : "") + run.lane + " " + (run.status === 0 ? "passed" : run.status === 3 ? "unmeasured" : "exited " + run.status)
                 + " · " + QK.span(run.ended - run.began) + " · ended " + QK.clock(run.ended)));
@@ -86,14 +90,20 @@ QK.panel("history", {
           svg("text", { class: "axis", x: x(bin.from), y: H - 5 }, bin.from + "m")));
     }
     // Each repository's day beside yesterday's to this time, and its passing gates' times as a strip of dots on one
-    // scale of minutes, the median marked: a repository's gate is its own, so no median is taken across them.
+    // scale of minutes, the median marked: a repository's gate is its own, so no median is taken across them. The
+    // scale is logarithmic, so a one-minute gate and a hundred-minute one each keep room to show their spread.
     function repositories() {
       // Those that did something today first, the busiest first; the rest in the listed order.
       const busy = one => one.error ? 1e9 : one.today.landed + one.today.cameBack + one.today.rounds;
       const rows = data.repositories.slice().sort((a, b) => busy(b) - busy(a)), timed = rows.filter(one => (one.gateSeconds || []).length);
       const minutes = timed.flatMap(one => one.gateSeconds).map(seconds => seconds / 60);
-      const low = minutes.length ? Math.floor(Math.min(...minutes)) : 0, high = minutes.length ? Math.ceil(Math.max(...minutes)) + 1 : 1;
-      const W = 300, H = 26, x = value => 6 + (value - low) / Math.max(1, high - low) * (W - 12);
+      const NICE = [0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+      const low = minutes.length ? Math.max(...NICE.filter(tick => tick <= Math.max(0.25, Math.min(...minutes)))) : 1;
+      const high = minutes.length ? Math.min(...NICE.filter(tick => tick >= Math.max(...minutes)), 1000) : 10;
+      const span = Math.log(high / low) || 1;
+      const share = value => (Math.log(Math.min(high, Math.max(low, value))) - Math.log(low)) / span;
+      const ticks = NICE.filter(tick => tick >= low && tick <= high);
+      const W = 300, H = 26, x = value => 6 + share(value) * (W - 12);
       function strip(one) {
         const runs = one.gateSeconds || [];
         if (runs.length < 3) return h("span", { class: "sub" }, runs.length ? QK.count(runs.length, "passing gate") : "No passing gate yet");
@@ -103,12 +113,25 @@ QK.panel("history", {
           svg("title", null, "Median " + QK.span(median) + " · fastest " + QK.span(sorted[0]) + " · slowest " + QK.span(sorted[sorted.length - 1])
             + " · last " + QK.count(runs.length, "passing run")),
           svg("line", { class: "base", x1: 0, x2: W, y1: H / 2, y2: H / 2 }),
+          ticks.map(tick => svg("line", { class: "tick", x1: x(tick), x2: x(tick), y1: 4, y2: H - 4 })),
           runs.map(seconds => svg("circle", { class: "run", cx: x(seconds / 60), cy: H / 2, r: 3.5 })),
           svg("line", { class: "median", x1: x(median / 60), x2: x(median / 60), y1: 2, y2: H - 2 }));
       }
+      // The minutes each tick stands for, above the strips, placed as the strips place them.
+      function axis() {
+        let last = -100;  // a label closer than this many percent to the last one shown is left out
+        return h("div", { class: "strip-axis", "aria-hidden": "true" }, ticks.map(tick => {
+          const at = 100 * (6 + share(tick) * (W - 12)) / W;
+          if (at - last < 9) return null;
+          last = at;
+          const label = h("span", null, tick < 1 ? Math.round(tick * 60) + "s" : tick >= 60 && tick % 60 === 0 ? tick / 60 + "h" : tick + "m");
+          label.style.left = at + "%";
+          return label;
+        }));
+      }
       return h("div", { class: "chart-scroll" }, h("table", { class: "repo-table" },
         h("thead", null, h("tr", null, ["Repository", "Landed", "Came back", "Flaky", "Rounds", "Median gate"].map(name => h("th", null, name)),
-          h("th", null, "Passing gates", minutes.length ? h("span", { class: "muted" }, " " + low + "–" + high + " min") : null))),
+          h("th", { class: "strip-head" }, "Passing gates", minutes.length ? axis() : null))),
         h("tbody", null, rows.map(one => one.error ? h("tr", null, h("td", null, tag(one.name)), h("td", { class: "warning wrap", colspan: 6 }, "Cannot be read: " + one.error))
           : h("tr", null, h("td", null, h("a", { href: QK.href(one.name, "history") }, tag(one.name))),
             h("td", null, h("b", null, one.today.landed), " ", (found => found ? h("span", { class: "change " + found.tone, title: found.title }, found.text) : null)(
@@ -172,10 +195,18 @@ QK.panel("history", {
               : number("Median gate", today.medianGateSeconds === null ? "–" : QK.span(today.medianGateSeconds), "medianGateSeconds", "fewer", true)))),
       all ? h("div", { class: "card" }, h("h2", null, "By repository", h("span", { class: "muted" }, "Today, against yesterday at this time")),
         repositories()) : null,
-      h("div", { class: "card" }, h("h2", null, "Lane runs", h("span", { class: "muted" }, "Today, by Mac")), swimlanes(),
-        (data.gates || []).length ? h("div", { class: "legend sub" }, h("span", null, h("i", { class: "dot good" }), "passed"),
-          h("span", null, h("i", { class: "dot danger" }), "failed"), h("span", null, h("i", { class: "dot unknown" }), "unmeasured"),
-          h("span", null, "Thin bars are lanes other than the gate." + (all ? " Every repository's runs share their Macs." : "") + " A bar opens its log.")) : null),
+      h("div", { class: "card" }, h("h2", null, "Lane runs", all ? h("span", { class: "chips", role: "group", "aria-label": "Color the runs by" },
+          [["repository", "By repository"], ["status", "By result"]].map(([value, label]) => h("button", { type: "button",
+            "aria-pressed": String((value === "repository") === byRepository),
+            onclick: () => { context.state.laneColor = value; context.refresh(); } }, label)))
+          : h("span", { class: "muted" }, "Today, by Mac")), swimlanes(),
+        (data.gates || []).length ? h("div", { class: "legend sub" }, byRepository
+          ? [...new Set(data.gates.map(run => run.repository))].sort((a, b) => a.localeCompare(b)).map(name =>
+              h("span", null, h("i", { class: "dot " + (hues[name] || "other") }), name)).concat(
+              h("span", null, h("i", { class: "key failed" }), "failed"), h("span", null, h("i", { class: "key unmeasured" }), "unmeasured"))
+          : [h("span", null, h("i", { class: "dot good" }), "passed"),
+          h("span", null, h("i", { class: "dot danger" }), "failed"), h("span", null, h("i", { class: "dot unknown" }), "unmeasured")],
+          h("span", null, "Today, by Mac. Thin bars are lanes other than the gate." + (all ? " Every repository's runs share their Macs." : "") + " A bar opens its log.")) : null),
       all ? h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "Every repository, by day and hour")), heatmap())
         : h("div", { class: "columns" },
           h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "By day and hour")), heatmap()),
