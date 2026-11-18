@@ -1053,7 +1053,11 @@ HH:MM:SS)`. Another Mac declines such a lane before it takes a checkout while it
 unlocked, and this Mac does not admit it while its own is not, so when no Mac reads unlocked
 the lane waits, offered to another Mac again as any waiting lane is, instead of running
 unmeasured and using up the merge queue's no-verdict runs. A gate waits for the screen before it
-starts, holding no slot. A bisect's older half is offered to the farm's Macs as any gate is, so it
+starts, holding no slot, and the screen is read again once its slots are granted: a screen that
+locked while it waited for them has it give them back, unstarted, and wait again with its place's
+age, saying `queuekeeper: gate gave back its admission, unstarted, and waits: ...`. Without that
+reading, on 2026-11-17, EPUBLib's gate held a Mac whole for 10 minutes for no verdict
+([#217](https://github.com/vocaro/queuekeeper/issues/217)). A bisect's older half is offered to the farm's Macs as any gate is, so it
 goes to a Mac whose screen reads unlocked as any lane does
 ([maintenance](maintenance.md), *A bisect's two halves gate at once*). A lane that does not declare it is placed
 as before, whatever either screen reads: a locked screen blocks only the work that needs it unlocked

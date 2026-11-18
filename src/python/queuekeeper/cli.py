@@ -371,6 +371,26 @@ def screen_wait(name, seconds, said):
         time.sleep(min(SCREEN_POLL, left))
 
 
+def screen_relocked(name, context, said):
+    """None when this Mac's screen still reads unlocked once admission (context, entered) has given a lane that needs
+    it its slots; otherwise why not, after giving the slots back, which started nothing, and saying so once for that
+    reading (said keeps it, as screen_wait does). A slot wait can be long, and a screen that locked during it had
+    admitted EPUBLib's gate to a Mac it could not run on: it held the Mac whole for 10 minutes and gave no verdict
+    (vocaro/queuekeeper#217)."""
+    try:
+        found = offload_host.screen()
+    except BaseException as error:
+        context.__exit__(type(error), error, error.__traceback__)
+        raise
+    if found["state"] == "unlocked": return None
+    refused, key = remote.screen_refusal(found, this_mac()), (found["state"], found.get("reason"))
+    context.__exit__(processes.NotStarted, processes.NotStarted(refused), None)
+    lane_wait.waiting(lane_wait.SCREEN, refused)
+    print(f"queuekeeper: {name} gave back its admission, unstarted, and waits: {refused}", file=sys.stderr, flush=True)
+    said.append(key)
+    return refused
+
+
 # Seconds between readings of free disk space while a lane that fills the disk waits for it, and between the lines
 # that say it still waits.
 SPACE_POLL, SPACE_SAID = 30, 300
@@ -414,7 +434,8 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     seconds, or at most FREE_WAIT with once. A whole-host lane takes every guaranteed slot,
     and every request keeps one place across local waits and its age across remote offers (resources.Place). A
     lane that needs an unlocked screen (screen) is admitted only while this Mac's screen reads unlocked, and waits
-    for it as for a slot (screen_wait). A lane that fills the disk (space, the paths whose volumes it writes) is
+    for it as for a slot (screen_wait); a screen that locks while it waits for slots has it give them back and wait
+    again (screen_relocked). A lane that fills the disk (space, the paths whose volumes it writes) is
     admitted only once they have the free space it needs, and waits for it the same way (space_wait). Its admission
     line says placement (admission_placement)."""
     refused, said = [], []
@@ -425,29 +446,39 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     if offered is not None: offered.place, offered.label = place, label
 
     def admit(seconds):
-        if space:
-            began = time.monotonic()
-            short = space_wait(name, seconds, space)
-            if short is not None:
-                refused.append(short)
+        deadline = time.monotonic() + max(seconds, 0)
+        while True:
+            if space:
+                short = space_wait(name, max(deadline - time.monotonic(), 0), space)
+                if short is not None:
+                    refused.append(short)
+                    return None
+            if screen:
+                locked = screen_wait(name, max(deadline - time.monotonic(), 0), said)
+                if locked is not None:
+                    refused.append(locked)
+                    return None
+            try:
+                # qk admit and qk run start every command they admit through processes.supervise (#315).
+                # A lane that waited for nothing before it asks for slots asks for them for all its seconds.
+                left = max(deadline - time.monotonic(), 0) if space or screen else seconds
+                context = resources.Admission(label, exclusive=exclusive, timeout=left,
+                                              model=model, whole_host=whole_host, place=place, placement=placement,
+                                              supervised=True)
+                admission = context.__enter__()
+            except TimeoutError as error:
+                # Admission published nothing but the place, which the finally below leaves.
+                refused.append(error)
                 return None
-            seconds = max(seconds - (time.monotonic() - began), 0)
-        if screen:
-            began = time.monotonic()
-            locked = screen_wait(name, seconds, said)
-            if locked is not None:
+            locked = screen_relocked(name, context, said) if screen else None
+            if locked is None:
+                stack.push(context)
+                return admission
+            # The screen locked while the lane waited for its slots, which it gave back: it waits for the screen again
+            # with its place's age, or declines once its time is up (vocaro/queuekeeper#217).
+            if time.monotonic() >= deadline:
                 refused.append(locked)
                 return None
-            seconds = max(seconds - (time.monotonic() - began), 0)
-        try:
-            # qk admit and qk run start every command they admit through processes.supervise (#315).
-            return stack.enter_context(resources.Admission(label, exclusive=exclusive, timeout=seconds, model=model,
-                                                           whole_host=whole_host, place=place, placement=placement,
-                                                           supervised=True))
-        except TimeoutError as error:
-            # Admission published nothing but the place, which the finally below leaves.
-            refused.append(error)
-            return None
     try:
         if offered is not None and offered.busy is not None:
             return remote.overflow(offered, admit, timeout, once, refused)

@@ -270,12 +270,16 @@ class AdmissionTests(unittest.TestCase):
         self.read = patch.object(offload_host, "screen")
         self.screen = self.read.start()
         self.addCleanup(self.read.stop)
-        self.admitted = []
+        self.admitted, self.released = [], []
 
         @contextlib.contextmanager
         def admission(label, **options):
             self.admitted.append(label)
-            yield "admission"
+            try:
+                yield "admission"
+            except BaseException as error:
+                self.released.append(error)
+                raise
         patch_admission = patch.object(resources, "Admission", side_effect=admission)
         patch_admission.start()
         self.addCleanup(patch_admission.stop)
@@ -308,11 +312,38 @@ class AdmissionTests(unittest.TestCase):
     def test_an_unlocked_mac_admits_it_and_a_lock_that_ends_lets_the_waiting_lane_in(self):
         self.screen.return_value = reading("unlocked")
         self.assertEqual(self.admit(True)[0], "admission")
-        self.screen.side_effect = [reading("locked"), reading("locked"), reading("unlocked")]
+        self.screen.side_effect = [reading("locked"), reading("locked"), reading("unlocked"), reading("unlocked")]
         status, error = self.admit(True, once=False, timeout=5)
         self.assertEqual(status, "admission")
         self.assertEqual(self.admitted, ["Example gate", "Example gate"])
         self.assertIn("waits: the lane needs an unlocked screen", error)
+
+    def test_a_screen_that_locks_during_the_slot_wait_has_the_slots_given_back_and_the_lane_wait_again(self):
+        # vocaro/queuekeeper#217: unlocked before the slot wait, locked once admitted, then unlocked again.
+        self.screen.side_effect = [reading("unlocked"), reading("locked"), reading("locked"), reading("unlocked"),
+                                   reading("unlocked")]
+        status, error = self.admit(True, once=False, timeout=5)
+        self.assertEqual(status, "admission")
+        self.assertEqual(self.admitted, ["Example gate", "Example gate"])
+        self.assertEqual([type(error) for error in self.released], [cli.processes.NotStarted])
+        self.assertIn("queuekeeper: gate gave back its admission, unstarted, and waits: the lane needs an unlocked "
+                      "screen, and this Mac (Trevors-MacBook-Pro-715)'s is locked", error)
+        # The lock is said once, by the reading that gave the slots back, not again by the wait that follows.
+        self.assertEqual(error.count("the lane needs an unlocked screen"), 1, error)
+
+    def test_a_screen_that_locks_during_the_slot_wait_with_no_time_left_declines_holding_nothing(self):
+        self.screen.side_effect = [reading("unlocked"), reading("locked")]
+        status, error = self.admit(True)
+        self.assertEqual(status, resources.BUSY)
+        self.assertEqual(self.admitted, ["Example gate"])
+        self.assertEqual(len(self.released), 1)
+        self.assertIn("queuekeeper: gate not run on this Mac (Trevors-MacBook-Pro-715): the lane needs an unlocked screen",
+                      error)
+
+    def test_a_screen_still_unlocked_once_admitted_keeps_the_slots(self):
+        self.screen.side_effect = [reading("unlocked"), reading("unlocked")]
+        self.assertEqual(self.admit(True)[0], "admission")
+        self.assertEqual((self.admitted, self.released), (["Example gate"], []))
 
     def test_an_undeclared_lane_is_admitted_on_a_locked_mac_without_a_reading(self):
         self.screen.side_effect = AssertionError("the screen was read")
