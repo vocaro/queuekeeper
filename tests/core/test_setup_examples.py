@@ -21,6 +21,15 @@ class SetupExamples(unittest.TestCase):
             self.assertIn("gate", project["lanes"])
             self.assertEqual(project["extensions"], [])
 
+    def test_a_docs_only_change_to_the_setup_guide_runs_this_module(self):
+        # A docs-only landing skips the gate, which runs this module; a change to the guide it reads must run it
+        # anyway, or the next code entry's gate fails on a document it did not touch (vocaro/queuekeeper#147).
+        project = config.load(Path(__file__).resolve().parents[2])
+        named = config.unread_named(project, ["doc/getting_started.md"])
+        self.assertTrue(named, "queue.unread names no lane for doc/getting_started.md")
+        self.assertTrue(any(__name__.rpartition(".")[2] in " ".join(project["lanes"][lane]["command"]) for lane in named),
+                        f"none of {sorted(named)} runs {__name__}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1011,7 +1011,13 @@ gates a passed batch again.
 The worker runs the preflight lanes, followed by the project's `docs` lane or the toolkit's
 implicit `docs` lane (`python3 scripts/qk docs check`, or `qk docs check` by the toolkit's own
 `bin/qk` in a project with no launcher). Queuekeeper's own guides are under `doc/guides/`, so
-the default takes them and its `queuekeeper.json` names no path.
+the default takes them. Its `queuekeeper.json` names one path, `doc/getting_started.md`, with the
+`setup-examples` lane that runs `test_setup_examples`, the one code test that reads it, so a
+docs-only batch changing that guide runs the test beside the docs lanes. On 2026-11-14 a docs-only
+landing removed the README's setup example, which that test then read; every later code entry's
+gate failed on it, and the queue blamed the first, which touched no document
+([vocaro/queuekeeper#147](https://github.com/vocaro/queuekeeper/issues/147)). A test that comes to
+read another document needs the same declaration; nothing finds it.
 Code, configuration, agent instructions, non-Markdown data, and documents under source or test
 folders retain the code gate. A batch that changes nothing runs every code lane, and so does an
 entry whose own commits change a document and code.

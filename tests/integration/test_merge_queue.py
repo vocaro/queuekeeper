@@ -4097,11 +4097,16 @@ class DefaultDocsOnly(Fixture):
 
     def test_queuekeepers_own_guides_are_unread_by_the_default(self):
         """Queuekeeper keeps its guides under doc/guides/, so the default takes them, and only their Markdown, with no
-        queue.unread of its own, nor the older docsOnly or carryOver; nothing is left at guides/, which is no default
-        folder (vocaro/queuekeeper#106)."""
+        older docsOnly or carryOver; nothing is left at guides/, which is no default folder (vocaro/queuekeeper#106).
+        Its queue.unread keeps the defaults and names only the setup guide, with the lane of the test that reads it,
+        which a docs-only batch changing it runs, and so never carries over (vocaro/queuekeeper#147)."""
         own = configuration.load(ROOT)
         self.assertEqual(configuration.DOCS_FOLDERS, ("doc/", "docs/"))
-        self.assertFalse({"unread", *configuration.UNREAD_LEGACY} & set(own.get("queue", {})))
+        self.assertFalse(set(configuration.UNREAD_LEGACY) & set(own.get("queue", {})))
+        self.assertEqual(set(own["queue"]["unread"]), {"paths"})
+        self.assertEqual(set(own["queue"]["unread"]["paths"]), {"doc/getting_started.md"})
+        self.assertEqual(mq.docs_lanes(own, ["doc/getting_started.md"]), ["spelling", "docs", "setup-examples"])
+        self.assertFalse(mq.carried_over("doc/getting_started.md", own, set()))
         self.assertEqual(run(ROOT, "git", "ls-files", "--", "guides"), "")
         for path in ("doc/guides/maintenance.md", "doc/guides/shared-host.md", "doc/merge_queue.md", "README.md"):
             with self.subTest(path=path):
