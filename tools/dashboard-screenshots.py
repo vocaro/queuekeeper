@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Retake the README's screenshots of the dashboard: assets/dashboard-TAB.png for each tab shown there, and with the
-Queue tab assets/dashboard-flow.svg, its Flow map on its own, whose dots move as they do on the page.
+"""Retake the README's screenshots of the dashboard: assets/dashboard-TAB.png for each tab shown there, but for the
+Queue tab assets/dashboard-home.svg, its picture with the Flow map's dots moving in it as they do on the page.
 
     python3 tools/dashboard-screenshots.py                    Home (Queue) and Farm, in the dark theme
     python3 tools/dashboard-screenshots.py --tabs logs history
@@ -17,9 +17,10 @@ was. Three things differ from what `qk serve` sends: the data, the theme, which 
 this script fixes, and one more script on the page, which reports the page's height so that each picture is as
 tall as its tab.
 
-The Flow map is drawn by the page as an SVG whose dots move by SVG's own animation (animateMotion), with no script,
-so the script saves that SVG as the page drew it, with the stylesheet's Flow rules and the theme's colors written into
-it. A README shows it as an image, moving.
+The Flow map is drawn by the page as an SVG whose dots move by SVG's own animation (animateMotion), with no script.
+So Home is saved as an SVG holding its picture, with the map as the page drew it laid over the picture's own, where the
+page says it is, and the stylesheet's Flow rules and the theme's colors written in. A README shows it as an image,
+moving.
 
 The pictures are taken by Google Chrome, headless, at twice the page's 1000 points. Name another Chromium browser
 with --chrome. When a panel's data changes shape, change PANELS here to match: a tab that then draws a fault is
@@ -30,6 +31,7 @@ checkout, and it is light: one headless Chrome for a few seconds, which admissio
 to another Mac, which may have no Chrome and would keep the pictures in its own checkout; there it refuses
 (vocaro/queuekeeper#172)."""
 import argparse
+import base64
 import copy
 import html
 import os
@@ -54,8 +56,17 @@ REPOSITORY, WIDTH, SCALE = "lumen-ios", 1000, 2
 TABS = ("queue", "farm", "history", "activity", "logs", "about")
 # The page's own script loads a panel's and asks for its data; this long is given it, in the page's own time.
 SETTLE = 6000
-MEASURE = """setInterval(() => { document.documentElement.dataset.height = document.body.scrollHeight;
-  document.documentElement.dataset.fault = document.querySelector("main p.danger") ? "yes" : "no"; }, 100);"""
+# It also says where the Flow map is drawn and on what color, for the moving map laid over the picture of it.
+MEASURE = """setInterval(() => { const page = document.documentElement.dataset;
+  page.height = document.body.scrollHeight;
+  page.fault = document.querySelector("main p.danger") ? "yes" : "no";
+  const map = document.querySelector(".flow-map svg");
+  if (!map) return;
+  const box = map.getBoundingClientRect();
+  let under = map;
+  while (under && getComputedStyle(under).backgroundColor === "rgba(0, 0, 0, 0)") under = under.parentElement;
+  page.flow = [box.left + scrollX, box.top + scrollY, box.width, box.height].join(" ");
+  page.flowUnder = under ? getComputedStyle(under).backgroundColor : ""; }, 100);"""
 
 NOW = time.time()
 # The second Mac's memory: swap nearly full under pressure, and its largest processes (host_health.shortage).
@@ -450,15 +461,15 @@ def capture(binary, profile, address, target):
     if not height or not fault or "Loading…" in drawn: return "the page did not finish drawing", drawn
     if fault.group(1) == "yes": return "the page drew a fault, so its data here no longer fits the panel", drawn
     chrome(binary, profile, address, f"--screenshot={target}", height=int(height.group(1)))
+    # The page as drawn at the picture's height, so that where it says its Flow map is, is where the picture has it.
+    drawn = chrome(binary, profile, address, "--dump-dom", height=int(height.group(1))).stdout
     return (None if target.is_file() else "Chrome saved no picture"), drawn
 
 
-PAD = 16  # the Flow image's margin around its map, in the map's units
-
-
 def flow(drawn, theme):
-    """The page's Flow map as an SVG file of its own: the map as drawn, its links and their tips taken out, on a card
-    of its own, with the stylesheet's Flow rules and the theme's colors. None when the page drew no map."""
+    """The page's Flow map as SVG of its own: (its label, its style, what it draws, its width and height in its own
+    units), the map as drawn with its links and their tips taken out, and the stylesheet's Flow rules and the theme's
+    colors. None when the page drew no map."""
     found = re.search(r'<div class="flow-map">(<svg\b.*?</svg>)</div>', drawn, re.S)
     if not found: return None
     drawing = re.sub(r"</?a\b[^>]*>|<title>.*?</title>", "", found.group(1), flags=re.S)
@@ -473,15 +484,29 @@ def flow(drawn, theme):
     rules = inside(media.sub("", css)) + [f"@media{condition}{{ {' '.join(inside(body))} }}" for condition, body in media.findall(css)
                                           if inside(body) and "prefers-color-scheme" not in condition]
     style = "\n".join([f"svg {{{light}{dark if theme == 'dark' else ''}}}",
-                       "svg { font-family: -apple-system, system-ui, sans-serif; font-variant-numeric: tabular-nums; }",
-                       ".card { fill: var(--card); stroke: var(--line); }", *rules])
+                       "svg { font-family: -apple-system, system-ui, sans-serif; font-variant-numeric: tabular-nums; }", *rules])
     opened = re.match(r"<svg\b[^>]*>", drawing).group(0)
     label = html.unescape(re.search(r'aria-label="([^"]*)"', opened).group(1))
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{-PAD} {-PAD} {width + 2 * PAD:g} {height + 2 * PAD:g}" '
-            f'width="{width + 2 * PAD:g}" height="{height + 2 * PAD:g}" role="img">\n'
-            f"<title>{html.escape(label)}</title>\n<style>\n{style}\n</style>\n"
-            f'<rect class="card" x="{-PAD + 0.5}" y="{-PAD + 0.5}" width="{width + 2 * PAD - 1:g}" height="{height + 2 * PAD - 1:g}" rx="12"/>\n'
-            + drawing[len(opened):-len("</svg>")] + "\n</svg>\n")
+    return label, style, drawing[len(opened):-len("</svg>")], width, height
+
+
+def moving(picture, drawn, theme):
+    """The picture of the page as an SVG, with the Flow map laid over the picture's own map where the page drew it,
+    on the color it was drawn on, so that its dots move as they do on the page (by SVG's own animation, which an
+    image plays) and stand still where the viewer asks for reduced motion. None when the page drew no map."""
+    found, where = flow(drawn, theme), re.search(r'data-flow="([\d. ]+)"', drawn)
+    under, height = re.search(r'data-flow-under="([^"]*)"', drawn), re.search(r'data-height="(\d+)"', drawn)
+    if not found or not where or not height: return None
+    label, style, drawing, width, tall = found
+    x, y, w, h = map(float, where.group(1).split())
+    page = int(height.group(1))
+    encoded = base64.b64encode(picture).decode()
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {page}" width="{WIDTH}" height="{page}" role="img">\n'
+            f"<title>The dashboard, its Flow map moving: {html.escape(label)}</title>\n<style>\n{style}\n</style>\n"
+            f'<image width="{WIDTH}" height="{page}" href="data:image/png;base64,{encoded}"/>\n'
+            f'<svg x="{x:g}" y="{y:g}" width="{w:g}" height="{h:g}" viewBox="0 0 {width:g} {tall:g}">\n'
+            f'<rect width="{width:g}" height="{tall:g}" fill="{html.escape(under.group(1) if under else "var(--card)")}"/>\n'
+            + drawing + "\n</svg>\n</svg>\n")
 
 
 def main(argv):
@@ -507,20 +532,21 @@ def main(argv):
     try:
         with tempfile.TemporaryDirectory() as profile:
             for tab in args.tabs:
-                target = args.out / f"dashboard-{'home' if tab == 'queue' else tab}.png"
+                # Home is an SVG that holds its picture, under a Flow map that moves; it is taken as a picture first.
+                target = Path(profile) / "home.png" if tab == "queue" else args.out / f"dashboard-{tab}.png"
                 address = f"http://{server.BIND}:{made.server_address[1]}/" + ("" if tab == "queue" else f"all/{tab}")
                 target.unlink(missing_ok=True)
                 why, drawn = capture(args.chrome, profile, address, target)
                 if why: failed += 1
-                print(f"dashboard-screenshots: {tab}: {why or target}", file=sys.stderr if why else sys.stdout)
+                if why or tab != "queue": print(f"dashboard-screenshots: {tab}: {why or target}", file=sys.stderr if why else sys.stdout)
                 if tab != "queue" or why: continue
-                drawing, moving = flow(drawn, args.theme), args.out / "dashboard-flow.svg"
+                drawing, home = moving(target.read_bytes(), drawn, args.theme), args.out / "dashboard-home.svg"
                 if drawing is None:
                     failed += 1
-                    print("dashboard-screenshots: flow: the page drew no Flow map", file=sys.stderr)
+                    print("dashboard-screenshots: queue: the page drew no Flow map", file=sys.stderr)
                     continue
-                moving.write_text(drawing)
-                print(f"dashboard-screenshots: flow: {moving}")
+                home.write_text(drawing)
+                print(f"dashboard-screenshots: queue: {home}")
     finally:
         made.shutdown()
     return 1 if failed else 0

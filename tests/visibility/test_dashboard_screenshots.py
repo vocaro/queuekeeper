@@ -74,19 +74,27 @@ class MadeUpData(test_dashboard.Fixture):
         for found in self.script.PANELS["queue"]["round"]["gates"]:
             self.assertLessEqual(set(found), {*queue.GATE, "role", "log", "phase"})
 
-    def test_the_flow_map_is_saved_as_an_svg_of_its_own_whose_dots_move_unless_motion_is_reduced(self):
+    def test_home_is_saved_as_its_picture_with_the_flow_map_moving_over_it_unless_motion_is_reduced(self):
         from xml.dom import minidom
-        drawn = ('<main><div class="flow-map"><svg viewBox="0 0 900 200" role="group" aria-label="Agents&#39; entries">'
+        drawn = ('<html data-height="1200" data-flow="50 300.5 900 200" data-flow-under="rgb(18, 23, 34)"><main>'
+                 '<div class="flow-map"><svg viewBox="0 0 900 200" role="group" aria-label="Agents&#39; entries">'
                  '<path id="flow-edge-1" class="edge submit live p3" d="M0 0 C 1 1, 2 2, 3 3"></path>'
                  '<circle class="moving submit p3" r="3.5"><animateMotion dur="1.6s" begin="-0.4s" repeatCount="indefinite">'
                  '<mpath href="#flow-edge-1"></mpath></animateMotion></circle>'
                  '<a href="/r/x/queue"><title>Only x</title><rect class="node running" x="0" y="0" width="9" height="9"></rect></a>'
-                 '</svg></div></main>')
-        saved = self.script.flow(drawn, "dark")
+                 '</svg></div></main></html>')
+        saved = self.script.moving(b"picture", drawn, "dark")
         document = minidom.parseString(saved)
         root = document.documentElement
-        self.assertEqual((root.getAttribute("viewBox"), root.getAttribute("width")), ("-16 -16 932 232", "932"))
-        self.assertEqual(document.getElementsByTagName("title")[0].firstChild.data, "Agents' entries")
+        self.assertEqual((root.getAttribute("viewBox"), root.getAttribute("height")), ("0 0 1000 1200", "1200"))
+        picture = document.getElementsByTagName("image")[0]
+        self.assertEqual((picture.getAttribute("href"), picture.getAttribute("height")), ("data:image/png;base64,cGljdHVyZQ==", "1200"))
+        # The map where the page drew it, over the picture's own, on the color it was drawn on.
+        map_ = root.getElementsByTagName("svg")[0]
+        self.assertEqual([map_.getAttribute(name) for name in ("x", "y", "width", "height", "viewBox")],
+                         ["50", "300.5", "900", "200", "0 0 900 200"])
+        self.assertEqual(map_.getElementsByTagName("rect")[0].getAttribute("fill"), "rgb(18, 23, 34)")
+        self.assertIn("Agents' entries", document.getElementsByTagName("title")[0].firstChild.data)
         self.assertEqual((len(document.getElementsByTagName("a")), len(document.getElementsByTagName("title"))), (0, 1))
         self.assertEqual(len(document.getElementsByTagName("animateMotion")), 1)
         style = document.getElementsByTagName("style")[0].firstChild.data
@@ -97,8 +105,8 @@ class MadeUpData(test_dashboard.Fixture):
         self.assertIn("@media (prefers-reduced-motion: reduce) { .moving { display: none; } }", style)
         self.assertNotRegex(style, r"(?m)^\s*\{")  # no rule left without its selector
         self.assertNotRegex(style.split("@media")[0], r"\.moving\s*\{\s*display: none")
-        self.assertNotIn("--card: #121722", self.script.flow(drawn, "light"))
-        self.assertIsNone(self.script.flow("<main>no map</main>", "dark"))
+        self.assertNotIn("--card: #121722", self.script.moving(b"picture", drawn, "light"))
+        self.assertIsNone(self.script.moving(b"picture", '<html data-height="1200"><main>no map</main></html>', "dark"))
 
 
 class Served(test_dashboard.Fixture):

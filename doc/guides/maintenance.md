@@ -1345,10 +1345,11 @@ after a change to how the dashboard looks:
 python3 tools/dashboard-screenshots.py
 ```
 
-It writes `assets/dashboard-home.png` (the Queue home view), `dashboard-farm.png` and `dashboard-flow.svg`, with
-compact sample data in the dark theme, and needs Google Chrome. `dashboard-flow.svg` is the home view's Flow map on
-its own, saved as the page drew it with the stylesheet's Flow rules written into it: its dots move by SVG's own
-animation, which a README image plays, and stand still where the viewer asks for reduced motion. The made-up data is in the script.
+It writes `assets/dashboard-home.svg` (the Queue home view) and `dashboard-farm.png`, with
+compact sample data in the dark theme, and needs Google Chrome. `dashboard-home.svg` holds the home view's picture
+with its Flow map laid over the picture's own, as the page drew it, with the stylesheet's Flow rules written in: the
+map's dots move by SVG's own animation, which a README image plays, and stand still where the viewer asks for
+reduced motion. The made-up data is in the script.
 
 Run it directly on this Mac, as shown, not through `qk admit`. The rule that every test or build takes
 admission does not cover it: it starts one headless Chrome for a few seconds, it needs this Mac's Chrome,

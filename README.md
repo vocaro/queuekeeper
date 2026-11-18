@@ -122,18 +122,12 @@ qk serve --open
 
 **Home** (the Queue tab) shows one verdict on every queue, naming any project that needs a look, the
 day's totals, a row for each project, every round being tested, and every entry in progress and up
-next. New arrivals tested on top of the current batch are labeled **Testing ahead**.
+next. New arrivals tested on top of the current batch are labeled **Testing ahead**. Its **Flow** map follows each
+entry from the agent that queued it, Claude, Codex or a person, through its project's queue and the round's
+gates to the Macs they run on and to main.
 
 <p align="center">
-  <img src="assets/dashboard-home.png" alt="The dashboard's Now view across four projects: a one-sentence health verdict with a forecast and five signs, daily totals, an entry that came back and a flaky test needing attention, the flow from Claude, Codex and a person through each project's queue, the rounds' gates and two Macs to main, with two gates waiting for a Mac and an arc back to the agent whose entry came back, then four gates being tested and three entries up next, each tagged with its project." width="100%">
-</p>
-
-**Flow** follows each entry from the agent that queued it, Claude, Codex or a person, through its project's
-queue and the round's gates to the Macs they run on and to main. A gate waiting for a Mac is dashed, and an
-entry that came back draws an arc back to its agent.
-
-<p align="center">
-  <img src="assets/dashboard-flow.svg" alt="The dashboard's Flow map, its dots moving along the lines: Claude, Codex and a person on the left, their entries flowing into the orbit-game, lumen-ios and fieldnotes queues beside one idle queue, then into four rounds' gates, two of them dashed as waiting for a Mac, then to This Mac and studio.local and to main with 28 landed, and a dashed arc from a round back to Codex, whose entry came back." width="100%">
+  <img src="assets/dashboard-home.svg" alt="The dashboard's Now view across four projects: a one-sentence health verdict with a forecast and five signs, daily totals, an entry that came back and a flaky test needing attention, the Flow map with its dots moving from Claude, Codex and a person through each project's queue, the rounds' gates and two Macs to main, with two gates waiting for a Mac and an arc back to the agent whose entry came back, then four gates being tested and three entries up next, each tagged with its project." width="100%">
 </p>
 
 **Farm** shows each Mac's slots, its load, and the work running and waiting on it, for every
