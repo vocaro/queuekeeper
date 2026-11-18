@@ -169,7 +169,7 @@ operations are degraded.
   ungated until a later gate covers it.
 - With both, the entry lands next. It goes ahead of a round whose gate still waits for admission,
   which then gates again on top of it, and waits only for a gate that has started, which status
-  says.
+  says. Given both again, an entry testing in such a round leaves it the same way.
 
 ## Closing a queue for maintenance
 

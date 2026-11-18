@@ -250,7 +250,11 @@ woken by its end:
   still queued, testing or passed holds the same tip, it prints `ID already holds TIP (STATE)` and
   follows that entry as `qk queue wait ID` would, as a session that ran it again after a crash on
   2026-11-13 was told `… already holds … (testing)`. `--front` and `--no-gate` given again change
-  only an entry still queued. A branch whose tip has changed since is another matter: its new
+  an entry still queued. For an entry testing in a round, they change something only when the
+  entry then holds both: while that round's gate waits to start, the worker takes the entry out
+  within 5 s and lands it first, and the round gates again without it; a gate that has started
+  finishes first. Otherwise the line says the option `changes nothing now` and how to land the
+  entry alone without the gate. A branch whose tip has changed since is another matter: its new
   commits replace the earlier entry, and stop that entry's gate if it is testing. A tip
   `origin/main` already holds is not queued (`origin/main already holds TIP: nothing to queue`,
   exit 0). Main holds a landed branch's commits under other hashes, so a branch that has landed is

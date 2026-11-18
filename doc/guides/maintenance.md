@@ -934,7 +934,12 @@ bisect's halves, a `--front` entry's and a stacked one. A gate that has started 
 `qk queue status` says so under the entry: `waits for the running gate of ID, which has run Nm`. On
 2026-11-12 such an entry waited more than 10 minutes behind a StudyWright round whose gate waited for
 admission behind another project's whole-host gate
-([#26](https://github.com/vocaro/queuekeeper/issues/26)).
+([#26](https://github.com/vocaro/queuekeeper/issues/26)). The same holds for an entry already
+testing in such a round that `qk land --front --no-gate` is given again: it leaves the round, which
+gates again on top of it. On 2026-11-15 `--no-gate` given again to an entry of a stacked gate that
+no Mac admitted for 30 minutes changed nothing, and only `qk queue remove` and landing it again
+landed it. Any other option given again to a testing entry still changes nothing, and `qk land`
+says how to land it alone without the gate.
 
 **Pushing by hand is the exception.** A session pushes to `main` by hand only when `qk land` cannot
 be used, when it must be bypassed, each for a reason it can state, such as a broken queue or a fix

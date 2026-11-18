@@ -2025,19 +2025,32 @@ def because(entry):
 
 
 def promote(queue, entry, flags):
-    """Give a queued entry the options flags holds, as qk land does an entry already holding its tip. A batch in its
-    gate, or one that passed, finishes as it is, so for one of those the options change nothing."""
+    """Give a queued entry the options flags holds, as qk land does an entry already holding its tip. A testing entry
+    that then holds --front and --no-gate both takes them too: the worker takes it out of its round while that round's
+    gate waits to start, as for an entry arriving with them (Worker.first_ungated); otherwise it lands with its round,
+    or first once that round queues it again (vocaro/queuekeeper#26). Any other option of a testing entry, and any of
+    one that passed, changes nothing, and the line says how to land it alone without the gate."""
     with queue.locked():
         current = queue.read(entry["id"])
-        if current and current["state"] == QUEUED:
+        testing = bool(current) and current["state"] == TESTING and all({**current, **flags}.get(name)
+                                                                         for name in OPTIONS)
+        if current and (current["state"] == QUEUED or testing):
             current.update(flags)
             queue.save(current)
-    if current and current["state"] == QUEUED:
+    if current and (current["state"] == QUEUED or testing):
         for name in OPTIONS:
             if name in flags: print(f"queue: {entry['id']} now {asked_for(name)}{because(current)}")
+        if testing:
+            print(f"queue: {entry['id']} is testing: the worker takes it out of its round within about "
+                  f"{REMOVAL_POLL:g}s while that round's gate waits to start, and gates the rest again on top of it; "
+                  "a gate that has started finishes first, and it lands with that round if the round passes")
         return
     print(f"queue: {entry['id']} is {current['state'] if current else 'gone'}, so "
           f"{' and '.join(OPTIONS[name] for name in OPTIONS if name in flags)} changes nothing now", file=sys.stderr)
+    if current and current["state"] == TESTING:
+        print("queue: to land it alone without the gate, give --front and --no-gate together, which take it out of a "
+              f"round whose gate waits to start, or run `qk queue remove {entry['id']}` and land it again with "
+              "--no-gate; its round then gates again without it", file=sys.stderr)
 
 
 def covered(root, entry, entries):
@@ -2948,6 +2961,7 @@ class Worker:
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.measured = None  # the passing gate run of the last round, which its landed entries record
         self.alone = False  # whether this round's batch is one entry an option of qk land put on its own (choose)
+        self.ungating = False  # whether this round lands that entry without the gate (round, first_ungated)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
         self.failed_results = None  # that lane's results folder, where a failedTests lane names its failures (gate)
         self.failed_load = None  # load_words for that lane, or None (gate)
@@ -4735,6 +4749,7 @@ class Worker:
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {head[:12]} on {base[:12]}"
                  + (" at the front of the queue, as qk land --front asked" if applied[0].get("front") else ""))
         ungated = self.ungated(applied, config)
+        self.ungating = bool(ungated)
         # Without renames, so that a file moved into a docs path also names the path it left.
         changed = [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base, head).splitlines()
                    if path]
@@ -5084,7 +5099,7 @@ class Worker:
         # What the gate ran on, which the push carries over the documents main has gained since (Worker.carry).
         base = stacked.base
         applied = [self.queue.read(entry["id"]) or entry for entry in stacked.entries]
-        self.alone = False
+        self.alone = self.ungating = False
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {stacked.tip[:12]} on "
                  f"{base[:12]}, whose gate began on top of the batch that just landed")
         self.begun(stacked.name, stacked.tip, base, applied, adopted=True)
@@ -5264,14 +5279,14 @@ class Worker:
         """The entry qk land --front --no-gate put first that goes ahead of this gate now, or None: one while the
         gate's lane waits to start, by its wait record (lane_wait), for admission, a screen or a Mac, so that a landing
         that needs only the spelling lane and a push does not wait behind a gate that has not begun
-        (vocaro/queuekeeper#26). A lane that runs, or whose record says nothing yet, runs on, and the entry lands after
-        it. An ungated round goes on as it is."""
-        if not self.lane_now: return None
-        waiting = self.queue.waiting()
+        (vocaro/queuekeeper#26). The entry may be one this gate tests, given both options again since its round began
+        (promote): the gate stops all the same, and the entry lands alone on the round after. An entry another gate
+        tests is that gate's to stop. A lane that runs, or whose record says nothing yet, runs on, and the entry lands
+        after it. An ungated round goes on as it is."""
+        if not self.lane_now or self.ungating: return None
         gating = set(self.gating)
-        if any(entry.get("noGate") for entry in waiting if entry["id"] in gating): return None
-        first = next((entry for entry in waiting if entry.get("front") and entry.get("noGate")
-                      and entry["state"] == QUEUED and entry["id"] not in gating), None)
+        first = next((entry for entry in self.queue.waiting() if entry.get("front") and entry.get("noGate")
+                      and (entry["id"] in gating or entry["state"] == QUEUED)), None)
         if first is None: return None
         lane, began = self.lane_now[0], self.lane_now[1]
         record = lane_wait.current(lane_wait.path_of(self.checkout, lane), began)

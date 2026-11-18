@@ -9853,6 +9853,44 @@ class UngatedAheadOfARound(Fixture):
         self.assertNotIn("unmeasured", log)
         self.assertIsNone(mq.Queue(self.repo).held())
 
+    def test_an_entry_of_the_round_given_both_again_leaves_it(self):
+        """qk land --front --no-gate again for an entry whose round's gate waits for admission takes it out of that
+        round, which gates again on top of it, as on 2026-11-15, when only `qk queue remove` did."""
+        self.commit("hold", "a"); self.commit("fix", "fix")
+        a, fix = self.add("a", "fix")
+        (self.base / "gates.release.2").write_text("")  # a's gate again, on top of the fix, runs through
+        said = []
+        def again():
+            self.until(self.counter.exists, "gate of a and the fix")
+            self.waits_for_admission()
+            # Its own lines, read from print, since the worker on the other thread writes to the same stdout.
+            with patch("builtins.print", side_effect=lambda *words, **_: said.append(" ".join(map(str, words)))):
+                mq.add(self.repo, "fix", front=True, no_gate=True, why=self.WHY)
+            try: self.until(lambda: self.state(fix)["state"] == mq.LANDED, "landing of the fix")
+            finally: (self.base / "gates.release.1").write_text("")
+        log = self.worked(again)
+        self.assertIn(f"queue: {fix} is testing: the worker takes it out of its round", "\n".join(said))
+        self.assertNotIn("changes nothing now", "\n".join(said))
+        self.assertEqual((self.state(fix)["state"], self.state(a)["state"]), ("landed", "landed"), log)
+        self.assertEqual(self.subjects()[:2], ["Add hold", "Add fix"], log)
+        self.assertEqual(self.gates(), 2, log)
+        self.assertIn(mq.UNGATED, run(self.repo, "git", "log", "-1", "--format=%B", "origin/main~1"))
+        self.assertIn(f"gate: stopped before it started, as {fix} lands first without the gate", log)
+
+    def test_another_option_of_a_testing_entry_says_how_to_land_it_ungated(self):
+        """--no-gate alone, given again to an entry in its round, changes nothing, and says what would."""
+        self.commit("fix", "fix")
+        [fix] = self.add("fix")
+        queue = mq.Queue(self.repo)
+        queue.mark([{"id": fix}], mq.TESTING)
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out), contextlib.redirect_stdout(io.StringIO()):
+            mq.promote(queue, {"id": fix}, {"noGate": True, "aheadWhy": self.WHY})
+        self.assertIn(f"{fix} is testing, so --no-gate changes nothing now", out.getvalue())
+        self.assertIn(f"give --front and --no-gate together, which take it out of a round whose gate waits to start, "
+                      f"or run `qk queue remove {fix}` and land it again with --no-gate", out.getvalue())
+        self.assertFalse(self.state(fix).get("noGate"))
+
     def test_it_waits_for_a_gate_that_runs_and_status_says_so(self):
         self.commit("hold", "a"); self.commit("fix", "fix")
         [a] = self.add("a")
