@@ -4365,8 +4365,14 @@ class RemoteTests(unittest.TestCase):
                 dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
                                                "run", "suites"], stdout=output, stderr=subprocess.STDOUT)
             try:
-                self.until(lambda: "holds a place in fake's queue" in log.read_text() or dispatcher.poll() is not None,
-                           "the lane took no place on another Mac")
+                # The place comes only after a whole offer to fake, a wait here and a second offer, about 20 s of
+                # fixed waits and sends on an idle Mac, so a 60 s deadline read once ran out on a loaded one
+                # (vocaro/queuekeeper#218). Bound a stall instead, watching the sends, fake's home and the log.
+                progress = waiting.combined(waiting.files(self.project, self.toolkit, self.home / remote.ROOT),
+                                            lambda: log.stat().st_size)
+                placed = "holds a place in fake's queue"
+                waiting.wait_until(lambda: placed in log.read_text() or dispatcher.poll() is not None, progress, stall=60)
+                self.assertIn(placed, log.read_text(), "the lane took no place on another Mac")
                 self.assertIsNone(dispatcher.poll(), log.read_text())
                 self.assertEqual(len(self.places_there()), 1)
                 # Killed, it says nothing more: its connection ends, and the holder takes the place out.
