@@ -62,6 +62,19 @@ class EntryIdentifiers(Fixture):
         self.assertRegex(first, r"^qk\d{4}-fix-layout$")
         self.assertEqual(self.state(first)["branch"], "codex/fix-layout")
 
+    def test_an_entry_records_the_coding_agent_whose_session_queued_it(self):
+        sessions = ("CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
+        self.commit("a.txt", "fix-layout")
+        with patch.dict(os.environ, {"CODEX_THREAD_ID": "thread-7"}):
+            for name in sessions[:2]: os.environ.pop(name, None)
+            first, = self.add("fix-layout")
+        self.assertEqual((self.state(first)["agent"], self.state(first)["agentSession"]), ("codex", "thread-7"))
+        self.commit("b.txt", "by-hand")
+        with patch.dict(os.environ, {}):
+            for name in sessions: os.environ.pop(name, None)
+            second, = self.add("by-hand")
+        self.assertNotIn("agent", self.state(second))
+
 
 class Landing(Fixture):
     def test_advisory_queue_read_error_preserves_wait_status(self):

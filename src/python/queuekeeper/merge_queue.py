@@ -1943,7 +1943,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     message = text(root, "log", "--format=%B", f"{base}..{tip}")
     entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": subject, "submitted": now, "state": QUEUED,
-             "directory": str(root), **({"replays": replays} if merges else {}), **flags}
+             "directory": str(root), **resources.coding_agent(), **({"replays": replays} if merges else {}), **flags}
     with queue.locked():
         # Closed since the check above: Queue.close takes this lock, so no entry is saved once it has returned.
         closure = queue.closed()

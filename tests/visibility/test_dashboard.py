@@ -280,14 +280,21 @@ class Panels(Fixture):
         self.read_farm()
         found = queue.flow(state, gates, now)
         self.assertEqual(found["agents"], [
-            {"name": "claude", "waiting": 1, "testing": 1}, {"name": "ann", "waiting": 1, "testing": 0},
-            {"name": "bob", "waiting": 1, "testing": 0}, {"name": "codex", "waiting": 0, "testing": 1},
+            {"name": "Claude", "waiting": 1, "testing": 1}, {"name": "ann", "waiting": 1, "testing": 0},
+            {"name": "bob", "waiting": 1, "testing": 0}, {"name": "Codex", "waiting": 0, "testing": 1},
             {"name": "2 more", "waiting": 2, "testing": 0, "more": True}])
         self.assertEqual(found["macs"], [
             {"name": "this Mac (desk)", "role": "here", "state": "observed", "used": 2, "most": 7, "gates": ["batch"]},
             {"name": "build", "role": "second", "state": "unknown", "used": 0, "most": 0, "gates": ["stacked"]}])
         self.assertEqual(found["back"], {"agent": "zed", "id": "new", "subject": "Z", "state": "conflict", "settled": now - 60})
-        self.assertEqual([queue.agent(branch) for branch in ("claude/a/b", "main", "/lead", None)], ["claude", "other", "other", "other"])
+        self.assertEqual([queue.agent({"branch": branch}) for branch in ("claude/a/b", "codex/x", "ann/x", "main", "/lead", None)],
+                         ["Claude", "Codex", "ann", "Person", "Person", "Person"])
+        # The agent a submission recorded comes first, then the agent whose worktree it came from, then the prefix.
+        self.assertEqual(queue.agent({"agent": "codex", "directory": "/r/.claude/worktrees/x", "branch": "ann/x"}), "Codex")
+        self.assertEqual(queue.agent({"directory": "/r/.claude/worktrees/agent-a5", "branch": "worktree-agent-a5"}), "Claude")
+        self.assertEqual(queue.agent({"directory": "/u/.codex/worktrees/de6d/r", "branch": None}), "Codex")
+        self.assertEqual(queue.agent({"agent": "unknown", "directory": "/r", "branch": "ann/x"}), "ann")
+        self.assertEqual(queue.agent(None), "Person")
         self.assertEqual(queue.data(self.one, {})["flow"]["agents"], [])
 
     def test_each_mac_is_drawn_by_its_kind_which_a_battery_tells_and_a_model_alone_does_not(self):
@@ -792,8 +799,8 @@ class EveryRepository(Fixture):
         self.assertEqual(found["flow"]["queues"], [
             {"name": "alpha", "waiting": 1, "testing": 1, "held": False, "worker": True},
             {"name": "beta", "waiting": 1, "testing": 0, "held": False, "worker": True}])
-        self.assertEqual(found["flow"]["agents"], [{"name": "claude", "waiting": 1, "testing": 1, "queues": ["alpha"]},
-                                                   {"name": "codex", "waiting": 1, "testing": 0, "queues": ["beta"]}])
+        self.assertEqual(found["flow"]["agents"], [{"name": "Claude", "waiting": 1, "testing": 1, "queues": ["alpha"]},
+                                                   {"name": "Codex", "waiting": 1, "testing": 0, "queues": ["beta"]}])
         self.assertEqual(found["flow"]["macs"][0]["gates"], [{"repository": "alpha", "role": "batch"}])
         self.assertEqual((found["flow"]["back"]["id"], found["flow"]["back"]["repository"]), ("a0", "alpha"))
         rows = {row["name"]: row for row in found["repositories"]}

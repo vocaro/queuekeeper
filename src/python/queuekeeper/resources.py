@@ -207,6 +207,21 @@ def work_origin(directory=None):
     return clean_origin(found)
 
 
+# The coding agents whose sessions name themselves in the environment of what they run, each with the variables that
+# name its session, first the one to record.
+CODING_AGENTS = {"claude": ("CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_SESSION_ID"), "codex": ("CODEX_THREAD_ID",)}
+
+
+def coding_agent(environment=None):
+    """The coding agent whose session runs this command, as {"agent": its key in CODING_AGENTS, "agentSession": its
+    session}, read from the environment that session gave it; {} when none did, as for a person at a terminal."""
+    environment = os.environ if environment is None else environment
+    for name, variables in CODING_AGENTS.items():
+        session = next((environment[variable] for variable in variables if environment.get(variable)), None)
+        if session: return {"agent": name, "agentSession": session[:ORIGIN_LIMIT]}
+    return {}
+
+
 def whence(origin):
     """An origin as a report line's words, or None."""
     origin = clean_origin(origin)

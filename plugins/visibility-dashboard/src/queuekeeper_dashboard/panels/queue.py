@@ -70,10 +70,24 @@ def detail(repository, query, state):
     return {"kind": "gate", "gate": gate(role, found), "round": current.get("round"), "entries": entries}
 
 
-def agent(branch):
-    """Whose entry this is, by its branch's prefix: claude/fix-it is claude's. A branch with no prefix is "other"."""
-    branch = str(branch or "")
-    return branch.split("/", 1)[0] if "/" in branch.strip("/") else "other"
+# Each coding agent's name as the flow map shows it, by its key in resources.CODING_AGENTS, and where its worktrees live.
+AGENT_NAMES = {"claude": "Claude", "codex": "Codex"}
+AGENT_WORKTREES = {"claude": "/.claude/worktrees/", "codex": "/.codex/worktrees/"}
+PERSON = "Person"
+
+
+def agent(entry):
+    """Who submitted entry, as the flow map names them: the coding agent its submission recorded (resources.coding_agent);
+    for one submitted before entries recorded it, the agent whose worktree it was submitted from; then its branch's
+    prefix, claude/fix-it being Claude's and ann/fix-it ann's; and a Person for a branch with none."""
+    entry = entry or {}
+    if entry.get("agent") in AGENT_NAMES: return AGENT_NAMES[entry["agent"]]
+    directory = str(entry.get("directory") or "") + "/"
+    found = next((key for key, where in AGENT_WORKTREES.items() if where in directory), None)
+    if found: return AGENT_NAMES[found]
+    branch = str(entry.get("branch") or "")
+    prefix = branch.split("/", 1)[0] if "/" in branch.strip("/") else None
+    return AGENT_NAMES.get(prefix, prefix) if prefix else PERSON
 
 
 def macs():
@@ -96,9 +110,9 @@ def flow(state, gates, now):
     counts, current = {}, set((state.get("round") or {}).get("entries") or [])
     for found in state.get("waiting") or []:
         testing = found.get("id") in current or found.get("state") in ("testing", "passed")
-        one = counts.setdefault(agent(found.get("branch")), {"waiting": 0, "testing": 0})
+        one = counts.setdefault(agent(found), {"waiting": 0, "testing": 0})
         one["testing" if testing else "waiting"] += 1
-    ranked = sorted(counts.items(), key=lambda item: (-sum(item[1].values()), item[0]))
+    ranked = sorted(counts.items(), key=lambda item: (-sum(item[1].values()), item[0].casefold()))
     agents = [{"name": name, **one} for name, one in ranked[:AGENTS]]
     if ranked[AGENTS:]:
         rest = [one for _, one in ranked[AGENTS:]]
@@ -112,7 +126,7 @@ def flow(state, gates, now):
     back = next((found for found in reversed(state.get("recent") or []) if found.get("state") in ("failed", "conflict")
                  and now - (found.get("settled") or 0) < NEWS), None)
     return {"agents": agents, "macs": farm,
-            "back": {"agent": agent(back.get("branch")), "id": back.get("id"), "subject": back.get("subject"),
+            "back": {"agent": agent(back), "id": back.get("id"), "subject": back.get("subject"),
                      "state": back.get("state"), "settled": back.get("settled")} if back else None}
 
 
@@ -353,17 +367,17 @@ def combine(parts, now=None):
         queues.append({"name": name, "waiting": len(waiting), "testing": len(mine), "held": bool(found.get("held")),
                        "worker": bool(found.get("worker"))})
         for one, testing in [*((one, True) for one in mine), *((one, False) for one in waiting)]:
-            agent_ = counts.setdefault(agent(one.get("branch")), {"waiting": 0, "testing": 0, "queues": []})
+            agent_ = counts.setdefault(agent(one), {"waiting": 0, "testing": 0, "queues": []})
             agent_["testing" if testing else "waiting"] += 1
             if name not in agent_["queues"]: agent_["queues"].append(name)
         for one in found.get("recent") or []:
             if one.get("state") in ("failed", "conflict") and now - (one.get("settled") or 0) < NEWS \
                     and (back is None or one["settled"] > back["settled"]):
-                back = {"agent": agent(one.get("branch")), "id": one.get("id"), "subject": one.get("subject"),
+                back = {"agent": agent(one), "id": one.get("id"), "subject": one.get("subject"),
                         "state": one.get("state"), "settled": one.get("settled"), "repository": name}
     if farm_line: lines.append(farm_line)
     lines.sort(key=lambda line: line.get("level") != "danger")
-    ranked = sorted(counts.items(), key=lambda item: (-(item[1]["waiting"] + item[1]["testing"]), item[0]))
+    ranked = sorted(counts.items(), key=lambda item: (-(item[1]["waiting"] + item[1]["testing"]), item[0].casefold()))
     agents = [{"name": name, **one} for name, one in ranked[:AGENTS]]
     if ranked[AGENTS:]:
         rest = [one for _, one in ranked[AGENTS:]]

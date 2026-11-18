@@ -568,6 +568,13 @@ class OriginTests(Namespace):
             self.assertEqual(holder["origin"], admission.origin)
             self.assertEqual(json.loads(self.guard.read_text())["owners"][admission.identity]["origin"], admission.origin)
 
+    def test_the_coding_agent_is_the_session_its_environment_names(self):
+        self.assertEqual(resources.coding_agent({"CLAUDE_CODE_SESSION_ID": "s", "CLAUDE_CODE_HOST_SESSION_ID": "local_h"}),
+                         {"agent": "claude", "agentSession": "local_h"})
+        self.assertEqual(resources.coding_agent({"CODEX_THREAD_ID": "t", "CLAUDE_CODE_SESSION_ID": ""}),
+                         {"agent": "codex", "agentSession": "t"})
+        self.assertEqual(resources.coding_agent({"PATH": "/usr/bin"}), {})
+
     def test_work_sent_from_another_mac_names_the_senders_origin_and_a_bad_one_reads_past(self):
         with patch.dict(os.environ, {resources.ORIGIN: json.dumps({**self.SENT, "extra": 1, "branch": 7})}):
             self.assertEqual(resources.work_origin(), {k: v for k, v in self.SENT.items() if k != "branch"})

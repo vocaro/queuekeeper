@@ -68,7 +68,7 @@
     // Agents, each with an edge to every queue it has entries in
     if (!agents.length) nodes.push(box(ax, first(1), aw, NODE, "idle"), text(ax + 12, first(1) + 30, "Nobody has an entry waiting", "sub"));
     agents.forEach((one, index) => {
-      const y = first(agents.length) + index * PITCH, kind = one.back ? "danger" : one.more || one.name === "other" ? "" : hueOf(one.name);
+      const y = first(agents.length) + index * PITCH, kind = one.back ? "danger" : one.more || one.name === "Person" ? "" : hueOf(one.name);
       const said = one.back ? (back.state === "conflict" ? "conflicted " : "came back ") + QK.ago(back.settled)
         : [one.testing ? one.testing + " testing" : null, one.waiting ? one.waiting + " waiting" : null].filter(Boolean).join(" · ");
       const drawn = [box(ax, y, aw, NODE, one.back ? "back" : ""), svg("circle", { cx: ax + 16, cy: y + 18, r: 5, class: "agent " + kind }),
