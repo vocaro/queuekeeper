@@ -2039,6 +2039,11 @@ Limits:
 
 `tests/host_isolation.py` replaces `cli.fix_hosts`, so no doctor test updates the real Mac of the farm,
 and a test's farm is its own namespace's, with no Mac unless the test writes a fake one into it.
+Nor does a test reach a real Mac by the name it gives that fake one (vocaro/queuekeeper#231): `host_isolation` puts
+stand-ins for `ssh` and `dns-sd` first on `PATH`, for the suite and every process it starts, so every connection,
+git's over ssh included, fails as one to a name that does not resolve, and Bonjour lists no Mac; in the suite's own
+process no name but this Mac's own resolves. A test that leaves a remote call unpatched therefore fails the same way
+on every Mac, as two `RoutingTests` failed only on build-host until d088e281 (vocaro/queuekeeper#228).
 
 ### Setting up another Mac
 

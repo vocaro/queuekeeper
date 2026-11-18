@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -377,6 +378,45 @@ class HostIsolationTests(unittest.TestCase):
 
 TOOLKIT = TESTS.parent
 # A variable of the toolkit's, as its code names it.
+class FarmReachTests(unittest.TestCase):
+    """No test reaches a real Mac by a name it gives its farm, on any Mac (vocaro/queuekeeper#231): every connection
+    fails as one to a name that does not resolve, as on build-host, here and in any process a test starts."""
+
+    def test_ssh_and_git_over_ssh_fail_as_for_a_name_that_does_not_resolve(self):
+        for command in (["ssh", "-T", "-o", "BatchMode=yes", "build-host", "true"],
+                        [sys.executable, "-c", "import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:]).returncode)",
+                         "ssh", "me@build-host", "true"]):
+            with self.subTest(command=command[0]):
+                ran = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=stretched(30))
+                self.assertEqual(ran.returncode, 255)
+                self.assertEqual(host_isolation.remote.last_line(ran.stderr),
+                                 "ssh: Could not resolve hostname build-host: nodename nor servname provided, or not known")
+        with tempfile.TemporaryDirectory() as directory:
+            listed = subprocess.run(["git", "ls-remote", "build-host:repository.git"], cwd=directory, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=stretched(30))
+            self.assertNotEqual(listed.returncode, 0)
+            self.assertIn("Could not resolve hostname build-host", listed.stderr)
+
+    def test_a_farm_mac_by_name_is_unresolved_and_unreachable_and_never_searched_for(self):
+        remote = host_isolation.remote
+        self.assertEqual(remote.ssh_settings("me@build-host")["hostname"], "build-host")
+        found = remote.connection("build-host", 1)
+        self.assertEqual(found["unresolved"], "[Errno 8] nodename nor servname provided, or not known")
+        with self.assertRaises(remote.Unreachable) as raised:
+            remote.reachable("build-host")
+        self.assertIn("Could not resolve hostname build-host", raised.exception.problem)
+        # A .local name is searched for over Bonjour, which lists no Mac.
+        self.addCleanup(remote.UNFOUND.clear)
+        with self.assertRaises(remote.Unreachable) as raised:
+            remote.reachable("build-host.local")
+        self.assertIn("no other Mac offers ssh", raised.exception.problem)
+
+    def test_this_macs_own_names_and_addresses_still_resolve(self):
+        for name in ("localhost", "127.0.0.1", "::1", None):
+            with self.subTest(name=name):
+                self.assertTrue(socket.getaddrinfo(name, 80 if name else "http", type=socket.SOCK_STREAM))
+
+
 VARIABLE = re.compile(rf"\b(?:{'|'.join(host_isolation.PREFIXES)})[A-Z0-9_]*[A-Z0-9]\b")
 # Prints the toolkit's variables, with their values, that a process importing host_isolation is left with.
 LEFT = ("import json, os, sys; sys.path.insert(0, sys.argv[1]); import host_isolation; print(json.dumps({name: value "

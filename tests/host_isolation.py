@@ -15,7 +15,8 @@ would be refused inside it.
 
 Every lane is admitted and offered to the farm's Macs first, and the farm is the namespace's own (queuekeeper.farm),
 so it has no Mac: no lane a test runs, in this process or a child, reaches a real Mac of the owner's farm. A test of
-a farm Mac writes its fake one into its farm (test_support.farm).
+a farm Mac writes its fake one into its farm (test_support.farm), and no connection to it, by ssh or name
+resolution, reaches a real Mac of that name (STAND_INS, vocaro/queuekeeper#231).
 
 `qk doctor` also fixes the Macs itself: it evens out their runtimes, deleting or copying them, and
 shuts down stale pool simulators (cli.fix_hosts). Most doctor tests compare this Mac with the real
@@ -26,11 +27,13 @@ is set to off, so no run a test makes does.
 QUEUEKEEPER_EVIDENCE_RETRY is set to off, so no queuekeeper a test runs offloads this Mac's evidence archives.
 """
 import atexit
+import ipaddress
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -228,6 +231,55 @@ os.environ[cli.REAP_SWITCH] = "off"
 # test's own run makes its own (pins).
 os.environ[offload_host.PINS_DIRECTORY] = str(ROOT / "pins")
 os.environ.pop(offload_host.PIN_VARIABLE, None)
+
+
+# Nor does any test reach a real Mac by a name it gives its farm (vocaro/queuekeeper#231). A test that writes a Mac named
+# build-host into its farm and leaves a remote call unpatched reached the real second Mac from the owner's workstation,
+# where the name resolves, and failed on build-host itself, where it does not: two RoutingTests passed on one Mac and were
+# sent back from the other (vocaro/queuekeeper#228). So every Mac fails such a test as build-host did. An ssh stand-in
+# is first on PATH, for this process and every queuekeeper a test starts: `ssh -G` answers as for a name no
+# ~/.ssh/config names, and every connection fails as one to a name that does not resolve, in ssh's own words; so does
+# git over ssh. A dns-sd stand-in lists no Mac offering ssh over Bonjour, so no rename is found. In this process no
+# name but this Mac's own resolves (UNRESOLVED), as remote.connection reads it. A test of a farm Mac fakes the call it
+# makes, or puts its own stand-in before these; a test of resolution itself calls RESOLVE, the real getaddrinfo.
+STAND_INS = ROOT / "no-farm"
+STAND_INS.mkdir()
+executable(STAND_INS / "ssh", """#!/bin/sh
+# tests/host_isolation.py's ssh: no test reaches a real Mac (vocaro/queuekeeper#231).
+if [ "$1" = "-G" ]; then
+    printf 'hostname %s\\nport 22\\naddressfamily any\\n' "${2##*@}"
+    exit 0
+fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -[BbcDEeFIiJLlmOoPpQRSWw]) shift 2 ;;
+        -*) shift ;;
+        *) break ;;
+    esac
+done
+echo "tests/host_isolation.py: a test reaches no real Mac; fake this connection (vocaro/queuekeeper#231)" >&2
+echo "ssh: Could not resolve hostname ${1##*@}: nodename nor servname provided, or not known" >&2
+exit 255
+""")
+executable(STAND_INS / "dns-sd", "#!/bin/sh\n# tests/host_isolation.py's dns-sd: no Mac offers ssh (vocaro/queuekeeper#231).\nexit 0\n")
+os.environ["PATH"] = os.pathsep.join([str(STAND_INS), *[entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+                                                       if entry and entry != str(STAND_INS)]])
+
+RESOLVE = socket.getaddrinfo
+LOCAL_NAMES = {None, "", "localhost", "localhost."}
+UNRESOLVED = "nodename nor servname provided, or not known"
+
+
+def resolved(host, *arguments, **options):
+    """getaddrinfo for this Mac's own names and numeric addresses; any other name does not resolve here."""
+    name = host.decode() if isinstance(host, bytes) else host
+    if name not in LOCAL_NAMES and not name.lower().endswith(".localhost"):
+        try: ipaddress.ip_address(name.split("%")[0])
+        except ValueError: raise socket.gaierror(socket.EAI_NONAME, UNRESOLVED) from None
+    return RESOLVE(host, *arguments, **options)
+
+
+socket.getaddrinfo = resolved
 
 
 def unfixed(root, hosts):
