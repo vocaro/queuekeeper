@@ -189,10 +189,42 @@ class Verdict(unittest.TestCase):
     def test_entries_coming_back_is_slow_and_doctors_other_findings_need_a_look(self):
         found = assess(state({"began": NOW - 60}), events=journal(back=3))
         self.assertEqual((found["verdict"], levels(found)["cameBack"]), ("slow", "warning"))
-        self.assertIn("3 of the last 4 came back", found["sentence"])
+        self.assertIn("3 of the last 4 commits came back (3 failed the lanes): a test, main or a Mac may be at fault",
+                      found["sentence"])
         found = assess(state({"began": NOW - 60}), findings=[{"signal": "refused", "diagnosis": "d", "remedy": "r"}])
         self.assertEqual((found["verdict"], found["label"], found["exitStatus"]), ("slow", "Needs a look", health.ATTENTION))
         self.assertIn("Doctor has 1 finding (refused).", found["sentence"])
+
+
+class CameBack(unittest.TestCase):
+    """The came-back sign counts commits, not tries (vocaro/queuekeeper#219)."""
+
+    def settled(self, *tries):
+        return [{"kind": f"entry.{kind}", "entry": f"qk{index}", "tip": tip, "time": NOW - 600 + index}
+                for index, (tip, kind) in enumerate(tries)]
+
+    def test_one_commit_added_again_until_it_lands_counts_once(self):
+        # Pagepour's 2026-11-17: one commit came back three times, landed on its fourth try, and two after it landed.
+        found = health.came_back(self.settled(("a", "landed"), ("b", "failed"), ("b", "failed"), ("b", "failed"),
+                                              ("b", "landed"), ("c", "landed"), ("d", "landed")))
+        self.assertEqual((found["level"], found["text"]), ("ok", "1 of the last 4 commits"))
+
+    def test_three_commits_that_came_back_warn_and_say_how(self):
+        found = health.came_back(self.settled(("a", "failed"), ("a", "failed"), ("b", "conflict"), ("c", "failed"),
+                                              ("d", "landed")))
+        self.assertEqual((found["level"], found["text"]), ("warning", "3 of the last 4 commits came back (2 failed the "
+                                                           "lanes, 1 conflicted with main): a test, main or a Mac may "
+                                                           "be at fault"))
+        found = health.came_back(self.settled(("a", "conflict"), ("b", "conflict"), ("c", "conflict")))
+        self.assertEqual(found["text"], "3 of the last 3 commits came back (3 conflicted with main)")
+
+    def test_the_window_is_the_last_commits_by_their_last_try_and_events_without_a_tip_count_by_entry(self):
+        # a's retry settles last, so a stays among the last six while the oldest commit, l0, falls out.
+        tries = [("a", "failed")] + [(f"l{index}", "landed") for index in range(6)] + [("a", "failed")]
+        found = health.came_back(self.settled(*tries))
+        self.assertEqual(found["text"], "1 of the last 6 commits")
+        older = [{"kind": "entry.failed", "entry": "qk1"}, {"kind": "entry.failed", "entry": "qk2"}]
+        self.assertEqual(health.came_back(older)["text"], "2 of the last 2 commits")
 
 
 class Command(unittest.TestCase):

@@ -75,8 +75,9 @@ QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
     "queued", "testing", "passed", "landed", "failed", "conflict", "removed"
 # Passed is a batch whose lanes passed and whose push has not landed it: Worker.keep and Worker.push_passed.
 WAITING = {QUEUED, TESTING, PASSED}
-# What an entry's record gives the event of its final state (Queue.settle), where it has them.
-EVENT_FIELDS = ("why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated")
+# What an entry's record gives the event of its final state (Queue.settle), where it has them. The tip lets a reader,
+# such as health.came_back, count one commit added again as one (vocaro/queuekeeper#219).
+EVENT_FIELDS = ("tip", "why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated")
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a

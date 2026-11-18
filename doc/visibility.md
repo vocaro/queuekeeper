@@ -205,10 +205,10 @@ Every event has these keys, and its kind's own beside them:
 | Kind | When | Its own keys |
 |---|---|---|
 | `entry.queued` | A commit range joined the queue | `entry`, `subject`, `commits`, `branch`, `note`, `front`, `noGate`, `aheadWhy` |
-| `entry.landed` | An entry is on `main` | `entry`, `subject`, `landedAs`, `landedTip`, `landedCommits`, `docsOnly`, `ungated` |
-| `entry.failed` | An entry came back from its gate | `entry`, `subject`, `why`, `log` |
-| `entry.conflict` | An entry came back with a conflict | `entry`, `subject`, `why` |
-| `entry.removed` | An entry was taken out | `entry`, `subject` |
+| `entry.landed` | An entry is on `main` | `entry`, `subject`, `tip`, `landedAs`, `landedTip`, `landedCommits`, `docsOnly`, `ungated` |
+| `entry.failed` | An entry came back from its gate | `entry`, `subject`, `tip`, `why`, `log` |
+| `entry.conflict` | An entry came back with a conflict | `entry`, `subject`, `tip`, `why` |
+| `entry.removed` | An entry was taken out | `entry`, `subject`, `tip` |
 | `entries.testing` | Entries went under test | `entries` |
 | `entries.requeued` | Entries went back to waiting | `entries` |
 | `round.began` | The worker started a round | `round`, `head`, `base`, `entries`, `bisect`, `adopted` |

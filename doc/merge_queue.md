@@ -228,7 +228,10 @@ waiting should land. It judges five signs:
 - **Pace**: how long since an entry last landed.
 - **Macs**: whether each Mac answers now and has the memory to work.
 - **Devices**: whether a device a gate waits for is connected.
-- **Came back**: how many of the last six entries came back.
+- **Came back**: how many of the last six commits settled came back, failed or with a conflict.
+  A commit added again after it came back counts once. It warns from three, saying how many failed
+  the lanes and how many conflicted; a failure may be a test's, `main`'s or a Mac's, which the journal
+  cannot yet tell apart, so the entries' logs say which.
 
 It also counts what `qk queue doctor` finds. A sign whose reading is missing, failed or more than
 90 seconds old is unknown, never healthy. When nothing shows a problem but a sign is unknown,

@@ -175,7 +175,7 @@ class QueueEvents(test_merge_queue.Fixture):
         with patch("builtins.print"): self.work()
         self.assertEqual(self.state(identifier)["state"], mq.FAILED)
         failed, = self.events(kinds=["entry.failed"])
-        self.assertEqual(failed["entry"], identifier)
+        self.assertEqual((failed["entry"], failed["tip"]), (identifier, self.state(identifier)["tip"]))
         self.assertEqual((failed["why"], failed["log"]), (self.state(identifier)["why"], self.state(identifier)["log"]))
         self.assertEqual([event["status"] for event in self.events(kinds=["gate.ended"])][-1], 1)
         self.assertEqual(self.kinds(kinds=["entry.landed", "batch.pushed"]), [])
