@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 932 326" width="932" height="326" role="img">
+<title>Agents&#x27; entries flow through the queues and the gates on the farm&#x27;s Macs to main</title>
+<style>
+svg {
+  --bg: #f6f7f9; --card: #ffffff; --soft: #eff1f5; --text: #141821; --muted: #5f6877; --line: #dde1e8;
+  --accent: #1f6fc2; --accent-bg: #e6f0fa; --good: #1a7f37; --good-bg: #e2f5e6; --warn: #8a5a00; --warn-bg: #fbf0d6;
+  --bad: #b3261e; --bad-bg: #fbe9e7; --mark: #d99a1c; --note: #6b4fbb; --note-bg: #f1edfb; --hit: #ffe58a;
+  /* Twelve hues for repositories and agents, in an order that keeps neighbors apart (QK.hues). */
+  --p1: #7a5af5; --p2: #0e9384; --p3: #d4570b; --p4: #c11574; --p5: #4e5ba6; --p6: #5f8f00;
+  --p7: #0b7fd0; --p8: #a35d1f; --p9: #d6609f; --p10: #b38600; --p11: #9b4dca; --p12: #7c6a52;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+    --bg: #0b0e15; --card: #121722; --soft: #1d2433; --text: #e9ecf2; --muted: #9aa3b5; --line: #2a3244;
+    --accent: #7db7f2; --accent-bg: #17304d; --good: #7dea8a; --good-bg: #163a23; --warn: #f0c36a; --warn-bg: #3f3212;
+    --bad: #f2a199; --bad-bg: #47201d; --mark: #e0a73a; --note: #c4b2f5; --note-bg: #272040; --hit: #6b5512;
+    --p1: #a99bf8; --p2: #2ed3b7; --p3: #f7a35c; --p4: #f670c7; --p5: #8098f9; --p6: #a6d34d;
+    --p7: #62b6f7; --p8: #d49a6a; --p9: #f5a3cf; --p10: #f2c94c; --p11: #c99cf2; --p12: #bfae94;
+  }
+svg { font-family: -apple-system, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+.card { fill: var(--card); stroke: var(--line); }
+text { fill: var(--text); font-size: 12px; }
+text.head { fill: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 0.07em; }
+text.name { font-weight: 600; }
+text.sub { fill: var(--muted); font-size: 11px; }
+text.big { font-size: 28px; font-weight: 600; }
+text.big.small { font-size: 20px; }
+text.danger { fill: var(--bad); }
+text.warning { fill: var(--warn); }
+text.good { fill: var(--good); }
+.node { fill: var(--soft); stroke: var(--line); }
+.node.running { stroke: var(--accent); stroke-width: 1.5; }
+.node.waiting { stroke: var(--mark); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.node.idle { fill: none; stroke-dasharray: 5 4; }
+.node.back { fill: var(--bad-bg); stroke: var(--bad); stroke-dasharray: 4 3; }
+.node.held { stroke: var(--bad); stroke-width: 1.5; }
+.node.main { fill: var(--good-bg); stroke: var(--good); }
+a:hover .node, a:focus-visible .node { stroke: var(--accent); stroke-width: 2; }
+a:focus { outline: none; }
+.cell { fill: none; stroke: var(--muted); stroke-dasharray: 2 2; }
+.cell.held { fill: var(--accent); stroke: none; }
+.edge { fill: none; stroke: var(--line); stroke-width: 1.75; }
+.edge.live { stroke: var(--accent); stroke-opacity: 0.6; stroke-width: 2.25; }
+.edge.land { stroke: var(--good); stroke-opacity: 0.7; stroke-dasharray: 5 4; }
+.edge.back { stroke: var(--bad); stroke-opacity: 0.8; stroke-dasharray: 5 4; }
+.moving { fill: var(--accent); }
+.agent { fill: var(--muted); }
+.agent.danger { fill: var(--bad); }
+.p1 { color: var(--p1); }
+.p2 { color: var(--p2); }
+.p3 { color: var(--p3); }
+.p4 { color: var(--p4); }
+.p5 { color: var(--p5); }
+.p6 { color: var(--p6); }
+.p7 { color: var(--p7); }
+.p8 { color: var(--p8); }
+.p9 { color: var(--p9); }
+.p10 { color: var(--p10); }
+.p11 { color: var(--p11); }
+.p12 { color: var(--p12); }
+.agent[class*=" p"], .moving[class*=" p"] { fill: currentColor; }
+.edge.submit.live[class*=" p"] { stroke: currentColor; }
+@media (prefers-reduced-motion: reduce) { .moving { display: none; } }
+</style>
+<rect class="card" x="-15.5" y="-15.5" width="931" height="325" rx="12"/>
+<path id="flow-edge-1" class="edge submit p3 live" d="M168 84 C 191 84, 191 115, 214 115"></path><path id="flow-edge-2" class="edge submit p3 live" d="M168 84 C 191 84, 191 177, 214 177"></path><path id="flow-edge-3" class="edge submit p9 live" d="M168 146 C 191 146, 191 53, 214 53"></path><path id="flow-edge-4" class="edge submit  live" d="M168 208 C 191 208, 191 115, 214 115"></path><path id="flow-edge-5" class="edge test live" d="M350 53 C 373 53, 373 53, 396 53"></path><path id="flow-edge-6" class="edge test live" d="M350 115 C 373 115, 373 115, 396 115"></path><path id="flow-edge-7" class="edge test" d="M350 115 C 373 115, 373 177, 396 177"></path><path id="flow-edge-8" class="edge test" d="M350 177 C 373 177, 373 239, 396 239"></path><path id="flow-edge-9" class="edge test live" d="M572 53 C 595 53, 595 115, 618 115"></path><path id="flow-edge-10" class="edge test live" d="M572 115 C 595 115, 595 177, 618 177"></path><path id="flow-edge-11" class="edge land" d="M794 146 C 817 146, 817 146, 840 146"></path><path class="edge back" d="M484 264 C 484 288, 228 288, 168 161"></path><circle class="moving submit p3" r="3.5"><animateMotion dur="1.6s" begin="-1.22s" repeatCount="indefinite"><mpath href="#flow-edge-1"></mpath></animateMotion></circle><circle class="moving submit p3" r="3.5"><animateMotion dur="2s" begin="-0.42s" repeatCount="indefinite"><mpath href="#flow-edge-2"></mpath></animateMotion></circle><circle class="moving submit p9" r="3.5"><animateMotion dur="2.4000000000000004s" begin="-2.02s" repeatCount="indefinite"><mpath href="#flow-edge-3"></mpath></animateMotion></circle><circle class="moving submit " r="3.5"><animateMotion dur="1.6s" begin="-1.22s" repeatCount="indefinite"><mpath href="#flow-edge-4"></mpath></animateMotion></circle><circle class="moving test" r="3.5"><animateMotion dur="2s" begin="-0.42s" repeatCount="indefinite"><mpath href="#flow-edge-5"></mpath></animateMotion></circle><circle class="moving test" r="3.5"><animateMotion dur="2.4000000000000004s" begin="-2.02s" repeatCount="indefinite"><mpath href="#flow-edge-6"></mpath></animateMotion></circle><circle class="moving test" r="3.5"><animateMotion dur="2.4000000000000004s" begin="-2.02s" repeatCount="indefinite"><mpath href="#flow-edge-9"></mpath></animateMotion></circle><circle class="moving test" r="3.5"><animateMotion dur="1.6s" begin="-1.22s" repeatCount="indefinite"><mpath href="#flow-edge-10"></mpath></animateMotion></circle><text x="0" y="12" class="head">AGENTS</text><text x="214" y="12" class="head">QUEUES</text><text x="396" y="12" class="head">ROUNDS</text><text x="618" y="12" class="head">FARM</text><text x="840" y="12" class="head">MAIN</text><rect x="214" y="28" width="136" height="50" rx="8" class="node running"></rect><circle cx="228" cy="46" r="4.5" class="agent p4"></circle><text x="238" y="50" class="name">orbit-game</text><text x="226" y="68" class="sub">1 waiting · 1 testi…</text><rect x="214" y="90" width="136" height="50" rx="8" class="node running"></rect><circle cx="228" cy="108" r="4.5" class="agent p3"></circle><text x="238" y="112" class="name">lumen-ios</text><text x="226" y="130" class="sub">2 waiting · 2 testi…</text><rect x="214" y="152" width="136" height="50" rx="8" class="node running"></rect><circle cx="228" cy="170" r="4.5" class="agent p1"></circle><text x="238" y="174" class="name">fieldnotes</text><text x="226" y="192" class="sub">0 waiting · 1 testi…</text><g><rect x="214" y="214" width="136" height="50" rx="8" class="node idle"></rect><text x="226" y="236" class="name">1 idle queue</text><text x="226" y="254" class="sub">nothing waiting</text></g><rect x="0" y="59" width="168" height="50" rx="8" class="node "></rect><circle cx="16" cy="77" r="5" class="agent p3"></circle><text x="28" y="81" class="name">Claude</text><text x="12" y="99" class="sub">3 testing · 1 waiting</text><rect x="0" y="121" width="168" height="50" rx="8" class="node "></rect><circle cx="16" cy="139" r="5" class="agent p9"></circle><text x="28" y="143" class="name">Codex</text><text x="12" y="161" class="sub">1 testing · 1 waiting</text><rect x="0" y="183" width="168" height="50" rx="8" class="node "></rect><circle cx="16" cy="201" r="5" class="agent "></circle><text x="28" y="205" class="name">Person</text><text x="12" y="223" class="sub">1 waiting</text><rect x="396" y="28" width="176" height="50" rx="8" class="node running"></rect><circle cx="410" cy="46" r="4.5" class="agent p4"></circle><text x="420" y="50" class="name">orbit-game</text><text x="562" y="50" class="sub" text-anchor="end">7m 19s</text><text x="408" y="68" class="sub">gate · unit tests, 88 of …</text><rect x="396" y="90" width="176" height="50" rx="8" class="node running"></rect><circle cx="410" cy="108" r="4.5" class="agent p3"></circle><text x="420" y="112" class="name">lumen-ios</text><text x="562" y="112" class="sub" text-anchor="end">4m 20s</text><text x="408" y="130" class="sub">gate · simulator tests, 2…</text><rect x="396" y="152" width="176" height="50" rx="8" class="node waiting"></rect><circle cx="410" cy="170" r="4.5" class="agent p3"></circle><text x="420" y="174" class="name">lumen-ios</text><text x="562" y="174" class="sub" text-anchor="end">4m 8s</text><text x="408" y="192" class="sub warning">Testing ahead · gate · wa…</text><rect x="396" y="214" width="176" height="50" rx="8" class="node waiting"></rect><circle cx="410" cy="232" r="4.5" class="agent p1"></circle><text x="420" y="236" class="name">fieldnotes</text><text x="562" y="236" class="sub" text-anchor="end">1m 43s</text><text x="408" y="254" class="sub warning">gate · waiting for a Mac</text><rect x="618" y="90" width="176" height="50" rx="8" class="node running"></rect><text x="630" y="110" class="name">This Mac</text><text x="784" y="110" class="sub" text-anchor="end">3 of 4</text><rect x="630" y="120" width="10" height="10" rx="2.5" class="cell held"></rect><rect x="643" y="120" width="10" height="10" rx="2.5" class="cell held"></rect><rect x="656" y="120" width="10" height="10" rx="2.5" class="cell held"></rect><rect x="669" y="120" width="10" height="10" rx="2.5" class="cell"></rect><rect x="618" y="152" width="176" height="50" rx="8" class="node running"></rect><text x="630" y="172" class="name">studio.local</text><text x="784" y="172" class="sub" text-anchor="end">4 of 4</text><rect x="630" y="182" width="10" height="10" rx="2.5" class="cell held"></rect><rect x="643" y="182" width="10" height="10" rx="2.5" class="cell held"></rect><rect x="656" y="182" width="10" height="10" rx="2.5" class="cell held"></rect><rect x="669" y="182" width="10" height="10" rx="2.5" class="cell held"></rect><rect x="840" y="111" width="60" height="70" rx="8" class="node main"></rect><text x="870" y="129" class="name good" text-anchor="middle">main</text><text x="870" y="157" class="big small" text-anchor="middle">28</text><text x="870" y="173" class="sub" text-anchor="middle">landed</text>
+</svg>

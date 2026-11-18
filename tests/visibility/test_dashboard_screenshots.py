@@ -74,6 +74,32 @@ class MadeUpData(test_dashboard.Fixture):
         for found in self.script.PANELS["queue"]["round"]["gates"]:
             self.assertLessEqual(set(found), {*queue.GATE, "role", "log", "phase"})
 
+    def test_the_flow_map_is_saved_as_an_svg_of_its_own_whose_dots_move_unless_motion_is_reduced(self):
+        from xml.dom import minidom
+        drawn = ('<main><div class="flow-map"><svg viewBox="0 0 900 200" role="group" aria-label="Agents&#39; entries">'
+                 '<path id="flow-edge-1" class="edge submit live p3" d="M0 0 C 1 1, 2 2, 3 3"></path>'
+                 '<circle class="moving submit p3" r="3.5"><animateMotion dur="1.6s" begin="-0.4s" repeatCount="indefinite">'
+                 '<mpath href="#flow-edge-1"></mpath></animateMotion></circle>'
+                 '<a href="/r/x/queue"><title>Only x</title><rect class="node running" x="0" y="0" width="9" height="9"></rect></a>'
+                 '</svg></div></main>')
+        saved = self.script.flow(drawn, "dark")
+        document = minidom.parseString(saved)
+        root = document.documentElement
+        self.assertEqual((root.getAttribute("viewBox"), root.getAttribute("width")), ("-16 -16 932 232", "932"))
+        self.assertEqual(document.getElementsByTagName("title")[0].firstChild.data, "Agents' entries")
+        self.assertEqual((len(document.getElementsByTagName("a")), len(document.getElementsByTagName("title"))), (0, 1))
+        self.assertEqual(len(document.getElementsByTagName("animateMotion")), 1)
+        style = document.getElementsByTagName("style")[0].firstChild.data
+        # The theme's colors, the Flow rules without the page's box, and the dots stilled only for reduced motion.
+        self.assertIn("--card: #121722", style)
+        self.assertIn(".node.running {", style)
+        self.assertNotIn(".flow-map", style)
+        self.assertIn("@media (prefers-reduced-motion: reduce) { .moving { display: none; } }", style)
+        self.assertNotRegex(style, r"(?m)^\s*\{")  # no rule left without its selector
+        self.assertNotRegex(style.split("@media")[0], r"\.moving\s*\{\s*display: none")
+        self.assertNotIn("--card: #121722", self.script.flow(drawn, "light"))
+        self.assertIsNone(self.script.flow("<main>no map</main>", "dark"))
+
 
 class Served(test_dashboard.Fixture):
     def test_its_server_answers_the_page_and_the_api(self):
