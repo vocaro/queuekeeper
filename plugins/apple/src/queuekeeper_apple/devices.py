@@ -1014,6 +1014,26 @@ def recoverable_lines(entries):
             for item in offload_host.recoverable(entries, offload_host.process_table(listed))]
 
 
+def overdue_silences(entries, at=None):
+    """What to say of each held physical device past its expected release whose silencing of the owner's
+    notifications is not yet put back (vocaro/queuekeeper#174): Do Not Disturb may still be on his device after the
+    time he agreed. Saying so changes nothing, since an overdue entry releases and restores nothing by itself."""
+    at = at or datetime.now(timezone.utc)
+    found = []
+    for key, entry in entries.items():
+        if not physical(entry.get("device")) or condition(entry) == "released": continue
+        if (entry.get("notifications") or {}).get("restore") != "pending": continue
+        deadline = moment(entry.get("expectedReleaseBy"))
+        if deadline is None or deadline >= at: continue
+        owner = entry.get("ownerChatID")
+        found.append(f"{key} is held by {owner} past its expected release, {entry.get('expectedReleaseBy')}, with "
+                     "the owner's notifications not yet put back: Do Not Disturb may still be on his device after the "
+                     f"time he agreed. Its holder restores them with `qk devices notifications restore {key} --owner "
+                     f"{owner} --revision {entry.get('revision', 0)}` or releases it; otherwise tell the owner. "
+                     "Nothing restores or releases it by itself (doc/guides/devices.md, An overdue silencing)")
+    return found
+
+
 def status(record, macs=None):
     """Print every entry's condition, then each device's declaration and what each Mac reads of it now: this Mac's
     and macs', (name, SSH destination) pairs, by default the farm's."""
@@ -1032,6 +1052,7 @@ def status(record, macs=None):
     for key, entry in value["devices"].items():
         if key != FOREGROUND: print(_describe(key, entry, waiting(value, key)))
     for line in recoverable_lines(value["devices"]): print(line)
+    for line in overdue_silences(value["devices"]): print(f"Overdue silencing: {line}")
     # Which Macs reach each device, and how, as each lists it now, beside what the owner declared (reach.py).
     found = reach.readings(macs=macs)
     names = [reach.mac_here(), *(name for name, _host in macs)]

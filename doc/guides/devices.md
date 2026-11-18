@@ -169,6 +169,19 @@ The setup names the device the entry records, so a replaced device needs it agai
   Shortcuts folder, is how the Mac confirms a shortcut ran; the iPad, whose Shortcuts the owner
   does not sync, has no recorded setup.
 
+### An overdue silencing
+
+A held physical device past its expected release whose entry still records `restore: pending`
+may keep Do Not Disturb on the owner's device, and with Share Across Devices his others, after
+the time he agreed. On 2026-11-15 the iPhone stayed so about 21 hours (vocaro/queuekeeper#174).
+`qk doctor` warns of each such entry, and `devices status` prints it as an `Overdue silencing:`
+line, naming the holder and the command that puts the notifications back:
+`qk devices notifications restore KEY --owner SESSION --revision N`. The holder runs it, or
+releases the device, which restores them too; otherwise tell the owner. Saying so changes
+nothing: like any overdue entry, it restores and releases nothing by itself. Whether Queuekeeper
+should restore the notifications itself at the expected release, or notify the owner, is open
+for the owner's decision.
+
 ### Verifying on a device
 
 The iPhone was verified on 2026-11-05 (vocaro-engineering#144): Silence and Restore from the

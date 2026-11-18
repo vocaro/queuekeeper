@@ -1420,6 +1420,35 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual([url for _device, url, _app in self.device.shortcuts()],
                          [self.silence_url(), self.restore_url()])
 
+    def test_a_held_device_past_its_release_with_its_silencing_pending_is_said_and_changed_by_nothing(self):
+        """vocaro/queuekeeper#174: the iPhone stayed silenced 21 hours past its release, and nothing said so."""
+        from queuekeeper_apple import doctor
+        self.first()
+        self.setup()
+        entry, _error = self.take()
+        self.assertEqual(devices.overdue_silences(self.record.load()["devices"]), [])
+        self.assertEqual(doctor.overdue_silences(None, {}, self.record), [])
+        value = json.loads(self.path.read_text())
+        value["devices"]["iPad"]["expectedReleaseBy"] = later(-5)
+        self.path.write_text(json.dumps(value))
+        before = self.path.read_bytes()
+        warned = doctor.overdue_silences(None, {}, self.record)
+        self.assertEqual(len(warned), 1, warned)
+        self.assertIn("iPad is held by session-a past its expected release", warned[0])
+        self.assertIn("Do Not Disturb may still be on his device", warned[0])
+        self.assertIn(f"`qk devices notifications restore iPad --owner session-a --revision {entry['revision']}`",
+                      warned[0])
+        self.assertIn(f"Overdue silencing: {warned[0]}", self.cli("status")[1])
+        # Saying so runs no shortcut and changes no entry: an overdue entry restores and releases nothing.
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual([url for _device, url, _app in self.device.shortcuts()], [self.silence_url()])
+        # Once its holder puts them back, it is held and overdue but no longer said.
+        code, _output, error = self.cli("notifications", "restore", "iPad", "--owner", "session-a", "--revision",
+                                        str(entry["revision"]))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(doctor.overdue_silences(None, {}, self.record), [])
+        self.assertNotIn("Overdue silencing", self.cli("status")[1])
+
     def test_a_run_whose_process_died_is_put_back_at_attended_recovery(self):
         self.first()
         self.setup()

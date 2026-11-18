@@ -123,8 +123,19 @@ def declared_devices(root, config):
         return [], [f"the declared devices could not be read: {error} (doc/guides/devices.md, Declared devices)"]
 
 
+def overdue_silences(root, config, record=None):
+    """A warning for each held physical device past its expected release whose silencing of the owner's
+    notifications is not yet put back (devices.overdue_silences; vocaro/queuekeeper#174). It changes nothing."""
+    from . import devices
+    try: value = (record or devices.Record()).load()
+    except (OSError, ValueError, RuntimeError) as error:
+        return [f"the device record could not be read to look for an overdue silencing: {error}"]
+    return devices.overdue_silences(value["devices"])
+
+
 def register():
     """Add these checks and fixes to `doctor`."""
+    if overdue_silences not in extensions.DOCTOR: extensions.DOCTOR.append(overdue_silences)
     if declared_devices not in extensions.DOCTOR_CHECKS: extensions.DOCTOR_CHECKS.append(declared_devices)
     if required_commands not in extensions.REQUIRED_COMMANDS: extensions.REQUIRED_COMMANDS.append(required_commands)
     if fix_hosts not in extensions.HOST_FIXES: extensions.HOST_FIXES.append(fix_hosts)

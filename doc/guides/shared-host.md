@@ -2900,7 +2900,9 @@ were never imported; once it is imported, stop writing it.
 
 A device is released only explicitly. A passed expected release time, an idle screen or a silent
 session proves nothing: obtain the release and verify the device's state freshly. A deadline
-never releases a device; `status` reports an overdue entry and changes nothing. The one exception is
+never releases a device; `status` reports an overdue entry and changes nothing, and `doctor` warns of
+one whose silencing of the owner's notifications is not yet put back
+([an overdue silencing](devices.md#an-overdue-silencing)). The one exception is
 a simulator pool's reservation whose processes are all gone and whose simulator is shut down, past its
 expected release or, for a run's reservation, before it once nothing accounts for its owner, which reap
 releases as a recovery
