@@ -41,6 +41,19 @@ For complete log output, use `python3 scripts/qk queue logs ID --json` and conti
 Use `queue status` and `queue doctor` to investigate holds; fix and resume a session's hold yourself,
 and involve the owner when the hold says it requires the owner.
 
+## Stay in your repository and keep its evidence
+
+Work in another repository is done by a session started there. A change spread across repositories runs
+as one session per repository, in order; each lands its part and leaves the next a hand-over note.
+Never create a worktree in, write in or land in a repository this session was not started in, even if
+the brief asks; if it asks, say so before starting.
+
+`git worktree remove` deletes ignored files without warning, with or without `--force`. Run it by hand
+only on a worktree proved to hold no ignored files except caches. Any other worktree goes through the
+project's documented disposal plan, such as a closeout cleanup script, even when the owner said to
+remove it, unless the owner named the files. Results, receipts, logs and captures under build folders
+are evidence, not caches.
+
 ## Find the implementation
 
 - `src/python/queuekeeper/cli.py`: command dispatch and lane execution.
