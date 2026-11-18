@@ -11,7 +11,7 @@ Each line is an object with these keys, and its kind's own beside them (KINDS):
 
     v      the schema's version, VERSION
     id     unique in the journal, and ordered as written by one process
-    time   seconds since the epoch
+    time   seconds since the epoch, to the millisecond, and never later than the event was written
     kind   what happened, one of KINDS
 
 The schema only grows: a later version adds kinds and keys, and never renames or removes one, so a reader
@@ -20,6 +20,7 @@ ignores a kind or key it does not know.
 import contextlib
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -61,7 +62,9 @@ def emit(directory, kind, **fields):
     not written. A key whose value is None is left out. Nothing here raises: the journal explains the queue, and
     never stops it."""
     try:
-        event = {"v": VERSION, "id": f"{time.time_ns():x}-{os.getpid():x}", "time": round(time.time(), 3), "kind": kind,
+        # Its time is its millisecond, cut and not rounded, so that no reader that comes after it finds it later than its now.
+        event = {"v": VERSION, "id": f"{time.time_ns():x}-{os.getpid():x}", "time": math.floor(time.time() * 1000) / 1000,
+                 "kind": kind,
                  **{key: value for key, value in fields.items() if value is not None}}
         line = (json.dumps(event, default=str) + "\n").encode()
         path = path_of(directory)

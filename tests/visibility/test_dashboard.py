@@ -638,18 +638,23 @@ class Panels(Fixture):
         self.assertEqual(logs.path_of(self.one, "gate.log")[0], queue_.logs / "gate.log")
 
     def test_trends_give_the_days_totals_and_each_days_measures(self):
-        directory = mq.Queue(self.repo).directory
-        events.emit(directory, "round.began", round="r")
-        for seconds in (600, 900, 1200): events.emit(directory, "gate.ended", lane="gate", status=0, seconds=seconds)
-        events.emit(directory, "gate.ended", lane="gate", status=1, seconds=5)
-        events.emit(directory, "gate.ended", lane="spelling", status=0, seconds=3)
-        events.emit(directory, "test.flaky", test="test_x", commit="c" * 40)
-        events.emit(directory, "entry.failed", entry="a", why="its gate failed")
-        events.emit(directory, "entry.landed", entry="b", subject="Add b", landedAs="0123456789abcdef")
-        with patch.object(events.time, "time", return_value=time.time() - 3 * 86400):
-            events.emit(directory, "entry.landed", entry="old", landedAs="f" * 40)
-            events.emit(directory, "gate.ended", lane="gate", status=0, seconds=1800)
-        found = history.data(self.one, {})
+        # Every event, and the moment the panel reads them, at a time of the test's own: today's noon and the seconds
+        # before it, so that neither the wall clock's steps nor midnight can move one out of its day (#222).
+        directory, now = mq.Queue(self.repo).directory, history.midnight(time.time()) + 12 * 3600
+        def at(before, kind, **fields):
+            with patch.object(events.time, "time", return_value=now - before):
+                # One the journal did not take fails here, and not as a total that is short.
+                self.assertIsNotNone(events.emit(directory, kind, **fields), kind)
+        at(60, "round.began", round="r")
+        for seconds in (600, 900, 1200): at(50, "gate.ended", lane="gate", status=0, seconds=seconds)
+        at(40, "gate.ended", lane="gate", status=1, seconds=5)
+        at(40, "gate.ended", lane="spelling", status=0, seconds=3)
+        at(30, "test.flaky", test="test_x", commit="c" * 40)
+        at(20, "entry.failed", entry="a", why="its gate failed")
+        at(10, "entry.landed", entry="b", subject="Add b", landedAs="0123456789abcdef")
+        at(3 * 86400, "entry.landed", entry="old", landedAs="f" * 40)
+        at(3 * 86400, "gate.ended", lane="gate", status=0, seconds=1800)
+        with patch.object(history.time, "time", return_value=now): found = history.data(self.one, {})
         self.assertEqual(found["today"], {"landed": 1, "cameBack": 1, "failed": 1, "conflict": 0, "removed": 0, "flaky": 1,
                                           "rounds": 1, "medianGateSeconds": 900})
         now = time.time()

@@ -32,6 +32,11 @@ class Journal(unittest.TestCase):
         self.assertNotIn("note", event)
         self.assertAlmostEqual(event["time"], time.time(), delta=5)
 
+    def test_an_events_time_is_its_millisecond_and_never_after_it(self):
+        # Rounded, 0.0006 s past a second would be dated after the moment a reader that came next takes as now (#222).
+        with patch.object(events.time, "time", return_value=1000.0006):
+            self.assertEqual(events.emit(self.directory, "entry.queued", entry="a")["time"], 1000.0)
+
     def test_events_are_read_in_the_order_written_with_ids_of_their_own(self):
         for number in range(20): events.emit(self.directory, "entry.queued", entry=str(number))
         found = events.read(self.directory)
