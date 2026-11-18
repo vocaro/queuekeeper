@@ -4989,6 +4989,41 @@ class ReclamationTests(unittest.TestCase):
         (logged,) = [entry for entry in self.lines("admitted") if entry["identity"] == admitted.identity]
         self.assertEqual(logged["reclaimed"], [identity])
 
+    def test_a_root_the_record_names_before_its_start_is_stopped_when_born_before_the_records_last_write(self):
+        # The owner was killed between starting its command and the first line that gives the command's start: the
+        # record names only its root. On 2026-11-17 StudyWright's warm-push test killed its keeper there, and admission
+        # replaced slot0 while the lane ran on (vocaro/queuekeeper#176).
+        os.environ.update(HEAVY_SLOTS="1", HEAVY_SLOTS_MAX="1")
+        pid, start = self.ended_process()
+        (root, root_start), (below, below_start) = self.sleeper(child=True)
+        record = [{"command": "a", "argv": ["swift", "test"]}, {"command": "a", "root": root, "spaces": [root]}]
+        identity = self.hold(pid, start, record=record)
+        with self.signals(allowed={root, below}) as sent:
+            self.admitted_next()
+        self.assertEqual(sorted(sent), sorted([(root, "SIGTERM"), (below, "SIGTERM")]))
+        self.assertNotEqual(resources.process_start(root), root_start)
+        self.assertNotEqual(resources.process_start(below), below_start)
+        self.assertNotIn(identity, self.owners())
+        (line,) = self.lines()
+        self.assertEqual(sorted(item["pid"] for item in line["signaled"]), sorted([root, below]))
+
+    def test_a_root_born_after_the_records_last_write_is_another_process_and_never_signaled(self):
+        # Its PID went to another process once the owner had ended, after the record's last write.
+        os.environ.update(HEAVY_SLOTS="1", HEAVY_SLOTS_MAX="1")
+        pid, start = self.ended_process()
+        ((other, other_start),) = self.sleeper()
+        identity = self.hold(pid, start, record=[{"command": "a", "argv": ["swift", "test"]},
+                                                 {"command": "a", "root": other, "spaces": [other]}])
+        written = processes.birth_time(other_start) - 2
+        os.utime(resources.record_path(self.guard, identity), (written, written))
+        with self.signals() as sent:
+            self.admitted_next()
+        self.assertEqual(sent, [])
+        self.assertEqual(resources.process_start(other), other_start)
+        self.assertNotIn(identity, self.owners())
+        (line,) = self.lines()
+        self.assertEqual(line["signaled"], [])
+
     def test_a_reused_pid_is_freed_and_never_signaled(self):
         os.environ.update(HEAVY_SLOTS="1", HEAVY_SLOTS_MAX="1")
         ((other, other_start),) = self.sleeper()

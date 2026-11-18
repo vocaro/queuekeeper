@@ -2511,21 +2511,39 @@ def start_now(pid):
     except (OSError, subprocess.SubprocessError): return ""
 
 
-def held_processes(guard, identity, entry):
+def held_processes(guard, identity, entry, start_of=None):
     """{PID: start} of an entry's owner and of every process its process record names, each as recorded: what is
-    left of a holder, if anything, is among them and below them. A line that cannot be read is passed over."""
+    left of a holder, if anything, is among them and below them. A line that cannot be read is passed over.
+
+    A command's root that the record names before any line gives its start, as when the owner was killed between
+    starting its command and its first sample, is taken with the start it has now (start_of) when that start falls
+    between the owner's and the record's last write, in whole seconds: the root was the owner's unreaped child when
+    that line was written, so its PID could go to another process only after the owner ended, after that write. A
+    root the bounds do not prove the command's is passed over (vocaro/queuekeeper#176)."""
+    from queuekeeper.processes import birth_time
     found = {entry["pid"]: collapsed(entry["start"])}
     path = record_path(guard, identity) if re.fullmatch(r"[0-9a-f]{32}", identity) else None
-    try: lines = path.read_bytes().splitlines() if path is not None else []
-    except OSError: lines = []
+    try:
+        lines = path.read_bytes().splitlines() if path is not None else []
+        written = path.stat().st_mtime if path is not None else None
+    except OSError: lines, written = [], None
+    roots = set()
     for text in lines:
         try: line = json.loads(text)
         except ValueError: continue
-        listed = line.get("processes") if isinstance(line, dict) else None
+        if not isinstance(line, dict): continue
+        if type(line.get("root")) is int and line["root"] > 1: roots.add(line["root"])
+        listed = line.get("processes")
         for item in listed if isinstance(listed, list) else []:
             if isinstance(item, list) and len(item) == 2 and type(item[0]) is int and item[0] > 1 \
                     and isinstance(item[1], str):
                 found.setdefault(item[0], collapsed(item[1]))
+    owner = birth_time(entry["start"])
+    for root in sorted(roots - found.keys()) if owner is not None and written is not None else []:
+        start = (start_of or start_now)(root)
+        born = birth_time(start) if start else None
+        if born is not None and owner <= born <= written:
+            found[root] = start
     return found
 
 
@@ -2560,7 +2578,7 @@ def stop_holder(guard, identity, entry, condition, *, listing=None, start_of=Non
         except (OSError, subprocess.SubprocessError, ValueError): return None
 
     mine = lineage(listed())
-    known = {pid: start for pid, start in held_processes(guard, identity, entry).items()
+    known = {pid: start for pid, start in held_processes(guard, identity, entry, start_of).items()
              if pid > 1 and pid not in mine and start and start_of(pid) == start}
     signals = {}
 

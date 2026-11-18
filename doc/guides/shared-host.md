@@ -3465,7 +3465,16 @@ Three kinds of marker coexist, and they are reclaimed differently:
   Mac for its own guard (`resources.free_holder`). It sends SIGTERM, then SIGKILL 3 seconds later,
   to the owner's PID and each process its process record names, each only while its PID still has
   the start recorded for it, and to every process found below one of those by parent, each checked
-  again by PID and start just before each signal; it never signals itself or its ancestors. An
+  again by PID and start just before each signal; it never signals itself or its ancestors. A
+  command's root that the record names before any line gives its start, as when the owner was
+  killed between starting its command and its first sample, counts with the start it has now when
+  that start falls between the owner's and the record's last write, in whole seconds: the root was
+  the owner's unreaped child when that line was written, so its PID could go to another process
+  only after the owner ended. Until 2026-11-18 such a root was not signaled, and the slot went to
+  the next job while the command ran on beside it
+  ([vocaro/queuekeeper#176](https://github.com/vocaro/queuekeeper/issues/176)); only a command
+  whose owner is killed before its root line is written is still missed, so a supervisor writes
+  that line as soon as its command starts. An
   owner whose start cannot be read is signaled nothing, nor anything under it, since its PID is
   not proven its own. Then it removes the entry, and the guard with its last one, and its process
   record, and frees its slots, every slot for exclusive work, and the model if it held it; a lock
