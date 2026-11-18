@@ -27,7 +27,7 @@
     const agents = model.agents.slice();
     if (back && !agents.some(one => one.name === back.agent)) agents.push({ name: back.agent, waiting: 0, testing: 0, back: true, queues: [] });
     const rows = Math.max(2, agents.length, gates.length, macs.length, single ? 0 : queues.length), body = rows * PITCH - (PITCH - NODE);
-    const height = TOP + body + (back ? 50 : 8), first = count => TOP + (body - (count * PITCH - (PITCH - NODE))) / 2;
+    const height = TOP + body + (back ? 30 : 8), first = count => TOP + (body - (count * PITCH - (PITCH - NODE))) / 2;
     const fit = (value, most) => (value = String(value || "")).length > most ? value.slice(0, most - 1) + "…" : value;
     const text = (x, y, value, kind, anchor) => svg("text", { x, y, class: kind || null, "text-anchor": anchor || null }, value);
     const box = (x, y, width, tall, kind) => svg("rect", { x, y, width, height: tall, rx: 8, class: "node " + (kind || "") });
@@ -112,11 +112,12 @@
     edge(macs.length ? fx + fw : rx + rw, TOP + body / 2, mx, TOP + body / 2, "land", false);
     // What came back, as an arc from the rounds to whoever sent it
     if (back) {
-      // It leaves the rounds' foot and comes in at the side of the agent's node, so it passes behind no other.
-      const index = agents.findIndex(one => one.name === back.agent), from = [rx + rw / 2, TOP + body], to = [ax + aw, first(agents.length) + index * PITCH + NODE - 10];
-      edges.push(svg("path", { class: "edge back", d: `M${from[0]} ${from[1]} C ${from[0]} ${height - 22}, ${to[0] + 60} ${height - 22}, ${to[0]} ${to[1]}` }));
-      nodes.push(text((from[0] + to[0]) / 2, height - 4, fit((back.state === "conflict" ? "conflicted · " : "came back · ")
-        + (single ? "" : back.repository + " · ") + (back.subject || back.id), 60), "sub danger", "middle"));
+      // It leaves the foot of the rounds' lowest node, which may stand above the foot of a taller column, and comes in
+      // at the side of the agent's node, so it passes behind no other.
+      const index = agents.findIndex(one => one.name === back.agent), shown = Math.max(1, gates.length);
+      const from = [rx + rw / 2, first(shown) + shown * PITCH - (PITCH - NODE)], to = [ax + aw, first(agents.length) + index * PITCH + NODE - 10];
+      // The map is an overview, so the arc says nothing of what came back; Needs attention says what and why.
+      edges.push(svg("path", { class: "edge back", d: `M${from[0]} ${from[1]} C ${from[0]} ${height - 6}, ${to[0] + 60} ${height - 6}, ${to[0]} ${to[1]}` }));
     }
     return svg("svg", { viewBox: `0 0 ${W} ${height}`, role: "group", "aria-label": "Agents' entries flow through the queue"
       + (single ? "" : "s") + " and the gates on the farm's Macs to main" }, edges, dots, nodes);
