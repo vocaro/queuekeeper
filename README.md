@@ -140,58 +140,24 @@ project. It also shows iOS device connections and reservations.
 
 ## Plugins
 
-A plugin teaches Queuekeeper a platform. A project switches one on by listing it in the
-`extensions` of its `queuekeeper.json`. Omitting that key loads the core alone.
+A plugin teaches Queuekeeper a platform. A project switches one on by listing its package in the
+`extensions` of its `queuekeeper.json`, such as `"extensions": ["queuekeeper_apple"]`. Omitting that
+key loads the core alone.
 
-Each plugin is a separate distribution with its own source root under `plugins/`. Python package
-names are `queuekeeper_apple`, `queuekeeper_mac_desktop`, `queuekeeper_mac_hardware`, and
-`queuekeeper_unity`. Apple and Unity declare a dependency on the desktop plugin. Optional visibility
-features are separate packages too: `queuekeeper_dashboard`, `queuekeeper_notify`, and `queuekeeper_watch`.
-
-Checkout launchers compose these source roots using `queuekeeper-workspace.json`; the checkout installer
-writes those same roots to its `.pth` file. Installing the root Python distribution installs core alone.
-Install the desired plugin distributions from their folders alongside core when using packaged installs.
-
-**Migrating existing projects:** replace extension names such as `queuekeeper.apple` with
-`queuekeeper_apple` in configuration and imports. Projects that relied on Apple being implicit must now
-list `"extensions": ["queuekeeper_apple"]`. Rerun `python3 tools/install-checkout.py` on each Mac to
-update the import roots. An old name is refused, naming its package.
-Native simulator helpers and build-tool wrappers ship inside the Apple package.
-
-Tests mirror component ownership under `tests/`, with cross-component scenarios in `tests/integration`
-and shared fixtures in `tests/test_support`. The architecture gate checks imports, distribution
-ownership, native resources, and loading each component with only its declared dependencies.
-
-### Apple plugin
-
-The [Apple plugin](plugins/apple/src/queuekeeper_apple/README.md) lets agents build and test iOS and Mac
-apps without getting in each other's way:
-
-- **Simulator pool.** Each run gets its own simulator, reset from a warmed template in a fraction of
-  a second.
-- **Test runners.** One build tested on several device types at once, with tests spread across
-  simulators.
-- **Physical devices.** Agents take an iPhone or iPad in turn, and a run is stopped before its
-  reservation ends.
-
-### Unity plugin
-
-The [Unity plugin](plugins/unity/src/queuekeeper_unity/README.md) runs a Unity project's editor
-unattended. It picks the editor the project pins, clears a project lock nothing holds, ends a batch
-run that has gone silent, and runs the project's tests.
-
-### Mac desktop plugin
-
-The [Mac desktop plugin](plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md) handles a Mac's logged-in
-session when nobody is at it. Crash dialogs, notification banners, locked keychains and lapsed
-permissions are cleared, or the run is reported as unmeasured instead of failed. The Apple and
-Unity plugins build on it.
-
-### Mac hardware plugin
-
-The [Mac hardware plugin](plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md) keeps a lane on the chip
-its results are valid on. A lane whose output differs by GPU lists its chips, such as
-`"chips": ["apple-m5-max"]`, and runs only on a Mac that has one.
+- **[Apple](plugins/apple/src/queuekeeper_apple/README.md)** lets agents build and test iOS and Mac
+  apps without getting in each other's way. Each run gets its own simulator, reset from a warmed
+  template in a fraction of a second; one build is tested on several device types at once; and agents
+  take an iPhone or iPad in turn, with a run stopped before its reservation ends.
+- **[Unity](plugins/unity/src/queuekeeper_unity/README.md)** runs a Unity project's editor unattended.
+  It picks the editor the project pins, clears a project lock nothing holds, ends a batch run that has
+  gone silent, and runs the project's tests.
+- **[Mac desktop](plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md)** handles a Mac's
+  logged-in session when nobody is at it. Crash dialogs, notification banners, locked keychains and
+  lapsed permissions are cleared, or the run is reported as unmeasured instead of failed. The Apple
+  and Unity plugins build on it.
+- **[Mac hardware](plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md)** keeps a lane on the
+  chip its results are valid on. A lane whose output differs by GPU lists its chips, such as
+  `"chips": ["apple-m5-max"]`, and runs only on a Mac that has one.
 
 ## Documentation
 
