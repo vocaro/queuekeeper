@@ -258,7 +258,8 @@ qk land --wait              # queue HEAD and follow it to its result
 qk land BRANCH              # queue a branch and return at once
 qk queue status             # what is waiting, testing, and what came back and why
 qk queue wait ID            # follow an entry already queued
-qk queue remove ID          # take an entry out
+qk queue remove ID          # take an entry out; --why TEXT tells its session why
+qk queue inbox              # this worktree's or branch's outcomes nobody has confirmed
 ```
 
 One worker per repository then repeats a round:
@@ -2448,7 +2449,7 @@ to their result.
   also quotes its command's last lines.
 - **Refusals** say what did not run and the command to run next.
 - **JSON** is available from `land`, `queue add`, `queue wait`, `queue result`, `queue status`,
-  `queue logs`, `queue doctor`, `queue health`, `queue placement`, `queue events`,
+  `queue inbox`, `queue confirm`, `queue logs`, `queue doctor`, `queue health`, `queue placement`, `queue events`,
   `admissions now` and `doctor`.
 - **`qk queue status --idle`** answers by exit status: 0 only when no worker runs and nothing is
   queued, testing or passed, and 75 otherwise.
@@ -2567,6 +2568,43 @@ qk queue logs ID --json --cursor CURSOR
   explicitly.
 - `--artifact KIND` or `--artifact PATH` picks one of the entry's listed logs.
 - A successful read is not evidence that the gate passed.
+
+### Next actions and the outcome inbox
+
+`qk queue result --json` and `qk queue status --json` also carry `nextAction`: the single command
+to run next, as `{"command": [...], "message": "..."}`, or null when nothing is left to do. For an
+entry still waiting it follows the entry, or diagnoses the hold. One sent back reads its log
+(`failed`) or rebases onto `origin/main` (`conflict`), and the message says to fix, commit and land
+again. One landed or removed is confirmed, which takes it out of the inbox. Status's `nextAction`
+is for the session asking: a hold comes first, then this worktree's or branch's unconfirmed
+outcomes, then its entry still waiting.
+
+`qk queue remove ID --why TEXT` records the reason as the entry's `removedWhy`, which
+`queue result`, `queue wait`, `queue inbox` and the `recovery` message say. Give one whenever you
+remove another session's entry.
+
+#### The outcome inbox
+
+A session that died, or lost its entry ID, recovers with `qk queue inbox --json`. It lists the
+entries of this worktree or branch whose outcome nobody has confirmed: `landed`, `sent-back`
+(failed or conflict), `removed`, and `held` for an entry waiting in a held queue. Only the newest
+entry of a branch counts, since landing a branch again replaces its earlier entries, and a settled
+outcome leaves the inbox after 14 days.
+
+```text
+{"schemaVersion": 1, "operation": "queue.inbox", "branch": "fix-parser",
+ "nextAction": {"command": ["qk", "queue", "logs", "qk1093-fix-parser", "--json"], "message": "Read the failing run's log, ..."},
+ "entries": [{"id": "qk1093-fix-parser", "state": "failed", "outcome": "sent-back",
+              "subject": "Fix the parser", "branch": "fix-parser", "settled": 1795000000.0, "landedAs": null,
+              "reason": "The gate failed", "recovery": {"reasonCode": "entry-failed"},
+              "nextAction": {"command": ["qk", "queue", "logs", "qk1093-fix-parser", "--json"], "message": "Read the failing run's log, ..."}}]}
+```
+
+Both `nextAction` and `recovery` are abbreviated here; the real command also names `--project`.
+
+`qk queue confirm ID` acknowledges one outcome and exits 0, or 1 for an entry still in the queue.
+Confirm a landing or removal once you have acted on it; fix a send-back and land again, which
+replaces it. Removing your own entry confirms it, since your session already knows.
 
 ### Verifying
 

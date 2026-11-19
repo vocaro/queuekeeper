@@ -2207,11 +2207,24 @@ def covered(root, entry, entries):
                for other in entries if other["state"] == LANDED)
 
 
-def remove(queue, identifier, quiet=False):
+def remove(queue, identifier, quiet=False, why=None):
+    """Take an entry out. why, from `qk queue remove --why`, is recorded as removedWhy, which `qk queue result`, `wait`
+    and `inbox` and the entry's recovery say. A removal by the session that submitted the entry confirms it (inbox), as
+    that session knows; any other removal is news to it, until it confirms it."""
     entry = queue.read(identifier)
     if entry is None: raise ValueError(f"The queue has no entry {identifier}")
-    if entry["state"] in WAITING: queue.settle(entry, REMOVED)
-    else: git(queue.root, "update-ref", "-d", f"refs/queuekeeper/queue/{identifier}")
+    why = " ".join(why.split()) if why and why.strip() else None
+    session = resources.coding_agent().get("agentSession")
+    fields = {**({"removedWhy": why} if why else {}),
+              **({"confirmed": time.time()} if session and session == entry.get("agentSession") else {})}
+    if entry["state"] in WAITING: queue.settle(entry, REMOVED, **fields)
+    else:
+        if fields:
+            with queue.locked():
+                current = queue.read(identifier) or entry
+                current.update({key: value for key, value in fields.items() if key not in current})
+                queue.save(current)
+        git(queue.root, "update-ref", "-d", f"refs/queuekeeper/queue/{identifier}")
     if not quiet:
         print(f"removed {identifier}")
         if entry["state"] == TESTING: print(stopping(queue, entry))
@@ -2261,6 +2274,7 @@ def describe(entry):
                  f"{len(flake['rerunLogs'])} times"
                  + (f"; {flake['issue']}" if flake.get("issue") else f"; not on the tracker: {flake.get('trackerError')}"))
     if entry.get("why"): line += f"\n         {entry['why']}"
+    if entry.get("removedWhy"): line += f"\n         removed: {entry['removedWhy']}"
     if entry.get("log"): line += f"\n         log: {entry['log']}"
     return line
 
@@ -2421,13 +2435,17 @@ def reading(root, recent=5):
     # Idle is no live worker and nothing queued, testing or passed (vocaro/queuekeeper#21). A worker between rounds
     # with nothing waiting is not idle: what ends it ends whatever it starts next. A held queue with entries waiting is
     # not idle either. The worker's lock is a flock, so a dead worker's lock file holds nothing and counts as none.
-    return {"schemaVersion": 1, "worker": working, "held": why,
-            "recovery": recovery.in_project(
-                recovery.for_queue(recovery.read_hold(queue.hold_file, why), working=working, waiting=waiting), root),
-            "round": current, "waiting": waiting, "recent": done,
-            "ungated": [entry["id"] for entry in ungated], "idle": not working and not waiting,
-            # Apart from a hold: a closed queue works on what it has, and is idle once that is done (#32).
-            "closed": queue.closed()}, ungated
+    state = {"schemaVersion": 1, "worker": working, "held": why,
+             "recovery": recovery.in_project(
+                 recovery.for_queue(recovery.read_hold(queue.hold_file, why), working=working, waiting=waiting), root),
+             "round": current, "waiting": waiting, "recent": done,
+             "ungated": [entry["id"] for entry in ungated], "idle": not working and not waiting,
+             # Apart from a hold: a closed queue works on what it has, and is idle once that is done (#32).
+             "closed": queue.closed()}
+    # The one command the session at root runs next (agent_results.queue_next_action).
+    from . import agent_results
+    state["nextAction"] = agent_results.queue_next_action(queue, root, state)
+    return state, ungated
 
 
 def status(root, as_json=False, recent=5, idle=False):
@@ -6947,6 +6965,17 @@ def add_arguments(parser):
     removing = operations.add_parser("remove", help="take an entry out; a gate testing it stops within "
                                    "seconds on whichever Mac runs it, and the rest of its batch gates again")
     removing.add_argument("id")
+    removing.add_argument("--why", metavar="TEXT", help="the reason, which the entry's `queue result`, `queue wait`, "
+                          "`queue inbox` and recovery say to the session that submitted it")
+    inbox = operations.add_parser("inbox", help="list the outcomes of this worktree's or branch's entries nobody has "
+                                  "confirmed: landed, sent back, removed, or waiting in a held queue, with the next "
+                                  "command for each; for a session that lost its entry IDs or took over from one that "
+                                  "died")
+    inbox.add_argument("--json", action="store_true", help="one versioned JSON result")
+    confirming = operations.add_parser("confirm", help="acknowledge an entry's outcome, which takes it out of "
+                                       "`qk queue inbox`: 0 confirmed, 1 still waiting in the queue")
+    confirming.add_argument("id")
+    confirming.add_argument("--json", action="store_true", help="one versioned JSON result")
     operations.add_parser("resume", help="clear a hold and start the worker: any session does this itself once the "
                           "hold's cause is dealt with or gone, and asks the owner only for a hold that says it is his")
     closing = operations.add_parser("close", help="refuse new entries from now on, saying why and who closed it, "
@@ -7004,7 +7033,11 @@ def main(root, args):
     if args.operation == "wait":
         return wait(root, args.id[0], args.limit) if len(args.id) == 1 else wait_for(root, args.id, args.limit)
     if args.operation == "events": return journal(root, args.json, args.since, args.kind, args.follow)
-    if args.operation == "remove": return remove(Queue(root), args.id)
+    if args.operation == "remove": return remove(Queue(root), args.id, why=args.why)
+    if args.operation in ("inbox", "confirm"):
+        from . import agent_results
+        if args.operation == "inbox": return agent_results.inbox(root, args.json)
+        return agent_results.confirm(root, args.id, args.json)
     if args.operation == "resume": return resume(root)
     if args.operation == "close": return close(root, args.why, args.by)
     if args.operation == "reopen": return reopen(root)

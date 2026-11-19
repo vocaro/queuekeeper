@@ -17,15 +17,16 @@ def advice(code, party, retryable, action, message, commands=()):
 def in_project(detail, root):
     """Make suggested Queuekeeper commands refer to the observed queue from any working directory."""
     if detail is None: return None
-    project = str(Path(root).resolve())
-    commands = []
-    for command in detail.get("suggestedCommands", []):
-        qualified = list(command)
-        if (qualified and qualified[0] == "qk" and not any(
-                part == "--project" or part.startswith("--project=") for part in qualified[1:])):
-            qualified[1:1] = ["--project", project]
-        commands.append(qualified)
-    return {**detail, "suggestedCommands": commands}
+    return {**detail, "suggestedCommands": [qualified(command, root) for command in detail.get("suggestedCommands", [])]}
+
+
+def qualified(command, root):
+    """A suggested command, with --project naming root when it is a Queuekeeper command that names no project."""
+    command = list(command)
+    if (command and command[0] == "qk" and not any(
+            part == "--project" or part.startswith("--project=") for part in command[1:])):
+        command[1:1] = ["--project", str(Path(root).resolve())]
+    return command
 
 
 def for_hold(why, responsible_party=None):
@@ -114,7 +115,8 @@ def for_entry(entry, held=None, *, limit_reached=False, unverified=False):
                       entry.get("why") or "Inspect the result and fix the failure before submitting again.",
                       [["qk", "queue", "result", identifier, "--json"]])
     if state == "removed":
-        return advice("entry-removed", "session", False, "none", "The entry was removed from the queue.")
+        return advice("entry-removed", "session", False, "none", "The entry was removed from the queue"
+                      + (f": {entry['removedWhy']}" if entry.get("removedWhy") else "."))
     return advice("entry-unknown-state", "unknown", False, "inspect-entry",
                   "This version does not recognize the entry's state.")
 
@@ -126,3 +128,30 @@ def for_queue(hold, *, working, waiting):
         return advice("worker-not-running", "session", True, "start-worker",
                       "Entries are waiting without a running worker.", [["qk", "queue", "resume"]])
     return None
+
+
+def action(command, message):
+    return {"command": list(command), "message": message}
+
+
+def next_action(entry, detail, root):
+    """The single command an agent runs next about entry, as {"command", "message"}, given its recovery detail; None
+    once nothing is left to do. A settled outcome nobody has confirmed is confirmed (`qk queue confirm`), which takes it
+    out of `qk queue inbox`; one sent back is fixed first, as confirming it changes nothing about the fix."""
+    state, identifier = entry.get("state"), entry["id"]
+    found = None
+    if state == "failed":
+        found = action(["qk", "queue", "logs", identifier, "--json"], "Read the failing run's log, fix the failure, "
+                       "commit, and land again with `qk land --wait --json`.")
+    elif state == "conflict":
+        found = action(["git", "pull", "--rebase", "origin", "main"], "Rebase onto origin/main, resolve the conflict, "
+                       "commit, and land again with `qk land --wait --json`.")
+    elif state in ("queued", "testing", "passed"):
+        commands = (detail or {}).get("suggestedCommands") or [["qk", "queue", "wait", identifier, "--json"]]
+        found = action(commands[0], (detail or {}).get("message") or "Follow the entry to its result.")
+    elif state in ("landed", "removed") and not entry.get("confirmed"):
+        found = action(["qk", "queue", "confirm", identifier, "--json"],
+                       "Acknowledge the outcome" + (f" ({entry['removedWhy']})" if entry.get("removedWhy") else "")
+                       + ", which takes it out of `qk queue inbox`.")
+    if found: found["command"] = qualified(found["command"], root)
+    return found

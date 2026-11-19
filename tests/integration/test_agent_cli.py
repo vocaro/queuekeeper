@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 from unittest.mock import patch
 
@@ -168,3 +169,126 @@ class AgentCli(Fixture):
             self.assertEqual(result["failure"]["message"], str(error))
             self.assertEqual(result["recovery"]["reasonCode"], "usage-or-configuration-error")
             self.assertIn(str(error), progress)
+
+
+class Outcomes(Fixture):
+    """`qk queue remove --why`, nextAction and the outcome inbox, which a session that died or lost its IDs reads."""
+    invoke = AgentCli.invoke
+
+    def text(self, *words):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
+                patch.object(mq.Queue, "start"), patch.object(cli.extensions, "recover"), contextlib.chdir(self.repo):
+            status = cli.main(["--project", str(self.repo), *words])
+        return status, out.getvalue()
+
+    def test_a_removal_reason_is_in_the_result_the_wait_and_the_recovery(self):
+        self.commit("feature", "feature")
+        [identifier] = self.add("feature")
+        status, said = self.text("queue", "remove", identifier, "--why", "  superseded by   the owner's fix ")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.state(identifier)["state"], mq.REMOVED)
+        self.assertEqual(self.state(identifier)["removedWhy"], "superseded by the owner's fix")
+        status, result, _ = self.invoke("queue", "result", identifier, "--json")
+        self.assertEqual(result["removedWhy"], "superseded by the owner's fix")
+        self.assertIn("superseded by the owner's fix", result["recovery"]["message"])
+        status, waited, _ = self.invoke("queue", "wait", identifier, "--json")
+        self.assertEqual((status, waited["removedWhy"]), (1, "superseded by the owner's fix"))
+        self.assertIn("superseded by the owner's fix", waited["recovery"]["message"])
+        status, said = self.text("queue", "wait", identifier)
+        self.assertIn("removed: superseded by the owner's fix", said)
+
+    def test_next_action_follows_the_entry_through_its_states(self):
+        self.commit("feature", "feature")
+        [identifier] = self.add("feature")
+        project = ["qk", "--project", str(self.repo.resolve())]
+        _, result, _ = self.invoke("queue", "result", identifier, "--json")
+        self.assertEqual(result["nextAction"]["command"], [*project, "queue", "wait", identifier, "--json"])
+        _, state, _ = self.invoke("queue", "status", "--json")
+        self.assertEqual(state["nextAction"]["command"], [*project, "queue", "wait", identifier, "--json"])
+        queue = mq.Queue(self.repo)
+        queue.settle(queue.read(identifier), mq.FAILED, why="A test failed")
+        _, result, _ = self.invoke("queue", "result", identifier, "--json")
+        self.assertEqual(result["nextAction"]["command"], [*project, "queue", "logs", identifier, "--json"])
+        _, state, _ = self.invoke("queue", "status", "--json")
+        self.assertEqual(state["nextAction"], result["nextAction"])
+        entry = queue.read(identifier)
+        entry.update(state=mq.LANDED, landedAs="a" * 40)
+        queue.save(entry)
+        _, result, _ = self.invoke("queue", "result", identifier, "--json")
+        self.assertEqual(result["nextAction"]["command"], [*project, "queue", "confirm", identifier, "--json"])
+        self.assertEqual(self.text("queue", "confirm", identifier)[0], 0)
+        _, result, _ = self.invoke("queue", "result", identifier, "--json")
+        self.assertIsNone(result["nextAction"])
+        _, state, _ = self.invoke("queue", "status", "--json")
+        self.assertIsNone(state["nextAction"])
+
+    def test_a_hold_is_the_next_action_before_any_entry(self):
+        self.commit("feature", "feature")
+        self.add("feature")
+        queue = mq.Queue(self.repo)
+        queue.hold("for the owner: a host needs repair")
+        _, state, _ = self.invoke("queue", "status", "--json")
+        self.assertEqual(state["nextAction"]["command"][-3:], ["queue", "doctor", "--json"])
+        _, found, _ = self.invoke("queue", "inbox", "--json")
+        self.assertEqual([item["outcome"] for item in found["entries"]], ["held"])
+        self.assertIn("a host needs repair", found["entries"][0]["reason"])
+
+    def test_the_inbox_lists_unconfirmed_outcomes_until_each_is_confirmed(self):
+        for branch in ("landed", "failed", "removed", "elsewhere"): self.commit(branch, branch)
+        landed, failed, removed, elsewhere = self.add("landed", "failed", "removed", "elsewhere")
+        queue = mq.Queue(self.repo)
+        queue.settle(queue.read(landed), mq.LANDED, landedAs="a" * 40)
+        queue.settle(queue.read(failed), mq.CONFLICT, why="Conflicts with main")
+        with patch.object(mq.resources, "coding_agent", return_value={"agent": "claude", "agentSession": "owner"}):
+            self.text("queue", "remove", removed, "--why", "the owner took it out")
+        subprocess.run(["git", "-C", str(self.repo), "checkout", "-q", "--detach"], check=True)
+        other = queue.read(elsewhere)
+        other.update(directory=str(self.base / "another-worktree"))
+        queue.save(other)
+        queue.settle(other, mq.LANDED, landedAs="b" * 40)
+        status, found, _ = self.invoke("queue", "inbox", "--json")
+        self.assertEqual((status, found["operation"]), (0, "queue.inbox"))
+        self.assertEqual({item["id"]: (item["outcome"], item["reason"]) for item in found["entries"]},
+                         {landed: ("landed", None), failed: ("sent-back", "Conflicts with main"),
+                          removed: ("removed", "the owner took it out")})
+        self.assertEqual(found["nextAction"]["command"][-3:], ["queue", "inbox", "--json"])
+        for identifier in (landed, removed):
+            status, confirmed, _ = self.invoke("queue", "confirm", identifier, "--json")
+            self.assertEqual((status, confirmed["alreadyConfirmed"]), (0, False))
+        status, confirmed, _ = self.invoke("queue", "confirm", landed, "--json")
+        self.assertEqual((status, confirmed["alreadyConfirmed"]), (0, True))
+        _, found, _ = self.invoke("queue", "inbox", "--json")
+        self.assertEqual([item["id"] for item in found["entries"]], [failed])
+        self.assertEqual(found["nextAction"], found["entries"][0]["nextAction"])
+        # The session that submitted an entry knows when it removes it.
+        self.commit("mine", "mine")
+        [mine] = self.add("mine")
+        entry = queue.read(mine)
+        entry["agentSession"] = "author"
+        queue.save(entry)
+        with patch.object(mq.resources, "coding_agent", return_value={"agent": "claude", "agentSession": "author"}):
+            self.text("queue", "remove", mine)
+        self.assertTrue(queue.read(mine)["confirmed"])
+        # Landing the branch again replaces the entry it sent back.
+        self.commit("failed-again", "failed")
+        [again] = self.add("failed")
+        _, found, _ = self.invoke("queue", "inbox", "--json")
+        self.assertEqual(found["entries"], [])
+        status, confirmed, _ = self.invoke("queue", "confirm", again, "--json")
+        self.assertEqual((status, confirmed["state"]), (1, mq.QUEUED))
+        status, said = self.text("queue", "inbox")
+        self.assertIn("no unconfirmed outcome", said)
+
+    def test_old_outcomes_and_unknown_ids_stay_out_of_the_inbox(self):
+        self.commit("feature", "feature")
+        [identifier] = self.add("feature")
+        queue = mq.Queue(self.repo)
+        queue.settle(queue.read(identifier), mq.LANDED, landedAs="a" * 40)
+        entry = queue.read(identifier)
+        entry["settled"] -= 15 * 86400
+        queue.save(entry)
+        _, found, _ = self.invoke("queue", "inbox", "--json")
+        self.assertEqual(found["entries"], [])
+        status, result, _ = self.invoke("queue", "confirm", "missing-entry", "--json")
+        self.assertEqual((status, result["state"]), (2, "error"))

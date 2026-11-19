@@ -6,8 +6,10 @@ with available=false; a later run's artifacts are never substituted for them.
 import json
 from pathlib import Path
 import re
+import shlex
 import stat
 import sys
+import time
 
 from . import lane_report, lane_timing
 
@@ -147,8 +149,10 @@ def entry_result(queue, entry):
             "resultsSummary": (entry.get("gate") or {}).get("results"),
             "docsOnly": entry.get("docsOnly"), "docsNamed": entry.get("docsNamed"), "ungated": entry.get("ungated"),
             "publication": publication(queue, entry) if pending else None,
-            "recovery": recovery.in_project(recovery.for_entry(entry, held, unverified=unverified(queue, entry)),
-                                            queue.root)}
+            "removedWhy": entry.get("removedWhy"), "confirmed": entry.get("confirmed"),
+            "recovery": recovery.in_project(
+                detail := recovery.for_entry(entry, held, unverified=unverified(queue, entry)), queue.root),
+            "nextAction": recovery.next_action(entry, detail, queue.root)}
 
 
 def unverified(queue, entry):
@@ -200,10 +204,138 @@ def result(root, identifier, as_json=False):
     else:
         print(f"{found['state']:8} {found['id']}  {found['subject'] or ''}")
         if found["landedAs"]: print(f"landed: {found['landedAs']}")
+        if found["removedWhy"]: print(f"removed: {found['removedWhy']}")
         if found["failure"]:
             print(found["failure"]["message"] or found["failure"]["category"])
             for test in found["failure"]["tests"]:
                 print(f"  failed: {test['name']}" + (f" at {test['location']}" if test["location"] else ""))
         for item in found["artifacts"]:
             print(f"{item['kind']}: {item['path']}" + ("" if item["available"] else " (unavailable or pruned)"))
+        if found["nextAction"]: print(f"next: {shlex.join(found['nextAction']['command'])}")
     return 0
+
+
+# How long a settled outcome stays in `qk queue inbox` unconfirmed: long enough for a session that died to be taken over.
+INBOX_DAYS = 14
+OUTCOMES = {"landed": "landed", "failed": "sent-back", "conflict": "sent-back", "removed": "removed"}
+
+
+def current_branch(root):
+    from . import merge_queue
+    found = merge_queue.git(root, "symbolic-ref", "--short", "-q", "HEAD")
+    branch = found.stdout.strip() if found.returncode == 0 else ""
+    return branch if branch and branch not in ("main", "HEAD") else None
+
+
+def outcomes(queue, root, now=None):
+    """The entries of root's worktree or branch whose outcome nobody has confirmed (`qk queue confirm`), oldest first:
+    those settled in the last INBOX_DAYS, and those waiting while the queue is held. Of a branch's entries only the
+    newest counts, as landing a branch again replaces its earlier entries."""
+    from . import recovery
+
+    now = time.time() if now is None else now
+    directory, branch = str(Path(root).resolve()), current_branch(root)
+    mine = [entry for entry in queue.all() if entry.get("directory") == directory
+            or (branch is not None and entry.get("branch") == branch)]
+    newest = {}
+    for entry in mine:
+        if entry.get("branch"): newest[entry["branch"]] = entry
+    held = recovery.read_hold(queue.hold_file, queue.held())
+    found = []
+    for entry in mine:
+        if entry.get("branch") and newest[entry["branch"]] is not entry: continue
+        state = entry["state"]
+        if state in WAITING:
+            if not held: continue
+            outcome, reason, detail = "held", held["message"], held
+        else:
+            if entry.get("confirmed") or now - entry.get("settled", 0) > INBOX_DAYS * 86400: continue
+            outcome = OUTCOMES.get(state, state)
+            reason = entry.get("removedWhy") if state == "removed" else entry.get("why")
+            detail = recovery.for_entry(entry)
+        found.append({"id": entry["id"], "state": state, "outcome": outcome, "subject": entry.get("subject"),
+                      "branch": entry.get("branch"), "settled": entry.get("settled"), "landedAs": entry.get("landedAs"),
+                      "reason": reason, "recovery": recovery.in_project(detail, root),
+                      "nextAction": recovery.next_action(entry, detail, root)})
+    return found, branch
+
+
+def inbox(root, as_json=False):
+    """`qk queue inbox`: exit 0 once read, whatever it holds."""
+    from . import merge_queue, recovery
+
+    found, branch = outcomes(merge_queue.Queue(root), root)
+    following = (found[0]["nextAction"] if len(found) == 1 else
+                 recovery.action(recovery.qualified(["qk", "queue", "inbox", "--json"], root),
+                                 "Act on each outcome by its nextAction.") if found else None)
+    if as_json:
+        print(json.dumps({"schemaVersion": VERSION, "operation": "queue.inbox", "project": str(root),
+                          "directory": str(Path(root).resolve()), "branch": branch, "entries": found,
+                          "nextAction": following, "exitStatus": 0}, indent=2))
+        return 0
+    if not found: print("inbox: no unconfirmed outcome for this worktree or branch")
+    for item in found:
+        print(f"{item['outcome']:9} {item['id']}  {item['subject'] or ''}")
+        if item["reason"]: print(f"          {item['reason']}")
+        if item["nextAction"]: print(f"          next: {shlex.join(item['nextAction']['command'])}")
+    return 0
+
+
+def confirm(root, identifier, as_json=False):
+    """`qk queue confirm`: 0 confirmed or confirmed already, 1 the entry still waits, 2 no such entry."""
+    from . import merge_queue
+
+    queue = merge_queue.Queue(root)
+    try:
+        with queue.locked():
+            entry = read_entry(queue, identifier)
+            already = entry.get("confirmed")
+            if entry["state"] not in WAITING and not already:
+                entry["confirmed"] = time.time()
+                queue.save(entry)
+    except (ValueError, OSError) as error:
+        print(f"queuekeeper: {error}", file=sys.stderr)
+        if as_json:
+            from .agent_cli import error_result
+            failed = error_result("usage-or-configuration-error", str(error))
+            failed.update(operation="queue.confirm", exitStatus=2, requestedIds=[identifier])
+            print(json.dumps(failed, indent=2))
+        return 2
+    waiting = entry["state"] in WAITING
+    status = 1 if waiting else 0
+    message = (f"{identifier} is still {entry['state']}: follow it with `qk queue wait {identifier}`" if waiting else
+               f"{identifier} ({entry['state']}) was already confirmed" if already else
+               f"confirmed {identifier} ({entry['state']})")
+    if as_json:
+        print(json.dumps({"schemaVersion": VERSION, "operation": "queue.confirm", "id": identifier,
+                          "state": entry["state"], "confirmed": entry.get("confirmed"),
+                          "alreadyConfirmed": bool(already), "message": message, "exitStatus": status}, indent=2))
+    else:
+        print(message, file=sys.stderr if waiting else sys.stdout)
+    return status
+
+
+def queue_next_action(queue, root, state):
+    """`qk queue status --json`'s nextAction, for the session asking: a hold first, then this worktree's or branch's
+    unconfirmed outcomes, then its entry still waiting, then a waiting queue with no worker; None when nothing is."""
+    from . import recovery
+
+    detail = state.get("recovery")
+    if state.get("held") and detail and detail.get("suggestedCommands"):
+        return recovery.action(detail["suggestedCommands"][0], detail["message"])
+    try: found, branch = outcomes(queue, root)
+    except (OSError, ValueError, KeyError): found, branch = [], None
+    found = [item for item in found if item["outcome"] != "held"]
+    if len(found) == 1: return found[0]["nextAction"]
+    if found:
+        return recovery.action(recovery.qualified(["qk", "queue", "inbox", "--json"], root),
+                               f"{len(found)} outcomes of this worktree or branch are unconfirmed.")
+    directory = str(Path(root).resolve())
+    own = [entry for entry in state.get("waiting", []) if entry.get("directory") == directory
+           or (branch is not None and entry.get("branch") == branch)]
+    if own:
+        return recovery.action(recovery.qualified(["qk", "queue", "wait", own[-1]["id"], "--json"], root),
+                               "Follow this worktree's entry to its result.")
+    if detail and detail.get("suggestedCommands"):
+        return recovery.action(detail["suggestedCommands"][0], detail["message"])
+    return None
