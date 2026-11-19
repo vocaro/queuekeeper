@@ -11,6 +11,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
+from host_isolation import stretched
 from queuekeeper import checkout
 from queuekeeper_mcp import server
 from test_support import queue as test_merge_queue
@@ -84,7 +85,7 @@ class Stdio(unittest.TestCase):
         if result is not None: environment["FAKE_RESULT"] = result
         finished = subprocess.run([sys.executable, str(SERVER), "--project", str(project or self.base)],
                                   input="".join(json.dumps(m) + "\n" for m in messages), capture_output=True,
-                                  text=True, env=environment, timeout=60)
+                                  text=True, env=environment, timeout=stretched(60))
         self.assertEqual(finished.returncode, 0, finished.stderr)
         return [json.loads(line) for line in finished.stdout.splitlines()]
 
@@ -159,7 +160,7 @@ class Stdio(unittest.TestCase):
     def test_a_line_that_is_not_json_is_a_parse_error(self):
         environment = {**os.environ, "PYTHONPATH": os.pathsep.join(map(str, checkout.source_paths()))}
         finished = subprocess.run([sys.executable, str(SERVER)], input="{not json\n", capture_output=True, text=True,
-                                  env=environment, timeout=60)
+                                  env=environment, timeout=stretched(60))
         self.assertEqual(json.loads(finished.stdout)["error"]["code"], -32700)
 
 
@@ -172,7 +173,7 @@ class AgainstAQueue(test_merge_queue.Fixture):
                     for number, (name, arguments) in enumerate(calls, 1)]
         finished = subprocess.run([sys.executable, str(SERVER), "--project", str(self.repo)],
                                   input="".join(json.dumps(m) + "\n" for m in messages), capture_output=True,
-                                  text=True, timeout=300)
+                                  text=True, timeout=stretched(300))
         self.assertEqual(finished.returncode, 0, finished.stderr)
         return {reply["id"]: reply["result"] for reply in map(json.loads, finished.stdout.splitlines())}
 
