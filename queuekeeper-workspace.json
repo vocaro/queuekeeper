@@ -42,7 +42,8 @@
   "queuekeeper_mcp": {
     "source": "plugins/mcp/src",
     "tests": "tests/mcp",
-    "requires": []
+    "requires": [],
+    "interface": "mcp"
   },
   "queuekeeper_dashboard": {
     "source": "plugins/visibility-dashboard/src",

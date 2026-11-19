@@ -21,12 +21,14 @@ DIAGRAM = "assets/overview.svg"
 def platform_plugins(root):
     """Each platform plugin's README path from the root, from the workspace and from plugins/ alike.
 
-    A visibility plugin is left out: the README and guides list those under Visibility features instead."""
+    A visibility plugin is left out: the README and guides list those under Visibility features instead. So is an
+    interface, such as the MCP server (`"interface"` in the workspace), which the agent sections link instead."""
     workspace = json.loads((root / "queuekeeper-workspace.json").read_text())
     readmes = {f"{entry['source']}/{package}/README.md": entry["source"].split("/")[1]
-               for package, entry in workspace.items() if "visibility" not in entry}
+               for package, entry in workspace.items() if "visibility" not in entry and "interface" not in entry}
+    interfaces = {entry["source"].split("/")[1] for entry in workspace.values() if "interface" in entry}
     folders = {path.name for path in (root / "plugins").iterdir()
-               if path.is_dir() and not path.name.startswith("visibility-")}
+               if path.is_dir() and not path.name.startswith("visibility-") and path.name not in interfaces}
     return readmes, sorted(folders - set(readmes.values()))
 
 
@@ -61,6 +63,7 @@ class PluginLists(unittest.TestCase):
         readmes, _ = platform_plugins(ROOT)
         self.assertIn("plugins/android/src/queuekeeper_android/README.md", readmes)
         self.assertNotIn("plugins/visibility-watch/src/queuekeeper_watch/README.md", readmes)
+        self.assertNotIn("plugins/mcp/src/queuekeeper_mcp/README.md", readmes)
         self.assertEqual(omissions(ROOT), [])
 
     def test_a_plugin_missing_from_a_list_or_the_diagram_is_reported(self):
