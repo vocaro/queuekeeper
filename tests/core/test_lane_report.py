@@ -846,6 +846,35 @@ class RunLoads(unittest.TestCase):
                           len(receipt["load"]["readings"])), ("failed", 7.25, 7.25, 1))
         self.assertIn(lane_report.load_line(receipt, "failed"), stream.getvalue().splitlines())
 
+    def test_the_load_is_read_over_the_admitted_run_and_not_the_wait_for_admission(self):
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": {
+            "lane": {"command": [sys.executable, "-c", "print('Ran 1 tests')"], "resource": "heavy"}}}))
+        started, recording = [], cli.record
+        def record(directory, receipt, work):
+            # The wait in the queue is measured once admitted, before the readings start.
+            started.append("queueSeconds" in receipt)
+            return recording(directory, receipt, work)
+        stream = StringIO()
+        with patch.object(cli, "refresh_policy", return_value="policy"), \
+                patch.object(cli, "source_identity", return_value={}), \
+                patch.object(cli, "record", side_effect=record), \
+                contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+            status = cli.main(["--project", str(self.root), "run", "--here", "lane"])
+        self.assertEqual(status, 0, stream.getvalue())
+        self.assertEqual(started, [True])
+        receipt = json.loads((self.root / ".build/queuekeeper/lane/source.json").read_text())
+        self.assertIn("load", receipt)
+        # A passed run says its load as well as a failed one.
+        self.assertIn(lane_report.load_line(receipt, "passed"), stream.getvalue().splitlines())
+
+    def test_load_said_words_a_receipts_load_and_says_none_was_kept_only_for_a_run_that_did_not_pass(self):
+        load = {"load": {"readings": [[31.0, 40.0, 90.0], [1014.0, 100.0, 90.0], [53.0, 70.0, 90.0]]}}
+        self.assertEqual(lane_report.load_said(load, True), "the one-minute load was highest 1014, last 53 over 3 "
+                                                            "readings, and the CPU was at most 100% busy")
+        self.assertEqual(lane_report.load_said({}, False), "its receipt keeps no reading of the load of the Mac it ran on")
+        self.assertIsNone(lane_report.load_said({}, True))
+        self.assertIsNone(lane_report.load_said(None, True))
+
 
 if __name__ == "__main__":
     unittest.main()

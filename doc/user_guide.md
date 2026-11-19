@@ -744,7 +744,11 @@ The most useful settings:
 Each run of `qk run LANE` writes its log, `.build/queuekeeper/LANE/run.log`, and a receipt,
 `source.json`, beside it: the commit and a hash of any uncommitted changes, the command and
 arguments, the exit status and outcome, the Mac, the wait for admission, the test counts and the
-Mac's load while it ran. Whole-lane runs on a clean commit are also kept by commit in the
+Mac's load while it ran. The load is read from admission to the run's end, never during the wait,
+and the summary's `load:` line gives its highest and last one-minute load, the number of readings
+and the highest CPU busy share, passed or not. A lane or lane group sent with `qk remote run` keeps
+that Mac's receipt under `result.receipt` and ends with a `remote: load on MAC` line saying the
+same. Whole-lane runs on a clean commit are also kept by commit in the
 repository's Git directory, so any worktree can ask whether that commit already passed a lane.
 `qk admit -- COMMAND` writes the same receipt, without a log, to `.build/queuekeeper/admit/`, and
 the next admitted command replaces it: copy it when it is evidence.

@@ -3369,6 +3369,32 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(lines[-2], lane_report.load_line(there, "unmeasured"))
         self.assertIn("load", there)
 
+    def test_a_lane_group_sent_with_remote_run_ends_with_the_load_of_the_mac_it_ran_on_passed_or_not(self):
+        # On 2026-11-13 a gate measured with `qk remote run gate` passed, and nothing it printed or kept gave the
+        # load of the Mac it ran on (vocaro/queuekeeper#133).
+        status, output, error = self.qk("remote", "run", "pair")
+        self.assertEqual(status, 0, output + error)
+        receipt = json.loads((self.project / ".build/queuekeeper/remote/pair/source.json").read_text())
+        there = receipt["result"]["receipt"]
+        self.assertEqual(there["parallel"], ["left", "right"])
+        self.assertGreaterEqual(len(there["load"]["readings"]), 1)
+        said = [line for line in error.splitlines() if line.startswith("remote: load on ")]
+        self.assertEqual(said, [f"remote: load on {remote.called('fake')} while pair ran: "
+                                f"{lane_report.load_said(there, True)}"], error)
+        self.assertRegex(said[0], r"while pair ran: the one-minute load (was highest [\d.]+, last [\d.]+ over \d+ "
+                                  r"readings?|could not be read), and the CPU ")
+        # A lane that did not pass says it too.
+        status, output, error = self.qk("remote", "run", "fail")
+        self.assertEqual(status, 3, output + error)
+        there = json.loads((self.project / ".build/queuekeeper/remote/fail/source.json").read_text())["result"]["receipt"]
+        self.assertIn(f"remote: load on {remote.called('fake')} while fail ran: {lane_report.load_said(there, False)}",
+                      error.splitlines())
+        # The negative control: `qk run` sent there says it once, in its own summary, and not on a line of its own.
+        status, output, error = self.qk("run", "pair")
+        self.assertEqual(status, 0, output + error)
+        self.assertNotIn("remote: load on ", error)
+        self.assertEqual(sum(line.startswith("  load: ") for line in error.splitlines()), 1, error)
+
     def test_keep_keeps_a_runs_results_beside_its_receipt_in_place_of_an_earlier_runs(self):
         base = Path(self.temp.name) / "keeping"
         kept, results = base / "store/COMMIT", base / "results"

@@ -320,7 +320,8 @@ def load_figures(readings):
 
 
 class RunLoad:
-    """The load of this Mac over a lane's run, for its receipt (vocaro/queuekeeper#133): the one-minute load and the
+    """The load of this Mac over a lane's admitted run, for its receipt (vocaro/queuekeeper#133), which cli.record starts
+    once the lane is admitted, so that its wait is no part of it: the one-minute load and the
     CPU's busy share against its busy limit, read every LOAD_SAMPLE seconds while the lane runs and once at its end, as
     a queue gate's are for its send-back (merge_queue.LoadSampler). Another Mac's own run of a lane sent there reads
     that Mac, and its receipt comes back with the result. A busy share needs a sample at least resources.BUSY_MINIMUM
@@ -374,20 +375,28 @@ class RunLoad:
         return found
 
 
-def load_line(receipt, verdict):
-    """The summary's line for the load of the Mac a lane ran on over its run, from its receipt's load (RunLoad), another
-    Mac's for a run there; for a run that did not pass and whose receipt keeps none, that none was kept; else
-    None. A lane that failed there on 2026-11-13 left its load to be read by hand (vocaro/queuekeeper#133)."""
-    load = receipt.get("load")
+def load_said(receipt, passed):
+    """What a lane's receipt says of the load of the Mac it ran on over its admitted run, from its load (RunLoad), or
+    for a run that did not pass and whose receipt keeps none, that none was kept; else None. load_line and the closing
+    lines of `qk remote run` (remote.execute) say it. A lane that failed there on 2026-11-13 left its load to be read by
+    hand, and a lane group that passed there left none at all (vocaro/queuekeeper#133)."""
+    load = receipt.get("load") if isinstance(receipt, dict) else None
     readings = load.get("readings") if isinstance(load, dict) else None
     if isinstance(readings, list):
         def figure(value):
             return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
         kept = [[figure(value) for value in reading] if isinstance(reading, list) and len(reading) == 3 else None
                 for reading in readings]
-        return f"  load: {load_figures(kept)[0]}"
-    if verdict != "passed": return "  load: its receipt keeps no reading of the load of the Mac it ran on"
+        return load_figures(kept)[0]
+    if not passed: return "its receipt keeps no reading of the load of the Mac it ran on"
     return None
+
+
+def load_line(receipt, verdict):
+    """The summary's line for the load of the Mac a lane ran on over its run, another Mac's for a run there
+    (load_said), or None."""
+    said = load_said(receipt, verdict == "passed")
+    return f"  load: {said}" if said else None
 
 
 def lane_receipt(directory):

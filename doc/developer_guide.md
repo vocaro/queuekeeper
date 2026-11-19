@@ -489,7 +489,9 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   still exits 3.
 - **Load.** `load` keeps the Mac's one-minute load, CPU busy share and busy limit every 60 seconds
   and at the end (`lane_report.RunLoad`), read where the lane ran. Both figures include the lane's
-  own work.
+  own work. `cli.record` starts it once the lane is admitted, so the wait for admission is no part
+  of it. `lane_report.load_said` words it for `qk run`'s summary and for the closing `remote:` line
+  of `qk remote run` (`remote.execute`'s `says_load`), which has no summary of its own.
 - **Scroll bars.** Each Mac run records the host's scroll-bar kind, read and never set: the global
   `AppleShowScrollBars` (or `unset`) and any external pointing device, under `scrollBars`, with one
   `queuekeeper: scroll bars:` log line per Mac. An unreadable value is `unknown`, never `unset`.

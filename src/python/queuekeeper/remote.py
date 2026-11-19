@@ -1866,7 +1866,7 @@ class Progress:
 
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
-            serial=False, subdirectory=None, sent=None, changes=False, slot=None, slot_wait=None):
+            serial=False, subdirectory=None, sent=None, changes=False, slot=None, slot_wait=None, says_load=False):
     """Run queuekeeper's work on another Mac and return its exit status, with the log and receipt kept here.
 
     work is another Mac's queuekeeper arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
@@ -1887,7 +1887,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     does not ignore comes back as a patch, CHANGES, beside the results (offload_host.gather_changes), and sent's
     ran says where the results are and what the patch holds (brought_back). With slot, only that checkout slot
     will do, and another Mac waits for it for slot_wait seconds (offload_host.claim); the receipt's
-    checkoutSlot says which was asked for and given, where it is, and how long the wait for it took.
+    checkoutSlot says which was asked for and given, where it is, and how long the wait for it took. With says_load,
+    for `qk remote run`, whose output has no summary of qk run's to say it, a lane's run there ends by saying the load
+    of that Mac over the run, as its receipt there keeps it (lane_report.load_said).
 
     The receipt's preparation records what came before another Mac's queue: the seconds of
     staging the commits, the preparing connection and the pushes here, each push's record (send),
@@ -2209,6 +2211,12 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     print(f"remote: {name} at {at} on {describe(remote)} in {result.get('checkout')}: "
           f"{'stopped' if result['stopped'] else f'exit {status}'}; results in {results}, and this dispatch's alone in "
           f"{own}", file=sys.stderr, flush=True)
+    if says_load and lane is not None and work[:1] == ["run"] and result.get("stage") == "work":
+        # The load of the Mac that ran the lane, a group's or one lane's, over its admitted run, as its own receipt
+        # there keeps it, passed or not (vocaro/queuekeeper#133). lane_report imports this module.
+        from . import lane_report
+        said = lane_report.load_said(result.get("receipt"), exit_status(result) == 0)
+        if said: print(f"remote: load on {called(host)} while {name} ran: {said}", file=sys.stderr, flush=True)
     files = [path for path in returned if path.startswith(RESULTS)]
     if files:
         # A group's lanes each write under results/LANE/.
@@ -2362,7 +2370,8 @@ def main(root, config, args):
         # A leased run sent again, after a notification reached it, offers the same commits (carrying).
         sent = {}
         send = lambda: execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect,
-                               lease=held, serial=args.serial, sent=sent, slot=slot, slot_wait=slot_wait)
+                               lease=held, serial=args.serial, sent=sent, slot=slot, slot_wait=slot_wait,
+                               says_load=True)
         if slot is not None:
             sending = send
             send = lambda: not_run_if_busy(args.lane, sending, called(host))
