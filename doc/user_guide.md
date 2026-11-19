@@ -108,8 +108,28 @@ Two defaults to know about:
 
 ### Tell your agents
 
-Agents have to be told to queue their work instead of pushing it. Add a rule like this to the
-instructions they read, such as `AGENTS.md` or `CLAUDE.md`, adapting the lane names:
+Agents have to be told to queue their work instead of pushing it. In the project, run:
+
+```sh
+qk agents setup --guard
+```
+
+It writes the rule below into `AGENTS.md`, or `CLAUDE.md` when only that exists (`--file PATH`
+picks others), and merges [Claude Code's hooks](#claude-codes-hooks) into `.claude/settings.json`,
+leaving everything else in both files as it was. Without `--guard` it adds only the session-start
+hook. Commit both files and land them, so that every worktree has them.
+
+- **Running it again** brings the rule up to date with this version of Queuekeeper. The rule sits
+  between two marker lines, and the first records a hash of what was written: a block someone
+  edited since is left alone, and `--force` replaces it.
+- **`qk agents remove`** takes out the block, unless it was edited, and only the hooks setup
+  adds. A file left empty is deleted.
+- **`qk agents check`** says what is in place, and exits 0 when the rule and the session-start
+  hook both are.
+- **`--launcher`** names the command the hooks run, `qk` unless you say otherwise, for example
+  `--launcher "python3 scripts/qk"`.
+
+For other agents, add the rule to the instructions they read yourself, adapting the lane names:
 
 ```markdown
 Never push to main. Commit on your own branch, then run `qk land --wait` as a
@@ -2423,6 +2443,37 @@ A waiting entry whose push got no answer has `reasonCode: "publication-unverifie
 means a push is in flight right now.) The worker settles the entry by fetching `origin/main`, so
 follow it with `qk queue wait ID --json` and never submit it again. If the queue is held as well,
 the advice is the hold's, since the next round can't check until the hold's cause is fixed.
+
+### Claude Code's hooks
+
+`qk agents setup` installs these in `.claude/settings.json`. Each reads the event's JSON on
+standard input, answers in Claude Code's hook format, and exits 0 whatever goes wrong, so a hook
+never stops a session.
+
+**`qk hook session-start`** tells a starting or resumed session what became of the entries its
+worktree or branch queued earlier. Of each branch's entries it reports the newest when it is
+still waiting, with the hold when the queue is held, or came back in the last fourteen days and
+is still in the queue's records. Each line gives the reason and the entry's
+`recovery.suggestedCommands`. It says nothing otherwise, and never creates a queue.
+`qk queue remove ID` silences an entry that came back and is no longer wanted. The hook is:
+
+```json
+{"SessionStart": [{"hooks": [{"type": "command", "command": "qk hook session-start", "timeout": 15}]}]}
+```
+
+**`qk hook pre-tool-use`**, with the matcher `Bash`, refuses a command that would land on `main`
+by hand and points the agent to `qk land --wait`:
+
+- `git push` to `main`: a refspec whose destination is `main`, `--all` or `--mirror`, or a bare
+  push from `main` or from a branch whose push destination is `main`;
+- `git merge` on `main`, except `--abort`, `--continue` and `--quit`;
+- moving `main` with `git update-ref` or `git branch -f`;
+- `gh pr merge`.
+
+It reads each command of a line, follows `cd`, `git -C` and `sh -c`, and skips redirections,
+variable assignments and `sudo`. It is a guard rail against a mistake, not a security boundary,
+and lets through what it cannot parse. Set `QUEUEKEEPER_GUARD=off` in Claude Code's environment
+to turn it off for a session.
 
 ### Reading logs without losing earlier output
 

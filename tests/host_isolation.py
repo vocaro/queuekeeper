@@ -158,6 +158,9 @@ os.environ.pop(cli.trial.VARIABLE, None)
 # Nor does a test start as a process that restarted itself because the suite was started by one
 # (restartable.RESTARTED): `qk serve` would not open its page. A test of a restart sets it itself.
 os.environ.pop("QUEUEKEEPER_RESTARTED", None)
+# Nor does the owner's switch that turns Claude Code's guard off (agent_hooks.GUARD_SWITCH) reach a test of the guard,
+# which a suite run from a session with the guard off would inherit. A test of the switch sets it itself.
+os.environ.pop("QUEUEKEEPER_GUARD", None)
 # Nor does a test read what a dispatch, an admission, a device pass or the merge queue tells the command it starts, which
 # the suite inherits whenever it is that command (vocaro/queuekeeper#46): the sending Mac's origin and arrival, which
 # every admission a test takes would report as its own, and the place it holds here for the run, which every admission

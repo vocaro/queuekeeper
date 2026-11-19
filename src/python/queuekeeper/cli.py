@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 
-from . import pins, __version__, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_unread_warning, project_checkout, \
@@ -1046,6 +1046,13 @@ def admitted_run(root, argv, first):
 
 
 def main(argv=None):
+    # Claude Code's hooks and their setup read no project configuration and load no extension, so that a plugin that
+    # fails to load never stops a session, and a hook that runs before each command starts fast (agent_hooks).
+    words = sys.argv[1:] if argv is None else list(argv)
+    first = 2 if words[:1] == ["--project"] else 1 if words[:1] and words[0].startswith("--project=") else 0
+    project = words[1] if first == 2 else words[0].split("=", 1)[1] if first == 1 else None
+    if words[first:first + 1] == ["hook"]: return agent_hooks.main(words[first + 1:], project)
+    if words[first:first + 1] == ["agents"]: return agent_setup.main(words[first + 1:], project)
     # A shared checkout left on a work branch runs that branch's code for every project's qk (#184).
     off_main = git_state.off_main(TOOLKIT_ROOT)
     if off_main: print(f"queuekeeper: {off_main}", file=sys.stderr, flush=True)
@@ -1453,6 +1460,11 @@ def perform(argv, report):
         "core, each module's package and every plugin it requires; exit 2 when a package is not found")
     importing.add_argument("modules", nargs="+", metavar="MODULE")
     importing.add_argument("--json", action="store_true", help="print the path and its folders as JSON")
+    commands.add_parser("agents", help="wire a project's coding agents to the queue: setup writes the rule into "
+                        "AGENTS.md or CLAUDE.md and merges Claude Code's hooks into .claude/settings.json (--guard adds "
+                        "the one that refuses landing on main by hand), remove undoes it, check says what is there")
+    commands.add_parser("hook", help="Claude Code's hooks, reading the event's JSON on stdin: session-start reports "
+                        "this worktree's entries that came back or wait; pre-tool-use refuses landing on main by hand")
     commands.add_parser("farm", help="the Macs beside this one that take work: list, add DESTINATION [--name NAME], "
                         "rename NAME NEW, pause NAME, resume NAME, remove NAME")
     commands.add_parser("visibility", help="turn the features that show the queue to its owner on and off: "

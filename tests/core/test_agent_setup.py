@@ -1,0 +1,112 @@
+"""`qk agents`: the rule in a project's agent instructions and Claude Code's hooks, written, rewritten and undone without
+touching anyone else's."""
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
+import host_isolation  # noqa: F401 -- first, as every test module
+from queuekeeper import agent_setup, cli
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class Agents(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        without = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+        self.enterContext(patch.dict(os.environ, {**without, "GIT_CONFIG_GLOBAL": os.devnull,
+                                                  "GIT_CONFIG_NOSYSTEM": "1"}, clear=True))
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True)
+        (self.root / "nested").mkdir()
+        self.settings = self.root / ".claude" / "settings.json"
+
+    def qk(self, *words):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            status = cli.main(["--project", str(self.root / "nested"), "agents", *words])
+        return status, output.getvalue()
+
+    def test_setup_and_remove_round_trip_leaves_the_project_as_it_was(self):
+        status, said = self.qk("setup", "--guard")
+        self.assertEqual(status, 0, said)
+        text = (self.root / "AGENTS.md").read_text()
+        self.assertIn(agent_setup.RULE, text)
+        settings = json.loads(self.settings.read_text())
+        self.assertEqual(settings["hooks"]["SessionStart"][0]["hooks"][0]["command"], "qk hook session-start")
+        self.assertEqual(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash")
+        self.assertEqual(self.qk("check")[0], 0)
+        status, said = self.qk("remove")
+        self.assertEqual(status, 0, said)
+        self.assertFalse((self.root / "AGENTS.md").exists())
+        self.assertFalse(self.settings.exists())
+        self.assertEqual(self.qk("check")[0], 1)
+
+    def test_others_text_and_hooks_survive_setup_rerun_and_remove(self):
+        (self.root / "CLAUDE.md").write_text("# Project\n\nOur own rules.\n")
+        self.settings.parent.mkdir()
+        theirs = {"model": "x", "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "make hello"}]}],
+                                          "Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}}
+        self.settings.write_text(json.dumps(theirs))
+        self.assertEqual(self.qk("setup", "--launcher", "python3 scripts/qk")[0], 0)
+        self.assertEqual(self.qk("setup", "--launcher", "python3 scripts/qk")[0], 0)
+        text = (self.root / "CLAUDE.md").read_text()
+        self.assertTrue(text.startswith("# Project\n\nOur own rules.\n\n<!-- queuekeeper:agents begin"))
+        self.assertEqual(text.count("queuekeeper:agents begin"), 1)
+        settings = json.loads(self.settings.read_text())
+        commands = [hook["command"] for group in settings["hooks"]["SessionStart"] for hook in group["hooks"]]
+        self.assertEqual(commands, ["make hello", "python3 scripts/qk hook session-start"])
+        self.assertNotIn("PreToolUse", settings["hooks"])
+        self.assertEqual(self.qk("remove")[0], 0)
+        self.assertEqual((self.root / "CLAUDE.md").read_text(), "# Project\n\nOur own rules.\n")
+        self.assertEqual(json.loads(self.settings.read_text()), theirs)
+
+    def test_an_edited_block_is_neither_rewritten_nor_removed_without_force(self):
+        self.qk("setup")
+        path = self.root / "AGENTS.md"
+        path.write_text(path.read_text().replace("Never push to main.", "Never, ever push to main."))
+        status, said = self.qk("remove")
+        self.assertEqual(status, 1)
+        self.assertIn("edited", said)
+        self.assertIn("Never, ever", path.read_text())
+        self.assertEqual(self.qk("setup")[0], 1)
+        self.assertIn("Never, ever", path.read_text())
+        self.assertEqual(self.qk("setup", "--force")[0], 0)
+        self.assertNotIn("Never, ever", path.read_text())
+        self.assertEqual(self.qk("remove")[0], 0)
+
+    def test_a_block_of_an_earlier_rule_is_brought_up_to_date(self):
+        path = self.root / "AGENTS.md"
+        older = "Never push to main.\n"
+        path.write_text("Intro.\n\n" + agent_setup.BEGIN.format(agent_setup.digest(older)) + "\n" + older
+                        + agent_setup.END + "\n\nOutro.\n")
+        self.assertIn("another version", self.qk("check")[1])
+        self.assertEqual(self.qk("setup")[0], 0)
+        self.assertEqual(path.read_text(), "Intro.\n\n" + agent_setup.block() + "\nOutro.\n")
+
+    def test_settings_that_are_not_json_are_left_as_they_are(self):
+        self.settings.parent.mkdir()
+        self.settings.write_text("{not json")
+        status, said = self.qk("setup")
+        self.assertEqual(status, 2)
+        self.assertEqual(self.settings.read_text(), "{not json")
+
+    def test_the_rule_is_the_user_guides(self):
+        guide = (ROOT / "doc/user_guide.md").read_text()
+        section = guide[guide.index("### Tell your agents"):]
+        found = re.search(r"```markdown\n(.*?)```", section, re.DOTALL)
+        self.assertEqual(found.group(1), agent_setup.RULE)
+
+
+if __name__ == "__main__":
+    unittest.main()

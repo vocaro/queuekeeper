@@ -95,9 +95,11 @@ def for_entry(entry, held=None, *, limit_reached=False, unverified=False):
                       [["qk", "queue", "wait", identifier, "--json"]])
     if state == "landed":
         return advice("entry-landed", None, False, "none", "The entry landed.")
+    # A send-back's result names the failed tests or conflicting files, and its logs.
     if state == "conflict":
         return advice("entry-conflict", "session", False, "fix-conflict",
-                      entry.get("why") or "Resolve the conflict and submit the corrected commits.")
+                      entry.get("why") or "Resolve the conflict and submit the corrected commits.",
+                      [["qk", "queue", "result", identifier, "--json"]])
     if state == "failed" and entry.get("conflictWith"):
         # It fails only together with these entries, each sent back too (merge_queue.Worker.together): their IDs
         # and commits, to rebase onto, and how to read why each came back.
@@ -109,7 +111,8 @@ def for_entry(entry, held=None, *, limit_reached=False, unverified=False):
                 "conflictWith": partners}
     if state == "failed":
         return advice("entry-failed", "session", False, "fix-failure",
-                      entry.get("why") or "Inspect the result and fix the failure before submitting again.")
+                      entry.get("why") or "Inspect the result and fix the failure before submitting again.",
+                      [["qk", "queue", "result", identifier, "--json"]])
     if state == "removed":
         return advice("entry-removed", "session", False, "none", "The entry was removed from the queue.")
     return advice("entry-unknown-state", "unknown", False, "inspect-entry",

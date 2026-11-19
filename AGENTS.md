@@ -61,6 +61,7 @@ are evidence, not caches.
 - `src/python/queuekeeper/merge_queue.py`: submission, batching, workers and landing.
 - `src/python/queuekeeper/agent_cli.py`, `agent_results.py`, `agent_logs.py` and `recovery.py`:
   structured results, resumable log reads and recovery commands.
+- `src/python/queuekeeper/agent_setup.py` and `agent_hooks.py`: `qk agents` and the Claude Code hooks it installs.
 - `src/python/queuekeeper/config.py` and `schemas/queuekeeper.schema.json`: project settings;
   keep the parser and schema consistent.
 - `src/python/queuekeeper/extensions.py`: extension hooks. Keep platform behavior in its extension;

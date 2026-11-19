@@ -48,10 +48,11 @@ later if builds need it. You can do each step below yourself, following the
 2. **Configure each project.** Add a `queuekeeper.json` whose gate runs the project's checks, enable
    the [plugins](#plugins) it needs, and resolve what `qk doctor` reports. Each project keeps its own
    gate and queue while sharing the Mac's capacity.
-3. **Teach your agents.** Add the [agent instructions](doc/user_guide.md#tell-your-agents) to each
-   project's `CLAUDE.md` or `AGENTS.md`, so agents land work with `qk land --wait` instead of pushing
-   to `main` and run builds and tests through `qk run` or `qk admit`. Installing `qk` alone does not
-   change how agents work.
+3. **Teach your agents.** Run `qk agents setup --guard` in each project. It writes the
+   [agent instructions](doc/user_guide.md#tell-your-agents) into `AGENTS.md` or `CLAUDE.md`, so agents
+   land work with `qk land --wait` instead of pushing to `main` and run builds and tests through
+   `qk run` or `qk admit`, and adds Claude Code hooks that report entries that came back when a
+   session starts and refuse pushes to `main`. Installing `qk` alone does not change how agents work.
 4. **Land the setup** through Queuekeeper with `qk land --wait`. Later landings use the gate on
    `main`, so a branch cannot loosen its own checks.
 5. **Follow the work** in the [dashboard](#dashboard), through
