@@ -69,7 +69,7 @@ import uuid
 import zlib
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
-from . import window_placement
+from . import count_history, window_placement
 from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_folders, sibling_variables, unlocked_screen
 from . import farm
 from .resources import BUSY, FREE_WAIT
@@ -1239,13 +1239,8 @@ def passed(root, lane, revision="HEAD"):
         receipt = json.loads((store(root) / commit / f"{lane}.json").read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(receipt, dict): return None
-    result = receipt.get("result", {})
-    whole = receipt.get("commit") == commit and receipt.get("lane") == lane and not receipt.get("arguments") \
-        and not receipt.get("snapshot") and not receipt.get("toolkitSnapshot") and not receipt.get("serial")
     # A run on this Mac counts by its judged verdict, which a zero exit that ran too few tests is not.
-    judged = receipt.get("ranOn") != HERE or result.get("outcome") == "passed"
-    return receipt if whole and judged and result.get("exitStatus") == 0 and not result.get("stopped") else None
+    return receipt if count_history.passing(receipt, commit, lane, HERE) else None
 
 
 # A receipt's ranOn for a run on this Mac, as cli.placement writes it.
@@ -1394,6 +1389,22 @@ def keep_here(root, lane, receipt, status, whole=True, results=None):
               f"it: {error}", file=sys.stderr, flush=True)
         return None
     return directory / f"{lane}.json"
+
+
+def held_to_history(root, lane, receipt):
+    """Fail a whole lane's pass on another Mac, in its dispatch's receipt, that executed fewer tests than the lane's
+    last passing whole run on main on that Mac (count_history.dropped), saying why: its result's exitStatus becomes 2
+    and the lane's own receipt says failed, with the reason under error, so that it is kept and returned as a failure."""
+    result = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
+    if result.get("exitStatus") != 0 or result.get("stopped") or result.get("stage", "work") != "work": return
+    inner = count_history.lane_receipt(receipt)
+    if not inner: return
+    why = count_history.dropped(root, store(root), lane, {**inner, "project": {"revision": receipt.get("commit")}},
+                                HERE, say=lambda words: print(f"remote: {words}", file=sys.stderr, flush=True))
+    if why is None: return
+    print(f"queuekeeper: {why}", file=sys.stderr, flush=True)
+    result["exitStatus"] = 2
+    inner.update(outcome="failed", error=why)
 
 
 def ran_where(receipt):
@@ -2183,6 +2194,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     if slot is not None:
         receipt["checkoutSlot"] = {"requested": slot, "assigned": result.get("slot"), "path": result.get("checkout"),
                                    "waitSeconds": wait}
+    # A whole lane's pass is held to its count's history here, where the repository's kept runs are: the Mac that ran
+    # it holds none of this repository's (count_history).
+    if lane is not None and not arguments and expect is None and commit == head and not serial and not members:
+        held_to_history(root, lane, receipt)
     own = file_results(base, name, dispatch, staging, receipt)
     if sent is not None:
         sent["ran"] = {"mac": farm.named(host), "results": str(own), "checkout": result.get("checkout"), "changes": result.get("changes"),

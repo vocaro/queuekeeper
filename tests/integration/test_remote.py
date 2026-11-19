@@ -3194,6 +3194,36 @@ class RemoteTests(unittest.TestCase):
                          "fake")
         self.assertNotIn("buildHost", error)
 
+    def test_a_whole_lane_on_another_mac_is_held_here_to_its_last_pass_on_main(self):
+        """The Mac that ran the lane holds none of this repository's kept runs, so the Mac that sent it judges its count
+        against them, and keeps and returns a fall as a failure (count_history)."""
+        git(self.project, "update-ref", "refs/heads/main", "HEAD")
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        kept = remote.store(self.project) / self.commit / "gate.json"
+        receipt = json.loads(kept.read_text())
+        self.assertEqual(receipt["ranOn"], "fake")
+        self.assertEqual(receipt["result"]["receipt"]["tests"], {"executed": 2, "skipped": 0})
+        # As if the pass on main had run a test more than the lane now runs.
+        receipt["result"]["receipt"]["tests"]["executed"] = 3
+        kept.write_text(json.dumps(receipt))
+        (self.project / "notes.txt").write_text("a change\n")
+        fell = commit_all(self.project)
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 2, output + error)
+        self.assertIn(f"gate executed 2 tests, 1 fewer than the 3 its last passing whole run on "
+                      f"{receipt['result']['receipt']['mac']} executed at {self.commit[:12]}", error)
+        failed = json.loads((remote.store(self.project) / fell / "gate.json").read_text())
+        self.assertEqual((failed["result"]["exitStatus"], failed["result"]["receipt"]["outcome"]), (2, "failed"))
+        self.assertIn("Tests-Removed: gate", failed["result"]["receipt"]["error"])
+        self.assertIsNone(remote.passed(self.project, "gate"))
+        # The negative control: a commit that says the lane's tests were removed lands the fall.
+        git(self.project, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty",
+            "-m", "Remove a test\n\nTests-Removed: gate")
+        status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("which a commit since says with Tests-Removed: gate", error)
+
     def test_a_receipt_from_before_the_rename_counts_as_one_of_now(self):
         # Receipts written before vocaro-engineering#58 say another Mac's run ran on the build host.
         self.assertEqual(self.run_here("gate")[0], 0)

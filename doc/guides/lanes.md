@@ -14,9 +14,11 @@ running on this Mac, both in a directory of that run's own, which its summary na
 with any arguments given after `--` appended, those `arguments` on their own, and the exit
 status or `failed-or-interrupted`. A lane's `compileFirst` step that fails records the outcome
 `build-failed`, apart from `failed` and `unmeasured`, and no test ran (apple-engineering's guides/app-testing.md,
-Compile before the tests). After a zero exit, a lane with `minimumTests` fails unless
-the log reports at least that many executed XCTest, Swift Testing, unittest or pytest tests; a run with
-arguments needs at least one. `--expect N` requires exactly N. The count is the sum of each
+Compile before the tests). After a zero exit, a run whose log reports executed XCTest, Swift Testing, unittest
+or pytest tests must report at least one that ran, a whole run must execute as many as its lane's last pass on
+main ([test counts from history](#test-counts-from-history)), and a lane with `minimumTests` fails unless
+the log reports at least that many. `--expect N` requires exactly N. The receipt records the counts under `tests`,
+`{"executed": N, "skipped": M}`. The count is the sum of each
 XCTest bundle's top-level total (`All tests`, or `Selected tests` when filtered), each Swift
 Testing run, each unittest run and each pytest run: `swift test` and `xcodebuild` run each bundle under its own
 top suite, so the largest total counted one bundle (2,516 of a 3,355-test EPUBLib run, Xcode
@@ -36,9 +38,50 @@ fails, saying how many skipped, and one that a test the host left unmeasured lea
 floor is unmeasured. A wrapper that counts skips apart prints its own `Executed N tests, M
 skipped`, with N leaving them out. Only the lane's own log is counted. A gate that writes each step's output to a log
 of its own leaves no count there, so its lane either puts that output on its own output as well,
-as PDFReflowLib's gate lanes do by running the steps serially, or sets no `minimumTests`.
+as PDFReflowLib's gate lanes do by running the steps serially, or is held to no count.
 
-A floor typed by hand drifts from the tests its lane selects, and a floor alone reports none of it: a
+### Test counts from history
+
+A gate that passes without testing, because nothing ran, every test skipped, or a bundle, module or file
+silently dropped out of what it selects, must not land ([#77](https://github.com/vocaro/queuekeeper/issues/77),
+[#153](https://github.com/vocaro/queuekeeper/issues/153)). No number in `queuekeeper.json` is needed for that:
+
+- A run whose log reports a count fails unless at least one test ran. A run whose every selected test skipped
+  fails, saying how many skipped. A lane whose log reports no count, such as a spelling check, is held to none.
+- A whole run, with no arguments or `--expect`, is held to the count of the lane's last passing whole run on main
+  on the same Mac. Every whole run is already kept by commit in the repository's Git directory, from any worktree
+  or the merge queue's checkout, and a run on another Mac by the Mac that sent it, which is where it is judged.
+  `qk run` searches up to 200 commits of main below the run's commit, along first parents, for the newest such run
+  that passed and recorded a count. A run that executed fewer fails, exit 2, naming the count, the commit and the
+  kept receipt to compare with:
+
+```text
+queuekeeper: gate executed 2511 tests, 5 fewer than the 2516 its last passing whole run on Trevors-MacBook-Pro executed at 1f2e3d4c5b6a (…/.git/queuekeeper/remote/1f2e3d4c…/gate.json). If tests were removed on purpose, add the trailer `Tests-Removed: gate` to a commit after 1f2e3d4c5b6a; otherwise find what stopped running, such as a bundle, module or file the lane no longer selects or whose tests now skip
+```
+
+A log that reports no count after one that did counts as 0. A count that rises needs nothing, and becomes the
+lane's count once its run passes on main. Only runs on main set the count, so that a branch's run whose count fell
+cannot lower it before the queue has checked it. Main is `origin/main`, or the local `main` in a checkout with no
+origin. A Mac compares only with its own runs, since a test can skip on one Mac and run on another; a Mac with no
+pass of the lane yet is held only to the first rule.
+
+A change that deletes tests on purpose says so in any of its commits with a trailer naming each lane whose count
+falls, or `*` for every lane:
+
+```text
+Remove the old parser and its tests
+
+Tests-Removed: gate, unit
+```
+
+The trailer counts only in a commit after the run it is compared with, so it lets one fall land and nothing
+after it. A run with arguments selects part of the lane, and is compared with no whole run: it needs one test that
+ran, or its `--expect`. A lane group is not compared as a whole; each of its lanes is held to the first rule.
+
+### Counts typed by hand
+
+`minimumTests` and `exactTests` still work, beside the history, for a lane that wants a number. Most lanes need
+neither. A floor typed by hand drifts from the tests its lane selects, and a floor alone reports none of it: a
 run passes with any count at or above it. BreezEPUB had seven lanes whose floors were below what they
 ran, `navigation-keys` with a floor of 1 and 5 tests, so that four of them could have stopped running
 with nothing said, and a test that another landing added to the accessibility lanes left their floors
@@ -60,8 +103,11 @@ the change has landed. Such a project also keeps a script test in its gate that 
 count from the test sources and compares it with `minimumTests`, and checks that each test the lane
 names exists, so that adding, deleting or renaming a test fails the gate. BreezEPUB's
 `scripts/tests/test_ui_test_counts.py` does so with an inventory read from its bundles' Swift sources,
-`scripts/ui_test_inventory.py`. A lane whose suite grows with every change, such as a library's whole
-unit suite, leaves `exactTests` out and keeps a floor.
+`scripts/ui_test_inventory.py`. A lane that says `"exactTests": true` is held to its own count, not its
+history. A lane whose suite grows with every change, such as a library's whole unit suite, needs no number: its
+history holds it. Between 2026-10-01 and 2026-11-18 the projects committed about 100 edits to `minimumTests`, the
+floor following the tests rather than guarding them. Keep a floor only where a lane must not fall below a count
+even on a Mac that has no pass of it yet.
 
 A lane is unmeasured, exit 3, when its command exits 3, when its command exits 0 but its log
 reports a test unmeasured ([honest outcome states](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/evidence.md#honest-outcome-states)), or when its

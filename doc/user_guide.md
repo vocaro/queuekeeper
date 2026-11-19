@@ -394,8 +394,8 @@ The most useful settings:
 | `wholeHost` | The lane starts its own parallel jobs and needs the whole Mac |
 | `unlockedScreen` | Runs only on a Mac whose screen is unlocked ([Screen lock](#screen-lock)) |
 | `labels` | Runs only on a Mac whose settings give it every label, such as `["unity-license"]` ([what a Mac takes](guides/shared-host.md#what-a-mac-takes)) |
-| `minimumTests` | Fails a run that executes fewer tests, so a run that silently selects nothing fails |
-| `exactTests` | With `minimumTests`, a whole run must execute exactly that many |
+| `minimumTests` | Rarely needed: a typed floor beside the [count from history](guides/lanes.md#test-counts-from-history), which already fails a whole run that executes fewer tests than the lane's last pass on main |
+| `exactTests` | With `minimumTests`, a whole run must execute exactly that many, for a lane that picks its tests by name |
 | `arguments` | `false` refuses `qk run LANE -- ARGUMENTS` for a lane that selects its own tests |
 | `budgetMinutes` | Warns when the gate's median time drifts past this target, naming the slowest parts |
 | `failedTests` | Lets the queue rerun a non-Python lane's failed tests ([When a batch fails](#when-a-batch-fails)) |

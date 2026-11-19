@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 
-from . import pins, __version__, budgets, checkout, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+from . import pins, __version__, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling, trial
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_spelling_warning, legacy_unread_warning, project_checkout, \
@@ -237,9 +237,10 @@ def expect_mismatch(error, log, asked, repeats=None):
 
 def judge(lane, result, log, extra=(), expect=None):
     """A lane's status and unmeasured tests from its command's status and its log. A completed run
-    that executed too few tests raises ValueError, as does one that executed any count but its minimumTests when the
-    lane says "exactTests": true, so that a count typed by hand cannot drift from the tests the lane selects
-    (vocaro/queuekeeper#77)."""
+    that executed too few tests raises ValueError: none, where its log reports a count, or fewer than the lane's
+    minimumTests, or any count but its minimumTests when the lane says "exactTests": true, so that a count typed by
+    hand cannot drift from the tests the lane selects (vocaro/queuekeeper#77). A whole run is held to its lane's
+    history apart from this, by held_to_history."""
     measured = result in (0, lane_results.UNMEASURED)
     not_run = []
     repeats = lane_results.repeats_asked(extra)
@@ -251,9 +252,12 @@ def judge(lane, result, log, extra=(), expect=None):
         cause = f"--repeat {repeats} was asked for, and the lane's log reports no series of {repeats} runs"
         print(f"queuekeeper: unmeasured: {cause}", file=sys.stderr)
         return lane_results.UNMEASURED, [cause]
-    if measured and (lane.get("minimumTests") or expect):
+    # A log that reports a count must report a test that ran, with or without a minimumTests: a run that executed none,
+    # or whose every selected test skipped, tested nothing. A lane whose log reports no count, such as a spelling check,
+    # is held to none here, and to its history once a whole run has counted (count_history).
+    if measured and (lane.get("minimumTests") or expect or lane_results.counted(log) is not None):
         # Arguments such as a filter select part of the lane, which must still run a test.
-        minimum = 1 if extra or expect else lane["minimumTests"]
+        minimum = 1 if extra or expect or not lane.get("minimumTests") else lane["minimumTests"]
         # The whole lane's count is exact where the lane says so, as --expect makes a filtered run's.
         exact = lane.get("exactTests") and not extra and not expect
         try:
@@ -284,6 +288,18 @@ def judge(lane, result, log, extra=(), expect=None):
                   sep="\n", file=sys.stderr)
         return lane_results.UNMEASURED, list(dict.fromkeys([*not_run, *unmeasured]))
     return result, []
+
+
+def held_to_history(root, name, lane, receipt):
+    """Raise ValueError when a passing whole run of the lane name executed fewer tests than its last passing whole run
+    on main on this Mac (count_history.dropped). A lane that says "exactTests": true is held to its own count instead,
+    and work run here for another Mac is held to the history of the Mac that sent it (remote.held_to_history)."""
+    if lane.get("exactTests") or os.environ.get(remote.DISPATCHER): return
+    try: store = remote.store(root)
+    except (OSError, RuntimeError, subprocess.SubprocessError): return
+    why = count_history.dropped(root, store, name, receipt, remote.HERE,
+                                say=lambda words: print(f"queuekeeper: {words}", file=sys.stderr, flush=True))
+    if why is not None: raise ValueError(why)
 
 
 def lane_command(lane, extra=()):
@@ -1183,7 +1199,7 @@ def perform(argv, report):
         "a test filter, to the lane's command")
     run.add_argument("--expect", type=int, metavar="N", help="require exactly N executed tests, skipped and "
         "canceled ones excluded: N selected with some skipped or canceled is unmeasured, exit 3, any other count fails, "
-        "and either says the counts executed and skipped; without it, a run with arguments needs at least one in place of the lane's minimumTests, which a whole run must reach, or equal where the lane says \"exactTests\": true")
+        "and either says the counts executed and skipped; without it, a run needs at least one where its log reports a count, a whole run as many as the lane's last pass on main (doc/guides/lanes.md), and the lane's minimumTests where it gives one, or exactly that where it says \"exactTests\": true")
     where = run.add_mutually_exclusive_group()
     where.add_argument("--here", action="store_true", help="run the lane on this Mac rather than on another Mac: "
         "for a build whose products the session uses here, or, with the owner's decision, while another Mac is "
@@ -1833,8 +1849,11 @@ def perform(argv, report):
             # The command has a confirmed terminal result. Coverage validation cannot turn
             # that completed process into an orphan reservation.
             log = (directory / "run.log").read_text(errors="replace")
+            tests = count_history.counts(lane_results.counted(log))
+            if tests is not None: receipt["tests"] = tests
             try:
                 status, unmeasured = judge(lane, result, log, extra, args.expect)
+                if status == 0 and whole: held_to_history(root, args.lane, lane, receipt)
             except ValueError as error:
                 concluded(2, error=str(error))
                 raise

@@ -19,7 +19,7 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
-from queuekeeper import cli, config, lane_results, place_holder, processes, resources
+from queuekeeper import cli, config, lane_results, offload_host, place_holder, processes, remote, resources
 from queuekeeper_mobile import devices
 from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import display, foreground
@@ -607,6 +607,81 @@ class ConfigurationTests(unittest.TestCase):
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
                 "gate": lane(), "group": {"parallel": ["gate"], "exactTests": True}}}))
             with self.assertRaisesRegex(ValueError, "Lane group group takes only"): config.load(root)
+
+    def test_a_lane_with_no_minimum_still_fails_a_run_whose_counted_tests_all_skipped_or_none_ran(self):
+        """A lane needs no minimumTests to catch a gate that tested nothing: a log that reports a count must report a
+        test that ran. A lane whose log reports no count, such as a spelling check, is held to none."""
+        with tempfile.TemporaryDirectory() as directory:
+            def lane(output):
+                return {"command": [sys.executable, "-c", f"print({output!r})"]}
+            (Path(directory) / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                "none": lane("Ran 0 tests"), "skipped": lane("Ran 2 tests\n\nOK (skipped=2)"),
+                "ran": lane("Ran 2 tests\n\nOK (skipped=1)"), "uncounted": lane("no misspellings")}}))
+            for name, status, said in [("none", 2, "Expected at least 1 executed tests; observed 0"),
+                                       ("skipped", 2, "observed 0 (2 skipped, which do not count)"),
+                                       ("ran", 0, None), ("uncounted", 0, None)]:
+                with self.subTest(name), patch.object(cli, "source_identity", return_value={}), \
+                        contextlib.redirect_stderr(StringIO()) as error:
+                    self.assertEqual(cli.main(["--project", directory, "run", name]), status, error.getvalue())
+                    recorded = json.loads((Path(directory) / ".build/queuekeeper" / name / "source.json").read_text())
+                    if said: self.assertIn(said, recorded["error"])
+                    # The receipt keeps the counts the log reports, which a later run is held to (count_history).
+                    if name == "ran": self.assertEqual(recorded["tests"], {"executed": 1, "skipped": 1})
+                    if name == "uncounted": self.assertNotIn("tests", recorded)
+
+    def test_a_whole_run_that_executed_fewer_tests_than_its_last_pass_on_main_fails_without_a_minimum(self):
+        """Projects committed about 100 edits to their lanes' minimumTests in seven weeks, the floor following the
+        tests. A whole run is held to the count of its lane's last passing whole run on main on this Mac instead."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*arguments):
+                return subprocess.run(["git", "-C", directory, "-c", "user.name=Test", "-c", "user.email=t@example.com",
+                                       *arguments], check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q", "-b", "main")
+            (root / ".gitignore").write_text(".build/\n")
+            count = [sys.executable, "-c", "import pathlib; print('Ran', pathlib.Path('count.txt').read_text().strip(), 'tests')"]
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                "test": {"command": count}, "exact": {"command": count, "minimumTests": 4, "exactTests": True}}}))
+            def landed(tests, message="state"):
+                (root / "count.txt").write_text(f"{tests}\n")
+                git("add", "-A")
+                git("commit", "-q", "--allow-empty", "-m", message)
+                return git("rev-parse", "HEAD")
+            def run(*arguments):
+                with patch.object(cli, "refresh_policy", return_value="policy"), \
+                        contextlib.redirect_stderr(StringIO()) as error:
+                    status = cli.main(["--project", directory, "run", *arguments])
+                lane = arguments[0]
+                return status, error.getvalue(), json.loads((root / ".build/queuekeeper" / lane / "source.json").read_text())
+            first = landed(5)
+            # The pass kept by commit, as keep_here keeps one where the toolkit has no working changes.
+            for lane in ("test", "exact"):
+                (remote.store(root) / first).mkdir(parents=True, exist_ok=True)
+                (remote.store(root) / first / f"{lane}.json").write_text(json.dumps({
+                    "ranOn": remote.HERE, "commit": first, "head": first, "lane": lane, "arguments": [],
+                    "result": {"exitStatus": 0, "outcome": "passed", "stopped": False,
+                               "receipt": {"mac": offload_host.mac_name(), "tests": {"executed": 5, "skipped": 0}}}}))
+            landed(4)
+            status, said, recorded = run("test")
+            self.assertEqual((status, recorded["outcome"]), (2, "failed"), said)
+            words = (f"test executed 4 tests, 1 fewer than the 5 its last passing whole run on {offload_host.mac_name()} "
+                     f"executed at {first[:12]}")
+            self.assertIn(words, said)
+            self.assertIn("add the trailer `Tests-Removed: test` to a commit after", recorded["error"])
+            self.assertEqual(recorded["tests"], {"executed": 4, "skipped": 0})
+            # A run with arguments selects part of the lane, and is compared with no whole run.
+            self.assertEqual(run("test", "--", "x")[0], 0)
+            # A lane that says its count is exact is held to that count alone.
+            self.assertEqual(run("exact")[0], 0)
+            # Additions need nothing.
+            landed(9)
+            self.assertEqual(run("test")[0], 0)
+            # A commit that says its tests were removed lets the count fall.
+            landed(4, "Remove a test\n\nTests-Removed: test")
+            status, said, recorded = run("test")
+            self.assertEqual((status, recorded["outcome"]), (0, "passed"), said)
+            self.assertIn(f"{words} (", said)
+            self.assertIn(f"/{first}/test.json), which a commit since says with Tests-Removed: test", said)
 
     def test_a_lane_that_takes_no_arguments_refuses_them_before_anything_runs_or_is_sent(self):
         """BreezEPUB's ways-in on 2026-11-13 refused two -only-testing arguments in its own script, after the run had

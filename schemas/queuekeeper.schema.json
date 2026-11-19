@@ -192,12 +192,12 @@
             ]
           },
           "minimumTests": {
-            "description": "The fewest executed tests the lane's log must report for a whole run that exits 0 to pass; a skipped test counts toward none. With exactTests, the count the run must equal (doc/guides/lanes.md, Receipts and test counts)",
+            "description": "A floor typed by hand: the fewest executed tests the lane's log must report for a whole run that exits 0 to pass; a skipped test counts toward none. Without it, a log that reports a count must report one test that ran, and a whole run must execute as many as the lane's last passing whole run on main on the same Mac, unless a commit since says Tests-Removed: LANE (doc/guides/lanes.md, Test counts from history). With exactTests, the count the run must equal",
             "type": "integer",
             "minimum": 1
           },
           "exactTests": {
-            "description": "Whether a whole run of the lane must execute exactly its minimumTests, which the lane must then give: any other count fails, naming the count observed, so that adding, deleting or renaming a test the lane selects fails the lane instead of leaving minimumTests wrong. Left out or false, minimumTests is a floor. A run with arguments needs one test, or its --expect, as before",
+            "description": "Whether a whole run of the lane must execute exactly its minimumTests, which the lane must then give: any other count fails, naming the count observed, so that adding, deleting or renaming a test the lane selects fails the lane instead of leaving minimumTests wrong. Left out or false, minimumTests is a floor. A lane that says true is held to this count instead of its history. A run with arguments needs one test, or its --expect, as before",
             "type": "boolean"
           },
           "arguments": {
