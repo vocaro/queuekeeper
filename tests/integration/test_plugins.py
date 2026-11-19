@@ -259,7 +259,6 @@ class OldPluginNameTests(unittest.TestCase):
         from queuekeeper import config
         for old, package in [("queuekeeper.apple", "queuekeeper_apple"),
                              ("queuekeeper.mac_desktop", "queuekeeper_mac_desktop"),
-                             ("queuekeeper.mac_hardware", "queuekeeper_mac_hardware"),
                              ("queuekeeper.unity", "queuekeeper_unity")]:
             for declared in ([old], [{"module": old, "path": "../kit/src"}]):
                 with self.subTest(declared=declared), self.assertRaisesRegex(
@@ -296,3 +295,30 @@ class OldPluginNameTests(unittest.TestCase):
         from queuekeeper import config
         declared = ["queuekeeper_apple", {"module": "queuekeeper_mac_desktop", "path": "../kit/src"}, "custom.hooks"]
         self.assertEqual(config.plugins(declared), declared)
+
+
+class ChipsGoneTests(unittest.TestCase):
+    """A lane's chips and the Mac hardware plugin that gave it are refused, saying that labels replace them
+    (vocaro/queuekeeper#224)."""
+    def parse(self, **value):
+        import json
+        from queuekeeper import config
+        return config.parse(json.dumps({"schemaVersion": 1, "name": "chips", **value}))
+
+    def test_a_lane_that_lists_chips_is_refused_naming_labels(self):
+        with patch.object(plugins, "LOADED", []), self.assertRaisesRegex(
+                ValueError, r"^gate\.chips, which kept a lane on a Mac with a listed chip, is gone from Queuekeeper: "
+                            r"labels replace it\. .*mac-settings\.json"):
+            self.parse(lanes={"gate": {"command": ["true"], "chips": ["apple-m5-max"]}})
+
+    def test_the_plugin_is_refused_by_either_name_and_loads_nothing(self):
+        for named in ("queuekeeper_mac_hardware", "queuekeeper.mac_hardware"):
+            with self.subTest(named=named), patch.object(plugins, "LOADED", []), self.assertRaisesRegex(
+                    ValueError, rf"^plugins names {named}, which kept a lane .* labels replace it"):
+                self.parse(plugins=[named], lanes={})
+            self.assertNotIn(named, sys.modules)
+
+    def test_the_same_lane_with_labels_is_taken(self):
+        with patch.object(plugins, "LOADED", []):
+            self.assertEqual(self.parse(lanes={"gate": {"command": ["true"], "labels": ["apple-m5-max"]}})
+                             ["lanes"]["gate"]["labels"], ["apple-m5-max"])

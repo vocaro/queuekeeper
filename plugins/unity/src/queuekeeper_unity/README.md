@@ -49,8 +49,9 @@ keeps simulating on the GPU while it is unfocused. So a `"unity": true` lane who
 `exclusive` also ends unmeasured while any editor on that Mac, on any project, is in Play mode.
 A paused editor, or one whose Play state cannot be read, does not stop it.
 
-A lane whose results differ by GPU, such as one that compares rendered images, also lists its chips
-with the [Mac hardware plugin](../mac_hardware/README.md), which keeps it on a Mac that has one.
+A lane whose results differ by GPU, such as one that compares rendered images, also needs a label
+naming the chip, such as `"labels": ["apple-m5-max"]`, which keeps it on a Mac whose settings give
+that label (the user guide's What a Mac takes).
 
 ## Doctor, disk and host
 

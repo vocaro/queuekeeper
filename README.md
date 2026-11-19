@@ -128,9 +128,6 @@ key loads the core alone.
   logged-in session when nobody is at it. Crash dialogs, notification banners, locked keychains and
   lapsed permissions are cleared, or the run is reported as unmeasured instead of failed. The mobile
   and Unity plugins build on it.
-- **[Mac hardware](plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md)** keeps a lane on the
-  chip its results are valid on. A lane whose output differs by GPU lists its chips, such as
-  `"chips": ["apple-m5-max"]`, and runs only on a Mac that has one.
 
 ## Documentation
 

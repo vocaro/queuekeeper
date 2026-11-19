@@ -20,11 +20,6 @@
     "tests": "tests/mac_desktop",
     "requires": []
   },
-  "queuekeeper_mac_hardware": {
-    "source": "plugins/mac-hardware/src",
-    "tests": "tests/mac_hardware",
-    "requires": []
-  },
   "queuekeeper_mobile": {
     "source": "plugins/mobile/src",
     "tests": "tests/mobile",

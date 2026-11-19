@@ -43,6 +43,7 @@ def plugins(declared):
         if not isinstance(named, str) or not re.fullmatch(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", named) or (
                 isinstance(entry, dict) and (set(entry) - {"module", "path"} or not isinstance(entry.get("path", ""), str))):
             raise ValueError('plugins lists module names, or {"module": NAME, "path": FOLDER}')
+        if named in (CHIPS_PLUGIN, __package__ + ".mac_hardware"): raise ValueError(f"plugins names {named}, {CHIPS_GONE}")
         unknown(named)
         normalized.append(dict(entry) if isinstance(entry, dict) else named)
     return normalized
@@ -139,12 +140,11 @@ def load(root):
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms", "exactTests",
+                       "deviceRunMinutes", "stall", "unity", "arguments", "idioms", "exactTests",
                        "failedTests", "labels", "sandbox", "timing", "notice"})
 # The lane keys above that a plugin shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the plugin is told which to switch on.
-PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
-                       "chips": "queuekeeper_mac_hardware", "devices": "queuekeeper_mobile",
+PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity", "devices": "queuekeeper_mobile",
                        "deviceRunMinutes": "queuekeeper_mobile", "idioms": "queuekeeper_apple"}
 # The top-level keys a plugin shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
 PLUGIN_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple",
@@ -196,6 +196,7 @@ def parse(source):
         if isinstance(lane, dict) and "parallel" in lane:
             group(name, lane, lanes)
             continue
+        if isinstance(lane, dict) and "chips" in lane: raise ValueError(f"{name}.chips, {CHIPS_GONE}")
         if not isinstance(lane, dict) or set(lane) - LANE_KEYS - set(hooks.LANE_KEYS):
             raise ValueError(f"Invalid lane {name}")
         apps(name, lane)
@@ -428,6 +429,12 @@ def exclusive_refusal(config, command):
 # The lane the merge queue runs after the preflight lanes and before its gate where a project has one: the setup a gate
 # assumes.
 PROVISION = "provision"
+# The Mac hardware plugin, removed with its lane key chips once labels did the same (vocaro/queuekeeper#224).
+CHIPS_PLUGIN = "queuekeeper_mac_hardware"
+# Why a lane's chips, and the plugin that gave it, are refused.
+CHIPS_GONE = ("which kept a lane on a Mac with a listed chip, is gone from Queuekeeper: labels replace it. Give the Mac "
+              "the chip's name as a label in its mac-settings.json, such as \"labels\": [\"apple-m5-max\"], and the lane "
+              "the same \"labels\"; the user guide's What a Mac takes says how")
 # Why queuekeeper.json's spelling and queue.spelling are refused. Spelling is no concern of Queuekeeper's: a project
 # that wants a spelling check, a linter or a formatter check makes it a lane of its own and lists it in
 # queue.preflight (vocaro/queuekeeper#69).
@@ -907,7 +914,7 @@ def stays(lanes, name):
     if lane.get("here"): return f"the lane says: {lane['here']}"
     for member in lane.get("parallel", []):
         if lanes[member].get("here"): return f"its lane {member} says: {lanes[member]['here']}"
-    # A key a plugin added may keep the lane here too, such as the chips its results are valid on.
+    # A key a plugin added may keep the lane here too.
     placed = hooks.placement(lanes, name)
     return placed[1] if placed and placed[0] == {hooks.HERE} else None
 

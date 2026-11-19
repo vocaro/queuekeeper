@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 700" role="img" aria-labelledby="t d" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
   <title id="t">How Queuekeeper fits together</title>
-  <desc id="d">You direct AI agents such as Claude Code and Codex, each in its own worktree of one of your projects. Agents land commits with qk land and get verdicts back, and run builds and tests with qk run. In Queuekeeper, preflight checks refuse a bad entry in seconds; each project's merge queue batches entries, tests new arrivals ahead, reruns flaky tests and bisects; admission and placement share every Mac's slots; and plugins for Apple, Android, mobile devices, Unity, the Mac desktop and Mac hardware drive the platform tools. Queuekeeper runs lanes on your build farm of Macs, simulators, emulators, editors and phones, pushes only what passed to main of each project, and shows you its state on the dashboard and in notifications.</desc>
+  <desc id="d">You direct AI agents such as Claude Code and Codex, each in its own worktree of one of your projects. Agents land commits with qk land and get verdicts back, and run builds and tests with qk run. In Queuekeeper, preflight checks refuse a bad entry in seconds; each project's merge queue batches entries, tests new arrivals ahead, reruns flaky tests and bisects; admission and placement share every Mac's slots; and plugins for Apple, Android, mobile devices, Unity and the Mac desktop drive the platform tools. Queuekeeper runs lanes on your build farm of Macs, simulators, emulators, editors and phones, pushes only what passed to main of each project, and shows you its state on the dashboard and in notifications.</desc>
 
   <defs>
     <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
@@ -85,16 +85,14 @@
     <rect x="684" y="440" width="130" height="40" rx="6"/>
     <rect x="546" y="488" width="130" height="40" rx="6"/>
     <rect x="684" y="488" width="130" height="40" rx="6"/>
-    <rect x="546" y="536" width="130" height="40" rx="6"/>
-    <rect x="684" y="536" width="130" height="40" rx="6"/>
+    <rect x="546" y="536" width="268" height="40" rx="6"/>
   </g>
   <g text-anchor="middle" font-size="14.5" font-weight="600" fill="#ece8da">
     <text x="611" y="465">Apple</text>
     <text x="749" y="465">Android</text>
     <text x="611" y="513">Mobile</text>
     <text x="749" y="513">Unity</text>
-    <text x="611" y="561">Mac desktop</text>
-    <text x="749" y="561">Mac hardware</text>
+    <text x="680" y="561">Mac desktop</text>
   </g>
 
   <!-- your git remotes -->

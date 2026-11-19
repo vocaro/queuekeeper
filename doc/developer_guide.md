@@ -127,9 +127,8 @@ Python): the core, each module's plugin and everything that plugin requires, tra
 Each plugin has a README of its own: [Apple](../plugins/apple/src/queuekeeper_apple/README.md),
 [Android](../plugins/android/src/queuekeeper_android/README.md),
 [Mobile](../plugins/mobile/src/queuekeeper_mobile/README.md), which the Apple and Android plugins
-share, [Unity](../plugins/unity/src/queuekeeper_unity/README.md),
-[Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md) and
-[Mac hardware](../plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md).
+share, [Unity](../plugins/unity/src/queuekeeper_unity/README.md)
+and [Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md).
 
 The [MCP server](../plugins/mcp/src/queuekeeper_mcp/README.md) is packaged the same way but is no
 plugin: a project does not list it, and it imports nothing from Queuekeeper. It runs the

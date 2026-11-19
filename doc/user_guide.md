@@ -1638,7 +1638,8 @@ labels it needs. No lane names a Mac, and no Mac names a lane. The settings are
   that says `"wholeHost": false` runs no project's gate.
 - **Labels** are lowercase words joined by hyphens, such as a license or a chip. A lane lists
   what it needs in `"labels"` and runs only on a Mac that has every one; a group needs its lanes'
-  labels as well as its own. A lane's `chips` list works the same way.
+  labels as well as its own. A lane whose results hold only on one chip, such as one that compares
+  rendered images byte for byte, needs a label naming it, such as `apple-m5-max`.
 - **Foreground.** A Mac marked `"foreground": true` lends its screen to foreground lanes without
   a window agreed beforehand. `qk farm foreground NAME` writes the mark, `--off` removes it, and
   `qk farm foreground here` marks this Mac. While no reachable Mac takes it, a foreground lane is
@@ -3108,7 +3109,6 @@ changes the run's result.
 - The plugins: [Apple](../plugins/apple/src/queuekeeper_apple/README.md),
   [Android](../plugins/android/src/queuekeeper_android/README.md),
   [Mobile](../plugins/mobile/src/queuekeeper_mobile/README.md),
-  [Unity](../plugins/unity/src/queuekeeper_unity/README.md),
-  [Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md) and
-  [Mac hardware](../plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md).
+  [Unity](../plugins/unity/src/queuekeeper_unity/README.md) and
+  [Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md).
 - The [developer guide](developer_guide.md) for how each part works inside.

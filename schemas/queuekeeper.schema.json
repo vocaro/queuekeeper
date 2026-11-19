@@ -157,7 +157,6 @@
                 "deviceRunMinutes",
                 "stall",
                 "unity",
-                "chips",
                 "arguments",
                 "idioms",
                 "exactTests",
@@ -420,15 +419,6 @@
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
-            }
-          },
-          "chips": {
-            "description": "The Mac hardware plugin's key, which a project gets with queuekeeper_mac_hardware. The chips the lane's results are valid on, such as [\"apple-m5-max\"], for a lane whose output differs by GPU. qk run runs the lane only on a Mac with one of them, waits for that Mac when it is busy, and never runs it on another. A lane without the key runs on any Mac. qk host chip prints a Mac's",
-            "type": "array",
-            "minItems": 1,
             "items": {
               "type": "string",
               "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"

@@ -4092,8 +4092,7 @@ def unplaceable_lanes(config, read_here=settings_here, read_there=None, limit=SE
     judged by this Mac's settings alone. This Mac's settings are read once (read_here) and each of the farm's Macs
     that take work now once (read_there, capacity_there), all at once and within limit seconds (SETTINGS_TIMEOUT),
     only when some lane needs something a Mac may decline. A Mac that cannot be read, or does not answer in time,
-    is unknown, never one that declines: a lane that only such a Mac might take is said to run only if it does. A
-    lane's "chips" is checked by its own plugin."""
+    is unknown, never one that declines: a lane that only such a Mac might take is said to run only if it does."""
     read_there = read_there or functools.partial(capacity_there, timeout=limit)
     lanes = config.get("lanes") if isinstance(config.get("lanes"), dict) else {}
     readings = {}
