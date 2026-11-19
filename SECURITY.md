@@ -1,13 +1,13 @@
 # Security
 
 Queuekeeper runs commands on your Macs, reaches other Macs over SSH, and can keep a Mac's login
-password to unlock its keychain for a run. Please report a weakness in any of that privately.
+password to unlock its keychain for a run. Please report a weakness in any of that privately,
+through GitHub's [private vulnerability reporting](https://github.com/vocaro/queuekeeper/security/advisories/new)
+for this repository, not in a public issue.
 
 ## Reporting a vulnerability
 
-Use GitHub's [private vulnerability reporting](https://github.com/vocaro/queuekeeper/security/advisories/new)
-for this repository. Do not open a public issue. Say what an attacker could do, on which version or
-commit, and how to reproduce it.
+Say what an attacker could do, on which version or commit, and how to reproduce it.
 
 You should hear back within a week. Fixes land on `main`; there are no maintained release branches,
 so the fix is in the next version.
