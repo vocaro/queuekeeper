@@ -10,7 +10,7 @@ this guide assumes you know what a lane, a gate, admission and the farm are.
 - [The merge queue](#the-merge-queue): rounds, blame and bisecting, pushing, state and recovery
 - [The build farm inside](#the-build-farm-inside): how a run reaches another Mac and comes back
 - [Admission internals](#admission-internals): slots, queue order, supervision, lock reclamation
-- [Scheduling](#scheduling): the goals, the rules in force and the decisions behind them
+- [Scheduling](#scheduling): the goals, the rules in force and the choices behind them
 - [Device, simulator and foreground internals](#device-simulator-and-foreground-internals): the
   platform plugins' records and rules
 - [Visibility features](#visibility-features): the event journal, and writing a feature
@@ -540,7 +540,7 @@ accepted costs of placing by headroom.
 A request keeps its arrival across retries and its place in this Mac's queue across waits. A Mac
 missing one offer, the first included, is asked again within 30 s while the lane waits in this
 Mac's queue; only a second miss in a row counts it unreachable,
-since one slow `ssh true` once kept a reachable Mac out of rotation for six minutes. One Mac of
+since one slow `ssh true` would otherwise keep a reachable Mac out of rotation for minutes. One Mac of
 several missed while the others were busy is asked again within 30 s once, and after that with the
 others; `qk queue status` names it. Exclusive
 work parks for up to `EXCLUSIVE_PARK_SECONDS` (900), offered with `--if-free` on the same
@@ -690,8 +690,8 @@ checked out once per Mac as a read-only detached worktree at
 names a local package by its folder. Another Mac is sent only the commits, takes each from its
 own `~/Development/FOLDER`, and links the pinned checkout beside the dispatched one. Before a
 round adopts a new set, the worker starts Queuekeeper with it at `origin/main`; exit 70 keeps the
-last set that started. Unpinned, a landing mid-run once reached later lanes with an adapter that
-no longer matched.
+last set that started. Without the pin, a landing mid-run could reach later lanes with an adapter
+that no longer matches.
 
 ### Local Network detection
 
@@ -751,8 +751,8 @@ that Mac when it reads one, so write a new key only once nothing on that Mac run
 The busy share comes from the kernel's tick counters over about 15 seconds. A request's first
 five seconds of samples withhold a slot as `settle`; while the share can't be read, a guaranteed
 slot opens anyway. Memory pressure is `kern.memorystatus_vm_pressure_level` (1 is normal). The
-one-minute load is still logged, but no longer decides anything: it read 27 to 66 on a half-idle
-Mac running simulators.
+one-minute load is logged but decides nothing, since it reads high (27 to 66) on a half-idle Mac
+running simulators.
 
 ### Queue order
 
@@ -1030,14 +1030,14 @@ the report.
 
 Scheduling here means admission on each Mac, placement across the Macs and the merge queue's
 order. This section states what they are for, the rules in force with the reason for each, and
-the decisions behind them. Read it before changing admission, placement or the queue's order,
+the choices behind them. Read it before changing admission, placement or the queue's order,
 and weigh a proposal against these goals rather than against the latest incident.
 
 ### Goals, in order
 
-The owner's direction is to optimize for throughput without starving jobs, respect each Mac's CPU
-limit, balance load where possible, and treat every Mac alike except for its own settings. Where
-two goals conflict, the earlier wins:
+Scheduling optimizes for throughput without starving jobs, respects each Mac's CPU limit, balances
+load where possible, and treats every Mac alike except for its own settings. Where two goals
+conflict, the earlier wins:
 
 1. **A verdict is true.** A pass, failure or timing describes the commits, never what else the
    Mac was doing. Work that could not be measured runs again rather than passing or failing.
@@ -1072,7 +1072,7 @@ sooner.
 
 `busyLimit` bounds when work starts, on a Mac and in placement, and when a worker reruns after no
 verdict. It doesn't bound what work does afterward: a slot holds a lane however many processes it
-starts, nothing is preempted, and load that never asks is not counted, though it now delays every
+starts, nothing is preempted, and load that never asks is not counted, though it delays every
 admission but the first.
 
 Admission knows a request's kind, arrival and label, not who asks: a queue's gate and a session's
@@ -1163,52 +1163,36 @@ each uses.
 Rules 27, 28 and 30 are the only exceptions to rule 2, and none gives a class of work priority in
 admission.
 
-### Decisions
+### Choices behind the rules
 
-The owner made each on 2026-11-17, against the goals above.
+The rules above cite these by their labels.
 
-- **D1, the order of goals: confirmed.** Accepted with it: with limits above bounded waits, a Mac
-  kept over its limit by work that never asks delays everything but its first job, and a request
-  there can time out with nothing run.
-- **D2, may a gate pass one-slot work queued ahead of it: no.** Arrival order stays (rule 7). A
-  replay of one day's gate waits found 8% of gate waiting was behind older one-slot work, too little
-  to break goal 3 for. If wanted later, a bounded pass (for one gate or a set time) is what would
-  keep goal 3.
-- **D3, may hand-run lanes hold guaranteed slots while a gate waits: yes.** Reserving slots for
-  gates would make the first priority class and starve hand-run work on Macs over their limits.
-  The same replay showed that while slots kept gates out, the Mac was at its CPU limit for all but
-  2 to 6% of the time: the holders were using the Mac, and the real shortage was Macs for gates
-  (D6). Letting a gate stand in beside a light holder stays a possible small change if light
-  holders prove common.
-- **D4, does a Mac's CPU limit bound every admission: yes, but the first** (rules 3 and 16). It was
-  the smallest change that makes the limit mean what it says, and it is safe only with D5, or an
-  over-limit Mac would push all work to this one. Counting a lane's width in slots, or admitting
-  by headroom alone with no slots (#84), stay larger alternatives.
-- **D5, balancing across the Macs: by headroom against each Mac's own limit** (rule 14). It
-  replaced "another Mac first", which filled one Mac's guaranteed slots with one-slot work and sent
-  every gate to this Mac. A 15-second reading can send several placements to one quiet Mac, and
-  leaving a warm checkout costs a colder build.
-- **D6, gates waiting for other gates: a waiting gate takes a place in each Mac's queue** (rule 19).
-  Two thirds of measured gate waiting was one gate behind another, while one Mac ran gates 40% of
-  the day and the other 11%. Places drain every Mac toward a waiting gate with no new priority; the
-  effect reads as each Mac's whole-host share in `qk admissions usage`. Two gates on one Mac was
-  rejected (it ran a 10-core Mac to a load of 719, and 8 of 12 gates gave no verdict); more Macs
-  come only if gates still queue.
+- **D1, the order of goals.** With limits above bounded waits, a Mac kept over its limit by work
+  that never asks delays everything but its first job, and a request there can time out with
+  nothing run.
+- **D2, a gate does not pass one-slot work queued ahead of it.** Arrival order holds (rule 7). Only
+  a small share of gate waiting is behind older one-slot work, too little to give up goal 3 for.
+- **D3, hand-run lanes keep their guaranteed slots while a gate waits.** Reserving slots for gates
+  would make them a priority class and starve hand-run work on Macs over their limits. While slots
+  keep gates out, the Mac is nearly always at its CPU limit: the holders are using it, and the
+  shortage is Macs for gates (D6).
+- **D4, a Mac's CPU limit bounds every admission but the first** (rules 3 and 16). This makes the
+  limit mean what it says, and it is safe only with D5, or an over-limit Mac would push all work to
+  this one.
+- **D5, load is balanced by headroom against each Mac's own limit** (rule 14), so one Mac's
+  guaranteed slots don't fill with one-slot work while every gate goes to another. A 15-second
+  reading can send several placements to one quiet Mac, and leaving a warm checkout costs a colder
+  build.
+- **D6, a waiting gate takes a place in each Mac's queue** (rule 19). Most gate waiting is one
+  gate behind another, and places drain every Mac toward a waiting gate with no new priority; the
+  effect reads as each Mac's whole-host share in `qk admissions usage`. A Mac runs one gate at a
+  time: two on one Mac overload it and leave most gates with no verdict.
 - **D7, no Mac is special.** Setup is the one exception: it writes 70% for its own Mac, and an
-  added Mac defaults to 90%. In force: this Mac is a placement candidate like any other, one test
-  of room, either half of a queue's pair on any Mac, the foreground only where a Mac's settings
-  allow it, and kinds plus labels in each Mac's `mac-settings.json`. Devices are declared with
+  added Mac defaults to 90%. This Mac is a placement candidate like any other, with one test of
+  room, either half of a queue's pair on any Mac, the foreground only where a Mac's settings allow
+  it, and kinds plus labels in each Mac's `mac-settings.json`. Devices are declared with
   `qk devices declare` (their `reach`, in order, and whether being `absent` is an error or
-  offline) and read by `qk devices status`, but placement does not yet choose among a device's
-  ways (#211).
-
-**Open questions.** Work admitted later can still void a run (rule 12, #28). A hold after three
-runs with no verdict may be better as an alert when the cause clears by itself (rule 29, #24).
-The admission log gives one refusal kind for a gate behind older one-slot work and a gate short of
-free slots; a kind for each would let `qk admissions` report D2's split every day. A gate that
-needs an unlocked screen waits, holding no slot, until a screen reads unlocked, while its other
-lanes could run; the owner's decision of 2026-11-18 is to measure that cost with
-`qk admissions waits --kind screen` before splitting a gate into a headless and a screen lane (#233).
+  offline) and read by `qk devices status`.
 
 ### Weighing a change
 
@@ -1217,31 +1201,7 @@ which reading would prove it wrong. Three readings exist: `qk admissions usage`,
 capacity, limits and share of time at each count of admitted jobs; each Mac's
 [admission log](#the-admission-log), for every wait for admission with its reason and the load it
 saw; and `qk admissions waits` over each Mac's [wait history](#the-wait-history), for the waits
-that take no admission, such as for an unlocked screen. Once the owner decides, record the decision
-here with its date.
-
-### Cloud gate runners
-
-A rented Apple Silicon Mac reachable over SSH could join the farm as an overflow host: the queue
-already sends the exact commits, admits the lane there and collects the verdict, and a persistent
-Mac keeps checkouts and simulator templates warm. No cloud Mac is in use. The current policy keeps
-source and test results on the owner's Macs, so a pilot needs his decision first.
-
-Options reviewed in November 2026, before taxes and storage:
-
-| Provider | Price | Fit |
-|---|---|---|
-| Scaleway Apple Silicon | €0.22 to €0.29 an hour for an M4, 24-hour minimum | A dedicated SSH host for a day of testing |
-| NoMac | $0.90 an hour of ready time, by the minute | Disposable VM; measure toolchain and cache setup first |
-| Roundfleet, MacStadium | $99 and $149 a month for an M4 | Persistent dedicated Mac |
-| GetMac, GitHub-hosted macOS | Per-minute Actions runners | Would need a dispatcher that tests the exact batch commit; a billing baseline only |
-
-Compare against adding a local Mac if capacity is needed most days. To evaluate a host, run one
-batch on a current Mac and the candidate at the same commit with the same Xcode, simulator
-runtimes and tools; check the verdict and test counts before timings; measure cold and warm
-dispatch, time to a verdict and billed time, retries included; then compare admission wait and
-time from queuing to landing during busy periods. More hosts let different projects gate at once;
-each project still runs one stacked gate beside its batch.
+that take no admission, such as for an unlocked screen.
 
 ## Device, simulator and foreground internals
 
@@ -1272,11 +1232,10 @@ device identifiers or live session details.
   `take` waits in (so joining a line never changes the holder's revision; a place whose `take` process
   is gone drops out), and `declarations`. Reach readings go in `device-reach.json` beside it, never in
   it.
-- **No approval.** Since 2026-11-06 the record schedules devices and `mac-foreground` first come first
-  served, and refuses `--approved-*`. `devices.require_window` still stops work under an older
-  reservation whose recorded approval has ended.
-- **Legacy records.** Sessions once kept ad hoc records in `/private/tmp`, which lost entries. The
-  helper refuses a record there. `qk devices import PATH… --by SESSION` merges one once, by its SHA-256:
+- **No approval.** The record schedules devices and `mac-foreground` first come first served, and
+  refuses `--approved-*`. `devices.require_window` stops work under a reservation whose recorded
+  approval has ended.
+- **Legacy records.** The helper refuses a record in `/private/tmp`, where entries can be lost. `qk devices import PATH… --by SESSION` merges one once, by its SHA-256:
   a held version wins over a released one, the later activity between equals, the loser is kept in
   `importedVersions`, and two holds of one device leave it uncertain.
 - `python3 -m queuekeeper_mobile.devices` finds its module only in a process `qk` started, which is why
