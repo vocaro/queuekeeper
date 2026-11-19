@@ -1009,7 +1009,62 @@ def preflight_lane_before_queued(root, queue, tip, replayed, base, name):
               f"round runs the {name} lane", file=sys.stderr)
     else:
         raise Refused(f"{tip[:12]} is not queued: {ran} fails on it replayed onto origin/main at {base[:12]}:\n  "
-                      + "\n  ".join(printed[-PREFLIGHT_SHOWN:]) + "\nFix that and land it again")
+                      + "\n  ".join(printed[-PREFLIGHT_SHOWN:]) + "\n"
+                      + (preflight_staged(root, base, tip, name) or "Fix that and land it again"))
+
+
+def preflight_staged(root, base, tip, name):
+    """The end of a refusal by the preflight lane name, which origin/main, base, lists in queue.preflight, when tip's own
+    queuekeeper.json leaves name out of its queue.preflight or changes the lane: only main's list counts (MAIN_ONLY),
+    so the lane ran on the entry although the entry stops relying on it, and the entry cannot both drop the lane and
+    what it reads. That lands in two steps (vocaro/queuekeeper#186). None otherwise, or when either cannot be read."""
+    try: main, own = config_at(root, base), config_at(root, tip)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError): return None
+    lane = own.get("lanes", {}).get(name)
+    if name not in preflight(own): change = f"leaves {name} out of its queue.preflight"
+    elif lane != main.get("lanes", {}).get(name): change = f"changes the {name} lane"
+    else: return None
+    return (f"origin/main's queue.preflight lists {name}, and only main's list counts, so {name} ran as main has it "
+            f"although this entry's queuekeeper.json {change}. Land the change to queue.preflight and the {name} lane "
+            f"on its own first, and what {name} reads in a second landing once that is on main")
+
+
+def main_copies(config, changed):
+    """A sentence naming the paths of changed under a folder inside the project that config's extensions load from, or
+    "". A lane run in a linked worktree of the project's main checkout, as the queue's checkout is, loads such a folder
+    from the main checkout (config.extensions_of), so a round judges a change to it by main's copy, not the batch's,
+    and an entry that changes the folder and starts relying on the change fails there although it is right. That
+    lands in two steps (vocaro/queuekeeper#186). A folder beside the project is pinned instead (pins), and not named."""
+    found = []
+    for entry in config.get("extensions", []):
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not path or os.path.isabs(path): continue
+        folder = os.path.normpath(path)
+        if folder == os.pardir or folder.startswith(os.pardir + os.sep): continue
+        under = sorted(changed) if folder == os.curdir else sorted(
+            name for name in changed if name == folder or name.startswith(folder + "/"))
+        if under: found.append((folder, entry["module"], under))
+    if not found: return ""
+    more = sum(len(under) for _, _, under in found) - REJECTION_SHOWN
+    paths = [name for _, _, under in found for name in under][:REJECTION_SHOWN]
+    folders = " and ".join(f"{folder}, which {module} loads from" for folder, module, _ in found)
+    return (f"This entry changes {', '.join(paths)}{f' and {more} more' if more > 0 else ''} in {folders}: the "
+            "round's lanes load the project's extensions from its main checkout, not from the batch, so main's copy "
+            "judged this entry. If the failure comes from that copy, land the change to the folder on its own first, "
+            "and what relies on it once that is on main")
+
+
+def hooks_elsewhere(checkout):
+    """What a refusal by the pre-push hook adds when core.hooksPath names a folder outside checkout, the queue's, such
+    as the main checkout's .githooks: the hook that ran is that folder's copy, not the batch's, and on 2026-11-16
+    Pagepour's old hook refused a batch that had moved what it read (vocaro/queuekeeper#186). "" otherwise."""
+    named = git(checkout, "config", "--get", "core.hooksPath").stdout.strip()
+    if not named or not os.path.isabs(os.path.expanduser(named)): return ""
+    folder = Path(named).expanduser().resolve()
+    if folder.is_relative_to(Path(checkout).resolve()): return ""
+    return (f". The hook ran from {folder}, which core.hooksPath names outside the queue's checkout, so it was that "
+            "folder's copy and not the batch's: a change to the hook, or to what it reads, that the old copy refuses "
+            "lands in two steps, keeping what the old copy needs for one landing and dropping it in a second")
 
 
 def failed_tests(log):
@@ -4357,7 +4412,8 @@ class Worker:
                     continue
                 if result in NO_VERDICT:
                     raise Hold(SESSION, f"the pre-push hook gave no verdict, exit {result}, twice on {head[:12]}; see {log}")
-                if result: raise Hold(SESSION, f"the pre-push hook refused {head[:12]}, exit {result}; see {log}")
+                if result: raise Hold(SESSION, f"the pre-push hook refused {head[:12]}, exit {result}; see {log}"
+                                               + hooks_elsewhere(self.checkout))
                 checked = head
             attempts.append({"head": head, "base": base, "at": time.time()})
             self.queue.mark_publishing(batch, {
@@ -5062,7 +5118,11 @@ class Worker:
         try: main = self.main_fails(base, log, config)
         except Exception as error:  # noqa: BLE001
             main = f" Whether origin/main fails {self.failed_lane} too could not be determined: {error}."
-        return f" {load}. {touched}" + (f".{main}" if main else "")
+        # A change to what the lanes load from the main checkout, which main's copy judged (vocaro/queuekeeper#186).
+        try: copies = main_copies(config, self.changed_by(entry)) if entry.get("commits") else ""
+        except Exception:  # noqa: BLE001
+            copies = ""
+        return f" {load}. {touched}" + (f".{main}" if main else "") + (f" {copies}." if copies else "")
 
     def settle_failure(self, entry, log, why, runner=None, **fields):
         """Keep only the dispatch of the gate that actually rejected this entry, with fields such as conflictWith."""

@@ -693,6 +693,15 @@ round adopts a new set, the worker starts Queuekeeper with it at `origin/main`; 
 last set that started. Without the pin, a landing mid-run could reach later lanes with an adapter
 that no longer matches.
 
+An extension folder inside the project is not pinned: `config.extensions_of` resolves it against
+the main checkout, so no command's hooks are an unlanded copy, and `qk unittest` sets it aside while
+it discovers the tree under test's own modules. A round therefore judges a change to that folder
+by main's copy, as `qk land` judges an entry by main's `queue.preflight` and the worker runs the
+pre-push hook an absolute `core.hooksPath` names. None of them loads from the candidate. Instead the
+refusal says so and names the two landings (vocaro/queuekeeper#186): `preflight_staged` for a lane
+the entry drops or changes, `main_copies` in a rejection's facts, and `hooks_elsewhere` in the
+hook's hold.
+
 ### Local Network detection
 
 When a connection to another Mac fails, the reach check asks macOS which process is responsible

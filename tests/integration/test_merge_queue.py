@@ -2485,6 +2485,31 @@ class HoldKinds(Fixture):
         self.assertTrue(held.endswith(f"which the resume pushes without gating again{self.SESSION_RESUMES}"), held)
         self.assertEqual(self.state(identifier)["state"], "passed")
 
+    def test_a_hook_core_hookspath_places_outside_the_queues_checkout_is_named_as_that_folders_copy(self):
+        """vocaro/queuekeeper#186: Pagepour's core.hooksPath named its main checkout's .githooks, whose old hook refused
+        a batch that had moved what the hook reads."""
+        hooks = self.base / "main-hooks"
+        hooks.mkdir()
+        (hooks / "pre-push").write_text("#!/bin/sh\necho the reason >&2\nexit 1\n")
+        host_isolation.executable(hooks / "pre-push")
+        run(self.repo, "git", "config", "core.hooksPath", str(hooks))
+        self.commit("a", "a")
+        self.add("a")
+        with patch("builtins.print"): self.assertEqual(self.work(), 1)
+        held = mq.Queue(self.repo).held()
+        self.assertIn(f"pre-push.log. The hook ran from {hooks.resolve()}, which core.hooksPath names outside the "
+                      "queue's checkout, so it was that folder's copy and not the batch's: a change to the hook, or to "
+                      "what it reads, that the old copy refuses lands in two steps", held)
+        self.assertEqual(mq.hooks_elsewhere(self.repo), f". The hook ran from {hooks.resolve()}, which core.hooksPath "
+                         "names outside the queue's checkout, so it was that folder's copy and not the batch's: a change "
+                         "to the hook, or to what it reads, that the old copy refuses lands in two steps, keeping what "
+                         "the old copy needs for one landing and dropping it in a second")
+        # A hook folder inside the checkout is the batch's own, and is not named.
+        run(self.repo, "git", "config", "core.hooksPath", ".githooks")
+        self.assertEqual(mq.hooks_elsewhere(self.repo), "")
+        run(self.repo, "git", "config", "core.hooksPath", str(self.repo / ".githooks"))
+        self.assertEqual(mq.hooks_elsewhere(self.repo), "")
+
     def test_no_verdict_from_a_misconfigured_host_is_the_owners_and_any_other_a_sessions(self):
         for status, kind in (("78", self.FOR_OWNER), ("3", self.FOR_SESSION), ("75", self.FOR_SESSION)):
             with self.subTest(status=status):
@@ -5356,6 +5381,32 @@ class PreflightBeforeQueued(Fixture):
         self.assertIn("is not queued: python3 check.py fails on it replayed onto origin/main", error)
         self.assertIn("fix:1: flag" + "ged", error)
         self.assertIn("Fix that and land it again", error)
+
+    def test_an_entry_that_drops_a_lane_main_lists_is_told_to_land_that_first(self):
+        """vocaro/queuekeeper#186: main's queue.preflight counts, so one commit cannot both drop a lane and what it
+        reads. The refusal says so, and names the two landings."""
+        config = self.preflight_check()
+        self.commit("fix", "fix", content=FLAGGED)
+        config["queue"]["preflight"] = []
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", "Drop the check")
+        identifier, _, error = self.land("fix")
+        self.assertIsNone(identifier)
+        self.assertIn("fix:1: flag" + "ged", error)
+        self.assertIn("origin/main's queue.preflight lists check, and only main's list counts, so check ran as main "
+                      "has it although this entry's queuekeeper.json leaves check out of its queue.preflight. Land the "
+                      "change to queue.preflight and the check lane on its own first, and what check reads in a second "
+                      "landing once that is on main", error)
+        self.assertNotIn("Fix that and land it again", error)
+
+    def test_an_entry_that_changes_the_lane_is_told_the_same(self):
+        config = self.preflight_check()
+        self.commit("fix", "fix", content=FLAGGED)
+        config["lanes"]["check"]["timeout"] = 30
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", "Change the check")
+        _, _, error = self.land("fix")
+        self.assertIn("although this entry's queuekeeper.json changes the check lane.", error)
 
     def test_a_clean_entry_is_queued_and_says_it_was_checked(self):
         # The positive control.
@@ -8275,6 +8326,49 @@ class RejectionFacts(Fixture):
         entry = self.state(identifier)
         self.assertNotEqual(entry["state"], "failed")
         self.assertNotIn("While gate ran", entry.get("why", ""))
+
+
+class MainCheckoutCopies(Fixture):
+    """A rejection of an entry that changes a folder inside the project that its extensions load from says that the
+    round's lanes loaded main's copy of it, not the entry's, and names the staged landing (vocaro/queuekeeper#186)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / "kit").mkdir()
+        (self.repo / "kit/fixture_inside.py").write_text("def register(): pass\n")
+        run(self.repo, "git", "add", "kit")
+        config = self.config()
+        config["extensions"] = [{"module": "fixture_inside", "path": "kit"}]
+        self.publish(config, "Load an extension from a folder inside the project")
+
+    def rejected(self, path, content):
+        """The why of one entry that commits content to path, whose gate fails."""
+        self.status.write_text("1")
+        self.commit(path, "branch", content)
+        [identifier] = self.add("branch")
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed")
+        return entry["why"]
+
+    def test_an_entry_that_changes_the_folder_is_told_main_judged_it(self):
+        why = self.rejected("kit/fixture_inside.py", "def register(): pass\n# changed\n")
+        self.assertIn("This entry changes kit/fixture_inside.py in kit, which fixture_inside loads from: the round's "
+                      "lanes load the project's extensions from its main checkout, not from the batch, so main's copy "
+                      "judged this entry. If the failure comes from that copy, land the change to the folder on its "
+                      "own first, and what relies on it once that is on main.", why)
+
+    def test_an_entry_that_changes_no_file_there_is_not(self):
+        why = self.rejected("elsewhere", "x\n")
+        self.assertIn("fail on this commit", why)
+        self.assertNotIn("main's copy", why)
+
+    def test_a_folder_beside_the_project_or_a_module_with_no_folder_is_not_named(self):
+        changed = {"kit/a.py", "../kit/a.py", "src/a.py"}
+        self.assertEqual(mq.main_copies({"extensions": ["fixture_inside", {"module": "beside", "path": "../kit"},
+                                                        {"module": "absolute", "path": "/kit"}]}, changed), "")
+        self.assertIn("src/a.py in src, which inside loads from",
+                      mq.main_copies({"extensions": [{"module": "inside", "path": "./src/"}]}, changed))
 
 
 class SummaryFacts(Fixture):

@@ -2288,6 +2288,19 @@ class ResourceTests(unittest.TestCase):
                           ("both/lanes/build.log", True)]:
             self.assertIn(f"model {held}", (logs / log).read_text(), log)
 
+    def test_a_lane_names_the_main_checkout_and_leaves_its_process_as_it_was(self):
+        """vocaro/queuekeeper#186: qk run in-process once left QUEUEKEEPER_PROJECT_CHECKOUT set for every later test."""
+        root = Path(self.temp.name)
+        probe = [sys.executable, "-c", f"import os; print('at', os.environ[{cli.PROJECT_CHECKOUT_VARIABLE!r}])"]
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Where", "lanes": {
+            "where": {"command": probe, "resource": "heavy"}}}))
+        self.assertNotIn(cli.PROJECT_CHECKOUT_VARIABLE, os.environ)
+        with patch.object(cli, "refresh_policy", return_value="policy"), patch.object(cli, "source_identity", return_value={}), \
+                contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
+            self.assertEqual(cli.main(["--project", str(root), "run", "where"]), 0)
+        self.assertIn(f"at {root.resolve()}", (root / ".build/queuekeeper/where/run.log").read_text())
+        self.assertNotIn(cli.PROJECT_CHECKOUT_VARIABLE, os.environ)
+
     def test_a_display_lane_runs_under_a_wake_and_then_the_display_assertion_and_its_receipt_shows_them(self):
         # A caffeinate on PATH that records each call and, for -d, runs the command in its own process, as
         # the real one does, so that no test wakes or holds this Mac's display.

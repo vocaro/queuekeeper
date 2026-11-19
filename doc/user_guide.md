@@ -324,6 +324,8 @@ mode. The project names them, in order, in `queue.preflight` on `main`:
   `qk preflight LANE` runs one. It exits 0 when all pass, 1 on a finding, and 3 when one could
   not run.
 - **`"queue": {"preflight": []}`, or no `queue.preflight`, runs none.**
+- **Only `main`'s list counts.** Removing a lane and what it reads takes two landings
+  ([Changes main's copy judges](#changes-mains-copy-judges)).
 
 A lane's command finds the project's main checkout in `QUEUEKEEPER_PROJECT_CHECKOUT` wherever it
 runs, so a launcher can find tools that sit beside the project.
@@ -604,6 +606,25 @@ Queue dependent pieces together, in order, instead of landing and waiting for ea
 
 They usually ride one gate. Each piece lands once, as its own commit. If an earlier piece comes
 back, the later pieces that hold its commits come back with it.
+
+### Changes main's copy judges
+
+Some of what judges an entry comes from `main` or the project's main checkout, not from the entry.
+A change to one of these pieces is judged by the old copy, so an entry that changes the piece and
+starts relying on the change in the same commit is refused, though it is right. Land it in two
+steps: the change to the piece alone first, then, once that is on `main`, what relies on it.
+Queuing them together as [changes that build on each other](#changes-that-build-on-each-other)
+does not help, since the second is still judged by `main` as it was.
+
+- **Preflight lanes.** `qk land` runs the lanes `main`'s `queue.preflight` lists, as `main` has
+  them, on the entry. To remove or replace a preflight lane, or what it reads, land the change to
+  `queue.preflight` and the lane first. A refusal by a lane the entry drops or changes says so.
+- **Extensions loaded from inside the project**, such as `{"module": "NAME", "path": "src/python"}`.
+  A lane in a linked worktree, the queue's checkout included, loads them from the main checkout.
+  A rejected entry that changes such a folder is told that main's copy judged it.
+- **A pre-push hook outside the queue's checkout.** When `core.hooksPath` is absolute and names
+  the main checkout's hooks, the worker runs that copy. Keep what it reads working for one landing
+  and drop it in a second. A hold for its refusal names the folder it ran from.
 
 ### Emergencies
 

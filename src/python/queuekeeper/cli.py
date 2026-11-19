@@ -825,9 +825,10 @@ SELF_LANE = "QUEUEKEEPER_SELF_LANE"
 
 @contextlib.contextmanager
 def patch_environment(values):
-    """os.environ with values set, for the commands started meanwhile, and as it was afterwards."""
+    """os.environ with values set, a value of None unset, for the commands started meanwhile, and as it was afterwards."""
     before = {key: os.environ.get(key) for key in values}
-    os.environ.update(values)
+    os.environ.update({key: value for key, value in values.items() if value is not None})
+    for key in [key for key, value in values.items() if value is None]: os.environ.pop(key, None)
     try:
         yield
     finally:
@@ -1063,7 +1064,10 @@ def main(argv=None):
             load_extensions(argv)
         except Exception as error:  # noqa: BLE001
             return could_not_start(error)
-        with patch_environment(extensions.command_environment()):
+        # qk run names the project's main checkout in os.environ for its lane's commands; afterwards it is as it was, so
+        # that a test calling qk in-process leaves no checkout behind for the next (vocaro/queuekeeper#186).
+        with patch_environment(extensions.command_environment()), \
+                patch_environment({PROJECT_CHECKOUT_VARIABLE: os.environ.get(PROJECT_CHECKOUT_VARIABLE)}):
             status = perform(argv, report)
     except Exception as error:
         report.finish(None, error)
