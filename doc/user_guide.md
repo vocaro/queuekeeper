@@ -2654,6 +2654,9 @@ Keep a long run's progress readable while it runs:
 
 - **Write its output to a file**, `COMMAND > FILE 2>&1`, as a background command, and trim when
   reading. Never pipe a long run through `tail` or `head`, which print nothing until the end.
+- **Give each run a file of its own.** Sessions or subagents that share a scratch folder must not
+  share a file name in it: a `qk land --wait` that writes `land.log` beside another's can find that
+  one's record and `exit 0` there first. A `--json` record names its entry in `id`; check it is yours.
 - **`qk unittest` keeps its own progress.** Its first line names the folder, under
   `.build/queuekeeper/runs/`, where `progress.log` gains a line as each test process ends.
 - **`qk progress`** reports on a run from another shell: what it runs, how long, the tests
