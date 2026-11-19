@@ -506,13 +506,21 @@ then looks for the one entry that explains them all (owner's decision, 2026-11-0
 points at an entry when that entry's commits change a path the failing rerun's output names, as
 `qk spelling`'s `PATH:LINE:` lines do, or the test's module or a file it imports, as above. A path
 counts only whole and only with a directory or an extension, so a bare word is not taken for a
-file. When every failed test points at the same single entry, the worker sends that entry back, says
-in its log which entry it blamed and why, and queues the rest to gate again at once, without the
-halves a bisect costs (about 30 minutes each for vocaro-engineering). Any doubt bisects as before: a
-test that points at no entry or at several, tests that point at different entries, a test whose
-module the worker cannot find, a failed test that passed alone beside the real failure, or a rerun
-that ended with no verdict. On 2026-11-07 a 6-entry batch bisected for about 2 hours over one spelling
-test whose output named a file only one commit changed.
+file. When every failed test points at the same single entry, the worker first confirms it: in the
+queue's checkout it picks the batch's other entries onto the gate's base, without that entry, and runs
+each failed test once alone there. Only when each passes does it send that entry back, say in its log
+which entry it blamed and why, and queue the rest to gate again at once, without the halves a bisect
+costs (about 30 minutes each for vocaro-engineering). The reason names the other entries of the
+batch, so that the session sent back knows what else was gated with its change. Any doubt bisects as
+before: a test that points at no entry or at several, tests that point at different entries, a test
+whose module the worker cannot find, a failed test that passed alone beside the real failure, a rerun
+that ended with no verdict, a failed test that fails without the entry too, or another entry that does
+not apply without it. On 2026-11-07 a 6-entry batch bisected for about 2 hours over one spelling
+test whose output named a file only one commit changed. The confirmation came after three wrong
+send-backs in November 2026: a test can read a file that neither its imports nor its failure name, as
+configuration it loads or sources it scans, so another entry of the batch had failed it while blame
+named the entry that changed the test's imports or its own file
+([vocaro/queuekeeper#183](https://github.com/vocaro/queuekeeper/issues/183)).
 
 **A send-back says the load and whether the entry changes the failed tests' files.** The reason an
 entry is sent back with ends with the load during the failed lane and with the failed tests

@@ -4274,7 +4274,8 @@ class Worker:
             elif None in real.values():
                 self.say("a rerun ended with no verdict, so no commit is blamed")
             else:
-                self.confirmed = {"tests": real, "top": top}
+                self.confirmed = {"tests": real, "top": top, "command": command, "base": base, "head": head,
+                                  "round": round_name}
             return None
         added = {}
         for flake in flakes:
@@ -4455,9 +4456,10 @@ class Worker:
         """(the one entry of applied that every failed test the last rerun confirmed reaches, why), to send back while
         the rest gate again at once, sparing the bisect's gates; or None to bisect. A test reaches an entry whose
         commits change a path its failing rerun's output names, as `qk spelling`'s `PATH:LINE:` lines do, or a file
-        its module is or imports (imported_files). Any doubt bisects: no confirmed failure, a module the worker cannot
-        find, a test that reaches no entry or several, or tests that reach different entries. A gate qk unittest
-        refused before running anything is blamed by its refusal instead (blame_refusal)."""
+        its module is or imports (imported_files); the blame stands only once the tests pass without it
+        (passes_without). Any doubt bisects: no confirmed failure, a module the worker cannot find, a test that reaches
+        no entry or several, tests that reach different entries, or tests that fail without the entry too. A gate qk
+        unittest refused before running anything is blamed by its refusal instead (blame_refusal)."""
         confirmed, self.confirmed = self.confirmed, None
         refused, self.refused, self.unblamed = self.refused, None, None
         added, self.added = self.added, None
@@ -4496,10 +4498,49 @@ class Worker:
             return None
         [identifier] = found
         entry = next(entry for entry in applied if entry["id"] == identifier)
-        why = "; ".join(whys)
+        without = self.passes_without(entry, applied, confirmed)
+        if without is None: return None
+        why = f"{'; '.join(whys)}; {without}"
         self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}): {why}; sending it back and "
                  f"gating the other {len(applied) - 1} at once instead of bisecting")
         return entry, why
+
+    def passes_without(self, entry, applied, confirmed):
+        """What blame says of the failed tests that confirmed holds, once each passed alone on the batch without entry,
+        the one entry they reach: the other entries of applied picked in order on the gate's base, and each test run
+        once as rerun ran it; or None to bisect (vocaro/queuekeeper#183). A test can read a file no import or failure
+        names, as configuration it loads or sources it scans, so that another entry's change fails it; a blame stands
+        only when the failure goes with entry. Any doubt bisects: a test that fails without entry too, a run with no
+        verdict, or another entry that does not apply without it. The words name the other entries, which gate again
+        at once, so that the session sent back knows what else was in the batch."""
+        others = [other for other in applied if other["id"] != entry["id"]]
+        named = ", ".join(other["id"] for other in others)
+        tests = confirmed["tests"]
+        self.reset(confirmed["base"])
+        try:
+            for other in others:
+                why = self.pick(other)
+                if why:
+                    self.say(f"{entry['id']} is blamed, but {other['id']} does not apply without it ({why}), so the "
+                             "blame cannot be confirmed: bisecting")
+                    return None
+            for number, test in enumerate(tests, 1):
+                path = self.queue.logs / f"{confirmed['round']}-without-{number}.log"
+                try: status_ = processes.run([*confirmed["command"], test], cwd=self.checkout, log_path=path,
+                                             timeout=LANE_LIMIT, env=self.environment)
+                except processes.TimedOut as error: status_ = f"unmeasured, {error}"
+                except OSError as error: status_ = f"not started, {error}"
+                if status_:
+                    self.say(f"{entry['id']} is blamed, but {test} "
+                             + (f"failed without it too, on the batch's other entries ({named}), "
+                                if isinstance(status_, int) else f"gave no verdict without it ({status_}), ")
+                             + f"so the blame is not confirmed: bisecting; see {path}")
+                    return None
+        finally:
+            self.reset(confirmed["head"])
+        one = len(tests) == 1
+        return (f"{'it' if one else 'each'} passed alone without this entry, on the batch's other "
+                f"{'entry' if len(others) == 1 else 'entries'}, {named}, which gate again at once")
 
     def own_paths(self, entry):
         """The paths entry's own commits change, as changed_by reads them, from the project's checkout, which every

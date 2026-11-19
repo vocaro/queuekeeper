@@ -8377,12 +8377,14 @@ class FlakyReruns(Fixture):
         log = said.getvalue()
         self.assertIn(f"{self.WORDS} failed again alone, on rerun 1 (exit 1), so the failure is real", log)
         self.assertIn(f"blaming {ids[1]} (Add docs/a.md): {self.WORDS}, which failed alone, as its failure names "
-                      f"docs/a.md, which only {ids[1]} changes; sending it back and gating the other 2 at once instead "
-                      "of bisecting", log)
+                      f"docs/a.md, which only {ids[1]} changes; it passed alone without this entry, on the batch's "
+                      f"other entries, {ids[0]}, {ids[2]}, which gate again at once; sending it back and gating the "
+                      "other 2 at once instead of bisecting", log)
         self.assertNotIn("fail together", log)
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "failed", "landed"])
         self.assertIn("its failure names docs/a.md", entries[1]["why"])
+        self.assertIn(f"on the batch's other entries, {ids[0]}, {ids[2]}, which gate again at once", entries[1]["why"])
         # One gate for the batch and one for the other two, with no half gated.
         self.assertEqual(self.runs_of_the_test(), 2)
         self.assertEqual(self.tracked, [])
@@ -8395,10 +8397,37 @@ class FlakyReruns(Fixture):
         with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
         log = said.getvalue()
         self.assertIn(f"blaming {ids[1]} (Add src/python/fixturelib/helper.py): {self.TEST}, which failed alone, as it "
-                      f"imports src/python/fixturelib/helper.py, which only {ids[1]} changes", log)
+                      f"imports src/python/fixturelib/helper.py, which only {ids[1]} changes; it passed alone without "
+                      f"this entry, on the batch's other entry, {ids[0]}, which gate again at once", log)
         self.assertNotIn("fail together", log)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "failed"])
-        self.assertEqual(self.runs_of_the_test(), 3)
+        # The gate, the rerun that confirmed the failure, the run without the blamed entry, and the other's gate.
+        self.assertEqual(self.runs_of_the_test(), 4)
+
+    def test_a_failure_another_entry_brings_through_a_file_the_test_reads_bisects_instead_of_blaming(self):
+        # On 2026-11-16 a test read queuekeeper.json, which one entry changed, while the other entry changed a module
+        # it imports; blame named the second alone and sent it back for the first's failure (vocaro/queuekeeper#183).
+        module = (self.repo / "tests/test_flaky.py").read_text().replace(
+            "    def test_steady(self):",
+            "    def test_reads(self):\n"
+            "        found = (pathlib.Path(__file__).resolve().parents[1] / 'data/setting.txt').exists()\n"
+            "        self.assertFalse(found, 'a setting was found')\n\n"
+            "    def test_steady(self):")
+        self.commit("tests/test_flaky.py", "reads", module)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("data/setting.txt", "a", "on\n")
+        self.commit("src/python/fixturelib/helper.py", "b", "from . import deeper\nVALUE = 1  # changed\n")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        reads = "test_flaky.Flaky.test_reads"
+        self.assertIn(f"{reads} failed again alone, on rerun 1 (exit 1), so the failure is real", log)
+        self.assertIn(f"{ids[1]} is blamed, but {reads} failed without it too, on the batch's other entries "
+                      f"({ids[0]}), so the blame is not confirmed: bisecting", log)
+        self.assertNotIn(f"blaming {ids[1]}", log)
+        self.assertIn("2 commits fail together: next the oldest 1", log)
+        # The bisect sends back the entry that brings the file, and the one blame named lands.
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
 
     def test_a_failure_that_names_paths_of_two_commits_bisects(self):
         self.commit("docs/a.md", "a", "The wrongword\n")
