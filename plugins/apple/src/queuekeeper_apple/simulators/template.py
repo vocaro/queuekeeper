@@ -1,6 +1,6 @@
 """A pool's warmed template: one simulator per kind (device type and runtime) that has booted once, heard
 VoiceOver speak and used the system's voices twice with a reboot between, from which the pool clones new
-members and resets taken ones (doc/guides/simulator-pool.md, Warmed templates).
+members and resets taken ones.
 
 A new simulator's first boot migrates its data, and VoiceOver's first start on it waits for its voice
 database, which took 40 to 60 s on a quiet Mac and minutes on a loaded one. The first request for the
@@ -31,8 +31,7 @@ from ..sources import BUILD_ROOT, ROOT, source_path
 from . import runtime_identity
 from .speech import CUE_DOMAIN, CUE_KEY
 
-# What the speech extension logs for each phrase VoiceOver speaks (AXVerify's guides/voiceover-simulator.md,
-# VoiceOver's vot log); the first one says VoiceOver has its voice.
+# What the speech extension logs for each phrase VoiceOver speaks, in VoiceOver's vot log; the first one says VoiceOver has its voice.
 SPEECH = "Processing markup for voice locale"
 PREDICATE = 'process == "vot" OR process == "MauiAUSP"'
 # Seconds VoiceOver may stay silent after it is switched on; under saturation it took up to 292 s.

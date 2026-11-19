@@ -22,9 +22,9 @@ LINE_LINK = re.compile(r"(.+):(\d+)")
 BOLD_LEAD = re.compile(r" {0,3}(?:[-*+][ \t]+|\d{1,9}[.)][ \t]+)?\*\*(.+?)\*\*")
 VENDORED = {"licenses", "ThirdParty", "Vendor"}
 # A citation of a document by its path, from the checkout's root or the citing file's folder, and a
-# section title or an anchor: doc/guides/admission.md, Heavy-work admission or doc/guides/lanes.md#every-test-has-a-lane.
+# section title or an anchor: doc/setup.md, Install or doc/setup.md#install.
 CITED = re.compile(r"(?<![\w./\\-])((?:[\w.-]+/)*[\w-][\w.-]*\.(?:md|markdown))(?:(#[\w-]+)|,[ \t]*)")
-# Another repository's document, as in the toolkit's doc/guides/releasing.md: the words before its path.
+# Another repository's document, as in the toolkit's doc/setup.md: the words before its path.
 OTHER_REPOSITORY = re.compile(r"[\w-]+'s\s*$")
 # What ends a line of a comment or a string literal that a citation wraps across, and what opens the next.
 WRAP_END = re.compile(r"""[\s"'+\\]*$""")
@@ -242,11 +242,11 @@ def citing(root, path):
 
 def cited(root, files):
     """Each citation in files of a Markdown document by its path and a section title, as in
-    (doc/guides/admission.md, Heavy-work admission), or by its path and an anchor, that names no document
+    (doc/setup.md, Install), or by its path and an anchor, that names no document
     in this checkout, or no heading or bold lead-in of it (vocaro/queuekeeper#114). The path is from
     the checkout's root or the citing file's folder. A title may wrap across lines of a comment or of
     adjacent string literals, and it may run on past the section's name. A citation of another
-    repository's document, as in the toolkit's doc/guides/releasing.md, is not read, since this checkout
+    repository's document, as in the toolkit's doc/setup.md, is not read, since this checkout
     cannot resolve it, and a Markdown link's target is the link check's."""
     root = Path(root).resolve()
     failures, read = [], {}

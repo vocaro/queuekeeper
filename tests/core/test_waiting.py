@@ -295,7 +295,7 @@ subprocess.check_output(["true"],  # wall-clock: says why on its first line
             [warning] = waiting.doctor_warnings(root)
             self.assertIn("4 test line(s)", warning)
             self.assertIn("scripts/tests/test_fixture.py:2", warning)
-            self.assertIn("Waits bound stalls", warning)
+            self.assertTrue(warning.endswith(f"says so with `# {waiting.EXEMPT} REASON`"), warning)
             self.assertIn("`monotonic() + N` deadline", warning)
 
     def found(self, text):

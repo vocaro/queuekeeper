@@ -1,7 +1,7 @@
 """The merge queue's event journal: one JSON line for each change of the queue's state.
 
 The queue writes it and reads nothing back. Everything that shows the queue to its owner, `qk queue
-events` and the visibility features (doc/developer_guide.md), reads it, so that none of them is called by the worker
+events` and the visibility features, reads it, so that none of them is called by the worker
 and none can slow or stop a round. The journal is beside the queue's other records:
 
     <common>/queuekeeper-queue/events.jsonl     the journal

@@ -71,7 +71,7 @@ class SlotTests(unittest.TestCase):
         self.assertIsNone(self.record.entry(devices.FOREGROUND))
         self.farm_mac()
         lacking = [("a command started over SSH is not trusted for accessibility", "add sshd-keygen-wrapper")]
-        with self.assertRaisesRegex(devices.Refused, "the owner's .*\n- a command started over SSH is not trusted "
+        with self.assertRaisesRegex(devices.Refused, "the owner's:\n- a command started over SSH is not trusted "
                                                      "for accessibility: add sshd-keygen-wrapper"):
             with self.slot(ready=lambda: lacking): self.fail("ran on another Mac that is not ready")
         # Nothing was taken.

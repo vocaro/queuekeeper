@@ -78,8 +78,7 @@ BUILD_LIMIT = 3600
 PREPARE_LIMIT = 900
 GIT_TIMEOUT = 300
 # Seconds a device install and a launch may take: an install over Wi-Fi took more than two minutes under load,
-# and the first launch of a run can fail inside devicectl before the app starts (apple-engineering's guides/device-testing.md,
-# devicectl states and timeouts), so a launch is tried twice.
+# and the first launch of a run can fail inside devicectl before the app starts, so a launch is tried twice.
 INSTALL_LIMIT = 600
 LAUNCH_LIMIT = 120
 # Minutes a device reservation for an install and launch lasts.
@@ -297,7 +296,7 @@ def signing_hint(log):
     except OSError:
         return ""
     return (". A target signs manually, so no profile was made for it: sign it automatically, with "
-            "CODE_SIGN_STYLE Automatic in the project or its project.yml (doc/guides/app-builds.md, Signing)")
+            "CODE_SIGN_STYLE Automatic in the project or its project.yml")
 
 
 def product(app, platform, derived):
@@ -597,7 +596,7 @@ def execute(root, args, config=None):
     if args.operation == "device": return install_and_launch(args.udid, args.app, args.bundle)
     config = config if config is not None else load(root)
     if "app" not in config:
-        say("queuekeeper.json configures no app" + (behind_main(root) or ": add `app` (doc/guides/app-builds.md)"))
+        say("queuekeeper.json configures no app" + (behind_main(root) or ": add `app`"))
         return 2
     store = Store(config["name"])
     try:

@@ -8,9 +8,12 @@ covers how it works inside and how to change it.
 - [Land changes](#land-changes): what the merge queue does with a commit
 - [Lanes and admission](#lanes-and-admission): the commands Queuekeeper runs, and when a Mac has room
 - [The build farm](#the-build-farm): running work on more than one Mac
+- [Apps, devices and simulators](#apps-devices-and-simulators): physical devices, the simulator pool,
+  foreground runs, kept app builds, Unity editors
 - [For agents](#for-agents): exit codes, structured results, logs and verification
 - [Watch the queue](#watch-the-queue): the terminal view, notifications and the dashboard
-- [Troubleshooting](#troubleshooting): holds, a stuck queue, disk space
+- [Troubleshooting](#troubleshooting): holds, a stuck queue, checking a project's setup
+- [Disk space and leftovers](#disk-space-and-leftovers): what `qk disk` finds and deletes
 
 ## Set up
 
@@ -78,7 +81,7 @@ one lane, `gate`, the command every change must pass:
 
 The queue always reads its settings from `main`, so a branch cannot loosen its own gate. The one
 exception is the commit that adds `queuekeeper.json`, which is gated by its own file since `main`
-has none yet ([A project's first landing](guides/merge-queue.md#a-projects-first-landing)).
+has none yet ([A project's first landing](#a-projects-first-landing)).
 
 Then check the setup:
 
@@ -145,15 +148,80 @@ Once changes land on one Mac, you can add more:
    qk doctor
    ```
 
-From then on each lane runs on whichever Mac has room ([The build farm](#the-build-farm)).
+From then on each lane runs on whichever Mac has room. [Setting up a Mac](#setting-up-a-mac) has
+the full checklist, including Xcode, simulator runtimes, private sources and signing.
 
 ### Keep the queue running
 
 A queue worker starts by itself when you run `qk land` and exits when nothing is waiting. To also
-check for waiting work at login and every two minutes, set up the
-[signed queue launcher](guides/maintenance.md#signed-queue-launcher). It also avoids a macOS
-restriction that can cut a background worker off from the local network
+check for waiting work at login and every two minutes, set up the signed queue launcher below. It
+also avoids a macOS restriction that can cut a background worker off from the local network
 ([macOS Local Network privacy](#macos-local-network-privacy)).
+
+#### The signed queue launcher
+
+Set this up once, on the Mac that owns the queues. From the Queuekeeper checkout, build the app
+and sign it in your own Terminal with an Apple-issued signing identity:
+
+```sh
+app="$PWD/.build/Queuekeeper.app"
+mkdir -p "$app/Contents/MacOS"
+cp src/python/queuekeeper/_native/queue-launcher/Info.plist "$app/Contents/Info.plist"
+python3 scripts/qk admit --here -- /usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror \
+  src/python/queuekeeper/_native/queue-launcher/main.c -o "$app/Contents/MacOS/QueueLauncher"
+/usr/bin/codesign --force --sign "Developer ID Application" --timestamp=none "$app"
+/usr/bin/codesign --verify --strict "$app"
+```
+
+Install it at a stable path and register it with Launch Services. When macOS asks, allow
+Queuekeeper Local Network access; if it is later blocked from reaching another Mac, check System
+Settings, Privacy & Security, Local Network.
+
+```sh
+mkdir -p "$HOME/Applications"
+/usr/bin/ditto "$app" "$HOME/Applications/Queuekeeper.app"
+app="$HOME/Applications/Queuekeeper.app"
+/usr/bin/open -g -a "$app" --args /usr/bin/true
+```
+
+Then, for each queue, run this from its main checkout with the Python and `PATH` its worker should
+use after login. The worker uses the account's normal Git and SSH credentials.
+
+```sh
+draft="$(mktemp)"
+python3 scripts/qk queue launcher-plist "$app" > "$draft" &&
+  label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$draft")" &&
+  mkdir -p "$HOME/Library/LaunchAgents" &&
+  install -m 644 "$draft" "$HOME/Library/LaunchAgents/$label.plist" &&
+  /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$label.plist"
+rm -f "$draft"
+```
+
+`qk land`, `qk queue wait` and `qk queue resume` ask launchd to start the agent, which runs the
+same worker at login and on its interval. An empty or held queue returns at once, and the queue's
+lock keeps out a second worker. If launchd refuses a start, `worker.log` records why and the
+session starts the worker itself.
+
+#### Removing the launcher
+
+Close the queue, wait until it is idle, then boot the agent out and remove its plist:
+
+```sh
+python3 scripts/qk queue close --why "removing the queue's LaunchAgent" && {
+  until python3 scripts/qk queue status --idle; do sleep 30; done &&
+    /bin/launchctl bootout "gui/$(id -u)/$label" &&
+    rm "$HOME/Library/LaunchAgents/$label.plist"
+  python3 scripts/qk queue reopen
+}
+```
+
+- **Wait on `--idle`, not plain status.** The bootout ends a running worker and its gate.
+  `qk queue status --idle` exits 0 only when no worker runs and nothing is queued, testing or
+  passed, and 75 otherwise; plain `qk queue status` exits 0 mid-gate.
+- **Close first**, so no entry arrives between the idle reading and the bootout
+  ([Closing a queue for maintenance](#closing-a-queue-for-maintenance)). Reopen afterward whether
+  or not the removal worked, if this `close` was the one that closed the queue.
+- **A held queue with entries never goes idle.** Resume it, or remove its entries, first.
 
 ## Land changes
 
@@ -186,17 +254,40 @@ throw the result away.
 ### Checks before queuing
 
 `qk land` refuses an entry within seconds, with nothing queued, when a round would only send it
-back later:
+back later. `--front` and `--no-gate` skip none of these checks.
 
-- **Conflicts** with `origin/main` or any entry ahead. The refusal names the files, lines and
-  entries in conflict. With `--wait`, it waits for those entries to land and tries again.
+- **Conflicts** with `origin/main` or any entry ahead. `qk land` replays the entry the way a round
+  would, after every entry ahead, in a scratch worktree. The refusal names the files and your own
+  lines in conflict (`PATH:FIRST-LAST`) and the entries ahead that change those files.
+  - A conflict with entries ahead only: `qk land --wait` waits for them to land and tries again
+    by itself. Without `--wait`, the refusal gives a `qk queue wait ID ID ...` command to run in
+    the background; it exits 0 when they all landed (rebase and land again), 1 when one came back
+    (land again), and 75 while the queue is held.
+  - A conflict with `origin/main` is refused at once, since only a rebase ends it.
+  - Lines several branches each add below one heading of a `CHANGELOG.md` are not a conflict: the
+    worker keeps both, the new lines first.
 - **Commit messages that close an issue by mistake**, such as "This does not fix #43", which
-  GitHub reads as closing issue 43.
-- **Tests that cannot run**, such as a test module that does not parse.
+  GitHub reads as closing issue 43. The refusal names the line and what to write instead.
+- **Tests that cannot run**, such as a test module that does not parse, in any queue lane that
+  runs `qk unittest`.
 - **Preflight findings** ([Preflight lanes](#preflight-lanes)).
 
-A refusal is one line, `COMMIT is not queued: REASON`, with exit status 1. A branch refreshed by
-merging `main` is not refused; the queue lands its own commits.
+A refusal is one line, `COMMIT is not queued: REASON`, with exit status 1. A check that cannot be
+made queues the entry anyway and says so; the round checks again. A branch refreshed by merging
+`main` is not refused; the queue lands its own commits.
+
+### Branches after a conflict or a landing
+
+- **The first commit that conflicts is the one to fix.** The queue picks an entry's commits one at
+  a time, so a branch whose final tree would apply is still refused when an earlier commit does
+  not. If the commits from that one on are yours alone and pushed nowhere, squash or amend them
+  so each applies in order. Otherwise wait for the entry ahead to land and rebase onto
+  `origin/main`.
+- **Start the next change from `origin/main`** once a landing says `landed`. The queue may change
+  a commit as it lands it, as when it settles a changelog conflict, so `main` holds it under
+  another hash. A branch that goes on after a landing still holds the old commits; rebase it onto
+  `origin/main`, using `git rebase --skip` for a commit whose change `main` already has. Never
+  merge `main` in.
 
 ### Preflight lanes
 
@@ -237,17 +328,19 @@ Queuekeeper's built-in spelling check. A later release removes that fallback
 The worker tries the cheap explanations before the expensive one:
 
 1. **A flaky test.** Each failed test is rerun alone, up to three times. If every rerun passes
-   and no commit in the batch touches the test's files, the batch lands. The flake is recorded in
-   the queue's status, in a `Flaky-test:` trailer on the landed commit, and on the issue tracker.
-   A test the batch itself adds is never treated as a flake.
-2. **One obvious culprit.** If every failed test points at the same entry, that entry is sent
-   back and the rest gate again at once.
+   and no commit in the batch touches the test's module or a file it imports, the batch lands. The
+   flake is recorded in the queue's status, in a `Flaky-test:` trailer on the landed commit, and on
+   the issue tracker. A test the batch itself adds is never treated as a flake: the entry that adds
+   it is sent back.
+2. **One obvious culprit.** If every failed test points at the same entry, the worker confirms it
+   by running those tests on the batch without that entry. If they pass, that entry is sent back
+   and the rest gate again at once.
 3. **Bisect.** Otherwise the batch is halved until one entry fails alone. Both halves gate at the
    same time on different Macs, and every entry that passes along the way lands.
 
-Steps 1 and 2 read test names from `qk unittest`, the bundled Python test runner. Any other lane,
-including Xcode and Unity lanes for now, gets step 1 only if it declares `failedTests`, and never
-step 2:
+Steps 1 and 2 read test names from `qk unittest`, the bundled Python test runner, and are skipped
+when more than five tests failed. Any other lane, including Xcode and Unity lanes for now, gets
+step 1 only if it declares `failedTests`, and never step 2:
 
 ```json
 "gate": {
@@ -268,34 +361,61 @@ step 2:
 
 A `qk unittest` gate run with `--fail-fast` stops once a failed test fails again alone, and runs
 the recently failed test classes first, so a failing batch usually reaches these steps well before
-the end of the suite ([Parallel tests](guides/parallel-tests.md#tests-within-one-suite)). Its
+the end of the suite ([Running tests side by side](#running-tests-side-by-side)). Its
 failed tests are rerun and blamed as any run's. If they then all pass alone, the batch does not
 land, because the rest of its suite never ran: it gates again, once for that commit, and bisects
 if the gate stops that way again.
 
+A gate that `qk unittest` refused with `nothing ran` is not rerun: the worker sends back the one
+entry that brings the refusal, or bisects. When the same refusal comes back with no entry to blame,
+the queue holds for a session.
+
 An entry that is sent back is told the failed tests, whether its commits touch their files, and
 the Mac's load during the run. When a preflight or docs lane failed, it is also told whether
-`origin/main` fails that lane on its own, so the fix may belong on `main`.
+`origin/main` fails that lane on its own, so the fix may belong on `main`. The entry keeps its ref
+until `qk queue remove ID`; fix it, rebase and land it again.
+
+A failure in a test your change cannot reach, which the queue did not excuse as a flake, goes on
+that test's issue before you land again, so the flake becomes somebody's to fix.
 
 ### While a gate runs
 
 - **Stacked gates.** Entries that arrive during a gate are tested on top of the batch, on a
-  different Mac. If the batch lands, the stacked gate becomes the next round's gate, already under
-  way. If not, it is thrown away. Only one runs at a time.
+  different Mac, once the batch's last lane has been admitted. If the batch lands, the stacked gate
+  becomes the next round's gate, already under way. Anything else (the batch fails or lands at
+  another commit, an entry is removed or put first, `main`'s lanes change, the queue holds) throws
+  it away and queues its entries again. Only one runs at a time.
 - **Documentation does not wait for code.** A documentation-only entry lands beside a running
-  code gate.
-- **Removing an entry** stops its gate within seconds and frees the Mac.
+  code gate, in a checkout of its own, as long as it changes none of the gate's paths. Queued
+  beside code, documentation lands first, in a round of its own.
+- **Removing an entry** (`qk queue remove ID`, or landing its branch again) stops its gate within
+  seconds on whichever Mac, frees the admission, and gates the rest again with no verdict counted.
+- **After a failure**, `qk queue status` and `qk land --wait` follow it: the worker reading the
+  failure, the failed tests waiting to rerun alone, then each rerun with its log and what its
+  admission waits for.
 
 ### No verdict is not a failure
 
 A lane ends as **passed**, **failed** or **unmeasured**. A timeout, a lost connection, a Mac too
 busy to admit the lane, a misconfigured Mac or a screen that locked during a UI test are all
 unmeasured: they say nothing about the commits, so nobody's entry is sent back. The worker waits
-for the Mac to settle and runs the lane again.
+for the Mac to settle (CPU under its busy limit and memory pressure normal, for up to an hour) and
+runs the lane again.
 
-After three runs in a row without a verdict, the queue *holds* with every entry still waiting
-([Holds](#holds)). An unreachable remote is retried for about an hour before the queue holds, and
-during a GitHub incident the worker keeps trying while GitHub reports Git operations as degraded.
+- **Three runs in a row without a verdict** hold the queue, with every entry still waiting
+  ([Holds](#holds)). A project changes that bound on `main` with `"queue": {"noVerdictRuns": N}`.
+  A verdict or `qk queue resume` starts the count again.
+- **A screen that locked during the run** does not count toward that bound. The lane runs next only
+  on a Mac whose screen is unlocked; five such runs in a row hold the queue.
+- **A lane whose command could not start** (exit 127), and **a lane Queuekeeper itself could not
+  start** in (exit 70, a plugin or extension that did not load), hold the queue at once, since a
+  rerun would fail the same way. If the batch's own commits break loading, that entry is found by
+  bisecting and sent back instead.
+- **Running out of disk space** holds the queue at once. Free space with `qk disk --delete` and
+  resume.
+- **An unreachable remote** is retried for about an hour before the queue holds. A push refused
+  for its key while fetches succeed is retried too, for up to an hour while GitHub reports Git
+  operations as degraded.
 
 ### Documentation changes
 
@@ -303,19 +423,108 @@ An entry that changes only documentation skips the code gate. It lands in second
 preflight lanes and the documentation lanes, beside any code gate that is running.
 
 - **Documentation** is Markdown in the usual places: the root `README.md`, `CONTRIBUTING.md` and
-  `CHANGELOG.md`, and `.md` or `.markdown` files under `doc/` and `docs/`. A project names other
-  paths with `queue.unread` on `main`.
+  `CHANGELOG.md`, and `.md` or `.markdown` files under `doc/` and `docs/`.
 - **Everything else is code**, including `AGENTS.md`, configuration, stylesheets, scripts, and
   images a document shows. One code path makes the whole entry ride the code gate, with the
-  documentation lanes run ahead of it.
+  documentation lanes run ahead of it so a cheap failure comes back first.
 - **`qk land` says which gate an entry will ride**, after the `queued ID` line. For an entry that
   rides the code gate, it names the first path that is not documentation.
 - **Land unrelated document changes on their own.** Commit them on a separate branch from
   `origin/main` so they land without waiting for code. Keep them in one entry when the document
   describes what the code change does.
+- **A docs-only landing is not a full gate** of the pushed commit, and it skips the pre-push hook,
+  so put required documentation checks in the documentation lanes.
 
-The full rule is in [the merge queue guide](guides/merge-queue.md#the-merge-queue), under
-*A docs-only batch runs the docs lanes*.
+#### Paths no code lane reads
+
+`queue.unread`, read only from `main`, decides two things with one list: whether a batch may skip
+the gate (every path it changes is unread), and whether a passed result still stands when `main`
+moves under it (every path `main` gained is unread and untouched by the batch).
+
+```json
+"queue": {
+  "unread": {
+    "paths": {"records/": "landing records; no lane reads them",
+              "doc/release/": {"why": "only the privacy checks read it", "lanes": ["privacy-docs"]}},
+    "exclude": {"doc/guide/input.md": "a code test reads this fixture"},
+    "lanes": ["docs"]
+  }
+}
+```
+
+Every key is optional:
+
+- `paths` adds to the Markdown defaults: a file, or a directory ending in `/` (which takes every
+  file in it, not only Markdown), with why no code lane reads it. A path one or two small checks
+  read can name those lanes instead, and a docs-only batch that changes it runs them too.
+- `exclude` names paths code does read, and wins over both.
+- `lanes`, by default `["docs"]`, is what a docs-only batch runs in place of the gate. The default
+  `docs` lane is `qk docs check`.
+- `"defaults": false` drops the Markdown defaults. `"unread": false` gates every batch and carries
+  nothing over.
+
+List a path only after checking that no lane reads it: a path left out costs a gate run, and a path
+wrongly listed lands untested. A test that reads a document needs that document in `exclude`, or
+a documentation lane that runs the test. The older `queue.docsOnly` and `queue.carryOver` are
+read as `queue.unread` for now, with a warning; `qk doctor` prints the replacement.
+
+When `main` moved only by unread paths, a passed batch is pushed without gating again, after
+`qk docs check` and any `queue.carryOverChecks`, commands run in order on the batch rebased onto the
+new `main`:
+
+```json
+"queue": {
+  "carryOverChecks": [
+    {"command": ["python3", "tools/check_records.py", "--base", "{base}"], "paths": ["records/"]},
+    {"command": ["python3", "scripts/qk", "docs", "check"]}
+  ]
+}
+```
+
+`paths` limits a costly check to moves of those paths, and `{base}` becomes the commit the result
+passed on. A check that fails sends the batch through the gate again, with no blame.
+
+### The pre-push hook
+
+After a gate passes, the worker runs the project's pre-push hook itself, as Git would for a push to
+`main`, then pushes. A hook that refuses holds the queue for a session; a hook's exit 3, 69, 75 or
+78 is no verdict and is tried once more. A hook that waits for admission should exit with the
+status it got rather than 1.
+
+**A hook that only repeats the lanes** can be one line, which runs the right lanes for the paths a
+push changes: the docs lanes for documents, `queue.lanes` or `gate` for anything else, nothing for a
+push that changes no path. It exits 0 on a pass, 1 on a failure and 3 when a lane was unmeasured,
+which refuses the push. Under the queue's worker it runs nothing, since the lanes just ran.
+`QUEUEKEEPER_PREPUSH=skip git push` skips it and says nothing was verified.
+
+```sh
+#!/bin/sh
+exec python3 scripts/qk pre-push "$@"
+```
+
+**A hook of the project's own that the lanes cover** can be skipped by the worker. The project
+names, on `main`, each lane that covers it and what of the hook it runs; the lanes must be ones the
+queue runs:
+
+```json
+"queue": {"lanes": ["gate", "app-gate"],
+          "hookCoveredBy": {"gate": "check-all.sh, the hook's first step", "app-gate": "check-app.sh, its second"}}
+```
+
+**Keep `core.hooksPath` right.** Git silently runs no hook, or another worktree's, when
+`core.hooksPath` is absolute, set per worktree, or names a missing folder. Name the hooks folder in
+`queuekeeper.json` and `qk doctor` sets and repairs it:
+
+```json
+"gitHooks": "tools/repository/hooks"
+```
+
+`qk doctor --hooks` does only that, in about a second, for a session-start hook. It exits 0 when
+nothing is left wrong and 1 when a warning remains:
+
+```json
+{"type": "command", "command": "python3 scripts/qk doctor --hooks", "timeout": 15}
+```
 
 ### Changes that build on each other
 
@@ -331,14 +540,21 @@ back, the later pieces that hold its commits come back with it.
 
 ### Emergencies
 
-- `qk land --front` tests an entry next, ahead of everything waiting.
-- `qk land --no-gate --why "..."` lands with only the preflight lanes and the pre-push hook. The
-  reason is required and recorded in a `Landed-without-gate:` trailer, and status lists the
-  commit as ungated until a later gate covers it.
+These are for a fix that cannot wait, never routine, and never for a flaky test.
+
+- `qk land --front` tests an entry next, as a batch of its own, ahead of everything waiting. A
+  running gate finishes first. `--why` is optional.
+- `qk land --no-gate --why "..."` lands the entry alone, in its turn, with only the preflight lanes
+  and the pre-push hook. The reason is required and recorded in a `Landed-without-gate:` trailer,
+  and status lists the commit as ungated until a later gate covers it. Tell the owner you used it
+  and why.
 - With both flags, the entry lands next. It overtakes a round whose gate is still waiting for
   admission; a gate that has started finishes first.
 
 Running the same flags again on an entry already queued updates it.
+
+Push to `main` by hand only when `qk land` cannot be used, such as a broken queue, or with the
+owner's approval, and report it with its reason. The queue takes a hand push as it comes.
 
 ### Closing a queue for maintenance
 
@@ -369,6 +585,19 @@ Entry IDs look like `qk7318-issue-123-fix-share-sheet`: `qk`, a random four-digi
 `issue-N-` prefix when the branch or commits reference an issue, and a slug of the branch name
 (without an `agent/` or `codex/` prefix) or of the commit subject.
 
+### A project's first landing
+
+The commit that adds a project's `queuekeeper.json` lands through the queue like any other, with
+`qk land --wait`. The queue normally reads settings from `origin/main`, so that no branch chooses
+its own gate; until `main` has a `queuekeeper.json` naming lanes, it reads the entry's for that
+landing alone, and says so. After that commit lands, every later entry is gated by `main`'s
+settings.
+
+Settings that loosen what the queue checks count only from `main`, even on the first landing:
+`queue.hookCoveredBy`, `queue.unread` (and the older `docsOnly` and `carryOver`),
+`queue.spelling: false` and `queue.preflight`. A project that wants one of them lands its
+configuration through the full checks once.
+
 ## Lanes and admission
 
 ### Lanes
@@ -395,60 +624,556 @@ The most useful settings:
 
 | Setting | What it does |
 |---|---|
-| `timeout` | Seconds before the lane ends as unmeasured |
-| `parallel` | Makes the lane a *group* that runs its members side by side under one admission |
+| `timeout` | Seconds before the lane ends as unmeasured; 2 hours when unset ([Time limits](#time-limits-and-the-gates-budget)) |
+| `parallel` | Makes the lane a *group* that runs its members side by side under one admission ([Lane groups](#lane-groups)) |
+| `jobs` | How many of a group's members run at once; all of them by default |
 | `resource` | `"exclusive"` for timing measurements that need the Mac to themselves; `"self"` for a script that admits its own parts |
 | `wholeHost` | The lane starts its own parallel jobs and needs the whole Mac |
+| `here` | Why the lane runs only on this Mac, such as a physical device |
 | `unlockedScreen` | Runs only on a Mac whose screen is unlocked ([Screen lock](#screen-lock)) |
-| `labels` | Runs only on a Mac whose settings give it every label, such as `["unity-license"]` ([what a Mac takes](guides/another-mac.md#what-a-mac-takes)) |
-| `minimumTests` | Rarely needed: a typed floor beside the [count from history](guides/lanes.md#test-counts-from-history), which already fails a whole run that executes fewer tests than the lane's last pass on main |
+| `labels` | Runs only on a Mac whose settings give it every label, such as `["unity-license"]` |
+| `compileFirst` | A build command run before the tests, in the same admission ([Compiling before the tests](#compiling-before-the-tests)) |
+| `minimumTests` | Rarely needed: a typed floor beside the [count from history](#test-counts), which already fails a whole run that executes fewer tests than the lane's last pass on main |
 | `exactTests` | With `minimumTests`, a whole run must execute exactly that many, for a lane that picks its tests by name |
 | `arguments` | `false` refuses `qk run LANE -- ARGUMENTS` for a lane that selects its own tests |
 | `budgetMinutes` | Warns when the gate's median time drifts past this target, naming the slowest parts |
 | `failedTests` | Lets the queue rerun a non-Python lane's failed tests ([When a batch fails](#when-a-batch-fails)) |
+| `stall` | Reports, and optionally stops, a lane that has gone quiet ([Time limits](#time-limits-and-the-gates-budget)) |
 
 [`schemas/queuekeeper.schema.json`](../schemas/queuekeeper.schema.json) lists every setting.
 
-- **Receipts.** Each run leaves a log and a receipt with the commit, command, exit status,
-  outcome, Mac and wait time. Results of whole-lane runs on a clean commit are kept by commit, so
-  any worktree can ask whether that commit already passed a lane.
-- **Test counts** are read from unittest, pytest, XCTest and Swift Testing output
-  ([test counts](guides/lanes.md#receipts-and-test-counts)).
 - **Arguments.** `qk run LANE -- ARGUMENTS` appends arguments to the lane's command, to run some
-  of its tests.
-- **Groups.** A member that fails fails the group. A member that did not run, or ended
-  unmeasured, leaves the group without a verdict rather than failed.
+  of its tests. A lane with `"arguments": false` refuses them at once, with exit 2.
+- **Results.** Each lane's command finds an empty folder of its own in `QUEUEKEEPER_RESULTS_DIR`
+  for transcripts, result files and failure records. Read the variable rather than naming a path,
+  since a group's members each get their own. Whatever is written there comes back from another
+  Mac however the run ends, and a whole lane's results are kept by commit beside its receipt.
+- **Where the project is.** A lane's command finds the project's main checkout in
+  `QUEUEKEEPER_PROJECT_CHECKOUT` wherever it runs.
+
+### Receipts and outcomes
+
+Each run of `qk run LANE` writes its log, `.build/queuekeeper/LANE/run.log`, and a receipt,
+`source.json`, beside it: the commit and a hash of any uncommitted changes, the command and
+arguments, the exit status and outcome, the Mac, the wait for admission, the test counts and the
+Mac's load while it ran. Whole-lane runs on a clean commit are also kept by commit in the
+repository's Git directory, so any worktree can ask whether that commit already passed a lane.
+`qk admit -- COMMAND` writes the same receipt, without a log, to `.build/queuekeeper/admit/`, and
+the next admitted command replaces it: copy it when it is evidence.
+
+| Outcome | Exit | When |
+|---|---|---|
+| `passed` | 0 | The command exited 0 and ran enough tests |
+| `failed` | the command's; 2 for too few tests | The command failed, or exited 0 with too few tests |
+| `failed`, before tests | 4 | The log shows no test started, such as a project that could not be generated; the summary quotes the last error |
+| `build-failed` | nonzero | The lane's `compileFirst` step failed; no test ran |
+| `unmeasured` | 3 | The command exited 3, a test reported itself unmeasured, or the `timeout` stopped it |
+| `not-started` | 127 | The command could not start, such as `python3` given a file the checkout lacks |
+
+A command that cannot measure something, such as a timing check voided by load, exits 3 and says
+why in a log line beginning `Unmeasured:`, which the queue quotes in a hold. A run that failed
+without naming a test ends its summary with the last lines its command printed.
+
+### Test counts
+
+Queuekeeper reads executed and skipped test counts from XCTest, Swift Testing, unittest, pytest
+and `qk unittest` output in the lane's own log. Skipped tests ran nothing and never count toward a
+floor. With no number in `queuekeeper.json`:
+
+- **A run that reports a count must run at least one test.** One whose every test skipped fails.
+  A lane whose log reports no count, such as a spelling check, is held to nothing.
+- **A whole run must run as many tests as the lane's last passing whole run on `main` on the same
+  Mac.** A run that falls short fails with exit 2, naming the count, the commit and the receipt to
+  compare with. A count that rises needs nothing. A run with arguments, and each member of a
+  group, is held only to the first rule.
+- **Removing tests on purpose** takes a trailer in any commit of the change, naming each lane whose
+  count falls, or `*` for every lane:
+
+  ```text
+  Tests-Removed: gate, unit
+  ```
+
+`minimumTests` is a typed floor for a lane that must not fall below a number even on a Mac with no
+pass yet; most lanes need none, since a typed floor drifts. A lane that picks its tests by name sets
+`"exactTests": true` beside it, so a whole run must execute exactly that many, and the error names
+the count to set. `qk run --expect N LANE` requires exactly N of one run ([Verifying](#verifying)).
+
+A gate that writes each step's output to a separate log leaves no count in its own; print the
+steps' output to the lane's output too, or the lane is held to no count.
+
+### Compiling before the tests
+
+A lane whose tests need a build first names that build in `compileFirst`:
+
+```json
+"mac-tests": {
+  "command": ["scripts/app.sh", "mac-test-unsigned"],
+  "compileFirst": ["xcodebuild", "build-for-testing", "-project", "app/App.xcodeproj", "-scheme", "App",
+                   "-destination", "platform=macOS", "-derivedDataPath", ".build/native-tests",
+                   "CODE_SIGNING_ALLOWED=NO"],
+  "resource": "heavy", "timeout": 3600
+}
+```
+
+It runs on the lane's Mac, in its one admission and within its `timeout`, before the command;
+arguments after `--` go to the command alone. A failed build ends the run as `build-failed`, and a
+passing build's output goes to `compile.log` so `run.log` holds only the tests. A `self` lane
+cannot have the step, and a group runs its members without theirs. `qk xctest` and
+`qk simulator-tests` compile first already. For `qk admit`, chain the two in one admitted job:
+`qk admit -- bash -c 'BUILD && TESTS'`.
+
+### Lane groups
+
+A lane whose `parallel` names other lanes runs them at once under one admission:
+
+```json
+"lanes": {
+  "mac-tests": {"command": ["swift", "test"], "resource": "heavy"},
+  "ios-tests": {"command": ["qk", "simulator-tests", "--scheme", "Package-Tests",
+                            "--runtime", "iOS-27-0", "--device", "iPhone-17-Pro", "--"], "resource": "heavy"},
+  "tests": {"parallel": ["mac-tests", "ios-tests"], "resource": "heavy"}
+}
+```
+
+- Each member is judged as `qk run MEMBER` would judge it, and writes its log and receipt to
+  `.build/queuekeeper/GROUP/lanes/`. A failed member's last 40 lines print under its result; the
+  others still run to their end.
+- A member that fails fails the group. A member that did not run, or ended unmeasured, leaves the
+  group without a verdict rather than failed.
+- The group needs a `resource` at least as heavy as its heaviest member. A lane that takes the
+  screen cannot join a group, and a group cannot name another group.
+- A group takes no arguments: filter one member instead (`qk run ios-tests -- -only-testing:T/C`).
+- A group with a `"model": true` member needs `"model": true` itself; with two such members it
+  also needs `"jobs": 1`.
+- A heavy group goes to another Mac whole unless it or a member says `here`. A gate script that runs
+  a group as one of its steps uses `qk run --here GROUP`, so the results stay with the gate.
+- `qk run --serial GROUP` runs the members one after another on this Mac, as a reference for a
+  failure seen only side by side; `qk remote run --serial GROUP` does so on another Mac. Neither
+  counts as a pass of the group.
+
+Members that share a build folder cannot run side by side: two `swift test` runs in one `.build`
+wait on its lock, and two `xcodebuild` runs need separate `-derivedDataPath`s.
+
+### Running tests side by side
+
+| Runner | Side by side | One at a time |
+| --- | --- | --- |
+| `qk unittest` | `qk unittest -s tests -j N`: a process per module, four by default | `-j 1` |
+| XCTest in a Swift package | `qk xctest -j N`: classes packed into xctest processes | `swift test` |
+| Simulators | `qk simulator-tests --device T --device T`: devices at once | `--jobs 1` |
+| xcodebuild | `-parallel-testing-enabled YES -parallel-testing-worker-count N` | `-parallel-testing-enabled NO` |
+| Swift Testing | Concurrent in one process by default | `swift test --no-parallel`, or `.serialized` |
+| pytest | pytest-xdist: `-n N --dist loadgroup` | `-n 0` |
+
+Keep tests that share state out of each other's way, with a serial group or a serialized suite for
+the few that must share, rather than turning parallelism off. Don't use `swift test --parallel`:
+it reports skipped XCTest tests as passed and prints no total to count.
+
+#### `qk unittest`
+
+`qk unittest` discovers a suite as unittest does and runs each module in its own process.
+
+- **Selecting.** Name modules, classes or tests after the options
+  (`qk unittest -s tests integration.test_merge_queue.Landing`), or filter with `-k PATTERN`, an
+  fnmatch pattern or substring on the test ID. `-p PATTERN` limits discovery by file name, and
+  repeats. A name or pattern that selects nothing exits 5 and runs nothing.
+- **Splitting.** `--split class` or `--split test` runs each class or test in a process of its own;
+  `--batch-size N` caps the tests per class process. A module that sets `shard_by = "class"` (or
+  `"test"`) splits that finely anyway, and one that sets `serial_group = "NAME"` runs in one
+  process with the rest of its group, in turn. The slowest process bounds the run, so split a
+  module that dominates.
+- **Counting.** Each process's output prints whole under a line naming it. A process that ran fewer
+  tests than discovery found for it fails.
+- **Progress.** The first line names a folder under `.build/queuekeeper/runs/` that `qk progress`
+  reads ([Long runs](#long-runs)).
+- **Unfinished runs.** A process past `--timeout` is unmeasured. A stopped run still prints its
+  summary, lists the unfinished tests, and gives the command that runs only them, also saved in
+  `unittest/unreached.txt` in the lane's results.
+- **Failing fast.** `--fail-fast` reruns a failed process's failed tests alone at once and, if one
+  fails again, stops the run and prints the tests left out with the command that runs only them. A
+  failure that passes alone lets the run go on. Such a run starts with the test classes that failed
+  in the repository's `--fail-fast` runs of the last 14 days, the latest first, since a failure
+  tends to come back where one just was. Queuekeeper's own gate runs this way.
+- **Admission.** Started outside a lane, `qk unittest` is admitted like `qk admit`. `--unadmitted`
+  is only for testing a runner itself.
+
+#### `qk xctest`
+
+`qk xctest` builds a Swift package's tests once, lists them, and packs the XCTest classes into
+`-j` processes, longest first by the last run's times. Each process runs one test at a time and
+reports its skips; the Swift Testing tests run once beside them.
+
+- `-C PACKAGE`, repeated, tests several packages, which share the processes.
+- `-c release`, `--scratch-path PATH` and `--swift-option OPTION` go to every swift command.
+- `--filter REGEX`, repeated, selects by `Module.Class/test`, as `swift test --filter` does.
+- `--split-swift-testing` puts Swift Testing suites into the shards too, one test at a time, for
+  suites that interfere when run together (such as main-actor suites sharing a window or fonts).
+- `--skip-build` reuses the last build.
+
+A process that fails, or runs other than the tests it was given, fails the run. A skip whose reason
+begins `Unmeasured:` leaves a passing run unmeasured (exit 3). A filter that selects nothing exits 5.
+
+#### `qk simulator-tests`
+
+`qk simulator-tests` builds a scheme's tests once and runs them on every named device at once:
+
+```sh
+qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
+  --device iPhone-17-Pro --device iPad-Air-13-inch-M4 --build-jobs 4 -- -only-testing:TARGET/CLASS
+```
+
+- Each device is a member of the project's simulator pool, reserved, reset from its kind's warmed
+  template (`--erase` erases it; `--keep-state` keeps it as it was), and released however the run
+  ends.
+- Devices boot while the build runs. Each then runs the same build with its own log, result bundle
+  and derived data.
+- Arguments after `--` go to every device's test run. A lane that runs `qk simulator-tests` ends
+  its command with `--`, so `qk run LANE -- -only-testing:T/C` lands there.
+- `-C DIRECTORY`, `--xcode-project` or `--workspace` say where the scheme is; `--setting NAME=VALUE`
+  adds a build setting. `--build-only` builds and tests nothing, to warm a build a later run reuses.
+- Counts come from each device's result bundle. A device that ran no test, or whose every test
+  skipped, fails. Read or copy the bundles before the next run with the same `--logs` folder.
+- One run at a time uses a `--derived-data` and `--logs` folder; another waits and prints `WAIT:`.
+- `--jobs N` tests N devices at a time. `--workers N` turns on xcodebuild's parallel testing on
+  each device; leave it off until a suite has been shown to pass with it. `--shards N` instead
+  splits each device's tests across N pool members, packed by the last run's times.
+- `--boot-timeout` (600 s) leaves a device that will not boot unmeasured. `--test-timeout` (2 h)
+  and `--test-allowance` bound the run and each test ([Time limits](#time-limits-and-the-gates-budget)).
+- Two simulators at once can hold memory pressure at warning for the whole run, which stops
+  admission from opening extra slots, so keep memory-ceiling measurements out of such a run.
+
+Each run keeps per-test outcomes and seconds in `simulator-tests/` of the lane's results. A script
+that runs `xcodebuild test` itself keeps the same record by calling, once per run, pass or fail:
+
+```sh
+qk results keep --log "$log" --bundle "$bundle" --name "$device" --status "$status"
+```
+
+It prints each test's outcome and seconds, exits 3 when the bundle cannot be read, and exits 1 when
+NAME is already in this run's results. `--activity-timing-prefix PREFIX` also keeps XCTest
+activities titled `PREFIX N s`. Keep a system trace in the results when a test reports a long wait,
+since the next run on that Mac replaces the logs.
+
+#### A pytest lane
+
+Run pytest with `-rs --no-fold-skipped`, so each skip's reason, including an `Unmeasured:` one, is
+printed per test:
+
+```json
+"python-tests": {"command": [".venv/bin/python", "-m", "pytest", "-n", "4", "--dist", "loadgroup",
+                             "-p", "no:cacheprovider", "-rs", "--no-fold-skipped"],
+                 "resource": "heavy"}
+```
+
+The count is pytest's last summary line: passed, failed, skipped, xfailed and xpassed tests ran;
+deselected tests and errors did not. A plugin that adds a word to that line, such as
+pytest-rerunfailures' `rerun`, leaves a line Queuekeeper cannot read.
+
+### Repeating a lane's tests
+
+One passing run does not show that a test that failed under load is fixed. Run it as a series:
+
+```sh
+qk run tests --repeat 10 --erase --only BreezEPUBTests/QuickLookTests
+```
+
+`--repeat N` runs the lane's `qk simulator-tests` tests N times on one build, each on a pool member
+taken afresh. `--erase` erases the member before each run, and `--template` copies its kind's warmed
+template instead. `--only TEST`, repeated, replaces the lane's own selection; a wrapper script must
+pass its arguments on for this to work. The series holds one admission with N times the lane's
+`timeout`. Each run prints its outcome, member, counts, seconds and load; `series.json` in the
+lane's results keeps them all. One failed run fails the series. A series is not a pass of the lane.
+
+### Time limits and the gate's budget
+
+Every run has two limits, so a hang ends instead of holding a slot:
+
+- **Each test** has one, so a hung test fails by itself. `qk simulator-tests` gives XCTest a
+  per-test allowance (`--test-allowance`, 600 s). A script that runs `xcodebuild test` itself
+  passes `-test-timeouts-enabled YES` and an allowance too, and a Swift Testing suite gives its
+  tests a `.timeLimit`.
+- **Each command** has one: a lane's `timeout`, `qk admit --time-limit`,
+  `qk simulator-tests --test-timeout`, or `--timeout` for each process of `qk unittest` and
+  `qk xctest`. A lane or `qk admit` command that sets none stops after 2 hours, and a
+  `qk unittest` or `qk xctest` process after 30 minutes. At its limit the command and its whole
+  process group are stopped, and the run is unmeasured, never passed.
+
+`qk doctor` lists the lanes that rely on the default. Give each a `timeout` of about twice its
+longest measured run.
+
+**Quiet lanes.** A lane can report when it has made no progress (no log output, no CPU, no new
+process) for a while, with `"stall": {"seconds": 600}` on the admitted lane that does the work,
+never on a group. The current and longest quiet interval go to `results/progress.json`, and
+`qk queue status` and `qk admissions now` show them. Once healthy runs have been measured, the lane
+can stop on a stall:
+
+```json
+"stall": {"seconds": 600, "action": "stop", "reason": "Healthy runs were quiet at most 240 s"}
+```
+
+A stopped lane is unmeasured (exit 3). A hook or script that turns every nonzero exit into 1 must
+keep 3 first. `"primaryControl": true` leaves out the CPU of a polling controller, such as
+pytest-xdist's main process, so its polling cannot hide stuck workers.
+
+**The gate's budget.** `budgetMinutes` on `gate` is a target for its own work, measured from
+admission to the end, not the wait for admission. When the median of the last 10 passing runs on an
+unloaded Mac (at least 3) passes the budget, `qk land` and `qk doctor` warn after each landing,
+naming the slowest parts and, beside them, the median wait. Runs on a Mac past its busy limit are
+left out, except whole-host gates. The warning repeats while the median stays over; add to the
+project's existing issue about the gate's budget rather than opening a new one each time.
+
+`qk doctor` also warns of a `gate` with no budget, and of a `gate` that takes a physical device.
+
+### Every test has a lane
+
+`qk doctor` reports `testLanes`: whether every XCTest class, Swift Testing suite and Python test
+module in the tracked source is selected by some lane. It reads `swift test`, `qk xctest`,
+`qk unittest`, `python3 -m unittest discover`, `xcodebuild test` and `qk simulator-tests` commands
+and their filters. Its result is `every-test-has-a-lane`, `tests-without-a-lane` (listed under
+`noLane`), `could-not-tell` (some lane runs a script it cannot read) or `no-tests-found`. Only the
+first is a pass, and none changes a gate.
+
+For a lane it cannot read, say what it selects; and name test paths kept only as records:
+
+```json
+"testLanes": {
+  "selects": {"ui": ["UITests/"], "spelling": []},
+  "skip": {"Tests/Archive/": "old fixtures kept as records"}
+}
+```
+
+With the Apple plugin, `qk doctor` also warns of a lane that runs one selection on both an iPhone
+and an iPad simulator, since tests that do not depend on the idiom then run twice. A lane in
+`release.lanes`, a lane per idiom, or a lane whose `idioms` says why its whole selection depends on
+the idiom gives no warning.
 
 ### Admission
 
 Ten agents that each start a build at once make every build slow and every timing meaningless.
-So every lane, and every command run through `qk admit -- COMMAND`, first asks the Mac for a
-*slot*, in one first-come, first-served queue per Mac.
+So every lane, and every command run through `qk admit -- COMMAND`, first asks a Mac for a
+*slot*, in one first-come, first-served queue per Mac. A private pool of your own, such as
+`mkdir` locks in a scratch folder, is a second queue that ignores load and that exclusive work
+cannot exclude, so don't build one.
 
-- **Slots.** Three slots are guaranteed. More, up to half the cores, open one at a time while the
-  CPU is under the Mac's limit (90% by default, 70% for the Mac setup ran on) and memory pressure
-  is normal.
-- **Bigger requests.** A lane can ask for the whole Mac, for work that runs its own parallel
-  jobs, or for exclusive use, for timing measurements. Exclusive work waits up to five minutes
-  for the CPU to read quiet before it starts. One lane at a time may use an on-device model or
-  the GPU.
-- **Waiting says why.** A waiting lane says what it is waiting for and behind whom, every five
-  minutes. `qk admissions now` shows who holds and who waits on every Mac, and
-  `qk admissions waits` how often and how long lanes waited, for an unlocked screen as well as a
-  slot, from each Mac's [wait history](guides/admission.md#wait-history).
-- **Limits.** Admission never stops running work, and it cannot see load that never asks, such
-  as an editor indexing in the background.
+```sh
+qk run LANE                      # a configured lane
+qk run test -- --filter SUITE    # arguments after -- are appended to the lane's command
+qk admit -- xcodebuild test -scheme SCHEME -destination "platform=iOS Simulator,id=UDID"
+```
 
-Don't wait for a quiet Mac before starting work, and don't poll `uptime` or `top`: admission
-waits for a slot and chooses the Mac. [Scheduling](guides/scheduling.md) explains the rules and
-the reasons behind them; [Heavy-work admission](guides/admission.md#heavy-work-admission) has
-every detail.
+`qk admit` runs the command in the current directory with its output on the terminal, records a
+receipt in `.build/queuekeeper/admit/`, and may run it on another Mac unless you add `--here`.
+`--timeout SECONDS` bounds the wait (5,400 s by default). Queuekeeper's own runners, `qk unittest`,
+`qk xctest`, `qk simulator-tests` and `qk unity test`, take admission by themselves when started
+alone and reuse it when a lane or `qk admit` started them. Any other command, such as a bare
+`swift test`, takes no slot unless run with `qk admit`.
+
+Don't wait for a quiet Mac before starting work, and don't poll `uptime`, `top` or the load
+average: on a busy Mac the load stays in the hundreds, so such a loop never fires. Admission waits
+for a slot and chooses the Mac.
+
+#### Choosing the request
+
+| Request | How | For |
+|---|---|---|
+| One slot | `qk admit`, or a lane with `"resource": "heavy"` or none | Builds, tests, setup |
+| Model | `qk admit --model`, or `"model": true` with `"resource": "heavy"` | On-device generation, MLX, Core ML that uses the GPU: one slot plus the Mac's single model lock |
+| Whole host | `"wholeHost": true` on the lane or its group | A gate that runs the project's suites side by side |
+| Exclusive | `qk admit --exclusive`, or `"resource": "exclusive"` | A timed or whole-machine measurement only |
+| Self | `"resource": "self"` | A script that admits each of its own parts |
+
+- **Only the timed part is exclusive.** Build and set up with `qk admit --here`, then run the
+  timed part alone with `qk admit --here --exclusive`. Both need `--here` so they run on the same
+  Mac. An exclusive request inside a one-slot admission is refused, so a lane that needs both is a
+  `self` lane. A lane group can neither be `self` nor run a `self` lane.
+- **A gate suite is never exclusive.** `qk admit --exclusive` refuses a command that is word for
+  word a lane's `command` or `compileFirst`; run it with `qk run LANE`.
+- **A check that voids itself on a busy Mac doesn't belong in a shared gate.** Admission judges
+  only when a run starts. Give such a check its own exclusive lane, listed in `queue.lanes` after
+  the gate, or admit it from a `self` lane with `--exclusive`.
+- **Exclusive work settles first.** It holds every slot and the model, then waits up to five
+  minutes for the CPU to read under 25% busy, and starts anyway at that bound. Its command then
+  finds what admission read in `QUEUEKEEPER_HOST_BUSY`, `QUEUEKEEPER_HOST_LOAD`,
+  `QUEUEKEEPER_HOST_SETTLED_SECONDS` and `QUEUEKEEPER_HOST_QUIET` (1 when the Mac read quiet). A
+  check that must judge the Mac reads `QUEUEKEEPER_HOST_QUIET` rather than waiting on its own.
+- **A model run that is timed** or compared with a baseline stays exclusive. Core ML pinned off
+  the GPU (`.cpuAndNeuralEngine`, `.cpuOnly`) needs no model lock.
+- **`qk doctor` warns** of a `self` lane whose command never calls `qk admit`.
+
+Admission counts a lane as one job however many processes it starts, so bound its own
+parallelism: `xcodebuild` takes a task per core unless given `-jobs N`, and a debug `swift test
+--jobs N` is bounded. A release `swift test -c release` is not, whatever flags it gets. A script
+that runs several jobs at once leaves at least one guaranteed slot for others.
+
+#### A Mac's limits
+
+Each Mac admits by its own limits:
+
+- **Three guaranteed slots** open while the CPU's busy share is under the Mac's `busyLimit`.
+- **More slots**, up to `slotsMax` (half the cores), open one at a time under the same limit,
+  while memory pressure is normal and 30 seconds (`settleSeconds`) after the last one was taken.
+- **At or over the limit** a Mac admits only its first job, so load that never asks can delay
+  admitted work but never stop all of it.
+- **A whole-host lane** starts once every guaranteed slot is free, and nothing else is admitted on
+  that Mac while it runs. While it waits, later work may take only slots beyond the guaranteed
+  ones, so they drain toward it.
+- **Nothing is preempted.** Work admitted while the Mac was quiet may grow heavy later.
+
+The busy share is the CPU's time outside idle over about the last 15 seconds. `busyLimit` is 90%
+by default; setup (`python3 tools/install-checkout.py`) writes 70% for the Mac it runs on, never
+changes a value already set, and `--check` prints the limit in force. `qk farm add` writes nothing
+on the Mac it adds.
+
+A Mac's limits live in `~/Library/Application Support/queuekeeper/admission-limits.json` on that
+Mac, with the keys `slots`, `slotsMax`, `busyLimit` (a percentage) and `settleSeconds`. Each is a
+number or `{"perCore": F}`, and a key left out keeps its default, as in
+`{"slots": 4, "busyLimit": 85}`. A file admission can't read, or one with an unknown key, refuses
+all work on that Mac with an error naming the file. To load a Mac more, raise `slotsMax` and
+`busyLimit`, not `slots`: every guaranteed slot added makes a whole-host gate wait longer there.
+
+- `qk admissions limits` prints this Mac's limits and where each comes from.
+- `qk admissions usage` prints every Mac's limits, its reading now, and its share of time at each
+  count of admitted jobs and under a whole-host lane.
+
+An environment variable named for a limit, such as `HEAVY_BUSY_LIMIT`, overrides the file for one
+process. Set it for every session or none.
+
+#### Waiting
+
+A wait is expected. A waiting request prints `heavy: waiting (Ns): REASON` when it starts and every
+five minutes after, naming the limit that refused it, the limit's value and where it was set, and
+the request it waits behind. The reasons are:
+
+| Kind | Waiting for |
+|---|---|
+| `slots` | A free slot, or every guaranteed slot for a whole-host lane, or every slot for exclusive work |
+| `settle` | The CPU to show the last job admitted, within `settleSeconds` |
+| `cpu` | The CPU's busy share to fall under `busyLimit` |
+| `memory` | Memory pressure to return to normal |
+| `model` | The run holding the model lock |
+| `exclusive`, `wholeHost` | Exclusive or whole-host work queued ahead or running |
+| `stranded`, `guard` | An entry no running admission vouches for (see [Stuck admission entries](#stuck-admission-entries)) |
+
+Arrival order holds across kinds: an older one-slot request runs before a later whole-host or
+exclusive one. A lane offered to other Macs keeps its place here meanwhile. A lane run's label in
+these messages is its project and lane, such as `EPUBLib gate`; a `qk admit` request's is its
+command line.
+
+When the wait times out, the request fails with nothing run and no lock reclaimed, naming the
+reason, the Mac and what held it. When no Mac admits the work, the message gives another Mac's
+reason and this Mac's.
+
+#### Who holds and who waits
+
+```sh
+qk admissions now [--json] [--here]            # every Mac now: holders, waiters, reasons
+qk admissions [--since WHEN] [--until WHEN]    # summarize this Mac's admission log
+qk admissions waits [--since WHEN] [--kind screen]   # how often and how long lanes waited
+```
+
+`qk admissions now` asks every Mac at once and changes nothing. For each holder it shows the
+slots, kind, hold time, CPU, and where the work comes from: repository, branch, worktree, agent
+session and Mac; for each waiter, its wait and reason. A Mac it can't read within 10 seconds is
+shown as unknown, never idle. A holder whose process has ended is shown as ended; admission frees
+it at its next attempt.
+
+`qk admissions` summarizes each kind and label over a period: requests admitted and withdrawn,
+their waits and what they waited behind, the loads seen and how admissions ended. Each Mac keeps
+its own log in `~/Library/Application Support/queuekeeper/admissions.jsonl`; to read another
+Mac's, pass a copy, the older generation first:
+
+```sh
+qk admissions <(ssh build-host \
+  'cd "Library/Application Support/queuekeeper" && cat admissions.1.jsonl admissions.jsonl 2>/dev/null')
+```
+
+`qk admissions waits` covers the waits the admission log cannot see, for an unlocked screen,
+another Mac's foreground, disk space or an offer, as well as for admission. Each Mac keeps the waits
+that ended on it; the command reads this Mac's and asks the farm's other Macs, and gives each Mac's
+count, total and longest wait of each kind, then each project's lane. The period defaults to the
+last 24 hours.
+
+#### Load admission cannot see
+
+Admission reads a Mac before it admits and cannot count work that never asks:
+
+- code navigation through `sourcekit-lsp`, which builds the worktree at full parallelism (agents
+  navigate with `grep` instead);
+- booting a fresh simulator, Xcode's indexing and an open Xcode's own builds;
+- a long measurement that holds a checkout's SwiftPM build lock, which a `swift test` in that
+  checkout then waits behind silently.
+
+Never stop another session's process merely because it is busy.
+
+#### Trial runs
+
+To try Queuekeeper without touching the live system, set `QUEUEKEEPER_TRIAL` to a folder's full
+path and run in a throwaway clone. Every `qk` command, and everything it starts, keeps its state
+there: admission, the farm, the device record, kept app builds and pinned checkouts. A trial's
+farm has no Mac, `qk doctor` fixes nothing, and the queue pushes to the clone's own `origin`.
 
 ### Process supervision
 
-Each lane runs in its own process group with a time limit. When it ends, Queuekeeper stops
-anything it left running. If something survives, the run is marked uncertain and its slot stays
-held until that is settled, so leftover load is never hidden.
+Each lane, `qk admit` command and runner runs in its own process group and session, with a time
+limit, and Queuekeeper follows every process it starts.
+
+- **When the command ends**, anything it left running has 60 seconds to end before it is stopped
+  (SIGTERM, then SIGKILL 10 seconds later). Leftover Xcode helpers, such as `DTServiceHub`, are
+  stopped at once. The command's own exit status still counts.
+- **A lane's `timeout`** stops the command the same way. The run is unmeasured (exit 3), never
+  green.
+- **A stop.** SIGTERM, SIGINT and SIGHUP stop the command and everything it started, with SIGKILL
+  10 seconds later. A stop while still waiting for admission leaves nothing behind.
+- **Uncertain runs.** After a failure, stop or timeout, Queuekeeper looks for anything still
+  running in the command's process groups and sessions. If something survives, the run is marked
+  uncertain and its slots stay held until that is settled, so leftover load is never hidden. A
+  passing command is not checked, so a daemon it starts on purpose holds nothing.
+
+#### Deadlines and stopping commands
+
+Keep three deadlines apart: your tool's wait for output, a connection or launch timeout, and the
+test's own deadline. A tool that returns before the command ends has observed nothing about the
+command:
+
+- **Follow an admitted command to its result.** When your tool's wait expires, the command is
+  usually still running: resume it or read its log and `qk progress`, and don't start a duplicate.
+  Wait for a confirmed result before starting dependent tests or pushes.
+- **Never stop an admitted command's task to retry or end it early.** An agent tool's stop often
+  sends SIGKILL a second or so after SIGTERM, before Queuekeeper has stopped what the command
+  started; the run is then left uncertain, holding its slots, and its command may run on
+  unsupervised. To end a run early, stop the command's own processes and let Queuekeeper follow
+  them to a result.
+- **Start long admitted commands in the background**, so a foreground timeout never cuts them off.
+- **Before ending a session or a subagent**, let its admitted commands finish. Stop only commands
+  still waiting for admission, which hold nothing. Archiving or deleting a Claude Code session,
+  quitting the Claude desktop app, ending a Codex session, or archiving a Codex Desktop thread
+  stops its commands.
+
+The [developer guide](developer_guide.md#how-agents-tools-stop-commands) says what each tool's
+actions do.
+
+#### Stuck admission entries
+
+An admission whose owner has ended, or can't be confirmed running, holds nothing: admission stops
+what is left of it and frees its slots at its next attempt. An entry left *uncertain* by a stop is
+recovered automatically once its owner has ended and nothing it ran still runs, checked every
+minute. Until then it counts as the slots it held, and other work admitted beside it says so.
+
+```sh
+qk admissions recover                       # list dead or uncertain entries
+qk admissions recover PID                   # recover one, by owner PID or identity
+qk admissions recover --host build-host PID # one on another Mac
+qk admissions remove PID --why "WHAT YOU CHECKED"
+```
+
+`qk admissions recover` changes an entry only when it can prove the owner and everything it ran
+have ended; otherwise it exits 1 naming each process still running. Stop or wait for those, then
+run it again. If the connection to another Mac drops, list there again before acting.
+
+An entry recovery can't prove finished, such as one with no record of its commands, is for a
+person: check with `ps` that nothing its owner started still runs, then remove it with
+`qk admissions remove`, which checks what it can first and records your `--why`. `qk queue status`
+and `qk queue doctor` say when a gate is stuck behind such an entry.
 
 ## The build farm
 
@@ -460,38 +1185,302 @@ The build farm is the Mac you work on plus any other Mac you can reach over SSH.
 qk farm add DESTINATION [--name NAME]   # add a Mac, last in the order
 qk farm list                            # the Macs, in the order work is offered to them
 qk farm rename NAME NEW
-qk farm pause NAME [--reason WHY]       # offer it no work until `qk farm resume NAME`
+qk farm pause NAME                      # offer it no work until `qk farm resume NAME`
 qk farm remove NAME                     # take it out for good
 qk farm foreground NAME [--off]         # allow lanes that take its screen, or not
 ```
 
+The list lives in `~/Library/Application Support/queuekeeper/farm.json` on the Mac that sends
+work. Nothing else names a Mac: no SSH alias or environment variable is read in its place. A farm
+with no Mac that takes work runs every lane on this Mac.
+
+- `qk farm add` reaches the Mac first and asks for its hardware UUID and local host name. The
+  UUID tells Macs apart, so this Mac, or a Mac already listed under another name, is refused.
 - A Mac's history follows its hardware, not its name, so renaming it is safe.
-- A paused Mac stays listed and finishes what it is running.
-- Removal is refused while work this Mac sent is still running there. Its checkouts stay on it
-  until you delete them.
+- A paused Mac stays listed, is offered nothing, and finishes what it is running.
+- Removal is refused while work this Mac sent is still running there; pause it meanwhile. Its
+  checkouts stay on it until you delete them, and earlier records of it are kept.
+
+Messages and receipts name a farm Mac by its name in `qk farm list`. Older records may call
+another Mac the *build host*; they still count.
+
+### Setting up a Mac
+
+The owner prepares each added Mac once:
+
+1. **Remote Login and SSH.** Turn on Remote Login (System Settings, General, Sharing) and add this
+   Mac's public key to that Mac's `~/.ssh/authorized_keys`.
+2. **An SSH alias** in this Mac's `~/.ssh/config`, so that `ssh ALIAS true` succeeds without a
+   prompt, then `qk farm add ALIAS`:
+
+   ```
+   Host ALIAS
+       HostName NAME.local
+       AddressFamily inet
+   ```
+
+   `AddressFamily inet` keeps ssh on IPv4. A `.local` name often resolves first to an IPv6
+   address that never answers, and every connection then waits out ssh's 10-second timeout.
+   `qk doctor` reports a first address that keeps connections waiting.
+3. **Xcode.** Install the same Xcode build this Mac uses, at the same path. A Mac with a different
+   Xcode at this Mac's developer directory refuses work.
+4. **Homebrew and tools.** Install Homebrew there yourself (its installer asks for that Mac's
+   password), then run `qk remote setup` from this Mac (see Tools, below).
+5. **Simulator runtimes**, for Apple projects: `qk remote setup --runtimes` (below).
+6. **Power.** Keep it on power and awake. A sleeping Mac leaves its run unmeasured, and its
+   `.local` name resolves only while it is awake on this Mac's network
+   (`dscacheutil -q host -a name NAME.local` shows whether it does).
+7. **A GitHub token**, if lanes fetch private sources (below).
+8. **Keychain**, if its runs sign: `qk keychain keep-unlocked --target MAC`
+   ([Keychains on another Mac](#keychains-on-another-mac)).
+9. **Extension folders.** Clone each folder the project's extensions load from beside it
+   ([Extension folders beside a project](#extension-folders-beside-a-project)).
+
+Then run `qk doctor` and a short lane there, such as `qk remote run LANE --host NAME`.
+
+#### Tools
+
+```sh
+qk remote setup [FORMULA ...] [--import MODULE ...] [--host NAME] [--check]
+```
+
+It puts Homebrew on the login shell's `PATH` in `~/.zprofile`, since work there runs in that
+Mac's login shell, and installs Homebrew's Python, `uv`, `shellcheck`, `xcodegen`, `zstd` and
+each formula you name. A new login shell then checks every tool, each `--import` module and the
+Xcode, one line each, and the command fails while anything is missing. Without Homebrew it stops
+with nothing changed; `--check` only checks. It also checks for the project's extension folders
+and names the `git clone` to run, but clones nothing.
+
+#### Simulator runtimes
+
+```sh
+qk remote setup --runtimes [--check]
+```
+
+Run it at setup and whenever either Mac gains a runtime; `qk doctor` runs it itself when the
+runtimes differ. It makes the Macs hold the same runtimes of this Mac's Xcode:
+
+- A runtime on one Mac only that nothing uses (no pin and no device record names it) is deleted
+  there. One that is used is copied across over SSH as a disk image, so a beta Apple no longer
+  serves arrives exactly; only an unreadable image is downloaded instead.
+- It deletes nothing while any simulator runs on that Mac, since that can crash them all, and
+  exits 1 naming them. Run it again once none runs.
+- It refuses a copy that would leave less than 40 GiB free.
+- It exits 0 only when the runtimes match. Five runtimes move about 40 GB, so run it in the
+  background; its last line is the outcome.
+
+#### Private sources
+
+Project commits reach another Mac over SSH with no GitHub credential. Fetching private toolkit
+code or private Swift package dependencies over HTTPS still needs one, and git's keychain helper
+cannot read the keychain over SSH. Create a fine-grained GitHub token with read-only Contents
+permission on the private repositories, and write it on the other Mac without leaving it in the
+shell's history:
+
+```sh
+read -rs "token?Token: "; echo
+(umask 077; printf 'https://USER:%s@github.com\n' "$token" > ~/Development/queuekeeper-farm/git-credentials)
+unset token
+```
+
+Each run's git reads that file through the store helper alone; your own git configuration there
+is unchanged. Renew the token before it expires. Never put a token in a package manifest, URL or
+committed configuration.
+
+#### When macOS renames a Mac
+
+macOS renames a Mac whose `.local` name another machine claims, adding or raising a `-N` suffix,
+and the old name stops resolving. When a name does not resolve or answers with another host key,
+Queuekeeper searches the Macs Bonjour lists for the one presenting the host key `known_hosts`
+holds, uses it if exactly one does, and says so. `qk doctor` reports the rename until you fix it:
+put the new name in `HostName` and the old one in `HostKeyAlias`, so a later rename needs only a
+new `HostName`. `sudo scutil --set LocalHostName NAME` on that Mac, with a name nobody else will
+claim, makes renames rarer.
 
 ### Which Mac runs a lane
 
-Each lane runs on the Mac with room for it and the most *headroom*: how far its CPU is under that
-Mac's own limit. Your Mac is a candidate like any other, and the farm's order breaks ties. When
-no Mac has room, the lane runs on whichever admits it first. Queuekeeper decides, not the agent.
+Every lane, a short check as much as a gate, is placed among the farm's Macs, this one included.
+Queuekeeper decides, not the agent: don't ask anyone which Mac to use.
+
+Each Mac is read for what its own admission would admit now. Of the Macs with room, the one with
+the most *headroom*, its CPU limit less its CPU's busy share, takes the work. A Mac 40% busy
+against a limit of 90% has 50 points; against a limit of 70%, 30.
 
 - **Each Mac's limit is its own.** Because your Mac's limit is 70% and an added Mac's is 90%, the
   added Mac takes the work at equal load. Change a Mac's `busyLimit` to load it more or less.
-- **An unreachable Mac** is skipped. **A misconfigured Mac**, with a different Xcode build for
-  example, runs nothing and says so, rather than producing results that can't be compared.
-- **Exclusive work** sent to another Mac waits for a moment it can start at once, for up to 15
-  minutes, before it joins that Mac's queue.
+- **Ties** go by the farm's order, with this Mac after the listed Macs.
+- **Room** means a free slot, the CPU under its limit (or nothing admitted running there), and no
+  whole-host gate or exclusive work running or waiting ahead.
+- **No Mac with room**: the lane waits in this Mac's queue and is offered again, every 15 seconds
+  at first and at most every two minutes, and runs on whichever Mac admits it first. A lane no
+  Mac admits within 90 minutes ends with exit 75.
+- **Exclusive work** sent to another Mac waits up to 15 minutes for a moment it can start at once
+  before it joins that Mac's queue, so that Mac keeps taking other work meanwhile.
+- **A gate** that runs its own suites side by side says `"wholeHost": true` and holds a whole Mac.
+
+A placement line says where a lane went and why, for example
+`queuekeeper: trying LANE on this Mac: this Mac has the most headroom ...`, and a refusal names
+its cause and where the Mac sets that limit.
+
+**Lanes that stay on this Mac:**
+
+- a lane that says `"here": "REASON"`, such as one needing a physical device or this Mac's GPU
+  (the reason is required);
+- a `self` lane, and the `qk admit` commands its script runs, since its parts share build
+  products;
+- a group, when it or one of its lanes says `here`;
+- `qk run --here`, `qk admit --here`, `--serial`, and work nested inside an admission.
+
+The receipt's `hereBecause` says why a run stayed. Simulator and background UI lanes go to
+other Macs like the rest; a lane whose test counts differ on another Mac has a defect to fix, not
+a reason to stay. The old lane setting `"buildHost"` is refused.
+
+To see where a gate would go without running one:
+
+```sh
+qk queue placement [LANE] [--json]   # each Mac's capacity now, and why it would or would not start the gate
+qk admissions usage                  # how busy each Mac has been, and why work ran here
+```
+
+A reading is a snapshot; the Mac checks admission again when the lane starts.
+
+### What a Mac takes
+
+A Mac's own settings say which kinds of work it takes and which labels it has; a lane says which
+labels it needs. No lane names a Mac, and no Mac names a lane. The settings are
+`~/Library/Application Support/queuekeeper/mac-settings.json` on that Mac:
+
+```json
+{
+  "takes": {"wholeHost": false, "foreground": true},
+  "labels": ["unity-license", "apple-m5-max"]
+}
+```
+
+- **Kinds.** `takes` may set `wholeHost`, `exclusive`, `model` and `foreground`. Left out, a Mac
+  takes whole-host gates, exclusive work and model runs, and no foreground work. A workstation
+  that says `"wholeHost": false` runs no project's gate.
+- **Labels** are lowercase words joined by hyphens, such as a license or a chip. A lane lists
+  what it needs in `"labels"` and runs only on a Mac that has every one; a group needs its lanes'
+  labels as well as its own. A lane's `chips` list works the same way.
+- **Foreground.** A Mac marked `"foreground": true` lends its screen to foreground lanes without
+  a window agreed beforehand. `qk farm foreground NAME` writes the mark, `--off` removes it, and
+  `qk farm foreground here` marks this Mac. While no reachable Mac takes it, a foreground lane is
+  refused, naming the command that fixes it.
+- **Declining.** A Mac that declines a lane is not offered it and gives it no place in its queue,
+  and the placement line says why, for example
+  `studio lacks the label unity-license that the work needs`. When no Mac takes the lane, nothing
+  runs and it exits 78, naming each Mac's reason: no verdict, so the merge queue holds rather than
+  sending anything back.
+
+`qk admissions limits` prints what a Mac takes, its labels and the file's path. Edit the file by
+hand. An unknown key is reported as `ignored:`; a file that is not JSON, or a known key of the
+wrong type, stops placement on that Mac rather than guess.
+
+### Commands and where they run
+
+```sh
+qk run LANE [-- ARGUMENTS]               # the Mac with room and the most headroom
+qk run --here LANE                       # this Mac, for products the session uses here
+qk run --offload-only LANE               # another Mac if one can start it now, never here
+qk admit -- COMMAND                      # any other heavy command, placed as a lane is
+qk admit --here -- COMMAND               # this Mac, for a build whose output the session uses here
+qk remote run LANE [--host NAME]         # a lane, on another Mac
+qk remote admit -- COMMAND               # a command, in the root of a checkout on another Mac
+qk remote passed LANE [--commit REV]     # exit 0 if the whole lane passed at exactly that commit
+```
+
+- **`--here` is not for a busy Mac.** Use it only when the session needs the products here
+  afterwards: build output, DerivedData, a result bundle, an app it launches. A test a lane covers
+  runs best as `qk run LANE -- FILTER`.
+- **`--offload-only`** is for a caller that holds admission here already. It exits 75 when no
+  other Mac is configured, reachable or free, so the caller runs the lane itself, and 78 when
+  another Mac is misconfigured.
+- **`qk admit` stays here**, saying why, when another Mac could not run the command as it runs
+  here: its directory is outside the checkout or ignored by Git; its arguments name a path only
+  this Mac has (this checkout's absolute path, `/tmp`, a scratchpad, anything under `~`, an
+  existing ignored file such as a scratch script, a pool simulator or a physical device); or the
+  environment sets `DEVELOPER_DIR` or a `TEST_RUNNER_` variable. System paths such as `/usr` and
+  `/opt/homebrew` do not count.
+- **A named checkout.** `qk remote run LANE --checkout-slot N` (0 to 3) runs in that checkout and
+  no other, for a check that depends on its path or warm products. It waits for that checkout,
+  up to `--checkout-wait SECONDS` (default 5400), and exits 75 having run nothing if it runs out.
+- `qk remote` always means another Mac: the first in the farm that takes work now, or the one
+  `--host` names by farm name or SSH destination. It takes no slot here.
 
 ### How the code gets there
 
-The exact commit, or a snapshot of the working tree, is pushed over SSH straight to the other Mac;
-nothing goes through the Git host. Each Mac keeps four checkouts per project and reuses the
-closest one, so builds stay warm. **Environment variables do not travel**, so lane settings must
-be arguments.
+The exact commit is pushed over SSH straight to the other Mac; nothing goes through the Git host.
+With uncommitted changes, Queuekeeper sends a snapshot commit of the working tree instead,
+leaving your branch, index and HEAD untouched. Ignored files stay behind, so ignore large files
+another Mac does not need. Queuekeeper's own code goes the same way.
+
+**A snapshot's result is no commit's pass.** `qk run` says so as it sends one, naming the changed
+files, and `qk remote passed` never counts it. Commit and run again for a pass that counts.
+
+Each Mac keeps four checkouts per project, under `~/Development/queuekeeper-farm`, and a run takes
+the free one closest to its commit, so builds stay warm. The project's `provision` lane, if it has
+one, runs first in that checkout, and the work runs only if it passes. A checkout a run left with
+changes is passed over and kept for inspection; the message names the files and the command that
+removes it.
+
+**Environment variables do not travel.** Another Mac runs work in its own login shell's
+environment, and a variable set here is silently lost. Pass lane settings as arguments after
+`--`, such as `qk run purchases -- --runtime ID`, and confirm them in the receipt. What a
+project's extensions add to every command's environment does reach it.
+
+**What comes back:**
+
+- The output, streamed as it is written. The log and receipt land in
+  `.build/queuekeeper/remote/LANE/` (`remote/admit/` for a command), a group's lanes' logs in
+  `lanes/` beneath it.
+- The exit status of the work there.
+- For `qk admit` and `qk remote admit`, what the command changed in files Git does not ignore, as
+  a patch applied to your working tree while it is still the tree that was sent. Otherwise the
+  patch is kept in `.build/queuekeeper/remote/unapplied/` and the command exits 73. Build
+  products stay on the other Mac; use `qk admit --here` when you need them.
+- Simulator lanes run headless from that Mac's own simulator pool; only logs and receipts come
+  back. Run the lane with `--here` to get a result bundle or device log here.
+
+The receipt names both Macs' model, macOS and Xcode, and `ranOn` says where the lane ran.
 
 A run is journaled on the Mac that executes it. If your Mac sleeps or the connection drops, the
-run continues, and your Mac collects the result later.
+run continues there and your Mac collects the result when it reconnects. Stopping the run here
+stops it there.
+
+If a lane this Mac takes finds the working tree changed since the commit was sent, it runs the
+commit sent in a temporary worktree, saying so, and removes the worktree afterwards, so its
+builds start cold.
+
+### Unreachable and misconfigured Macs
+
+Before sending anything, `qk run` checks that the Mac can be reached: its name resolves, its ssh
+port answers within 3 seconds, and `ssh HOST true` finishes within 30.
+
+- **Unreachable** is not a configuration problem. The lane runs here at once, and a line says
+  why. An offer that misses once is retried within 30 seconds; only a second miss in a row counts
+  the Mac unreachable.
+- **Misconfigured** stops the lane for the owner, with exit 78 and the fix: a refused login or
+  changed host key, a failing login shell, a different Xcode build, every checkout left changed, a
+  failing `provision` lane. In the merge queue that is a run with no verdict.
+- **Lost after sending**: the run is unmeasured rather than run again here, since it may still be
+  running there.
+
+A failed connection reports what ssh said, when the run was sent and lost, and how long this Mac
+slept in between. A Mac asleep runs no ssh, so a timeout this Mac slept through says nothing about
+the other Mac; keep this Mac awake. ssh drops a connection after about two minutes of silence.
+
+| ssh says | Meaning |
+|---|---|
+| `connect to host ADDRESS port 22: Operation timed out` | Nothing answered within 10 seconds |
+| `Connection timed out during banner exchange` | The port answered, but no SSH banner came within 10 seconds |
+| `Connection to ADDRESS port 22 timed out` (no banner line) | Silence for two minutes during key exchange or login |
+
+`qk doctor` compares the Macs and reports as errors a different default Xcode, a different Xcode
+at this Mac's developer directory, different simulator runtimes (which it evens out itself), a
+refused login, and leading addresses that do not answer. An unreachable Mac is `unchecked`, not an
+error. It also shuts down stale pool simulators on each Mac and keeps each Mac's own Queuekeeper
+checkout current when it safely can.
 
 ### Asking whether a command runs on another Mac
 
@@ -510,18 +1499,676 @@ another machine claims, and a check written for the old name then fails without 
 
 ### Screen lock
 
-UI tests fail in confusing ways behind a locked screen. A lane marked `"unlockedScreen": true`
-runs only on a Mac whose screen is unlocked, and waits while none is. A run that ended unmeasured
-because the screen locked is not held against the commits. Queuekeeper cannot unlock a screen.
+Any Mac can lock, by hand or after idle time. Queuekeeper never assumes a screen's state: it reads
+it on the Mac that runs a lane and records what it read, or `unknown`. `qk host screen` reads this
+Mac's (`--remote` another's) and exits 0 unlocked, 1 locked or 2 unknown.
+
+Most lanes run fine behind a lock. A lane whose tests need an unlocked screen, such as one that
+reads its own windows through the accessibility API, says `"unlockedScreen": true`, and so does
+every group that runs it. Such a lane:
+
+- **runs only on a Mac whose screen reads unlocked.** Locked and unknown both count as no room,
+  and the placement line says which Mac was locked.
+- **waits while none is**, and is offered again like any waiting lane, instead of running
+  unmeasured. A gate reads the screen again once admitted; if it locked meanwhile, the gate gives
+  back its admission unstarted and waits again.
+- **has the screen read and logged** as it starts (`queuekeeper: screen: STATE ...`), kept in its
+  receipt as `screen`, and read again as `screenAfter` when it ends unmeasured.
+
+`"display": true` wakes the display and keeps it on, but unlocks nothing. A `"display": true`
+lane whose tests can't measure behind a lock also says `"unlockedScreen": true`; one that can says
+`"unlockedScreen": false`. `qk doctor` warns about a display lane that says neither.
+
+A run that ended unmeasured because the screen locked is not held against the commits and does
+not count toward a hold. The queue runs that lane next with `qk run --unlocked-screen`, which
+places it as if it declared `"unlockedScreen": true`. Queuekeeper cannot unlock a screen.
+`qk admissions waits --kind screen` shows how often and how long each lane waited for one.
 
 ### macOS Local Network privacy
 
-macOS can silently deny local-network access to a background process whose parent has exited.
-Queuekeeper detects this rather than reporting the other Mac as down. The
-[signed queue launcher](guides/maintenance.md#signed-queue-launcher) avoids it.
+macOS's Local Network privacy judges a connection by the process it holds responsible. A
+session's queue worker inherits the session's permission, but once that session's app process
+exits, as when the session is archived, every local-network connection the worker makes fails at
+once with `No route to host`, while other sessions still reach the other Mac.
+
+Queuekeeper detects this rather than reporting the other Mac as down:
+
+- **The queue worker** checks before each round, and on finding itself cut off exits, holding
+  nothing, with its entries back in the queue. The next `qk land`, `qk queue wait` or
+  `qk queue resume` from a live session starts a worker that can connect. A session that finds
+  the queue waiting with no worker runs `qk queue resume`.
+- **A gate's lane** cut off this way runs nothing and exits 69, which the queue treats as no
+  verdict without counting it toward a hold. A session's own `qk run` still falls back to this
+  Mac.
+
+The signed queue launcher avoids the problem: a LaunchAgent runs a signed app that macOS holds
+responsible for the worker.
 
 The [Apple plugin](../plugins/apple/src/queuekeeper_apple/README.md) keeps Xcode and simulator
 runtimes alike across Macs.
+
+### Keychains on another Mac
+
+A keychain unlock reaches one Mac and only the login session it was made in. Unlocking your own
+Mac does nothing for another, and an unlock made in Keychain Access or an earlier `ssh -t` session
+does not reach a `qk remote` run, since every run is its own SSH login. So each run unlocks the
+login keychain itself, from a password the owner gives once:
+
+```sh
+qk keychain keep-unlocked [--target MAC] [--identity NAME]
+```
+
+The owner runs it in their own Terminal, once for each farm Mac whose runs sign. On that Mac it
+asks for the login password at its own prompt (three tries), keeps the one that works in
+`~/Development/queuekeeper-farm/keychain-password`, readable only by the owner's account, and stops
+the keychain locking on a timer or on sleep. It exits 0 when done, 1 when no password worked, and
+2 when it refused, as on the wrong Mac, without a terminal, or before any `qk remote` run has set
+up that Mac. Each `qk remote run` and `qk remote admit` then unlocks the keychain in its own
+session. When the password stops working, runs are refused until you run `keep-unlocked` again.
+To undo it, delete the file and set the lock settings with `security set-keychain-settings`.
+
+Two more commands help:
+
+```sh
+qk keychain recover [--target MAC] [--keychain PATH] [--identity NAME]
+qk remote admit -- python3 scripts/qk keychain check [--keychain PATH] --identity NAME
+```
+
+- **`qk keychain recover`** says which Mac's keychain the work needs, checks the keychain file is
+  there under its exact name, and prints unlock commands that each run only on the Mac they name.
+  It unlocks nothing and reads no password.
+- **`qk keychain check`** runs where the signing runs and reports the session kind (`ssh`, `gui`
+  or `background`), whether the keychain is unlocked, whether the identity is there, and whether
+  `codesign` can sign with it. It exits 0 when signing passed, 1 when it failed or the keychain
+  or identity is missing, and 3 when unmeasured.
+
+A result holds only for the kind of session it was measured in: signing in your desktop session
+says nothing about signing over SSH. Never ask an owner for a password or put one in chat, a
+command's arguments, an environment variable or a log. Partition lists, trust settings and
+certificates are the owner's to change; neither command touches them.
+
+### Extension folders beside a project
+
+A project's extension may load from a folder beside it, named in `queuekeeper.json` as
+`{"module": "NAME", "path": "../FOLDER/..."}`. Other projects share that folder and landings move
+it, so a run pins it: every lane of a `qk run`, a `qk remote run` or a queue round, on any Mac,
+loads the folder at the commit its `origin/main` named when the run started, never your
+checkout's branch or changes. `qk run` names the commit as it starts and the receipt records it.
+Other commands, such as `qk doctor` and `qk admit`, load the folder as it stands.
+
+- **Folders it loads from in turn.** A folder's own `queuekeeper.json` may list further folders
+  under `siblings`, each with the variable its code finds it by:
+  `"siblings": {"apple-engineering": "APPLE_ENGINEERING_ROOT"}`. They are pinned the same way.
+- **Testing a newer commit of the folder.** `qk run --sibling FOLDER=WHERE LANE` pins it at a
+  commit or a checkout's path instead. A commit no branch of the origin holds runs on this Mac
+  only. A change that needs an unlanded folder change is two landings, the folder's first.
+- **Another Mac needs its own checkout** of each folder, a `git clone` of the same origin into
+  `~/Development/FOLDER` there; `qk doctor` and `qk remote setup` name the clone. Without it, or
+  when that Mac cannot fetch the commit, the lane ends with exit 70, `queuekeeper: could not
+  start:`, and the queue holds for the owner.
+- **A pin set that does not start** in the project is not adopted: the queue keeps the last set
+  that worked, and with none it holds.
+
+Pinned checkouts live in `~/Development/queuekeeper-pins/` on each Mac; `qk disk` lists them and
+`qk disk --prune-pins` removes those unused for a week. A folder that is not a Git checkout loads
+as it stands.
+
+## Apps, devices and simulators
+
+The platform plugins add what an app project needs beyond lanes: reservations of physical devices and
+simulators, runs that take a Mac's screen, kept builds of the app, and Unity editors. Each plugin's README
+says what it adds: [Apple](../plugins/apple/src/queuekeeper_apple/README.md),
+[mobile](../plugins/mobile/src/queuekeeper_mobile/README.md) (the device record and device pass, which
+the Apple and [Android](../plugins/android/src/queuekeeper_android/README.md) plugins share),
+[Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md) and
+[Unity](../plugins/unity/src/queuekeeper_unity/README.md).
+
+Everything about physical devices below applies to an Android phone too, except that it is named by its
+adb serial rather than a UDID, and its notifications are silenced with Do Not Disturb over adb, with no
+shortcuts to set up.
+
+### Physical devices
+
+A paired iPhone or iPad, a simulator pool's members and a Mac's foreground are used only under a
+reservation in the Mac's one **device record**:
+`~/Library/Application Support/queuekeeper/device-handoff.json`, outside every repository.
+`qk devices` reads and changes it in any project that uses the Apple or Android plugin.
+
+```sh
+qk devices status                 # every entry, overdue ones, declarations and what each Mac reaches
+qk devices show iPhone            # one entry and its revision (0 if new)
+qk devices reserve iPhone --owner SESSION --revision N --device UDID \
+  --purpose "…" --release-by 2026-10-21T18:00:00Z
+qk devices update iPhone --owner SESSION --revision N --own PID --launched BUNDLE
+qk devices release iPhone --owner SESSION --revision N --outcome "…" --restoration "…" --apps-quit "…"
+```
+
+- **Every change names the revision you read.** A change is refused if the entry has moved on or is
+  no longer yours; a refusal changes nothing, so read the entry again and decide afresh. Each change
+  prints the new revision for your next one.
+- **Name a device by its uppercase UDID**, never by a name or `booted`.
+- **Record what you start.** `update --own PID` records a process you launched, and `release` waits
+  until it has exited. `update --launched BUNDLE` records an app you launched on the device; releasing
+  then requires `--apps-quit` saying how it was quit.
+- **`--owner` names your session.** Where it is optional (`take`, `run`, `check`, the notification
+  commands), it defaults to `QUEUEKEEPER_DEVICE_OWNER`, then the agent's session.
+- **Outside such a project**, run it through Queuekeeper's own checkout, as its recovery messages do:
+  `python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices …`.
+
+#### Taking a device
+
+`qk devices take` waits in line for the paired iPad or iPhone, first come first served, one holder at a
+time, and reserves it until `--release-by`:
+
+```sh
+qk devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z
+```
+
+- It says who holds the device and until when while it waits, and gives up after `--wait` seconds (an
+  hour by default), reserving nothing. Run it in the background when the wait may be long.
+- It refuses a device the record has never seen (its first `reserve --device` records it) and an
+  orphaned or uncertain entry.
+- The record records no approval. Whether a session may use a device is between it and the owner: the
+  iPad carries the owner's standing approval, so take it whenever it is free; the iPhone is the owner's
+  personal phone, so ask first and set `--release-by` to the end of the time agreed.
+
+**The reservation is the window.** A device is held until `--release-by` and no longer for running
+work, but it is released only explicitly: a passed release time, an idle screen or a silent session
+proves nothing. `status` reports an overdue entry and changes nothing. Release yours rather than holding
+it through offline analysis.
+
+#### Bounded runs on a device
+
+Run a command on a device you hold through `qk devices run`, which stops it before the reservation
+ends:
+
+```sh
+qk devices run iPhone --owner SESSION --revision N --limit 180 -- \
+  xcodebuild test-without-building … -destination "platform=iOS,id=UDID"
+```
+
+- It requires that you hold the entry with no run active, and refuses a command that names any other
+  device, running nothing.
+- The bound is the reservation's remaining time, less 105 seconds for the run's own end and
+  `--restoration` seconds (60 by default) for your restoration checks, and at most `--limit`. A bound
+  under 30 seconds is refused. The bound counts `xcodebuild`'s start-up and any time the Mac sleeps.
+- It records the run's process and outcome in the entry: `exit N`, a timeout (status 124), a stop, or a
+  command that did not start.
+- A command that exits 0 having run no test (every one skipped, or a count of zero) returns 3,
+  unmeasured. `--no-tests` keeps 0 for a run meant to select none.
+- It never releases the device, changes VoiceOver, uninstalls apps or deletes data. Read the new
+  revision with `qk devices show KEY` before your next change.
+
+A project's own launcher can do the same from Python with `devices.BoundedRun`.
+
+#### Restoring, releasing and recovering
+
+- **Before releasing**, verify the original accessibility and keyboard settings, that none of your
+  test processes remain, and remove only your own app and runner bundles. An interrupted test skips
+  its own restoration, so query the settings yourself. If you cannot, record the restoration as
+  unverified and leave the entry for recovery.
+- **`release` refuses while a run is active.** Record the run's end first.
+- **Orphaned and uncertain entries.** A run whose process is gone is an orphan; an entry marked
+  `uncertain` or `restoration-unverified` is uncertain. Neither can be reserved again until its owner
+  releases it or someone the owner agreed records an attended recovery, once the work has stopped and
+  the device is verified:
+
+  ```sh
+  qk devices recover iPhone --by SESSION --revision N --verified "WHAT WAS CHECKED"
+  ```
+
+  Recovery refuses while the recorded process still runs. For a run sent to another Mac, it first asks
+  that Mac and refuses while any process there names the device's UDID or was left over from the run.
+  An unreachable Mac keeps the device until the owner recovers it with `--offload-unchecked REASON`.
+
+#### Devices and another Mac
+
+**Physical devices are reserved only in this Mac's record**, the Mac that sends work to the others.
+Every paired device is reachable from every Mac, so a record on each would let two runs share one.
+Every `qk remote` run first makes the other Mac's record defer physical devices to this one's
+(`qk devices defer MAC`); a deferring record refuses to reserve one. `qk doctor` reports each Mac's
+record and calls it an error for this Mac's record to defer, or another Mac's to hold a device.
+
+A run on another Mac uses a device only under a reservation held here, which it carries:
+
+```sh
+qk remote admit --device iPhone -- COMMAND
+qk remote run --device iPhone LANE -- ARGUMENTS
+```
+
+- `--device KEY`, repeatable, makes the dispatch a bounded run of the reservations you hold, with the
+  same checks as `qk devices run`. The bound starts when the dispatch does, so sending the commits and
+  waiting for admission there count against it.
+- There, `qk devices run KEY -- COMMAND` reads its reservation from `QUEUEKEEPER_DEVICE_LEASE`.
+- The device stays reserved after the run; restoring and releasing it is yours, from this Mac.
+- Without `--device`, a command or lane arguments that name any hardware UDID are refused. `qk run`
+  keeps a lane that names one of this record's devices on this Mac, and a lane that needs a device says
+  so with `"here"`.
+- A 40-digit hash that names a commit rather than a device can trip the check. Declare it with
+  `qk remote admit --git-commit /path/to/repository=FULL_SHA -- COMMAND FULL_SHA`, as its own argument.
+
+The records bind only work that goes through Queuekeeper: `xcodebuild`, `devicectl` or Xcode run by
+hand on another Mac reach the devices without them.
+
+#### Notifications during a run
+
+A notification read out by VoiceOver in the middle of a session spoils it, and the paired devices get
+the owner's notifications. So reserving or taking a physical device silences them, and releasing or
+recovering it puts back what was there.
+
+**The owner's one-time setup.** On each device, the owner makes three shortcuts in Shortcuts with
+exactly these names:
+
+1. **Vocaro Silence Notifications**: Get Current Focus; If Current Focus does not have any value: Set
+   Focus, turn Do Not Disturb on until turned off, then Text `eng` and Save File to the Shortcuts folder
+   with Subpath `silenced.txt` (Ask Where to Save off, Overwrite If File Exists on); End If; Go to Home
+   Screen.
+2. **Vocaro Restore Notifications**: Get File `silenced.txt` from the Shortcuts folder (Error If Not
+   Found off); Get Text from Input; If Text is `eng`: Set Focus, turn Do Not Disturb off, then Text
+   `off` and Save File as above, its input the `off` Text; End If; Go to Home Screen.
+3. **Vocaro Test Notification**: Show Notification "Vocaro test".
+
+Where an action takes a value, pick the earlier action's output with Select Variable, not Shortcut
+Input. The marker file means a Focus the owner already had on is left alone, and running either
+shortcut twice changes nothing. The owner runs each once by hand from no Focus, answering every prompt
+with Always Allow: Silence, Restore, then Restore again. In Settings, Focus, Do Not Disturb, turn off
+Intelligent Breakthrough & Silencing, allow no people and no apps, and turn off Time Sensitive
+notifications and repeated calls. With Share Across Devices on, Do Not Disturb follows to the owner's
+other devices, Macs included, for the run. Then a session holding the device records the owner's word,
+once per device:
+
+```sh
+qk devices notifications setup iPad --by owner --at 2026-11-04T09:00:00Z --words "the shortcuts are on the iPad"
+```
+
+**What a run does.**
+
+- Reserving or taking the device runs Silence and records each step in the entry's `notifications`.
+  Nothing returns the shortcut's result to the Mac, so the silencing is recorded as requested, never
+  confirmed.
+- Without the recorded setup, nothing runs, and the command says what to ask the owner: to turn on Do
+  Not Disturb himself. Record that with `qk devices notifications by-owner KEY --owner SESSION
+  --revision N --by owner --at TIME`.
+- A silencing that fails, for example on a locked device, stays pending. Try again once the device is
+  unlocked: `qk devices notifications silence KEY --owner SESSION --revision N`.
+- `qk devices run` watches the device's log for a banner while its command runs, over USB or the
+  network (`idevicesyslog`, from `brew install libimobiledevice`). A run a banner reached is unmeasured
+  and runs once more; if a banner reaches the rerun too, it exits 3, so ask the owner to check Do Not
+  Disturb. A run whose log could not be read is recorded as not watched and keeps its status: read its
+  transcript for a notification. Only the count of banners is kept, never what one said.
+- The iPhone's log reaches the Mac over Wi-Fi; the iPad's does not, so plug the iPad into this Mac for a
+  watched run. Runs sent with `qk remote --device` are watched from this Mac the same way.
+- `qk devices release` runs Restore first and records whether it worked; a failed restore is reported
+  for the owner and the release goes on. `qk devices notifications restore KEY --owner SESSION
+  --revision N` puts them back without releasing.
+
+**An overdue silencing.** A held device past its release time that still has a restore pending may keep
+Do Not Disturb on the owner's devices. `qk doctor` warns of it and `qk devices status` prints an
+`Overdue silencing:` line naming the holder and the restore command. The holder runs it or releases the
+device; otherwise tell the owner. Nothing restores it automatically.
+
+#### The device pass
+
+A project's physical-device checks run as one release lane whose command is `qk device-pass`. It runs
+the command once on each device named, in turn:
+
+```json
+"device-voiceover": {
+  "command": ["python3", "scripts/qk", "device-pass", "--device", "iPad", "--device", "iPhone",
+              "--", "python3", "scripts/run-device-voiceover.py", "--device", "{udid}"],
+  "resource": "heavy", "here": "physical devices, reserved in this Mac's device record",
+  "timeout": 7200, "minimumTests": 2
+}
+```
+
+- **It runs here.** The lane is heavy and says `"here"`, since devices are reserved only in this Mac's
+  record. `qk doctor` warns of a device-pass lane without `"here"`, and of a `gate` that runs one.
+- **Devices in turn.** For each device, in order, the pass uses your own reservation if you hold one and
+  leaves it held; otherwise it takes the device in turn, silencing notifications, and releases it
+  afterward. A device whose turn does not come within `--wait` is not run. The pass checks no approval,
+  so run a lane that names the iPhone only once the owner has agreed. Name the iPhone first when its
+  window is shorter than the iPad's wait.
+- **Each run is a bounded run**, as with `qk devices run`, watched for banners and rerun after one.
+  `{udid}` and `{key}` become the device's UDID and entry key, which the command also finds in
+  `QUEUEKEEPER_DEVICE_UDID` and `QUEUEKEEPER_DEVICE_KEY`. `--launched BUNDLE` and `--apps-quit` say what
+  the command launches and how it quits it. A script that builds first can call `device_pass.run(KEYS,
+  COMMAND)` from Python.
+- **Admission waits only as long as the window allows.** A lane on a device you already hold waits until
+  the latest start that leaves room for its run and the reservation's cleanup; past it, it returns busy.
+  Set `deviceRunMinutes` to the lane's whole time (build, every device, cleanup). Queuekeeper uses the
+  larger of that and the median of its last five passing runs. A lane whose script calls
+  `device_pass.run` names its devices in `"devices": ["iPhone"]`.
+- **Verdict.** The pass exits 0 only when every device passed. A failure on any device fails it; a
+  device not run, a run its bound stopped or one a banner reached twice leaves it unmeasured. Each
+  device's outcome is in the lane's `device-pass.json`. A device it took and could not release stays
+  held, with its release command, and the pass exits 2.
+
+#### A stuck CoreDeviceService
+
+CoreDeviceService on a Mac can get stuck while `devicectl list devices` still lists its devices: every
+command to one then hangs until its timeout. So before each device's run in a pass, and before each
+notification shortcut, Queuekeeper asks `xcrun devicectl --timeout 30 device info details --device UDID`,
+which a healthy service answers in well under a second.
+
+- No answer within about 45 seconds, for a listed device, is a stuck service: that device's part is
+  unmeasured, saying so.
+- A refusal, such as a device not unlocked recently, is reported as the device's, in `devicectl`'s words.
+
+The fix is to restart the service, once no other device run is in progress on that Mac: quit Device Hub
+and run `pkill -x CoreDeviceService`; launchd starts a new one at the next request. It breaks every
+device session on the Mac, so Queuekeeper names it and never runs it.
+
+#### Declared devices
+
+A device belongs to the farm, not to a Mac: one on Wi-Fi is reachable from every Mac, one on a cable from
+one. The owner declares what should be true of each device, and Queuekeeper reports what each Mac
+actually reaches. Declarations only report: they place no lane and change no entry.
+
+```sh
+qk devices declare iPad --by owner --reach network --absent error
+qk devices declare iPad --by owner --reach cable,network --cable-on studio --absent error
+qk devices declare iPhone --by owner --reach cable,network --absent offline
+qk devices declare iPhone --by owner --clear
+```
+
+- **`--reach`** lists the ways a Mac may reach it, in order of preference: `cable`, `network` or both.
+  A way not listed counts for nothing. `--cable-on` names the Mac its cable is expected on.
+- **`--absent`** says what it means when no Mac reaches it: `error` for a device that should always be
+  there, `offline` for one that may be away.
+- A device is declared under its entry's key, once its first reservation has recorded its UDID, and only
+  in the record that holds physical devices.
+
+`qk devices status` lists each device and declaration with what each Mac reads now: reached by a way,
+by a way not declared, or not listed. A device is **unreachable** once no Mac has reached it by a
+declared way for 300 seconds, counted from the first reading that missed it. Then a device declared
+`error` is an error in `qk doctor`, in `qk queue health`'s Devices sign and in `status`; one declared
+`offline` is reported as offline, with no error or alert. If a Mac could not be read, the device is
+"not known" rather than unreachable.
+
+### The simulator pool
+
+Scripts that pick a simulator by name, or use `booted`, end up on Xcode's default simulators or on one
+another agent is using. A project's pool gives each run its own: simulators named `POOL LABEL N`, such
+as `Pagepour iPhone 17 Pro 2`, where `simulatorPool` in `queuekeeper.json` names the pool. A member's
+*kind* is its device type and runtime. Each Mac has its own pool and record, so a lane on another Mac
+takes members there.
+
+`qk simulator-tests` takes one member per device type, builds the tests once while they boot, and runs
+them side by side. A project's own runner takes members itself:
+
+```sh
+udid=$(qk admit --here -- qk simulator-pool take --device iPhone-17-Pro --runtime iOS-27-2)
+qk simulator-pool extend UDID [--hold MINUTES]
+qk simulator-pool release UDID
+qk simulator-pool release --mine     # every member you hold whose take has ended
+qk simulator-pool check [--held] UDID
+qk simulator-pool list
+```
+
+- **A take** reserves a shut-down member of the kind, or creates the next one, resets it, boots it and
+  prints its UDID. It exits 3 when the boot reaches its limit, and the run is unmeasured, not failed. A
+  member that fails to boot is passed over for another, twice by default (`--boot-attempts N`). Booting
+  is heavy work, so outside an admitted lane take a member under `qk admit --here`, as above.
+- **A member is held for an hour** (`--hold MINUTES`). Extend it if you need longer; once its time has
+  passed and its session has gone, it may be reaped. Session closeout runs `release --mine`.
+- **`check UDID`** exits 1 for anything but a pool member, so a script that takes a UDID from its caller
+  fails loudly rather than filling a default simulator with apps. `check --held` also requires that you
+  hold it. `qk doctor` and `qk disk --delete` delete Xcode's default simulators when they are shut down
+  and unused.
+- **Before releasing**, copy evidence off: the next session resets the member.
+- Never delete or rename a member by hand; pruning does that.
+
+**Reset, keep or erase.** By default a take resets the member from its kind's *warmed template*, a
+simulator that has finished its first boot and first used VoiceOver and the system voices, so the member
+and `xcodebuild`'s clones of it start in seconds rather than minutes. Resetting keeps the member's UDID,
+and with it the simulator tool's approval.
+
+- `--keep-state` (`qk simulator-tests --keep-state`) boots the member as its last holder left it: apps,
+  data and settings included. Use it only for tests that depend on none of that, and still set what you
+  rely on, such as appearance or volume.
+- `--erase` gives pristine data instead of the template's. A take also falls back to erasing when no
+  settled template can be copied, and says why.
+- `qk simulator-pool template --device TYPE --runtime RUNTIME [--refresh]` warms a kind's template with
+  generous limits. Run it before lanes on a new runtime, or when a take reports a cold or unsettled
+  template. A take makes a missing template itself, within shorter limits.
+
+**App accessibility.** A hosted test that reads UIKit's and SwiftUI's own accessibility in process, such
+as an accessibility snapshot of system views, asks for it with `--app-accessibility` on
+`qk simulator-tests` or `qk simulator-pool take`. Queuekeeper sets it after each boot and fails the
+device if it does not read back. It does nothing for a hostless test bundle.
+
+**Cleanup.** `qk simulator-pool reap [--dry-run] [--here]` shuts down a member or template left booted
+for two hours that nothing accounts for; it also runs before work goes to another Mac and in
+`qk doctor`. A member unused for an hour may be deleted, except each kind's lowest-numbered one, which
+goes only when you ask (`qk simulator-pool prune` or `qk disk`) and every member of the kind has been
+unused for 7 days. `qk simulator-pool list` shows each member and template and whether it may be pruned.
+
+**Stale explicit modules.** Derived data reused across a dependency change can fail with `has been
+modified since the module file`. `qk simulator-tests`, and any Apple lane's `xcodebuild` or `swift`
+called by name, removes the stale module cache inside the checkout and runs once more, saying `STALE
+MODULES`. It never runs a third time. A script that calls `/usr/bin/xcodebuild` by path, through `xcrun`,
+or with PATH cleared bypasses this.
+
+### Foreground runs
+
+A lane that needs a Mac's screen, keyboard, pointer, focus or speech, such as Mac VoiceOver or Mac
+XCUITest, is marked `"foreground": true` with a heavy or exclusive resource. `qk run LANE` sends it to
+another Mac whose settings take foreground work (`qk farm foreground NAME`), never to this one, and stops
+with what the owner must change if that Mac is not ready.
+
+```sh
+qk remote foreground                     # 0 ready; 78 with what the owner must change, and who holds it
+qk remote run LANE -- KEY=VALUE ...
+qk remote admit --foreground -- COMMAND  # one command, under that Mac's foreground and admission
+qk admit --foreground -- COMMAND         # on that Mac itself
+```
+
+`--exclusive` with `admit --foreground` holds the whole Mac for a timing measurement. `--app NAME` names
+the app under test, as a lane's `"apps"` does.
+
+#### Setting up a Mac for foreground work
+
+These are the owner's settings, made once; Queuekeeper changes none of them. Every foreground run checks
+them first and stops with exit 78 while one is missing.
+
+1. **The account is logged in on the Mac's own screen**, with no other account switched in.
+2. **The screen stays unlocked.** In Lock Screen settings, the screen saver and display sleep are never,
+   with no password after either.
+3. **Accessibility for commands over SSH.** In Privacy & Security, Accessibility, add and turn on
+   `/usr/libexec/sshd-keygen-wrapper`, and System Events (`/System/Library/CoreServices/System Events.app`)
+   too, since it posts the keys a run sends. `qk remote foreground` does not yet check System Events'
+   grant.
+4. **Screen recording for commands over SSH.** Add `sshd-keygen-wrapper` to the Screen Recording list.
+   macOS also asks separately, per app path, to let an app "bypass the system private window picker",
+   and asks again 30 days after each approval. So launch capturing runners from one stable path per Mac,
+   under `~/Library/Application Support/queuekeeper/foreground-runners`, and have the owner allow it
+   again about once a month; `qk remote foreground` lists when each approval lapses. A run that meets
+   the prompt is unmeasured.
+5. **XCTest automation without a password:**
+   `sudo automationmodetool enable-automationmode-without-authentication`.
+6. **No VoiceOver welcome dialog:**
+   `defaults write com.apple.VoiceOverTraining doNotShowSplashScreen -bool true`.
+7. **No Dictation offer:** `defaults write com.apple.HIToolbox AppleDictationAutoEnable -int 0`.
+
+XCTest's "Automation Running" banner cannot be turned off with System Integrity Protection on. A session
+VoiceOver stops at the banner is unmeasured, and a project's session runner runs it again a bounded
+number of times. Builds signed ad hoc are unmeasured there; signing with a team needs that Mac's keychain.
+
+#### Running and waiting
+
+- **Results.** A lane writes what must come back, transcripts included, in the folder named by
+  `QUEUEKEEPER_RESULTS_DIR`. However the run ends, it comes back to
+  `.build/queuekeeper/remote/LANE/results/` here. In a lane group each lane has its own folder, so read
+  the variable rather than a fixed path. `qk remote admit` brings no files back: write outside the
+  checkout and copy them, or make the work a lane.
+- **Arguments** after `--` reach the lane's command. Check a session's steps here first with the
+  project's own check; the lane checks them again there only after waiting for the screen.
+- **One run holds a Mac's foreground at a time.** A waiting run says who holds it and until when, and
+  takes it as soon as it is free, for up to the 5,400 seconds `qk run` waits for admission. A holder
+  expected to finish after that deadline is judged at once: the waiter looks for 180 more seconds in case
+  it ends early, then exits 75 naming the command to run again.
+- **The screen comes before the slot.** A run takes the foreground first and admission after it, so a
+  run waiting for the screen holds no slot. Builds and background tests keep running beside a session.
+- **Build before the screen.** A lane holds the foreground for its whole command, so a slow build
+  belongs in a lane of its own first.
+- **When the other Mac cannot be reached**, ask the owner for a window on this Mac's foreground (see
+  Attended sessions, below) rather than ending on the stop.
+
+#### What a foreground run cleans up
+
+- **VoiceOver** is put back exactly as the run found it, however the run ends. VoiceOver on at the start
+  is a valid state, not a sign of a failed run. A restoration that cannot be verified leaves the
+  foreground uncertain for recovery.
+- **Apps the run opened** are asked to quit before the screen is released, and never forced. On another
+  Mac that means new apps from the Applications folders, built in the run's checkout, or recorded with
+  `qk devices update mac-foreground --launched BUNDLE`; on any other Mac only the last two. Anything
+  else new is left running and reported in the log and the entry's `appsQuit`. Windows the run opened in
+  apps already running stay.
+- **Crash-report alerts** ("APP quit unexpectedly.") would take the run's clicks. For every foreground
+  run Queuekeeper turns crash dialogs off and puts the exact setting back afterward, and clears any crash
+  report on screen with Ignore or OK before and during the run. It never presses Reopen or Report…, and
+  never touches a password or permission prompt. An alert it may not clear stops the run unmeasured
+  (exit 3), naming it and where it sits. A failed run is unmeasured when a cleared alert for another
+  process stood longer than one look; a crash of the app under test stays a failure. A driver can look
+  between its own steps with `python3 -m queuekeeper_mac_desktop.crash_alerts check`. If crash dialogs
+  are off with no run holding the screen, the owner puts them back with
+  `defaults delete com.apple.CrashReporter DialogType`.
+- **Notification Center windows** sit over every app. Under the foreground lease on another Mac,
+  Queuekeeper closes each banner or alert with its own Close action before the run starts, never pressing
+  one, clearing a stack or touching a permission request; one it cannot close stops the run unmeasured.
+  It closes nothing on this Mac. `qk host notifications` lists them, exiting 0 when none is and 3 when one
+  is; `qk host notifications --dismiss` closes them under a lease you hold.
+
+#### Recovering the foreground
+
+A run whose Queuekeeper process died leaves the `mac-foreground` entry orphaned, and every later run
+stops on it, naming the recovery command. Attended recovery is the owner's decision. On that Mac, once
+the run's work has stopped:
+
+1. Put VoiceOver back as the run's `host.txt` recorded it, with Command-F5. If VoiceOver was quit
+   through AppleScript, also run `defaults write com.apple.universalaccess voiceOverOnOffKey -bool false`
+   and check that it reads 0.
+2. Record it: `qk devices recover mac-foreground --by SESSION --revision N --verified "WHAT WAS
+   CHECKED"`. From another Mac, add `--host HOST` after `recover`.
+
+One exception needs no owner: when a session's own VoiceOver restoration could not be verified and
+nothing else is uncertain, the live run's session runner may set VoiceOver back to the recorded original
+once and carry on.
+
+#### Attended sessions on this Mac
+
+Foreground work runs on another Mac by default. A session on this Mac's screen happens only within a
+window the owner agreed beforehand, under a reservation of `mac-foreground`:
+
+```sh
+qk devices reserve mac-foreground --owner SESSION --revision N \
+  --purpose "Mac XCUITest of …" --release-by 2026-10-23T18:00:00Z
+export QUEUEKEEPER_DEVICE_OWNER=SESSION
+qk devices check      # at the start and before each action
+qk devices update mac-foreground --owner SESSION --revision N --own PID
+qk devices release mac-foreground --owner SESSION --revision N \
+  --outcome "…" --restoration "…" --frontmost restored
+```
+
+- **`qk devices check`** refuses unless the session holds the entry, it is neither orphaned nor
+  uncertain, and its release time has not passed. A driver calls it, or `devices.require_foreground`,
+  before each key, activation or focus change. `qk run --here` and `qk admit --foreground` check the same
+  way.
+- **A passed release time releases nothing.** The check refuses further work, and the session stops,
+  restores and releases.
+- **A new window is a new reservation.** Never extend one yourself.
+- **The screen and the CPU are separate.** A timing measurement needs the reservation and exclusive
+  admission; a functional UI test needs only the reservation.
+- Record each app and runner you launch with `--own PID`. The release says whether the previous
+  frontmost app was restored (`restored`) or the session no longer owned the screen (`not-ours`).
+- Announce each start and when the owner can work again, guard every action by the exact app path and
+  PID, and restore the original settings before handing back.
+
+### Kept app builds
+
+`qk app` keeps the last good build of a project's app on this Mac and runs it. After the merge queue
+pushes a gated batch, it starts `qk app keep --after-landing` in the background, which builds the pushed
+commit with `xcodebuild build` and keeps the product. The gate's own builds are test builds in a
+checkout that is reused, possibly on another Mac and never for a device, so none of them is kept. A
+build that fails keeps nothing, and a docs-only or ungated landing keeps no build.
+
+```sh
+qk app run              # open the newest kept Mac build, building origin/main first if it is newer
+qk app run --ipad       # install and launch the device build on the paired iPad (or --iphone)
+qk app keep [--commit SHA] [--platform mac]   # or ios
+qk app status           # the kept builds, and how far each is behind origin/main
+```
+
+- `qk app run` refuses while another copy of the app runs from somewhere else, such as a gate's test
+  host, and names it; `--replace` quits it, which fails that gate's run. `--no-build` runs the kept build
+  as it is. It uses the owner's screen, so run it only when asked.
+- `--ipad` and `--iphone` run as a device pass: the device is taken in turn (or your reservation used),
+  notifications silenced and put back, and the app left running. Use `--iphone` only when the owner has
+  asked or agreed.
+
+Configure it with `app` in `queuekeeper.json`:
+
+```json
+"app": {
+  "project": "Name.xcodeproj",
+  "configuration": "Debug",
+  "prepare": ["xcodegen", "generate", "--quiet"],
+  "mac": {"scheme": "Name"},
+  "ios": {"scheme": "Name", "settings": {"DEVELOPMENT_TEAM": "TEAMID"}}
+}
+```
+
+- `project` or `workspace` (one of them) is a path inside the checkout; `directory` is where the build
+  runs, by default the checkout's top. `prepare` is a command run there before each build, as an argument
+  list.
+- `mac` and `ios` each name the `scheme`, and optionally the `product` (when the build makes more than
+  one app) and `settings` for xcodebuild's command line. `configuration` defaults to Debug.
+- `afterLanding` on each platform says whether the queue keeps it after each landing: by default the Mac
+  build yes, the device build no (it is built when a device asks). Each keep is one admitted build on
+  this Mac.
+- **Signing.** The device build uses `-allowProvisioningUpdates`, which needs the signing team, an Apple
+  Account signed in to Xcode on that Mac, and every target, extensions included, signing automatically.
+  XcodeGen writes no `CODE_SIGN_STYLE`, so set `CODE_SIGN_STYLE: Automatic` in the spec; choosing the team
+  in Xcode does not survive `prepare`.
+
+Everything lives under `~/Library/Application Support/queuekeeper/apps/NAME/`: a locked `source/`
+worktree, each platform's DerivedData in `derived/` (kept warm, listed by `qk disk` once idle), the
+newest two builds per platform in `kept/`, and each build's log in `logs/`.
+
+### Unity editors
+
+A project that lists the Unity plugin runs its editor unattended. Unity's lock, `Library/`, `Temp/` and
+its Pipeline server are all per project path, and each Git worktree is a separate path, so each worktree
+may have its own editor open. The cost is a cold `Library/`: a new worktree's first editor imports every
+asset and compiles every shader. Reuse worktrees, and let `qk disk` reclaim idle ones.
+
+What sessions on one Mac share:
+
+- **The GPU.** A time measured while another run uses it is void, so run measurements in an exclusive
+  lane.
+- **An editor in Play mode**, which keeps simulating unfocused and which admission cannot see. An
+  exclusive `"unity": true` lane ends unmeasured while one plays on that Mac.
+- **The licensing helper**, which the plugin stops when no editor is running before it starts one.
+- **Pushes.** A pre-push hook that runs the tests starts a batch editor, so ask a session that is
+  measuring to hold its pushes too.
+
+A batch run needs the project lock, which an open editor holds:
+
+```sh
+qk unity closed -- ./tools/verification/check.sh --gates
+```
+
+closes the project's editor, runs the command, and opens the editor again. It never force-kills; an
+editor that will not close, say for unsaved changes, ends the run unmeasured. A lane that runs the editor
+says `"unity": true`, and Queuekeeper checks on the Mac that runs it that a batch run can start; when it
+cannot, the lane ends unmeasured rather than failed.
+
+A second session on a Mac:
+
+1. Create the worktree, and open its editor with `qk unity open --ensure` when needed, expecting a cold
+   import the first time.
+2. Run `qk host editors` before driving any editor, to see which are open and which is in Play mode.
+3. Keep at most one editor in Play mode, and run measurements alone, in an exclusive lane.
 
 ## For agents
 
@@ -635,7 +2282,7 @@ Every verification run goes through admission, so it takes a slot and shows in
 Never run `python3 -m unittest` directly, however small the run. It takes no slot, so other work
 waits behind load nobody can see, and it misses `qk unittest`'s summary, logs, progress and the
 suite's own setup. Only a test of a runner itself uses `--unadmitted`
-([Heavy-work admission](guides/admission.md#heavy-work-admission)).
+([Admission](#admission)).
 
 `qk run --expect N LANE -- FILTER` checks that exactly N tests *executed*. Skipped tests don't
 count: if executed plus skipped make N, the run is unmeasured (exit 3), and any other count fails
@@ -783,22 +2430,36 @@ The [developer guide](developer_guide.md#the-event-journal) lists the event kind
 
 ### Holds
 
-When the queue stops, it *holds* with every entry still waiting, and the hold's reason says whom
-it is for:
+When the queue stops, it *holds* with every entry still waiting, and the hold's reason begins by
+saying whom it is for:
 
-- **Most holds are for an agent**, which fixes the cause and runs `qk queue resume`.
-- **A hold is for the owner** only when an agent cannot fix the cause, such as a refused SSH key.
-  With the [notify feature](#the-notify-feature) on, you hear about these at once.
+- **`for a session, not the owner`**: most holds. Any session that fixes the cause, or finds it
+  gone, runs `qk queue resume` and says so in its report, without asking the owner. A cause a
+  session cannot find is still a session's: say what was looked at.
+- **`for the owner, since nobody else can fix it`**: a Mac's configuration (exit 78), a push the
+  remote refused, a key or token a remote refused. Once the owner has fixed it, any session
+  resumes. With the [notify feature](#the-notify-feature) on, you hear about these at once.
+
+`qk queue status`, `qk land` and `qk land --wait` print the reason. A batch that passed before a
+hold stops its push is kept; after `qk queue resume` it is pushed without gating again if nothing
+changed.
 
 Common holds:
 
 - **No verdict three times in a row** ([No verdict is not a failure](#no-verdict-is-not-a-failure)).
+  The reason says on which Mac and why: the lane that timed out, the tests left unmeasured, the
+  project's last `Unmeasured:` line, no admission, or the Mac's configuration.
 - **Queuekeeper itself could not start** in a lane (exit 70). No commit was tested. Bring
   Queuekeeper and the folders the project's extensions load from to versions that work together.
+  `qk queue resume` starts a worker from the current checkout, which is often the whole repair.
+- **A lane's command could not start** (exit 127). Make the command start, or remove the entry
+  that took away what it runs.
+- **Out of disk space.** Free space with `qk disk --delete` and resume.
+- **A refusal `qk unittest` gives every gate** with no entry to blame, such as a broken module
+  that reached `main` past the queue. The reason quotes the line.
 - **An extension folder beside the project.** A run loads such a folder at its `origin/main`, not
   as your checkout stands. Test a change to it with `qk run --sibling FOLDER=WHERE LANE`, and land
-  it before the change that needs it
-  ([Extension folders beside a project](guides/another-mac.md#extension-folders-beside-a-project)).
+  it before the change that needs it.
 
 ### A queue that looks stuck
 
@@ -820,8 +2481,187 @@ reports on each Mac, without changing its verdict.
 
 ### Disk space
 
-`qk disk` lists Queuekeeper's build caches, test results and simulator resources, with what is
-safe to delete ([Reclaiming disk space](guides/disk-cleanup.md#reclaiming-disk-space)).
+Run `qk disk` to see what Queuekeeper may delete, and `qk disk --delete` to delete it. A lane that
+waits on free space or stops with `queuekeeper: out of disk space:` is covered by
+[Free disk space](#free-disk-space). The whole story is in
+[Disk space and leftovers](#disk-space-and-leftovers).
+
+## Disk space and leftovers
+
+Queuekeeper keeps a Mac's disk and process table clean: `qk disk` deletes only what is provably
+unused, two free-space floors protect a run, and leftover processes, pool simulators and Mac app
+registrations are found and, where it is provably safe, cleaned up.
+
+### Taking the inventory
+
+`qk disk` takes the inventory and changes nothing:
+
+```sh
+python3 scripts/qk disk              # everything, with its status and why
+python3 scripts/qk disk --dry-run    # only what --delete would remove
+python3 scripts/qk disk --json
+```
+
+- **What it reads.** Every project in `~/Development` (`--development` names another folder), and
+  only what Queuekeeper and its plugins create: simulators and runtimes, DerivedData and SwiftPM
+  caches, lane results kept in each Git directory, kept app builds and the checkouts runs were
+  pinned to. Never the rest of the home folder or the volume.
+- **What it prints.** Each item's size, why it has its status, and the exact command that removes
+  it. `--min-size-mb` lists small items only as totals.
+- **Progress.** Stderr names each pass and removal as it starts. Stdout is written line by line,
+  so output saved to a file shows how far it got.
+- **What sessions leave** (linked worktrees, scratch builds in `/private/tmp`, evidence) is the
+  engineering toolkit's `eng disk` to remove. When short of space run both, then `qk disk` again,
+  since removed worktrees make their DerivedData a candidate.
+
+### What may be deleted
+
+Each item is one of three kinds:
+
+- **Candidate**: proven unused by the rules below. `--delete` removes it without asking.
+- **Owner item**: shows no sign of use, but only the owner can say whether it is still wanted,
+  such as test results, a folder no repository registered, or a worktree outside the session
+  folders. Its command is printed, never run.
+- **Kept**: in use, owned, of unclear ownership, or holding work or evidence.
+
+A path is **in use**, and kept, when any of the account's processes has its working directory, an
+open file or an argument inside it. The rules for each category:
+
+| Category | A candidate when |
+|---|---|
+| Pool simulators | The pool's pruning rule allows it; removed by `qk simulator-pool prune` |
+| Old disposable simulators (UUID in the name) | Shut down, idle, and named by no process and no device record |
+| Xcode's default devices, unavailable devices, orphaned device folders | Always (`qk doctor` deletes this Mac's defaults itself). Any other named device is kept, since it may belong to a pool Queuekeeper cannot see |
+| Simulator runtimes | No device uses it and it was last used over 14 days ago, or it is a superseded build of an identifier last used over 14 days ago. Kept if it came with Xcode, is pinned by the toolkit or named by a device record (such as a pool template's `runtimeBuild`), or another Mac still uses its copy |
+| DerivedData | Its `info.plist` names a workspace that no longer exists; or it has no `info.plist`, no process, has been idle for `--min-idle-hours` (24), and holds only what a stray `xcodebuild` leaves (`Logs`, `SourcePackages`, `TestResults`, or a `Build` with only `ProfileData`). Shared folders such as `ModuleCache.noindex` are kept |
+| SwiftPM's cache | Its clones and artifacts, which SwiftPM fetches again |
+| Kept lane results | Beyond each lane's newest 10 commits and older than 14 days; removed by `qk remote prune-results CHECKOUT`. Receipts are never removed |
+| Pinned checkouts | Unused by any run for a week and by any process; removed by `qk disk --prune-pins` |
+
+**No runtime is removed while any simulator on this Mac runs or is reserved**, on any runtime: they
+share one launch host, and deleting a runtime can crash it. An unreadable device record keeps every
+device and superseded runtime it might name.
+
+### Deleting
+
+```sh
+python3 scripts/qk disk --delete [--yes 'WHO ASKED']
+```
+
+- **Any session may run it** when the volume runs short. It removes every candidate without
+  asking; `--yes` only records who asked.
+- **Each removal is checked again** just before it, with a fresh census. It never removes inside a
+  working tree or through a link, and logs every decision to
+  `~/Library/Application Support/queuekeeper/disk-reclaimed.jsonl`.
+- **Report the space freed by measuring it.** Sizes are allocated sizes, and APFS clones share
+  blocks, so a removal can free less than its size. Compare `df -k /System/Volumes/Data` before and
+  after, and call the dry run's total "allocated size".
+
+### Free disk space
+
+A run that fills the disk is lost, and can hang while holding the queue and the Mac. Two floors, in
+GiB free on the data volume and on the checkout's volume, prevent it:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `QUEUEKEEPER_START_FREE_GB` | 30 | A whole-host or exclusive lane, or one with `compileFirst`, waits for this much before asking for admission, holding no slot. `qk queue status` shows `waiting: free disk space: ...`. Waiting longer than the lane's admission wait exits 75 and runs nothing |
+| `QUEUEKEEPER_RUN_FREE_GB` | 2 | A running admitted command is checked every 10 seconds. Below the floor, or when a write finds the disk full, it is stopped as a timeout would stop it: unmeasured, exit 3, with a line starting `queuekeeper: out of disk space:`. The merge queue holds at once |
+
+Both are environment variables inherited by child processes; 0 turns a floor off. Free space with
+`qk disk --delete`.
+
+### Processes left over from runs
+
+Supervision can miss a child that moved to a session of its own and was orphaned between two
+samples. So before work is sent to another Mac, `qk remote` and `qk run` search it and print what
+they find, and `qk doctor` lists it for each Mac under `farm`, `leftovers`.
+
+A process is a **leftover** when it is the account's, runs from a farm checkout
+(`~/Development/queuekeeper-farm/checkouts`), the temporary folder or a simulator's device folder,
+and no live run accounts for it. A live admission owner and its descendants account for their
+processes, as do a simulator a live run reserved or names, and Xcode programs or built apps running
+from the slot of a live admission that started before them. Programs under `/System` are never
+listed.
+
+Each leftover is listed with its PID, parent, start, command line, where it runs from, and the bytes
+it and its descendants have written.
+
+**The search only reports.** A failed search says why, and the work is sent anyway. Whether to stop
+a listed process is the owner's decision; tell the owner what it lists, with PIDs and writes. Two
+exceptions are cleaned up automatically:
+
+- **What an ended run provably launched.** While a dispatch holds a slot, it records each process
+  launchd starts from that slot's built executables in `SLOT.launched.jsonl`. Afterward, cleanup
+  sends those processes SIGTERM, after checking everything again, and logs each stop in
+  `leftover-stops.jsonl` beside the admission log. Anything it keeps is printed with the missing
+  evidence (`did not stop PID …: …`) and left for the owner; `qk doctor` shows what it would stop.
+- **Stale pool simulators**, below.
+
+### Stale pool simulators
+
+Any session may run this without asking:
+
+```sh
+python3 scripts/qk simulator-pool reap [--dry-run] [--here] [--pool NAME]
+```
+
+Queuekeeper also runs it before sending work to another Mac, in `qk doctor`, and once heavy work run
+here by `qk run` or `qk admit` is admitted. With no options it acts on this Mac and then on another
+Mac; `--here` leaves the other out, `--dry-run` says what it would do and why, and `--pool` looks
+at one pool. It exits 1 when anything failed, including an unreachable Mac.
+
+**It shuts a simulator down** (`xcrun simctl shutdown`) only when all of these hold, and still hold
+at a second check just before the stop:
+
+1. It is a member of a pool some project names, or that pool's warmed template whose creator no
+   longer runs.
+2. It is left over: the search above lists it, and no process outside it names its UDID.
+3. No live reservation holds it.
+4. It has run for 2 hours.
+
+**A pool member with no live reservation goes after 2 hours, whoever booted it.** To keep one,
+boot a simulator outside the pool, or reserve it with `qk devices reserve`. A member taken with
+`qk simulator-pool take` is held for an hour (or `take --hold MINUTES`); extend it with
+`qk simulator-pool extend UDID [--hold MINUTES]`.
+
+**It is cautious.** It erases, deletes and kills nothing. It stops nothing when anything it reads
+(processes, device record, admissions, simctl) is unreadable, or when its log, `simulator-reaps.jsonl`
+beside the admission log, cannot be written. Before a run it spends at most 60 seconds. It takes the
+device record's lock for its final check, so it cannot race a take.
+
+**It releases dead reservations** of pool simulators, on any Mac, so nobody recovers them by hand.
+It releases an entry only when every process the entry records is gone; the release is due, or
+(for a run's own reservation, never a take) nothing alive names its owner or device; the entry is
+certain and its run stayed on this Mac; and simctl shows the simulator shut down. Each release is
+logged and printed (`released KEY (UDID), held for owner …`). An entry that is due but not provably
+dead stays held, and reap, `qk doctor` and `qk devices status` name it with its exact recovery
+command, which runs from any folder:
+
+```sh
+python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover …
+```
+
+For another Mac's entry the command adds `--host HOST`, which runs the recovery through that Mac's
+`qk` (a plain `ssh HOST` finds a Python too old to start it).
+
+### Registered Mac builds
+
+Xcode registers a Mac app when it builds it, and macOS when it launches it, and neither is undone.
+Stale registrations make the system run an old build's extensions, document types or URL schemes.
+
+So when `qk run` or `qk admit` ends, however it ends, Queuekeeper unregisters each Mac app
+(`lsregister -u`) and app extension (`pluginkit -r`) under the derived data its xcodebuilds named,
+read from their `-derivedDataPath` or `-xctestrun` while the run goes. A lane needs no option, but:
+
+- **Give each lane its own `-derivedDataPath`.** An xcodebuild without one is not covered (the run
+  says so), and a folder another live run uses is left until it is free.
+- **Nothing else is touched**: nothing outside the folder or through a link, no iOS app, and never
+  a folder that cannot be derived data, such as the home folder, a checkout or Xcode's shared
+  default.
+- **A killed run** leaves a journal that the next run on that Mac sweeps.
+
+The run prints one line on stderr saying what it unregistered and what it left. A problem here never
+changes the run's result.
 
 ## Further reading
 
@@ -832,5 +2672,4 @@ safe to delete ([Reclaiming disk space](guides/disk-cleanup.md#reclaiming-disk-s
   [Unity](../plugins/unity/src/queuekeeper_unity/README.md),
   [Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md) and
   [Mac hardware](../plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md).
-- The [developer guide](developer_guide.md) and its [reference guides](developer_guide.md#reference-guides)
-  for the detail behind every rule.
+- The [developer guide](developer_guide.md) for how each part works inside.

@@ -34,9 +34,8 @@ and hands each question to the platform that owns the device, so a project can l
 - **The `devices` and `deviceRunMinutes` lane keys**, with the device windows an admitted run waits in.
 - **`qk doctor`** gets a check of the devices the owner declared, using each platform's listing on every Mac.
 
-The behavior is documented in [Physical devices](../../../../doc/guides/devices.md) and
-[Device reservations](../../../../doc/guides/devices.md#device-reservations). Both guides apply to every
-platform, though their examples name iPhones.
+The behavior is documented in the user guide's [Physical devices](../../../../doc/user_guide.md#physical-devices)
+section, which applies to every platform, though its examples name iPhones.
 
 ## Shards
 

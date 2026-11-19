@@ -10,7 +10,7 @@ from . import devices, platforms
 
 class Lease(devices.BoundedRun):
     """Physical devices a run on another Mac uses, each reserved in this Mac's record by the session
-    that sends the run (doc/guides/devices.md, Physical devices and another Mac): a bounded run
+    that sends the run: a bounded run
     whose command runs there.
 
     The dispatch marks each entry's run active with its own process, whose end, by a stop, its death

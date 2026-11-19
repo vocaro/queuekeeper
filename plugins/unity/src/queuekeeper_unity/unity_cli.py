@@ -8,7 +8,7 @@ project lists, and so answers only for a project that has that package and an ed
 Every reading here is None when it could not be made: no command on this Mac, a project without the package, a
 keychain the command may not read, a reply in a form not known. None is never taken for signed out or for stopped.
 The reply of `editor_status` was not read from a live editor when this was written (2026-11-12, command
-1.0.0-beta.13): its "playMode" is looked for anywhere in the reply, as vocaro/mpm's doc/unity.md describes it."""
+1.0.0-beta.13): its "playMode" is looked for anywhere in the reply."""
 import json
 import os
 from pathlib import Path

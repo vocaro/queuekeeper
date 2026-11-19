@@ -516,8 +516,8 @@ def setup_limits(path=None):
     left as it is, whatever it sets. Returns (whether the file was written, the busyLimit it now sets).
 
     A file admission cannot read raises ValueError naming it, as host_limits does, and is left for its owner. Only
-    busyLimit is ever added: a key an older copy of the toolkit does not know makes that copy refuse all its work
-    (doc/guides/admission.md, Heavy-work admission). The file appears whole or not at all, since every admission
+    busyLimit is ever added: a key an older copy of the toolkit does not know makes that copy refuse all its work.
+    The file appears whole or not at all, since every admission
     on the Mac reads it: a new one is linked into place, which fails rather than replace one made meanwhile."""
     path = limits_path() if path is None else Path(path)
     host_limits(path)
@@ -661,7 +661,7 @@ def limits_main(argv=None, out=print):
     """qk admissions limits: the admission limits in force for a process started like this one, and their sources."""
     parser = argparse.ArgumentParser(prog="qk admissions limits", description="Print the heavy-work admission "
         "limits in force here and where each comes from: its environment variable, the host's limits file or the "
-        "default (doc/guides/admission.md, Heavy-work admission).")
+        "default.")
     parser.parse_args(argv)
     try:
         found = limits()
@@ -690,8 +690,8 @@ def limits_main(argv=None, out=print):
 def pressure(limit=None):
     """Why the host has no spare capacity now, by the CPU's busy share and memory pressure, as the refusal's kind,
     cpu or memory, and its reason, which names the limit and its value beside what was read; None when it has.
-    The merge queue waits for it to clear before it runs a gate again that gave no verdict (doc/guides/merge-queue.md,
-    The merge queue); admission judges its own attempt's reading the same way (Admission._extra_refusal)."""
+    The merge queue waits for it to clear before it runs a gate again that gave no verdict;
+    admission judges its own attempt's reading the same way (Admission._extra_refusal)."""
     said = None
     if limit is None:
         found = limits()
@@ -2019,7 +2019,7 @@ def report(paths=None, since=None, until=None, out=print):
 
 
 # `qk admissions usage`: whether another Mac is being used, and why work is on this Mac, read from each Mac's
-# capacity and admission logs rather than from the sound of a fan (doc/guides/another-mac.md, Which Mac runs a lane).
+# capacity and admission logs rather than from the sound of a fan.
 USAGE_WINDOW = 3 * 3600
 # An admission with no end logged that began longer than this before the window's end is taken as one whose process
 # died unrecorded, and counts as running no longer: lanes' time limits are 2 h by default (processes.DEFAULT_LIMIT).
@@ -2214,7 +2214,7 @@ def usage_main(argv=None, out=print):
     parser = argparse.ArgumentParser(prog="qk admissions usage", description="Show each Mac's capacity now, side by "
         "side, with whether each has spare capacity for a heavy and for a whole-host lane; the share of the period "
         "each Mac spent at each count of admitted heavy jobs; and why this Mac's admissions ran here: never offered "
-        "to another Mac, and why, or offered and declined, and why (doc/guides/another-mac.md, Which Mac runs a lane).")
+        "to another Mac, and why, or offered and declined, and why.")
     parser.add_argument("--since", type=local_time, metavar="WHEN", help="the period's start, an ISO 8601 date or "
                         "time, local unless it names a zone (default 3 hours before --until)")
     parser.add_argument("--until", type=local_time, metavar="WHEN", help="the period's end (default now)")
@@ -2433,7 +2433,7 @@ def now_main(argv=None, out=print, read=None):
     when every Mac asked about was read whole, 1 when one is partial or unknown, 2 for a mistaken command line."""
     parser = argparse.ArgumentParser(prog="qk admissions now", description="Show who holds heavy-work admission on "
         "this Mac and the farm's other Macs now, and who waits for it, for how long and why, as each waiter says it. It changes "
-        "nothing. A Mac that cannot be read is unknown, never idle (doc/guides/admission.md, Who holds and who waits).")
+        "nothing. A Mac that cannot be read is unknown, never idle.")
     parser.add_argument("--json", action="store_true", help="print the readings as JSON")
     parser.add_argument("--here", action="store_true", help="read this Mac only, in this process's namespace")
     args = parser.parse_args(argv)
@@ -2450,7 +2450,7 @@ def now_main(argv=None, out=print, read=None):
 
 # What recovery tells a person to do about an entry it leaves.
 BY_HAND = ("check by hand that nothing its owner started still runs, then remove its entry with `python3 scripts/qk "
-           "admissions remove OWNER --why TEXT` (doc/guides/process-supervision.md, Lock reclamation)")
+           "admissions remove OWNER --why TEXT`")
 # Why recovery leaves an entry it cannot prove finished, as reclaim says it: the entries `qk admissions remove` may
 # remove once a person has checked them, unlike one whose owner or a process it names still runs.
 UNRECORDED, UNVOUCHED = "it has no process record", "its process record cannot vouch for every command"
@@ -2892,8 +2892,7 @@ def locked_guard(out):
         except (OSError, ValueError): state = None
         owners = entries(state)
         if owners is None:
-            out(f"{guard} is unreadable or not in admission's format. Recovery leaves it alone; inspect it by hand "
-                "(doc/guides/process-supervision.md, Lock reclamation).")
+            out(f"{guard} is unreadable or not in admission's format. Recovery leaves it alone; inspect it by hand.")
             yield None
         else:
             yield guard, state, owners
@@ -3064,8 +3063,7 @@ def remove_main(argv=None):
         "is recovered, and one whose owner or a process it names still runs stays. Then it checks what of the process "
         "record can be read, and the owner's process group or session, and leaves the entry while anything there "
         "runs. The admission log records the removal and why. It exits 1 when it removes nothing. Unlike `qk "
-        "admissions recover`, it is deliberately outside this repository's allow rule for recovery "
-        "(doc/guides/process-supervision.md, Lock reclamation).")
+        "admissions recover`, it is deliberately outside this repository's allow rule for recovery.")
     parser.add_argument("owner", metavar="OWNER", help="the PID or identity of the entry's owner, as `qk admissions "
                         "recover` lists it")
     parser.add_argument("--why", required=True, metavar="TEXT", help="what you checked that shows nothing its owner "
@@ -3084,7 +3082,7 @@ def recover_main(argv=None):
         "entries, or recover one: remove that entry alone, and the guard with its last one, once its owner has ended "
         "and a census against its process record finds nothing of its commands still running. It exits 1 when it "
         "removes nothing, and leaves a live owner's entry, an entry without a process record and a guard that is "
-        "unreadable or not in admission's format alone (doc/guides/process-supervision.md, Lock reclamation).")
+        "unreadable or not in admission's format alone.")
     parser.add_argument("owner", nargs="?", metavar="OWNER", help="the PID or identity of the entry's owner, as the "
                         "listing names it; without it, list the guard's dead or uncertain entries")
     parser.add_argument("--host", metavar="HOST", help="list or recover on this SSH host, using its login shell "

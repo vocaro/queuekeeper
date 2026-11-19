@@ -8,8 +8,7 @@
   `mediaserver` not.
 
 The others are those recordings with only the lock keys changed, as the locks measured on another
-Mac set them (apple-engineering's guides/background-mac-testing.md, Lock screen and display sleep), since a
-test never locks a real screen (vocaro-engineering#185):
+Mac set them, since a test never locks a real screen (vocaro-engineering#185):
 
 - `*-locked-idle.plist`: a lock from idle time, as on 2026-10-28: the console session's
   `CGSSessionScreenIsLocked` true, `IOConsoleLocked` false.

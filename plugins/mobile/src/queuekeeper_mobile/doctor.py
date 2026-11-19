@@ -9,7 +9,7 @@ def declared_devices(root, config):
     from . import reach
     try: return reach.findings(offload_host.record_path())
     except (OSError, ValueError, RuntimeError) as error:
-        return [], [f"the declared devices could not be read: {error} (doc/guides/devices.md, Declared devices)"]
+        return [], [f"the declared devices could not be read: {error}"]
 
 
 def overdue_silences(root, config, record=None):

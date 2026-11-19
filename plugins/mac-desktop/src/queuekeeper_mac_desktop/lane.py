@@ -43,7 +43,7 @@ class Foreground(extensions.Foreground):
         try:
             return stack.enter_context(crash_alerts.guarded(purpose, receipt=receipt, apps=apps))
         except crash_alerts.Blocked as error:
-            print(f"queuekeeper: unmeasured: {error}; nothing ran ({crash_alerts.GUIDE}, Crash-report alerts)", file=sys.stderr)
+            print(f"queuekeeper: unmeasured: {error}; nothing ran", file=sys.stderr)
             receipt["outcome"] = "unmeasured"
             return lane_results.UNMEASURED
 
@@ -56,7 +56,7 @@ class Foreground(extensions.Foreground):
             receipt["notificationCenter"] = notification_center.dismiss()
             return None
         except (notification_center.Blocked, reservations.Refused) as error:
-            print(f"queuekeeper: unmeasured: {error}; nothing ran ({notification_center.GUIDE}, {notification_center.SECTION})",
+            print(f"queuekeeper: unmeasured: {error}; nothing ran",
                   file=sys.stderr)
             receipt["notificationCenter"] = {"left": str(error)}
             receipt["outcome"] = "unmeasured"

@@ -31,7 +31,7 @@ import host_isolation
 from host_isolation import stretched
 
 # Each class in a process of its own under `qk unittest`'s default module split: whole, with a real Git
-# fixture built for every test, this module alone bounded the toolkit's suite (doc/guides/parallel-tests.md).
+# fixture built for every test, this module alone bounded the toolkit's suite.
 shard_by = "class"
 
 

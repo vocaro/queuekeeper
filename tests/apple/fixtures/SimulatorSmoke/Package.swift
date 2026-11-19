@@ -1,6 +1,6 @@
 // swift-tools-version:6.0
 // The smallest package eng simulator-tests can build once and test on several simulators: the
-// positive control for a real run (doc/guides/parallel-tests.md).
+// positive control for a real run.
 import PackageDescription
 
 let package = Package(

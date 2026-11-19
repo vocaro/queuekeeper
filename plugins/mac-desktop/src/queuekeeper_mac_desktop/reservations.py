@@ -42,7 +42,7 @@ from queuekeeper.resources import process_start
 SCHEMA = 1
 OVERRIDE = "QUEUEKEEPER_DEVICE_RECORD"
 ABOUT = ("Device reservations on this Mac. Change entries only through "
-         "`qk devices` (doc/guides/devices.md, Device reservations).")
+         "`qk devices`.")
 # The Mac whose record holds physical devices, in a record that defers them to it: another Mac's.
 DEFERRED = "physicalDevicesRecordedOn"
 # Written only by the record's own operations, which say who changed ownership and why.

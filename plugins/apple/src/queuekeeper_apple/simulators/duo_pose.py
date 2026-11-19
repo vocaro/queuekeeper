@@ -10,7 +10,7 @@ spawn`. A built helper is named by a hash of its source, its compiler flags and 
 rebuilt only when one of them changes, and a helper that failed to build or sign is never kept.
 The helper posts a private, undocumented simulator event: development tooling only, never linked
 into an app, a package or a gate, which any Xcode or runtime can break. Sending an event does not
-prove a pose; confirm it from the displays (apple-engineering's guides/simulator-testing.md#setting-a-pose).
+prove a pose; confirm it from the displays.
 
 The exit status is `simctl spawn`'s, which is the helper's once it runs; 64 for arguments it does
 not take; and 1 when the helper could not be built, signed or run in time.

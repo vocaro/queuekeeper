@@ -1,5 +1,5 @@
 """The bounded check that this Mac's CoreDeviceService answers for a physical device before devicectl or XCTest work
-on it (vocaro/queuekeeper#227; doc/guides/devices.md, A stuck CoreDeviceService)."""
+on it (vocaro/queuekeeper#227)."""
 import os
 import sys
 import unittest
@@ -47,7 +47,6 @@ class Check(unittest.TestCase):
         self.assertIn("no answer within 30s", why)
         self.assertIn("pkill -x CoreDeviceService", why)
         self.assertIn("once no other device run is in progress here", why)
-        self.assertIn(core_device.GUIDE, why)
         self.assertIn("Queuekeeper does not restart it itself", why)
         # A listing that could not be read still names the service, as possibly listing the device.
         def unreadable(): raise RuntimeError("devicectl exited 1")

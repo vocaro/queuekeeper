@@ -180,7 +180,7 @@ def main(argv=None, out=print):
     parser = argparse.ArgumentParser(prog="qk admissions waits", description="Show how many times and how long each "
         "project's lanes waited in the period, by what they waited for (an unlocked screen first, then admission, "
         "another Mac's foreground, free disk space and the offers to another Mac) and on which Mac, from each Mac's "
-        f"wait history ({LOG} beside its admission log; doc/guides/admission.md, Wait history).")
+        f"wait history ({LOG} beside its admission log).")
     parser.add_argument("--since", type=resources.local_time, metavar="WHEN", help="the period's start, an ISO 8601 "
                         "date or time, local unless it names a zone (default 24 hours before --until)")
     parser.add_argument("--until", type=resources.local_time, metavar="WHEN", help="the period's end (default now)")

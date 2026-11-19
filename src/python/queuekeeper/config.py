@@ -299,8 +299,8 @@ def test_lanes(declared):
 
 def compile_first(name, lane):
     """A lane's "compileFirst", the argv that compiles its test target before its command, in its one admission and
-    on the derived data the command uses, so that a compile error stops the run before its tests take a simulator
-    (doc/guides/lanes.md, Compile before the tests). A self lane has no admission of its own to run it in."""
+    on the derived data the command uses, so that a compile error stops the run before its tests take a simulator.
+    A self lane has no admission of its own to run it in."""
     if "compileFirst" not in lane: return
     command = lane["compileFirst"]
     if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
@@ -315,8 +315,7 @@ def compile_first(name, lane):
 # lane that gives no resource takes too; light, which once ran unadmitted where it started, now means heavy, so
 # that the queuekeeper.json files that give it keep loading; exclusive, the host to itself; and self, a lane whose
 # script admits each of its parts itself, such as a calibration that builds under `qk admit` and then times under
-# `qk admit --exclusive`, which an admission of its own would refuse, so qk run runs it where it starts, unadmitted
-# (doc/guides/admission.md, Heavy-work admission).
+# `qk admit --exclusive`, which an admission of its own would refuse, so qk run runs it where it starts, unadmitted.
 RESOURCES = ["light", "heavy", "exclusive", "self"]
 # How heavily a lane's admission holds its Mac, so that a group's is at least each of its lanes'.
 WEIGHT = {"heavy": 0, "exclusive": 1}
@@ -357,7 +356,7 @@ def self_lane_warnings(root, config):
             else "any file of the checkout it runs"
         warnings.append(f"{name} is a self lane, which queuekeeper runs unadmitted, trusting it to admit each of its parts, "
                         f"but neither its command nor {ran} calls qk admit, so its work runs outside admission: "
-                        "give it \"resource\": \"heavy\", or admit each part with qk admit (doc/guides/admission.md, Heavy-work admission)")
+                        "give it \"resource\": \"heavy\", or admit each part with qk admit")
     return warnings
 
 
@@ -398,8 +397,8 @@ def exclusive_refusal(config, command):
             if admission(lane) != "heavy": continue
         except ValueError:
             continue
-        return (f"the command is the {name} lane's, which its configuration admits as heavy work, never exclusive "
-                f"(doc/guides/admission.md, Heavy-work admission): run it with `qk run {name}`, or, if its run "
+        return (f"the command is the {name} lane's, which its configuration admits as heavy work, never exclusive: "
+                f"run it with `qk run {name}`, or, if its run "
                 f"really needs the host to itself, give the lane \"resource\": \"exclusive\"")
     return None
 # The platforms `qk app` builds an app for, and whether each is kept after every gated landing unless the
@@ -430,7 +429,7 @@ IMPLICIT_DOCS = ["python3", LAUNCHER, "docs", "check"]
 IMPLICIT_WORDS = {SPELLING: [SPELLING], DOCS: ["docs", "check"]}
 # Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates. guides/ and
 # knowledge/ are no standard documentation folders, so a project that keeps documents there names them in
-# queue.unread.paths; Queuekeeper keeps its own guides under doc/guides/ (vocaro/queuekeeper#106).
+# queue.unread.paths (vocaro/queuekeeper#106).
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/")
 # The older settings that queue.unread replaces: docsOnly, the paths a batch could change and skip the gate, and
@@ -532,10 +531,10 @@ def legacy_unread_warning(config):
         return (f"{went}, and queue.unread, which replaces them, cannot say both that every batch gates and that "
                 f"{', '.join(sorted(queue['carryOver']))} carr{'ies' if len(queue['carryOver']) == 1 else 'y'} over: "
                 f"give \"queue\": {{\"unread\": false}} to carry nothing over, or {{\"unread\": {{\"paths\": {paths}, "
-                "\"defaults\": false}} to let those paths also skip the gate (doc/guides/merge-queue.md, The merge queue)")
+                "\"defaults\": false}} to let those paths also skip the gate")
     return (f"{went}: give \"queue\": {{\"unread\": {json.dumps(declared, sort_keys=True)}}} in place of {said}, "
             "which the queue already reads it as. Markdown outside doc/ and docs/ no longer "
-            "carries over unless paths names it (doc/guides/merge-queue.md, The merge queue)")
+            "carries over unless paths names it")
 
 
 def preflight(config):
@@ -564,10 +563,10 @@ def legacy_spelling_warning(config):
     if implicit_spelling(config):
         return ("the queue runs Queuekeeper's built-in spelling check for this project, which a later release removes: "
                 "define a spelling lane of the project's own and list it in queue.preflight, or give "
-                "\"queue\": {\"preflight\": []} for none (doc/user_guide.md, Preflight lanes)")
+                "\"queue\": {\"preflight\": []} for none")
     if SPELLING in config.get("lanes", {}):
         return ("the queue runs the spelling lane first only because of its name, which a later release stops: list it "
-                "in queue.preflight, as \"queue\": {\"preflight\": [\"spelling\"]} (doc/user_guide.md, Preflight lanes)")
+                "in queue.preflight, as \"queue\": {\"preflight\": [\"spelling\"]}")
     return None
 
 
@@ -580,8 +579,7 @@ def project_checkout(root):
 
 def landing_lanes(lanes, queue):
     """Each lane a landing runs, with why: the cheap checks before the gate, queue.lanes or gate, the lanes a
-    docs-only batch runs instead, and every lane a group among them runs (doc/guides/merge-queue.md, The merge
-    queue)."""
+    docs-only batch runs instead, and every lane a group among them runs."""
     named = queue.get("lanes") or (["gate"] if "gate" in lanes else [])
     first = [name for name in preflight({"lanes": lanes, "queue": queue}) if name in lanes]
     found = {name: "the merge queue runs it before the gate" for name in [*first, PROVISION] if name in lanes}
@@ -605,8 +603,7 @@ def landing_lanes(lanes, queue):
 
 def release(declared, lanes=None, queue=None):
     """The release gate's settings: lanes, the release checks each a lane of its own, which eng release
-    requires a pass of at the release commit, and maxCommits, the checkpoint's limit (the toolkit's doc/guides/releasing.md,
-    Two gates and Checkpoints). A name in lanes that is no lane is qk doctor's warning, not an error.
+    requires a pass of at the release commit, and maxCommits, the checkpoint's limit. A name in lanes that is no lane is qk doctor's warning, not an error.
     A release lane that a landing also runs is an error: a release check runs once, on the release
     commit, and no change waits for one to land."""
     if not isinstance(declared, dict) or set(declared) - {"lanes", "maxCommits"}:
@@ -623,16 +620,15 @@ def release(declared, lanes=None, queue=None):
         if name in landing:
             raise ValueError(f"release.lanes names {name}, which a landing runs too: {landing[name]}. A release "
                              "check runs once, on the release commit, so take it out of the landing lanes or out of "
-                             "release.lanes (the toolkit's doc/guides/releasing.md, Two gates)")
+                             "release.lanes")
 
 
 def budget(name, lane):
-    """budgetMinutes, the gate's time budget, from its measured time, past which qk land and qk doctor warn
-    (the toolkit's doc/guides/releasing.md, Keeping the split). Only the gate lane has one."""
+    """budgetMinutes, the gate's time budget, from its measured time, past which qk land and qk doctor warn.
+    Only the gate lane has one."""
     if not isinstance(lane, dict) or "budgetMinutes" not in lane: return
     if name != "gate":
-        raise ValueError(f"{name}.budgetMinutes: only the gate lane has a time budget (the toolkit's doc/guides/releasing.md, "
-                         "Keeping the split)")
+        raise ValueError(f"{name}.budgetMinutes: only the gate lane has a time budget")
     if type(lane["budgetMinutes"]) is not int or lane["budgetMinutes"] <= 0:
         raise ValueError("gate.budgetMinutes must be a positive integer")
 
@@ -643,7 +639,7 @@ def merge_queue(queue, lanes):
     which of the lanes cover the pre-push hook, each with what of the hook it runs, the paths a
     docs-only batch changes, each with why no code lane reads it, with the lanes it runs instead, and how
     many runs in a row may give no verdict before the queue holds, and spelling, false for a project whose queue
-    runs no spelling check of the toolkit's in place of a spelling lane (doc/guides/merge-queue.md, The merge queue).
+    runs no spelling check of the toolkit's in place of a spelling lane.
     unread, the paths no code lane reads, replaces docsOnly and carryOver, which it cannot stand beside."""
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
                                                     "unread", "noVerdictRuns", "spelling", "followLandings",
@@ -655,7 +651,7 @@ def merge_queue(queue, lanes):
         if given:
             raise ValueError(f"queue.unread and queue.{' and queue.'.join(given)} cannot both be given: queue.unread "
                              f"replaces {' and '.join(given)}, so move {'its' if len(given) == 1 else 'their'} paths "
-                             "into queue.unread.paths (doc/guides/merge-queue.md, The merge queue)")
+                             "into queue.unread.paths")
         if queue["unread"] is not False and not unread_object(queue["unread"], lanes):
             raise ValueError("queue.unread is false to gate every batch and carry nothing over, or an object of "
                              "optional paths, mapping each path, a directory ending in /, to why no code lane "
@@ -761,20 +757,19 @@ def retired(lanes):
     """Refuse "buildHost", true or false, on any lane or group. It once sent a lane to another Mac, and
     vocaro-engineering#58 removed it: every heavy or exclusive lane goes there unless it says why it stays,
     so a checkout that still has it is older than its project's change, and reading it as nothing could
-    move that checkout's work without a word (doc/guides/another-mac-setup.md, Earlier names)."""
+    move that checkout's work without a word."""
     marked = [name for name, lane in lanes.items() if isinstance(lane, dict) and "buildHost" in lane]
     if not marked: return
     named = ", ".join(marked[:-1]) + " and " + marked[-1] if len(marked) > 1 else marked[0]
     raise ValueError(f"queuekeeper.json gives {named} \"buildHost\", which vocaro-engineering#58 removed: every heavy "
                      "or exclusive lane goes to another Mac unless it says why it stays, with \"here\": \"REASON\", "
                      f"so delete {'it' if len(marked) == 1 else 'each'}, and rebase a checkout older than that change "
-                     "onto main (doc/guides/another-mac-setup.md, Earlier names)")
+                     "onto main")
 
 
 def place(name, lane):
     """Every admitted lane is placed among the Macs unless "here" says why it stays on this Mac, such as
-    a physical device or a measurement tied to this Mac's hardware, like goldens rendered on its GPU
-    (doc/guides/another-mac.md, Which Mac runs a lane)."""
+    a physical device or a measurement tied to this Mac's hardware, like goldens rendered on its GPU."""
     if "here" not in lane: return
     if not isinstance(lane["here"], str) or not lane["here"].strip():
         raise ValueError(f"{name}.here says why the lane stays on this Mac, such as a physical device or a "
@@ -834,7 +829,7 @@ def screen(name, lane):
     """A lane that needs an unlocked console screen, "unlockedScreen": true, such as a Mac suite whose tests read
     their own window through the accessibility API, which a lock hides, runs only on a Mac whose screen queuekeeper reads
     as unlocked when it places the lane, and otherwise waits for one, instead of running unmeasured
-    (vocaro-engineering#185; doc/guides/another-mac.md, Which Mac runs a lane). A self lane is not placed."""
+    (vocaro-engineering#185). A self lane is not placed."""
     if lane.get("unlockedScreen") and unadmitted(lane):
         raise ValueError(f"{name}.unlockedScreen needs an admitted lane: queuekeeper places only an admitted lane on a Mac, "
                          "and a self lane runs where it starts")
@@ -902,7 +897,7 @@ def stays(lanes, name):
 
 def model(name, lane):
     """A generative-model lane takes one heavy slot and the host's model lock. A self lane is not
-    admitted, and exclusive admission holds the model already (doc/guides/admission.md, Model admission)."""
+    admitted, and exclusive admission holds the model already."""
     if lane.get("model") and admission(lane) != "heavy":
         raise ValueError(f"{name}.model needs a heavy lane: a self lane is not admitted, and exclusive "
                          "admission holds the model already")
@@ -912,7 +907,7 @@ def whole_host(name, lane):
     """A whole-host lane, "wholeHost": true, is a Mac's work: a gate that runs the project's suites side by
     side. It takes every guaranteed slot of the Mac it runs on, so that a second such lane never runs
     beside it there, and queuekeeper sends it to the Mac that has them all free, while a lighter heavy lane still
-    shares (vocaro-engineering#168; doc/guides/another-mac.md, Which Mac runs a lane). A self lane is not
+    shares (vocaro-engineering#168). A self lane is not
     admitted, and exclusive admission holds the host already."""
     if lane.get("wholeHost") and admission(lane) != "heavy":
         raise ValueError(f"{name}.wholeHost needs a heavy lane: a self lane is not admitted, and exclusive "
@@ -922,7 +917,7 @@ def whole_host(name, lane):
 def group(name, lane, lanes):
     """A lane group names other lanes to run side by side under its one admission, so it needs
     the heaviest resource among them, the model when one of them runs a model, and one lane at a
-    time when several do (doc/guides/parallel-tests.md)."""
+    time when several do."""
     if set(lane) - GROUP_KEYS:
         raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model, wholeHost, "
                          "unlockedScreen and budgetMinutes")

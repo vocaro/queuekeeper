@@ -23,7 +23,7 @@ class TwoIdiomLanes(unittest.TestCase):
         self.assertIn("2 lane(s) run one selection on an iPhone and an iPad simulator, so each test whose result "
                       "does not depend on the idiom runs twice: ios, script;", found[0])
         self.assertIn('"idioms"', found[0])
-        self.assertIn("Test dimensions and the snapshot layer", found[0])
+        self.assertIn("is not counted", found[0])
 
     def test_a_lane_of_one_idiom_a_release_lane_and_a_stated_exception_are_not(self):
         both = {"command": [*QK, *PHONE, *PAD, "--"]}

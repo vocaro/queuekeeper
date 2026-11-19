@@ -25,8 +25,6 @@ import time
 
 from queuekeeper import offload_host
 
-GUIDE = "doc/guides/foreground.md"
-SECTION = "Apps a run opened"
 # "off" reads no running apps, so that nothing is quit: the test suite sets it for every run it makes, in its own
 # process and its children, so that no test quits an app on the Mac that runs it.
 SWITCH = "QUEUEKEEPER_QUIT_OPENED_APPS"
@@ -143,7 +141,7 @@ def settle(before, own, *, said, launched=(), workstation=False, wait=None, step
     now = read()
     if before is None or now is None:
         said(f"queuekeeper: could not read {offload_host.mac_name()}'s running apps {'before' if before is None else 'after'} "
-             f"the run, so it quit none it may have opened ({GUIDE}, {SECTION})")
+             "the run, so it quit none it may have opened")
         return {"quit": [], "left": ["the running apps could not be read"]}
     known = {app["pid"] for app in before}
     new = [app for app in now if app["pid"] not in known and app["pid"] != os.getpid()]
@@ -163,7 +161,7 @@ def settle(before, own, *, said, launched=(), workstation=False, wait=None, step
     left += [f"{describe(app)}: it was asked to quit and still ran after {wait:g}s, perhaps asking to save"
              for app in running]
     for line in quit_: said(f"queuekeeper: quit {line}, which the run opened")
-    for line in left: said(f"queuekeeper: left running {line} ({GUIDE}, {SECTION})")
+    for line in left: said(f"queuekeeper: left running {line}")
     return {"quit": quit_, "left": left}
 
 

@@ -3,7 +3,7 @@
 It shows what the queue is doing in one line, then each running gate, the entries waiting, the last few settled
 and the journal's last events, and draws it again every few seconds until interrupted. Where its output is not a
 terminal, or with --once, it prints the view once. It changes nothing: it reads the queue's snapshot and journal,
-as every visibility feature does (doc/developer_guide.md).
+as every visibility feature does.
 """
 import argparse
 import contextlib

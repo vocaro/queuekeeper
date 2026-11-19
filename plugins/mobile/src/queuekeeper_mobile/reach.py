@@ -1,7 +1,6 @@
 """Which Macs reach each physical device, and how, as each Mac's platform tools list it (Platform.listing_here: an
 iPhone's by `devicectl`, an Android phone's by `adb devices`); and the owner's declaration of each device: the ways
-a Mac may reach it, in his order, and what it means when no Mac does (vocaro/queuekeeper#211, doc/guides/devices.md,
-Declared devices).
+a Mac may reach it, in his order, and what it means when no Mac does (vocaro/queuekeeper#211).
 
 The owner declares; Queuekeeper reads. What a Mac reads never adds a device to the farm or takes one out: a device
 that nobody declared is listed as seen and never used, and a declared one that no Mac reaches stays in the record
@@ -35,7 +34,7 @@ KEYS = ("reach", "cableOn", "absent", "declaredBy", "declaredAt")
 # Seconds a device may go unreached before it counts as unreachable: by one way on one Mac, or by every declared way on
 # every Mac, after which its absence counts, as an error or as offline. One drop is not a decision: a momentary loss
 # of Wi-Fi, a device's sleep or a cable moved from one port to another neither raises the error nor, once placement
-# reads it, causes a fallback (doc/guides/devices.md, The settle time).
+# reads it, causes a fallback.
 SETTLE = 300
 # The file beside the record where each Mac's readings of the declared devices are remembered, so that a device's
 # absence is measured from the first reading that missed it.
@@ -317,7 +316,7 @@ def absence(item, kept, now=None, settle=SETTLE):
                 "said": f"Offline since {found['since']}{last}, which is no error"}
     return {**found, "state": "unreachable",
             "text": f"{item['key']}, declared always reachable, is reached by no Mac since {found['since']}{last}: "
-                    f"{tried} (doc/guides/devices.md, Declared devices)",
+                    f"{tried}",
             "said": f"Error: reached by no Mac since {found['since']}{last}, and declared always reachable"}
 
 
@@ -355,7 +354,7 @@ def findings(record):
     for item in answer["devices"]:
         if item["declaration"] is not None and item["problems"]:
             warnings.append(f"{item['key']}'s device declaration is wrong, so it is taken as undeclared: "
-                            f"{'; '.join(item['problems'])} (doc/guides/devices.md, Declared devices)")
+                            f"{'; '.join(item['problems'])}")
         found = item.get("absence")
         if not found or found["absent"] != "error": continue
         if found["state"] == "unreachable": errors.append(found["text"])

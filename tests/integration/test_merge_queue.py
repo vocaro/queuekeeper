@@ -4109,7 +4109,7 @@ class DefaultDocsOnly(Fixture):
         self.assertEqual(configuration.lane_to_run(config, "docs", self.repo)["command"], configuration.IMPLICIT_DOCS)
 
     def test_queuekeepers_own_guides_are_unread_by_the_default(self):
-        """Queuekeeper keeps its guides under doc/guides/, so the default takes them, and only their Markdown, with no
+        """Queuekeeper keeps its guides under doc/, so the default takes them, and only their Markdown, with no
         older docsOnly or carryOver; nothing is left at guides/, which is no default folder (vocaro/queuekeeper#106).
         Its queue.unread keeps the defaults and names only the setup guide, with the lane of the test that reads it,
         which a docs-only batch changing it runs, and so never carries over (vocaro/queuekeeper#147)."""
@@ -4121,14 +4121,14 @@ class DefaultDocsOnly(Fixture):
         self.assertEqual(mq.docs_lanes(own, ["doc/user_guide.md"]), ["spelling", "docs", "setup-examples"])
         self.assertFalse(mq.carried_over("doc/user_guide.md", own, set()))
         self.assertEqual(run(ROOT, "git", "ls-files", "--", "guides"), "")
-        for path in ("doc/guides/maintenance.md", "doc/guides/admission.md", "doc/developer_guide.md", "README.md"):
+        for path in ("doc/developer_guide.md", "doc/related_tools.md", "README.md"):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
                 self.assertEqual(mq.docs_lanes(own, [path]), ["spelling", "docs"])
                 self.assertIsNone(mq.docs_lanes(own, [path, "src/python/queuekeeper/config.py"]))
                 self.assertTrue(mq.carried_over(path, own, set()))
         old = "guides" + "/maintenance.md"   # the guide's path before the move, which no default takes
-        for path in ("AGENTS.md", "queuekeeper.json", "tests/core/test_docs.py", old, "doc/guides/diagram.png"):
+        for path in ("AGENTS.md", "queuekeeper.json", "tests/core/test_docs.py", old, "doc/diagram.png"):
             with self.subTest(path=path):
                 self.assertIsNone(mq.docs_lanes(own, [path]))
                 self.assertFalse(mq.carried_over(path, own, set()))
@@ -4478,7 +4478,7 @@ class ClaimsBeforeQueued(Fixture):
         self.assertIn(f"{tip[:12]} line 4 closes #43: This does not fix #43.", error)
         self.assertIn('"Refs #43"', error)
         self.assertIn('"leaves #43 open"', error)
-        self.assertIn("Checked before it is queued", error)
+        self.assertIn("Reword the commit and land it again", error)
 
     def test_a_plain_claim_is_queued(self):
         # The positive control.
@@ -5137,7 +5137,7 @@ class SpelledBeforeQueued(Fixture):
         self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue"), "")
         self.assertIn("is not queued: python3 scripts/qk spelling fails on it replayed onto origin/main", error)
         self.assertIn("fix:1: British spelling", error)
-        self.assertIn("Checked before it is queued", error)
+        self.assertIn("Fix that and land it again", error)
 
     def test_a_clean_entry_is_queued_and_says_it_was_checked(self):
         # The positive control.
@@ -5746,7 +5746,7 @@ class Changelogs(Fixture):
                          [["spelling", "docs"]] * 3)
         self.assertIsNone(mq.Queue(self.repo).held())
         # The first went in as it was; each settled one adds its very line beside other neighbors, which
-        # Closeout's landed.sh proves resolved, so its branch goes unasked (#164, doc/guides/merge-queue.md).
+        # Closeout's landed.sh proves resolved, so its branch goes unasked (#164).
         contained = lambda branch: mq.landing_proofs.contained(lambda *words: mq.git(self.repo, *words), "origin/main", branch)
         self.assertNotIn(contained("b0"), (None, mq.landing_proofs.RESOLVED))
         self.assertEqual([contained("b1"), contained("b2")], [mq.landing_proofs.RESOLVED] * 2)
@@ -10537,7 +10537,7 @@ class RoundAccount(Fixture):
         said = mq.stuck({"waitingSince": late, "stranded": True}, at)
         self.assertEqual(said, "stuck: the gate has waited 16m00s for admission held up by dead or uncertain guard "
                                "entries that admission has not recovered; `python3 scripts/qk admissions recover` lists "
-                               "them (doc/guides/process-supervision.md, Lock reclamation)")
+                               "them")
         # Negative controls: before the threshold; a wait on no stranded entry; a gate with no wait recorded.
         self.assertIsNone(mq.stuck({"waitingSince": early, "stranded": True}, at))
         self.assertIsNone(mq.stuck({"waitingSince": late, "stranded": False}, at))

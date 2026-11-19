@@ -7,7 +7,7 @@ from queuekeeper import config, extensions
 APP_PLATFORMS = {"mac": True, "ios": False}
 
 def app(declared):
-    """The app `qk app` keeps and runs (app_builds.py, doc/guides/app-builds.md)."""
+    """The app `qk app` keeps and runs (app_builds.py)."""
     if not isinstance(declared, dict) or set(declared) - {"project", "workspace", "directory", "configuration",
                                                           "prepare", "links", *APP_PLATFORMS}:
         raise ValueError("app supports only project or workspace, directory, configuration, prepare, links, mac and ios")

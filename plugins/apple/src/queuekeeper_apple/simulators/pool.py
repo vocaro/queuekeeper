@@ -14,10 +14,10 @@ with erase erases the member as before, and one with keep_state reserves and boo
 or erasing it. Pruning deletes a member
 unused and released for an hour, the lowest-numbered of its kind only on request and once the whole kind
 is unused for 7 days, and a template whose runtime is no longer installed or whose kind has no member left
-and is as long unused, and records each deletion (doc/guides/simulator-pool.md, Reserved simulator pool). Nothing
+and is as long unused, and records each deletion. Nothing
 else here deletes or renames a simulator, except a template whose runtime moved, which is replaced.
 Reaping shuts down a member, or a template, left booted past its time, such as by a killed warm-up
-(offload_host.reap; doc/guides/disk-cleanup.md, Stale pool simulators).
+(offload_host.reap).
 Checking a UDID refuses any device outside the pool, such as one of Xcode's default devices, which a
 script that picks a device by name finds instead of a member (vocaro-engineering#91); checking it
 as held also refuses a member that the caller holds no live reservation of (vocaro-engineering#122).
@@ -105,8 +105,7 @@ BOOT_ERROR_SHOWN = 2000
 # The simulator's setting that has the system load UIKit's and SwiftUI's own accessibility into every app
 # process with no assistive technology running, so that an in-process test hosted in an app reads their
 # views (AccessibilitySnapshot.readsSystemViews). Apple documents no such key: verified on the iOS 27.2
-# simulator, runtime build 24B8117, and checked again by the OS-drift procedure (vocaro-engineering#181;
-# doc/guides/simulator-pool.md, App accessibility).
+# simulator, runtime build 24B8117, and checked again by the OS-drift procedure (vocaro-engineering#181).
 APP_ACCESSIBILITY_DOMAIN, APP_ACCESSIBILITY_KEY = "com.apple.Accessibility", "ApplicationAccessibilityEnabled"
 
 
@@ -534,8 +533,7 @@ class Pool:
             else "the pool's warmed template, which is only cloned, never tested on, and a device" \
             if any(template.udid == udid for template in templates(self.name, listing)) else "a device"
         raise RuntimeError(f"{entry.get('name')} ({udid}) is {kind} outside the {self.name} simulator pool: take a "
-                           "member with `qk simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID "
-                           "(doc/guides/simulator-pool.md, Reserved simulator pool)")
+                           "member with `qk simulator-pool take --device TYPE --runtime RUNTIME` and pass its UDID")
 
     def check_held(self, udid, listing=None, defaults=None):
         """The member this UDID names, when this owner holds a live reservation of it: its record entry,
@@ -562,8 +560,7 @@ class Pool:
             why = "nobody holds it"
         raise device_record.Refused(f"{member.name} ({member.udid}) is a {self.name} pool member that {self.owner} "
                                     f"holds no reservation of; {why}. Take one with `qk simulator-pool take "
-                                    "--device TYPE --runtime RUNTIME` and pass the UDID it prints "
-                                    "(doc/guides/simulator-pool.md, Reserved simulator pool)")
+                                    "--device TYPE --runtime RUNTIME` and pass the UDID it prints")
 
     def state(self, udid):
         """A fresh observation of this exact device, or None when simctl no longer lists it."""
@@ -1278,9 +1275,8 @@ def boot(pool, lease, timeout, *, app_accessibility=False):
     command that fails is logged with its error text (boot_failure).
 
     The member boots with VoiceOver's sound cues already off, written into its data while it is shut
-    down: an erase clears the setting, the mute leaves the cues audible through the Mac
-    (AXVerify's guides/voiceover-simulator.md, Muted speech capture), and a spawned write in the booted member
-    timed out on every take of a loaded host (vocaro-engineering#310). A setting that cannot be written
+    down: an erase clears the setting, the mute leaves the cues audible through the Mac, and a spawned
+    write in the booted member timed out on every take of a loaded host (vocaro-engineering#310). A setting that cannot be written
     is logged, not a failed boot: a lane without VoiceOver plays no cues. With app_accessibility its app
     processes get UIKit's and SwiftUI's own accessibility (set_app_accessibility); a setting that does not read as asked fails the boot with status 1, since the
     lane asked for it, and is logged."""
@@ -1375,7 +1371,7 @@ def main(argv, project=None):
                        "template, for a lane that wants pristine data")
     take.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
                       "accessibility on in the member's app processes, for tests hosted in an app that read system "
-                      "views (doc/guides/simulator-pool.md, App accessibility); a setting that does not read on fails "
+                      "views; a setting that does not read on fails "
                       "the take")
     take.add_argument("--boot-timeout", type=int, default=600, help="seconds the boot may take (default 600); "
                       f"past it the member is released and the command exits {lane_results.UNMEASURED}")
@@ -1402,8 +1398,7 @@ def main(argv, project=None):
                                 "whose runtime is no longer installed or whose kind has no member left")
     prune.add_argument("udids", nargs="*", metavar="UDID", help="only these members or templates")
     reap = action("reap", help="shut down members and warmed templates left booted for 2 hours that "
-                               "nothing accounts for, on this Mac and the farm's other Macs (doc/guides/disk-cleanup.md, Stale "
-                               "pool simulators)")
+                               "nothing accounts for, on this Mac and the farm's other Macs")
     reap.add_argument("--dry-run", action="store_true", help="say what it would stop and keep, and stop nothing")
     reap.add_argument("--here", action="store_true", help="only this Mac")
     template = action("template", help="warm the kind's template now, with the full limits for VoiceOver's "

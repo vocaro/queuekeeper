@@ -1,6 +1,5 @@
 """A lane's executed-test count, held against the count of its last passing whole run on main, so that a gate
-that silently lost a bundle, a module or a file's tests fails without a floor typed by hand (doc/guides/lanes.md,
-Test counts from history).
+that silently lost a bundle, a module or a file's tests fails without a floor typed by hand.
 
 Every judged whole run of a lane is kept by commit in the repository's Git directory (remote.keep_here, and
 remote.execute for a run on another Mac), and its lane's receipt records `tests`, the counts its log reports. A whole

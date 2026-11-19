@@ -405,7 +405,7 @@ class ConfigurationTests(unittest.TestCase):
                 with self.subTest(lanes=lanes, queue=queue, named=named):
                     write(lanes, queue, named)
                     with self.assertRaisesRegex(ValueError, f"release.lanes names {named}, which a landing runs too: "
-                                                f".*{re.escape(why)}.*Two gates"):
+                                                f".*{re.escape(why)}.*out of release.lanes$"):
                         config.load(root)
             for lanes, queue, named in apart:
                 with self.subTest(lanes=lanes, queue=queue, named=named):
@@ -4583,7 +4583,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("gate (PID {}) has no process record, so its entry stays".format(pid), output)
         self.assertIn("check by hand that nothing its owner started still runs", output)
-        self.assertIn("Lock reclamation", output)
+        self.assertIn("admissions remove OWNER --why TEXT", output)
         self.assertEqual(self.owners(), {"older": older})
         self.guard.unlink()
         # A caller that runs its own commands without recording them, as an older push keeper does, leaves none either.
@@ -4856,7 +4856,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_a_caller_that_supervises_its_own_command_and_records_it_with_observe_is_recovered_as_supervisions(self):
         # StudyWright's push keeper runs its commands without processes.supervise and writes only the lines
-        # doc/guides/process-supervision.md gives an external supervisor, so that is all this owner writes.
+        # an external supervisor writes, so that is all this owner writes.
         here = Path(self.temp.name)
         keeper = ("import subprocess, sys, time\nfrom pathlib import Path\nfrom queuekeeper import resources\n"
                   "here = Path(sys.argv[1])\n"
@@ -4942,7 +4942,7 @@ class RecoveryTests(unittest.TestCase):
                     status, output = self.recover(*owner)
                     self.assertEqual(status, 1, output)
                     self.assertEqual(output, f"{self.guard} is unreadable or not in admission's format. Recovery leaves "
-                                             "it alone; inspect it by hand (doc/guides/process-supervision.md, Lock reclamation).\n")
+                                             "it alone; inspect it by hand.\n")
                     self.assertEqual(self.guard.read_text(), text)
                     self.assertEqual(record.read_bytes() if record.exists() else None, recorded)
         # The control's recovery, of the guard and record as admission wrote them, whatever a case changed.

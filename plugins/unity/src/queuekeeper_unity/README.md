@@ -161,5 +161,5 @@ failed. `closed` and `run` otherwise exit with their command's own status.
 - **Whether a batch run with a graphics device works over SSH** on another Mac, or needs an
   unlocked screen, is not tested.
 
-The [Unity editors](../../../../doc/guides/unity-editors.md) guide
+The user guide's [Unity editors](../../../../doc/user_guide.md#unity-editors) section
 says what two sessions share on one Mac and what they do not.

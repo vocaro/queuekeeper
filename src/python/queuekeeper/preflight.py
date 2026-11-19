@@ -1,5 +1,5 @@
 """`qk preflight`: the project's preflight lanes, run here, now, as the merge queue runs them before it queues an entry
-(doc/user_guide.md, Preflight lanes; vocaro/queuekeeper#69).
+(vocaro/queuekeeper#69).
 
 A preflight lane is a cheap check the project defines, such as a spelling check, a linter or a formatter in check
 mode: one command, which exits 0 when it passes, 1 when it finds something, and anything else when it could not run.

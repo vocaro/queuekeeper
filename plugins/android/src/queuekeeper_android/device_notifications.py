@@ -28,7 +28,7 @@ SET_DND = {"off": "off", "priority": "priority", "none": "none", "alarms": "alar
 # The mode a run sets: priority only, which lets alarms and starred contacts through and nothing else.
 SILENT = "priority"
 WATCH = "QUEUEKEEPER_DEVICE_LOG_WATCH"
-GUIDE = "plugins/android/src/queuekeeper_android/README.md, Notifications"
+GUIDE = "see the Android plugin's README"
 EVENT = re.compile(r"\b(?P<tag>notification_enqueue|notification_alert)\b\s*:?\s*\[(?P<fields>[^\]]*)\]")
 # Seconds a change of the mode has to read back.
 SETTLE = 5

@@ -1,4 +1,4 @@
-"""The visibility features and their switch: `qk visibility` (doc/developer_guide.md).
+"""The visibility features and their switch: `qk visibility`.
 
 A feature shows the queue to its owner in some way other than the command line and log files: a notification, a
 web page. Each is a module or package of its own in this one, found by its name, so adding one changes no other

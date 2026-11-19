@@ -173,7 +173,7 @@ class CitationSettingTests(unittest.TestCase):
                 config.parse(json.dumps({"schemaVersion": 1, "name": "Example", "docs": docs_value}))
         schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
         self.assertEqual(schema["properties"]["docs"]["properties"]["citations"]["type"], "boolean")
-        self.assertTrue(config.load(config.TOOLKIT_ROOT)["docs"]["citations"])   # Queuekeeper checks its own
+        self.assertNotIn("docs", config.load(config.TOOLKIT_ROOT))   # Queuekeeper's own code cites no documents
 
     def test_qk_docs_check_reads_citations_only_when_the_project_turns_them_on(self):
         with tempfile.TemporaryDirectory() as directory:

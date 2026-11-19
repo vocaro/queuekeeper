@@ -42,7 +42,7 @@ from test_support import farm as farm_fixture
 
 # Each test in a process of its own under `qk unittest`'s default module split: most are in RemoteTests, and
 # whole, the module's real queuekeeper runs against a fake second Mac took 450 s on a quiet host, bounding the toolkit's
-# suite alone (doc/guides/parallel-tests.md).
+# suite alone.
 shard_by = "test"
 
 # remote.advertised as it is, before any test patches it.
@@ -1192,7 +1192,7 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("ran in", (self.project / ".build/queuekeeper/remote/admit/output.log").read_text())
 
     def test_a_command_asks_whether_it_was_sent_to_the_farm_mac_whatever_either_mac_is_called(self):
-        # The documented check (doc/user_guide.md): the variable is set, whatever it holds (vocaro/queuekeeper#93).
+        # The documented check: the variable is set, whatever it holds (vocaro/queuekeeper#93).
         asks = [sys.executable, "-c", f"import os; sender = os.environ.get({remote.DISPATCHER!r}); "
                                       "print('sent by', sender); raise SystemExit(4 if sender else 0)"]
         # As macOS renames a Mac: this Mac's name, and the name another Mac is reached by.
@@ -3166,8 +3166,7 @@ class RemoteTests(unittest.TestCase):
         # false to keep it here, is refused, rather than having its work go where it did not say.
         refused = ("queuekeeper: queuekeeper.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
                    "exclusive lane goes to another Mac unless it says why it stays, with \"here\": \"REASON\", so "
-                   "delete {}, and rebase a checkout older than that change onto main (doc/guides/another-mac-setup.md, "
-                   "Earlier names)\n")
+                   "delete {}, and rebase a checkout older than that change onto main\n")
         original = (self.project / "queuekeeper.json").read_text()
         for marks, named, pronoun in [({"gate": True}, "gate", "it"), ({"gate": False}, "gate", "it"),
                                       ({"pair": True}, "pair", "it"), ({"pair": False}, "pair", "it"),
@@ -5184,7 +5183,7 @@ exec {shlex.quote(real)} "$@"
 
     def test_the_old_name_of_offload_only_is_refused_with_the_new_one_and_hidden_from_help(self):
         refused = ("queuekeeper: --build-host-only was --offload-only's name until vocaro-engineering#58, and is no longer "
-                   "read: use --offload-only (doc/guides/another-mac-setup.md, Earlier names)\n")
+                   "read: use --offload-only\n")
         # Refused whatever the lane and beside any other flag, before anything runs on any Mac.
         for arguments in (["gate"], ["failing"], ["build"], ["fail"], ["pair"], ["--here", "gate"],
                           ["--offload-only", "gate"], ["--if-free", "gate"], ["--serial", "pair"], ["missing"]):
@@ -5438,8 +5437,7 @@ exec {shlex.quote(real)} "$@"
         # kept one here, are refused alike, on a lane of any kind and on a group, before any other check.
         refused = ("queuekeeper.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
                    "exclusive lane goes to another Mac unless it says why it stays, with \"here\": \"REASON\", so "
-                   "delete {}, and rebase a checkout older than that change onto main (doc/guides/another-mac-setup.md, "
-                   "Earlier names)")
+                   "delete {}, and rebase a checkout older than that change onto main")
         heavy = {"command": ["true"], "resource": "heavy"}
         kinds = [{"lane": heavy}, {"lane": {"command": ["true"]}}, {"lane": {**heavy, "foreground": True}},
                  {"lane": {**heavy, "here": "GPU goldens"}}, {"lane": heavy, "group": {"parallel": ["lane"], "resource": "heavy"}}]
@@ -8029,7 +8027,7 @@ class DoctorFixTests(unittest.TestCase):
         self.assertEqual(len(fixed["errors"]), 2, fixed)
         self.assertIn("fake has no ~/Development/apple-engineering", fixed["errors"][0])
         self.assertIn(f"git clone {url} ~/Development/apple-engineering", fixed["errors"][0])
-        self.assertIn("Extension folders beside a project", fixed["errors"][0])
+        self.assertIn("so every lane sent there fails to load it", fixed["errors"][0])
         # An origin that is a path on this Mac names nothing there, so the clone is described, not given.
         self.assertIn(f"git clone of the repository this Mac's {other} comes from, into ~/Development/local-only",
                       fixed["errors"][1])

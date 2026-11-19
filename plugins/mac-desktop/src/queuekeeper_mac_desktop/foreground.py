@@ -7,7 +7,7 @@ a slot: it waits while another run holds another Mac's mac-foreground entry, res
 which records no approval, runs the work with
 QUEUEKEEPER_DEVICE_OWNER naming the reservation, so that drivers' `devices check` passes, and releases it.
 This Mac is the owner's workstation. Its foreground needs a window the owner agreed beforehand, which
-the session reserves itself (doc/guides/foreground.md, Attended Mac sessions), and queuekeeper never sends
+the session reserves itself, and queuekeeper never sends
 foreground work to it.
 
 Which Mac is which is each Mac's own setting, `takes.foreground` in its mac-settings.json, which
@@ -31,7 +31,6 @@ POLL = 10
 # Seconds a run is expected to hold the foreground when its lane names no timeout. A deadline releases
 # nothing: the run releases the entry when its work ends, however long that takes.
 EXPECTED = 3 * 3600
-GUIDE = "doc/guides/foreground.md"
 # Seconds a waiter keeps looking once the holder's expected release falls after its own deadline, in case the holder
 # releases early, before it ends with nothing run (vocaro/queuekeeper#95). A holder already ending its run
 # releases within about this long: its command has up to processes.FOREGROUND_KILL_AFTER, 120 s, between SIGTERM and
@@ -74,7 +73,7 @@ def problems():
 def refusal(found):
     lines = [f"- {problem}: {fix}" for problem, fix in found]
     return reservations.Refused(f"{offload_host.mac_name()}'s foreground is not ready for work started over SSH, and setting it up is "
-                           f"the owner's ({GUIDE}):\n" + "\n".join(lines))
+                           "the owner's:\n" + "\n".join(lines))
 
 
 @contextlib.contextmanager
@@ -100,8 +99,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     if not farm_mac(record):
         raise reservations.Refused("queuekeeper takes the foreground only on a Mac whose own settings say it takes "
                               "foreground work (`qk farm foreground NAME`); this Mac's needs a window the owner "
-                              "agreed beforehand, which the session reserves as mac-foreground itself "
-                              "(doc/guides/foreground.md, Attended Mac sessions)")
+                              "agreed beforehand, which the session reserves as mac-foreground itself")
     found = (ready or problems)()
     if found: raise refusal(found)
     owner = f"queuekeeper {os.getpid()} on {offload_host.mac_name()}"
@@ -129,7 +127,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
                                   f"for {entry.get('purpose')}; it needs attended recovery first, on that Mac: "
                                   f"`{offload_host.recover_command(reservations.FOREGROUND, entry.get('revision'), 'WHAT')}`, "
                                   "or from another Mac the same with `--host` and that Mac's SSH name after "
-                                  f"`recover`, never as a command given to ssh ({GUIDE})")
+                                  "`recover`, never as a command given to ssh")
         holder, due = entry.get("ownerChatID"), entry.get("expectedReleaseBy")
         lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release {due}")
         now = time.monotonic()

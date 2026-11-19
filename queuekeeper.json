@@ -4,7 +4,6 @@
   "integration": "direct-main",
   "extensions": ["queuekeeper_apple"],
   "simulatorPool": "Queuekeeper",
-  "docs": {"citations": true},
   "lanes": {
     "gate": {
       "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4", "--jobs", "8", "--fail-fast", "-v"],

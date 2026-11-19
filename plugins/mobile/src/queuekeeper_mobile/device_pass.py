@@ -1,6 +1,6 @@
 """A release's physical-device pass as a lane: `qk device-pass --device KEY ... -- COMMAND` (vocaro-engineering#148).
 
-The release gate's device pass (the toolkit's doc/guides/releasing.md, Two gates) is a lane of its own, named in
+The release gate's device pass is a lane of its own, named in
 queuekeeper.json's `release.lanes`, whose command is this one, or a project script that builds first and
 then calls run() from Python. `qk run LANE` admits it and writes its receipt, so `eng release` finds a pass
 of it at the commit as it finds any other lane's (release.lane_passed). The lane is heavy and says
@@ -24,7 +24,7 @@ For each device named, in the order named, the pass:
 
 The pass exits 0 when every device's command exited 0; 1 when any failed; and otherwise UNMEASURED (3), so
 that a device not run, or a run a notification reached twice or that its bound stopped, leaves the lane
-unmeasured, never passed (the toolkit's doc/guides/evidence.md, Honest outcome states). It writes each device's outcome to
+unmeasured, never passed. It writes each device's outcome to
 device-pass.json in the results directory, by key, with no device identity. A device it took and could not
 release stays held, said with the command that releases it, and the pass exits 2.
 """
@@ -88,7 +88,7 @@ def acquire(record, key, owner, *, purpose, minutes, wait, said):
     if value.get(devices.DEFERRED):
         raise Misplaced(f"this Mac's device record defers physical devices to {value[devices.DEFERRED]}, so the pass "
                         "runs there: give the lane \"here\" with the reason, a physical device, so that qk run keeps "
-                        "it on the Mac whose record holds them (doc/guides/devices.md, The device pass)")
+                        "it on the Mac whose record holds them")
     entry = value["devices"].get(key)
     if entry is not None and devices.condition(entry) == "held" and entry.get("ownerChatID") == owner:
         said(f"device-pass: {key}: {owner} holds it already, so the pass uses that reservation and leaves it held")
@@ -217,7 +217,7 @@ def run(keys, command, *, owner=None, purpose="release device pass", minutes=MIN
 
 def main(argv, project=None):
     parser = argparse.ArgumentParser(prog="qk device-pass", description="Run a release's device pass: COMMAND "
-        "once on each physical device named, in turn, under its reservation (doc/guides/devices.md, The device pass)")
+        "once on each physical device named, in turn, under its reservation")
     parser.add_argument("--device", action="append", required=True, metavar="KEY", choices=sorted(devices.paired()),
                         help="a paired device's entry; repeat for each, in the order to run them")
     parser.add_argument("--owner", default=devices.default_owner(), help=f"the session (default: {devices.OWNER}, "

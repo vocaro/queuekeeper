@@ -5,7 +5,7 @@ itself, that reads the journal from where the last one stopped and sends a notic
 channel that is on (deliver). The queue waits for none of it. A rule decides which events are told (rules); a
 channel, a module of its own in `channels`, is one way of telling. A queue that stalls writes no event, so the
 commands that reach the hosts also start, at most once every two minutes, a look for one that is stuck (check). The
-feature's settings are the `notify` object of the owner's visibility settings (doc/developer_guide.md).
+feature's settings are the `notify` object of the owner's visibility settings.
 """
 from queuekeeper import extensions
 

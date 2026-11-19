@@ -1,4 +1,4 @@
-"""British spellings in a project's text, identifiers included (the toolkit's doc/agents/core.md, Writing).
+"""British spellings in a project's text, identifiers included.
 
 The words arrive one at a time and are invisible in review, and later sessions copy the spelling
 they read, so they are caught mechanically. The checker began as mpm's tree-wide gate.
@@ -470,10 +470,10 @@ def check(root, config, paths=(), out=print, commands=()):
             out(f"{f}:{line}: the command's old name '{OLD_COMMAND} {name}' -> {COMMAND} {name}")
             old += 1
     renamed = (f"{old} use(s) of the command's old name: the command is {COMMAND}, and a line that keeps the old name "
-               "on purpose is marked `spelling: keep` with its reason (doc/guides/maintenance.md, Spelling check)")
+               "on purpose is marked `spelling: keep` with its reason")
     if found:
         out(f"queuekeeper spelling: FAIL — {found} British spelling(s) in {len(files)} text file(s) and "
-            f"{len(names)} file name(s). Spell them the American way (the toolkit's doc/agents/core.md, Writing)."
+            f"{len(names)} file name(s). Spell them the American way."
             + (f" Also {renamed}." if old else ""))
         return 1
     if old:

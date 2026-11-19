@@ -1,5 +1,5 @@
 """The owner's declaration of each physical device, and which Macs reach it, read from recorded devicectl listings
-(vocaro/queuekeeper#211; doc/guides/devices.md, Declared devices)."""
+(vocaro/queuekeeper#211)."""
 import contextlib
 from io import StringIO
 import json

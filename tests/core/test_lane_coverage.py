@@ -326,7 +326,7 @@ class Doctor(Project):
         self.package()
         status, shown = self.doctor({"tests": {**lane("swift", "test"), "timeout": 60}})
         self.assertEqual((status, shown["testLanes"]["result"]), (0, EVERY_TEST_HAS_A_LANE))
-        self.assertFalse([w for w in shown["warnings"] if lane_coverage.RULE in w])
+        self.assertFalse([w for w in shown["warnings"] if "belong to no lane" in w or "every test has a lane" in w])
 
     def test_doctor_warns_of_a_test_with_no_lane_and_still_exits_zero(self):
         """A warning, which changes no gate: whether this ever fails is the owner's to decide (#289)."""

@@ -4,8 +4,7 @@ The dialog "… is requesting to bypass the system private window picker and dir
 audio" is separate from the Screen Recording list and CGPreflightScreenCaptureAccess. macOS records each Allow in
 replayd's ScreenCaptureApprovals.plist, keyed by the app's file URL (or a bundle ID or executable path for some),
 and asks again for any other path, and again for the same path once its hint date passes, 30 days after its last
-prompt. Signature and CDHash do not enter into it (second Mac, macOS 27.2 26B123, 2026-11-06; vocaro-engineering#209,
-doc/guides/foreground.md, Screen recording for commands started over SSH).
+prompt. Signature and CDHash do not enter into it (second Mac, macOS 27.2 26B123, 2026-11-06; vocaro-engineering#209).
 
 So a test runner that captures through ScreenCaptureKit launches from one path per host, outside the checkout slots
 (stage and rebind below), and `qk remote foreground` lists when that path's approval, and the SSH command

@@ -1,8 +1,7 @@
 """Whether this Mac's CoreDeviceService answers for a physical device, asked once and bounded before devicectl or
-XCTest work on it (vocaro/queuekeeper#227, doc/guides/devices.md, A stuck CoreDeviceService).
+XCTest work on it (vocaro/queuekeeper#227).
 
-CoreDeviceService can get stuck while its devices stay reachable (apple-engineering's guides/device-testing.md,
-Diagnosing a device): `devicectl list devices` still lists them, as `available (paired)` or `connecting`, but every
+CoreDeviceService can get stuck while its devices stay reachable: `devicectl list devices` still lists them, as `available (paired)` or `connecting`, but every
 command to one hangs until its timeout. On 2026-11-17 a release's device pass found out only after XCTest's
 30-minute allowance and the pass's bound, about 90 minutes, and the owner's notifications were not put back after
 a 120 s wait. One `devicectl device info details` per device, bounded at TIMEOUT, tells a stuck service from a
@@ -24,7 +23,6 @@ GRACE = 15
 # "off" answers that every device's service answers, with no devicectl, as tests set it for every process they
 # start (host_isolation).
 PROBE = "QUEUEKEEPER_DEVICE_PROBE"
-GUIDE = "apple-engineering's guides/device-testing.md, Diagnosing a device"
 RESTART = "pkill -x CoreDeviceService"
 
 
@@ -78,5 +76,5 @@ def check(udid, key=None):
     return (f"this Mac's CoreDeviceService looks stuck: devicectl {'lists' if listed else 'may list'} {name}, but "
             f"`devicectl device info details` had {said}, so its run would only wait out devicectl's and XCTest's "
             f"timeouts. Restarting the service fixes it but breaks every device session on this Mac: once no other "
-            f"device run is in progress here, quit Device Hub and run `{RESTART}` ({GUIDE}); Queuekeeper does not "
+            f"device run is in progress here, quit Device Hub and run `{RESTART}`; Queuekeeper does not "
             f"restart it itself")

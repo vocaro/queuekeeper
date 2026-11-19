@@ -1,6 +1,6 @@
 """Whether every test of a project has a lane: qk doctor's reading of what each lane selects (#289).
 
-A test no lane selects goes stale unseen (doc/guides/lanes.md, Every test has a lane). This reads the tests from
+A test no lane selects goes stale unseen. This reads the tests from
 the tracked source, without building or running anything, and each lane's selection from its command:
 
 - swift test and qk xctest select their package's test targets, narrowed by --filter and --skip;
@@ -27,7 +27,6 @@ EVERY_TEST_HAS_A_LANE = "every-test-has-a-lane"
 TESTS_WITHOUT_A_LANE = "tests-without-a-lane"
 COULD_NOT_TELL = "could-not-tell"
 NO_TESTS_FOUND = "no-tests-found"
-RULE = "doc/guides/lanes.md, Every test has a lane"
 # Frozen records at the top of a project, and code a project keeps but did not write, anywhere in it.
 RECORDS = ("measurements/", "evidence/")
 VENDORED = {"licenses", "ThirdParty", "Vendor"}
@@ -338,7 +337,7 @@ def doctor_warnings(result):
     if result["result"] == TESTS_WITHOUT_A_LANE:
         return [f"{len(result['noLane'])} test(s) belong to no lane, so nothing runs them and they go stale unseen: "
                 f"{named(result['noLane'])}; give each a lane or delete it, and name a record kept on purpose in "
-                f"testLanes.skip ({RULE})"]
+                "testLanes.skip"]
     if result["result"] != COULD_NOT_TELL: return []
     parts = []
     if result["undetermined"]:
@@ -347,4 +346,4 @@ def doctor_warnings(result):
                      f"{len(result['unreadLanes'])} lane(s) cannot be read ({named(result['unreadLanes'])}): state what "
                      "each selects in testLanes.selects, an empty list for one that runs no test")
     parts += result["problems"]
-    return [f"could not tell whether every test has a lane, which is not a pass: {'; '.join(parts)} ({RULE})"]
+    return [f"could not tell whether every test has a lane, which is not a pass: {'; '.join(parts)}"]

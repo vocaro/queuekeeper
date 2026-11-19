@@ -67,11 +67,7 @@ def default_simulators(config):
     shown = ", ".join(found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
     return [f"{len(found)} of Xcode's default simulators exist on this Mac: {shown}. A script or Xcode run that "
             "picks a device by name or `booted` installs on one instead of a pool member; `qk doctor` deletes each "
-            "one that is shut down and unused, and `qk disk` says why it kept these (doc/guides/simulator-pool.md, "
-            "Reserved simulator pool)"]
-
-
-TEST_DIMENSIONS = "apple-engineering's guides/app-testing.md, Test dimensions and the snapshot layer"
+            "one that is shut down and unused, and `qk disk` says why it kept these"]
 
 
 def idioms(command):
@@ -101,7 +97,7 @@ def idiom_warnings(config):
             f"does not depend on the idiom runs twice: {', '.join(found)}; run those tests once, on the Mac where "
             "the code allows it, and on each simulator only the classes that depend on its idiom, or say in the "
             "lane's \"idioms\" why its whole selection depends on the idiom; a lane in release.lanes, the control "
-            f"for platform divergence, is not counted ({TEST_DIMENSIONS})"]
+            "for platform divergence, is not counted"]
 
 
 def simulator_warnings(root, config):

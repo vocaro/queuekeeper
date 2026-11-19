@@ -21,7 +21,7 @@ class Platform:
     # What the platform's devices call a device's identifier in the words a command takes, such as "UDID".
     identifier_name = "identifier"
     # Where the owner reads how the platform keeps notifications out of a run.
-    guide = "plugins/mobile/src/queuekeeper_mobile/README.md, Platforms"
+    guide = "see the mobile plugin's README"
 
     def physical(self, identifier):
         """Whether identifier is a physical device of this platform's."""

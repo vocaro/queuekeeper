@@ -1,5 +1,4 @@
-"""The warnings about the landing gate's time budget (the toolkit's doc/guides/releasing.md, Keeping the split,
-vocaro-engineering#135), which a landing prints after its result and `doctor` gives:
+"""The warnings about the landing gate's time budget (vocaro-engineering#135), which a landing prints after its result and `doctor` gives:
 
 - the gate's median own time, from its admission to its end, over its recent passing runs in the merge queue made on
   an unloaded host exceeds the gate lane's budgetMinutes, naming its median wait for admission and median landing
@@ -44,8 +43,6 @@ NAMED_PARTS = 5
 # lane group prints for each of its lanes under "Lane times (...)": "  NAME     12s  PASS".
 SHARD = re.compile(r"^== (.+?): .*\((?:[^()]*, )?(\d+(?:\.\d+)?)s\)$")
 LANE_TIME = re.compile(r"^  (\S+)\s+(\d+(?:\.\d+)?)s\s+(?:PASS|FAIL|UNMEASURED)$")
-SPLIT = "the toolkit's doc/guides/releasing.md, Keeping the split"
-PASS = "doc/guides/devices.md, The device pass"
 
 
 def parts(log):
@@ -176,7 +173,7 @@ def gate_warnings(config, entries):
             f"Search the project's issue tracker for its open proposal on the gate's budget and add to it, or open one "
             f"only if there is none, naming which check to move to release.lanes; a reading the proposal already has "
             f"need not be repeated, unless it changes the picture, such as a much higher median or fewer runs left out "
-            f"for load. The owner approves a move or a higher budget ({SPLIT})"]
+            f"for load. The owner approves a move or a higher budget"]
 
 
 def lane_commands(config, name):
@@ -234,14 +231,14 @@ def doctor_warnings(config):
     lanes = config.get("lanes", {})
     warnings = [f"{name} runs a device pass with no \"here\", so qk run sends it to another Mac, whose device "
                 "record defers physical devices to this Mac: give it \"here\": \"a physical device, reserved in "
-                f"this Mac's device record\" ({PASS})" for name in misplaced_passes(config)]
+                "this Mac's device record\"" for name in misplaced_passes(config)]
     if GATE not in lanes: return warnings
     if config.get("integration", "direct-main") == "direct-main" and "budgetMinutes" not in lanes[GATE]:
         warnings.append(f"gate has no budgetMinutes, so nothing warns when it outgrows its time: set it in the gate "
-                        f"lane from the gate's measured time ({SPLIT})")
+                        "lane from the gate's measured time")
     if any(takes_device(command) for command in lane_commands(config, GATE)):
         warnings.append(f"gate takes a physical device, which makes it a release check: move that check to a lane "
-                        f"of its own named in release.lanes ({SPLIT})")
+                        "of its own named in release.lanes")
     return warnings
 
 

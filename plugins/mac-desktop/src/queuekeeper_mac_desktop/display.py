@@ -2,8 +2,7 @@
 
 A lane that says it waits for what the display's refresh times, such as a scroll view's animation. Its command
 runs under a one-second caffeinate -u, which wakes a sleeping display, behind a lock too, and then caffeinate -d,
-which keeps an awake one on but wakes none, and no other assertion (apple-engineering's guides/background-mac-testing.md, Lock screen
-and display sleep). It unlocks nothing: a lane whose tests need an unlocked screen says "unlockedScreen" too."""
+which keeps an awake one on but wakes none, and no other assertion. It unlocks nothing: a lane whose tests need an unlocked screen says "unlockedScreen" too."""
 from queuekeeper import extensions
 from queuekeeper.config import unadmitted
 
@@ -47,7 +46,7 @@ def warnings(root, config):
                      "does not say \"unlockedScreen\", so queuekeeper may place it on a Mac whose screen is locked, where a "
                      "test that reports a lock as unmeasured gives no verdict: if its tests need an unlocked "
                      f"screen, it needs \"unlockedScreen\": true{also} and if they measure behind a lock, say "
-                     "\"unlockedScreen\": false (doc/guides/another-mac.md, Which Mac runs a lane)")
+                     "\"unlockedScreen\": false")
     return found
 
 

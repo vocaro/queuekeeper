@@ -2,7 +2,8 @@
 
 usage: watch.py LOG OUT SECONDS
 Watches each logged process and the parent of each "child", which is the command's shell.
-How to run it beside siglog.py, and read both: doc/guides/process-supervision.md, Probing stop signals.
+It writes when each is gone, and ends when all are gone or after SECONDS. Start it with detach.py, where
+the action under test cannot reach it; siglog.py's docstring shows the whole probe.
 """
 import os
 import sys

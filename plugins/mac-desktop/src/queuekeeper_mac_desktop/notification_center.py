@@ -14,8 +14,7 @@ again until the window has left the screen. It never presses a notification, whi
 Clear All on a stack, and never touches a notification that asks for a password, permission or access: those
 are the owner's (crash_alerts.OWNERS). A window it cannot identify, read, close, or see gone stops the run as
 unmeasured, naming the window. Nothing a notification says is printed or recorded: only the window's number,
-process, layer and frame, and each closed notification's kind and frame (doc/guides/foreground.md,
-Notification Center windows).
+process, layer and frame, and each closed notification's kind and frame.
 """
 import json
 import os
@@ -39,8 +38,6 @@ CLOSE = "Close"
 GONE = 5
 STEP = 0.5
 ROUNDS = 3
-GUIDE = "doc/guides/foreground.md"
-SECTION = "Notification Center windows"
 # What the toolkit reads and changes on the Mac, through this alone, so that tests replace it (host_isolation).
 run = offload_host.output
 trusted = offload_host.accessibility_trusted
@@ -251,7 +248,7 @@ def lease(owner=None, record=None):
     if not foreground.farm_mac(record):
         raise reservations.Refused("queuekeeper closes Notification Center's notifications only on a Mac whose own "
                               "settings say it takes foreground work, under the foreground lease a run holds there; "
-                              f"this Mac's are the owner's ({GUIDE}, {SECTION})")
+                              "this Mac's are the owner's")
     reservations.require_foreground(owner if owner is not None else os.environ.get(reservations.OWNER), record)
 
 
@@ -284,7 +281,7 @@ def dismiss(said=None, *, owner=None, record=None, wait=GONE):
     if not trusted():
         raise Blocked(f"{describe(found[0])} is over the screen, and this process is not trusted for accessibility "
                       "(AXIsProcessTrusted is false), so queuekeeper cannot close its notifications; the grant is the "
-                      f"owner's ({GUIDE}, Setting up another Mac's foreground)")
+                      "owner's")
     for window in found:
         for _ in range(ROUNDS):
             presented = notifications(window["pid"])
@@ -341,7 +338,7 @@ def main(argv=None):
         said(f"queuekeeper: {error}")
         return 1
     except Blocked as error:
-        said(f"queuekeeper: unmeasured: {error} ({GUIDE}, {SECTION})")
+        said(f"queuekeeper: unmeasured: {error}")
         return lane_results.UNMEASURED
     if not report["found"]: said("queuekeeper: no Notification Center window is over the screen")
     return 0

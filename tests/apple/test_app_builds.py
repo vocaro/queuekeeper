@@ -328,7 +328,7 @@ class Configured(Fixture):
         git(self.root, "commit", "-q", "-am", "no app")
         git(self.root, "push", "-q", "origin", "HEAD:main")
         self.assertEqual(self.status(), 2)
-        self.assertEqual(self.said, ["queuekeeper.json configures no app: add `app` (doc/guides/app-builds.md)"])
+        self.assertEqual(self.said, ["queuekeeper.json configures no app: add `app`"])
 
 
 class Ps:

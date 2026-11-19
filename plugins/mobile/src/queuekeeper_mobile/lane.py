@@ -75,10 +75,9 @@ def register():
         "device-pass": ("a release's physical-device pass, as a release lane's command: run COMMAND once on each paired "
                         "device named, an iPhone, an iPad or an Android phone, in turn, under its reservation, taking a "
                         "paired device in turn and using one the session reserved within the owner's window: qk "
-                        "device-pass --device iPad --device iPhone -- COMMAND; -h for the rest (doc/guides/devices.md, "
-                        "The device pass)", device_pass.main),
+                        "device-pass --device iPad --device iPhone -- COMMAND; -h for the rest", device_pass.main),
         "devices": ("read or change this Mac's device record, which reserves its physical devices, simulator pool "
                     "members and foreground: qk devices status|show|reserve|update|take|release|recover|run; "
-                    "-h for the rest (doc/guides/devices.md, Device reservations)",
+                    "-h for the rest",
                     lambda arguments, project: devices.main(arguments)),
     })

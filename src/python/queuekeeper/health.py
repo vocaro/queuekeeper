@@ -201,7 +201,7 @@ def devices(record, state):
     if record.get("error"): return sign("devices", UNKNOWN, f"the devices could not be read: {record['error']}")
     if record.get("deferredTo"): return sign("devices", IDLE, f"managed on {record['deferredTo']}")
     # A device the owner declared always reachable that no Mac has reached for the settle time is an error; one that
-    # may be away is offline, which is said and alerts no one (doc/guides/devices.md, Declared devices).
+    # may be away is offline, which is said and alerts no one.
     declared = record.get("declared") or []
     errors = [device["text"] for device in declared if device.get("state") == "unreachable" and device.get("absent") == "error"]
     if errors: return sign("devices", DANGER, "; ".join(errors))

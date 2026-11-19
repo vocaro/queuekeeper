@@ -30,7 +30,7 @@ checks, within seconds, that another Mac can be reached. When it cannot, because
 this Mac is away from another Mac's network, nothing answers on its ssh port or ssh cannot
 connect, the work runs on this Mac at once (the owner's decision, 2026-10-27). Another Mac that
 answers but is misconfigured, such as one that refuses the login or has another Xcode, stops the
-work for the owner's decision (the toolkit's doc/agents/core.md, Shared resources); only `--here` then runs it
+work for the owner's decision; only `--here` then runs it
 here. A run that was sent and lost its connection is unmeasured and runs nowhere else.
 `qk doctor` compares the Macs and times how ssh connects to another Mac, and reports another
 Mac it cannot reach as unchecked, and gives both the same simulator runtimes, as
@@ -195,22 +195,20 @@ RENAMED = {}
 # ssh under that were asked for its key, none presenting it (rediscover).
 UNFOUND = {}
 # Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records. That it
-# is set is also the documented way a project's script asks whether it runs on another Mac (doc/user_guide.md,
-# vocaro/queuekeeper#93), so neither its name nor when it is set changes without that page.
+# is set is also the documented way a project's script asks whether it runs on another Mac
+# (vocaro/queuekeeper#93), so neither its name nor when it is set changes without the user guide.
 DISPATCHER = "QUEUEKEEPER_DISPATCHED_FROM"
 # Seconds `qk doctor` waits for another Mac to report its Xcodes and runtimes.
 SURVEY_TIMEOUT = 180
 # Seconds `qk doctor` waits for the census of another Mac's leftover processes.
 CENSUS_TIMEOUT = 60
-# Where a leftover process is explained.
-LEFTOVER_GUIDE = "doc/guides/disk-cleanup.md, Processes left over from runs"
 # The author and committer of a snapshot commit, which records a working tree rather than anyone's
 # work, and needs no identity configured in the session's git.
 SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "queuekeeper snapshot", "GIT_AUTHOR_EMAIL": "snapshot@queuekeeper.invalid",
                      "GIT_COMMITTER_NAME": "queuekeeper snapshot", "GIT_COMMITTER_EMAIL": "snapshot@queuekeeper.invalid"}
 
 
-# What every project's gates use on another Mac (doc/guides/another-mac-setup.md, Setting up another Mac).
+# What every project's gates use on another Mac.
 SETUP_FORMULAE = ["python", "uv", "shellcheck", "xcodegen", "zstd"]
 # Where Homebrew's installer puts brew: Apple silicon, then Intel.
 BREW = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
@@ -228,7 +226,7 @@ RUNTIME_STAGING = f"{ROOT}/runtimes"
 LOCAL_RUNTIME_STAGING = "Library/Application Support/queuekeeper/runtimes"
 # Free bytes a runtime's copy or download must leave on the volume that receives it: room for simctl
 # to copy the image once more where it cannot clone it, as its help says it may, and for the 8-14 GB
-# building worktrees of the sessions that share the volume (the toolkit's doc/agents/core.md, Concurrent work).
+# building worktrees of the sessions that share the volume.
 RUNTIME_MARGIN = 40 << 30
 # The bytes a download is taken to need when no image says: more than the largest runtime image on
 # any Mac, iOS 26.5's 8.5 GB (October 2026).
@@ -264,7 +262,7 @@ class Loaded(Busy):
 
 class Misconfigured(Unavailable):
     """Another Mac's configuration kept the work from running there: the owner's to fix, and
-    no reason to run it on this Mac without the owner's decision (the toolkit's doc/agents/core.md, Shared resources).
+    no reason to run it on this Mac without the owner's decision.
     problem says what is wrong, and fix what fixing it takes."""
 
     def __init__(self, problem, fix):
@@ -302,8 +300,7 @@ def ssh_failure(host, said, *context, sent=False):
         found = searched(host) if OTHER_KEY.search(line) else ""
         return Misconfigured(f"ssh reached {host} but could not log in: {line}{found}",
                              f"correct its entry in ~/.ssh/config, its host key in ~/.ssh/known_hosts or this Mac's key "
-                             f"in its ~/.ssh/authorized_keys, until `ssh {host} true` succeeds without a prompt "
-                             "(doc/guides/another-mac-setup.md, Setting up another Mac)")
+                             f"in its ~/.ssh/authorized_keys, until `ssh {host} true` succeeds without a prompt")
     stop = unreachable(host, said, *context)
     if sent and line and not OFFLINE.search(line) and not banner: return stop
     return Unreachable(stop.problem, stop.fix)
@@ -359,8 +356,7 @@ def check(host, found=None):
     if checked.returncode:
         raise Misconfigured(f"{host}'s login shell could not run `true` (exit {checked.returncode}): "
                             f"{last_line(checked.stderr) or 'no output'}",
-                            f"repair the login shell there, which every run uses, until `ssh {host} true` succeeds "
-                            "(doc/guides/another-mac-setup.md, Setting up another Mac)")
+                            f"repair the login shell there, which every run uses, until `ssh {host} true` succeeds")
 
 
 def answered(stop, addresses):
@@ -374,8 +370,7 @@ def answered(stop, addresses):
 # What a process that macOS's Local Network privacy denies says ssh does: it connects nowhere on this Mac's network,
 # and its connections fail at once with EHOSTUNREACH, "No route to host" (vocaro-engineering#282).
 LOST_FIX = ("start the process again from a live Claude session, or from Terminal, whose app holds the owner's Local "
-            "Network grant: a queue worker exits for that, and the next `qk land` or `qk queue wait` starts another "
-            "(doc/guides/another-mac.md, Local Network access)")
+            "Network grant: a queue worker exits for that, and the next `qk land` or `qk queue wait` starts another")
 # The executable names of a Python, as proc_pidpath gives them: Homebrew's Python.app runs .../MacOS/Python, and
 # python3 and python3.14 run themselves.
 PYTHON = re.compile(r"^[Pp]ython(\d+(\.\d+)*)?$")
@@ -487,8 +482,7 @@ def searched(host):
 def renamed_fix(host):
     found = RENAMED[host]
     return (f"to keep it, set `HostName {found['to']}` under `Host {host}` in ~/.ssh/config, and `HostKeyAlias "
-            f"{found['keyAlias']}` too, so a later rename needs no new known_hosts entry (doc/guides/another-mac-setup.md, "
-            "Setting up another Mac)")
+            f"{found['keyAlias']}` too, so a later rename needs no new known_hosts entry")
 
 
 def presents(host, name, alias):
@@ -570,23 +564,20 @@ def unreachable(host, detail, slept=None):
         problem += (f"; this Mac slept for {sleep:.0f} s while ssh waited, and a Mac asleep answers nothing, so the "
                     f"timeout says nothing of {host}")
         return Misconfigured(problem, f"keep this Mac awake while queuekeeper connects to {host}; `ssh {host} true` shows "
-                                      f"whether {host} answers now (doc/guides/another-mac.md, How a run reaches another "
-                                      "Mac)")
+                                      f"whether {host} answers now")
     remedy = (f"wake {host} and connect it to this Mac's network: {name} is a multicast DNS name, which resolves only "
               "while the Macs are awake on one network that passes multicast between them, as "
               f"`dscacheutil -q host -a name {name}` shows" if name and name.rstrip(".").lower().endswith(".local")
               else f"see whether {host} is overloaded or its sshd is stuck, as `ssh -v {host} true` shows" if connected
               else f"wake {host} and connect it to the network")
     return Misconfigured(problem, f"{remedy}, or correct its entry in ~/.ssh/config or its authorized_keys, until "
-                                  f"`ssh {host} true` succeeds without a prompt (doc/guides/another-mac-setup.md, Setting up "
-                                  "another Mac)")
+                                  f"`ssh {host} true` succeeds without a prompt")
 
 
 def no_toolkit(host, status, detail):
     return Misconfigured(f"{host} could not run the toolkit (exit {status}): {detail or 'no output'}",
                          f"give {host}'s login shell a python3 that runs it: Homebrew's, which `qk remote setup` "
-                         "installs, or the system's, which Xcode's command line tools provide "
-                         "(doc/guides/another-mac-setup.md, Setting up another Mac)")
+                         "installs, or the system's, which Xcode's command line tools provide")
 
 
 def configured():
@@ -668,8 +659,7 @@ def toolkit_gap(toolkit):
     The run there executes that toolkit, so a project change that needs newer toolkit code fails, and only as
     an error from wherever it first reaches for it: on 2026-11-06 BreezEPUB's driver stopped on "cannot import
     name 'capture_approvals'" while this Mac's shared checkout waited one landing behind for a process running
-    from it to end (vocaro-engineering#209; doc/guides/merge-queue.md, The shared checkout follows each toolkit
-    landing). A dispatch says it only when it sends the checkout's own tree: a clean checkout on main that is
+    from it to end (vocaro-engineering#209). A dispatch says it only when it sends the checkout's own tree: a clean checkout on main that is
     only behind sends origin/main instead (followed)."""
     count = git_state.behind(toolkit)
     if not count: return None
@@ -849,7 +839,7 @@ def origin(root):
         if not upstream or offload_host.local_url(upstream): upstream = UPSTREAM
         raise RuntimeError(f"{root}'s origin is {url}, a path on this Mac, from which another Mac cannot fetch the "
                            f"policy; set it with `git -C {shlex.quote(str(root))} remote set-url origin {upstream}` "
-                           "and send the work again (the toolkit's doc/guides/adoption.md, Locating the toolkit from a worktree)")
+                           "and send the work again")
     return "https://github.com/" + url[len("git@github.com:"):] if url.startswith("git@github.com:") else url
 
 
@@ -980,7 +970,7 @@ def send(root, host, repository, commit, advertised=None, sends=None):
             raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository}: its ref {REF}{commit} "
                                 f"names {found['other'][:12]} instead",
                                 f"delete that ref with `git --git-dir ~/{repository} update-ref -d {REF}{commit}` on "
-                                f"{host} and send the work again (doc/guides/another-mac.md, How a run reaches another Mac)")
+                                f"{host} and send the work again")
         if not raced or attempt >= RACE_PUSHES: break
         print(f"remote: {commit[:12]} lost the race for its ref on {host}, which names it nowhere yet "
               f"({found['seen']}); pushing it again", file=sys.stderr, flush=True)
@@ -989,7 +979,7 @@ def send(root, host, repository, commit, advertised=None, sends=None):
                             f"the race for the commit's ref to another session's push of it, and then {host} named "
                             f"it neither by that ref nor by a checkout's ({found['seen']})",
                             "send the work again, or start dispatches of one commit a few seconds apart; nothing on "
-                            f"{host} needs repair (doc/guides/another-mac.md, How a run reaches another Mac)")
+                            f"{host} needs repair")
     raise Misconfigured(f"{host} did not receive {commit[:12]} into ~/{repository} (git push exited "
                         f"{record['status']}): {(record['said'] or ['no output'])[-1]}",
                         f"repair ~/{repository} on {host}, or free space there, until the push succeeds")
@@ -1034,7 +1024,7 @@ def push_once(root, host, repository, commit, variables, record, began):
                             f"and was stopped, so nothing ran there: {sending(record)}",
                             f"see whether the link between the Macs is slow, as Wi-Fi can be, or what keeps {host} from "
                             "taking the pack, as its disk or load; a push that completes leaves what it sent there, "
-                            "so the next sends only what is new (doc/guides/another-mac.md, How a run reaches another Mac)")
+                            "so the next sends only what is new")
     return pushing.returncode
 
 
@@ -1429,8 +1419,7 @@ def uncounted(root, lane):
     shown = ", ".join(changed[:5]) + (f" and {len(changed) - 5} more" if len(changed) > 5 else "")
     return (f"{lane} runs the working tree's uncommitted changes ({shown}), so its result is no commit's pass "
             "for eng release or a checkpoint: commit them, or keep a file no lane reads, such as release notes, "
-            "out of the checkout until the lane has run, then run it again for a pass that counts "
-            "(the toolkit's doc/guides/releasing.md, Preparing a release)")
+            "out of the checkout until the lane has run, then run it again for a pass that counts")
 
 
 def write(stream, data):
@@ -1517,7 +1506,7 @@ def apply_changes(root, sent_commit, patch, named, where, name, status):
     shutil.copyfile(patch, kept)
     print(f"queuekeeper: what the command changed {where} ({named}) was not applied here: {why}\n"
           f"queuekeeper: the patch is {kept}; apply it with `git apply --binary {kept}` once the tree allows, or run the "
-          f"command again (exit {UNAPPLIED}; doc/guides/another-mac.md, Which Mac runs a lane)", file=sys.stderr, flush=True)
+          f"command again (exit {UNAPPLIED})", file=sys.stderr, flush=True)
     return UNAPPLIED
 
 
@@ -2022,7 +2011,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             raise Misconfigured(f"{host} could not prepare ~/{ROOT} (exit {prepared.returncode}): "
                                 f"{last_line(prepared.stderr) or 'no output'}",
                                 f"make ~/{ROOT} writable there and install the Xcode this Mac uses, with its license "
-                                "accepted and its first launch run (doc/guides/another-mac-setup.md, Setting up another Mac)")
+                                "accepted and its first launch run")
         for line in reap_lines(host, final_object(prepared).get("reap"), listing=False):
             print(f"remote: {line}", file=sys.stderr, flush=True)
         for line in leftover_lines(host, *read_census(prepared)):
@@ -2246,8 +2235,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         raise Misconfigured(f"{host} {UNPROVISIONED}: the provision lane exited {status} in "
                             f"{result.get('checkout')}, so {name} did not run there; its log is {own / 'run.log'}",
                             f"give {host} what provisioning needs, which that log names, such as a tool "
-                            "`qk remote setup` installs or the git-credentials token for private dependencies "
-                            "(doc/guides/another-mac-setup.md, Setting up another Mac)")
+                            "`qk remote setup` installs or the git-credentials token for private dependencies")
     return exit_status(result)
 
 
@@ -2286,7 +2274,7 @@ def exclusive_offers(name, offer, park, park_after=None, clock=time.monotonic, s
     waiting in another Mac's queue, once EXCLUSIVE_PARK_SECONDS of offers it declined have passed.
 
     Exclusive work queued on a Mac holds back every later request there while the slots it needs drain
-    (resources.Admission, doc/guides/admission.md). Queued from the start, a gate suite sent as exclusive work
+    (resources.Admission). Queued from the start, a gate suite sent as exclusive work
     kept another Mac at under 20% CPU, refusing every lane for 12 minutes while one lane drained, and those
     lanes all went to this Mac (2026-11-12). So it is offered first as `--if-free` work: another Mac starts it
     only while every slot is free and no request queued ahead of it waits, carrying the work's arrival from the
@@ -2436,7 +2424,7 @@ def foreground_lane(root, config, lane, arguments, expect):
             (f"no Mac of the farm takes foreground work, by its own settings ({offload_host.MAC_SETTINGS}): mark one "
              "with `qk farm foreground NAME`")
         raise ValueError(f"{lane} takes a Mac's screen, and {none}. This Mac's foreground needs a "
-                         "window the owner agrees first (doc/guides/foreground.md, Attended Mac sessions), then "
+                         "window the owner agrees first, then "
                          f"`qk run --here {lane}`")
     host = waiting_host(hosts)
     print(f"queuekeeper: {lane} takes a Mac's screen, so it runs on {called(host)}, under its foreground",
@@ -2556,7 +2544,7 @@ def offering_here(here, send):
         raise Unreachable(away.problem, f"{away.fix}; or ask the owner for a window on this Mac's foreground, "
                                         "saying what would run there and for how long, since foreground work never "
                                         "moves to this Mac without one, and within it reserve mac-foreground and run "
-                                        f"`{here}` (the toolkit's doc/guides/second-mac-foreground.md, This Mac's foreground)") from None
+                                        f"`{here}`") from None
 
 
 def foreground_report(host):
@@ -2574,7 +2562,7 @@ def foreground_report(host):
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):
-        print(f"These are the owner's settings to change, on {called(host)} (doc/guides/foreground.md); "
+        print(f"These are the owner's settings to change, on {called(host)}; "
               "foreground work there stops until they are.")
         return MISCONFIGURED
     print("Ready for foreground work started over SSH.")
@@ -2672,8 +2660,7 @@ def verify_script(formulae, modules, developer=None, siblings=()):
                      f'else echo "MISSING import {module} in python3"; fail=1; fi')
     for name, clone in siblings:
         missing = (f"MISSING ~/Development/{name}, the checkout the project's extension loads from there, which "
-                   f"queuekeeper does not create: make it there with {clone} "
-                   "(doc/guides/another-mac.md, Extension folders beside a project)")
+                   f"queuekeeper does not create: make it there with {clone}")
         lines.append(f'if [ -d "$HOME/Development/"{shlex.quote(name)} ]; then '
                      f'echo {shlex.quote(f"ok      ~/Development/{name}")}; '
                      f'else echo {shlex.quote(missing)}; fail=1; fi')
@@ -2953,8 +2940,7 @@ def bring_runtimes(host, developer, check):
     if found[HERE]["xcode"] != found[host].get("xcode"):
         there = version(found[host]["xcode"]) if found[host].get("xcode") else "missing"
         print(f"runtimes: the Xcode at {developer} is {version(found[HERE]['xcode'])} on this Mac and {there} on "
-              f"{host}; install this Mac's Xcode at that path there first (doc/guides/another-mac-setup.md, Setting up another "
-              "Mac)", flush=True)
+              f"{host}; install this Mac's Xcode at that path there first", flush=True)
         return 1
     xcode = f"{version(found[HERE]['xcode'])} at {developer}"
     stores = {side: runtime_images(host, side, developer, clear=not check) for side in (HERE, host)}
@@ -3373,8 +3359,8 @@ class Offer:
                 # run it; otherwise no Mac will, and it stops for whoever sets what the Macs take.
                 if self.choosing and not isinstance(here, Unfit): raise Loaded("; ".join(filter(None, [*said, here])))
                 raise Misconfigured(f"no Mac takes {self.name}: {'; '.join(filter(None, [*said, here]))}",
-                                    f"have a Mac take it, in its {offload_host.MAC_SETTINGS} (doc/guides/another-mac.md, "
-                                    "What a Mac takes), or change what the work needs")
+                                    f"have a Mac take it, in its {offload_host.MAC_SETTINGS}, "
+                                    "or change what the work needs")
             roomy.sort(key=most_headroom)
             for at, (_under, _order, host, _name) in enumerate(roomy):
                 if host is None:
@@ -3463,7 +3449,7 @@ class Offer:
 
     def stopped(self, stop):
         print(f"queuekeeper: {self.name} not run: {stop.problem}\nqueuekeeper: to fix it, {stop.fix}\nqueuekeeper: a misconfigured shared host "
-              f"stops the work that depends on it (the toolkit's doc/agents/core.md, Shared resources). Running {self.name} on this Mac "
+              f"stops the work that depends on it. Running {self.name} on this Mac "
               f"instead takes the owner's decision, then {self.instead}.", file=sys.stderr, flush=True)
         self.busy, self.status = None, MISCONFIGURED
         return MISCONFIGURED
@@ -3850,8 +3836,7 @@ def capacity_there(host, *, diagnostic=False, started=None):
     answered = ask(host, request, timeout=CENSUS_TIMEOUT, unsent=True)
     if isinstance(answered, dict) and answered.get("error"):
         raise Misconfigured(f"{host} could not read its admission limits: {answered['error']}",
-                            f"correct the limits file or variable it names on {host} (doc/guides/admission.md, "
-                            "Heavy-work admission)")
+                            f"correct the limits file or variable it names on {host}")
     if not isinstance(answered, dict) or not all(isinstance(answered.get(key), int) for key in ("slots", "slotsMax")) \
             or not isinstance(answered.get("busy"), list) or not isinstance(answered.get("busyLimit"), (int, float)):
         raise Unavailable(f"{host} did not report its capacity: it answered {answered!r}")
@@ -3901,7 +3886,7 @@ def admissions_there(host, budget=ADMISSIONS_BUDGET):
         raise Unreachable(f"ssh to {host} could not start: {error}", "check ssh on this Mac") from None
     if found.returncode == 255:
         raise Unreachable(f"ssh could not reach {host}: {last_line(found.stderr) or 'it said nothing'}",
-                          "check that it is awake and on the network (doc/guides/another-mac.md, Another Mac)")
+                          "check that it is awake and on the network")
     if len(found.stdout) > ADMISSIONS_BYTES:
         raise Unavailable(f"{host} sent {len(found.stdout)} bytes, more than a reading's {ADMISSIONS_BYTES}")
     try: answered = json.loads(last_line(found.stdout) or "")
@@ -4292,7 +4277,7 @@ def toolkit_line(host, found, what="toolkit checkout"):
     at = f" at {found['head'][:12]}" if found.get("head") else ""
     return (f"left {where}{at} as it is: {found.get('reason') or 'it gave no reason'}. queuekeeper fast-forwards it to "
             "origin/main only on main, clean, with no commit of its own and nothing running from it; the owner "
-            "decides what becomes of it (doc/guides/another-mac.md, Another Mac's own toolkit checkout)"), True
+            "decides what becomes of it"), True
 
 
 def update_there(host, siblings=()):
@@ -4376,8 +4361,7 @@ def reap_lines(where, report, listing=True, held=False):
     reap stopped its simulator; its recover command runs on where unless where is HERE."""
     if not isinstance(report, dict): return []
     item_line = lambda item: f"{item['name']} ({item['udid']}), PID {item['pid']}"
-    lines = [f"on {where}, stopped {item_line(item)}: {item['reason']} ({offload_host.REAP_LOG}; "
-             f"{LEFTOVER_GUIDE})" for item in report.get("stopped", [])]
+    lines = [f"on {where}, stopped {item_line(item)}: {item['reason']} ({offload_host.REAP_LOG})" for item in report.get("stopped", [])]
     lines += [f"on {where}, failed to stop {item_line(item)}, which is not tried again in this run: {item['error']}"
               for item in report.get("failed", [])]
     lines += [f"on {where}, did not stop {item_line(item)}: {item['hold']}" for item in report.get("skipped", [])]
@@ -4391,7 +4375,7 @@ def reap_lines(where, report, listing=True, held=False):
     found = report.get("processes") if isinstance(report.get("processes"), dict) else {}
     named = lambda item: f"PID {item['pid']}, started {item['start']} ({item.get('executable') or item['command']})"
     lines += [f"on {where}, stopped {named(item)}" + (", which had ended before SIGTERM" if item.get("ended") else "")
-              + f": {item['reason']} ({offload_host.STOP_LOG}; {LEFTOVER_GUIDE})" for item in found.get("stopped", [])]
+              + f": {item['reason']} ({offload_host.STOP_LOG})" for item in found.get("stopped", [])]
     lines += [f"on {where}, failed to stop {named(item)}, which is not tried again in this run: {item['error']}"
               for item in found.get("failed", [])]
     lines += [f"on {where}, did not stop {named(item)}: {item['hold']}" for item in found.get("kept", [])]
@@ -4437,7 +4421,7 @@ def leftover_lines(host, census, missing):
         lines.append(f"{host} runs {len(rows)} process{'es' if len(rows) > 1 else ''} left over from runs, which no "
                      f"live run or admission there accounts for. These were not stopped; tell the owner, unless a stale pool "
                      f"simulator among them is `qk simulator-pool reap`'s to stop, or a later cleanup proves one an "
-                     f"ended run's ({LEFTOVER_GUIDE}):")
+                     f"ended run's:")
     for row in rows:
         written = row.get("written")
         rate = f", {disk.human(written / row['seconds'])}/s since it started" if written and row.get("seconds") else ""
@@ -4546,12 +4530,12 @@ def slow_connection(host, found, timeout=CONNECT_TIMEOUT):
             f"not answer before {used['address']}, which answered in {used['seconds']:.2f} s: {waits}. So each "
             f"connection to {host}, several in every run, first waits up to ConnectTimeout's {timeout} s for "
             f"{'each' if plural else 'it'}, and an ssh without ConnectTimeout, such as a plain `ssh {host}`, waits out "
-            f"the system's TCP connection timeout; to fix it, {fix} (doc/guides/another-mac-setup.md, Setting up another Mac)")
+            f"the system's TCP connection timeout; to fix it, {fix}")
 
 
 def compare_device_records(report, host, here, there):
     """Add to `qk doctor`'s report what the Macs' device records say of physical devices, which
-    only this Mac's record holds (doc/guides/devices.md, Physical devices and another Mac): this
+    only this Mac's record holds: this
     Mac's must defer them to no Mac, and another Mac's must defer them to this Mac and hold none."""
     fix = "which Mac's record holds physical devices is the owner's decision"
     ours, theirs = here.get("deviceRecord") or {}, there.get("deviceRecord") or {}
@@ -4668,8 +4652,8 @@ def compare_hosts(host=None):
         report["errors"].append(
             f"the Xcode at this Mac's developer directory, {developer}, is {version(here['xcode'])} on this Mac and "
             f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so qk remote refuses "
-            f"every run there; to fix it, install this Mac's Xcode at that path on {host} (doc/guides/another-mac-setup.md, "
-            "Setting up another Mac), or select with DEVELOPER_DIR an Xcode the Macs have at the same path")
+            f"every run there; to fix it, install this Mac's Xcode at that path on {host}, "
+            "or select with DEVELOPER_DIR an Xcode the Macs have at the same path")
     if None in (here.get("runtimes"), there.get("runtimes")):
         report["unchecked"].append(f"the simulator runtimes, which simctl did not list on "
                                    f"{'this Mac' if here.get('runtimes') is None else host}")
@@ -4679,6 +4663,5 @@ def compare_hosts(host=None):
         report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
                                 "`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
                                 "defaults uses and copying any other to the Mac that lacks it, and it could not here: "
-                                "see its `runtimes:` lines, or run `python3 scripts/qk remote setup --runtimes` "
-                                "(doc/guides/another-mac-setup.md, Setting up another Mac)")
+                                "see its `runtimes:` lines, or run `python3 scripts/qk remote setup --runtimes`")
     return report

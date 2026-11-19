@@ -8,18 +8,17 @@ Each device is a member of the pool, `POOL LABEL N`: a free one of its kind is r
 host's device record and reset from its kind's warmed template (erased with --erase, or when no settled
 template can be copied), or, with --keep-state, kept as earlier runs left it, or, when none is
 free, the next is cloned from that template, or created, and kept in the pool, after members idle
-past the pruning rule's limits are pruned (doc/guides/simulator-pool.md, Reserved simulator pool).
+past the pruning rule's limits are pruned.
 With --app-accessibility each member's app processes get UIKit's and SwiftUI's own accessibility, for tests
-hosted in an app that read system views (doc/guides/simulator-pool.md, App accessibility). With --voiceover each
+hosted in an app that read system views. With --voiceover each
 member's VoiceOver sound cues are switched off and its volume held at 0 before its tests, for a probe that
-switches VoiceOver on, and its volume is watched while they run (AXVerify's guides/voiceover-simulator.md, Muted speech
-capture). With --xcodegen SPEC
+switches VoiceOver on, and its volume is watched while they run. With --xcodegen SPEC
 the Xcode project is generated from SPEC before the build. Every device boots while the tests build, and is shut down and released however the run ends. The
 build is one `xcodebuild build-for-testing` for the first device's destination; each device
 then runs `xcodebuild test-without-building` on the same .xctestrun, with its own log, result
 bundle and derived data folder, removed when its tests end. Each device's outcome stands apart: a boot that reached its limit leaves that
 device unmeasured, and the run fails when any device failed, and is otherwise unmeasured when
-any device was. doc/guides/parallel-tests.md says how to bound it. A build that fails on a module older
+any device was. A build that fails on a module older
 than a header it was built from clears that module cache and builds once more, and says so.
 
 One run at a time builds into a derived data folder and writes a logs folder: a later run that
@@ -54,8 +53,7 @@ template with --template, which leaves a run unmeasured when the pool could only
 --, so that `qk run LANE --repeat N` reaches this through the arguments a lane appends, on any Mac; --only TEST
 then replaces the lane's own selection. Each run keeps its own outcome, test counts and one-minute load at its start
 and end, printed one line each, added up on the "Repeat series:" line and kept in series.json. Any failed run fails
-the series, and a run that did not happen is unmeasured, never passed (apple-engineering's guides/simulator-testing.md, Repeating a test
-to show a fix works).
+the series, and a run that did not happen is unmeasured, never passed.
 """
 import argparse
 import contextlib
@@ -143,27 +141,23 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
     fresh = parser.add_mutually_exclusive_group()
     fresh.add_argument("--keep-state", action="store_true", help="take each member without resetting or erasing it, "
                        "for tests that need no fresh installation: it keeps what earlier runs installed and skips "
-                       "the first boot's migration (doc/guides/simulator-pool.md, Reserved simulator pool)")
+                       "the first boot's migration")
     fresh.add_argument("--erase", action="store_true", help="erase each member in place of the reset from its "
-                       "kind's warmed template, for tests that want pristine data (doc/guides/simulator-pool.md, "
-                       "Warmed templates)")
+                       "kind's warmed template, for tests that want pristine data")
     fresh.add_argument("--template", action="store_true", help="with --repeat: every run must get a copy of its "
                        "kind's warmed template; a run the pool could only erase is left unmeasured")
     parser.add_argument("--repeat", type=int, metavar="N", help="build once and run the tests N times, each run on a "
                         "member taken from the pool afresh, one outcome, set of test counts and one-minute load "
-                        "each; it may also follow -- (apple-engineering's guides/simulator-testing.md, Repeating a test to show a fix "
-                        "works). A lane's --shards is set aside: each run is one test process on each member")
+                        "each; it may also follow --. A lane's --shards is set aside: each run is one test process on each member")
     parser.add_argument("--only", action="append", default=[], metavar="TEST", help="with --repeat: run only this "
                         "test, in place of the run's own -only-testing and -skip-testing arguments; repeat for each")
     parser.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
                         "accessibility on in each member's app processes once it has booted, for tests hosted in an "
-                        "app that read system views; a device whose setting does not read on fails "
-                        "(doc/guides/simulator-pool.md, App accessibility)")
+                        "app that read system views; a device whose setting does not read on fails")
     parser.add_argument("--voiceover", action="store_true", help="for tests that switch VoiceOver on, such as a "
                         "speech probe's: switch each member's VoiceOver sound cues off and hold its volume at 0 before "
                         "its tests, read it each second while they run, switch off a VoiceOver they left on, and print "
-                        "their VOICEOVER_ lines; a member that could not be silenced, or was heard, fails "
-                        "(AXVerify's guides/voiceover-simulator.md, Muted speech capture)")
+                        "their VOICEOVER_ lines; a member that could not be silenced, or was heard, fails")
     parser.add_argument("--build-only", action="store_true", help="build the tests for the first device and "
                         "test nothing, so that a later run with the same options finds the build up to date; the "
                         "member is taken without erasing or booting it, only to name the build's destination")
@@ -233,8 +227,7 @@ def series_options(args, parser_factory):
 
 def forwarded(prefixes, environment):
     """The TEST_RUNNER_ variables that give the test process each variable starting with a prefix. A test
-    process in a simulator sees only what xcodebuild is given that way (apple-engineering's guides/simulator-testing.md, Test
-    environment), and a TEST_RUNNER_ variable already set is the caller's and stays."""
+    process in a simulator sees only what xcodebuild is given that way, and a TEST_RUNNER_ variable already set is the caller's and stays."""
     if not prefixes: return {}
     return {f"TEST_RUNNER_{name}": value for name, value in environment.items()
             if name.startswith(tuple(prefixes)) and f"TEST_RUNNER_{name}" not in environment}
@@ -437,8 +430,7 @@ class Run:
     def silence(self, kind, device, log):
         """With --voiceover, VoiceOver's sound cues off and the volume held at 0 before any test runs: a
         simulator's VoiceOver speaks through the Mac's own output, and its cues play past the mute. False,
-        with the device failed, when either could not be done (AXVerify's guides/voiceover-simulator.md, Muted speech
-        capture)."""
+        with the device failed, when either could not be done."""
         try:
             off, why = speech.silence_cues(device.udid), "it did not read back off"
         except (RuntimeError, OSError, subprocess.SubprocessError) as error:

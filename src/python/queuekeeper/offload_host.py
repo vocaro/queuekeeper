@@ -561,7 +561,6 @@ def join(request):
     return {"id": hardware_id(), "name": mac_name(), **adopt_root(request["root"])}
 
 
-SCREEN_GUIDE = "apple-engineering's guides/background-mac-testing.md, Checking a Mac's screen"
 SCREEN_KEYS = ("CGSSessionScreenIsLocked", "IOConsoleLocked")
 # A recorded `ioreg -n Root -d1 -a` to read in place of the IORegistry, for tests, which never lock a real screen.
 SCREEN_RECORDING = "QUEUEKEEPER_SCREEN_IOREG"
@@ -843,7 +842,7 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
         refusal = f"{path} is not on {here}"
     elif not root.is_dir():
         refusal = (f"{root} is not on {here}: set up the farm's other Macs first, and run qk remote there once "
-                   "(doc/guides/another-mac-setup.md, Setting up another Mac)")
+                   "(see the user guide's section on setting up another Mac)")
     elif not terminal:
         refusal = "it asks for the password at a terminal, and this has none: run it in your own Terminal"
     if refusal:
@@ -912,7 +911,7 @@ def screen_capture_allowed():
 def foreground_problems():
     """What this Mac lacks for foreground work, a Mac VoiceOver session among it, run by a command started
     over SSH, as [problem, the owner's fix] pairs; none when it is ready. Each is a setting of the owner's
-    Mac, which the owner changes, never a run (doc/guides/foreground.md).
+    Mac, which the owner changes, never a run.
     It reads and changes nothing else: nothing here prompts, activates or sends a key."""
     found = []
     user, console = pwd.getpwuid(os.getuid()).pw_name, console_user()
@@ -2894,7 +2893,7 @@ def pool_of(name, pools, runtime=""):
     """The pool a simulator belongs to and as what: (POOL, "member") for a name `POOL LABEL N`, and
     (POOL, "template") for its kind's warmed template, `POOL LABEL template (RUNTIME)` on that runtime, as
     simulators/pool.py lists one; else (None, None). Reaping may shut down a template too, by the owner's
-    decision of 2026-11-04 (doc/guides/disk-cleanup.md, Stale pool simulators)."""
+    decision of 2026-11-04."""
     for pool in sorted(pools):
         if not name.startswith(pool + " "): continue
         rest = name[len(pool) + 1:]
@@ -3569,7 +3568,7 @@ def pressure():
     heavy-work admission finds no spare capacity, HEAVY_BUSY_LIMIT, the host's limits file or 90, as
     resources.busy_limit sets it (limits); its memory pressure level, None when unread; and its one-minute load,
     which the merge queue logs. The merge queue judges them as admission does (resources.judged) before it runs
-    again a lane that ran here and gave no verdict (doc/guides/merge-queue.md, The merge queue)."""
+    again a lane that ran here and gave no verdict."""
     try: load = round(os.getloadavg()[0], 2)
     except OSError: load = None
     sources = {}
@@ -3709,7 +3708,7 @@ def gather_changes(checkout, path):
         files = run("diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", variables=variables,
                     text=True).split("\0")
     files = [name for name in files if name]
-    # The patch first, under .build/queuekeeper, which every project ignores (the toolkit's doc/guides/adoption.md), so the clean
+    # The patch first, under .build/queuekeeper, which every project ignores, so the clean
     # below leaves it.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(patch)
@@ -4052,7 +4051,7 @@ def place(repository, checkout, commit, ref, origin=None):
         raise Refusal(f"the toolkit's origin is {origin}, a path on the sending Mac, from which no checkout here "
                       "can fetch the policy",
                       "set the sending checkout's origin to https://github.com/vocaro/queuekeeper.git and "
-                      "send the work again (the toolkit's doc/guides/adoption.md, Locating the toolkit from a worktree)")
+                      "send the work again")
     if origin:
         # Different checkout slots can place the toolkit at once. Hold the shared lock only for its config.
         with (repository / "eng-origin.lock").open("a") as lock:
@@ -4294,8 +4293,7 @@ def defer_devices(kit, mac, command=(), toolkit=None):
                       f"(`{spelled}`): the sending Mac's Queuekeeper and the toolkit it sent are different versions, "
                       "and no device record was read or changed",
                       "bring the sending Mac's Queuekeeper checkout to the toolkit it sends, which it follows once "
-                      "nothing runs from it (doc/guides/merge-queue.md, The shared checkout follows each toolkit "
-                      "landing), and send the work again")
+                      "nothing runs from it, and send the work again")
     try:
         deferred = subprocess.run([sys.executable, *command], capture_output=True,
                                   text=True, env={**os.environ, "PYTHONPATH": os.pathsep.join(map(str, sources)), **NO_BYTECODE},
@@ -4310,8 +4308,7 @@ def defer_devices(kit, mac, command=(), toolkit=None):
                           "repair what that error names in the toolkit sent or on another Mac; nothing here says "
                           "that its device record is misconfigured")
         raise Refusal(f"its device record cannot defer physical devices to {mac}: {problem[0]}",
-                      "decide which Mac's record holds physical devices and resolve that in another Mac's record "
-                      "(doc/guides/devices.md, Physical devices and another Mac)")
+                      "decide which Mac's record holds physical devices and resolve that in another Mac's record")
     if deferred.stdout.strip(): say(deferred.stdout.strip())
 
 
@@ -4557,8 +4554,8 @@ def main(plan):
         if expected and found != expected:
             version = lambda text: " ".join(text.split())
             raise Refusal(f"the Xcode at {plan['developerDir']} is {version(found or 'missing')}, not the dispatcher's "
-                          f"{version(expected)}", "install this Mac's Xcode at that path on another Mac "
-                          "(doc/guides/another-mac-setup.md, Setting up another Mac), or select with DEVELOPER_DIR an Xcode "
+                          f"{version(expected)}", "install this Mac's Xcode at that path on another Mac, "
+                          "or select with DEVELOPER_DIR an Xcode "
                           "the Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
         screen_declined(plan)
