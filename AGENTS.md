@@ -72,3 +72,14 @@ are evidence, not caches.
 - `doc/user_guide.md` and `doc/developer_guide.md`: the documentation, for users and for people changing Queuekeeper.
 
 See [the merge queue](doc/developer_guide.md#the-merge-queue) for queue operation and [spelling](doc/developer_guide.md#spelling) for spelling.
+
+<!-- queuekeeper:agents begin sha256=7574de43a2ad6c89 -- written by `qk agents setup`; `qk agents remove` takes it out -->
+Never push to main. Commit on your own branch, then run `qk land --wait` as a
+background command and follow it to its result. Exit 0 means landed, 1 means it came back
+with a reason, and 75 means the queue is held or still waiting. If the wait is interrupted, the
+entry still lands: follow it with `qk queue wait ID`, or run the same `qk land --wait` again,
+which follows the entry already queued. Run tests and builds with `qk run LANE` or
+`qk admit -- COMMAND`, never bare, so that they wait their turn on the shared Macs. Run unittest
+suites with `qk unittest`, never `python3 -m unittest`. Send a long run's output to a file, never
+through `tail` or `head`, and trim when reading it; `qk progress` says how far a run has got.
+<!-- queuekeeper:agents end -->
