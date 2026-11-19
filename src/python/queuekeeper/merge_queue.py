@@ -60,7 +60,7 @@ from . import budgets, disk, plugins, farm, host_health, lane_results, landing_p
 from . import events, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
-    lane_to_run, legacy_carried, legacy_unread_warning, old_plugins_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
+    lane_to_run, old_plugins_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
     siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
@@ -602,7 +602,7 @@ def has_config(root, commit):
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
 # paths that skip the gate, and the preflight lanes, which can be none. A batch whose lanes the queue runs, because main
 # names none yet, gives none of them (#10, vocaro/queuekeeper#69).
-MAIN_ONLY = ("hookCoveredBy", "unread", "docsOnly", "carryOver", "preflight", "affected")
+MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "affected")
 
 
 def as_batch(config):
@@ -765,8 +765,7 @@ def carried_over(path, config, batch_files):
     paths skip the gate, so a docs entry that lands beside a gate (Worker.docs_beside) never stops its pass carrying
     over. A path whose queue.unread.paths entry names lanes is read by those lanes, so it never carries over
     unchecked: main gaining it gates again (vocaro/queuekeeper#27)."""
-    return path not in batch_files and (unread(config, path) and not unread_named(config, [path])
-                                        or legacy_carried(config, path))
+    return path not in batch_files and unread(config, path) and not unread_named(config, [path])
 
 
 def carried_by_rules(path, config, batch_files, ran):
@@ -1002,8 +1001,6 @@ def preflight_before_queued(root, queue, tip, config):
     round, about 40 minutes on EPUBLib on 2026-11-07 (vocaro-engineering#283). It is a hint, as check is: the worker
     still runs the lanes on the batch. A lane that cannot be run, or that fails otherwise, queues the entry for the
     round to judge, and so does a failure origin/main gives too, which is not the entry's to fix."""
-    unread_warned = legacy_unread_warning(config)
-    if unread_warned: print(f"queue: {unread_warned}", file=sys.stderr)
     if old_plugins_warning(config): print(f"queue: {old_plugins_warning(config)}", file=sys.stderr)
     names = preflighted(config)
     if not names: return
@@ -2186,7 +2183,7 @@ def rides(config, changed):
                      + (f", main's queue.unread.paths naming {named_said(named)}" if named else ""))
     queue = config.get("queue", {})
     if unread_declared(queue) is False:
-        why = f"main's queue.{'unread' if 'unread' in queue else 'docsOnly'} is false, so every entry does"
+        why = "main's queue.unread is false, so every entry does"
     elif not changed: why = "its commits change no file"
     else: why = f"{next(path for path in changed if not docs_lanes(config, [path]))} is not documentation"
     also = [lane for lane in lanes_of(config, changed) if lane not in lanes_of(config)]

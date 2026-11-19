@@ -81,7 +81,7 @@ class PrePushTests(unittest.TestCase):
     def test_the_project_s_own_docs_paths_and_queue_lanes_choose(self):
         config = {**CONFIG, "lanes": {**CONFIG["lanes"], "fast": {"command": ["x"]}, "notes": {"command": ["y"]}},
                   "queue": {"lanes": ["fast", "gate"],
-                            "docsOnly": {"paths": {"notes/": "prose"}, "lanes": ["notes"]}}}
+                            "unread": {"paths": {"notes/": "prose"}, "lanes": ["notes"], "defaults": False}}}
         self.assertEqual(pre_push.lanes_for(config, ["notes/a.txt"])[0], ["notes"])
         # A push of documents and code runs the docs lanes too, first, as the queue does (vocaro/queuekeeper#122).
         self.assertEqual(pre_push.lanes_for(config, ["notes/a.txt", "README.md"]),

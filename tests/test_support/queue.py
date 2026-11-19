@@ -183,7 +183,7 @@ class Fixture(unittest.TestCase):
         (self.repo / "CLAUDE.md").write_text("@AGENTS.md\n")
         (self.repo / "queuekeeper.json").write_text(json.dumps({
             "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
-            "queue": {"carryOver": {"records/": "no lane reads it"}},
+            "queue": {"unread": {"paths": {"records/": "no lane reads it"}}},
             "lanes": {"gate": {"command": ["python3", "lane.py", str(self.counter), str(self.status)]}}}))
         run(self.repo, "git", "add", ".")
         run(self.repo, "git", "commit", "-qm", "start")

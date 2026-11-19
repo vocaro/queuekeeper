@@ -198,7 +198,7 @@ or a finding `origin/main` gives too.
 
 **A project's first landing** reads the entry's `queuekeeper.json`, and the batch's in a round,
 only while `origin/main` has none that names lanes. The settings that loosen checking
-(`hookCoveredBy`, `unread`, `docsOnly`, `carryOver`, `preflight`, `affected`) count only
+(`hookCoveredBy`, `unread`, `preflight`, `affected`) count only
 from `main` even then.
 
 **A repository with no `main`.** `fetch_main` lets the fetch fail with git's "couldn't find remote

@@ -374,7 +374,7 @@ class ConfigurationTests(unittest.TestCase):
             ({"lanes": {"gate": lane, "provision": lane}}, {}, "provision", "before the gate"),
             ({"lanes": {"gate": lane, "app-gate": lane}}, {"lanes": ["gate", "app-gate"]}, "app-gate",
              "one of queue.lanes"),
-            ({"lanes": {"gate": lane, "docs": lane}}, {"docsOnly": {"paths": {"guides/": "prose"}, "lanes": ["docs"]}},
+            ({"lanes": {"gate": lane, "docs": lane}}, {"unread": {"paths": {"guides/": "prose"}}},
              "docs", "docs-only batch"),
             ({"lanes": {"tests": lane, "device": heavy, "gate": {"parallel": ["tests", "device"], "resource": "heavy"}}},
              {}, "device", "lane group gate"),
@@ -386,7 +386,7 @@ class ConfigurationTests(unittest.TestCase):
             ({"lanes": {"gate": lane, "device": heavy}}, {}, "device"),
             ({"lanes": {"gate": lane, "app-gate": lane, "device": heavy}}, {"lanes": ["gate", "app-gate"]}, "device"),
             ({"lanes": {"gate": lane, "docs": lane, "device": heavy}},
-             {"docsOnly": {"paths": {"guides/": "prose"}, "lanes": ["docs"]}}, "device"),
+             {"unread": {"paths": {"guides/": "prose"}}}, "device"),
             # A group that no landing runs may hold a release lane, and gate may stand beside it.
             ({"lanes": {"gate": lane, "device": heavy, "corpus": heavy,
                         "release-pass": {"parallel": ["device", "corpus"], "resource": "heavy"}}}, {}, "release-pass"),

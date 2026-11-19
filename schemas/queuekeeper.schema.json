@@ -536,15 +536,6 @@
             "minLength": 1
           }
         },
-        "carryOver": {
-          "description": "Paths main may change under a passed result without gating again, a directory ending in /, each with why no queue lane reads it. Deprecated: read as queue.unread.paths, which replaces it",
-          "deprecated": true,
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
         "hookCoveredBy": {
           "description": "The queue lanes that cover the pre-push hook, each with what of the hook it runs. With it, the queue pushes without running the hook",
           "type": "object",
@@ -554,56 +545,8 @@
             "minLength": 1
           }
         },
-        "docsOnly": {
-          "description": "Conventional Markdown docs use the preflight lanes and the docs check by default. False disables this path; an object replaces default paths and lanes. Docs landings skip code hooks and are no full gate. Deprecated: read as queue.unread, which replaces it",
-          "deprecated": true,
-          "type": [
-            "object",
-            "boolean"
-          ],
-          "additionalProperties": false,
-          "required": [
-            "paths",
-            "lanes"
-          ],
-          "properties": {
-            "paths": {
-              "description": "Each path, a directory ending in /, with why no code lane reads it",
-              "type": "object",
-              "minProperties": 1,
-              "additionalProperties": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "lanes": {
-              "description": "The lanes a docs-only batch runs instead, in order; never gate, whose receipt qk release reads",
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "not": {
-                  "const": "gate"
-                }
-              }
-            },
-            "exclude": {
-              "description": "Paths consumed by code or tests, with why; these retain code gates even under listed documentation directories",
-              "type": "object",
-              "additionalProperties": {
-                "type": "string",
-                "minLength": 1
-              }
-            }
-          },
-          "not": {
-            "const": true
-          }
-        },
         "unread": {
-          "description": "The paths no code lane reads. A batch that changes only these runs the docs lanes in place of the gate, and main changing one a passed batch does not touch leaves its result standing. The conventional Markdown defaults, the root README.md, CONTRIBUTING.md and CHANGELOG.md and Markdown under doc/ and docs/, count unless defaults is false. False gates every batch and carries nothing over. Replaces docsOnly and carryOver",
+          "description": "The paths no code lane reads. A batch that changes only these runs the docs lanes in place of the gate, and main changing one a passed batch does not touch leaves its result standing. The conventional Markdown defaults, the root README.md, CONTRIBUTING.md and CHANGELOG.md and Markdown under doc/ and docs/, count unless defaults is false. False gates every batch and carries nothing over. Replaced docsOnly and carryOver, which are refused",
           "type": [
             "object",
             "boolean"
@@ -933,7 +876,7 @@
       "additionalProperties": false,
       "properties": {
         "lanes": {
-          "description": "The release checks, each a lane of its own, which run after gate on the release commit; qk release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which qk release checks first, nor any lane a landing runs: the preflight lanes, provision, queue.lanes or gate, queue.docsOnly.lanes, or a member of a group among them",
+          "description": "The release checks, each a lane of its own, which run after gate on the release commit; qk release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which qk release checks first, nor any lane a landing runs: the preflight lanes, provision, queue.lanes or gate, queue.unread.lanes, or a member of a group among them",
           "type": "array",
           "uniqueItems": true,
           "items": {

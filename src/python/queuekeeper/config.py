@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -445,10 +446,6 @@ IMPLICIT_WORDS = {DOCS: ["docs", "check"]}
 # queue.unread.paths (vocaro/queuekeeper#106).
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/")
-# The older settings that queue.unread replaces: docsOnly, the paths a batch could change and skip the gate, and
-# carryOver, the paths main could change under a passed result. Both said a path no code lane reads, in two lists that
-# could disagree; a release accepts them, read as queue.unread (unread_declared), and the next refuses them.
-UNREAD_LEGACY = ("docsOnly", "carryOver")
 # Seconds a preflight lane may run before qk land queues an entry, and its timeout when its lane gives none
 # (vocaro-engineering#283, vocaro/queuekeeper#69). A preflight lane is a cheap check, never a build.
 PREFLIGHT_LIMIT = 300
@@ -472,26 +469,8 @@ def names_path(path, key):
 
 
 def unread_declared(queue):
-    """queue.unread as the queue reads it: False, or an object of paths, exclude, lanes and defaults. A project still on
-    the older queue.docsOnly and queue.carryOver has them read as one: carryOver's paths join docsOnly's, and an
-    explicit docsOnly, which replaced the Markdown defaults, keeps them off. docsOnly false gives False, and beside a
-    carryOver, which has no exact reading as queue.unread, its paths still carry over (legacy_carried) until the
-    owner chooses one."""
-    if "unread" in queue: return queue["unread"]
-    docs, carried = queue.get("docsOnly"), queue.get("carryOver") or {}
-    if docs is False: return False
-    if docs is None: return {"paths": dict(carried)} if carried else {}
-    return {"paths": {**docs["paths"], **carried}, "exclude": dict(docs.get("exclude", {})),
-            "lanes": list(docs["lanes"]), "defaults": False}
-
-
-def legacy_carried(config, path):
-    """Whether path carries over only by the older queue.docsOnly false beside a queue.carryOver that names it: every
-    batch gates, yet those paths still leave a passed result standing, as they did before queue.unread. One list
-    cannot say both, so this reading lasts only as long as the older settings do (legacy_unread_warning)."""
-    queue = config.get("queue", {})
-    return "unread" not in queue and queue.get("docsOnly") is False \
-        and any(names_path(path, key) for key in queue.get("carryOver") or {})
+    """queue.unread as the queue reads it: False, or an object of paths, exclude, lanes and defaults."""
+    return queue.get("unread", {})
 
 
 def unread(config, path):
@@ -564,25 +543,52 @@ def affected_lanes(config, changed):
     return [name for name in named if name in selected] or named
 
 
-def legacy_unread_warning(config):
-    """qk doctor's and qk land's warning for a project that still gives queue.docsOnly or queue.carryOver, which a later
-    release refuses, with the queue.unread that reads the same, or the choice to make where none does; else None."""
-    queue = config.get("queue", {})
-    given = [key for key in UNREAD_LEGACY if key in queue]
-    if not given: return None
-    declared = unread_declared(queue)
-    if isinstance(declared, dict) and not declared: return None
+def unread_retired(queue):
+    """Refuse queue.docsOnly and queue.carryOver, the older settings queue.unread replaced (vocaro/queuekeeper#189).
+    docsOnly named the paths a batch could change and skip the gate, and carryOver the paths main could change under a
+    passed result; both said a path no code lane reads, in two lists that could disagree. One release read them as
+    queue.unread, and vocaro/vocaro-engineering#504 moved every project, so a checkout that still gives one is older
+    than its project's main. The refusal says the queue.unread that reads the same, or the choice where none does."""
+    given = [key for key in ("docsOnly", "carryOver") if key in queue]
+    if not given: return
     said = " and ".join(f"queue.{key}" for key in given)
-    went = f"{said} {'go' if len(given) > 1 else 'goes'} in a later release"
-    if declared is False and queue.get("carryOver"):
-        paths = json.dumps(queue["carryOver"], sort_keys=True)
-        return (f"{went}, and queue.unread, which replaces them, cannot say both that every batch gates and that "
-                f"{', '.join(sorted(queue['carryOver']))} carr{'ies' if len(queue['carryOver']) == 1 else 'y'} over: "
-                f"give \"queue\": {{\"unread\": false}} to carry nothing over, or {{\"unread\": {{\"paths\": {paths}, "
-                "\"defaults\": false}} to let those paths also skip the gate")
-    return (f"{went}: give \"queue\": {{\"unread\": {json.dumps(declared, sort_keys=True)}}} in place of {said}, "
-            "which the queue already reads it as. Markdown outside doc/ and docs/ no longer "
-            "carries over unless paths names it")
+    went = f"queuekeeper.json gives {said}, which queue.unread replaced (vocaro/queuekeeper#189)"
+    docs, carried = queue.get("docsOnly"), queue.get("carryOver") or {}
+    if not isinstance(carried, dict) or not (docs is None or docs is False or isinstance(docs, dict)
+                                             and isinstance(docs.get("paths"), dict)):
+        raise ValueError(f"{went}: move each path into queue.unread.paths, with why no code lane reads it")
+    if docs is False and carried:
+        raise ValueError(f"{went}, which cannot say both that every batch gates and that "
+                         f"{', '.join(sorted(carried))} carr{'ies' if len(carried) == 1 else 'y'} over: give "
+                         f"\"queue\": {{\"unread\": false}} to carry nothing over, or {{\"unread\": {{\"paths\": "
+                         f"{json.dumps(carried, sort_keys=True)}, \"defaults\": false}}}} to let those paths also "
+                         "skip the gate")
+    if docs is False: declared = False
+    elif docs is None: declared = {"paths": dict(carried)}
+    else: declared = {"paths": {**docs["paths"], **carried}, "defaults": False,
+                      **({"exclude": docs["exclude"]} if docs.get("exclude") else {}),
+                      **({"lanes": docs["lanes"]} if docs.get("lanes") not in (None, [DOCS]) else {})}
+    raise ValueError(f"{went}: give \"queue\": {{\"unread\": {json.dumps(declared, sort_keys=True)}}} in its place, "
+                     "which reads the same but that Markdown outside doc/ and docs/ carries over only if paths names it")
+
+
+def unrun_carry_checks(config):
+    """qk doctor's warning for each of queue.carryOverChecks that can never run: every path it is limited to is one
+    queue.unread.paths names lanes for, which never carries over (merge_queue.carried_over), so main moving it gates
+    again rather than running the check. A batch of such paths runs those lanes instead (vocaro/queuekeeper#27, #189)."""
+    declared = unread_declared(config.get("queue", {}))
+    if not isinstance(declared, dict): return []
+    warnings = []
+    for check in config.get("queue", {}).get("carryOverChecks", []):
+        paths = check.get("paths")
+        if not paths or not all(unread(config, path) and unread_named(config, [path])
+                                and not any(names_path(key, path) for key in declared.get("exclude", {}))
+                                for path in paths): continue
+        warnings.append(f"queue.carryOverChecks runs {shlex.join(check['command'])} only on a move of "
+                        f"{', '.join(paths)}, which never carries over, since queue.unread.paths names the lanes "
+                        "that read it: main gaining it gates again and those lanes run on a batch of it, so the check "
+                        "never runs; drop it, or name its lane there")
+    return warnings
 
 
 def preflight(config):
@@ -661,19 +667,14 @@ def merge_queue(queue, lanes):
     which of the lanes cover the pre-push hook, each with what of the hook it runs, the paths a
     docs-only batch changes, each with why no code lane reads it, with the lanes it runs instead, and how
     many runs in a row may give no verdict before the queue holds.
-    unread, the paths no code lane reads, replaces docsOnly and carryOver, which it cannot stand beside."""
+    unread, the paths no code lane reads, replaced docsOnly and carryOver, which are refused (unread_retired)."""
     if isinstance(queue, dict) and "spelling" in queue: raise ValueError(f"queue.spelling {SPELLING_GONE}")
-    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
-                                                    "unread", "noVerdictRuns", "followLandings", "preflight",
-                                                    "affected"}:
+    if isinstance(queue, dict): unread_retired(queue)
+    if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOverChecks", "hookCoveredBy", "unread",
+                                                    "noVerdictRuns", "followLandings", "preflight", "affected"}:
         raise ValueError("queue supports only lanes, unread, affected, carryOverChecks, hookCoveredBy, noVerdictRuns, "
-                         "followLandings and preflight, and the older docsOnly and carryOver")
+                         "followLandings and preflight")
     if "unread" in queue:
-        given = [key for key in UNREAD_LEGACY if key in queue]
-        if given:
-            raise ValueError(f"queue.unread and queue.{' and queue.'.join(given)} cannot both be given: queue.unread "
-                             f"replaces {' and '.join(given)}, so move {'its' if len(given) == 1 else 'their'} paths "
-                             "into queue.unread.paths")
         if queue["unread"] is not False and not unread_object(queue["unread"], lanes):
             raise ValueError("queue.unread is false to gate every batch and carry nothing over, or an object of "
                              "optional paths, mapping each path, a directory ending in /, to why no code lane "
@@ -693,10 +694,6 @@ def merge_queue(queue, lanes):
     named = queue.get("lanes", [])
     if not isinstance(named, list) or len(set(map(str, named))) != len(named) or any(name not in lanes for name in named):
         raise ValueError("queue.lanes must list distinct configured lanes")
-    carried = queue.get("carryOver", {})
-    if not isinstance(carried, dict) or any(not key.strip() or not isinstance(why, str) or not why.strip()
-                                            for key, why in carried.items()):
-        raise ValueError("queue.carryOver maps each path, a directory ending in /, to why no queue lane reads it")
     if "hookCoveredBy" in queue:
         covering = queue["hookCoveredBy"]
         passed = {*preflight({"lanes": lanes, "queue": queue}), PROVISION, *(named or ["gate"])} & set(lanes)
@@ -704,11 +701,6 @@ def merge_queue(queue, lanes):
                                                                  or not what.strip() for lane, what in covering.items()):
             raise ValueError("queue.hookCoveredBy maps each lane the queue runs that covers the pre-push hook to what "
                              "of the hook it runs")
-    if "docsOnly" in queue and queue["docsOnly"] is not False and not docs_only(queue["docsOnly"], lanes):
-        raise ValueError("queue.docsOnly is false to disable docs-only landings, or holds paths, mapping each path, "
-                         "a directory ending in /, to why no code lane "
-                         "reads it, and lanes, the distinct configured lanes a docs-only batch runs instead, never gate, "
-                         "whose receipt eng release reads; optional exclude maps code-read paths to their reasons")
     checks = queue.get("carryOverChecks", [])
     if not isinstance(checks, list) or any(not carry_over_check(check) for check in checks):
         raise ValueError("queue.carryOverChecks lists objects with a command, an argv list and never shell source, and "
@@ -771,19 +763,6 @@ def unread_object(declared, lanes):
     if "defaults" in declared and type(declared["defaults"]) is not bool: return False
     if declared.get("defaults") is False and not declared.get("paths"): return False
     return runs(declared.get("lanes", [DOCS]))
-
-
-def docs_only(declared, lanes):
-    if not isinstance(declared, dict) or not {"paths", "lanes"} <= set(declared) \
-            or set(declared) - {"paths", "lanes", "exclude"}: return False
-    excluded = declared.get("exclude", {})
-    if not isinstance(excluded, dict) or any(not isinstance(key, str) or not key.strip() or not isinstance(why, str)
-                                            or not why.strip() for key, why in excluded.items()): return False
-    paths, named = declared["paths"], declared["lanes"]
-    return isinstance(paths, dict) and paths and all(isinstance(key, str) and key.strip() and isinstance(why, str)
-                                                      and why.strip() for key, why in paths.items()) \
-        and isinstance(named, list) and named and len(set(map(str, named))) == len(named) \
-        and all((name in lanes or name == DOCS) and name != "gate" for name in named)
 
 
 def carry_over_check(check):

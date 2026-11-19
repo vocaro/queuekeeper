@@ -17,7 +17,7 @@ import traceback
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
-    source_identity, lane_devices, legacy_unread_warning, old_plugins_warning, project_checkout, \
+    source_identity, lane_devices, unrun_carry_checks, old_plugins_warning, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
@@ -1575,8 +1575,8 @@ def perform(argv, report):
                     and config.get("integration", "direct-main") == "direct-main":
                 warnings.append("no lane is named gate, which qk land runs: name the lane holding "
                                 "what a commit must pass before it lands gate")
-            # A project still on queue.docsOnly or queue.carryOver, which queue.unread replaces.
-            if legacy_unread_warning(config): warnings.append(legacy_unread_warning(config))
+            # A queue.carryOverChecks entry limited to paths that never carry over (vocaro/queuekeeper#189).
+            warnings += unrun_carry_checks(config)
             if old_plugins_warning(config): warnings.append(old_plugins_warning(config))
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)

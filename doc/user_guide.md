@@ -523,7 +523,7 @@ Every key is optional:
 List a path only after checking that no lane reads it: a path left out costs a gate run, and a path
 wrongly listed lands untested. A test that reads a document needs that document in `exclude`, or
 a documentation lane that runs the test. The older `queue.docsOnly` and `queue.carryOver` are
-read as `queue.unread` for now, with a warning; `qk doctor` prints the replacement.
+refused, and the error prints the `queue.unread` to give in their place.
 
 When `main` moved only by unread paths, a passed batch is pushed without gating again, after
 `qk docs check` and any `queue.carryOverChecks`, commands run in order on the batch rebased onto the
@@ -539,7 +539,10 @@ new `main`:
 ```
 
 `paths` limits a costly check to moves of those paths, and `{base}` becomes the commit the result
-passed on. A check that fails sends the batch through the gate again, with no blame.
+passed on. A check that fails sends the batch through the gate again, with no blame. A path whose
+`queue.unread.paths` entry names lanes never carries over, so a check limited to such paths never
+runs, and `qk doctor` warns of it: name the check's lane on the path instead, and a batch that
+changes the path runs it.
 
 ### Gate lanes chosen by changed paths
 
@@ -710,8 +713,7 @@ landing alone, and says so. After that commit lands, every later entry is gated 
 settings.
 
 Settings that loosen what the queue checks count only from `main`, even on the first landing:
-`queue.hookCoveredBy`, `queue.unread` (and the older `docsOnly` and `carryOver`),
-and `queue.preflight`. A project that wants one of them lands its
+`queue.hookCoveredBy`, `queue.unread` and `queue.preflight`. A project that wants one of them lands its
 configuration through the full checks once.
 
 A repository created empty has no `main` at all. Its first `qk land` creates it: the worker gates
