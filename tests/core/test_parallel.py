@@ -4,6 +4,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -675,6 +676,24 @@ class UnittestRunnerTests(unittest.TestCase):
                 self.assertEqual(status, 0, output)
                 self.assertEqual(self.ran(root), ["loaded.Loaded.two"])
 
+    def test_a_module_that_failed_to_import_says_so_under_a_selection_and_is_not_run_to_select_nothing(self):
+        # Its shard once ran with the selection, selected none of its tests and said only "no result" (#240).
+        root = self.suite(module("test_broken", "import no_such_module\nclass B(unittest.TestCase):\n    def test_b(self): pass\n"),
+                          module("test_ok", "class O(unittest.TestCase):\n    def test_o(self): pass\n"))
+        status, output = self.run_suite(root, "test_ok")
+        self.assertEqual(status, 1, output)
+        self.assertIn("== test_broken: FAILED (failed to import in discovery) (0 tests", output)
+        self.assertIn("test_broken failed to import in discovery, so it is not run", output)
+        self.assertIn("No module named 'no_such_module'", output)
+        self.assertIn("== test_ok: OK (1 tests", output)
+        self.assertNotIn("no result", output)
+        # The control: without a selection its own process runs it and reports the import error itself.
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        self.assertIn("== test_broken: FAILED", output)
+        self.assertNotIn("failed to import in discovery", output)
+        self.assertIn("No module named 'no_such_module'", output)
+
     def test_a_module_imports_from_and_runs_in_the_directory_eng_runs_in(self):
         root = self.suite(module("test_invoked", """
             from helpers import VALUE
@@ -729,6 +748,107 @@ class UnittestRunnerTests(unittest.TestCase):
 
 # A unittest module that records the file its process holds at each number PROBE_FDS names, by
 # inode or None for none, and whether it inherits an admission: True, False or why it is refused.
+class ExtensionCopyTests(unittest.TestCase):
+    """A linked worktree's extensions load from its main checkout, and so did its package where an extension is in
+    it: discovery then imported the main checkout's copy, a test module that imports what only the worktree has
+    failed to import there though it imports in its own process, and the run failed with "ran 2 of 1" or, under a
+    selection, "no result" (vocaro/queuekeeper#240)."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.main, self.linked = self.root / "main", self.root / "linked"
+        self.git(self.root, "init", "-q", "-b", "main", str(self.main))
+        (self.main / "queuekeeper.json").write_text(json.dumps({"extensions": [{"module": "kit.hooks", "path": "src/python"}]}))
+        package = self.main / "src/python/kit"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("WHERE = 'main'\n")
+        (package / "hooks.py").write_text(textwrap.dedent("""
+            from queuekeeper import extensions
+            import kit
+            def where(argv, project):
+                print("kit from", kit.WHERE)
+                return 0
+            def register(): extensions.COMMANDS["kit-where"] = ("say which checkout kit loaded from", where)
+        """))
+        # The project's own launcher, which names its checkout as the project, run with this Queuekeeper.
+        (self.main / "scripts").mkdir()
+        shutil.copy(ENG, self.main / "scripts/qk")
+        (self.main / "tests").mkdir()
+        (self.main / "tests/test_other.py").write_text("import unittest\nclass O(unittest.TestCase):\n    def test_o(self): pass\n")
+        self.git(self.main, "add", "-A")
+        self.git(self.main, "commit", "-q", "-m", "First")
+        self.git(self.main, "worktree", "add", "-q", "-b", "work", str(self.linked))
+        # The worktree's change: a module its package and its tests have and the main checkout's do not.
+        (self.linked / "src/python/kit/__init__.py").write_text("WHERE = 'linked'\n")
+        (self.linked / "src/python/kit/fresh.py").write_text("VALUE = 'fresh'\n")
+        (self.linked / "tests/test_fresh.py").write_text(textwrap.dedent("""
+            import pathlib, sys, unittest
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src/python"))
+            import kit
+            from kit import fresh
+            class Fresh(unittest.TestCase):
+                def test_value(self): self.assertEqual(fresh.VALUE, "fresh")
+                def test_where(self): self.assertEqual(kit.WHERE, "linked")
+        """))
+
+    def git(self, cwd, *arguments):
+        identity = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "Test",
+                    "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test",
+                    "GIT_COMMITTER_EMAIL": "test@example.com", "PATH": "/usr/bin:/bin"}
+        subprocess.run(["git", "-C", str(cwd), *arguments], check=True, capture_output=True, text=True, env=identity)
+
+    def qk(self, *arguments):
+        finished = subprocess.run([sys.executable, str(self.linked / "scripts/qk"), *arguments], capture_output=True,
+                                  text=True, cwd=self.linked,
+                                  env={**os.environ, "QUEUEKEEPER_ROOT": str(ENG.parents[1])})
+        return finished.returncode, finished.stderr + finished.stdout
+
+    def test_discovery_imports_the_worktrees_own_copy_of_a_package_an_extension_loads_from_the_main_checkout(self):
+        status, output = self.qk("unittest", "--unadmitted", "-s", "tests")
+        self.assertEqual(status, 0, output)
+        self.assertIn("queuekeeper unittest: 3 tests (0 skipped) in 2 processes", output)
+        self.assertNotIn("_FailedTest", output)
+        # Under a name selection, as a docs lane runs, the worktree's module is not a shard that selects nothing.
+        status, output = self.qk("unittest", "--unadmitted", "-s", "tests", "test_other")
+        self.assertEqual(status, 0, output)
+        self.assertIn("queuekeeper unittest: 1 tests (0 skipped) in 1 processes", output)
+        self.assertNotIn("test_fresh", output)
+        status, output = self.qk("unittest", "--unadmitted", "-s", "tests", "test_fresh.Fresh.test_value")
+        self.assertEqual(status, 0, output)
+        self.assertIn("== test_fresh: OK (1 tests", output)
+
+    def test_the_extension_still_loads_from_the_main_checkout_and_works(self):
+        status, output = self.qk("kit-where")
+        self.assertEqual(status, 0, output)
+        self.assertIn("kit from main", output)
+
+    def test_discovery_sets_the_extensions_copy_aside_and_puts_it_back_for_its_hooks(self):
+        folder = str(self.main / "src/python")
+        tree = self.linked / "src/python"
+        self.enterContext(patch.object(parallel.extensions, "FOLDERS", [folder]))
+        self.enterContext(patch.object(sys, "path", [folder, *sys.path]))
+        self.enterContext(patch.dict(sys.modules))
+        import kit.hooks
+        loaded = sys.modules["kit"]
+        self.assertEqual(loaded.WHERE, "main")
+        with parallel.tree_imports([self.linked]):
+            self.assertNotIn(folder, sys.path)
+            self.assertNotIn("kit", sys.modules)
+            sys.path.insert(0, str(tree))
+            from kit import fresh
+            import kit as discovered
+            self.assertEqual((discovered.WHERE, fresh.VALUE), ("linked", "fresh"))
+        # The extension's own modules are back, and the worktree's copies are gone, its new module too.
+        self.assertIs(sys.modules["kit"], loaded)
+        self.assertIs(sys.modules["kit.hooks"], kit.hooks)
+        self.assertNotIn("kit.fresh", sys.modules)
+        self.assertEqual(sys.path[0], folder)
+        # The control: a run from the main checkout itself, where the folder is the tree's own, sets nothing aside.
+        with parallel.tree_imports([self.main]):
+            self.assertIn(folder, sys.path)
+            self.assertIs(sys.modules["kit"], loaded)
+
+
 PROBE = textwrap.dedent("""
     import json, os, pathlib, unittest
     from queuekeeper import resources

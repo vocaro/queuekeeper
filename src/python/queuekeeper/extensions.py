@@ -40,6 +40,9 @@ HOST_FIXES = []
 # the process that wrote it. What one raises is dropped, and none may wait: the journal never holds the queue up.
 AFTER_EVENT = []
 LOADED = []
+# The folders load put extensions' packages in on the import path: a linked worktree's are its main checkout's, which
+# `qk unittest` sets aside while it discovers the tree under test's own modules (parallel.tree_imports).
+FOLDERS = []
 
 
 class Foreground:
@@ -302,6 +305,7 @@ def load(named, requiring=()):
         if name in requiring:
             raise ValueError(f"extensions require each other in a cycle: {' -> '.join([*requiring, name])}")
         if folder and folder not in sys.path: sys.path.insert(0, folder)
+        if folder and folder not in FOLDERS: FOLDERS.append(folder)
         module = importlib.import_module(name)
         load(getattr(module, "REQUIRES", ()), (*requiring, name))
         module.register()

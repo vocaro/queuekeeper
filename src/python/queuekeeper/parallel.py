@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import fnmatch
 import glob
+import io
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,7 @@ import threading
 import time
 import unittest
 
-from . import lane_results, processes, resources, run_progress, shims
+from . import extensions, lane_results, processes, resources, run_progress, shims
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
@@ -211,6 +212,41 @@ class OriginLoader(unittest.TestLoader):
         return suite
 
 
+def loaded_from(module, folders):
+    """Whether module was loaded from a file or package folder under one of folders."""
+    places = [getattr(module, "__file__", None), *(getattr(module, "__path__", None) or ())]
+    return any(isinstance(place, str) and (place == folder or place.startswith(folder.rstrip(os.sep) + os.sep))
+               for place in places for folder in folders)
+
+
+@contextlib.contextmanager
+def tree_imports(roots):
+    """While discovery imports the modules of the tree under test, whose folders are roots: no extension folder outside
+    them on the import path, and none of the modules loaded from one, as a shard's own process has neither. A linked
+    worktree's extensions load from its main checkout (cli.load_extensions), so a package that is both the project's
+    and an extension's was otherwise the main checkout's copy, cached, and a test module importing a module or name
+    only the tree under test has failed to import here though it imports in its shard (vocaro/queuekeeper#240). The
+    extensions' own copies come back afterwards, for their hooks, which still run the main checkout's code."""
+    # Never the folder this Queuekeeper runs from, whose modules are running this.
+    roots = [Path(root).resolve() for root in (*roots, Path(__file__).resolve().parents[1])]
+    foreign = [folder for folder in extensions.FOLDERS
+               if not any(Path(folder).resolve().is_relative_to(root) for root in roots)]
+    if not foreign:
+        yield
+        return
+    path = list(sys.path)
+    evicted = {name: module for name, module in list(sys.modules.items()) if loaded_from(module, foreign)}
+    for name in evicted: del sys.modules[name]
+    sys.path[:] = [entry for entry in sys.path if entry not in foreign]
+    try: yield
+    finally:
+        # What discovery added to the path stays, after what was there; the tree's copies of the evicted packages go.
+        sys.path[:] = path + [entry for entry in sys.path if entry not in path]
+        packages = {name.split(".", 1)[0] for name in evicted}
+        for name in [name for name in sys.modules if name.split(".", 1)[0] in packages]: del sys.modules[name]
+        sys.modules.update(evicted)
+
+
 def addressable(test):
     """Whether a fresh process can import the test's module by its name, as `python3 -m unittest`
     does with the test's id. A module that a load_tests loaded from its file is not in sys.modules."""
@@ -322,6 +358,17 @@ def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT, 
                       else f"timed out after {timeout:g}s" if status is None
                       else summary.group(0) if summary else "no result",
             "seconds": time.monotonic() - began}
+
+
+def unimported_result(name, placeholders):
+    """The result of a shard that stands for a module that failed to import in discovery, in a run that selects tests,
+    without running it: its import error, as unittest reports one."""
+    stream = io.StringIO()
+    unittest.TextTestRunner(stream).run(unittest.TestSuite(placeholders))
+    output = (f"{name} failed to import in discovery, so it is not run: under a selection its own process would "
+              f"select none of its tests\n{stream.getvalue()}")
+    return {"name": name, "tests": [name], "status": 1, "output": output, "ran": 0,
+            "result": "FAILED (failed to import in discovery)", "seconds": 0.0}
 
 
 def stop_requested():
@@ -448,7 +495,20 @@ def discover_and_run(args, progress):
         for line in refused: print(line, file=sys.stderr)
         return 1
     # Discovery imports every module here, as unittest's own would, and each shard imports its own
-    # again: from the top-level directory, then the directory queuekeeper runs in (#74).
+    # again: from the top-level directory, then the directory queuekeeper runs in (#74). It sees the tree under
+    # test's own copy of a package an extension loaded from elsewhere, as each shard does (tree_imports).
+    with tree_imports((os.getcwd(), top, start)):
+        discovered = discover(args, start, top)
+    if isinstance(discovered, int): return discovered
+    # A stop signal, such as the SIGTERM supervise sends a lane's command at its timeout, stops the processes; the run
+    # still ends with its summary and what it did not reach, and then by that signal (vocaro/queuekeeper#37).
+    with processes.forwarding_signals():
+        return run_shards(args, top, *discovered, progress)
+
+
+def discover(args, start, top):
+    """(tests, {shard: tests}, {shard: test ids}, the same for a run that selects tests or None) for what args
+    selects under start, or the status of a run that finds nothing to run."""
     for directory in (os.getcwd(), str(top)):
         if directory not in sys.path: sys.path.insert(0, directory)
     loader, patterns = OriginLoader(), args.pattern or ["test*.py"]
@@ -482,10 +542,7 @@ def discover_and_run(args, progress):
     if not found:
         print(f"queuekeeper unittest: no tests found in {start} matching {' or '.join(patterns)}", file=sys.stderr)
         return NO_TESTS
-    # A stop signal, such as the SIGTERM supervise sends a lane's command at its timeout, stops the processes; the run
-    # still ends with its summary and what it did not reach, and then by that signal (vocaro/queuekeeper#37).
-    with processes.forwarding_signals():
-        return run_shards(args, top, tests, found, members, chosen, progress)
+    return tests, found, members, chosen
 
 
 # Seconds a stopped run waits for its running processes to end before its summary, each stopped at its next look
@@ -499,6 +556,10 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
     members for a run that selects tests, else None. progress, a run_progress.Tracker, records each process as it
     starts and ends, in whatever order they end."""
     expected = {name: len(tests) for name, tests in found.items()}
+    # The shards that stand for a module that failed to import in discovery, which unittest gave a placeholder.
+    placeholders = {test.id(): test for test in tests if type(test).__module__ == "unittest.loader"}
+    unimported = {name: [placeholders[identity] for identity in members[name]] for name in found
+                  if members.get(name) and all(identity in placeholders for identity in members[name])}
     # Counted for the reader of an admitted run's output, whose progress folder on another Mac it cannot read.
     print(f"{run_progress.PREFIX}{len(tests)} tests in {len(found)} processes, {args.jobs} at a time",
           flush=True)
@@ -510,7 +571,9 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
             with contextlib.suppress(OSError): progress.started(name)
         result = None
         try:
-            result = run_shard(name, *arguments)
+            # Under a selection, its process would select none of the module's tests and say only that none ran.
+            result = unimported_result(name, unimported[name]) if chosen is not None and name in unimported \
+                else run_shard(name, *arguments)
             return result
         finally:
             if progress is not None:
@@ -571,7 +634,9 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
         elif result["status"] != 0: fail(result, f"{result['result']}, status {result['status']}")
         elif result["ran"] != expected[result["name"]]:
             # A shard that ran other than the tests discovery found for it did not run what it was given.
-            fail(result, f"ran {result['ran']} of {expected[result['name']]} tests")
+            fail(result, f"ran {result['ran']} of {expected[result['name']]} tests"
+                 + (": its module failed to import in discovery but not in its own process"
+                    if result["name"] in unimported else ""))
     finished = {result["name"] for result in results if result["status"] is not None}
     unfinished = [name for name in found if name not in finished]
     # One item for what the stop left, not each process: a stop at a gate's timeout leaves hundreds, which
