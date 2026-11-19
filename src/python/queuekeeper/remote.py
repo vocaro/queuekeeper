@@ -3251,6 +3251,10 @@ class Offer:
         # The offers again() made in a row that could not reach any Mac, and when the last of them failed
         # (an epoch time): away is set only once there are UNREACHABLE_AFTER (vocaro/queuekeeper#25).
         self.failed, self.failed_at = 0, None
+        # Each Mac that the offers in a row could not reach, by SSH destination, with how many and when the last did
+        # (an epoch time), while the work was offered to the farm's other Macs too: a Mac missed once is asked again
+        # soon (soon), as one slow probe takes no Mac out of rotation, whichever Mac the work waits for meanwhile.
+        self.missed = {}
         # Whether each offer may send the work to this Mac's queue instead, by this Mac's capacity (attempt): an offer
         # this Mac may take does, and --offload-only's, which never runs the work here, does not. Set by make.
         self.choosing = False
@@ -3320,7 +3324,17 @@ class Offer:
             for order, host in enumerate(self.hosts):
                 try:
                     # A Mac that cannot be reached costs seconds here, and nothing is sent to it.
-                    reachable(host)
+                    try:
+                        reachable(host)
+                    except Unreachable:
+                        count, _last = self.missed.get(host, (0, None))
+                        self.missed[host] = (count + 1, time.time())
+                        raise
+                    except Exception:
+                        # Whatever else it said, it answered.
+                        self.missed.pop(host, None)
+                        raise
+                    self.missed.pop(host, None)
                     # Reached again, it is no longer said to be unreachable, with its failed probes, while the offer
                     # goes on.
                     if not reached and self.away is not None and self.busy is not None:
@@ -3430,6 +3444,17 @@ class Offer:
         except Unavailable as reason:
             if self.lost_access(reason): return self.status
             said = reason.problem if isinstance(reason, Unreachable) else str(reason)
+            if fallback and isinstance(reason, Unreachable):
+                # The first offer that could not reach another Mac is no verdict on it: the work waits in this Mac's
+                # queue, which may admit it at once, and the Macs are asked again within reprobe()'s seconds, as after
+                # any other offer that could not reach them (again). Until then one slow `ssh HOST true` at the first
+                # offer kept another Mac out of rotation for the whole wait (vocaro/queuekeeper#25).
+                self.failed, self.failed_at = 1, time.time()
+                print(f"queuekeeper: running {self.name} on this Mac: {said}; {self.remote_macs} is asked again within "
+                      f"{self.reprobe()}s while it waits here, as one offer that could not reach it does not make it "
+                      "unreachable", file=sys.stderr, flush=True)
+                self.busy = self.status = said
+                return self.status
             print(f"queuekeeper: {f'running {self.name} on this Mac' if fallback else f'{self.name} not run'}: {said}",
                   file=sys.stderr, flush=True)
             self.status = said if fallback else BUSY
@@ -3498,9 +3523,22 @@ class Offer:
         REPROBE_WAIT after the first, doubling to REPROBE_WAIT_MAX."""
         return min(REPROBE_WAIT * 2 ** max(self.failed - 1, 0), REPROBE_WAIT_MAX)
 
+    def soon(self):
+        """Seconds at most until the Macs are asked again after a probe that could not reach one, or None when none
+        calls for it: reprobe()'s after offers that reached no Mac, and REPROBE_WAIT after one that missed a Mac of
+        several only the first time in a row it did. A Mac missed again counts as away, and is asked again only
+        when the others are offered the work again, since each offer to them costs them a checkout claim."""
+        if self.failed: return self.reprobe()
+        if any(count < UNREACHABLE_AFTER for count, _last in self.missed.values()): return REPROBE_WAIT
+        return None
+
     def probes(self):
-        """The failed offers in a row and when the last failed, for the wait record (lane_wait.waiting)."""
-        return {"failed": self.failed, "last": self.failed_at} if self.failed else None
+        """The failed offers in a row and when the last failed, for the wait record (lane_wait.waiting): those that
+        reached no Mac, or else those of the Mac of several missed most often, named (mac)."""
+        if self.failed: return {"failed": self.failed, "last": self.failed_at}
+        if not self.missed: return None
+        host, (count, last) = max(self.missed.items(), key=lambda item: item[1])
+        return {"failed": count, "last": last, "mac": self.called(host)}
 
 
 # Seconds this Mac's admission waits between offers to another Mac while the Macs are busy: at
@@ -3726,8 +3764,9 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
         while True:
             # Once another Mac can no longer take it, this Mac's queue alone, for the rest of the time.
             bound = window if offered.busy is not None else deadline - time.monotonic()
-            # An offer that could not reach another Mac is followed soon by another (Offer.reprobe).
-            if offered.busy is not None and offered.failed: bound = min(bound, offered.reprobe())
+            # An offer that could not reach another Mac is followed soon by another (Offer.soon).
+            soon = offered.soon() if offered.busy is not None else None
+            if soon is not None: bound = min(bound, soon)
             if places is not None:
                 if offered.busy is not None and offered.away is None:
                     # The Macs are read again soon: one whose slots drained toward the work is offered it then.
@@ -3738,7 +3777,7 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
                     places.leave()
             if offered.away is not None:
                 lane_wait.waiting(lane_wait.UNREACHABLE, offered.away, probes=offered.probes())
-            elif offered.busy is not None: lane_wait.waiting(lane_wait.OVERFLOW, offered.busy)
+            elif offered.busy is not None: lane_wait.waiting(lane_wait.OVERFLOW, offered.busy, probes=offered.probes())
             admission = admit(max(min(bound, deadline - time.monotonic()), 0))
             if admission is not None:
                 # Admitted here, it gives up the others before its command starts.

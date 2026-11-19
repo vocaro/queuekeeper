@@ -332,6 +332,96 @@ class Waits(Named):
                          f"last 40 s ago), and is asked again within a minute: {slow.problem}")
         self.assertIn("the last 100 s ago", lane_wait.words(record, at=1100.0))
 
+    @staticmethod
+    def choosing(free):
+        """Offer.room that gives a reading room by its "free" key alone, so that the fakes below need no capacity."""
+        return patch.object(remote.Offer, "room", lambda offered, reading, mac: None if reading.get("free") else "full")
+
+    def test_a_first_offer_that_cannot_reach_the_farm_mac_asks_it_again_soon(self):
+        """vocaro/queuekeeper#25: one `ssh fake true` that did not finish at the first offer kept another Mac out of
+        rotation for the lane's whole wait in this Mac's queue. It is asked again within REPROBE_WAIT: back, it takes
+        the work; still down, it counts as unreachable at the second miss, asked again at a bounded backoff."""
+        slow = remote.Unreachable("fake cannot be reached: `ssh fake true` did not finish in 30s", "see")
+        for outcomes, expected in (([slow, None], 0), ([slow] * 4, "admitted here")):
+            lane_wait.running()
+            offered, waits, said = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0, hosts=("fake",)), [], []
+            def admit(seconds):
+                waits.append(seconds)
+                said.append(self.said())
+                return "admitted here" if len(waits) == 4 else None
+            with self.subTest(failures=outcomes.count(slow)), self.choosing(True), \
+                    patch.object(remote, "reachable", side_effect=outcomes) as reachable, \
+                    patch.object(remote, "capacity_there", return_value={"free": True}), \
+                    patch.object(remote.offload_host, "capacity", return_value={"free": False}), \
+                    patch("sys.stderr", new_callable=StringIO) as error:
+                # The first miss runs the lane here, as before, but is no verdict on the Mac it missed.
+                self.assertEqual(offered.make(), slow.problem)
+                self.assertEqual((offered.busy, offered.away, offered.failed), (slow.problem, None, 1))
+                self.assertIn(f"queuekeeper: running gate on this Mac: {slow.problem}; fake is asked again within "
+                              f"{remote.REPROBE_WAIT}s while it waits here", error.getvalue())
+                self.assertEqual(remote.overflow(offered, admit, timeout=3600), expected)
+            # One probe per wait, never a tight loop: each wait at least FREE_WAIT, none past the re-probe's bound.
+            self.assertEqual(reachable.call_count, len(outcomes))
+            self.assertTrue(all(resources.FREE_WAIT <= wait <= remote.REPROBE_WAIT_MAX for wait in waits), waits)
+            self.assertEqual(waits, sorted(waits))
+            # The verdict's count and age: after one miss the Mac is still in rotation; after more, unreachable.
+            self.assertRegex(said[0], r"^whichever Mac admits it first, the farm's other Macs asked again \(1 probe "
+                                      r"failed, the last \d+ s ago\): fake cannot be reached")
+            if expected == 0:
+                self.assertEqual(waits, [resources.FREE_WAIT])
+                self.assertEqual((offered.busy, offered.away, offered.failed, offered.missed), (None, None, 0, {}))
+            else:
+                self.assertRegex(said[-1], r"^another Mac cannot be reached \(4 probes failed, the last \d+ s ago\)")
+                self.assertEqual(offered.reprobe(), remote.REPROBE_WAIT_MAX)
+        # The negative control: work that never runs here (--offload-only) is not run, and nothing asks again.
+        offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0, hosts=("fake",))
+        with patch.object(remote, "reachable", side_effect=slow), patch("sys.stderr", new_callable=StringIO):
+            self.assertEqual(offered.make(fallback=False), remote.BUSY)
+        self.assertIsNone(offered.busy)
+
+    def test_a_farm_mac_of_several_missed_once_while_another_is_busy_is_asked_again_soon_and_once(self):
+        """A Mac of several that one probe misses while the others decline the work as busy is asked again within
+        REPROBE_WAIT, said with its name, its count and the probe's age; missed again, it waits for the next offer to
+        the others, which costs them a checkout claim, rather than having them offered the work every half minute."""
+        slow = remote.Unreachable("mini cannot be reached: `ssh mini true` did not finish in 30s", "see")
+        for back in (True, False):
+            lane_wait.running()
+            reach = {"mini": iter([None, slow, None if back else slow]), "studio": iter([None] * 3)}
+            readings = {"mini": iter([{"free": False}, {"free": True}]), "studio": iter([{"free": False}] * 3)}
+            sends = []
+            def send(host, sent):
+                sends.append(host)
+                if host == "studio" or sends.count("mini") == 1: raise remote.Busy("every checkout is in use")
+                return 0
+            def reachable(host):
+                found = next(reach[host])
+                if found is not None: raise found
+            offered, waits, said = remote.Offer("gate", "`qk run --here gate`", send, hosts=("mini", "studio")), [], []
+            def admit(seconds):
+                waits.append(seconds)
+                said.append(self.said())
+                return "admitted here" if len(waits) == 3 else None
+            with self.subTest(back=back), self.choosing(True), patch.object(remote, "reachable", reachable), \
+                    patch.object(remote, "capacity_there", lambda host, **options: next(readings[host])), \
+                    patch.object(remote.offload_host, "capacity", return_value={"free": False}), \
+                    patch.object(remote, "OVERFLOW_WAIT", remote.OVERFLOW_WAIT_MAX), \
+                    patch("sys.stderr", new_callable=StringIO):
+                offered.make()
+                self.assertIsNotNone(offered.busy)
+                self.assertEqual(remote.overflow(offered, admit, timeout=3600), 0 if back else "admitted here")
+            # Waits already backed off to two minutes: the miss brings the next offer within REPROBE_WAIT.
+            self.assertEqual(waits[:2], [resources.FREE_WAIT, remote.REPROBE_WAIT])
+            self.assertRegex(said[1], r"^whichever Mac admits it first, the farm's other Macs asked again \(mini: 1 "
+                                      r"probe failed, the last \d+ s ago\): studio is busy: every checkout is in use$")
+            self.assertIsNone(offered.away)
+            if back:
+                self.assertEqual((sends, offered.missed), (["mini", "studio", "mini"], {}))
+            else:
+                # Missed twice in a row: no early offer to the busy Mac, and the status says how many.
+                self.assertEqual(waits[2], remote.OVERFLOW_WAIT_MAX)
+                self.assertIsNone(offered.soon())
+                self.assertRegex(said[2], r"\(mini: 2 probes failed, the last \d+ s ago\)")
+
     def test_a_farm_mac_that_can_no_longer_take_it_leaves_this_mac_alone(self):
         offered = self.offer()
         with patch.object(remote, "reachable", side_effect=[remote.Unavailable("names a device")]), \

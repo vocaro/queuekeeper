@@ -1460,8 +1460,8 @@ builds start cold.
 Before sending anything, `qk run` checks that the Mac can be reached: its name resolves, its ssh
 port answers within 3 seconds, and `ssh HOST true` finishes within 30.
 
-- **Unreachable** is not a configuration problem. The lane runs here at once, and a line says
-  why. An offer that misses once is retried within 30 seconds; only a second miss in a row counts
+- **Unreachable** is not a configuration problem. The lane goes to this Mac's queue at once, and a
+  line says why. An offer that misses once, the first included, is retried within 30 seconds; only a second miss in a row counts
   the Mac unreachable.
 - **Misconfigured** stops the lane for the owner, with exit 78 and the fix: a refused login or
   changed host key, a failing login shell, a different Xcode build, every checkout left changed, a

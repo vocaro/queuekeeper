@@ -473,8 +473,11 @@ accepted costs of placing by headroom.
    After 5,400 s unadmitted the lane exits 75.
 
 A request keeps its arrival across retries and its place in this Mac's queue across waits. A Mac
-missing one offer is asked again within 30 s; only a second miss in a row counts it unreachable,
-since one slow `ssh true` once kept a reachable Mac out of rotation for six minutes. Exclusive
+missing one offer, the first included, is asked again within 30 s while the lane waits in this
+Mac's queue; only a second miss in a row counts it unreachable,
+since one slow `ssh true` once kept a reachable Mac out of rotation for six minutes. One Mac of
+several missed while the others were busy is asked again within 30 s once, and after that with the
+others; `qk queue status` names it. Exclusive
 work parks for up to `EXCLUSIVE_PARK_SECONDS` (900), offered with `--if-free` on the same
 backoff, before it queues on a Mac at its first arrival.
 

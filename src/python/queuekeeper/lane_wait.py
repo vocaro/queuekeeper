@@ -41,7 +41,7 @@ WORDS = {ADMISSION: "admission on {mac}: {reason}",
          FOREGROUND: "another Mac's foreground, {reason}",
          UNREACHABLE: "another Mac cannot be reached{probes}, and is asked again within a minute: {reason}",
          ALONE: "this Mac alone, as another Mac cannot take it: {reason}",
-         OVERFLOW: "whichever Mac admits it first, the farm's other Macs asked again: {reason}"}
+         OVERFLOW: "whichever Mac admits it first, the farm's other Macs asked again{probes}: {reason}"}
 # What identifies a state of the record, apart from when it was written.
 STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted", "probes")
 
@@ -275,9 +275,11 @@ def words(record, at=None):
 
 
 def probed(probes, at=None):
-    """The verdict's count and age, as " (2 probes failed, the last 40 s ago)", or nothing when probes says neither."""
+    """The verdict's count and age, as " (2 probes failed, the last 40 s ago)", or nothing when probes says neither;
+    with the Mac's name first when probes names one of several (mac), as " (NAME: 1 probe failed, the last 9 s ago)"."""
     if not isinstance(probes, dict): return ""
-    failed, last = probes.get("failed"), probes.get("last")
+    failed, last, mac = probes.get("failed"), probes.get("last"), probes.get("mac")
     if not isinstance(failed, int) or not isinstance(last, (int, float)): return ""
     age = max(int((time.time() if at is None else at) - last), 0)
-    return f" ({failed} probe{'' if failed == 1 else 's'} failed, the last {age} s ago)"
+    named = f"{mac}: " if isinstance(mac, str) and mac else ""
+    return f" ({named}{failed} probe{'' if failed == 1 else 's'} failed, the last {age} s ago)"
