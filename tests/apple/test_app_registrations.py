@@ -1,6 +1,7 @@
 """What a run built leaves LaunchServices and pluginkit when the run ends (#87), over stub lsregister and
 pluginkit scripts that log their arguments, and a stub xcodebuild, so no test registers anything on this Mac."""
 from contextlib import redirect_stderr
+import ctypes
 from io import StringIO
 import json
 import os
@@ -25,6 +26,47 @@ SOURCE = Path(__file__).resolve().parents[2] / "src/python"
 
 def executable(path, text):
     return host_isolation.executable(path, text)
+
+
+class BSDInfo(ctypes.Structure):
+    """libproc's struct proc_bsdinfo, which proc_pidinfo's PROC_PIDTBSDINFO fills."""
+    _fields_ = [*((name, ctypes.c_uint32) for name in ("flags", "status", "xstatus", "pid", "ppid", "uid", "gid", "ruid",
+                                                        "rgid", "svuid", "svgid", "rfu")),
+                ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
+                *((name, ctypes.c_uint32) for name in ("nfiles", "pgid", "pjobc", "tdev", "tpgid")),
+                ("nice", ctypes.c_int32), ("start", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
+
+
+def kernel_listing(root):
+    """root and its descendants as registrations.PROCESSES lists them, read from the kernel with no process started:
+    libproc for each one's children, parent, user and start, and sysctl KERN_PROCARGS2 for its arguments. A process
+    that ends or becomes a zombie meanwhile is left out, as ps lists no arguments for one."""
+    libproc, libc = ctypes.CDLL("/usr/lib/libproc.dylib"), ctypes.CDLL(None)
+    lines, pending, seen = [], [root], set()
+    while pending:
+        pid = pending.pop()
+        if pid in seen: continue
+        seen.add(pid)
+        children = (ctypes.c_int * 4096)()
+        count = libproc.proc_listchildpids(pid, children, ctypes.sizeof(children))
+        pending += [child for child in children[:max(count, 0)] if child > 0]
+        info = BSDInfo()
+        if libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info): continue
+        mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
+        found = ctypes.create_string_buffer(1 << 18)
+        size = ctypes.c_size_t(len(found))
+        if libc.sysctl(mib, 3, found, ctypes.byref(size), None, 0) != 0: continue
+        # The argument count, the executable's path, padding, then the arguments, each ending in a NUL.
+        raw = found.raw[:size.value]
+        argc, rest = int.from_bytes(raw[:4], sys.byteorder), raw[4:]
+        words = rest[rest.find(b"\0"):].lstrip(b"\0").split(b"\0")[:argc]
+        started = time.strftime("%a %b %e %H:%M:%S %Y", time.localtime(info.start))
+        # A control character in octal, as ps writes a newline, so that each process stays on its line: the stub
+        # xcodebuild's script has several.
+        args = re.sub(r"[\x00-\x1f\x7f]", lambda character: f"\\{ord(character[0]):03o}",
+                      " ".join(word.decode(errors="replace") for word in words))
+        lines.append(f"{pid} {info.ppid} {info.uid} {started} {args}")
+    return "".join(f"{line}\n" for line in lines)
 
 
 class RegistrationTests(unittest.TestCase):
@@ -78,18 +120,16 @@ exec /bin/ps "$@"
                         patch.object(registrations, "PLUGINKIT", str(self.pluginkit))):
             patcher.start()
             self.addCleanup(patcher.stop)
-        # A sweep's or a cleanup's listing of the processes, asked again when it fails. In a gate on 2026-11-11, at
+        # A listing of the processes that ps cannot give is read from the kernel instead. In a gate on 2026-11-11, at
         # load about 50, one returned None, as when ps cannot start or outlasts its bound, so the run took the
-        # could-not-list path instead of the one under test (vocaro/queuekeeper#86, #87). That path has a test of
-        # its own, which patches the listing to fail every time. A sample's 10 s listing is left alone: one asked
-        # again could outlast the 15 s a run's end waits for its sampling thread.
+        # could-not-list path instead of the one under test (vocaro/queuekeeper#86, #87); asking ps again did not
+        # always help, since any ps, even one that reads no command line, has stalled for a minute on this Mac
+        # (vocaro/queuekeeper#76). The kernel starts no process and answers at once, so a sample's listing falls
+        # back in time too. The could-not-list path has a test of its own, which patches the listing to fail.
         real = registrations.offload_host.listing
         def listing(command, timeout=60, **options):
-            if command != registrations.PROCESSES or timeout != registrations.LISTING_SECONDS:
-                return real(command, timeout, **options)
-            for _attempt in range(3):
-                found = real(command, stretched(timeout), **options)
-                if found is not None: break
+            found = real(command, timeout, **options)
+            if found is None and command == registrations.PROCESSES: found = kernel_listing(os.getpid())
             return found
         patcher = patch.object(registrations.offload_host, "listing", listing)
         patcher.start()
@@ -266,6 +306,15 @@ exec /bin/ps "$@"
         self.addCleanup(process.kill)
         self.wait_for(lambda: registrations.process_start(process.pid))
         return process.pid, registrations.process_start(process.pid)
+
+    def test_the_kernels_listing_reads_a_process_as_ps_does(self):
+        pid, start = self.live_process("-derivedDataPath", str(self.derived), "one\nline")
+        table = registrations.offload_host.process_table(kernel_listing(os.getpid()))
+        self.assertEqual(table[os.getpid()]["start"], " ".join(registrations.process_start(os.getpid()).split()))
+        self.assertEqual({key: table[pid][key] for key in ("parent", "uid", "start")},
+                         {"parent": os.getpid(), "uid": os.getuid(), "start": " ".join(start.split())})
+        self.assertTrue(table[pid]["args"].endswith(f"time.sleep({stretched(60)}) -derivedDataPath {self.derived} "
+                                                    r"one\012line"), table[pid]["args"])
 
     def test_a_folder_another_live_run_shares_keeps_its_registrations_until_that_run_has_gone(self):
         pid, start = self.live_process()
