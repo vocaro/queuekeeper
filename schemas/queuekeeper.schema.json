@@ -582,6 +582,41 @@
             }
           }
         },
+        "affected": {
+          "description": "Path rules that select gate lanes, the lanes of queue.lanes or else gate: a batch runs the gate lanes its changed paths select, the lanes of every rule whose globs match one. A path queue.unread takes selects none; a path no rule covers selects every gate lane. When main moved only by paths, untouched by a passed batch, that select none of the lanes it ran, its result carries over after its preflight lanes pass again. Read from main",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "paths",
+              "lanes"
+            ],
+            "properties": {
+              "paths": {
+                "description": "Globs of repository-relative paths: * and ? within one directory, ** across any number",
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "lanes": {
+                "description": "The gate lanes that read the paths these globs match",
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
         "noVerdictRuns": {
           "description": "How many runs in a row of a batch's gate may give no verdict (exit 3, 75 or 78) before the queue holds; 3 where it is unset. Read from main, never from a branch",
           "type": "integer",

@@ -37,7 +37,7 @@ described only in general terms because they change often.
 | **Finding the bad change in a batch** | Bisects, both halves at once; skips the bisect when the failure points at one entry | Removes the failing pull request and rebuilds | Bisects | Removes the failing merge request and restarts | Bisects | Bisects | Isolates or bisects |
 | **Flaky tests** | Reruns the failed tests alone; lands a proven flake and records it (Python test lanes only) | Not documented | Later batches can vouch for earlier ones; quarantine in a separate product | Not documented | Optimistic merging; retries failures that match flaky patterns | Classifies a failure and reruns the job once (beta) | Not documented |
 | **Priorities** | Jump to the front | Jump to the front | Priority rules | Not documented | Numbered levels | Yes | Fast-track |
-| **Splitting by affected paths** | Documentation only | No | Scopes, with Bazel and Nx | No | Parallel queues, with Bazel and Nx | Affected targets, with Bazel and Nx | Not documented |
+| **Splitting by affected paths** | Path globs choose gate lanes; an unmatched path runs them all | No | Scopes, with Bazel and Nx | No | Parallel queues, with Bazel and Nx | Affected targets, with Bazel and Nx | Not documented |
 | **Pause** | Holds itself with a reason; no manual pause | Not documented | Pause and scheduled freeze | Not documented | Pause, drain, resume | Pause per repository or branch | Pause |
 | **Simulators, devices, Xcode** | Apple plugin | Not documented | Not documented | Runner setup guide only | Not in the queue | Not documented | Not documented |
 | **Admission by machine load** | Yes | Left to CI | Left to CI | Left to CI | Left to CI | Left to CI | Left to CI |
@@ -89,7 +89,8 @@ enough, start with one of them.
   machines as you pay for. Queuekeeper runs one gate, one gate stacked on it, and the two halves of
   a bisect, on a handful of Macs.
 - **Large monorepos.** Mergify, Trunk and Aviator split a queue by affected targets and integrate
-  with Bazel and Nx. Queuekeeper only separates documentation from code.
+  with Bazel and Nx. Queuekeeper chooses gate lanes by path globs, with no build graph, and still
+  runs one queue.
 - **Clean, elastic builders.** A hosted runner starts fresh every time and never depends on a desk
   Mac being awake, logged in and unlocked.
 - **Flaky-test history.** Trunk, Mergify and Aviator track flaky tests across runs and can

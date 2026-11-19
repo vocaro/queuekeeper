@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import extensions as hooks, pins
 
@@ -506,6 +506,42 @@ def unread_lanes(config):
     return None if declared is False else list(declared.get("lanes", [DOCS]))
 
 
+def gate_lanes(config):
+    """The lanes main names as its gate, in order: queue.lanes, or gate where it gives none."""
+    named = config.get("queue", {}).get("lanes")
+    return list(named) if named else (["gate"] if "gate" in config.get("lanes", {}) else [])
+
+
+def matches(path, pattern):
+    """Whether pattern, a glob of queue.affected, matches the whole of path: * and ? stay within one directory and **
+    spans any number of them."""
+    return PurePosixPath(path).full_match(pattern)
+
+
+def affected_by(config, path):
+    """The gate lanes main's queue.affected selects for path, a changed path: those of every rule that matches it,
+    none for a path queue.unread takes, which no gate lane reads, and None for a path no rule covers, which selects
+    every gate lane (fail closed). None too where main gives no queue.affected."""
+    rules = config.get("queue", {}).get("affected")
+    if not rules: return None
+    if unread(config, path): return set()
+    found = [rule for rule in rules if any(matches(path, pattern) for pattern in rule["paths"])]
+    return set().union(*(rule["lanes"] for rule in found)) if found else None
+
+
+def affected_lanes(config, changed):
+    """The gate lanes (gate_lanes) a batch changing the paths changed runs, in their order: those its paths select by
+    main's queue.affected (affected_by), every one when a path no rule covers changed, when queue.affected is not
+    given, or when no path selects any, as a batch of unread paths alone, which runs the docs lanes instead."""
+    named = gate_lanes(config)
+    selected = set()
+    for path in changed:
+        lanes = affected_by(config, path)
+        if lanes is None: return named
+        selected |= lanes
+    return [name for name in named if name in selected] or named
+
+
 def legacy_unread_warning(config):
     """qk doctor's and qk land's warning for a project that still gives queue.docsOnly or queue.carryOver, which a later
     release refuses, with the queue.unread that reads the same, or the choice to make where none does; else None."""
@@ -606,8 +642,9 @@ def merge_queue(queue, lanes):
     unread, the paths no code lane reads, replaces docsOnly and carryOver, which it cannot stand beside."""
     if isinstance(queue, dict) and "spelling" in queue: raise ValueError(f"queue.spelling {SPELLING_GONE}")
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
-                                                    "unread", "noVerdictRuns", "followLandings", "preflight"}:
-        raise ValueError("queue supports only lanes, unread, carryOverChecks, hookCoveredBy, noVerdictRuns, "
+                                                    "unread", "noVerdictRuns", "followLandings", "preflight",
+                                                    "affected"}:
+        raise ValueError("queue supports only lanes, unread, affected, carryOverChecks, hookCoveredBy, noVerdictRuns, "
                          "followLandings and preflight, and the older docsOnly and carryOver")
     if "unread" in queue:
         given = [key for key in UNREAD_LEGACY if key in queue]
@@ -624,6 +661,7 @@ def merge_queue(queue, lanes):
                              "why; lanes, the distinct configured lanes a batch of unread paths runs instead, never "
                              "gate; and defaults, false to drop the Markdown defaults")
     if "preflight" in queue: preflight_lanes(queue, lanes)
+    if "affected" in queue: affected_rules(queue, lanes)
     if "followLandings" in queue and queue["followLandings"] is not True:
         raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
                          "checkout after each landing, for a checkout other projects read, such as an extension's")
@@ -673,6 +711,28 @@ def preflight_lanes(queue, lanes):
             raise ValueError(f"queue.preflight names {name}, which is not one command that qk land can run before it "
                              f"queues an entry, unadmitted, in a scratch worktree: "
                              f"{'it has ' + ', '.join(keys) if keys else 'it is a self lane'}")
+
+
+def affected_rules(queue, lanes):
+    """queue.affected, checked: a nonempty list of rules, each of paths, distinct globs, and lanes, distinct gate lanes
+    (gate_lanes) that read the paths those globs match."""
+    rules, named = queue["affected"], gate_lanes({"lanes": lanes, "queue": queue})
+    def distinct(items): return isinstance(items, list) and items and len(set(map(str, items))) == len(items) \
+        and all(isinstance(item, str) and item.strip() for item in items)
+    if not isinstance(rules, list) or not rules or any(not isinstance(rule, dict) or set(rule) != {"paths", "lanes"}
+                                                       or not distinct(rule["paths"]) or not distinct(rule["lanes"])
+                                                       for rule in rules):
+        raise ValueError("queue.affected lists rules, each an object of paths, distinct globs of the paths a few gate "
+                         "lanes read (* within one directory, ** across them), and lanes, those gate lanes: a batch "
+                         "runs the gate lanes its changed paths select, and every one for a path no rule covers")
+    for rule in rules:
+        for name in rule["lanes"]:
+            if name not in named:
+                raise ValueError(f"queue.affected names {name}, which is not one of the gate lanes "
+                                 f"({', '.join(named) or 'none'}), queue.lanes or else gate")
+        for pattern in rule["paths"]:
+            if pattern.startswith("/") or not PurePosixPath(pattern).parts:
+                raise ValueError(f"queue.affected's glob {pattern} is no path relative to the repository")
 
 
 def unread_object(declared, lanes):

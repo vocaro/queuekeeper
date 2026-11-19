@@ -1529,11 +1529,14 @@ def perform(argv, report):
                 elif "remote" in hosts: warnings += host_health.warnings(hosts["remote"]["hostHealth"], hosts["host"])
             test_lanes = lane_coverage.report(root, config)  # a warning at most, and never a failure (#289)
             warnings += lane_coverage.doctor_warnings(test_lanes)
+            affected = lane_coverage.affected_paths(root, config)  # warnings only: an uncovered file gates everything
+            warnings += lane_coverage.affected_warnings(affected)
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "extensions": list(extensions.LOADED),
                 "missingCommands": missing, "errors": errors, "warnings": warnings,
                 "notes": list(dict.fromkeys(note for hosts in compared for note in remote.python_crash_notes(hosts))),
-                "testLanes": test_lanes, "farm": compared}, indent=2))
+                "testLanes": test_lanes, **({"affectedPaths": affected} if affected else {}), "farm": compared},
+                indent=2))
             return int(bool(missing or errors or any(hosts["errors"] for hosts in compared)))
         elif args.action == "pre-push": return pre_push.main(root, config, args.remote)
         elif args.action == "admit": return admit(root, args, config, device_window=device_window)

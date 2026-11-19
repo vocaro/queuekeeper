@@ -101,6 +101,8 @@ Two defaults to know about:
 - **Documentation-only changes** skip the gate and run the documentation lanes instead
   ([Documentation changes](#documentation-changes)). Set `"queue": {"unread": false}` to gate
   every change.
+- **Every gate lane runs for every code change** unless `queue.affected` maps paths to lanes
+  ([Gate lanes chosen by changed paths](#gate-lanes-chosen-by-changed-paths)).
 
 [Lanes and admission](#lanes-and-admission) describes the other lane settings.
 
@@ -483,6 +485,44 @@ new `main`:
 
 `paths` limits a costly check to moves of those paths, and `{base}` becomes the commit the result
 passed on. A check that fails sends the batch through the gate again, with no blame.
+
+### Gate lanes chosen by changed paths
+
+A project whose gate is several lanes, such as a Python suite and an app build, can run only the
+ones a batch needs. `queue.affected`, read only from `main`, lists rules that map globs to gate
+lanes, the lanes of `queue.lanes`:
+
+```json
+"queue": {
+  "lanes": ["unit", "app"],
+  "affected": [
+    {"paths": ["src/python/**", "tests/**"], "lanes": ["unit"]},
+    {"paths": ["apple/**", "*.xcconfig"], "lanes": ["app"]},
+    {"paths": ["schemas/*.json"], "lanes": ["unit", "app"]}
+  ]
+}
+```
+
+- **A glob matches the whole path** from the repository root. `*` and `?` stay within one
+  directory, and `**` spans any number of them.
+- **A changed path selects the lanes of every rule that matches it.** A batch runs its preflight,
+  provision and documentation lanes as usual, then the gate lanes its paths select, in
+  `queue.lanes` order. `qk land` and the round's log say which lanes were selected.
+- **A path no rule covers selects every gate lane**, so a file nobody thought of is gated, not
+  skipped. Paths `queue.unread` takes select no gate lane; they run the documentation lanes.
+- **`queue.hookCoveredBy` skips the pre-push hook only when every lane it names ran.**
+- **`qk doctor` lists tracked files no rule covers**, which gate everything, and globs that match
+  no tracked file, as warnings. Its JSON's `affectedPaths` holds the full lists.
+
+List a lane for a path only after checking that no other gate lane reads that path: a path wrongly
+mapped lands untested by the lanes that read it.
+
+Path rules also extend carry-over. When `main` moved only by paths that the batch does not touch,
+that rules cover, and that select none of the gate lanes the batch's own paths selected, its pass
+still stands: the lanes it ran do not read what `main` gained, and `main` gated those paths with
+their own lanes. The batch is pushed without gating again, after the project's preflight lanes,
+`qk docs check` and any `queue.carryOverChecks` pass on the rebased tree. A project with a
+`provision` lane carries over only unread paths, since provisioning sets up every gate lane.
 
 ### The pre-push hook
 

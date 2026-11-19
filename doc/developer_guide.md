@@ -162,6 +162,11 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   goes ahead of an older entry only when they share no path. One that fails its docs lanes ahead of
   older entries may need one of them, so it records them as `waitsFor` and goes back in line
   behind them.
+- **Gate lanes by path.** `lanes_of` runs only the gate lanes `config.affected_lanes` selects: the
+  union of the rules matching each changed path, every gate lane when one path is covered by no
+  rule nor `queue.unread`, and every one when nothing is selected. The push recomputes this to
+  decide whether `queue.hookCoveredBy`'s lanes ran, and records it as the lanes a carry-over by path
+  must avoid.
 - **Changelog conflicts.** A conflict made only of whole lines both sides added directly below one
   Markdown heading (or list item) of a `CHANGELOG.md` is settled by keeping both, the new lines
   first. The commit is listed under `kept` in the entry's record.
@@ -178,7 +183,7 @@ or a finding `origin/main` gives too.
 
 **A project's first landing** reads the entry's `queuekeeper.json`, and the batch's in a round,
 only while `origin/main` has none that names lanes. The settings that loosen checking
-(`hookCoveredBy`, `unread`, `docsOnly`, `carryOver`, `preflight`) count only
+(`hookCoveredBy`, `unread`, `docsOnly`, `carryOver`, `preflight`, `affected`) count only
 from `main` even then.
 
 ### The Queuekeeper a worker runs
@@ -340,7 +345,10 @@ again. `queue.hookCoveredBy` skips the hook, and a docs-only batch always does.
 **Main moving under a passed batch.** If `main` moved only by unread paths the batch does not touch,
 the worker checks that the batch's patch is unchanged on the new `main`, runs `qk docs check` when a
 document moved and then `queue.carryOverChecks` (supervised, with `LANE_LIMIT`), and pushes. Any
-other move, or a failing check, gates again with no blame.
+other move, or a failing check, gates again with no blame. A moved path that `queue.affected` covers
+and whose lanes are none the batch's own paths selected (`carried_by_rules`) carries over too, after
+`qk preflight` passes on the rebased tree; a batch that ran a `provision` lane, a docs-only batch
+and an ungated landing carry over this way never.
 
 ### State and recovery
 

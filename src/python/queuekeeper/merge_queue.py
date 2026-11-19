@@ -60,7 +60,7 @@ from . import events, pre_push, recovery, restartable
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, legacy_carried, legacy_unread_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
-    siblings_in, stays, toolkit_command, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
+    siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -489,9 +489,9 @@ def preflighted(config):
 def lanes_of(config, changed=()):
     """The lanes a batch must pass, in order: the project's preflight lanes (preflighted), and its provision lane
     when it has one, the cheap checks and setup that a gate assumes, then the docs lanes of a batch whose changed
-    paths hold documents beside code (docs_also), and then `queue.lanes` or its gate lane."""
-    lanes = config.get("lanes", {})
-    named = config.get("queue", {}).get("lanes") or (["gate"] if "gate" in lanes else None)
+    paths hold documents beside code (docs_also), and then `queue.lanes` or its gate lane: those of them that main's
+    queue.affected selects for the paths changed (affected_lanes), every one unless each changed path is covered."""
+    named = affected_lanes(config, changed)
     if not named:
         raise ValueError(f"{config.get('name')} has no gate lane, so the queue has nothing to run: name the lane "
                          "holding what a commit must pass before it lands gate")
@@ -536,7 +536,7 @@ def has_config(root, commit):
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
 # paths that skip the gate, and the preflight lanes, which can be none. A batch whose lanes the queue runs, because main
 # names none yet, gives none of them (#10, vocaro/queuekeeper#69).
-MAIN_ONLY = ("hookCoveredBy", "unread", "docsOnly", "carryOver", "preflight")
+MAIN_ONLY = ("hookCoveredBy", "unread", "docsOnly", "carryOver", "preflight", "affected")
 
 
 def as_batch(config):
@@ -701,6 +701,18 @@ def carried_over(path, config, batch_files):
     unchecked: main gaining it gates again (vocaro/queuekeeper#27)."""
     return path not in batch_files and (unread(config, path) and not unread_named(config, [path])
                                         or legacy_carried(config, path))
+
+
+def carried_by_rules(path, config, batch_files, ran):
+    """Whether main changing path leaves standing the pass of a batch whose own paths select the gate lanes ran
+    (lanes_of): path, which queue.unread does not take (carried_over decides those) and the batch does not touch, is
+    covered by main's queue.affected, and selects none of ran. Only those lanes read path, and the batch changed nothing
+    they read, so main's own gate of path still holds with the batch on top, and the batch's of its lanes with path
+    beneath. A provision lane, which sets up every gate, counts as reading every path. ran None, as for a docs-only or
+    ungated landing, carries nothing over this way."""
+    if ran is None or path in batch_files or PROVISION in ran or unread(config, path): return False
+    selected = affected_by(config, path)
+    return selected is not None and not selected & set(ran)
 
 
 def carry_checks(config, moved, base, docs_check=IMPLICIT_DOCS):
@@ -1990,8 +2002,11 @@ def rides(config, changed):
     elif not changed: why = "its commits change no file"
     else: why = f"{next(path for path in changed if not docs_lanes(config, [path]))} is not documentation"
     also = [lane for lane in lanes_of(config, changed) if lane not in lanes_of(config)]
-    return f"rides the code gate: {why}" + (f"; {spoken(also)} run{'s' if len(also) == 1 else ''} too, ahead of "
-                                            "it, for its documents" if also else "")
+    selected, named = affected_lanes(config, changed), gate_lanes(config)
+    narrowed = (f"; of the gate lanes, only {spoken(selected)}, which main's queue.affected selects for its paths"
+                if selected != named else "")
+    return f"rides the code gate: {why}" + narrowed + (f"; {spoken(also)} run{'s' if len(also) == 1 else ''} too, "
+                                                       "ahead of it, for its documents" if also else "")
 
 
 def spoken(lanes):
@@ -4143,18 +4158,25 @@ class Worker:
                 return False
         return True
 
-    def carry(self, config, batch, base, head):
+    def carry(self, config, batch, base, head, ran=None):
         """(new base, new head) with the batch on origin/main, when main moved past base only by files the
-        lanes do not read and the batch does not touch, else None.
+        lanes do not read and the batch does not touch, else None: unread files (carried_over), or, for a batch whose
+        own paths selected the gate lanes ran, files whose queue.affected lanes are none of those (carried_by_rules).
         The patch must be the one that passed, and the documents and the project's
-        carry-over checks must pass on the rebased tree."""
+        carry-over checks must pass on the rebased tree, and its preflight lanes too after a carry by queue.affected,
+        since every batch runs them."""
         new_base = text(self.checkout, "rev-parse", MAIN)
         batch_files = set(self.changed(base, head))
         moved = [path for path in self.changed(base, new_base) if path]
-        refused = [path for path in moved if not carried_over(path, config, batch_files)]
+        ruled = [path for path in moved if not carried_over(path, config, batch_files)
+                 and carried_by_rules(path, config, batch_files, ran)]
+        refused = [path for path in moved if not carried_over(path, config, batch_files) and path not in ruled]
         if refused:
             self.say(f"main moved by {refused[0]}, which the result does not cover: gating again")
             return None
+        if ruled:
+            self.say(f"main moved by {', '.join(ruled[:5])}, which select by queue.affected none of the lanes the "
+                     f"batch ran ({', '.join(ran)})")
         patch = text(self.checkout, "diff", base, head)
         self.reset(new_base)
         if any(self.pick(entry) for entry in batch):
@@ -4163,7 +4185,9 @@ class Worker:
         if text(self.checkout, "diff", new_base, "HEAD") != patch:
             self.say("the batch's patch changed on main: gating again")
             return None
-        if not self.carry_passes(carry_checks(config, moved, base, self.implicit(DOCS))): return None
+        checks = carry_checks(config, moved, base, self.implicit(DOCS))
+        if ruled and preflighted(config): checks.append(toolkit_command(self.checkout, ["preflight"], self.toolkit_root()))
+        if not self.carry_passes(checks): return None
         self.say(f"carried the result over {len(moved)} file(s) on main: {', '.join(moved[:5])}")
         return new_base, self.head()
 
@@ -4181,15 +4205,25 @@ class Worker:
         main has passed over an earlier ungated landing (covered)."""
         head = self.head()
         gated_on = base
-        named = unread_named(config, [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base,
-                                                             head).splitlines() if path]) if docs else {}
+        changed = [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base,
+                                         head).splitlines() if path]
+        named = unread_named(config, changed) if docs else {}
+        # The lanes the batch's own paths select, by which main moving under it may carry over (carried_by_rules).
+        ran = None if docs or ungated or not config.get("queue", {}).get("affected") else lanes_of(config, changed)
         unsure = False
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
+        # A lane that covers the hook covers it only when it ran: queue.affected may have left it out.
+        skipped = [lane for lane in covered if lane not in lanes_of(config, changed)] \
+            if covered and not docs and not ungated else []
+        if skipped:
+            self.say(f"the pre-push hook runs: main's queue.hookCoveredBy names {', '.join(skipped)}, which the "
+                     "batch's paths did not select by queue.affected")
+            covered = None
         for _ in range(CARRIES):
             reach(self.checkout, *FETCH, say=self.say, check=True)
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
-                carried = self.carry(config, batch, base, head)
+                carried = self.carry(config, batch, base, head, ran)
                 if carried is None: return False
                 base, head = carried
                 if ungated: head = self.mark_ungated(ungated, base)
@@ -4968,6 +5002,11 @@ class Worker:
         if also:
             self.say(f"the batch changes documents beside code: running {', '.join(also)} as well as the gate, for "
                      "what only the docs lanes check")
+        selected = affected_lanes(config, changed) if lanes and not beside else None
+        if selected and selected != gate_lanes(config):
+            left = [lane for lane in gate_lanes(config) if lane not in selected]
+            self.say(f"by main's queue.affected, the batch's paths select {', '.join(selected)} of the gate lanes, "
+                     f"not {', '.join(left)}")
         self.role = "older half" if beside else "batch"
         # The preflight lanes and the docs check run unadmitted first, whatever the batch changes (#169).
         self.checks = quick_lanes(config, code=not docs)

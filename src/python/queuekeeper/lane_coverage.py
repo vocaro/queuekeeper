@@ -347,3 +347,36 @@ def doctor_warnings(result):
                      "each selects in testLanes.selects, an empty list for one that runs no test")
     parts += result["problems"]
     return [f"could not tell whether every test has a lane, which is not a pass: {'; '.join(parts)}"]
+
+
+def affected_paths(root, config, tracked=None):
+    """qk doctor's affectedPaths, for a project whose main gives queue.affected, else None: uncovered, the tracked
+    files that neither queue.unread nor a rule covers, each of which selects every gate lane when a batch changes it
+    (fail closed), and unmatched, each rule's globs that match no tracked file, as a rule for a moved folder would."""
+    from .config import affected_by, matches
+    rules = config.get("queue", {}).get("affected")
+    if not rules: return None
+    problems = []
+    if tracked is None:
+        try: tracked = tracked_files(root)
+        except (OSError, subprocess.SubprocessError) as error:
+            tracked = []
+            problems.append(f"the project's files could not be listed: {error}")
+    return {"uncovered": [path for path in tracked if affected_by(config, path) is None],
+            "unmatched": [pattern for rule in rules for pattern in rule["paths"]
+                          if not any(matches(path, pattern) for path in tracked)],
+            "problems": problems}
+
+
+def affected_warnings(result):
+    """qk doctor's words for affectedPaths (affected_paths): warnings, since an uncovered file gates every lane."""
+    if not result: return []
+    warnings = [f"could not tell which files queue.affected covers: {problem}" for problem in result["problems"]]
+    if result["uncovered"]:
+        warnings.append(f"{len(result['uncovered'])} tracked file(s) are covered by no queue.affected rule nor by "
+                        f"queue.unread, so a batch changing one runs every gate lane: {named(result['uncovered'])}; "
+                        "give each a rule, or leave it to gate everything; qk doctor's affectedPaths lists them all")
+    if result["unmatched"]:
+        warnings.append(f"queue.affected's glob(s) {named(result['unmatched'])} match no tracked file: correct or "
+                        "remove each")
+    return warnings
