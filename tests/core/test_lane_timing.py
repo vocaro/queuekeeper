@@ -118,6 +118,17 @@ class PaceTests(unittest.TestCase):
             self.assertEqual(lane_timing.live(Path(tmp) / "gate.json")["state"], "failed")
             self.assertEqual(pace.summary()["failSeconds"], 150)
 
+    def test_a_first_look_past_the_threshold_says_the_warning_with_the_failure(self):
+        with tempfile.TemporaryDirectory() as tmp, history(tmp):
+            for index in range(10): lane_timing.record("P", "gate", 100, at=index)
+            clock = Clock()
+            pace = lane_timing.Pace("gate", {"timing": {"fail": "+50%"}}, "P", live=None, clock=clock)
+            clock.now = 151
+            said, failed = pace.observe()
+            self.assertEqual([line.split(": ")[1] for line in said.splitlines()], ["warning", "failed"])
+            self.assertEqual(lane_timing.found_in(said)[0], lane_timing.PREFIX + "warning: " + pace.warned)
+            self.assertIn("+50%", failed)
+
     def test_without_a_baseline_or_with_warnings_off_there_is_nothing_to_watch(self):
         with tempfile.TemporaryDirectory() as tmp, history(tmp):
             self.assertFalse(lane_timing.Pace("gate", {}, "P", live=None).active())

@@ -250,7 +250,8 @@ class Pace:
                 **({"warned": self.warned} if self.warned else {}), **({"failed": self.failed} if self.failed else {})}
 
     def observe(self):
-        """(a line to log, or None; why the lane fails now, or None)."""
+        """(the lines to log, or None; why the lane fails now, or None). A first look that finds the lane past both its
+        p90 and its fail threshold, as a busy Mac's late poll can, says the warning and the failure together."""
         if self.base is None: return None, None
         elapsed = self.clock() - self.began
         said = None
@@ -264,7 +265,7 @@ class Pace:
             self.failed = (f"{self.name} ran past {words(self.limit)}, its fail threshold {self.setting} over its p90 "
                            f"of {words(self.base['p90'])} over its last {self.base['samples']} passing runs on this Mac")
             self.publish("failed", self.failed)
-            return PREFIX + "failed: " + self.failed, self.failed
+            return "\n".join(filter(None, (said, PREFIX + "failed: " + self.failed))), self.failed
         return said, None
 
     def publish(self, state, said):
