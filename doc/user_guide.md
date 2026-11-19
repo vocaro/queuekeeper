@@ -60,7 +60,7 @@ takes it out again.
 Queuekeeper reads `queuekeeper.json` at the root of each project. The smallest useful file names
 one lane, `gate`, the command every change must pass:
 
-```json
+```json queuekeeper.json
 {
   "schemaVersion": 1,
   "name": "my-project",
@@ -735,7 +735,7 @@ nothing is rewritten. Until then:
 A lane is a named command in `queuekeeper.json`, with a timeout and a statement of what it needs
 from the Mac. `qk run LANE` runs one, for an agent or for the queue.
 
-```json
+```json queuekeeper.json
 {
   "schemaVersion": 1,
   "name": "my-app",
@@ -2615,7 +2615,7 @@ entries of this worktree or branch whose outcome nobody has confirmed: `landed`,
 entry of a branch counts, since landing a branch again replaces its earlier entries, and a settled
 outcome leaves the inbox after 14 days.
 
-```text
+```json
 {"schemaVersion": 1, "operation": "queue.inbox", "branch": "fix-parser",
  "nextAction": {"command": ["qk", "queue", "logs", "qk1093-fix-parser", "--json"], "message": "Read the failing run's log, ..."},
  "entries": [{"id": "qk1093-fix-parser", "state": "failed", "outcome": "sent-back",

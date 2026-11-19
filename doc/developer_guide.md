@@ -1653,7 +1653,10 @@ schema only grows, so readers ignore what they do not know.
 - **Docs check.** `python3 scripts/qk docs check` checks links, anchors and the `qk` commands a
   document tells a reader to type. See [Docs check](#docs-check), below.
 - **The setup example.** `tests/core/test_setup_examples.py` parses each complete
-  `queuekeeper.json` example in the [user guide](user_guide.md), since agents copy it. A
+  `queuekeeper.json` example in the [user guide](user_guide.md), since agents copy it. It reads
+  only the code blocks whose fence is tagged `json queuekeeper.json`, which GitHub still
+  highlights as JSON. Tag a whole configuration that way; tag any other JSON block, such as a
+  fragment showing one setting or a `--json` result with its `schemaVersion`, plain `json`. A
   documentation-only change to the user guide runs that test through the `setup-examples` lane
   (see `queue.unread` in [queuekeeper.json](../queuekeeper.json)).
 - **The plugin lists.** `tests/core/test_plugin_lists.py` fails when a platform plugin, a folder

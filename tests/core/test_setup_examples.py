@@ -12,12 +12,12 @@ from queuekeeper import config
 class SetupExamples(unittest.TestCase):
     def test_setup_configurations_are_accepted_without_implicit_platform_plugins(self):
         # The user guide holds the configuration agents copy; the README sends them there and has none of its own.
-        # Its whole configurations, the blocks that give schemaVersion, are checked; the fragments that show one
-        # setting are not configurations of their own.
+        # Its whole configurations are the blocks fenced ```json queuekeeper.json; the fragments that show one
+        # setting, and the --json results that give schemaVersion too, are not configurations of their own
+        # (vocaro/queuekeeper#272).
         name = "doc/user_guide.md"
         root = Path(__file__).resolve().parents[2]
-        blocks = re.findall(r"^```json\s*\n(.*?)^```", (root / name).read_text(), re.M | re.S)
-        examples = [block for block in blocks if block.lstrip().startswith("{") and '"schemaVersion"' in block]
+        examples = re.findall(r"^```json queuekeeper\.json[ \t]*\n(.*?)^```", (root / name).read_text(), re.M | re.S)
         self.assertTrue(examples, f"{name} has no JSON setup example")
         for example in examples:
             project = config.parse(example)
