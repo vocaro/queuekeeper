@@ -48,6 +48,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -312,6 +313,10 @@ WAIT_LIMIT = 6 * 3600
 HEARTBEAT = 5 * 60
 KEPT_LOGS = 200
 GIT_TIMEOUT = 600
+# How often Worker.reconcile looks whether a gone worker's push still runs, and how long it gives one it ended to go
+# and the remote to apply what it had taken, before its fetch (Worker.outlive).
+PUSH_POLL = 2
+PUSH_SETTLE = 5
 # The folder, beside the main checkouts and outside every repository, that holds each queue's checkouts as
 # another Mac holds a run's (offload_host, checkouts/NAME/N/...): QUEUES/NAME/NAME and, beside it, the
 # toolkit's copy, so that a project's ../vocaro-engineering finds that copy (owner's decision,
@@ -379,12 +384,26 @@ def environment():
     return {key: value for key, value in os.environ.items() if key not in drop}
 
 
-def git(directory, *arguments, hooks=True, check=False, timeout=GIT_TIMEOUT):
+def git(directory, *arguments, hooks=True, check=False, timeout=GIT_TIMEOUT, started=None):
     """Git in directory. Without hooks, for what the worker does in its own checkout: a project's
-    checkout hook may open an editor on the owner's screen."""
+    checkout hook may open an editor on the owner's screen. started, when given, is called with the
+    process's PID as soon as it runs, before its answer, as Worker.pushing records a push's."""
     command = ["git", *([] if hooks else ["-c", "core.hooksPath=/dev/null"]), "-C", str(directory), *arguments]
-    done = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=environment(),
-                          timeout=timeout)
+    if started is None:
+        done = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=environment(),
+                              timeout=timeout)
+    else:
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              stdin=subprocess.DEVNULL, env=environment()) as process:
+            try:
+                started(process.pid)
+                output, errors = process.communicate(timeout=timeout)
+            except BaseException:
+                # As subprocess.run does: a push this process gave up on, or died over, is no orphan of it.
+                process.kill()
+                process.wait()
+                raise
+        done = subprocess.CompletedProcess(command, process.returncode, output, errors)
     if check: checked(done, arguments)
     return done
 
@@ -504,13 +523,14 @@ def now():
     return time.monotonic()
 
 
-def reach(directory, *arguments, say=print, check=False, allow=None):
+def reach(directory, *arguments, say=print, check=False, allow=None, started=None):
     """Git in directory for what talks to the remote, a fetch or a push: one that did not reach it is tried
     again after each of BACKOFF, and only then fails, as anything else does at once. With check, a failure is a
     Hold: one that clears by itself for a remote still out of reach, the owner's for a refusal, which only he
-    can fix, and a session's for anything else; a failure whose message allow, a pattern, finds is returned instead."""
+    can fix, and a session's for anything else; a failure whose message allow, a pattern, finds is returned instead.
+    started is git's, for each try."""
     for tries, delay in enumerate((*BACKOFF, None), start=1):
-        done = git(directory, *arguments)
+        done = git(directory, *arguments, **({"started": started} if started else {}))
         said = done.stderr.strip()
         if done.returncode == 0 or delay is None or not unreached(said): break
         say(f"`git {arguments[0]}` did not reach the remote, so trying again in {delay}s: {said.splitlines()[-1]}")
@@ -518,6 +538,18 @@ def reach(directory, *arguments, say=print, check=False, allow=None):
     if check and done.returncode and not (allow and allow.search(said)):
         raise Hold(CLEARS if unreached(said) else OWNER if REFUSED.search(said) else SESSION, failure(done, arguments, tries))
     return done
+
+
+def pushing_start(pid):
+    """When the process pid started, as the kernel records it (resources.kernel_start), so that a later look knows it
+    for the same push and not a process that took its PID: None when it runs no more or the kernel cannot say."""
+    try: return resources.kernel_start(pid)
+    except OSError: return None
+
+
+def push_runs(attempt):
+    """Whether the git push of attempt, one of a push's records (Worker.pushing), still runs as itself."""
+    return bool(attempt.get("pid") and attempt.get("start")) and pushing_start(attempt["pid"]) == attempt["start"]
 
 
 def fetch_main(directory, say=print):
@@ -4699,14 +4731,21 @@ class Worker:
                                                + hooks_elsewhere(self.checkout))
                 checked = head
             attempts.append({"head": head, "base": base, "at": time.time()})
-            self.queue.mark_publishing(batch, {
+            marker = {
                 "batch": [entry["id"] for entry in batch], "attempts": attempts, "gatedOn": gated_on,
                 **({"docsOnly": docs} if docs else {}), **({"docsNamed": named} if named else {}),
-                **({"ungated": ungated} if ungated else {}), **({"gate": self.measured} if self.measured else {})})
+                **({"ungated": ungated} if ungated else {}), **({"gate": self.measured} if self.measured else {})}
+            self.queue.mark_publishing(batch, marker)
+            def started(pid, attempt=attempts[-1], marker=marker):
+                # The push's own process, which outlives a worker killed alone (vocaro/queuekeeper#265): reconcile
+                # waits it out before it takes a fetch's word that the push did not land.
+                attempt.update(pid=pid, start=pushing_start(pid))
+                self.queue.mark_publishing(batch, marker)
             # A connection that dropped pushes again here, without running the hook again.
             try:
-                pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say)
-                pushed, status = self.push_again(pushed)
+                pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say,
+                               started=started)
+                pushed, status = self.push_again(pushed, started)
             except subprocess.TimeoutExpired as error:
                 raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: the push of {head[:12]} gave no answer in "
                                    f"{error.timeout:g}s, so whether origin/main took it is unknown until a fetch "
@@ -4764,6 +4803,7 @@ class Worker:
         or gated as before. Whether it landed anything, a remote out of reach holding as for any fetch."""
         marked = [entry for entry in self.queue.waiting() if entry.get("publishing")]
         if not marked: return False
+        self.outlive([attempt for entry in marked for attempt in entry["publishing"].get("attempts", [])])
         if not fetch_main(self.queue.main_checkout, self.say):
             # Nothing landed while origin has no main: the entries are gated as before.
             self.say(f"origin has no main, so {', '.join(entry['id'] for entry in marked)}, whose push's answer never "
@@ -4791,6 +4831,34 @@ class Worker:
                       marker.get("docsNamed"), marker.get("ungated"), marker.get("gate"), reconciled=True)
             landed = True
         return landed
+
+    def outlive(self, attempts):
+        """Wait until no git push of attempts (Worker.pushing's records) still runs, before a fetch says whether they
+        landed. A worker killed alone, as by SIGKILL to its Python process, leaves its push running, and a push that
+        lands after the fetch said it had not would be pushed or gated again over commits main then holds
+        (vocaro/queuekeeper#265). Each push has the GIT_TIMEOUT from its start that its own worker would have given
+        it; one still running then is ended, as that worker would have ended it, and the fetch waits PUSH_SETTLE more
+        for a remote that took its whole pack to apply it. A push known by its PID and start alone: a PID that now
+        runs another process is no push of these."""
+        live = {attempt["pid"]: attempt for attempt in attempts if push_runs(attempt)}
+        if not live: return
+        self.say(f"waiting for the push of {', '.join(a['head'][:12] for a in live.values())}, still running as PID "
+                 f"{', '.join(map(str, live))} from a worker that is gone, to end before asking origin whether it landed")
+        while live:
+            overdue = [a for a in live.values() if time.time() >= a.get("at", 0) + GIT_TIMEOUT]
+            for attempt in overdue:
+                self.say(f"ending the push of {attempt['head'][:12]}, PID {attempt['pid']}, which ran past "
+                         f"{GIT_TIMEOUT}s")
+                for sent in (signal.SIGTERM, signal.SIGKILL):
+                    if not push_runs(attempt): break
+                    with contextlib.suppress(ProcessLookupError, PermissionError): os.kill(attempt["pid"], sent)
+                    for _ in range(PUSH_SETTLE):
+                        if not push_runs(attempt): break
+                        pause(1)
+                live.pop(attempt["pid"])
+                pause(PUSH_SETTLE)
+            live = {pid: attempt for pid, attempt in live.items() if push_runs(attempt)}
+            if live: pause(PUSH_POLL)
 
     def keep_app(self, head):
         """Start keeping the app built at head, the gated commit just pushed, in the background, when head's
@@ -4836,7 +4904,7 @@ class Worker:
             position = match + 1
         return own
 
-    def push_again(self, pushed):
+    def push_again(self, pushed, running=None):
         """(the last push, what a hold adds of GitHub's status). A push the remote refused for its credentials, when
         the fetch at the top of push went through from the same URL a moment before, is tried again after each of
         BACKOFF; and then, on GitHub, while its status says Git Operations is not operational, every REFUSAL_POLL
@@ -4862,7 +4930,8 @@ class Worker:
             self.say(f"the push was refused as the fetch before it was not, so trying again in {delay:g}s"
                      + (f" while GitHub's {GIT_OPERATIONS} is {status}" if status else "") + f": {said.splitlines()[-1]}")
             pause(delay)
-            pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say)
+            pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say,
+                           started=running)
             said = pushed.stderr.strip()
             if pushed.returncode == 0 or not AUTHENTICATION.search(said): return pushed, ""
 

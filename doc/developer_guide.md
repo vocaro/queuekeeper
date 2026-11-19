@@ -475,6 +475,14 @@ gate's log when the lane ends.
   main has moved on since. Otherwise the field is dropped and the round goes on as before. The
   fetch at the top of each try in `Worker.push` asks the same question, so a push whose connection
   dropped after it landed is recognised there, even once main has moved past it.
+- Each attempt in `publishing` also records the PID of its `git push` and that process's start, as
+  the kernel gives it. A worker killed alone, such as by SIGKILL to its Python process, leaves its
+  push running, and a push that landed after `reconcile`'s fetch said it had not would be pushed or
+  gated again over commits main then holds (vocaro/queuekeeper#265). So before its fetch,
+  `reconcile` waits for any recorded push still running as the same process (`Worker.outlive`).
+  A push still running `GIT_TIMEOUT` after it started, as long as its own worker would have given
+  it, is ended, and the fetch waits `PUSH_SETTLE` more for a remote that had its whole pack.
+  A PID that now runs another process is no push, and is neither waited for nor signalled.
 - Without this, a landed push was recognised only while `origin/main` was still its commit. Once
   main moved on, the batch was carried over or gated again, cherry-picking commits main already
   held, or sent back as a conflict with itself. A worker that died while settling a batch left

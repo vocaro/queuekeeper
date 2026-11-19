@@ -7906,6 +7906,72 @@ class PublicationUnverified(Fixture):
         self.assertEqual((entry["state"], entry["landedAs"]), ("landed", entry["passed"]["head"]))
         self.assertEqual(self.gates(), 1)
 
+    def orphaned(self, script, *branches):
+        """Queue branches and run a worker killed alone mid-push, its git push left running as an orphan, as SIGKILL
+        to the worker's Python process leaves it, which launchd reaps once it ends: script, a shell command, runs
+        before the push, which it skips by exec-ing something else. The ids and the orphan's record, its pid and
+        start, which the test ends if it outlives the test."""
+        ids = self.add(*branches)
+        real, orphans = mq.git, []
+        def git(directory, *arguments, **options):
+            if not arguments or arguments[0] != "push": return real(directory, *arguments, **options)
+            launched = subprocess.run(
+                ["/bin/sh", "-c", f'({script}; exec git -C "$0" "$@") </dev/null >/dev/null 2>&1 & echo $!',
+                 str(directory), *arguments], capture_output=True, text=True, check=True, env=mq.environment())
+            pid = int(launched.stdout)
+            orphans.append({"pid": pid, "start": mq.pushing_start(pid)})
+            self.addCleanup(lambda orphan=orphans[-1]: mq.push_runs(orphan) and os.kill(orphan["pid"], signal.SIGKILL))
+            options["started"](pid)
+            raise Killed("mid-push")
+        with patch.object(mq, "git", git), patch("builtins.print"), self.assertRaises(Killed): self.work()
+        [orphan] = orphans
+        self.assertTrue(mq.push_runs(orphan))
+        return ids, orphan
+
+    def test_a_push_that_outlives_its_killed_worker_is_waited_out_and_lands_without_a_second_push(self):
+        """vocaro/queuekeeper#265: the dead worker's push lands seconds after the next worker starts. Its fetch
+        must not say it did not land before it ends, or the next worker pushes the batch again over it."""
+        self.commit("a", "a")
+        [identifier], orphan = self.orphaned("sleep 3", "a")
+        [attempt] = self.state(identifier)["publishing"]["attempts"]
+        self.assertEqual((attempt["pid"], attempt["start"]), (orphan["pid"], orphan["start"]))
+        self.assertEqual(self.restart(), [])
+        self.assertFalse(mq.push_runs(orphan))
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"]), ("landed", attempt["head"]))
+        self.assertEqual(self.origin_main(), attempt["head"])
+        self.assertEqual(self.gates(), 1)
+        [event] = self.reconciled()
+        self.assertEqual(event["head"], attempt["head"])
+
+    def test_a_dead_workers_push_that_runs_past_its_timeout_is_ended_and_pushed_again(self):
+        self.commit("a", "a")
+        [identifier], orphan = self.orphaned("exec sleep 600", "a")
+        said = io.StringIO()
+        counting, seen = self.pushes()
+        with patch.object(mq, "GIT_TIMEOUT", 1), patch.object(mq, "PUSH_SETTLE", 1), counting, \
+                contextlib.redirect_stdout(said):
+            self.assertEqual(self.work(), 0)
+        self.assertFalse(mq.push_runs(orphan))
+        self.assertIn("ending the push of", said.getvalue())
+        self.assertEqual(len(seen), 1)
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"]), ("landed", self.origin_main()))
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.reconciled(), [])
+
+    def test_a_recorded_push_pid_that_now_runs_another_process_is_not_waited_for(self):
+        self.commit("a", "a")
+        [identifier] = self.die("before", "a")
+        entry = self.state(identifier)
+        stranger = subprocess.Popen(["/bin/sleep", "600"])
+        self.addCleanup(lambda: (stranger.kill(), stranger.wait()))
+        attempts = [{**attempt, "pid": stranger.pid, "start": "Thu Jan  1 00:00:00 1970"}
+                    for attempt in entry["publishing"]["attempts"]]
+        mq.Queue(self.repo).record(entry, publishing={**entry["publishing"], "attempts": attempts})
+        self.assertEqual(len(self.restart()), 1)
+        self.assertIsNone(stranger.poll())
+        self.assertEqual(self.state(identifier)["state"], "landed")
 
 class PushRefusedInAnIncident(Fixture):
     """A push refused for its credentials, seconds after a fetch from the same URL went through, is tried again:
