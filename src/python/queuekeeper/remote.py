@@ -202,6 +202,10 @@ DISPATCHER = "QUEUEKEEPER_DISPATCHED_FROM"
 SURVEY_TIMEOUT = 180
 # Seconds `qk doctor` waits for the census of another Mac's leftover processes.
 CENSUS_TIMEOUT = 60
+# Seconds `qk doctor` waits for each of the farm's Macs to report the settings by which it takes work, read all at
+# once, so that a Mac that is asleep costs doctor this long and no more (the owner's decision, 2026-11-19,
+# vocaro/queuekeeper#224). A Mac that has not answered by then is unknown, never one that declines.
+SETTINGS_TIMEOUT = 10
 # The author and committer of a snapshot commit, which records a working tree rather than anyone's
 # work, and needs no identity configured in the session's git.
 SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "queuekeeper snapshot", "GIT_AUTHOR_EMAIL": "snapshot@queuekeeper.invalid",
@@ -3882,10 +3886,10 @@ def toolkit_qk(host, arguments, *, project=False, timeout=CENSUS_TIMEOUT):
     return found.returncode
 
 
-def capacity_there(host, *, diagnostic=False, started=None):
+def capacity_there(host, *, diagnostic=False, started=None, timeout=CENSUS_TIMEOUT):
     """Another Mac's capacity for heavy work, as offload_host.capacity reads it there, in its login shell as a
-    run there reads it. Another Mac that cannot be reached raises Unreachable, as the connection that prepares
-    a run does, and one that does not answer with a reading Unavailable: the work then runs on this Mac, saying so. One whose admission limits cannot
+    run there reads it, waiting timeout seconds for it. Another Mac that cannot be reached raises Unreachable, as
+    the connection that prepares a run does, and one that does not answer with a reading Unavailable: the work then runs on this Mac, saying so. One whose admission limits cannot
     be read refuses every request there, which is its owner's to fix (Misconfigured)."""
     request = {"capacity": "diagnostic" if diagnostic else True}
     # The place the asking work holds in that Mac's queue (Places) is no request queued ahead of it.
@@ -3894,7 +3898,7 @@ def capacity_there(host, *, diagnostic=False, started=None):
         request["requestStarted"] = started
     elif resources._request_started.get() is not None:
         request["requestAge"] = max(0, time.time() - resources.request_started())
-    answered = ask(host, request, timeout=CENSUS_TIMEOUT, unsent=True)
+    answered = ask(host, request, timeout=timeout, unsent=True)
     if isinstance(answered, dict) and answered.get("error"):
         raise Misconfigured(f"{host} could not read its admission limits: {answered['error']}",
                             f"correct the limits file or variable it names on {host}")
@@ -4040,16 +4044,38 @@ def settings_here():
             "settingsIgnored": found["ignored"]}
 
 
-def unplaceable_lanes(config, read_here=settings_here, read_there=None):
+def read_macs(hosts, read_there, limit):
+    """Each of hosts read by read_there all at once, by its name (farm.named): its reading, or why it could not be
+    read, as Unavailable's problem says it or that it did not answer within limit seconds. The whole takes about
+    the slowest read, bounded by limit, never their sum (vocaro/queuekeeper#224). Any other failure is raised."""
+    found, failed = {}, []
+
+    def read(host):
+        try: found[host] = read_there(host)
+        except Unavailable as error: found[host] = str(getattr(error, "problem", error))
+        except BaseException as error: failed.append(error)
+
+    # Daemon threads, so that a read that outlives the limit, bounded by its own ssh timeout, never holds qk's exit.
+    threads = [threading.Thread(target=read, args=(host,), name=f"qk-settings-{host}", daemon=True) for host in hosts]
+    for thread in threads: thread.start()
+    deadline = time.monotonic() + limit
+    for thread in threads: thread.join(max(0, deadline - time.monotonic()))
+    if failed: raise failed[0]
+    return {farm.named(host): found[host] if host in found else f"it did not answer in {limit:g}s"
+            for host in hosts}
+
+
+def unplaceable_lanes(config, read_here=settings_here, read_there=None, limit=SETTINGS_TIMEOUT):
     """`qk doctor`'s warning for each admitted lane that no Mac of the farm takes by its own settings (unfit): its
     labels, as a group's are its lanes' too, that no Mac has, or its kind of work, whole-host gate, exclusive work,
     model run or foreground work, that every Mac declines. Run, such a lane ends as for a misconfigured Mac (exit
     78), and a queue holds for it; this says so beforehand (vocaro/queuekeeper#224). A lane that says "here" is
     judged by this Mac's settings alone. This Mac's settings are read once (read_here) and each of the farm's Macs
-    that take work now once (read_there, capacity_there), only when some lane needs something a Mac may decline. A
-    Mac that cannot be read is unknown, never one that declines: a lane that only such a Mac might take is said to
-    run only if it does. A lane's "chips" is checked by its own plugin."""
-    read_there = read_there or capacity_there
+    that take work now once (read_there, capacity_there), all at once and within limit seconds (SETTINGS_TIMEOUT),
+    only when some lane needs something a Mac may decline. A Mac that cannot be read, or does not answer in time,
+    is unknown, never one that declines: a lane that only such a Mac might take is said to run only if it does. A
+    lane's "chips" is checked by its own plugin."""
+    read_there = read_there or functools.partial(capacity_there, timeout=limit)
     lanes = config.get("lanes") if isinstance(config.get("lanes"), dict) else {}
     readings = {}
 
@@ -4058,9 +4084,7 @@ def unplaceable_lanes(config, read_here=settings_here, read_there=None):
             readings[HERE] = read_here()
             try: hosts = farm.destinations()
             except ValueError as error: hosts, readings["the farm's other Macs"] = (), str(error)
-            for host in hosts:
-                try: readings[farm.named(host)] = read_there(host)
-                except Unavailable as error: readings[farm.named(host)] = str(getattr(error, "problem", error))
+            readings.update(read_macs(hosts, read_there, limit))
         return {HERE: readings[HERE]} if here_only else readings
 
     found = []

@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
@@ -265,8 +267,8 @@ class LaneFitTests(FarmCase):
         there = {"studio.local": self.settings("studio", {"wholeHost": False}, ["apple-m5-max"]),
                  "mini.local": self.settings("mini", {"wholeHost": False, "exclusive": False})}
         found = {warning.split(":")[0]: warning for warning in self.warnings(here, there)}
-        # Each Mac is read once, however many lanes ask.
-        self.assertEqual(self.asked, ["studio.local", "mini.local"])
+        # Each Mac is read once, however many lanes ask, all at once and so in no set order.
+        self.assertEqual(sorted(self.asked), ["mini.local", "studio.local"])
         self.assertEqual(sorted(found), ["screen", "suite", "unity"])
         self.assertEqual(found["unity"],
             "unity: the lane needs a Mac of the farm that has the label unity-license, and none does, so the lane "
@@ -323,6 +325,43 @@ class LaneFitTests(FarmCase):
         there["studio.local"] = self.settings("studio", {"foreground": True})
         [unity] = self.warnings("Invalid Mac settings: /x is not JSON", there)
         self.assertIn("whether this Mac takes it is unknown: Invalid Mac settings: /x is not JSON", unity)
+
+    def test_the_macs_are_read_at_once_so_doctor_waits_about_one_read_not_their_sum(self):
+        # vocaro/queuekeeper#224, the owner's decision of 2026-11-19: a Mac that is asleep must not make doctor slow.
+        self.macs["air.local"] = {"id": "CCCC-3", "name": "Air"}
+        self.add("air.local")
+        here, there = self.settings("here"), {host: self.settings(host, {"foreground": True}, ["unity-license"])
+                                              for host in ("studio.local", "mini.local", "air.local")}
+        def slow(host):
+            time.sleep(0.5)
+            return there[host]
+        began = time.monotonic()
+        found = remote.unplaceable_lanes({"lanes": self.LANES}, read_here=lambda: here, read_there=slow, limit=5)
+        elapsed = time.monotonic() - began
+        self.assertEqual(found, [])
+        self.assertLess(elapsed, 1.2, "three reads of 0.5 s each took their sum, not one read")
+        self.assertGreaterEqual(elapsed, 0.5)
+        self.assertEqual(remote.SETTINGS_TIMEOUT, 10)
+
+    def test_a_mac_that_does_not_answer_in_time_is_unknown_and_never_said_to_lack(self):
+        here = self.settings("here")
+        released = threading.Event()
+        self.addCleanup(released.set)
+        def read(host):
+            if host == "mini.local":
+                released.wait(30)  # asleep: it answers only after doctor stops waiting
+                return self.settings("mini", {"foreground": True}, ["unity-license"])
+            return self.settings("studio")
+        began = time.monotonic()
+        unity, screen = sorted(remote.unplaceable_lanes({"lanes": self.LANES}, read_here=lambda: here,
+                                                        read_there=read, limit=0.3), reverse=True)
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertIn("so it runs only if Mini does", unity)
+        self.assertIn("whether Mini takes it is unknown: it did not answer in 0.3s", unity)
+        self.assertIn("Studio lacks the label unity-license", unity)
+        self.assertNotIn("Mini lacks", unity)
+        self.assertIn("whether Mini takes it is unknown: it did not answer in 0.3s", screen)
+        self.assertNotIn("Mini takes no", screen)
 
     def test_a_lane_that_stays_here_is_judged_by_this_macs_settings_alone(self):
         lanes = {"local": {"command": ["true"], "here": "it reads this Mac's keychain", "labels": ["unity-license"]},

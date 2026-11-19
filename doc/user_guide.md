@@ -1619,8 +1619,9 @@ labels it needs. No lane names a Mac, and no Mac names a lane. The settings are
 `qk admissions limits` prints what a Mac takes, its labels and the file's path. `qk admissions usage`
 prints the same of every Mac beside its capacity, with the keys it passes over and where foreground
 lanes go, and `qk doctor` warns of a lane no Mac takes, naming what it needs and each Mac's reason. A
-Mac that cannot be read is unknown in both, never one that lacks. Edit the file by
-hand. An unknown key is reported as `ignored:`; a file that is not JSON, or a known key of the
+Mac that cannot be read is unknown in both, never one that lacks. Doctor reads the Macs at once,
+and only when some lane needs something a Mac may decline; one that does not answer within 10
+seconds, such as one asleep, is unknown. Edit the file by hand. An unknown key is reported as `ignored:`; a file that is not JSON, or a known key of the
 wrong type, stops placement on that Mac rather than guess.
 
 ### Commands and where they run
