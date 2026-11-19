@@ -8204,6 +8204,128 @@ class Refusals(Fixture):
         with self.assertRaisesRegex(ValueError, "neither origin/main nor .* has a queuekeeper.json"): self.add("other")
         self.assertEqual(mq.Queue(self.repo).all(), [])
 
+    def without_main(self):
+        """Origin as a repository created empty is, with no main at all, and the clone's commit, which holds a
+        queuekeeper.json, on a branch of its own: the landing that creates main (#10). Returns the commit."""
+        shutil.rmtree(self.origin)
+        run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.origin))
+        run(self.repo, "git", "update-ref", "-d", "refs/remotes/origin/main")
+        run(self.repo, "git", "checkout", "-q", "-B", "first")
+        return run(self.repo, "git", "rev-parse", "HEAD")
+
+    def origin_main(self):
+        """origin's main, or "" while it has none."""
+        return run(self.origin, "git", "for-each-ref", "--format=%(objectname)", "refs/heads/main")
+
+    def test_the_landing_into_a_repository_with_no_main_creates_main_at_its_tip(self):
+        """#10: the queue fetched origin's main to land anything, so an empty repository's first commit went in by
+        hand."""
+        tip = self.without_main()
+        said = io.StringIO()
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            first = mq.add(self.repo, "first", quiet_wait=True)
+        self.assertIn("origin has no main yet, so this landing creates it", said.getvalue())
+        self.assertIsNone(self.state(first)["base"])
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said): self.work()
+        self.assertEqual(self.state(first)["state"], "landed", said.getvalue())
+        self.assertEqual(self.state(first)["landedAs"], tip)
+        self.assertEqual(self.origin_main(), tip)
+        self.assertEqual(self.gates(), 1)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn("creating main", said.getvalue())
+        # From then on main exists, and the next entry lands on it as any does.
+        self.commit("a", "next")
+        [after] = self.add("next")
+        self.work()
+        self.assertEqual(self.state(after)["state"], "landed")
+        self.assertIn("a", self.main_files())
+
+    def test_a_landing_that_would_create_main_and_fails_its_gate_leaves_origin_without_main(self):
+        self.without_main()
+        (self.repo / "bad").write_text("x")
+        run(self.repo, "git", "add", "bad")
+        run(self.repo, "git", "commit", "-qm", "Fail the gate")
+        [first] = self.add("first")
+        self.work()
+        self.assertEqual(self.state(first)["state"], "failed")
+        self.assertIn("gated alone to create main", self.state(first)["why"])
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.origin_main(), "")
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_commit_without_a_configuration_is_refused_when_origin_has_no_main(self):
+        self.without_main()
+        run(self.repo, "git", "rm", "-q", "queuekeeper.json")
+        run(self.repo, "git", "commit", "-qm", "No Queuekeeper")
+        with self.assertRaisesRegex(mq.Refused, "origin has no main yet, and .* has no queuekeeper.json"):
+            self.add("first")
+        with self.assertRaisesRegex(mq.Refused, "without --no-gate"), patch.object(mq.Queue, "start"), \
+                patch("builtins.print"):
+            mq.add(self.repo, "HEAD~1", no_gate=True, why="an empty repository")
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_only_one_entry_waits_to_create_main(self):
+        self.without_main()
+        [first] = self.add("first")
+        self.commit("a", "second", start="first")
+        with self.assertRaises(mq.Refused) as refused, patch("builtins.print"): mq.add(self.repo, "second")
+        self.assertIn("creates main, gated alone", str(refused.exception))
+        self.assertEqual(refused.exception.waits_for, [first])
+        self.assertEqual([entry["id"] for entry in mq.Queue(self.repo).all()], [first])
+        # The same branch added again replaces its own entry rather than waiting for it.
+        run(self.repo, "git", "checkout", "-q", "first")
+        self.commit("b", "first", start="first")
+        [again] = self.add("first")
+        self.assertEqual(self.state(first)["state"], "removed")
+        self.assertEqual(self.state(again)["state"], "queued")
+
+    def test_main_created_during_the_gate_sends_the_landing_back_to_the_queue(self):
+        """The push creates main only while there is none (--force-with-lease), so that nothing is rewritten."""
+        start = self.without_main()
+        self.commit("a", "first", start="first")
+        real = mq.Worker.gate
+        def gate(worker, lanes, round_name):
+            outcome = real(worker, lanes, round_name)
+            if not self.origin_main(): run(self.repo, "git", "push", "-q", "origin", f"{start}:refs/heads/main")
+            return outcome
+        [first] = self.add("first")
+        said = io.StringIO()
+        with patch.object(mq.Worker, "gate", gate), contextlib.redirect_stdout(said): self.work()
+        self.assertIn("main was created while", said.getvalue())
+        self.assertEqual(self.state(first)["state"], "landed", said.getvalue())
+        self.assertEqual(self.gates(), 2)
+        # Landed on top of the main made by hand, which it did not rewrite.
+        run(self.repo, "git", "fetch", "-q", "origin")
+        self.assertEqual(run(self.repo, "git", "rev-parse", "origin/main~1"), start)
+        self.assertIn("a", self.main_files())
+
+    def test_qk_land_wait_exits_by_whether_the_landing_that_creates_main_landed(self):
+        """Through the real command line: git's "couldn't find remote ref" made qk land fail with exit 2, and with 0
+        before that."""
+        tip = self.without_main()
+        # A commit without the configuration, which the working tree keeps, is refused, exit 1.
+        run(self.repo, "git", "rm", "-q", "--cached", "queuekeeper.json")
+        run(self.repo, "git", "commit", "-qm", "No Queuekeeper")
+        land = ["python3", "scripts/qk", "land", "--wait", "--limit", str(stretched(120))]
+        done = subprocess.run(land, cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("has no queuekeeper.json", done.stderr)
+        self.assertNotIn("couldn't find remote ref", done.stderr)
+        # A commit whose gate fails comes back, exit 1.
+        run(self.repo, "git", "reset", "-q", "--hard", tip)
+        (self.repo / "bad").write_text("x")
+        run(self.repo, "git", "add", "bad")
+        run(self.repo, "git", "commit", "-qm", "Fail the gate")
+        done = subprocess.run(land, cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertEqual(self.origin_main(), "")
+        # And one that passes creates main, exit 0.
+        run(self.repo, "git", "reset", "-q", "--hard", tip)
+        done = subprocess.run(land, cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.origin_main(), tip)
+
     def test_a_session_in_another_repository_lands_here(self):
         """Through the real command line, from another project's checkout, as a session fixing a
         dependency does: this repository's queue takes it, and its own session's entry waits beside it."""

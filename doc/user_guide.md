@@ -148,6 +148,8 @@ through `tail` or `head`, and trim when reading it; `qk progress` says how far a
 
 Have your agent commit the configuration and agent instructions on its branch, run
 `qk land --wait`, follow the entry to its result, and confirm the setup reached `origin/main`.
+This works in a repository created empty too, with no `main` yet: that landing creates `main`
+([A project's first landing](#a-projects-first-landing)).
 
 ### Add another Mac
 
@@ -711,6 +713,18 @@ Settings that loosen what the queue checks count only from `main`, even on the f
 `queue.hookCoveredBy`, `queue.unread` (and the older `docsOnly` and `carryOver`),
 and `queue.preflight`. A project that wants one of them lands its
 configuration through the full checks once.
+
+A repository created empty has no `main` at all. Its first `qk land` creates it: the worker gates
+the entry's commit alone, on its own `queuekeeper.json` as above, runs the pre-push hook, and
+pushes that commit as `main` only while `origin` still has none, so nothing ungated lands and
+nothing is rewritten. Until then:
+
+- a commit without a `queuekeeper.json` naming a gate lane is refused, exit 1;
+- only one entry waits to create `main`; another is refused naming it, and `qk land --wait`
+  waits for it, then lands on the `main` it made;
+- `--no-gate` is refused;
+- a `main` someone pushes while the gate runs sends the entry back into the queue, which lands it
+  on top of that `main`.
 
 ## Lanes and admission
 
@@ -2476,6 +2490,9 @@ wake you.
   by a limit prints a `queuekeeper notice:`. Do not raise a `timeout`, stall bound or timing threshold
   just to make the gate pass; find what made it slower, or after a deliberate change to the lane's
   work run `qk timing stale LANE --reason WHY` ([Time limits](#time-limits-and-the-gates-budget)).
+- **A repository with no `main` yet** takes its first landing the same way, and that landing
+  creates `main`. A commit the queue cannot use for it is refused with exit 1, saying why
+  ([A project's first landing](#a-projects-first-landing)).
 - **An interrupted wait withdraws nothing.** The worker lands the entry whether or not anyone is
   waiting. Pick up the result with `qk queue wait ID`, which behaves like `qk land --wait`, or
   find it in `qk queue status`. Queue the commits again only after confirming the entry came back

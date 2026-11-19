@@ -201,6 +201,16 @@ only while `origin/main` has none that names lanes. The settings that loosen che
 (`hookCoveredBy`, `unread`, `docsOnly`, `carryOver`, `preflight`, `affected`) count only
 from `main` even then.
 
+**A repository with no `main`.** `fetch_main` lets the fetch fail with git's "couldn't find remote
+ref" (`NO_MAIN`), deletes any stale `origin/main`, and returns False. `add` then reads the tip's
+own configuration (`first_config`), records `base` as `None` with every commit to the tip, skips
+the trial integration and the preflight lanes, and refuses `--no-gate` and any second entry
+(`Refused.waits_for` names the first). The worker's round hands the oldest entry to
+`Worker.first_landing`, which makes its checkout at the tip, gates it alone on its lanes for every
+path in its tree, and on a pass runs the pre-push hook with the all-zero old value and pushes with
+`--force-with-lease=refs/heads/main:`. A lease refused because `main` now exists queues the entry
+again, and the next round integrates it as any entry.
+
 ### The Queuekeeper a worker runs
 
 Each project's queue has one folder beside the main checkouts, outside every repository:

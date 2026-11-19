@@ -147,6 +147,11 @@ CLEARING_WAITS = (60, 300, 900)
 # the owner's key from one second to the next, for over an hour, while the same key fetched (vocaro-engineering#151).
 # A push refused so, seconds after a fetch from the same URL went through, is tried again (Worker.push_again).
 AUTHENTICATION = re.compile(r"Permission denied \(publickey\)|Authentication failed|Invalid username or token")
+# What git says when origin has no main at all, as a repository just created empty has until its first landing, which
+# then creates main (fetch_main, Worker.first_landing, #10).
+NO_MAIN = re.compile(r"couldn't find remote ref refs/heads/main")
+# What git says when a push's --force-with-lease found the ref other than expected: main created meanwhile.
+STALE_LEASE = re.compile(r"\(stale info\)")
 # GitHub's status page, and its component for Git over SSH and HTTPS, which says whether a refusal may be GitHub's.
 GITHUB_STATUS = "https://www.githubstatus.com/api/v2/components.json"
 GIT_OPERATIONS = "Git Operations"
@@ -458,20 +463,35 @@ def now():
     return time.monotonic()
 
 
-def reach(directory, *arguments, say=print, check=False):
+def reach(directory, *arguments, say=print, check=False, allow=None):
     """Git in directory for what talks to the remote, a fetch or a push: one that did not reach it is tried
     again after each of BACKOFF, and only then fails, as anything else does at once. With check, a failure is a
     Hold: one that clears by itself for a remote still out of reach, the owner's for a refusal, which only he
-    can fix, and a session's for anything else."""
+    can fix, and a session's for anything else; a failure whose message allow, a pattern, finds is returned instead."""
     for tries, delay in enumerate((*BACKOFF, None), start=1):
         done = git(directory, *arguments)
         said = done.stderr.strip()
         if done.returncode == 0 or delay is None or not unreached(said): break
         say(f"`git {arguments[0]}` did not reach the remote, so trying again in {delay}s: {said.splitlines()[-1]}")
         pause(delay)
-    if check and done.returncode:
+    if check and done.returncode and not (allow and allow.search(said)):
         raise Hold(CLEARS if unreached(said) else OWNER if REFUSED.search(said) else SESSION, failure(done, arguments, tries))
     return done
+
+
+def fetch_main(directory, say=print):
+    """Fetch origin's main into MAIN: True, or False when origin has no main, as a repository created empty has until
+    its first landing creates it (#10), with any MAIN an earlier fetch left deleted. Any other failure holds, as
+    reach's check says."""
+    if reach(directory, *FETCH, say=say, check=True, allow=NO_MAIN).returncode == 0: return True
+    git(directory, "update-ref", "-d", MAIN)
+    return False
+
+
+def main_commit(directory):
+    """origin/main's commit as last fetched, or None when origin had no main (fetch_main)."""
+    found = git(directory, "rev-parse", "--verify", "--quiet", f"{MAIN}^{{commit}}")
+    return found.stdout.strip() if found.returncode == 0 else None
 
 
 def on_github(url):
@@ -910,10 +930,10 @@ def prerun(root, commit, config):
 
 def refused_alone(root, tip, config):
     """The lines of prerun that tip's tree gives and origin/main's does not: what the entry itself brings, which a
-    gate of any batch holding it would refuse."""
+    gate of any batch holding it would refuse; every one of them while origin has no main (#10)."""
     lines = prerun(root, tip, config)
     if not lines: return []
-    before = prerun(root, MAIN, config)
+    before = prerun(root, MAIN, config) if main_commit(root) else []
     return [line for line in lines if line not in before]
 
 
@@ -928,9 +948,10 @@ def checked_before_running(root, tip, config):
 
 
 def claims_before_queued(root, base, tip):
-    """Refuse tip, queuing nothing, when a message of its commits after base denies a closing claim, as "This does not
-    fix #43." does: GitHub closes the issue when the commit reaches main (landing_proofs.negated, vocaro-engineering#286)."""
-    found = landing_proofs.negated_claims(lambda *words: git(root, *words), f"{base}..{tip}")
+    """Refuse tip, queuing nothing, when a message of its commits after base, or of every commit to tip when base is
+    None as for a landing that creates main (#10), denies a closing claim, as "This does not fix #43." does: GitHub
+    closes the issue when the commit reaches main (landing_proofs.negated, vocaro-engineering#286)."""
+    found = landing_proofs.negated_claims(lambda *words: git(root, *words), f"{base}..{tip}" if base else tip)
     if found is None: raise Refused(f"{tip[:12]} is not queued: its commit messages could not be read")
     if not found: return
     issue = found[0][3]
@@ -2007,12 +2028,20 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     no_gate, qk land's emergency options --front and --no-gate, and why, the reason --why gives (ahead), go
     in the entry; an entry already queued with the same tip takes them. A queue closed to new entries (Queue.close)
     refuses every new entry, one with --front or --no-gate and one that would replace its branch's earlier entry
-    included, and leaves what it has as it was; a tip it already holds is no new entry, and is followed as before."""
+    included, and leaves what it has as it was; a tip it already holds is no new entry, and is followed as before.
+    While origin has no main at all, as a repository created empty has, the entry creates it: the worker gates its tip
+    alone and pushes it only while main is still absent (Worker.first_landing, #10). Such an entry is refused unless
+    its tip has a queuekeeper.json naming a gate lane, which gates it less what only main may say, and while another
+    entry waits, which creates main first; nor can it land without the gate."""
     flags = ahead(front, no_gate, why)
     queue = Queue(root)
-    reach(root, *FETCH, say=lambda words: print(f"queue: {words}", file=sys.stderr), check=True)
+    present = fetch_main(root, say=lambda words: print(f"queue: {words}", file=sys.stderr))
     tip = text(root, "rev-parse", "--verify", f"{reference}^{{commit}}")
-    if has_config(root, MAIN): config = config_at(root, MAIN)
+    if not present:
+        config = first_config(root, tip, no_gate)
+        print(f"queue: origin has no main yet, so this landing creates it from {tip[:12]}, gated alone by its own "
+              "queuekeeper.json, all but what only main may say, and by main's from then on", file=sys.stderr)
+    elif has_config(root, MAIN): config = config_at(root, MAIN)
     elif has_config(root, tip):
         config = as_batch(config_at(root, tip))
         print(f"queue: origin/main has no queuekeeper.json yet, so the queue reads {tip[:12]}'s for this landing "
@@ -2025,12 +2054,13 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     gating = config
     try: lanes_of(config)
     except ValueError: lanes_of(gating := config_at(root, tip))
-    if git(root, "merge-base", "--is-ancestor", tip, MAIN).returncode == 0:
+    if present and git(root, "merge-base", "--is-ancestor", tip, MAIN).returncode == 0:
         print(f"origin/main already holds {tip[:12]}: nothing to queue")
         return None
-    base = text(root, "merge-base", tip, MAIN)
-    commits = text(root, "rev-list", "--reverse", f"{base}..{tip}").split()
-    merges = text(root, "rev-list", "--merges", f"{base}..{tip}").split()
+    # A landing that creates main has no base: every commit to its tip lands, as it is, merges and all.
+    base = text(root, "merge-base", tip, MAIN) if present else None
+    commits = text(root, "rev-list", "--reverse", f"{base}..{tip}" if present else tip).split()
+    merges = text(root, "rev-list", "--merges", f"{base}..{tip}").split() if present else []
     if merges:
         # A branch refreshed by merging main, as the app's sync does, lands as its own commits replayed (#217).
         replayed = linear(queue, root, tip)
@@ -2064,15 +2094,23 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     # A branch added again replaces what it added before; main names nobody's work in particular.
     replaced = [entry for entry in waiting
                 if branch and branch not in ("main", "HEAD") and entry.get("branch") == branch]
+    # Only one entry can create main: any other waits for it, and then lands on the main it made (#10).
+    first = [entry["id"] for entry in waiting if entry not in replaced]
+    if not present and first:
+        raise Refused(f"{tip[:12]} is not queued: origin has no main yet, and {', '.join(first)} waiting ahead of it "
+                      "creates main, gated alone; land this again once that has landed", first)
     # A negated closing claim closes its issue on landing, whatever a gate finds (#286): refused before anything else.
     claims_before_queued(root, base, tip)
     # What a round would find, before anything is queued or replaced: a refused entry leaves the queue as it was. First
     # qk unittest's own checks before a run, which a gate holding it would fail in seconds and bisect blind (#290).
     checked_before_running(root, tip, gating)
-    check(root, queue, {"id": "new", "tip": tip, "commits": commits},
-          [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
-    # Then the preflight lanes, on its commits replayed onto origin/main, which take seconds where a slip costs a round.
-    preflight_before_queued(root, queue, tip, gating)
+    # A landing that creates main has nothing to integrate onto, nor preflight lanes, which only main may name.
+    if present:
+        check(root, queue, {"id": "new", "tip": tip, "commits": commits},
+              [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
+        # Then the preflight lanes, on its commits replayed onto origin/main, which take seconds where a slip costs a
+        # round.
+        preflight_before_queued(root, queue, tip, gating)
     # Which gate it will ride, found before anything is queued, so that no slip here leaves it queued unsaid (#118).
     # The round reads main's settings, or the batch's less what only main may say (settings), as gating stands for.
     riding = None if no_gate else rides(config if gating is config else as_batch(config_at(root, tip)), {
@@ -2084,7 +2122,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         if entry["state"] == TESTING: print(f"queue: {stopping(queue, entry)}", file=sys.stderr)
     now = time.time()
     subject = text(root, "log", "-1", "--format=%s", tip)
-    message = text(root, "log", "--format=%B", f"{base}..{tip}")
+    message = text(root, "log", "--format=%B", f"{base}..{tip}" if present else tip)
     entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": subject, "submitted": now, "state": QUEUED,
              "directory": str(root), **resources.coding_agent(), **({"replays": replays} if merges else {}), **flags}
@@ -2111,6 +2149,27 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         print("nothing else is needed for it to land; to be told at once if it comes back, run as a background "
               f"command: python3 {shlex.quote(str(root))}/scripts/qk queue wait {identifier}")
     return identifier
+
+
+def first_config(root, tip, no_gate):
+    """The settings an entry at tip that creates main, as origin has none yet, is gated by (add): its own
+    queuekeeper.json, less what only main may say (as_batch), as a project's first landing onto a main without one
+    reads (#10). Refused, with nothing queued, when tip has none, or none that names a gate lane, and for --no-gate,
+    since nothing ungated creates main."""
+    if no_gate:
+        raise Refused(f"{tip[:12]} is not queued: origin has no main yet, and the landing that creates it is gated; "
+                      "land it again without --no-gate")
+    if not has_config(root, tip):
+        raise Refused(f"{tip[:12]} is not queued: origin has no main yet, and {tip[:12]} has no queuekeeper.json, so "
+                      "the queue has nothing to gate the landing that creates main with: commit one with a gate lane "
+                      "and land that (README, Getting started)")
+    try:
+        config = as_batch(config_at(root, tip))
+        lanes_of(config)
+    except ValueError as error:
+        raise Refused(f"{tip[:12]} is not queued: origin has no main yet, and the landing that creates it is gated "
+                      f"by {tip[:12]}'s own queuekeeper.json, which the queue cannot use: {error}") from error
+    return config
 
 
 def rides(config, changed):
@@ -2810,13 +2869,15 @@ def reclaimed_words(item):
 
 
 def placement(root, name=None, as_json=False):
-    """Inspect current capacity for a configured gate lane without dispatching or taking admission."""
-    base = text(root, "rev-parse", MAIN)
-    config = config_at(root, base)
+    """Inspect current capacity for a configured gate lane without dispatching or taking admission: by origin/main's
+    configuration, or this checkout's while origin/main has none, as before a project's first landing (#10)."""
+    base = main_commit(root)
+    if base and has_config(root, base): config, where = config_at(root, base), base[:12]
+    else: config, where, base = load(root), "this checkout's queuekeeper.json, as origin/main has none yet", None
     name = name or (config.get("queue", {}).get("lanes") or ["gate"])[0]
     lane = lane_to_run(config, name, root)
     if lane is None:
-        raise ValueError(f"{name} is not a lane on {MAIN}; give the lane to inspect")
+        raise ValueError(f"{name} is not a lane on {MAIN if base else 'this checkout'}; give the lane to inspect")
     lanes = config["lanes"]
     local = stays(lanes, name)
     foreground = bool(lane.get("foreground"))
@@ -2855,7 +2916,7 @@ def placement(root, name=None, as_json=False):
     if as_json:
         print(json.dumps(report, indent=2))
     else:
-        print(f"{name} at {base[:12]} (whole host: {whole_host}, exclusive: {exclusive}, unlocked screen: {screen})")
+        print(f"{name} at {where} (whole host: {whole_host}, exclusive: {exclusive}, unlocked screen: {screen})")
         print(f"the farm's Macs: {', '.join(map(lane_wait.farm_mac, hosts)) or 'none'}"
               + (f"; local only: {local}" if local else ""))
         for row in checked:
@@ -3366,12 +3427,14 @@ class Worker:
                 return f"{where} did not settle in {int(waited)}s ({reason})"
             pause(min(SETTLE_POLL, max(0, SETTLE_LIMIT - waited)))
 
-    def prepare(self):
-        """The worker's own checkout. Locked, so that no sweep takes it for an abandoned worktree."""
-        self.place(self.queue.main_checkout, self.checkout, self.queue.old_checkout, "the merge queue's checkout")
+    def prepare(self, start=MAIN):
+        """The worker's own checkout, made at start when it is new: origin/main, or the tip of the landing that creates
+        main (first_landing). Locked, so that no sweep takes it for an abandoned worktree."""
+        self.place(self.queue.main_checkout, self.checkout, self.queue.old_checkout, "the merge queue's checkout", start)
 
-    def place(self, repository, path, old, reason):
-        """A locked worktree of repository at path. One an earlier worker kept at old moves there, with the
+    def place(self, repository, path, old, reason, start=MAIN):
+        """A locked worktree of repository at path, made at start, origin/main unless said. One an earlier worker kept
+        at old moves there, with the
         ignored inputs its lanes provisioned, when no process uses it: this worker holds the queue, so no gate
         of its own runs there, and a process that does, a lane an earlier worker left running among them, keeps
         it where it is. Then path is made afresh, and old stays, locked as retired, for `qk disk` to list."""
@@ -3387,7 +3450,7 @@ class Worker:
             # Relocked as retired, so that `qk disk` can show the owner that nothing needs it.
             git(repository, "worktree", "unlock", str(old), hooks=False)
             git(repository, "worktree", "lock", "--reason", f"{disk.RETIRED}: replaced by {path}", str(old), hooks=False)
-        git(repository, "worktree", "add", "--detach", "--lock", "--reason", reason, str(path), MAIN, hooks=False,
+        git(repository, "worktree", "add", "--detach", "--lock", "--reason", reason, str(path), start, hooks=False,
             check=True)
 
     def move(self, repository, old, new):
@@ -3517,8 +3580,9 @@ class Worker:
         """Whether Queuekeeper starts in the project at origin/main with the pin set made, as starts says of the
         checkout as it is: True, False when it exits TOOL_NOT_STARTED, or None when it says neither. The checkout is
         reset to origin/main first, as the round's integration resets it next: what an earlier batch left there may
-        be what does not start."""
-        self.reset(text(self.queue.main_checkout, "rev-parse", MAIN))
+        be what does not start. While origin has no main (#10), the checkout stays as it is."""
+        main = main_commit(self.queue.main_checkout)
+        if main: self.reset(main)
         command = toolkit_command(self.checkout, ["--version"], self.toolkit_root())
         try:
             status_ = processes.run(command, cwd=self.checkout, log_path=log.with_name(f"{log.stem}-start.log"),
@@ -4531,7 +4595,12 @@ class Worker:
         or gated as before. Whether it landed anything, a remote out of reach holding as for any fetch."""
         marked = [entry for entry in self.queue.waiting() if entry.get("publishing")]
         if not marked: return False
-        reach(self.queue.main_checkout, *FETCH, say=self.say, check=True)
+        if not fetch_main(self.queue.main_checkout, self.say):
+            # Nothing landed while origin has no main: the entries are gated as before.
+            self.say(f"origin has no main, so {', '.join(entry['id'] for entry in marked)}, whose push's answer never "
+                     "came, did not land, and are gated as before")
+            self.queue.drop_field(marked, "publishing")
+            return False
         main, landed = text(self.queue.main_checkout, "rev-parse", MAIN), False
         while marked:
             marker = marked[0]["publishing"]
@@ -4579,7 +4648,8 @@ class Worker:
         records its own commit on main rather than the batch's tip (vocaro-engineering#184). A pushed commit is its
         entry's by author, author date and subject, which a cherry-pick, a carry-over and the UNGATED amend all keep,
         matched in order, as the batch was picked in order. An entry none of whose commits the range holds, as when
-        main already had each, is left out, and records the tip, which holds it."""
+        main already had each, is left out, and records the tip, which holds it. A base of None, for the landing that
+        created main (first_landing), reads every commit to head."""
         form = "--format=%H%x00%an%x00%ae%x00%ad%x00%s"
         def keyed(output):
             return [(line.split("\0", 1)[0], line.split("\0", 1)[1]) for line in output.splitlines() if line]
@@ -4588,7 +4658,8 @@ class Worker:
             originals = keyed(text(self.checkout, "show", "-s", "--date=raw", form, *entry["commits"]))
             expected += [(entry["id"], key) for _, key in originals]
         own, position = {}, 0
-        for commit, key in keyed(text(self.checkout, "log", "--reverse", "--date=raw", form, f"{base}..{head}")):
+        for commit, key in keyed(text(self.checkout, "log", "--reverse", "--date=raw", form,
+                                      f"{base}..{head}" if base else head)):
             match = next((index for index in range(position, len(expected)) if expected[index][1] == key), None)
             if match is None: continue
             identifier = expected[match][0]
@@ -4631,7 +4702,8 @@ class Worker:
         call it, before any connection to the remote. Status 0 when the project has none."""
         log = self.queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}-pre-push.log"
         told = self.queue.directory / "pre-push.stdin"
-        told.write_text(f"HEAD {head} refs/heads/main {text(self.checkout, 'rev-parse', MAIN)}\n")
+        # Git's all-zero name for a main the push creates (#10).
+        told.write_text(f"HEAD {head} refs/heads/main {main_commit(self.checkout) or '0' * 40}\n")
         url = text(self.checkout, "remote", "get-url", "--push", "origin")
         self.say(f"pre-push hook on {head[:12]}")
         try:
@@ -5282,7 +5354,7 @@ class Worker:
         batch = self.stacked.entries if self.stacked else self.choose(waiting)
         if not batch: return False
         passed = [entry for entry in batch if entry["state"] == PASSED] if not self.stacked else []
-        reach(queue.main_checkout, *FETCH, say=self.say, check=True)
+        if not fetch_main(queue.main_checkout, self.say): return self.first_landing(batch[0])
         self.prepare()
         self.toolkit()
         self.pin()
@@ -5363,6 +5435,91 @@ class Worker:
         if older_passes: beside.weigh(config, base, older_landed=outcome == LANDED)
         self.after_beside(beside, applied, outcome)
         return True
+
+    def first_landing(self, entry):
+        """Gate entry alone and create main from its tip, as origin has no main yet (#10): the owner's choice for a
+        repository created empty. Its own queuekeeper.json gates it, less what only main may say (as_batch), with its
+        lanes for every path it holds and never the docs lanes alone. On a pass, after the pre-push hook, its tip is
+        pushed only while main is still absent (--force-with-lease), so that nothing ungated lands and nothing on main
+        is rewritten; a main created meanwhile queues it again, for the next round to land it on top of that main or
+        find main already holds it. A failure sends it back, and no verdict counts as any round's does."""
+        queue, tip = self.queue, entry["tip"]
+        self.prepare(start=tip)
+        self.toolkit()
+        self.pin()
+        self.jumped, self.alone, self.ungating = {}, True, False
+        self.reset(tip)
+        self.gating = (entry["id"],)
+        config = as_batch(self.judged(f"the entry at {tip[:12]}"))
+        changed = text(self.checkout, "ls-tree", "-r", "--name-only", tip).splitlines()
+        try: lanes = lanes_of(config, changed)
+        except ValueError as error:
+            queue.settle(entry, FAILED, why=f"origin has no main yet, and this entry's queuekeeper.json, which would "
+                                            f"gate the landing that creates it, cannot: {error}")
+            return True
+        queue.mark([entry], TESTING)
+        self.say(f"testing {entry['id']} at {tip[:12]} alone: origin has no main yet, so this landing creates it, "
+                 f"gated by the entry's own queuekeeper.json, all but its queue.{' and queue.'.join(MAIN_ONLY)}")
+        round_name = f"{time.strftime('%Y%m%d-%H%M%S')}-{tip[:8]}"
+        self.role = "batch"
+        self.checks = quick_lanes(config, code=True)
+        self.begun(round_name, tip, None, [entry])
+        result, log = self.gate(lanes, round_name)
+        self.prune()
+        if result in NO_VERDICT or result == WITHDRAWN:
+            self.older(config, [entry], None, tip, None, None, result, log, round_name)
+            return True
+        unstarted = self.unstarted(result)
+        if unstarted:
+            queue.mark([entry], QUEUED)
+            queue.hold(worded(SESSION, f"{self.failed_lane} could not start{self.ran_where}: {unstarted}. Its command "
+                                       "never ran, so this says nothing of the commits that create main and none is "
+                                       f"sent back: {self.start_fix()}; see {log}"))
+            return True
+        self.no_verdicts = self.locked_screens = 0
+        if result:
+            why = "the queue's lanes fail on this commit, gated alone to create main: fix it and add it again."
+            self.say(f"{entry['id']}: {why}")
+            self.settle_failure(entry, log, why)
+            return True
+        current = queue.read(entry["id"])
+        if current is None or current["state"] not in WAITING:
+            self.say(f"{entry['id']} was removed during the run: nothing creates main")
+            return True
+        return self.create_main(config, entry, tip)
+
+    def create_main(self, config, entry, tip):
+        """Push tip, which passed its gate alone, as origin's new main (first_landing), after the pre-push hook, which
+        runs as for any landing, since only main may say that lanes cover it. The lease says main must still be absent:
+        one created meanwhile queues entry again, and the next round lands it on top of that main, or finds main
+        already holds it. A refusal of any other kind holds, as push's does."""
+        result, log = self.pre_push(tip)
+        if result in NO_VERDICT:
+            raise Hold(SESSION, f"the pre-push hook gave no verdict, exit {result}, on {tip[:12]}, which would create "
+                                f"main; see {log}")
+        if result: raise Hold(SESSION, f"the pre-push hook refused {tip[:12]}, exit {result}; see {log}"
+                                       + hooks_elsewhere(self.checkout))
+        try:
+            pushed = reach(self.checkout, "push", "--no-verify", "--force-with-lease=refs/heads/main:", "origin",
+                           f"{tip}:refs/heads/main", say=self.say)
+        except subprocess.TimeoutExpired as error:
+            raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: the push of {tip[:12]}, which would create main, gave no "
+                               f"answer in {error.timeout:g}s; the next round's fetch says whether it did") from error
+        said = pushed.stderr.strip()
+        if pushed.returncode == 0:
+            git(self.checkout, *FETCH)
+            self.say(f"pushed {tip[:12]}, creating main")
+            self.settle_pushed([entry], None, tip, None, None, {}, None, self.measured)
+            return True
+        if STALE_LEASE.search(said) and fetch_main(self.queue.main_checkout, self.say):
+            self.say(f"main was created while {entry['id']} gated, so its push, which creates main only while there is "
+                     "none, was refused: queued again, to land on top of that main")
+            self.queue.mark([entry], QUEUED)
+            return True
+        if unreached(said):
+            raise Hold(CLEARS, f"the push of {tip[:12]}, which would create main, did not reach the remote in "
+                               f"{len(BACKOFF) + 1} tries: {said}")
+        raise Hold(OWNER, f"the push of {tip[:12]}, which would create main, was refused: {said or 'no output'}")
 
     def docs_ahead(self, waiting, batch, base):
         """This round's batch, once docs-only entries are kept out of code batches (vocaro-engineering#394): the
