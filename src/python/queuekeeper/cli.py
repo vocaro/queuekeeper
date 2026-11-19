@@ -134,6 +134,34 @@ def out_of_space(lane, why):
     return lane_results.UNMEASURED
 
 
+def slept_since(began):
+    """Seconds this Mac slept since remote.asleep() read began, or 0 where either reading is missing or the sleep was
+    shorter than remote.SLEEP_NOTED, which two clocks may differ by without any. macOS stops time.monotonic(), its
+    CLOCK_UPTIME_RAW, while asleep, and CLOCK_MONOTONIC_RAW runs on (remote.asleep)."""
+    now = remote.asleep() if began is not None else None
+    slept = now - began if now is not None else 0
+    return slept if slept >= remote.SLEEP_NOTED else 0
+
+
+def slept_failure(status, receipt):
+    """Whether a run that ended with status, through a sleep of this Mac, failed in a way the sleep may have caused: any
+    failure but a refused usage, a build that failed, which never reads as unmeasured (compile_first), and a command
+    that never started. A test's time limit counted on a clock that runs through sleep runs out while nothing runs."""
+    return status not in (0, lane_results.UNMEASURED, USAGE) and status not in merge_queue.NO_VERDICT \
+        and not compile_failed(receipt) and not receipt.get("notStarted")
+
+
+def slept_through(lane, slept):
+    """Say that lane's run failed across slept seconds of this Mac's sleep, and so is unmeasured, the host's fault and
+    not the commits' (vocaro/queuekeeper#198), and return the words, which the run's receipt records as its error, the
+    cause the merge queue's hold gives. On 2026-11-16 a Pagepour gate run on a Mac whose lid closed on battery sent back
+    a change to its configuration on two Swift tests that timed out across the sleep."""
+    words = (f"{this_mac()} slept for {slept:.0f} s while {lane} ran, and a test's time limit runs on through a sleep "
+             "while nothing runs, so its failures say nothing of the commits it ran")
+    print(f"queuekeeper: unmeasured: {words}", file=sys.stderr, flush=True)
+    return words
+
+
 def failed_short(status, admission, tree):
     """Why a run that ended with status, a failure, failed for want of disk space, or None: a write of its admission
     found the disk full, or the disk is short of QUEUEKEEPER_RUN_FREE_GB now that it has ended. A command that fails
@@ -1693,6 +1721,8 @@ def perform(argv, report):
             whole = not extra and args.expect is None and not args.serial
             keys = lane_devices(lane)
             admission = None
+            # remote.asleep()'s reading as the lane's command starts, for the sleep its run spans (slept_since).
+            asleep_began = None
             # Where the lane's command runs: this checkout, or the worktree of what was sent (admitted_tree). Its
             # receipt, logs and results stay in this checkout's directory either way.
             tree = root
@@ -1761,6 +1791,7 @@ def perform(argv, report):
                         # Each part its script admits stays on this Mac, which holds what an earlier part built.
                         lane_wait.running()
                         with patch_environment({SELF_LANE: args.lane}):
+                            asleep_began = remote.asleep()
                             result = execute()
                     else:
                         with contextlib.ExitStack() as stack:
@@ -1821,6 +1852,7 @@ def perform(argv, report):
                             unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited,
                                                              admission.interrupted, tree if tree != root else None)
                             if unprovisioned is not None: return unprovisioned
+                            asleep_began = remote.asleep()
                             result = execute(admission.interrupted)
                             # A failed build ran no test an alert could have disturbed.
                             if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)
@@ -1831,8 +1863,13 @@ def perform(argv, report):
                     report.explain(error, complete=False)
                     return out_of_space(args.lane, error)
                 print(f"queuekeeper: unmeasured: {error}", file=sys.stderr)
+                slept = slept_since(asleep_began)
+                if slept: print(f"queuekeeper: {this_mac()} slept for {slept:.0f} s of that", file=sys.stderr)
                 report.explain(error, complete=False)
                 return lane_results.UNMEASURED
+            # A pass through a sleep keeps its pass; the receipt says how long this Mac slept (vocaro/queuekeeper#198).
+            slept = slept_since(asleep_began)
+            if slept: receipt["sleptSeconds"] = round(slept)
             # A group's lanes were each judged by their own logs.
             if "parallel" in lane:
                 short = failed_short(result, admission, tree)
@@ -1840,6 +1877,10 @@ def perform(argv, report):
                     receipt["outOfSpace"] = short
                     concluded(lane_results.UNMEASURED)
                     return out_of_space(args.lane, short)
+                if slept and slept_failure(result, receipt):
+                    words = slept_through(args.lane, slept)
+                    concluded(lane_results.UNMEASURED, unmeasured=[words], error=words)
+                    return lane_results.UNMEASURED
                 if reads_screen and result == lane_results.UNMEASURED: unmeasured_screen(args.lane, receipt)
                 concluded(result)
                 return result
@@ -1864,6 +1905,10 @@ def perform(argv, report):
                 receipt["outOfSpace"] = short
                 concluded(lane_results.UNMEASURED, unmeasured=[f"out of disk space: {short}"])
                 return out_of_space(args.lane, short)
+            if slept and slept_failure(status, receipt):
+                words = slept_through(args.lane, slept)
+                concluded(lane_results.UNMEASURED, unmeasured=[words], error=words)
+                return lane_results.UNMEASURED
             if status == lane_results.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)
             # A failure whose log shows no test started, such as a project that could not be generated, exits apart

@@ -332,6 +332,10 @@ misconfigured Mac) blame no commit. The worker runs the lanes again, and holds o
   and without the batch, within `START_LIMIT` (60 s). If only the batch breaks it, the batch is
   bisected; otherwise the queue holds for a session.
 - **Disk space.** A lane that ends with `queuekeeper: out of disk space:` holds at once.
+- **Sleep.** A lane that fails while its Mac sleeps over 5 s during its command, as a lid closed on
+  battery does, ends unmeasured (exit 3), and its receipt's error and `sleptSeconds` say how long:
+  a test's time limit runs on through the sleep while nothing runs. A pass through a sleep keeps its
+  pass, and a failed `compileFirst` build stays failed (`cli.slept_since`).
 - **What the hold says.** How many runs, on which Mac, and why: the lane at its limit, the first
   unmeasured test and last screen reading, the receipt's error, no admission, or the Mac's
   configuration, else the project's last `Unmeasured:` line (cut at `UNMEASURED_SHOWN`, 300
