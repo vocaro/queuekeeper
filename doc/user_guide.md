@@ -787,6 +787,55 @@ cannot have the step, and a group runs its members without theirs. `qk xctest` a
 `qk simulator-tests` compile first already. For `qk admit`, chain the two in one admitted job:
 `qk admit -- bash -c 'BUILD && TESTS'`.
 
+### Sandboxing a lane
+
+A lane can run its command under macOS's Seatbelt sandbox (`sandbox-exec`), so tests an agent
+wrote cannot write outside the checkout or reach the network freely:
+
+```json
+"unit": {"command": ["python3", "-m", "pytest"], "sandbox": true},
+"integration": {"command": ["scripts/integration.sh"],
+                "sandbox": {"write": ["~/.gradle"], "network": ["localhost", "*:443"]}}
+```
+
+The command and its `compileFirst` may write only to:
+
+- the checkout the lane runs in, and its git directory (a linked worktree keeps that outside the checkout)
+- the run's directory under `.build/queuekeeper/`
+- `/private/tmp`, `/private/var/tmp`, `$TMPDIR`, the user's temporary and cache folders, `~/Library/Caches`
+  and `~/.cache`
+- the null and terminal devices
+- the folders in `write`: absolute, `~/...`, or relative to the checkout
+
+Reading is not limited. The network is off unless `network` says otherwise. Unix sockets inside the
+lane's own writable folders still work, so a test's server and client can talk. Seatbelt can tell only
+localhost from other hosts, so `network` takes `localhost`, `localhost:PORT`, `*:PORT` (any host on
+that port, with name lookups), `*` (no limit), or a unix socket's absolute path. A host name such as
+`github.com:443` is refused.
+
+The profile is made when the lane starts on the Mac that runs it, after admission has placed it, so a
+lane sent to another Mac gets that Mac's paths. It is kept as `sandbox.sb` in the run's directory
+(`sandbox-NAME.sb` for each member of a group), and the receipt's `sandbox` lists what it allows.
+Before the command starts, Queuekeeper checks that the profile applies on that Mac. If it does not,
+the lane ends `not-started`, not failed. A refused write fails the command's own call with
+`Operation not permitted`.
+
+Admission and [process supervision](#process-supervision) work as for any lane. `qk run` holds the
+admission outside the sandbox, and `sandbox-exec` replaces itself with the command, so its time limit
+and stop reach the same processes. A group's members each have their own `sandbox` (a group cannot
+have one).
+
+macOS cannot apply a sandbox inside another. A lane run inside a sandboxed lane runs under the outer
+sandbox, and its receipt says `{"inside": "OUTER"}`. For the same reason:
+
+- **A `self` lane** cannot have a sandbox: its script admits its parts, which may run on other Macs.
+- **Xcode and SwiftPM** apply sandboxes of their own (xcodebuild to script phases, SwiftPM to manifests
+  and plugins), and they write to `~/Library/Developer`. With the Apple extension, a lane with `idioms`, or
+  whose command or `compileFirst` runs `xcodebuild`, `xcrun`, `swift`, `simctl`, `devicectl`,
+  `simulator-tests` or `xctest`, is refused a sandbox when the configuration is read. Run these lanes
+  unsandboxed. A script that runs one of them inside a sandboxed lane fails when it starts it.
+- **Device lanes** reach phones over the network and usbmuxd's socket. Run them unsandboxed too.
+
 ### Lane groups
 
 A lane whose `parallel` names other lanes runs them at once under one admission:

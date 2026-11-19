@@ -49,6 +49,7 @@ Changing Queuekeeper while other projects' work runs on it has its own rules:
 | `src/python/queuekeeper/resources.py` | Heavy-work admission on one Mac |
 | `src/python/queuekeeper/remote.py`, `offload_host.py` | Placement and running work on another Mac |
 | `src/python/queuekeeper/config.py`, `schemas/queuekeeper.schema.json` | Project settings |
+| `src/python/queuekeeper/sandbox.py` | A lane's Seatbelt sandbox: its profile and the words that start its command under it |
 | `src/python/queuekeeper/extensions.py` | Extension hooks. The core never imports a plugin directly |
 | `src/python/queuekeeper/events.py` | The event journal |
 | `src/python/queuekeeper/visibility/` | The visibility switch and features |

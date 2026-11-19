@@ -18,6 +18,9 @@ COMMAND_ENVIRONMENT = []
 COMMAND_WRAPPERS = []
 # Each (): called before a command that reaches the hosts starts (run, admit, remote, land, queue, disk).
 HOST_COMMAND = []
+# Each (lane) -> why the lane cannot run in a sandbox, or None: a lane whose "sandbox" one refuses is refused when the
+# configuration is read (sandbox.check). The Apple extension refuses lanes that run Xcode or SwiftPM.
+SANDBOX_REFUSALS = []
 # Each (root, config): called before a lane or an admitted command is placed; a ValueError refuses the run.
 BEFORE_LANE = []
 # Each (root, config): called on the Mac that runs an admitted lane or command, before its command starts.

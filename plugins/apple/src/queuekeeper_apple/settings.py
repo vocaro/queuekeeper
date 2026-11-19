@@ -62,6 +62,27 @@ def simulator_pool(value):
         raise ValueError("simulatorPool must be a nonempty name, such as the project's")
 
 
+# The words that start a command that runs Xcode or SwiftPM, which a lane's sandbox cannot hold (sandbox_refusal).
+XCODE_WORDS = frozenset({"xcodebuild", "xcrun", "swift", "simulator-tests", "xctest", "xcodes", "simctl", "devicectl"})
+
+
+def sandbox_refusal(lane):
+    """Why the lane cannot run in a sandbox (queuekeeper.sandbox), or None. xcodebuild applies a sandbox of its own to
+    a target's script phases (ENABLE_USER_SCRIPT_SANDBOXING) and SwiftPM to its manifests and plugins, and macOS refuses
+    one inside another (sandbox_apply: Operation not permitted, measured on macOS 27.2); Xcode, its simulators and
+    CoreDevice also write to ~/Library/Developer and reach devices over the network. Such a lane runs unsandboxed.
+    A lane's command is read word by word, so a script that runs xcodebuild is not caught here and fails as it starts
+    it."""
+    if lane.get("idioms") is not None: return "a lane with idioms runs on simulators, which Xcode runs"
+    words = {Path(word).name for word in [*lane.get("command", []), *lane.get("compileFirst", [])] if isinstance(word, str)}
+    found = sorted(words & XCODE_WORDS)
+    if found:
+        return (f"its command runs {', '.join(found)}, which applies a sandbox of its own, and macOS refuses one inside "
+                "another")
+    return None
+
+
 def register():
     extensions.CONFIG_KEYS.update(app=app, simulatorPool=simulator_pool)
     extensions.LANE_KEYS.update(idioms=Idioms())
+    if sandbox_refusal not in extensions.SANDBOX_REFUSALS: extensions.SANDBOX_REFUSALS.append(sandbox_refusal)

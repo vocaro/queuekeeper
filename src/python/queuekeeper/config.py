@@ -6,7 +6,7 @@ import re
 import sys
 from pathlib import Path, PurePosixPath
 
-from . import extensions as hooks, pins
+from . import extensions as hooks, pins, sandbox
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
 # The extensions a project gets when its queuekeeper.json names none, and that a command with no project loads.
@@ -121,7 +121,7 @@ def load(root):
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms", "exactTests",
-                       "failedTests", "labels"})
+                       "failedTests", "labels", "sandbox"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
 EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
@@ -195,6 +195,7 @@ def parse(source):
         compile_first(name, lane)
         stall(name, lane)
         failed_tests_setting(name, lane)
+        sandbox.check(name, lane)
         extension_keys(name, lane)
         command = lane.get("command")
         if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):

@@ -15,7 +15,7 @@ import time
 import traceback
 
 from . import pins, __version__, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
-    parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, trial, wait_history
+    parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_unread_warning, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
@@ -177,13 +177,14 @@ def compile_failed(receipt):
     return receipt.get("compile", {}).get("outcome") == "failed"
 
 
-def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_after):
+def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_after, wrap=()):
     """A lane's "compileFirst" command, run inside the lane's one admission and environment, so that its xcodebuild or
     swift has the stale-module rebuild the lane's own has (shims.py). Returns (status, seconds left): the
     status of a failed build with None, its output staying in run.log, or None with what remains of limit for the
     lane's command, which shares the lane's one timeout. The step's output moves to compile.log once it has passed, so
     that run.log holds only the tests queuekeeper reads. A build that fails never reads as unmeasured, whatever status it
-    exited with; one that reaches the limit raises TimedOut, which is. A lane without the step has its whole limit."""
+    exited with; one that reaches the limit raises TimedOut, which is. A lane without the step has its whole limit.
+    wrap starts it under the lane's sandbox, as the lane's command starts (sandbox.prepared)."""
     compiled = directory / "compile.log"
     compiled.unlink(missing_ok=True)
     command = lane.get("compileFirst")
@@ -191,7 +192,7 @@ def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_afte
     log = directory / "run.log"
     step = receipt["compile"] = {"command": command}
     began = time.monotonic()
-    status = processes.run(command, cwd=root, log_path=log, timeout=limit, on_stop=on_stop, env=env, kill_after=kill_after)
+    status = processes.run([*wrap, *command], cwd=root, log_path=log, timeout=limit, on_stop=on_stop, env=env, kill_after=kill_after)
     seconds = time.monotonic() - began
     step.update(exitStatus=status, seconds=round(seconds, 3))
     if status == 0:
@@ -1759,13 +1760,17 @@ def perform(argv, report):
                     def work():
                         env = shims.environment(parallel.results_environment(directory / "results"), tree)
                         kill_after = processes.FOREGROUND_KILL_AFTER if lane.get("foreground") else processes.KILL_AFTER
+                        # Made here, on the Mac that runs it, for the tree it reads (sandbox.py).
+                        try: wrap, sandboxed = sandbox.prepared(args.lane, lane, tree, directory)
+                        except sandbox.Unusable as error: return not_started(directory, receipt, args.lane, str(error))
+                        if sandboxed: receipt["sandbox"] = sandboxed
                         failed, left = compile_first(lane, tree, directory, receipt, limit,
-                                                     env, on_stop, kill_after)
+                                                     env, on_stop, kill_after, wrap)
                         if failed is not None: return failed
                         why = unstartable(lane["command"], tree)
                         if why: return not_started(directory, receipt, args.lane, why)
                         try:
-                            return processes.run(command, cwd=tree, log_path=directory / "run.log", timeout=left,
+                            return processes.run([*wrap, *command], cwd=tree, log_path=directory / "run.log", timeout=left,
                                                  on_stop=on_stop, env=env, kill_after=kill_after,
                                                  **({"stall": lane["stall"], "progress_path": directory / "results/progress.json"}
                                                     if "stall" in lane else {}))
@@ -1778,9 +1783,18 @@ def perform(argv, report):
                 # Each lane's receipt shows the command it ran, as its own keys make it.
                 members = [(name, {**config["lanes"][name], "command": lane_command(config["lanes"][name])}) for name in group]
                 def execute(on_stop=None):
-                    return record(directory, receipt, lambda: prepared(lambda: parallel.lanes(tree, members, directory / "lanes", jobs,
-                                  lambda member, status, log: judge(member, status, log)[0], receipt, on_stop,
-                                  results_directory=directory / "results")))
+                    def work():
+                        # Each lane's own sandbox, made for the tree the group reads, its profile in the group's directory.
+                        wrapped = []
+                        for name, member in members:
+                            try: wrap, sandboxed = sandbox.prepared(name, member, tree, directory, f"sandbox-{name}.sb")
+                            except sandbox.Unusable as error: return not_started(directory, receipt, name, str(error))
+                            if sandboxed: receipt.setdefault("sandbox", {})[name] = sandboxed
+                            wrapped.append((name, {**member, "command": [*wrap, *member["command"]]}))
+                        return parallel.lanes(tree, wrapped, directory / "lanes", jobs,
+                                              lambda member, status, log: judge(member, status, log)[0], receipt, on_stop,
+                                              results_directory=directory / "results")
+                    return record(directory, receipt, lambda: prepared(work))
             try:
                 with processes.forwarding_signals():
                     if resource == "self":
