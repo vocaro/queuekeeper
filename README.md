@@ -36,71 +36,26 @@ queues, including other local queues for AI agents, and says where they are the 
 
 ## Getting started
 
-Suppose you use Claude Code or Codex to work on two projects already checked out at
-`~/Development/my-app` and `~/Development/my-game`. You want agents in both repositories to send
-finished work through Queuekeeper and share your Mac's build capacity. Set up Queuekeeper once on
-the Mac, then configure each repository. You can ask an agent to do the setup with the prompts below;
-replace the example paths with yours.
+Queuekeeper needs macOS, Python 3.14 or newer and Git. Each project needs an `origin` remote it can
+push to without a prompt and must allow changes to land directly on `main`; Queuekeeper does not
+integrate through pull requests. Start with one Mac and [add more](doc/user_guide.md#add-another-mac)
+later if builds need it. You can do each step below yourself, following the
+[user guide](doc/user_guide.md#set-up), or ask an agent to do it.
 
-Using agents is optional: you can also set up and use
-Queuekeeper directly from the command line. The [user guide](doc/user_guide.md#set-up) has the
-commands and configuration details.
-
-**1. Check that the projects fit.** You need macOS, Python 3.14 or newer, Git, and the tools that
-already build and test each project. Each repository needs a remote named `origin` that can be
-pushed to without a prompt, and must allow changes to land directly on `main`. Queuekeeper does
-not integrate through pull requests. Start with one Mac; you can [add more](doc/user_guide.md#add-another-mac)
-if needed to speed up builds and tests.
-
-**2. Install Queuekeeper once.** In an agent session with access to your development folder, ask:
-
-> Clone https://github.com/vocaro/queuekeeper.git into ~/Development/queuekeeper. Read
-> doc/user_guide.md, check the requirements, and install it with
-> `python3 tools/install-checkout.py` using Python 3.14 or newer. Make sure `qk --help` works
-> in the shell my agents use. Report any missing tools or setup I need to handle.
-
-Keep that checkout: the installed `qk` command runs it. Both projects use the same installation.
-The [installation steps](doc/user_guide.md#install) explains the PATH setup and how to update
-or remove it.
-
-**3. Configure each project.** Open an agent session in each repository and give it this task:
-
-> Set up this repository for Queuekeeper using ~/Development/queuekeeper/doc/user_guide.md.
-> Inspect the existing build and test scripts, then add queuekeeper.json with a gate that runs
-> this project's checks and has an explicit timeout. Enable the plugins this project needs;
-> read their setup docs first. Ask me which cheap checks to list as preflight lanes, and check the
-> documentation-only behavior with me. Run `qk doctor` and resolve its findings. Work on a branch and leave the setup ready to review.
-
-Each repository gets its own `queuekeeper.json`, gate and queue. The projects can use different
-test commands and [plugins](#plugins) while sharing the Mac's capacity.
-
-**4. Teach future agent sessions the workflow.** In both repositories, have the agent update the
-project instructions that your coding tools read, such as `CLAUDE.md` or `AGENTS.md`. Ask it to
-include the [agent instructions from the user guide](doc/user_guide.md#tell-your-agents),
-adapting the lane names to the project. Those instructions tell agents to:
-
-- Submit committed work with `qk land --wait` instead of pushing to `main`, and follow it to a result.
-- Run builds and tests through `qk run LANE` or `qk admit -- COMMAND` so agents in both projects
-  share the machine without overloading it.
-- Fix failures using the verdict and logs, and resume following an existing queue entry if a wait
-  is interrupted.
-
-This is what makes Queuekeeper part of everyday agent work. Installing the command alone does
-not change how an agent builds, tests or pushes.
-
-**5. Review and land the setup in both repositories.** Review each project's gate, plugin settings
-and agent instructions, then ask its agent to commit and land the setup through Queuekeeper.
-The first landing runs the gate defined by the setup commit; later landings use the settings on
-`main`, so a branch cannot loosen its own checks. Queuekeeper tests in a checkout of its own and
-pushes what passes, leaving the agent's working tree alone.
-
-Ask each agent to confirm that its setup landed on `origin/main` and report the queue result.
-If a gate fails, have it fix the cause and submit the correction. Once both setups have landed,
-new agent sessions in either project can use the same workflow for their changes.
-
-**6. Choose how to follow the work.** Ask an agent to enable the [dashboard](#dashboard) for a view
-across projects, or [notifications](doc/user_guide.md#the-notify-feature) when the queue needs your attention. Agents
-can check their own project's queue with `qk queue status`.
+1. **Install once per Mac.** Clone this repository into `~/Development/queuekeeper` and run
+   `python3 tools/install-checkout.py`. Keep the checkout: the installed `qk` command runs from it
+   ([details](doc/user_guide.md#install)).
+2. **Configure each project.** Add a `queuekeeper.json` whose gate runs the project's checks, enable
+   the [plugins](#plugins) it needs, and resolve what `qk doctor` reports. Each project keeps its own
+   gate and queue while sharing the Mac's capacity.
+3. **Teach your agents.** Add the [agent instructions](doc/user_guide.md#tell-your-agents) to each
+   project's `CLAUDE.md` or `AGENTS.md`, so agents land work with `qk land --wait` instead of pushing
+   to `main` and run builds and tests through `qk run` or `qk admit`. Installing `qk` alone does not
+   change how agents work.
+4. **Land the setup** through Queuekeeper with `qk land --wait`. Later landings use the gate on
+   `main`, so a branch cannot loosen its own checks.
+5. **Follow the work** in the [dashboard](#dashboard), through
+   [notifications](doc/user_guide.md#the-notify-feature), or with `qk queue status`.
 
 ## Dashboard
 
