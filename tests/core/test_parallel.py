@@ -749,7 +749,10 @@ class UnittestRunnerTests(unittest.TestCase):
                                  (["-k", "keep", "test_alpha"], "is selected by -k keep and test_alpha"),
                                  # A name that matches nothing fails the run though another matches.
                                  (["test_alpha.Landing", "test_alpha.Landng"], "is or is under test_alpha.Landng"),
-                                 (["test_alpha.Land"], "is or is under test_alpha.Land")):
+                                 (["test_alpha.Land"], "is or is under test_alpha.Land"),
+                                 # Two names in one argument, as zsh passes an unquoted $var, are named as such.
+                                 ([" test_alpha.Landing test_beta"], "1 NAME held several words in one argument, "
+                                  "such as 'test_alpha.Landing' and 'test_beta'")):
             with self.subTest(arguments=arguments):
                 status, output = self.run_suite(root, *arguments)
                 self.assertEqual(status, 5, output)

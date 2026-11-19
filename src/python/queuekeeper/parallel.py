@@ -565,6 +565,15 @@ def discover(args, start, top):
         if unmatched:
             print(f"queuekeeper unittest: no test discovered in {start} matching {matching} is or is under "
                   f"{', '.join(unmatched)}", file=sys.stderr)
+            # No test id holds whitespace. On 2026-11-19 a session's 23 class names reached the runner as one, from
+            # `qk unittest $args` in zsh, which does not split an unquoted variable, and the message read as 23
+            # names that each matched nothing.
+            joined = [name for name in unmatched if len(name.split()) > 1]
+            if joined:
+                print(f"queuekeeper unittest: {len(joined)} NAME{'s' if len(joined) > 1 else ''} held several words "
+                      f"in one argument, such as {joined[0].split()[0]!r} and {joined[0].split()[1]!r}: pass each "
+                      "name as its own argument (zsh does not split an unquoted $var: write ${=var} or an array)",
+                      file=sys.stderr)
             return NO_TESTS
         tests = [test for test in tests if selected(test, selectors, args.names)]
         if not any(type(test).__module__ != "unittest.loader" for test in tests):
