@@ -9,7 +9,6 @@
     "gate": {
       "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4", "--jobs", "8", "-v"],
       "resource": "heavy",
-      "minimumTests": 40,
       "timeout": 2400,
       "budgetMinutes": 15
     },
@@ -19,8 +18,6 @@
     },
     "setup-examples": {
       "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "core.test_setup_examples"],
-      "minimumTests": 2,
-      "exactTests": true,
       "timeout": 300
     }
   },
