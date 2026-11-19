@@ -3870,12 +3870,12 @@ class RemoteTests(unittest.TestCase):
             status, output, error = self.run_here("gate")
         self.assertEqual(status, 0, output + error)
         self.assertRegex(error, r"queuekeeper: trying gate on this Mac: the lane needs an unlocked screen, and fake's is "
-                                r"locked \(screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked yes, "
+                                r"locked \(screen: locked \(console user owner, CGSSessionScreenIsLocked yes, "
                                 r"IOConsoleLocked no\) on \S+ at \d\d:\d\d:\d\d\)")
         self.assertNotIn("remote: sending", error)
         self.assertRegex(error, r"queuekeeper: gate runs on this Mac \(\S+\), not another Mac: the lane needs an unlocked "
                                 r"screen\b")
-        self.assertRegex(error, r"queuekeeper: screen: unlocked \(console user trevorharmon, CGSSessionScreenIsLocked absent, "
+        self.assertRegex(error, r"queuekeeper: screen: unlocked \(console user owner, CGSSessionScreenIsLocked absent, "
                                 r"IOConsoleLocked no\) on this Mac \(\S+\) at ")
         receipt = self.ran_here()
         self.assertEqual((receipt["ranOn"], receipt["screen"]["state"]), ("this Mac", "unlocked"))
@@ -3888,9 +3888,9 @@ class RemoteTests(unittest.TestCase):
             status, output, error = self.run_here("--if-free", "gate")
         self.assertEqual(status, resources.BUSY, output + error)
         self.assertIn("fake did not take it: its screen is locked, and the lane needs it unlocked (screen: locked "
-                      "(console user trevorharmon, CGSSessionScreenIsLocked yes, IOConsoleLocked yes)", error)
+                      "(console user owner, CGSSessionScreenIsLocked yes, IOConsoleLocked yes)", error)
         self.assertRegex(error, r"queuekeeper: gate waits: the lane needs an unlocked screen, and this Mac \(\S+\)'s is locked "
-                                r"\(screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked yes, "
+                                r"\(screen: locked \(console user owner, CGSSessionScreenIsLocked yes, "
                                 r"IOConsoleLocked no\)")
         self.assertIn("queuekeeper: gate not run: no Mac admitted it now; fake is busy: fake did not take it: "
                       "its screen is locked", error)

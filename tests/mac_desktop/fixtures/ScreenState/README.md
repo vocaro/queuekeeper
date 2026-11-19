@@ -1,10 +1,10 @@
 # Recorded screen states
 
-`ioreg -n Root -d1 -a` from the Macs on 2026-11-05, both unlocked, with the large
-`IOKitDiagnostics` and `IORegistryEntryChildren` entries removed:
+`ioreg -n Root -d1 -a` from the Macs on 2026-11-05, both unlocked, with the console user renamed
+`owner` and the large `IOKitDiagnostics` and `IORegistryEntryChildren` entries removed:
 
 - `this-mac-unlocked.plist`: Trevors-MacBook-Pro-715, one login session, on the console.
-- `second-mac-unlocked.plist`: Medias-MacBook-Pro-5, `trevorharmon` on the console and
+- `second-mac-unlocked.plist`: Medias-MacBook-Pro-5, `owner` on the console and
   `mediaserver` not.
 
 The others are those recordings with only the lock keys changed, as the locks measured on another

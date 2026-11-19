@@ -36,11 +36,11 @@ class ScreenReadingTests(unittest.TestCase):
     def test_both_macs_recorded_unlocked_read_unlocked(self):
         here = recorded("this-mac-unlocked", "Trevors-MacBook-Pro-715")
         self.assertEqual((here["state"], here["user"], here["CGSSessionScreenIsLocked"], here["IOConsoleLocked"]),
-                         ("unlocked", "trevorharmon", None, False))
+                         ("unlocked", "owner", None, False))
         there = recorded("second-mac-unlocked")
-        self.assertEqual((there["state"], there["user"]), ("unlocked", "trevorharmon"))
+        self.assertEqual((there["state"], there["user"]), ("unlocked", "owner"))
         self.assertEqual(offload_host.screen_line(there),
-                         "screen: unlocked (console user trevorharmon, CGSSessionScreenIsLocked absent, IOConsoleLocked "
+                         "screen: unlocked (console user owner, CGSSessionScreenIsLocked absent, IOConsoleLocked "
                          "no) on Medias-MacBook-Pro-5 at 03:18:00")
 
     def test_an_idle_time_lock_reads_locked_though_ioconsolelocked_says_no(self):
@@ -63,7 +63,7 @@ class ScreenReadingTests(unittest.TestCase):
         # The negative control: mediaserver's session, not on the console, locked, leaves the screen unlocked.
         found = recorded("second-mac-other-session-locked")
         self.assertEqual((found["state"], found["user"], found["CGSSessionScreenIsLocked"]),
-                         ("unlocked", "trevorharmon", None))
+                         ("unlocked", "owner", None))
 
     def test_no_console_session_or_a_failed_read_is_unknown_never_unlocked(self):
         found = recorded("second-mac-no-console-session")
@@ -212,7 +212,7 @@ class PlacementTests(unittest.TestCase):
     def test_a_locked_mac_is_refused_and_an_unlocked_one_taken_for_a_lane_that_needs_it(self):
         refused = remote.spare(self.capacity("locked"), "another Mac", screen=True)
         self.assertTrue(refused.startswith("the lane needs an unlocked screen, and another Mac's is locked (screen: "
-                                           "locked (console user trevorharmon, CGSSessionScreenIsLocked yes, "
+                                           "locked (console user owner, CGSSessionScreenIsLocked yes, "
                                            "IOConsoleLocked no) on Trevors-MacBook-Pro-715"), refused)
         self.assertIsNone(remote.spare(self.capacity("unlocked"), "another Mac", screen=True))
         unknown = remote.spare(self.capacity("unknown"), "this Mac", screen=True)
@@ -252,7 +252,7 @@ class PlacementTests(unittest.TestCase):
             offload_host.screen_declined(plan, lambda: recorded("second-mac-locked-idle"))
         self.assertTrue(refused.exception.busy)
         self.assertTrue(str(refused.exception).startswith(
-            "its screen is locked, and the lane needs it unlocked (screen: locked (console user trevorharmon, "
+            "its screen is locked, and the lane needs it unlocked (screen: locked (console user owner, "
             "CGSSessionScreenIsLocked yes, IOConsoleLocked no) on Medias-MacBook-Pro-5 at 03:18:00)"))
         with self.assertRaises(offload_host.Refusal):
             offload_host.screen_declined(plan, lambda: recorded("second-mac-no-console-session"))
@@ -441,24 +441,24 @@ class MessageTests(unittest.TestCase):
             cli.unmeasured_screen("gate", receipt)
         self.assertEqual(error.getvalue().splitlines(), [
             "queuekeeper: gate unmeasured on this Mac (Trevors-MacBook-Pro-715)",
-            "queuekeeper: screen: locked (console user trevorharmon, CGSSessionScreenIsLocked yes, IOConsoleLocked no) on this "
+            "queuekeeper: screen: locked (console user owner, CGSSessionScreenIsLocked yes, IOConsoleLocked no) on this "
             "Mac (Trevors-MacBook-Pro-715) at 03:18:00"])
         self.assertEqual(receipt["screenAfter"]["state"], "locked")
 
     def test_a_hold_for_an_unmeasured_run_quotes_the_last_screen_reading(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "gate.log"
-            log.write_text("queuekeeper: screen: unlocked (console user trevorharmon, CGSSessionScreenIsLocked absent, "
+            log.write_text("queuekeeper: screen: unlocked (console user owner, CGSSessionScreenIsLocked absent, "
                            "IOConsoleLocked no) on this Mac (Trevors-MacBook-Pro-715) at 01:39:20\n"
                            "Test case 'ReaderTests/scroll()' Unmeasured: the screen is locked; the accessibility "
                            "service hides the test window\n"
-                           "queuekeeper: screen: locked (console user trevorharmon, CGSSessionScreenIsLocked yes, "
+                           "queuekeeper: screen: locked (console user owner, CGSSessionScreenIsLocked yes, "
                            "IOConsoleLocked no) on this Mac (Trevors-MacBook-Pro-715) at 01:58:02\n")
             worker = Namespace(timed_out=None)
             with patch.object(mq.lane_results, "unmeasured_tests", return_value=["Test case 'ReaderTests/scroll()' "
                               "Unmeasured: the screen is locked"]):
                 said = mq.Worker.no_verdict_cause(worker, 3, log)
-        self.assertTrue(said.endswith("; the last reading screen: locked (console user trevorharmon, "
+        self.assertTrue(said.endswith("; the last reading screen: locked (console user owner, "
                                       "CGSSessionScreenIsLocked yes, IOConsoleLocked no) on this Mac "
                                       "(Trevors-MacBook-Pro-715) at 01:58:02"), said)
 

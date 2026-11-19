@@ -1616,7 +1616,7 @@ class NoVerdict(Fixture):
         self.assertIn(f"gate ran behind a locked screen, the last reading {self.LOCKED[len("queuekeeper: "):]}, which queue.noVerdictRuns "
                       "does not count; its next run goes only to a Mac whose screen reads unlocked", said.getvalue())
         self.assertRegex(said.getvalue(), r"gate ran behind a locked screen, the last reading screen: locked \(console "
-                         r"user trevorharmon, CGSSessionScreenIsLocked yes, IOConsoleLocked no\) on this Mac \(\S+\) at ")
+                         r"user owner, CGSSessionScreenIsLocked yes, IOConsoleLocked no\) on this Mac \(\S+\) at ")
         self.assertNotIn("of at most", said.getvalue())
         runs = self.lane_runs(ran)
         self.assertEqual(runs[0], ["python3", "scripts/qk", "run", "gate"])
@@ -1870,7 +1870,7 @@ class NoVerdict(Fixture):
         held = mq.Queue(self.repo).held()
         self.assertTrue(held.startswith("for a session, not the owner: gate ended behind a screen that locked during "
                                         "the run in 5 runs in a row, the last reading screen: locked ("), held)
-        self.assertRegex(held, r"the last reading screen: locked \(console user trevorharmon, CGSSessionScreenIsLocked "
+        self.assertRegex(held, r"the last reading screen: locked \(console user owner, CGSSessionScreenIsLocked "
                          r"yes, IOConsoleLocked no\) on this Mac \(\S+\) at \S+, the most LOCKED_SCREEN_RUNS allows "
                          r"\(5\); see ")
         self.assertIn("runs `qk queue resume` itself", held)

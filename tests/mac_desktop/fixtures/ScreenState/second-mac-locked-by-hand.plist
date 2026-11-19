@@ -26,11 +26,11 @@
 			<key>kCGSSessionUserIDKey</key>
 			<integer>502</integer>
 			<key>kCGSSessionUserNameKey</key>
-			<string>trevorharmon</string>
+			<string>owner</string>
 			<key>kCGSessionLoginDoneKey</key>
 			<true/>
 			<key>kCGSessionLongUserNameKey</key>
-			<string>Trevor Harmon</string>
+			<string>Owner</string>
 			<key>kSCSecuritySessionID</key>
 			<integer>100083</integer>
 		</dict>

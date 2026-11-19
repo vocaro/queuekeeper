@@ -132,6 +132,8 @@ key loads the core alone.
 - **[Developer guide](doc/developer_guide.md)**: how Queuekeeper works inside, the goals behind its
   scheduling, writing a visibility feature, and an index of the detailed reference guides.
 - **[Related tools](doc/related_tools.md)**: how Queuekeeper compares with other merge queues.
+- **[Contributing](CONTRIBUTING.md)** and **[security](SECURITY.md)**: reporting problems and
+  sending changes.
 
 ## License
 

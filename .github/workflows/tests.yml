@@ -1,0 +1,28 @@
+name: Tests
+
+# Queuekeeper's own merge queue gates main; this workflow shows outside readers that the gate passes
+# on a clean Mac, and checks pull requests from people who cannot land through the queue.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Run the gate
+        run: python3 scripts/qk run gate

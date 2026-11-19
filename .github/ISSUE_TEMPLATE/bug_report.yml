@@ -1,0 +1,29 @@
+name: Bug report
+description: Something Queuekeeper did that it should not have, or did not do
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: >
+        The relevant output. For a landing, `qk queue result ID --json` has the verdict and failures;
+        `qk doctor` often says what is wrong with the setup.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Queuekeeper commit
+      description: "`git -C ~/Development/queuekeeper rev-parse --short HEAD`"
+  - type: input
+    id: system
+    attributes:
+      label: macOS and Python versions
+      placeholder: macOS 27.2, Python 3.14.1
