@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Retake the README's screenshots of the dashboard: assets/dashboard-TAB.png for each tab shown there, but for the
-Queue tab assets/dashboard-home.svg, its picture with the Flow map's dots moving in it as they do on the page.
+Now tab (`queue`) assets/dashboard-home.svg, its picture with the Flow map's dots moving in it as they do on the page.
 
-    python3 tools/dashboard-screenshots.py                    Home (Queue) and Farm, in the dark theme
-    python3 tools/dashboard-screenshots.py --tabs logs history
+    python3 tools/dashboard-screenshots.py                    Now (queue), Farm and Trends (history), in the dark theme
+    python3 tools/dashboard-screenshots.py --tabs logs activity
     python3 tools/dashboard-screenshots.py --theme light --out /tmp/shots
 
 What is captured is the dashboard itself: this checkout's page, scripts and styles, served by the dashboard's own
@@ -512,8 +512,8 @@ def moving(picture, drawn, theme):
 def main(argv):
     parser = argparse.ArgumentParser(prog="dashboard-screenshots.py", description="Retake the README's screenshots "
                                      "of the dashboard, from made-up data.")
-    parser.add_argument("--tabs", nargs="+", default=["queue", "farm"], choices=TABS, metavar="TAB",
-                        help="the tabs to take (default: queue farm; also history and logs)")
+    parser.add_argument("--tabs", nargs="+", default=["queue", "farm", "history"], choices=TABS, metavar="TAB",
+                        help="the tabs to take (default: queue farm history; also activity, logs and about)")
     parser.add_argument("--theme", choices=("dark", "light"), default="dark", help="the page's theme (default dark)")
     parser.add_argument("--out", type=Path, default=CHECKOUT / "assets", metavar="FOLDER",
                         help="where the pictures go (default: this checkout's assets)")

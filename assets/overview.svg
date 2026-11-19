@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 660" role="img" aria-labelledby="t d" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 680" role="img" aria-labelledby="t d" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
   <title id="t">How Queuekeeper fits together</title>
-  <desc id="d">You direct several AI agents, each in its own worktree. The agents send commits to Queuekeeper and get verdicts back. Queuekeeper holds the merge queue, admission and placement, and four plugins: Apple, Unity, Mac desktop and Mac hardware. It builds and tests on your build farm, which is your Mac, another Mac, their simulators and Unity editors, and an iPhone and iPad. It pushes what passed to main in each of your projects, three of them here, on your Git remotes.</desc>
+  <desc id="d">You direct AI agents such as Claude Code and Codex, each in its own worktree of one of your projects. Agents land commits with qk land and get verdicts back, and run builds and tests with qk run. In Queuekeeper, preflight checks refuse a bad entry in seconds; each project's merge queue batches entries, tests new arrivals ahead, reruns flaky tests and bisects; admission and placement share every Mac's slots; and plugins for Apple, Android, mobile devices, Unity, the Mac desktop and Mac hardware drive the platform tools. Queuekeeper runs lanes on your build farm of Macs, simulators, emulators, editors and phones, pushes only what passed to main of each project, and shows you its state on the dashboard and in notifications.</desc>
 
   <defs>
     <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
@@ -13,108 +13,129 @@
     <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0 0L10 5L0 10z" fill="#7dea8a"/>
     </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#8cc4ff"/>
+    </marker>
   </defs>
 
-  <rect width="1280" height="660" rx="18" fill="url(#sky)"/>
+  <rect width="1280" height="680" rx="18" fill="url(#sky)"/>
 
-  <g transform="translate(0 90)">
   <!-- you -->
-  <rect x="36" y="215" width="112" height="60" rx="30" fill="#232a3b" stroke="#6a748c" stroke-width="2"/>
-  <text x="92" y="252" text-anchor="middle" font-size="21" font-weight="600" fill="#ece8da">You</text>
-  <path d="M148 245H224" stroke="#8b93a7" stroke-width="2.5" marker-end="url(#arrow)"/>
-  <text x="186" y="230" text-anchor="middle" font-size="15" fill="#aab1c2">directs</text>
+  <rect x="24" y="262" width="112" height="60" rx="30" fill="#232a3b" stroke="#6a748c" stroke-width="2"/>
+  <text x="80" y="299" text-anchor="middle" font-size="21" font-weight="600" fill="#ece8da">You</text>
+  <path d="M136 292H194" stroke="#8b93a7" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="166" y="280" text-anchor="middle" font-size="14" fill="#aab1c2">direct</text>
 
   <!-- agents -->
-  <rect x="230" y="90" width="220" height="310" rx="14" fill="#121722" stroke="#3a4256" stroke-width="2"/>
-  <text x="340" y="124" text-anchor="middle" font-size="19" font-weight="600" fill="#ece8da">AI agents</text>
+  <rect x="200" y="110" width="230" height="364" rx="14" fill="#121722" stroke="#3a4256" stroke-width="2"/>
+  <text x="315" y="144" text-anchor="middle" font-size="19" font-weight="600" fill="#ece8da">AI agents</text>
   <g fill="#232a3b" stroke="#4a5266" stroke-width="1.5">
-    <rect x="252" y="146" width="176" height="62" rx="8"/>
-    <rect x="252" y="226" width="176" height="62" rx="8"/>
-    <rect x="252" y="306" width="176" height="62" rx="8"/>
+    <rect x="220" y="164" width="190" height="84" rx="8"/>
+    <rect x="220" y="264" width="190" height="84" rx="8"/>
+    <rect x="220" y="364" width="190" height="84" rx="8"/>
   </g>
   <g text-anchor="middle">
-    <text x="340" y="173" font-size="17" font-weight="600" fill="#ece8da">Agent</text>
-    <text x="340" y="194" font-size="14" fill="#aab1c2">in its own worktree</text>
-    <text x="340" y="253" font-size="17" font-weight="600" fill="#ece8da">Agent</text>
-    <text x="340" y="274" font-size="14" fill="#aab1c2">in its own worktree</text>
-    <text x="340" y="333" font-size="17" font-weight="600" fill="#ece8da">Agent</text>
-    <text x="340" y="354" font-size="14" fill="#aab1c2">in its own worktree</text>
+    <text x="315" y="194" font-size="17" font-weight="600" fill="#ece8da">Claude Code</text>
+    <text x="315" y="215" font-size="14" fill="#aab1c2">in a worktree of</text>
+    <text x="315" y="234" font-size="14" fill="#cfd5e2" font-family="ui-monospace, Menlo, monospace">my-app</text>
+    <text x="315" y="294" font-size="17" font-weight="600" fill="#ece8da">Codex</text>
+    <text x="315" y="315" font-size="14" fill="#aab1c2">in a worktree of</text>
+    <text x="315" y="334" font-size="14" fill="#cfd5e2" font-family="ui-monospace, Menlo, monospace">my-game</text>
+    <text x="315" y="394" font-size="17" font-weight="600" fill="#ece8da">Claude Code</text>
+    <text x="315" y="415" font-size="14" fill="#aab1c2">in a worktree of</text>
+    <text x="315" y="434" font-size="14" fill="#cfd5e2" font-family="ui-monospace, Menlo, monospace">my-game</text>
   </g>
 
   <!-- agents and queuekeeper -->
-  <path d="M450 220H554" stroke="#8b93a7" stroke-width="2.5" marker-end="url(#arrow)"/>
-  <text x="502" y="206" text-anchor="middle" font-size="15" fill="#aab1c2">commits</text>
-  <path d="M560 272H456" stroke="#8b93a7" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
-  <text x="505" y="296" text-anchor="middle" font-size="15" fill="#aab1c2">verdicts</text>
-
+  <g font-size="13.5" text-anchor="middle">
+    <path d="M430 124H506" stroke="#8b93a7" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <text x="474" y="114" fill="#cfd5e2" font-family="ui-monospace, Menlo, monospace">qk land</text>
+    <path d="M510 204H434" stroke="#8b93a7" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+    <text x="474" y="226" fill="#aab1c2">verdicts</text>
+    <path d="M430 296H506" stroke="#8b93a7" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <text x="474" y="286" fill="#cfd5e2" font-family="ui-monospace, Menlo, monospace">qk run</text>
   </g>
 
   <!-- queuekeeper -->
-  <rect x="560" y="50" width="290" height="570" rx="14" fill="#121722" stroke="#7dea8a" stroke-width="2"/>
-  <text x="705" y="86" text-anchor="middle" font-size="21" font-weight="700" fill="#7dea8a">Queuekeeper</text>
+  <rect x="510" y="40" width="340" height="540" rx="14" fill="#121722" stroke="#7dea8a" stroke-width="2"/>
+  <text x="680" y="76" text-anchor="middle" font-size="21" font-weight="700" fill="#7dea8a">Queuekeeper</text>
   <g fill="#232a3b" stroke="#4a5266" stroke-width="1.5">
-    <rect x="582" y="108" width="246" height="78" rx="8"/>
-    <rect x="582" y="204" width="246" height="78" rx="8"/>
-    <rect x="582" y="300" width="246" height="298" rx="8"/>
+    <rect x="530" y="96" width="300" height="56" rx="8"/>
+    <rect x="530" y="166" width="300" height="84" rx="8"/>
+    <rect x="530" y="264" width="300" height="66" rx="8"/>
+    <rect x="530" y="344" width="300" height="214" rx="8"/>
+  </g>
+  <g stroke="#6a748c" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M680 152V164"/>
+    <path d="M680 250V262"/>
+  </g>
+  <g text-anchor="middle">
+    <text x="680" y="119" font-size="17" font-weight="600" fill="#ece8da">Preflight</text>
+    <text x="680" y="140" font-size="14" fill="#aab1c2">refuses conflicts and findings in seconds</text>
+    <text x="680" y="191" font-size="17" font-weight="600" fill="#ece8da">Merge queue, one per project</text>
+    <text x="680" y="213" font-size="14" fill="#aab1c2">tests a batch once, new arrivals ahead</text>
+    <text x="680" y="233" font-size="14" fill="#aab1c2">reruns flaky tests, bisects failures</text>
+    <text x="680" y="290" font-size="17" font-weight="600" fill="#ece8da">Admission and placement</text>
+    <text x="680" y="312" font-size="14" fill="#aab1c2">shares every Mac's slots across projects</text>
+    <text x="680" y="370" font-size="17" font-weight="600" fill="#ece8da">Plugins</text>
+    <text x="680" y="390" font-size="14" fill="#aab1c2">the platform knowledge</text>
   </g>
   <g fill="#1a2130" stroke="#4a5266" stroke-width="1.5">
-    <rect x="598" y="372" width="214" height="46" rx="6"/>
-    <rect x="598" y="426" width="214" height="46" rx="6"/>
-    <rect x="598" y="480" width="214" height="46" rx="6"/>
-    <rect x="598" y="534" width="214" height="46" rx="6"/>
+    <rect x="546" y="406" width="130" height="40" rx="6"/>
+    <rect x="684" y="406" width="130" height="40" rx="6"/>
+    <rect x="546" y="454" width="130" height="40" rx="6"/>
+    <rect x="684" y="454" width="130" height="40" rx="6"/>
+    <rect x="546" y="502" width="130" height="40" rx="6"/>
+    <rect x="684" y="502" width="130" height="40" rx="6"/>
   </g>
-  <g text-anchor="middle">
-    <text x="705" y="143" font-size="18" font-weight="600" fill="#ece8da">Merge queue</text>
-    <text x="705" y="166" font-size="14" fill="#aab1c2">batches, tests, bisects</text>
-    <text x="705" y="239" font-size="17" font-weight="600" fill="#ece8da">Admission and placement</text>
-    <text x="705" y="262" font-size="14" fill="#aab1c2">picks a machine with room</text>
-    <text x="705" y="332" font-size="18" font-weight="600" fill="#ece8da">Plugins</text>
-    <text x="705" y="354" font-size="14" fill="#aab1c2">each knows a platform</text>
-    <text x="705" y="391" font-size="15" font-weight="600" fill="#ece8da">Apple</text>
-    <text x="705" y="408" font-size="12.5" fill="#aab1c2">simulators, devices, Xcode</text>
-    <text x="705" y="445" font-size="15" font-weight="600" fill="#ece8da">Unity</text>
-    <text x="705" y="462" font-size="12.5" fill="#aab1c2">an unattended editor</text>
-    <text x="705" y="499" font-size="15" font-weight="600" fill="#ece8da">Mac desktop</text>
-    <text x="705" y="516" font-size="12.5" fill="#aab1c2">dialogs and permissions</text>
-    <text x="705" y="553" font-size="15" font-weight="600" fill="#ece8da">Mac hardware</text>
-    <text x="705" y="570" font-size="12.5" fill="#aab1c2">lanes kept on their chip</text>
+  <g text-anchor="middle" font-size="14.5" font-weight="600" fill="#ece8da">
+    <text x="611" y="431">Apple</text>
+    <text x="749" y="431">Android</text>
+    <text x="611" y="479">Mobile</text>
+    <text x="749" y="479">Unity</text>
+    <text x="611" y="527">Mac desktop</text>
+    <text x="749" y="527">Mac hardware</text>
   </g>
+
+  <!-- your git remotes -->
+  <rect x="950" y="40" width="300" height="214" rx="14" fill="#121722" stroke="#3a4256" stroke-width="2"/>
+  <text x="1100" y="74" text-anchor="middle" font-size="19" font-weight="600" fill="#ece8da">Your Git remotes</text>
+  <g stroke="#7dea8a" stroke-width="2.5" fill="none">
+    <path d="M830 208H993" marker-end="url(#arrowGreen)"/>
+    <path d="M890 208V122H993" marker-end="url(#arrowGreen)"/>
+  </g>
+  <path d="M998 102v36a102 9 0 0 0 204 0v-36" fill="#232a3b" stroke="#7dea8a" stroke-width="2"/>
+  <ellipse cx="1100" cy="102" rx="102" ry="9" fill="#2b3447" stroke="#7dea8a" stroke-width="2"/>
+  <text x="1100" y="134" text-anchor="middle" font-size="14" fill="#aab1c2"><tspan font-size="16" font-weight="700" fill="#ece8da">main</tspan> of <tspan font-family="ui-monospace, Menlo, monospace" fill="#cfd5e2">my-app</tspan></text>
+  <path d="M998 188v36a102 9 0 0 0 204 0v-36" fill="#232a3b" stroke="#7dea8a" stroke-width="2"/>
+  <ellipse cx="1100" cy="188" rx="102" ry="9" fill="#2b3447" stroke="#7dea8a" stroke-width="2"/>
+  <text x="1100" y="220" text-anchor="middle" font-size="14" fill="#aab1c2"><tspan font-size="16" font-weight="700" fill="#ece8da">main</tspan> of <tspan font-family="ui-monospace, Menlo, monospace" fill="#cfd5e2">my-game</tspan></text>
+  <text x="1100" y="246" text-anchor="middle" font-size="13" fill="#7dea8a">pushes only what passed</text>
 
   <!-- queuekeeper and the build farm -->
-  <path d="M856 190H984" stroke="#8b93a7" stroke-width="2.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
-  <text x="920" y="175" text-anchor="middle" font-size="15" fill="#aab1c2">builds and tests</text>
+  <path d="M836 306H944" stroke="#8b93a7" stroke-width="2.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="900" y="294" text-anchor="middle" font-size="13.5" fill="#aab1c2">runs lanes</text>
+  <path d="M836 474H944" stroke="#8b93a7" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#arrow)"/>
+  <text x="900" y="462" text-anchor="middle" font-size="13.5" fill="#aab1c2">drives tools</text>
 
   <!-- build farm -->
-  <rect x="990" y="40" width="254" height="300" rx="14" fill="#121722" stroke="#3a4256" stroke-width="2"/>
-  <text x="1117" y="74" text-anchor="middle" font-size="19" font-weight="600" fill="#ece8da">Your build farm</text>
-  <path d="M1117 234V258" stroke="#6a748c" stroke-width="2"/>
+  <rect x="950" y="276" width="300" height="304" rx="14" fill="#121722" stroke="#3a4256" stroke-width="2"/>
+  <text x="1100" y="310" text-anchor="middle" font-size="19" font-weight="600" fill="#ece8da">Your build farm</text>
+  <path d="M1100 386V398M1100 456V500" stroke="#6a748c" stroke-width="2"/>
   <g fill="#232a3b" stroke="#4a5266" stroke-width="1.5">
-    <rect x="1010" y="92" width="214" height="62" rx="8"/>
-    <rect x="1010" y="172" width="214" height="62" rx="8"/>
-    <rect x="1010" y="258" width="214" height="56" rx="28"/>
+    <rect x="970" y="328" width="260" height="58" rx="8"/>
+    <rect x="970" y="398" width="260" height="58" rx="8"/>
+    <rect x="970" y="500" width="260" height="56" rx="28"/>
   </g>
   <g text-anchor="middle">
-    <text x="1117" y="119" font-size="17" font-weight="600" fill="#ece8da">Your Mac</text>
-    <text x="1117" y="140" font-size="14" fill="#aab1c2">simulators · Unity editor</text>
-    <text x="1117" y="199" font-size="17" font-weight="600" fill="#ece8da">Another Mac</text>
-    <text x="1117" y="220" font-size="14" fill="#aab1c2">simulators · Unity editor</text>
-    <text x="1117" y="292" font-size="17" font-weight="600" fill="#ece8da">iPhone and iPad</text>
+    <text x="1100" y="352" font-size="17" font-weight="600" fill="#ece8da">Your Mac</text>
+    <text x="1100" y="373" font-size="14" fill="#aab1c2">simulators · emulators · editors</text>
+    <text x="1100" y="422" font-size="17" font-weight="600" fill="#ece8da">More Macs, over SSH</text>
+    <text x="1100" y="443" font-size="14" fill="#aab1c2">optional, each with its own slots</text>
+    <text x="1100" y="534" font-size="16" font-weight="600" fill="#ece8da">iPhone · iPad · Android phone</text>
   </g>
 
-  <!-- repositories -->
-  <rect x="990" y="372" width="254" height="248" rx="14" fill="#121722" stroke="#3a4256" stroke-width="2"/>
-  <text x="1117" y="404" text-anchor="middle" font-size="19" font-weight="600" fill="#ece8da">Your Git remotes</text>
-  <text x="921" y="434" text-anchor="middle" font-size="12.5" fill="#7dea8a">pushes what passed</text>
-  <path d="M856 448H1016" stroke="#7dea8a" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
-  <path d="M1022 428v36a95 9 0 0 0 190 0v-36" fill="#232a3b" stroke="#7dea8a" stroke-width="2"/>
-  <ellipse cx="1117" cy="428" rx="95" ry="9" fill="#2b3447" stroke="#7dea8a" stroke-width="2"/>
-  <text x="1117" y="460" text-anchor="middle" font-size="13" fill="#aab1c2"><tspan font-size="16" font-weight="700" fill="#ece8da">main</tspan> of one project</text>
-  <path d="M856 510H1016" stroke="#7dea8a" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
-  <path d="M1022 490v36a95 9 0 0 0 190 0v-36" fill="#232a3b" stroke="#7dea8a" stroke-width="2"/>
-  <ellipse cx="1117" cy="490" rx="95" ry="9" fill="#2b3447" stroke="#7dea8a" stroke-width="2"/>
-  <text x="1117" y="522" text-anchor="middle" font-size="13" fill="#aab1c2"><tspan font-size="16" font-weight="700" fill="#ece8da">main</tspan> of another project</text>
-  <path d="M856 572H1016" stroke="#7dea8a" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
-  <path d="M1022 552v36a95 9 0 0 0 190 0v-36" fill="#232a3b" stroke="#7dea8a" stroke-width="2"/>
-  <ellipse cx="1117" cy="552" rx="95" ry="9" fill="#2b3447" stroke="#7dea8a" stroke-width="2"/>
-  <text x="1117" y="584" text-anchor="middle" font-size="13" fill="#aab1c2"><tspan font-size="16" font-weight="700" fill="#ece8da">main</tspan> of a third project</text>
+  <!-- watching -->
+  <path d="M680 580V636H80V328" fill="none" stroke="#8cc4ff" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrowBlue)"/>
+  <text x="380" y="626" text-anchor="middle" font-size="14" fill="#8cc4ff">dashboard · notifications · <tspan font-family="ui-monospace, Menlo, monospace">qk queue status</tspan></text>
 </svg>

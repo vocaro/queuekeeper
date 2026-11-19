@@ -5,9 +5,7 @@
 Queuekeeper is a merge queue and build farm for one developer working with AI coding agents. It
 runs on that developer's own machines instead of in the cloud. Agents hand it commits; it batches
 them, tests each batch once on whichever machine has room, and pushes to `main` only what passed.
-
-Its Apple, Unity, Mac desktop and Mac hardware [plugins](#plugins) handle the local tools and
-hardware that builds and tests depend on.
+Its [plugins](#plugins) handle the local tools and hardware that builds and tests depend on.
 
 ## Why another merge queue?
 
@@ -33,7 +31,7 @@ local machines together, with a few priorities:
 queues, including other local queues for AI agents, and says where they are the better choice.
 
 <p align="center">
-  <img src="assets/overview.svg" alt="You direct several AI agents. They send commits to Queuekeeper and get verdicts back. Queuekeeper, made of the merge queue, admission and placement, and the Apple, Unity, Mac desktop and Mac hardware plugins, builds and tests on your build farm of Macs, simulators, Unity editors and devices, and pushes what passed to main in each of your projects." width="100%">
+  <img src="assets/overview.svg" alt="You direct AI agents, each in a worktree of one of your projects. They land commits with qk land and get verdicts back, and run builds and tests with qk run. Inside Queuekeeper, preflight checks refuse bad entries in seconds, each project's merge queue batches and tests entries, admission and placement share every Mac's slots, and plugins drive the platform tools. It runs lanes on your build farm of Macs, simulators, emulators, editors and phones, pushes only what passed to main of each project, and shows you its state on the dashboard and in notifications." width="100%">
 </p>
 
 ## Getting started
@@ -42,7 +40,9 @@ Suppose you use Claude Code or Codex to work on two projects already checked out
 `~/Development/my-app` and `~/Development/my-game`. You want agents in both repositories to send
 finished work through Queuekeeper and share your Mac's build capacity. Set up Queuekeeper once on
 the Mac, then configure each repository. You can ask an agent to do the setup with the prompts below;
-replace the example paths with yours. Using agents is optional: you can also set up and use
+replace the example paths with yours.
+
+Using agents is optional: you can also set up and use
 Queuekeeper directly from the command line. The [user guide](doc/user_guide.md#set-up) has the
 commands and configuration details.
 
@@ -72,10 +72,7 @@ or remove it.
 > documentation-only behavior with me. Run `qk doctor` and resolve its findings. Work on a branch and leave the setup ready to review.
 
 Each repository gets its own `queuekeeper.json`, gate and queue. The projects can use different
-test commands and plugins while sharing the Mac's capacity. For an Apple app, start with the
-[Apple plugin](plugins/apple/src/queuekeeper_apple/README.md); for a Unity project, use the
-[Unity plugin](plugins/unity/src/queuekeeper_unity/README.md). The [Mac desktop and hardware plugins](#plugins)
-cover unattended desktop sessions and tests that depend on a particular chip.
+test commands and [plugins](#plugins) while sharing the Mac's capacity.
 
 **4. Teach future agent sessions the workflow.** In both repositories, have the agent update the
 project instructions that your coding tools read, such as `CLAUDE.md` or `AGENTS.md`. Ask it to
@@ -105,10 +102,6 @@ new agent sessions in either project can use the same workflow for their changes
 across projects, or [notifications](doc/user_guide.md#the-notify-feature) when the queue needs your attention. Agents
 can check their own project's queue with `qk queue status`.
 
-Run `qk disk` for a read-only inventory of Queuekeeper-managed build caches, test results and
-simulator resources, including safe cleanup candidates; see
-[Reclaiming disk space](doc/guides/disk-cleanup.md#reclaiming-disk-space).
-
 ## Dashboard
 
 The dashboard is a web page of the queue and the build farm, served from your own Mac. It shows
@@ -120,25 +113,34 @@ qk visibility enable dashboard
 qk serve --open
 ```
 
-**Home** (the Queue tab) shows one verdict on every queue, naming any project that needs a look, the
-day's totals, a row for each project, every round being tested, and every entry in progress and up
-next. New arrivals tested on top of the current batch are labeled **Testing ahead**. Its **Flow** map follows each
-entry from the agent that queued it, Claude, Codex or a person, through its project's queue and the round's
-gates to the Macs they run on and to main.
+**Now** shows one verdict on every queue, naming any project that needs a look, the day's totals,
+a row for each project, every round being tested, and every entry in progress and up next. New
+arrivals tested on top of the current batch are labeled **Testing ahead**. Its **Flow** map follows
+each entry from the agent that queued it, Claude, Codex or a person, through its project's queue and
+the round's gates to the Macs they run on and to main.
 
 <p align="center">
   <img src="assets/dashboard-home.svg" alt="The dashboard's Now view across four projects: a one-sentence health verdict with a forecast and five signs, daily totals, an entry that came back and a flaky test needing attention, the Flow map with its dots moving from Claude, Codex and a person through each project's queue, the rounds' gates and two Macs to main, with two gates waiting for a Mac and an arc back to the agent whose entry came back, then four gates being tested and three entries up next, each tagged with its project." width="100%">
 </p>
 
 **Farm** shows each Mac's slots, its load, and the work running and waiting on it, for every
-project. It also shows iOS device connections and reservations.
+project. It also shows phone and tablet connections and reservations.
 
 <p align="center">
   <img src="assets/dashboard-farm.png" alt="The dashboard's Farm tab: two Macs, each drawn as a laptop or desktop with a badge for its state, its slots in use, its CPU and memory, running and waiting work, plus an iPhone connection and reservation." width="100%">
 </p>
 
-**History** holds recent changes and events; **Logs** holds debug output. See
-[the user guide](doc/user_guide.md#the-dashboard) for details.
+**Trends** sets the last 7 or 30 days against the ones before: landings per day, how often entries
+came back, gate times against each project's usual, and flaky tests. It also shows each project's
+day so far, today's lane runs on each Mac, and when work lands by day and hour.
+
+<p align="center">
+  <img src="assets/dashboard-history.png" alt="The dashboard's Trends tab across four projects: landings per day, the share that came back, gate time against usual and flaky tests over the last 7 days against the 7 before; a row per project with today's landings, rounds and passing gate times; today's lane runs on two Macs; and a grid of when work landed by day and hour over the last week." width="100%">
+</p>
+
+**Activity** lists each round, newest first, with how each entry ended and a link to every lane's
+log, which opens in **Logs** with its failures marked. See [the user guide](doc/user_guide.md#the-dashboard)
+for details.
 
 ## Plugins
 
