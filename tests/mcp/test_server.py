@@ -163,6 +163,18 @@ class Stdio(unittest.TestCase):
         self.assertIn("heartbeat: still waiting", result["content"][0]["text"])
         self.assertNotIn("structuredContent", result)
 
+    def test_a_command_ended_by_a_signal_says_so_with_what_it_printed(self):
+        (self.base / "scripts/qk").write_text("import os, signal, sys\n"
+                                              "print('partial', flush=True)\n"
+                                              "print('stopping', file=sys.stderr, flush=True)\n"
+                                              "os.kill(os.getpid(), signal.SIGTERM)\n")
+        result = self.converse(self.call(1, "queue_status", {}))[-1]["result"]
+        self.assertTrue(result["isError"])
+        self.assertNotIn("structuredContent", result)
+        self.assertEqual(result["content"][0]["text"].splitlines(),
+                         ["qk queue status --json was ended by SIGTERM (exited -15)",
+                          "standard output:", "partial", "standard error:", "stopping"])
+
     def test_bad_arguments_are_a_tool_error_and_an_unknown_tool_a_protocol_error(self):
         replies = self.converse(self.call(1, "queue_result", {}), self.call(2, "deploy", {}),
                                 self.call(3, "queue_status", {"directory": "missing"}))
@@ -178,7 +190,12 @@ class Stdio(unittest.TestCase):
         for reply in replies:
             self.assertEqual(structured(self, reply["result"])["exitStatus"], 0)
 
-    def test_sigterm_stops_the_command_a_call_runs(self):
+    def test_sigterm_or_sigint_stops_the_command_a_call_runs(self):
+        for number in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(signal=number.name): self.stops(number)
+
+    def stops(self, number):
+        (self.base / "scripts/started").unlink(missing_ok=True)
         (self.base / "scripts/qk").write_text("import pathlib, sys, time\n"
                                               "pathlib.Path(sys.argv[0]).with_name('started').touch()\n"
                                               "time.sleep(600)\n")
@@ -186,6 +203,8 @@ class Stdio(unittest.TestCase):
         serving = subprocess.Popen([sys.executable, str(SERVER), "--project", str(self.base)], stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, text=True, env=environment)
         self.addCleanup(serving.kill)
+        self.addCleanup(serving.stdout.close)
+        self.addCleanup(serving.stdin.close)
         serving.stdin.write(json.dumps(self.call(1, "queue_status", {})) + "\n")
         serving.stdin.flush()
         started = self.base / "scripts/started"
@@ -194,8 +213,8 @@ class Stdio(unittest.TestCase):
         self.assertTrue(started.exists(), "the command never started")
         commands = subprocess.run(["pgrep", "-f", str(self.base / "scripts/qk")], capture_output=True, text=True)
         self.assertTrue(commands.stdout.split())
-        serving.terminate()
-        self.assertEqual(serving.wait(timeout=stretched(60)), 128 + signal.SIGTERM)
+        serving.send_signal(number)
+        self.assertEqual(serving.wait(timeout=stretched(60)), 128 + number)
         deadline = time.monotonic() + stretched(60)
         while time.monotonic() < deadline:
             if subprocess.run(["pgrep", "-f", str(self.base / "scripts/qk")], capture_output=True).returncode: break

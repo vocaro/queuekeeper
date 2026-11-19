@@ -33,33 +33,56 @@ runtime dependency. It speaks JSON-RPC 2.0, one message a line, and accepts prot
 
 ## Register it with Claude Code
 
-From the project's directory:
+Tried with Claude Code 2.1.321. From the project's directory:
 
 ```sh
-claude mcp add --scope project queuekeeper -- python3 ~/Development/queuekeeper/plugins/mcp/src/queuekeeper_mcp/server.py
+claude mcp add queuekeeper -- python3 ~/Development/queuekeeper/plugins/mcp/src/queuekeeper_mcp/server.py
 ```
 
-This writes `.mcp.json` in the project, with the path the shell expanded, so every session there
-gets the tools, as `mcp__queuekeeper__land` and so on. Use `--scope user` to have it in every
-project instead, or `--scope local` to keep the path out of the repository. Tools run in the
-server's working directory unless they name a `directory`; an agent in a worktree should pass its
-worktree to `land`. Claude Code waits a long time for a tool by default; `MCP_TOOL_TIMEOUT`, in
-milliseconds, changes that.
+This uses the default scope, `local`: the server is private to you and recorded in `~/.claude.json`
+under the project. Run from a linked worktree, it is recorded under the main checkout's path, so
+it serves that checkout and every worktree of it. `--scope user` has it in every project, and
+`--scope project` writes it to `.mcp.json` in the repository, where each person approves it before
+it connects. `claude mcp get queuekeeper` should say `Connected`; `claude mcp remove queuekeeper -s
+local` removes it.
+
+The tools appear as `mcp__queuekeeper__land`, `mcp__queuekeeper__queue_wait` and so on. Claude Code
+starts the server in the session's working directory, so a session started in a worktree runs its
+tools there and `land` lands that worktree's HEAD. A session that commits somewhere else should pass
+that worktree as `directory`.
+
+Claude Code sends a progress token with every call, but in 2.1.321 its terminal did not show
+`queue_wait`'s progress lines, and they do not extend its tool timeout. That timeout is about 28
+hours by default; `MCP_TOOL_TIMEOUT`, or a `timeout` field on the server in `.mcp.json`, both in
+milliseconds, lower it. When it expires, or the user presses Escape during a call, Claude Code sends
+`notifications/cancelled` and the server ends the command. The entry stays queued. Claude Code stops
+the server with SIGINT and then SIGTERM, and either one ends the commands it is running.
 
 ## Register it with Codex
 
-Add it to `~/.codex/config.toml`:
+Tried with Codex 0.151.0. Add it to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.queuekeeper]
 command = "python3"
 args = ["/Users/YOU/Development/queuekeeper/plugins/mcp/src/queuekeeper_mcp/server.py"]
 tool_timeout_sec = 900
+default_tools_approval_mode = "approve"
 ```
 
-Codex gives a tool 60 seconds by default, so raise `tool_timeout_sec` above the `limit` your
-agents pass to `queue_wait`. Add `"--project", "/path/to/project"` to `args` to pin the
-directory tools run in when they name none.
+Codex starts the server in its working directory, the project or worktree it was started in. Add
+`"--project", "/path/to/project"` to `args` to pin the directory that tools use when they name
+none.
+
+Without `default_tools_approval_mode = "approve"`, Codex asks before each tool call, and
+`codex exec` under `approval_policy = "never"` fails every call with "MCP tool call requires
+approval".
+
+`tool_timeout_sec` is a hard limit, and `queue_wait`'s progress does not extend it. Codex sends
+the progress token, but when the limit passes it fails the call without cancelling it, and the
+command runs on until it finishes or the server stops. Keep `tool_timeout_sec` above the `limit`
+your agents pass to `queue_wait`, which is 600 seconds by default. Without the setting, Codex
+0.151.0 let a silent 75-second call finish.
 
 ## Install it as a package
 

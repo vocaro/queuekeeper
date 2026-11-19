@@ -128,6 +128,16 @@ def last_object(text):
     return None
 
 
+def ended(status):
+    """How a command ended: its exit status, or the signal that ended it, such as SIGTERM from a server stopping."""
+    if status >= 0: return f"exited {status}"
+    try:
+        name = signal.Signals(-status).name
+    except ValueError:
+        name = f"signal {-status}"
+    return f"was ended by {name} (exited {status})"
+
+
 def launcher_for(directory, configured=None):
     """The configured launcher, else the nearest `scripts/qk` at or above directory."""
     if configured: return Path(configured)
@@ -262,9 +272,12 @@ class Server:
         with self.guard: self.running.pop(identifier, None)
         text = "".join(out)
         payload = last_object(text)
-        summary = f"qk {' '.join(argv[2:])} exited {status}"
+        summary = f"qk {' '.join(argv[2:])} {ended(status)}"
         if not isinstance(payload, dict):
-            detail = "\n".join([summary, text.strip(), *err]).strip()
+            # Everything the command said, so a client or a test that finds no JSON can say why.
+            detail = "\n".join([summary, "standard output:" if text.strip() else "no standard output",
+                                 *([text.strip()] if text.strip() else []),
+                                 *(["standard error:", *err] if any(line.strip() for line in err) else [])])
             return {"content": [{"type": "text", "text": detail}], "isError": True}
         payload.setdefault("exitStatus", status)
         return {"content": [{"type": "text", "text": f"{summary}\n{json.dumps(payload, indent=2)}"}],
@@ -297,7 +310,8 @@ def main(argv=None):
     def stopped(number, frame):
         serving.stop()
         os._exit(128 + number)
-    signal.signal(signal.SIGTERM, stopped)
+    # Claude Code stops its servers with SIGINT and then SIGTERM; either ends the commands they run.
+    for number in (signal.SIGINT, signal.SIGTERM): signal.signal(number, stopped)
     serving.serve(stdin)
     return 0
 
