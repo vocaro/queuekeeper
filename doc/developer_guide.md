@@ -860,7 +860,9 @@ which no allow rule matches, is for the rest, after a person has checked by hand
 the guard and `HEAVY_SLOT_DIR`; `test_host_isolation` fails a module that doesn't. A test that
 starts `qk` with its own `env=` builds it from `os.environ` or `host_isolation.reduced`, or passes
 `--unadmitted`. `host_isolation` clears every `QUEUEKEEPER_*` and `HEAVY_*` variable a run sets, or
-lists it in `INHERITED` with why that is safe. A test that mocks `subprocess.run` and admits work
+lists it in `INHERITED` with why that is safe. A variable of another name, such as a dispatch's
+`DEVELOPER_DIR`, is found where the code writes it into a child's environment (`child_variables`,
+which says what it cannot see) and is held to the same rule. A test that mocks `subprocess.run` and admits work
 sets its own `HEAVY_SLOT_DIR`.
 
 ### The admission log

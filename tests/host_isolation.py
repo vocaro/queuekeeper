@@ -31,6 +31,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -140,6 +141,14 @@ for variable in (cli.parallel.RESULTS_VARIABLE, "QUEUEKEEPER_STALE_MODULES_ROOT"
 # Nor does a dispatch a test sends count the keychain as unlocked because the dispatch that runs the suite on the second
 # Mac unlocked the real one: it would unlock nothing, and a test of a kept password that cannot unlock would pass the run.
 os.environ.pop('QUEUEKEEPER_KEYCHAIN_UNLOCKED', None)
+# Nor does a test read the Xcode a dispatch selected for the run's command (DEVELOPER_DIR), which a test that sends a
+# dispatch would send on as its own toolchain on the second Mac and not here (remote.developer_directory), or give its
+# git the dispatch's credential file, which GIT_CONFIG_COUNT and its numbered keys and values name
+# (offload_host.credentials) and which offsets the keys a test's own git configuration numbers from 0
+# (vocaro/queuekeeper#46). A test of either sets it itself.
+for variable in [name for name in os.environ if name in ("DEVELOPER_DIR", "GIT_CONFIG_COUNT")
+                 or re.fullmatch(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+", name)]:
+    os.environ.pop(variable)
 # Nor does a test run as a trial because the suite was started inside one (vocaro/queuekeeper#34): every cli.main a test
 # calls would move its namespaces there. A test of a trial sets it itself.
 os.environ.pop(cli.trial.VARIABLE, None)
@@ -313,12 +322,26 @@ ISOLATION = {name: os.environ[name] for name in (
 # Mac: on 2026-11-12 another Mac's dispatch had unlocked the real keychain, and a test of a password that cannot
 # unlock it failed there every time and passed here (vocaro/queuekeeper#46). So test_host_isolation fails when what
 # this module leaves holds one that it neither set (ISOLATION) nor lists here, and it plants every such variable the
-# toolkit's code names to find one: a new variable is cleared above, or listed here with its reason.
+# toolkit's code names to find one: a new variable is cleared above, or listed here with its reason. A variable of
+# another name is found where the code writes it into an environment it gives a child (test_host_isolation's
+# child_variables), and planted and listed the same way.
 PREFIXES = ("QUEUEKEEPER_", "HEAVY_")
 OWNER_LIMIT = "the owner's override of an admission limit or interval, which no run sets for the commands it starts"
 OWNER_PATH = "a path the owner or a test names, which no run sets for the commands it starts"
 OWNER_SWITCH = "the owner's own switch, which no run sets for the commands it starts"
+ONE_TOOL = ("set only in the environment of one git, gh or Android SDK command the toolkit starts, never in a run's "
+            "or a dispatch's command, so no suite inherits it from a run")
 INHERITED = {
+    **dict.fromkeys(("GIT_INDEX_FILE", "GIT_SSH_COMMAND", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_AUTHOR_NAME",
+                     "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GH_PROMPT_DISABLED",
+                     "GH_NO_UPDATE_NOTIFIER", "ANDROID_HOME", "ANDROID_AVD_HOME", "JAVA_HOME"), ONE_TOOL),
+    "PATH": "the owner's search path, which this module puts its stand-ins before; a run adds to it only folders of "
+            "the same tools (the Android SDK's, the Apple plugin's shims), and a test that runs a tool puts its own first",
+    "PYTHONPATH": "the composition of the checkout under test (checkout.activate), which pythonpath reads on purpose so "
+                  "that a test's Python child imports the same code",
+    "PYTHONDONTWRITEBYTECODE": "a dispatch sets it so that no __pycache__ is left in the checkout it placed "
+                               "(offload_host.NO_BYTECODE); it changes no result, and a test that needs bytecode written "
+                               "clears it itself, as test_remote does",
     **dict.fromkeys(("HEAVY_SLOTS", "HEAVY_SLOTS_MAX", "HEAVY_SETTLE_SECONDS", "HEAVY_QUIET_LIMIT",
                      "HEAVY_POLL_SECONDS", "HEAVY_RECOVER_SECONDS", "HEAVY_PLACE_SECONDS"), OWNER_LIMIT),
     **dict.fromkeys(("QUEUEKEEPER_APP_STORE", "QUEUEKEEPER_SCREEN_IOREG"), OWNER_PATH),

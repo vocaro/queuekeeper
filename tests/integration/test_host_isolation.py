@@ -419,31 +419,129 @@ class FarmReachTests(unittest.TestCase):
 
 
 VARIABLE = re.compile(rf"\b(?:{'|'.join(host_isolation.PREFIXES)})[A-Z0-9_]*[A-Z0-9]\b")
-# Prints the toolkit's variables, with their values, that a process importing host_isolation is left with.
-LEFT = ("import json, os, sys; sys.path.insert(0, sys.argv[1]); import host_isolation; print(json.dumps({name: value "
-        "for name, value in os.environ.items() if name.startswith(host_isolation.PREFIXES)}))")
+# Prints the variables, with their values, that a process importing host_isolation is left with: the toolkit's, and
+# those named in the JSON list that is its second argument.
+LEFT = ("import json, os, sys; sys.path.insert(0, sys.argv[1]); named = set(json.loads(sys.argv[2])); "
+        "import host_isolation; print(json.dumps({name: value for name, value in os.environ.items() "
+        "if name.startswith(host_isolation.PREFIXES) or name in named}))")
+
+
+def toolkit_code():
+    """The toolkit's code outside its tests: the package, the plugins, the launchers and the tools, Python modules and
+    the Python scripts without a suffix among them (a shim, scripts/duo-pose)."""
+    found = []
+    for folder in ("bin", "scripts", "src", "plugins", "tools"):
+        for path in sorted((TOOLKIT / folder).rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts: continue
+            first = path.read_bytes()[:128].split(b"\n")[0] if not path.suffix else b""
+            if path.suffix == ".py" or first.startswith(b"#!") and b"python" in first: found.append(path)
+    return found
 
 
 def toolkit_variables():
-    """Every variable the toolkit's code names: the launchers, the package and the tools."""
-    code = [*sorted((TOOLKIT / "plugins").rglob("*.py")), TOOLKIT / "bin/qk", TOOLKIT / "scripts/qk", *sorted((TOOLKIT / "src").rglob("*.py")),
-            *sorted((TOOLKIT / "tools").glob("*.py"))]
-    return sorted({name for path in code for name in VARIABLE.findall(path.read_text())})
+    """Every variable of the toolkit's prefixes that its code names."""
+    return sorted({name for path in toolkit_code() for name in VARIABLE.findall(path.read_text())})
+
+
+# A name an environment holds, as the code writes it.
+ENVIRONMENT_NAME = re.compile(r"[A-Z][A-Z0-9_]*[A-Z0-9]")
+# What the code calls an environment it gives a child: os.environ, environ, env, environment, variables, or an
+# attribute or a call of that name (sdk.environment(), self.environment).
+ENVIRONMENT = re.compile(r"(?:[\w.]+\.)?(?:environ|env|environment|variables)(?:\(\))?", re.I)
+
+
+def child_variables(paths, root=TOOLKIT):
+    """Every name the code in paths writes into an environment it gives a child, as {name: ["file:line", ...]}.
+
+    It finds a name given as a string, an f-string whose literal head names a family (GIT_CONFIG_KEY_{n} is
+    GIT_CONFIG_KEY_*), or a constant of the code's, by its own module's name or, imported or as module.NAME, by the one
+    value every module gives that name; written by `ENV[NAME] = ...`, `ENV.setdefault(NAME, ...)`,
+    `ENV.update(NAME=..., {NAME: ...})`, `os.putenv(NAME, ...)`, `dict(ENV, NAME=...)`, `ENV | {NAME: ...}`, a dict that
+    spreads ENV (and the module's dicts it spreads with it), or a dict given as env=, where ENV is ENVIRONMENT.
+
+    It cannot see a name it is not given whole: a key that is a loop's or a parameter's variable (resources' HOST_READING,
+    cli's environment(**values)), a name built at run time, an environment the code names otherwise, or a
+    variable set in the text of a shell command (remote's `DEVELOPER_DIR=... qk` over ssh). The toolkit's own prefixes
+    are planted by name, wherever the code names them, so this matters only for a variable of another name."""
+    trees = {path: ast.parse(path.read_text(), str(path)) for path in paths}
+
+    def constants(tree, kind):
+        return {target.id: node.value for node in tree.body if isinstance(node, ast.Assign) and isinstance(node.value, kind)
+                for target in node.targets if isinstance(target, ast.Name)}
+
+    every = {}
+    for tree in trees.values():
+        for name, value in constants(tree, ast.Constant).items():
+            if isinstance(value.value, str): every.setdefault(name, set()).add(value.value)
+    found = {}
+    for path, tree in trees.items():
+        own = {name: value.value for name, value in constants(tree, ast.Constant).items() if isinstance(value.value, str)}
+        dicts = constants(tree, ast.Dict)
+
+        def named(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str): text = node.value
+            elif isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[0], ast.Constant):
+                head = node.values[0].value
+                return head + "*" if re.fullmatch(r"[A-Z][A-Z0-9_]*_", head) else None
+            elif isinstance(node, (ast.Name, ast.Attribute)):
+                name = node.id if isinstance(node, ast.Name) else node.attr
+                values = {own[name]} if isinstance(node, ast.Name) and name in own else every.get(name, set())
+                if len(values) != 1: return None
+                text, = values
+            else: return None
+            return text if ENVIRONMENT_NAME.fullmatch(text) else None
+
+        def keys(mapping):
+            for key, value in zip(mapping.keys, mapping.values):
+                if key is not None: yield key
+                elif isinstance(value, ast.Name) and value.id in dicts: yield from keys(dicts[value.id])
+
+        def environment(node):
+            return ENVIRONMENT.fullmatch(ast.unparse(node)) is not None
+
+        for node in ast.walk(tree):
+            written = []
+            if isinstance(node, (ast.Assign, ast.AugAssign)):
+                written += [target.slice for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+                            if isinstance(target, ast.Subscript) and environment(target.value)]
+            elif isinstance(node, ast.Dict) and any(key is None and environment(value)
+                                                    for key, value in zip(node.keys, node.values)):
+                written += keys(node)
+            elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr) and environment(node.left) \
+                    and isinstance(node.right, ast.Dict):
+                written += keys(node.right)
+            elif isinstance(node, ast.Call):
+                function = node.func
+                if isinstance(function, ast.Attribute) and (environment(function.value) or ast.unparse(function) == "os.putenv"):
+                    if function.attr in ("setdefault", "putenv") and node.args: written.append(node.args[0])
+                    if function.attr == "update":
+                        written += [ast.Constant(keyword.arg) for keyword in node.keywords if keyword.arg]
+                        written += [key for argument in node.args if isinstance(argument, ast.Dict) for key in keys(argument)]
+                if isinstance(function, ast.Name) and function.id == "dict" and node.args and environment(node.args[0]):
+                    written += [ast.Constant(keyword.arg) for keyword in node.keywords if keyword.arg]
+                written += [key for keyword in node.keywords if keyword.arg == "env" and isinstance(keyword.value, ast.Dict)
+                            for key in keys(keyword.value)]
+            for key in written:
+                name = named(key)
+                if name: found.setdefault(name, []).append(f"{path.relative_to(root)}:{node.lineno}")
+    return found
 
 
 class InheritedVariableTests(unittest.TestCase):
-    """What host_isolation leaves of the toolkit's variables, which a run sets for the commands it starts and a suite
-    run as one of them inherits (vocaro/queuekeeper#46). Each is set by host_isolation, cleared, or listed in INHERITED
-    with why it is safe."""
+    """What host_isolation leaves of the variables a run sets for the commands it starts, which a suite run as one of
+    them inherits (vocaro/queuekeeper#46). Each is set by host_isolation, cleared, or listed in INHERITED with why it is
+    safe."""
 
     PLANTED = "planted by test_host_isolation"
     CONTROL = "QUEUEKEEPER_PLANTED_BY_TEST_HOST_ISOLATION"
+    # A variable of no prefix of the toolkit's, which no code sets.
+    OTHER_CONTROL = "PLANTED_BY_TEST_HOST_ISOLATION"
 
     def left(self, planted):
-        """The toolkit's variables a process importing host_isolation is left with, given the environment this
-        process started with and planted."""
-        result = subprocess.run([sys.executable, "-c", LEFT, str(TOOLKIT / "src/python")], cwd=TESTS,
-                                env={**host_isolation.RECEIVED, **planted}, capture_output=True, text=True,
+        """The toolkit's variables and those planted that a process importing host_isolation is left with, given the
+        environment this process started with and planted."""
+        result = subprocess.run([sys.executable, "-c", LEFT, str(TOOLKIT / "src/python"), json.dumps(sorted(planted))],
+                                cwd=TESTS, env={**host_isolation.RECEIVED, **planted}, capture_output=True, text=True,
                                 timeout=stretched(60))
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout.splitlines()[-1])
@@ -452,6 +550,11 @@ class InheritedVariableTests(unittest.TestCase):
         """The variables in left that host_isolation neither set over what was planted nor lists."""
         return sorted(name for name, value in left.items() if name not in host_isolation.INHERITED
                       and (name not in host_isolation.ISOLATION or value == self.PLANTED))
+
+    @staticmethod
+    def planted(names):
+        """Each name, a family's (NAME_*) as its member NAME_0."""
+        return [name.replace("*", "0") for name in names]
 
     def test_what_this_suite_inherited_leaves_no_variable_that_is_neither_set_nor_listed(self):
         # On another Mac, run for a dispatch, the suite inherits what the dispatch set; here, what this Mac's run did.
@@ -468,8 +571,70 @@ class InheritedVariableTests(unittest.TestCase):
         self.assertNotIn(host_isolation.keychain.UNLOCKED, left)
         for name in host_isolation.ISOLATION: self.assertNotEqual(left.get(name), self.PLANTED, name)
 
+    def test_every_variable_of_another_name_the_toolkit_sets_for_a_child_is_cleared_or_listed(self):
+        found = child_variables(toolkit_code())
+        # The dispatch's toolchain and credential file, which reached the suite on another Mac before they were cleared,
+        # are among those found, and so are the toolkit's own prefixes, which the code writes the same way.
+        for name in ("DEVELOPER_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_*", "GIT_CONFIG_VALUE_*",
+                     host_isolation.keychain.UNLOCKED, "QUEUEKEEPER_DISPATCHED_FROM", "QUEUEKEEPER_ADMISSION_ORIGIN"):
+            self.assertIn(name, found)
+        self.assertLessEqual({name for name in found if name.startswith(host_isolation.PREFIXES)}, set(toolkit_variables()))
+        others = [name for name in self.planted(found) if not name.startswith(host_isolation.PREFIXES)]
+        self.assertGreater(len(others), 10)
+        # PATH is listed, and planted over it no process runs.
+        left = self.left(dict.fromkeys([*(name for name in others if name != "PATH"), self.OTHER_CONTROL], self.PLANTED))
+        self.assertEqual(self.unexplained(left), [self.OTHER_CONTROL],
+                         {name: found.get(name, found.get(name[:-1] + "*")) for name in self.unexplained(left)})
+        for name in ("DEVELOPER_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
+            self.assertNotIn(name, left)
+
+    def test_a_new_variable_the_code_sets_for_a_child_fails_until_it_is_cleared_or_listed(self):
+        # The negative control: code that sets a variable host_isolation has never heard of, each way the code does.
+        with tempfile.TemporaryDirectory() as directory:
+            names = Path(directory) / "names.py"
+            names.write_text('IMPORTED = "PLANTED_IMPORTED"\nAMBIGUOUS = "PLANTED_AMBIGUOUS_ONE"\n')
+            (Path(directory) / "other.py").write_text('AMBIGUOUS = "PLANTED_AMBIGUOUS_TWO"\n')
+            module = Path(directory) / "planted.py"
+            module.write_text(textwrap.dedent('''\
+                import os, subprocess
+                from names import IMPORTED, AMBIGUOUS
+                import names
+                OWN = "PLANTED_OWN"
+                EXTRA = {"PLANTED_SPREAD": "1"}
+                environment = {**os.environ, "PLANTED_DICT": "1", OWN: "1", **EXTRA}
+                environment["PLANTED_SUBSCRIPT"] = "1"
+                environment[IMPORTED] = "1"
+                environment[names.IMPORTED] = "1"
+                environment[AMBIGUOUS] = "1"
+                os.environ.setdefault("PLANTED_SETDEFAULT", "1")
+                os.environ.update(PLANTED_UPDATE="1")
+                os.environ.update({"PLANTED_UPDATE_DICT": "1"})
+                os.putenv("PLANTED_PUTENV", "1")
+                variables = dict(os.environ, PLANTED_CALL="1")
+                variables = os.environ | {"PLANTED_UNION": "1"}
+                for count in range(2): environment[f"PLANTED_FAMILY_{count}"] = "1"
+                subprocess.run(["true"], env={"PATH": "/usr/bin", "PLANTED_ENV": "1"})
+                # Not an environment: a record, and a name in lower case.
+                record = {**EXTRA, "NOT_AN_ENVIRONMENT": 1}
+                os.environ["lower_case"] = "1"
+                for name in ("PLANTED_LOOP",): environment[name] = "1"
+                '''))
+            found = child_variables([names, Path(directory) / "other.py", module], Path(directory))
+        expected = {"PLANTED_DICT", "PLANTED_OWN", "PLANTED_SPREAD", "PLANTED_SUBSCRIPT", "PLANTED_IMPORTED",
+                    "PLANTED_SETDEFAULT", "PLANTED_UPDATE", "PLANTED_UPDATE_DICT", "PLANTED_PUTENV", "PLANTED_CALL",
+                    "PLANTED_UNION", "PLANTED_FAMILY_*", "PATH", "PLANTED_ENV"}
+        # A constant two modules give different values, and a loop's variable, are what it cannot see.
+        self.assertEqual(set(found), expected)
+        self.assertEqual(len(found["PLANTED_IMPORTED"]), 2)
+        planted = [name for name in self.planted(found) if name != "PATH"]
+        left = self.left(dict.fromkeys(planted, self.PLANTED))
+        self.assertEqual(self.unexplained(left), sorted(planted))
+        # Listed, with its reason, a variable passes.
+        with patch.dict(host_isolation.INHERITED, dict.fromkeys(planted, "listed for the control")):
+            self.assertEqual(self.unexplained(left), [])
+
     def test_each_inherited_variable_is_one_the_toolkit_names_and_says_why_it_is_safe(self):
-        names = toolkit_variables()
+        names = {*toolkit_variables(), *child_variables(toolkit_code())}
         for name, reason in host_isolation.INHERITED.items():
             with self.subTest(name=name):
                 self.assertIn(name, names)
