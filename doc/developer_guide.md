@@ -78,7 +78,7 @@ Tests set up host isolation first (`import host_isolation`); follow the neighbor
 7. **On no verdict**, it waits for the Mac to settle and runs again; three in a row hold the queue.
 
 Every change of state is appended to [the event journal](#the-event-journal). The full set of
-rules, with the incidents behind them, is in [Maintenance](guides/maintenance.md#the-merge-queue).
+rules, with the incidents behind them, is in [Maintenance](guides/merge-queue.md#the-merge-queue).
 
 ### Admission and placement
 
@@ -101,8 +101,8 @@ a rule naming a Mac.
 the target Mac, runs the lane there under that Mac's admission, and journals the run on that Mac
 so the sender can reattach after a dropped connection.
 
-Detail: [Heavy-work admission](guides/shared-host.md#heavy-work-admission) and
-[Which Mac runs a lane](guides/shared-host.md#which-mac-runs-a-lane).
+Detail: [Heavy-work admission](guides/admission.md#heavy-work-admission) and
+[Which Mac runs a lane](guides/another-mac.md#which-mac-runs-a-lane).
 
 ### Plugins and extensions
 
@@ -217,7 +217,7 @@ schema only grows, so readers ignore what they do not know.
   subcommand ([Docs check](guides/maintenance.md#docs-check)).
 - **Citations.** Queuekeeper turns on `"docs": {"citations": true}`, so the docs check also reads
   citations of a document by path and section title, such as
-  `(doc/guides/shared-host.md, Heavy-work admission)`, in code, messages and the schema. Error
+  `(doc/guides/admission.md, Heavy-work admission)`, in code, messages and the schema. Error
   messages cite the rule an agent broke, so it can read the reason. When you rename or move a
   section, the check names every citation to update.
 - **The setup example.** `tests/core/test_setup_examples.py` parses each complete
@@ -237,12 +237,19 @@ truth. Start with the user guide or this one, and come here for a specific mecha
 | Guide | Read it when you are working on |
 |---|---|
 | [Scheduling](guides/scheduling.md) | Any change to admission, placement or the queue's order: goals, rules in force, decisions |
-| [Maintenance](guides/maintenance.md) | The merge queue's rules in full, a project's first landing, the signed launcher, the spelling and docs checks |
-| [Shared host](guides/shared-host.md) | Admission, another Mac, disk cleanup, device reservations, Unity editors, process supervision and lock reclamation |
+| [Merge queue](guides/merge-queue.md) | The merge queue's rules in full: batches, blame, pushes and hooks, docs-only batches, recovery, a project's first landing |
+| [Maintenance](guides/maintenance.md) | Changing Queuekeeper while work runs, the signed launcher, the README's screenshots, the spelling and docs checks |
+| [Heavy-work admission](guides/admission.md) | Slots, model admission, the admission log, who holds and who waits, trial runs |
+| [Another Mac](guides/another-mac.md) | Which Mac runs a lane, what each Mac takes, how a run reaches another Mac, extension folders |
+| [Screen state](guides/screen-state.md) | How a locked or asleep screen affects placement and the lanes that need it |
+| [Setting up another Mac](guides/another-mac-setup.md) | `qk remote setup`, keychains on the right Mac, earlier configuration names |
+| [Disk cleanup](guides/disk-cleanup.md) | `qk disk`, leftover processes, stale pool simulators, registered Mac builds |
+| [Process supervision](guides/process-supervision.md) | Supervised processes, lock reclamation, stop signals, ending a coordinated command |
+| [Unity editors](guides/unity-editors.md) | Running batches beside an open Unity editor |
 | [Lanes](guides/lanes.md) | Receipts, test counts, compiling before tests, tests no lane runs, the gate's time budget |
 | [Parallel tests](guides/parallel-tests.md) | Lane groups, `qk unittest`, `qk simulator-tests` and `qk xctest` |
 | [Simulator pool](guides/simulator-pool.md) | The Apple plugin's reserved simulators and warmed templates |
-| [Physical devices](guides/devices.md) | Runs on a paired iPhone or iPad, the device pass, declared devices |
+| [Physical devices](guides/devices.md) | Device reservations, runs on a paired iPhone or iPad, the device pass, declared devices |
 | [Kept app builds](guides/app-builds.md) | `qk app`, which keeps and runs the last good build of a project's app |
-| [Foreground runs](guides/foreground.md) | Lanes that take a Mac's screen |
+| [Foreground runs](guides/foreground.md) | Lanes that take a Mac's screen, attended sessions on this Mac |
 | [Cloud gate runners](guides/cloud-gate-runners.md) | Renting a Mac as an overflow host |

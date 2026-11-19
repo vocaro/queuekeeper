@@ -425,17 +425,17 @@ admission log for every wait, with its reason and the load and busy share it saw
 ([admission log][log]). Once the owner decides, the decision goes into the table above with its
 date, and the mechanism's guide says how it works.
 
-[admission]: shared-host.md#heavy-work-admission
-[placement]: shared-host.md#which-mac-runs-a-lane
-[takes]: shared-host.md#what-a-mac-takes
-[farm]: shared-host.md#the-farms-macs
-[model]: shared-host.md#model-admission
-[screen]: shared-host.md#screen-state
-[unseen]: shared-host.md#load-the-queue-cannot-see
-[log]: shared-host.md#admission-log
-[devices]: shared-host.md#device-reservations
+[admission]: admission.md#heavy-work-admission
+[placement]: another-mac.md#which-mac-runs-a-lane
+[takes]: another-mac.md#what-a-mac-takes
+[farm]: another-mac.md#the-farms-macs
+[model]: admission.md#model-admission
+[screen]: screen-state.md#screen-state
+[unseen]: admission.md#load-the-queue-cannot-see
+[log]: admission.md#admission-log
+[devices]: devices.md#device-reservations
 [foreground]: foreground.md#waiting-for-the-foreground
-[queue]: maintenance.md#the-merge-queue
+[queue]: merge-queue.md#the-merge-queue
 [fails]: ../user_guide.md#when-a-batch-fails
 [171-split]: https://github.com/vocaro/queuekeeper/issues/171#issuecomment-6954024828
 [#12]: https://github.com/vocaro/queuekeeper/issues/12

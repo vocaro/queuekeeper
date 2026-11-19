@@ -119,11 +119,11 @@ A lane whose `parallel` names other lanes runs them at once under its own single
 - A group that runs a lane marked `"model": true` needs `"model": true` itself, or an exclusive
   resource. A group that runs two or more such lanes needs `"jobs": 1`: its one model lock
   cannot keep its own lanes from driving the model at once
-  ([model admission](shared-host.md#model-admission)).
+  ([model admission](admission.md#model-admission)).
 - A heavy or exclusive group goes to another Mac whole, unless it or one of its lanes says why
   it stays on this Mac (`"here"`), and its lanes' logs and receipts come back with its own results,
   under `.build/queuekeeper/remote/GROUP/lanes/`
-  ([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)). A gate script that runs such a
+  ([which Mac runs a lane](another-mac.md#which-mac-runs-a-lane)). A gate script that runs such a
   group as one of its steps runs it with `qk run --here GROUP`, so the group runs where the gate
   is and leaves its results there; without `--here` a gate started outside an admission sends the
   group away and finds no results ([MathMLLayout](https://github.com/vocaro/MathMLLayout)
@@ -133,7 +133,7 @@ A lane whose `parallel` names other lanes runs them at once under its own single
   `qk remote run --serial GROUP` runs them one after another on another Mac, under its
   admission, for a group that runs there. The serial reference is no pass of the group's:
   `qk remote passed` counts only its lanes side by side
-  ([how a run reaches another Mac](shared-host.md#how-a-run-reaches-another-mac)).
+  ([how a run reaches another Mac](another-mac.md#how-a-run-reaches-another-mac)).
 
 A group is for lanes one admission can bound. A release checkpoint's lanes are not one: each is
 heavy by itself, so `eng checkpoint` runs them one after another, each under its own admission
@@ -165,7 +165,7 @@ more than 64 MiB keeps it only in its dispatch. `qk remote passed LANE` names th
 are and how many files they hold. A gate on another Mac whose command writes nothing there, such
 as a `qk unittest` lane, says that its command wrote none, since another Mac sends back all it
 writes there (#38). `qk disk` reclaims these folders by their rule, and never the receipts
-([reclaiming disk space](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#reclaiming-disk-space)).
+([reclaiming disk space](disk-cleanup.md#reclaiming-disk-space)).
 
 Per-test times come back that way. `qk simulator-tests` keeps, for each test run, a shard or a
 device, `simulator-tests/KIND.log` and `KIND.json` in its lane's `results/`: the log's lines that

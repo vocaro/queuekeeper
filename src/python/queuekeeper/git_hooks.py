@@ -47,7 +47,7 @@ def relative(value, root, checkouts):
     return found if found is not None and str(found) != "." else None
 
 
-# A hook that hands the push to Queuekeeper, as doc/guides/maintenance.md's one-line hook does.
+# A hook that hands the push to Queuekeeper, as doc/guides/merge-queue.md's one-line hook does.
 RUNS_QK = re.compile(r"\bqk\s+pre-push\b")
 
 

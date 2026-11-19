@@ -35,7 +35,7 @@ and hands each question to the platform that owns the device, so a project can l
 - **`qk doctor`** gets a check of the devices the owner declared, using each platform's listing on every Mac.
 
 The behavior is documented in [Physical devices](../../../../doc/guides/devices.md) and
-[Device reservations](../../../../doc/guides/shared-host.md#device-reservations). Both guides apply to every
+[Device reservations](../../../../doc/guides/devices.md#device-reservations). Both guides apply to every
 platform, though their examples name iPhones.
 
 ## Shards

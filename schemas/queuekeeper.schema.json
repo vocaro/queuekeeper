@@ -45,7 +45,7 @@
       "type": "string"
     },
     "siblings": {
-      "description": "The folders beside this checkout that its own code loads from, each with the environment variable the code finds it by, as in {\"apple-engineering\": \"APPLE_ENGINEERING_ROOT\"}. A run that pins this checkout, or a run of this project, pins each at one commit and sets the variable to its checkout of it (doc/guides/shared-host.md, Extension folders beside a project)",
+      "description": "The folders beside this checkout that its own code loads from, each with the environment variable the code finds it by, as in {\"apple-engineering\": \"APPLE_ENGINEERING_ROOT\"}. A run that pins this checkout, or a run of this project, pins each at one commit and sets the variable to its checkout of it (doc/guides/another-mac.md, Extension folders beside a project)",
       "type": "object",
       "propertyNames": {"pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"},
       "additionalProperties": {"type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$"}
@@ -183,7 +183,7 @@
             }
           },
           "resource": {
-            "description": "The admission the lane takes, first come, first served, another Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which qk run runs where it starts, unadmitted (doc/guides/shared-host.md, Heavy-work admission)",
+            "description": "The admission the lane takes, first come, first served, another Mac first (the owner's decision, 2026-11-07): heavy, one slot, which light, the older name of a short check, and no resource mean too; exclusive, the host to itself; or self, for a lane whose script admits each of its parts itself, which qk run runs where it starts, unadmitted (doc/guides/admission.md, Heavy-work admission)",
             "enum": [
               "light",
               "heavy",
@@ -348,7 +348,7 @@
             "minimum": 1
           },
           "wholeHost": {
-            "description": "A heavy lane that is a Mac's work, such as a gate that runs the project's suites side by side: it takes every guaranteed slot of the Mac it runs on, so a second such lane never runs beside it there, and qk run sends it to the Mac that has them all free, while a lighter heavy lane still shares. A lane group that runs it needs wholeHost too, or an exclusive resource, which holds the host already (doc/guides/shared-host.md, Which Mac runs a lane)",
+            "description": "A heavy lane that is a Mac's work, such as a gate that runs the project's suites side by side: it takes every guaranteed slot of the Mac it runs on, so a second such lane never runs beside it there, and qk run sends it to the Mac that has them all free, while a lighter heavy lane still shares. A lane group that runs it needs wholeHost too, or an exclusive resource, which holds the host already (doc/guides/another-mac.md, Which Mac runs a lane)",
             "type": "boolean"
           },
           "idioms": {
@@ -366,7 +366,7 @@
             "minItems": 1
           },
           "unlockedScreen": {
-            "description": "A lane whose tests need an unlocked console screen, such as one that reads its own tree through the accessibility API; a lane group that runs such a lane says so too. queuekeeper places it only on a Mac whose screen reads unlocked, locked and unknown alike counting as no room for it, and otherwise it waits instead of running unmeasured. It needs an admitted lane (doc/guides/shared-host.md, Which Mac runs a lane)",
+            "description": "A lane whose tests need an unlocked console screen, such as one that reads its own tree through the accessibility API; a lane group that runs such a lane says so too. queuekeeper places it only on a Mac whose screen reads unlocked, locked and unknown alike counting as no room for it, and otherwise it waits instead of running unmeasured. It needs an admitted lane (doc/guides/another-mac.md, Which Mac runs a lane)",
             "type": "boolean"
           },
           "compileFirst": {
@@ -419,7 +419,7 @@
       "additionalProperties": false,
       "properties": {
         "citations": {
-          "description": "true has qk docs check also check citations of a document by path and section title, as in (doc/guides/shared-host.md, Heavy-work admission), or by path and anchor, in the project's Markdown and source files: each must name a document of this checkout and a heading or bold lead-in of it. Off unless set (doc/guides/maintenance.md, Docs check)",
+          "description": "true has qk docs check also check citations of a document by path and section title, as in (doc/guides/admission.md, Heavy-work admission), or by path and anchor, in the project's Markdown and source files: each must name a document of this checkout and a heading or bold lead-in of it. Off unless set (doc/guides/maintenance.md, Docs check)",
           "type": "boolean"
         }
       }
@@ -476,7 +476,7 @@
       }
     },
     "queue": {
-      "description": "The merge queue (doc/guides/maintenance.md, The merge queue)",
+      "description": "The merge queue (doc/guides/merge-queue.md, The merge queue)",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -634,12 +634,12 @@
           }
         },
         "noVerdictRuns": {
-          "description": "How many runs in a row of a batch's gate may give no verdict (exit 3, 75 or 78) before the queue holds; 3 where it is unset. Read from main, never from a branch (doc/guides/maintenance.md, The merge queue)",
+          "description": "How many runs in a row of a batch's gate may give no verdict (exit 3, 75 or 78) before the queue holds; 3 where it is unset. Read from main, never from a branch (doc/guides/merge-queue.md, The merge queue)",
           "type": "integer",
           "minimum": 1
         },
         "followLandings": {
-          "description": "true has the queue fast-forward the project's main checkout to origin/main after each landing, when it is on main, clean and nothing runs from it: for a checkout other projects read, such as the folder an extension loads from. Read from main (doc/guides/maintenance.md, The merge queue)",
+          "description": "true has the queue fast-forward the project's main checkout to origin/main after each landing, when it is on main, clean and nothing runs from it: for a checkout other projects read, such as the folder an extension loads from. Read from main (doc/guides/merge-queue.md, The merge queue)",
           "const": true
         },
         "spelling": {

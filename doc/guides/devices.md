@@ -1,9 +1,9 @@
 # Physical devices
 
-What the Apple plugin does around a run on a paired iPhone or iPad: silencing the owner's notifications,
-the device pass that runs a project's device checks under one reservation, and the owner's declaration of
-each device with what each Mac reads of it. Reservations themselves are
-in [shared host](shared-host.md#device-reservations); how devices behave under test is in the toolkit's
+How a session reserves a paired iPhone or iPad, or the members of a simulator pool, and what the plugins
+do around a run on a device: silencing the owner's notifications, the device pass that runs a
+project's device checks under one reservation, and the owner's declaration of each device with what each
+Mac reads of it. How devices behave under test is in the toolkit's
 [device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md) guide.
 
 The record, the device pass and declarations belong to the [mobile plugin](../../plugins/mobile/src/queuekeeper_mobile/README.md),
@@ -11,6 +11,315 @@ which the Apple and Android plugins share, so all of this applies to an Android 
 the [Android plugin's notes](../../plugins/android/src/queuekeeper_android/README.md#physical-devices). An Android
 device is named by its adb serial rather than a UDID, and its notifications are silenced with Do Not Disturb over
 adb and read back, with no shortcuts to set up.
+
+## Device reservations
+
+Physical devices, and the members of a project's simulator pool, are used only under a real
+reservation in the host's one device record. This section covers the record, taking a device,
+bounded runs on it, and runs on another Mac.
+
+### The device record
+
+The record is a human-readable JSON file outside every repository,
+`~/Library/Application Support/queuekeeper/device-handoff.json` of the account the sessions run as.
+
+- `plugins/mobile/src/queuekeeper_mobile/devices.py`, which the Apple and Android extensions share, is its
+  only writer. It finds the record from the
+  account's home directory, not `HOME` or `TMPDIR`, so a session with a private environment joins the
+  same record; `QUEUEKEEPER_DEVICE_RECORD` names an isolated record for tests only.
+- Committed documentation keeps no device identifiers or live session details.
+- Beside the device entries it holds `mac-foreground`, the owner's screen
+  ([attended Mac sessions](foreground.md#attended-mac-sessions)), and the owner's declaration of each
+  physical device, which `devices declare` changes without touching any entry. What each Mac reads of
+  a declared device is kept in `device-reach.json` beside the record, never in it
+  ([declared devices](#declared-devices)).
+
+An entry records:
+
+- the device and the owning session, with the revision the helper assigns;
+- reserved, testing or released state, whether a run is active, and the process whose end ends the
+  run; for a simulator pool member, the process that took it;
+- the purpose, the expected release time and the bounded run being attempted;
+- the original accessibility settings, and the apps, outputs and owner data to preserve;
+- at handoff, the terminal outcome, the restoration checks and the explicit release time.
+
+Read and change it through `qk devices`, which the mobile extension adds in a project that uses the
+Apple or Android extension,
+or from a script through `devices.Record()` and its `reserve`, `update`, `release` and `recover`
+methods. Outside such a project, run it through Queuekeeper's own checkout, as the recovery commands
+Queuekeeper prints do: `python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper
+devices …`. `python3 -m queuekeeper_mobile.devices` finds its module only in a process `qk` started
+(vocaro/queuekeeper#167).
+
+```sh
+qk devices status
+qk devices show iPhone    # the entry and its revision; 0 if new
+qk devices reserve iPhone --owner SESSION --revision N \
+  --device UDID --purpose "…" --release-by 2026-10-21T18:00:00Z \
+  --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
+qk devices update iPhone --owner SESSION --revision N --set 'run=…'
+qk devices release iPhone --owner SESSION --revision N \
+  --outcome "…" --restoration "…"
+```
+
+### Changing an entry
+
+The record is a coordination record, not a mutex: agree ownership with the other session first.
+
+- Each change takes an exclusive lock, reads the record fresh, refuses unless the entry is still at
+  the revision the caller read and, for an update or release, still the caller's, and replaces the
+  file whole without rewriting any other entry. The lock covers one change, never a reservation.
+- A refusal changes nothing: read the entry again and decide afresh. Each change prints the entry's
+  new revision, which the caller's next change names.
+- One device is never held under two keys. Give every command the device's canonical uppercase UDID,
+  never a name or `booted`; the helper takes nothing else.
+- `update KEY … --own PID` records a process the session launched, by its PID and start time;
+  `release` and `recover` refuse until each has exited.
+
+**Legacy records.** Sessions once kept ad hoc records in `/private/tmp`, where two could be live at
+once, unlocked writes lost entries, and a restart emptied them while device work ran. The helper
+refuses a record there. `devices import PATH… --by SESSION` merges such a file once, by its SHA-256,
+leaving the file untouched. Every entry survives: a held version stays current over a released one,
+the later activity wins between equals, the other version is kept in `importedVersions`, and two
+holds of one device leave it uncertain. `status` names a legacy file whose current bytes were never
+imported; once it is imported, stop writing it.
+
+### Releasing and recovering
+
+**A device is released only explicitly.** A passed expected release time, an idle screen or a silent
+session proves nothing: obtain the release and verify the device's state freshly.
+
+- A deadline never releases a device. `status` reports an overdue entry and changes nothing, and
+  `doctor` warns of one whose silencing of the owner's notifications is not yet put back
+  ([an overdue silencing](#an-overdue-silencing)).
+- The one exception is a simulator pool's reservation whose processes are all gone and whose
+  simulator is shut down, past its expected release or, for a run's reservation, once nothing
+  accounts for its owner: reap releases it as a recovery
+  ([stale pool simulators](disk-cleanup.md#stale-pool-simulators)).
+- Release yours during offline analysis instead of holding an idle reservation.
+- `release` refuses while a run is active: record its confirmed terminal result first.
+
+**Orphaned and uncertain entries.** Preserve a live or uncertain reservation until recovery confirms
+its work has stopped, as a heavy-work guard is preserved. Marking a run active records its process
+(`hostProcessIdentifier`) and its start time. An active run whose process is gone, or has another
+start time, is an orphan; an entry marked `uncertain` or `restoration-unverified` is uncertain.
+Neither is reserved again until its owner releases it or an attended recovery is recorded, by the
+owner or a session they agreed, once the run's processes have stopped and the device's settings and
+apps are verified:
+
+```sh
+qk devices recover iPhone --by SESSION --revision N --verified "…"
+```
+
+Recovery refuses while the recorded process still runs and, for a run sent to another Mac, while
+anything there may still use the device ([physical devices and another Mac](#physical-devices-and-another-mac)).
+
+[Simulator testing](https://github.com/vocaro/apple-engineering/blob/main/guides/simulator-testing.md)
+covers the pool's take, use and release steps. A physical device's reservation covers installing and
+launching there, not operating the device by hand; [device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md)
+has the preflight, UI-automation authorization and restoration steps.
+
+### Taking the iPad or iPhone in turn
+
+The record schedules the paired iPad and iPhone, first come first served, one holder at a time, and
+records no approval (owner's decision, 2026-11-06). Whether a session may use a device is between
+the session and the owner:
+
+- **The iPad** carries his standing approval (2026-10-31): take it whenever it is free, without
+  asking.
+- **The iPhone** is his personal phone (2026-11-01): ask him first, take it only once he has agreed,
+  with `--release-by` at the end of the time he gave.
+
+Both are taken the same way:
+
+```sh
+qk devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z \
+  --set 'originalSettings={"voiceoverEnabled": false}' --set 'preservation=…'
+```
+
+- `take` joins the entry's line, waits while another session holds the device or is ahead of it,
+  saying who holds it and until when, and reserves it until `--release-by`. It prints the entry,
+  whose revision the session's next change names.
+- `--wait SECONDS`, an hour by default, bounds the wait, after which it leaves the line and reserves
+  nothing. Start it in the background when the wait may outlast the tool's. Nothing hurries the
+  holder, so a wait behind one that never releases ends at `--wait`.
+- The line is kept in the record's `queues`, so joining it never changes the holder's revision. Each
+  place records the waiting `take` process and its start; a place whose process is gone drops out.
+  While anyone waits, `reserve` refuses everyone but the first in line.
+- `take` refuses an entry that has never recorded its device (its first `reserve --device` does), and
+  an orphaned or uncertain entry, which needs attended recovery.
+
+**Notifications.** Reserving or taking a physical device also silences the owner's notifications on
+it, with the shortcuts he made there once, and releasing or recovering it puts them back; the entry's
+`notifications` records each step. Without those shortcuts the command says what to ask the owner.
+`devices run` watches the device's log for a banner and runs a command one reached once more
+([notifications during a run](#notifications-during-a-run)).
+
+**Apps.** Record each app the session launches with `devices update KEY --launched BUNDLE`. Releasing
+an entry that records any requires `--apps-quit "…"`, saying how they were quit (for example
+`devicectl device process terminate`). The Shortcuts app that `devices take` opens for silencing
+needs no such word. The next entry starts without them; its `previousLease` keeps them. An app running
+on a device a session holds is a leftover the holder may quit, but never uninstall or clear beyond
+the agreed cleanup.
+
+### Device windows
+
+A physical device's window is the reservation itself, until `--release-by`, and a bounded run stops
+before that (owner's decision, 2026-11-06). The record refuses `--approved-*` on a physical device,
+a hardware UDID of 8 and 16 hex digits or 40; only `mac-foreground` records the owner's approval. A
+reservation made before then that recorded an approval stops once it has ended:
+`devices.require_window(KEY, entry)` refuses, `qk remote --device` refuses, and `status` reports the
+work as refused. An ended window releases nothing; the session restores the device and releases it.
+
+### Bounded device runs
+
+Run a command on a physical device through the toolkit's one launcher for a bounded run:
+
+```sh
+qk devices run iPhone --owner SESSION --revision N --limit 180 \
+  --restoration 60 -- xcodebuild test-without-building … -destination "platform=iOS,id=UDID"
+```
+
+A project's launcher calls it from Python, `devices.BoundedRun([KEY], owner, command, revision=N,
+limit=…, restoration=…).execute(command, stdout=log)`, and adds its own restoration queries and
+release around it, as Pagepour's mobile UI session does. `qk remote --device` runs the same checks
+and bound on another Mac ([below](#physical-devices-and-another-mac)). The launcher:
+
+- **requires a held entry:** the session (`--owner`, else `QUEUEKEEPER_DEVICE_OWNER`, else the agent
+  session) holds KEY with no run active, at `--revision` when given, and KEY names a physical device.
+  It never acquires, extends or changes a reservation;
+- **requires the window** the entry records and refuses once it has ended (`devices.require_window`);
+- **refuses a command that names another device**, running nothing: a hardware UDID in any case, or
+  any device the record holds under another key, a simulator among them;
+- **runs the command supervised under a bound:** the reservation's remaining time, less 105 s for the
+  run's own end (supervision's grace, SIGTERM, settling and SIGKILL waits) and `--restoration`
+  seconds, 60 by default, for restoration queries, and at most `--limit`. It refuses a bound under
+  30 s. The bound counts `xcodebuild` start-up, which can take minutes on a busy Mac, and counts
+  waking time, so a Mac that sleeps through a run lengthens it by the sleep;
+- **records the run:** marks it active with its own PID as the run's process, records the command's
+  process as the entry's own, and records the outcome in `run` once the command and its observed
+  descendants have ended: `exit N`, which is also its status, a timeout (status 124), a stop (the
+  launcher then ends by the same signal) or a command that did not start;
+- **treats an empty test run as unmeasured:** a command that exits 0 with a test count and no test
+  run, every one skipped or none counted, returns status 3. `xcodebuild` has reported
+  `** TEST EXECUTE SUCCEEDED **` after `Executed 0 tests` (vocaro/queuekeeper#100). `--no-tests`
+  keeps 0 for a run meant to select none; a command that prints no count, such as an install, keeps
+  its status;
+- **leaves an unconfirmed end uncertain:** the run stays active and the entry uncertain, for attended
+  recovery;
+- **updates only its own entry,** naming the revision its previous change returned. A change the
+  holding session makes during the run, such as extending its window, does not keep the run's end
+  from being recorded: the launcher rereads the entry while the same owner holds it with this run
+  active ([#230](https://github.com/vocaro/queuekeeper/issues/230));
+- **never releases the device,** changes VoiceOver, uninstalls apps or deletes data. The session's
+  next change names the revision the launcher's last change returned (`devices show KEY`).
+
+**Which hex strings name a device.** A hardware UDID is 8 and 16 hex digits, or 40. A simulator's
+UUID and a longer run of hex digits, such as a SHA-256, name no device. Nor do 40 digits that the
+current directory's Git knows as an object (`git cat-file -e`), such as a commit's whole SHA-1, or
+that name a code-signing identity's SHA-1 where a signing setting takes them: right after a name
+ending in `IDENTITY=`, after `--identity`, or after `-s` or `--sign` in a `codesign` command. The
+launcher cannot recognize a device's name or CoreDevice identifier, so name the device by its UDID.
+
+### Restoring and releasing
+
+A project's launcher keeps ownership and records `restoration-unverified` when restoration fails.
+Read the launcher's terminal output and verify its receipt before reporting a release.
+
+- An interrupted test bypasses its own restoration code. After a transport failure or a forced
+  termination, query the settings independently before releasing; if connectivity prevents that,
+  record restoration as unverified and coordinate recovery.
+- An uninstall timeout has an unknown outcome: query the exact bundle's presence, retry removal only
+  if it is still installed, and verify absence separately.
+- To release, verify the original accessibility and keyboard settings, the absence of owned test
+  processes and the measured build identities. Remove only the exact owned app and runner bundles,
+  verify their absence, release the entry, and tell the other session that the device is released,
+  including any unresolved restoration state.
+
+### Physical devices and another Mac
+
+**A physical device is reserved only in this Mac's record,** the Mac that sends runs to another Mac;
+another Mac's record holds only its own simulators. The paired iPhone and iPad are reachable from
+every Mac, so a record on each would let two runs use one device. Another Mac never reads this Mac's
+record, which would give code there a way into this Mac; a run carries the reservation it may use.
+
+**Deferral.** Every `qk remote` run first makes another Mac's record defer physical devices to the
+sending Mac's (`devices defer MAC`, kept as `physicalDevicesRecordedOn`, which `status` reports).
+
+- A record that defers them refuses to reserve a physical device or give an entry one, and names the
+  record that holds them.
+- A record there that already defers to another Mac, or holds a physical device, stops the run as a
+  configuration problem for the owner: only `devices defer MAC --replace` changes the Mac (`--end`
+  ends a deferral), and a held device is released or recovered first.
+- The setup runs in the toolkit the sending Mac sent, which is newer when a shared checkout that is
+  behind sends `origin/main`. Only the record's own refusal, status 2, is reported as the record's
+  configuration; a toolkit that lacks the command's module is reported as a version difference,
+  before any record is read; any other failure is the command's ([#155](https://github.com/vocaro/queuekeeper/issues/155)).
+- `qk doctor` reports each Mac's records under `deviceRecord`. It is an error for this Mac's record
+  to defer physical devices, or for another Mac's to hold one or defer them to another Mac; one that
+  defers to no Mac yet is listed as unchecked until the next run.
+
+**Running with a device.** A run on another Mac uses a physical device only under a reservation
+held here, which it carries:
+
+```sh
+python3 scripts/qk remote admit --device iPhone -- COMMAND
+python3 scripts/qk remote run --device iPhone LANE -- ARGUMENTS
+```
+
+- `--device KEY`, repeatable, makes the dispatch a [bounded run](#bounded-device-runs) of the
+  reservations held here, with the same checks; otherwise nothing is sent. `--device-owner` names the
+  session, else `QUEUEKEEPER_DEVICE_OWNER`, else the agent session.
+- The dispatch marks each entry's run active with the `qk remote` process as its process, records the
+  connection's `ssh` as the entry's own process, and records the outcome, host, work and results
+  directory in `run`. Its end, by a stop, its death or a dropped connection, stops the run there, so
+  a run whose dispatcher vanished is an orphan here.
+- The bound starts when the dispatch does, so it counts sending the commits and waiting for admission
+  there. Once it passes by this Mac's clock, the dispatch stops the run, and the outcome begins
+  `stopped at its Ns bound`. The dispatch reports the time left and cleanup allowance before sending
+  and again when the work starts, and warns, advisory only, if cleanup and an explicit
+  `--time-limit` or lane `timeout` exceed the time left. Checkout preparation also consumes the
+  window.
+- The run reads its reservations from `QUEUEKEEPER_DEVICE_LEASE`:
+  `{"record": MAC, "devices": {KEY: UDID}, "until": END}`. There `devices run KEY -- COMMAND` takes
+  KEY from the lease, checks the devices the command names against it, bounds the command by END,
+  and leaves the recording to the dispatch.
+- The dispatch watches each leased device's log from this Mac and reruns a command a notification
+  banner reached (doc/guides/devices.md, Notifications during a run); a `devices run` in the work
+  watches from another Mac as well.
+- The device stays reserved after the run. Preflight, restoration and release are the session's,
+  from this Mac.
+- Without `--device`, a command or lane arguments that name any hardware UDID are refused, whether or
+  not this record holds the device: reserve it here and add `--device KEY`. `qk run` keeps a lane
+  whose arguments name a physical device of this record on this Mac, and `qk admit` a command that
+  names any hardware UDID.
+
+**Recovery after a run there.** `devices recover` of an entry whose run went to another Mac asks
+that host first. It refuses while the host lists any process whose command line names the device's
+UDID, or any process left over in a checkout or the temporary directory since the run started
+([processes left over from runs](disk-cleanup.md#processes-left-over-from-runs)). The run's
+`offload_host.py`, `xcodebuild` and `devicectl` all name the UDID; a process that reaches the device
+without naming it is not seen. An unreachable Mac keeps the device until it can be reached, or until
+the owner recovers it with `--offload-unchecked REASON`, which the recovery records.
+
+**Dependency commits.** A dependency commit can be absent from the caller's Git. Declare it with
+`qk remote admit --git-commit /path/to/dependency=FULL_SHA -- COMMAND FULL_SHA`.
+
+- The repeatable option verifies the full 40-digit hash as a commit in that local repository before
+  sending anything; a missing object, a tree, a tag object, an invalid hash or an unreadable
+  repository refuses the dispatch.
+- Only an exact, separate positional argument is exempt; `id=FULL_SHA`, a hash after an option, or a
+  hash inside a shell string still follows the device checks. A device the record knows always needs
+  its reservation.
+- The command receives the hash unchanged; the path is used only for local verification. Declare
+  each foreign commit separately.
+- The refusal of 40 hex digits that no entry holds names `--git-commit` and its limit; that of an
+  8-16 UDID does not (vocaro/queuekeeper#91).
+
+**Limits.** The records constrain only work that goes through the toolkit: `xcodebuild` or
+`devicectl` run by hand on another Mac, or Xcode there, reaches the devices without them. A lane that
+needs a device says so with `"here"`, so sending one to another Mac is always an explicit
+`qk remote --device`.
 
 ## Notifications during a run
 
@@ -269,7 +578,7 @@ its receipt, so `eng release` counts a pass of it at the commit as it counts any
   ([a stuck CoreDeviceService](#a-stuck-coredeviceservice)); a device the pass took goes back.
 - It runs the command once on each device as `devices run` does: bounded by the reservation,
   refused when it names another device, watched for a notification banner, and run once more
-  after one ([bounded device runs](shared-host.md#bounded-device-runs)). `{udid}` and `{key}` in
+  after one ([bounded device runs](devices.md#bounded-device-runs)). `{udid}` and `{key}` in
   its words become the device's hardware UDID and its entry's key, which the command also finds
   in `QUEUEKEEPER_DEVICE_UDID` and `QUEUEKEEPER_DEVICE_KEY`, with a results directory of its own under the lane's.
   A project script that builds first, before any device is held, calls

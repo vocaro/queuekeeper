@@ -38,7 +38,7 @@ emulator another agent is using. The pool gives each run its own.
   recovery.
 
 Members are AVDs named `POOL_LABEL_N`, such as `Pagepour_Pixel_8_API_36_2`. Each is keyed by that name in the
-[device record](../../../../doc/guides/shared-host.md#device-reservations). Each Mac has its own pool.
+[device record](../../../../doc/guides/devices.md#device-reservations). Each Mac has its own pool.
 
 ## Emulator tests
 

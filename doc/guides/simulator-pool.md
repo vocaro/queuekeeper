@@ -14,7 +14,7 @@ and with it the simulator tool's approval, so a pool interrupts the owner far le
 per run.
 
 1. Take a shut-down member of the kind you need under a real reservation in the
-   [device record](shared-host.md#device-reservations), keyed by its name. A booted member is
+   [device record](devices.md#device-reservations), keyed by its name. A booted member is
    another session's even when it looks idle, and so is one whose entry is held; if `simctl boot`
    reports it already booted, another session took it first, so choose another.
 2. Observe it still shut down under the reservation, then reset only that member: Queuekeeper erases it
@@ -50,7 +50,7 @@ member's exact name, and if more than one device has that name, stop and inspect
 Each Mac has its own pool and device record. A lane run on another Mac takes or creates its
 members among another Mac's simulators and reserves them in another Mac's record, so the
 two Macs' members of one name are two simulators, and a reservation on one Mac holds nothing on
-the other ([simulators on another Mac](shared-host.md#simulators-on-another-mac)).
+the other ([simulators on another Mac](another-mac.md#simulators-on-another-mac)).
 
 Never delete or rename a pool member automatically, except by pruning.
 
@@ -71,7 +71,7 @@ from the kind's template (or erases: with `--erase`, or when no settled template
 with `--keep-state`) or creates, and boots a member and prints its UDID, exiting 3 when the boot
 reaches its limit. A taken member is held for an hour (`--hold MINUTES` for longer): the take/release
 leases the record kept lasted 2 to 6 minutes and the longest pool lease 42, and once its expected
-release has passed, reap may release a member whose session has gone (shared-host.md, Stale pool
+release has passed, reap may release a member whose session has gone (disk-cleanup.md, Stale pool
 simulators). A session that needs it longer runs `qk simulator-pool extend UDID [--hold MINUTES]`,
 which moves its expected release to that many minutes from now, an hour by default;
 `qk simulator-pool release UDID` shuts it down and releases it, and
@@ -109,7 +109,7 @@ shuts down a member or warmed template left booted for 2 hours that no live run,
 accounts for, on the Macs, without asking the owner, and also runs before work is sent to another Mac, before heavy work runs on the
 Mac it was started on, and in `qk doctor`; to keep one
 running, reserve it or boot a simulator outside the pool
-([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#stale-pool-simulators)).
+([stale pool simulators](disk-cleanup.md#stale-pool-simulators)).
 
 ### Keeping a member's state
 
@@ -161,7 +161,7 @@ pristine data or created and booted for the first time (`queuekeeper_apple.simul
 The member pattern `POOL LABEL N` never matches a template, so no lane takes, tests on or prunes
 one, and `simulator-pool check` refuses its UDID. A reap may shut one down, under the same
 conditions as a member, by the owner's decision of 2026-11-04
-([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#stale-pool-simulators)); pruning deletes one only when its
+([stale pool simulators](disk-cleanup.md#stale-pool-simulators)); pruning deletes one only when its
 runtime is no longer installed, or its kind has no member left and is [unused for 7 days](#pruning).
 
 - When a session takes or creates a member and its kind has no current template, it makes one under
@@ -259,14 +259,14 @@ runtime is no longer installed, or its kind has no member left and is [unused fo
   clone failed and stored nothing, and every member while simctl cannot list the runtime's builds.
 - A warm-up killed outright leaves its template booted and held by a process that is gone. Reap shuts
   it down once that reservation's expected release has passed and the template has run 2 hours, and
-  then releases its entry ([stale pool simulators](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/shared-host.md#stale-pool-simulators)). Once that entry is released, the template has
+  then releases its entry ([stale pool simulators](disk-cleanup.md#stale-pool-simulators)). Once that entry is released, the template has
   no record of a finished warm-up, so the next take or creation of the kind replaces it.
 - A clone has a UDID of its own, as a created member has, so the simulator tool's first use of it
   asks the owner, as for any new member ([simulator lifecycle](https://github.com/vocaro/apple-engineering/blob/main/guides/simulator-testing.md#simulator-lifecycle)); a reset
   member keeps its UDID and approval. The template itself is never handed to a tool.
 - `qk simulator-pool list` shows each member's last take, the template it was reset or cloned from
   and when that was made, or why it was erased, and each template, current or stale, and why.
-  [`qk disk`](shared-host.md#reclaiming-disk-space) keeps a template while its runtime is installed
+  [`qk disk`](disk-cleanup.md#reclaiming-disk-space) keeps a template while its runtime is installed
   and lists one whose runtime is gone, which `qk simulator-pool prune` deletes under a reservation
   and records.
 
@@ -296,7 +296,7 @@ follows the same rule.
 #### A kind left unused
 
 A kind's lowest-numbered member goes only when a session asks (`qk simulator-pool prune`, or
-[`qk disk`](shared-host.md#reclaiming-disk-space)), never at a take, and only once every member of
+[`qk disk`](disk-cleanup.md#reclaiming-disk-space)), never at a take, and only once every member of
 the kind is unused, and its own entry released, for 7 days. Its kind's warmed template is deleted
 after it. A kind a project has left, such as one on a runtime it moved off, otherwise kept a member
 and a template for good: 11 members and 9 templates idle for 7 to 27 days on the first Mac when its
@@ -320,7 +320,7 @@ A session checks for eligible members when it takes or creates one of the same k
 `qk simulator-tests` and `qk simulator-pool take` prune that kind first, and
 `qk simulator-pool prune [UDID ...]` prunes on request. The reservation is made at the entry's
 revision that was found eligible, so a use in between refuses it, and the deletion is recorded
-as the entry's `pruned` field and its release. [`qk disk`](shared-host.md#reclaiming-disk-space)
+as the entry's `pruned` field and its release. [`qk disk`](disk-cleanup.md#reclaiming-disk-space)
 lists eligible members of every pool a main checkout names, with the prune command.
 
 ### App accessibility

@@ -9,7 +9,7 @@ Mac's destination from the canonical resolver (remote.configured), what `ssh -G`
 that destination to, and whether this Mac's device record marks it as another Mac of another
 Mac. The session comes from the process's audit session flags: an SSH login is flagged remote and
 has no graphic access, so nothing in it can show a dialog, while a session with graphic access can
-(doc/guides/shared-host.md, Keychains on the right Mac).
+(doc/guides/another-mac-setup.md, Keychains on the right Mac).
 """
 import ctypes
 import os

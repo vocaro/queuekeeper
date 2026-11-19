@@ -19,7 +19,7 @@ Replace the example with the relevant module, class or test. Run the configured 
 `python3 scripts/qk run gate`. Every test or build must take admission, even a single test:
 use `python3 scripts/qk admit -- COMMAND` for other build commands. Do not run bare
 `python3 -m unittest`, `swift test` or `xcodebuild`. Use `--unadmitted` only when testing a runner
-itself, as described in [the admission guide](doc/guides/shared-host.md#heavy-work-admission).
+itself, as described in [the admission guide](doc/guides/admission.md#heavy-work-admission).
 Run `python3 tools/dashboard-screenshots.py`, which retakes the README's screenshots with this Mac's Chrome,
 directly and not through admission ([why](doc/guides/maintenance.md#the-readmes-screenshots)).
 
@@ -70,4 +70,4 @@ are evidence, not caches.
 - `tests/`: component suites, `integration/`, architecture checks, and `test_support/` fixtures. Follow neighboring tests' `host_isolation` setup.
 - `doc/user_guide.md` and `doc/developer_guide.md`: the two main documents; `doc/guides/`: reference detail and design decisions.
 
-See [maintenance](doc/guides/maintenance.md) for queue operation and spelling rules.
+See [the merge queue](doc/guides/merge-queue.md) for queue operation and [maintenance](doc/guides/maintenance.md) for spelling rules.

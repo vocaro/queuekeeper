@@ -79,6 +79,6 @@ def register():
                         "The device pass)", device_pass.main),
         "devices": ("read or change this Mac's device record, which reserves its physical devices, simulator pool "
                     "members and foreground: qk devices status|show|reserve|update|take|release|recover|run; "
-                    "-h for the rest (doc/guides/shared-host.md, Device reservations)",
+                    "-h for the rest (doc/guides/devices.md, Device reservations)",
                     lambda arguments, project: devices.main(arguments)),
     })

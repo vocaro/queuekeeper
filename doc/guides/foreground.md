@@ -9,7 +9,7 @@ toolkit's [second Mac foreground](https://github.com/vocaro/vocaro-engineering/b
 
 A command Queuekeeper runs on another Mac starts over SSH. It runs in an audit session of its own,
 yet the window server gives it the console user's session
-([which Mac runs a lane](shared-host.md#which-mac-runs-a-lane)). Foreground work there needs
+([which Mac runs a lane](another-mac.md#which-mac-runs-a-lane)). Foreground work there needs
 settings of the owner's Mac that the hosted workflow once made on each disposable runner. They
 are the owner's to change, once; Queuekeeper and its runs change none of them. `qk remote foreground`
 lists each one missing with its fix, and which run holds the foreground. Every foreground run
@@ -155,7 +155,7 @@ The hosted runner was prepared in other ways too, which another Mac is not:
   certificate or secret, and the image's own privacy grants were enough for the UI test. On another
   Mac an ad hoc runner is unmeasured. Signing with a team needs its keychain in a GUI
   session, which an SSH command does not reach
-  ([keychains on the right Mac](shared-host.md#keychains-on-the-right-mac)).
+  ([keychains on the right Mac](another-mac-setup.md#keychains-on-the-right-mac)).
 - Read actual on/off state with the canonical public AppKit getter under the foreground lease
   ([state and restoration](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration)). Read and, if a run asks, choose VoiceOver's link verbosity
   with `voiceover-link-verbosity.swift` ([link verbosity](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#link-verbosity)),
@@ -166,7 +166,7 @@ The hosted runner was prepared in other ways too, which another Mac is not:
 - A project keeps its foreground work in a lane marked `"foreground": true`, with a heavy or
   exclusive resource. `qk run LANE [-- ARGUMENTS]` sends it to another Mac, uncommitted work
   as a snapshot commit, as any lane goes ([how a run reaches the second
-  Mac](shared-host.md#how-a-run-reaches-another-mac)), and `qk remote run LANE` does the
+  Mac](another-mac.md#how-a-run-reaches-another-mac)), and `qk remote run LANE` does the
   same. It never falls back to this Mac: another Mac that is not configured, cannot be reached
   or is not ready stops the lane, with what the owner can change.
 - A stop is not the end of the work. When another Mac cannot be reached, ask the owner for a
@@ -178,11 +178,11 @@ The hosted runner was prepared in other ways too, which another Mac is not:
   host for a timing measurement. On another Mac itself, `qk admit --foreground -- COMMAND`
   holds them the same way. `qk admit` never sends foreground work to another Mac: it runs where its foreground is held.
 - The foreground is the `mac-foreground` entry of another Mac's own
-  [device record](shared-host.md#device-reservations), whose deferral of physical devices to
+  [device record](devices.md#device-reservations), whose deferral of physical devices to
   this Mac's record marks it as another Mac's. Queuekeeper reserves it for the run, recording no
   approval (vocaro-engineering#207), naming the reservation `queuekeeper PID on MAC`, records its own process as the entry's active run,
   and sets `QUEUEKEEPER_DEVICE_OWNER` for the work, so a driver's `devices check` before each key
-  passes as on this Mac ([attended Mac sessions](shared-host.md#attended-mac-sessions)). The
+  passes as on this Mac ([attended Mac sessions](foreground.md#attended-mac-sessions)). The
   check confirms that the active run still runs by its start time; a driver inside an app's
   sandbox, such as an XCTest runner, may not start `ps`, and the check then reads that start from
   the kernel instead. A sandboxed runner's check once failed on `ps` alone, so its test skipped
@@ -344,7 +344,7 @@ Safari after the last session; Queuekeeper's quit is the net under it
 - **What is the run's, on any other Mac.** That decision does not reach this Mac, the owner's
   workstation, where he may open Safari or Mail while a run holds the screen. A Mac is one whose
   foreground a run takes when its own settings say it takes foreground work
-  (`reservations.takes_foreground`, [what a Mac takes](shared-host.md#what-a-mac-takes)), never by
+  (`reservations.takes_foreground`, [what a Mac takes](another-mac.md#what-a-mac-takes)), never by
   its name, and since 2026-11-17 no longer by its device record. On any other, only an app the run is shown to own is quit: one built in the
   run's checkout or recorded with `--launched`. Every other new app is left running and reported
   as "this Mac is a workstation". `foreground.slot` takes the foreground only on another Mac
@@ -569,3 +569,82 @@ Checked live on another Mac (macOS 27.2) on 2026-11-07, under admitted foregroun
 
 How a driver ends a session, and what it writes when VoiceOver will not return to its state, is in the
 toolkit's [Mac VoiceOver](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md#voiceover-state-and-restoration) guide.
+
+## Attended Mac sessions
+
+Mac VoiceOver and foreground UI default to another Mac's foreground, which Queuekeeper reserves for
+each run without asking the owner ([running foreground work](#running-foreground-work)), not to this
+Mac. These rules are a method for a session on this Mac's foreground within a period the owner
+approved beforehand ([this Mac's foreground](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/second-mac-foreground.md#this-macs-foreground));
+they grant nothing by themselves. The drivers' check below is the same on every Mac.
+
+### Reserving the foreground
+
+Agree the window with the owner first, then reserve the foreground for it before taking it.
+
+- The `mac-foreground` entry in the [device record](devices.md#device-reservations) stands for the
+  screen, keyboard, pointer, focus and speech, and names no device.
+- Like a physical device's, its reservation records no approval (owner's decision, 2026-11-06,
+  vocaro-engineering#207): the record schedules it, one holder at a time, and `--release-by` is the
+  end of the window the owner agreed. `--approved-*` is refused. A reservation made before then that
+  recorded an approval also stops once that approval ends.
+- A new window from the owner is a new reservation, after a release. Another session sees the
+  holder in `devices status`, and its reservation is refused while the entry is held.
+
+```sh
+qk devices reserve mac-foreground --owner SESSION --revision N \
+  --purpose "Mac XCUITest of …" --release-by 2026-10-23T18:00:00Z
+export QUEUEKEEPER_DEVICE_OWNER=SESSION
+qk devices check      # at the start and before each action
+qk devices update mac-foreground --owner SESSION --revision N \
+  --own PID
+qk devices release mac-foreground --owner SESSION --revision N \
+  --outcome "…" --restoration "…" --frontmost restored
+```
+
+### The drivers' check
+
+A foreground driver calls `devices check`, or `devices.require_foreground(owner)` from Python, at the
+start and before each key, activation or `set frontmost`. It refuses unless:
+
+- the session named by `--owner` or `QUEUEKEEPER_DEVICE_OWNER` holds the entry;
+- the entry is neither orphaned nor uncertain;
+- on this Mac, its expected release has not passed.
+
+`qk run --here` checks a lane marked `"foreground": true` the same way, and `qk admit --foreground`
+a command. On another Mac Queuekeeper holds the entry for the run itself and names it in
+`QUEUEKEEPER_DEVICE_OWNER` ([running foreground work](#running-foreground-work)), and a run there may
+outlast its expected release.
+
+**An uncertain entry** needs attended recovery, with one exception on another Mac: when a session's
+own VoiceOver restoration could not be verified, and nothing else is uncertain, the run's own runner
+may set VoiceOver back to the original recorded in the entry (`voiceOverOriginal`) with
+`voiceover.state.recover_restoration(owner)`, once, while the run lives. Verified, the entry is no
+longer uncertain and the run's next session starts (owner's decision, 2026-11-12,
+[EPUBLib#416](https://github.com/vocaro/EPUBLib/issues/416);
+[recovering the foreground](#recovering-the-foreground)).
+
+**On this Mac a passed expected release releases nothing:** `status` reports it, the check refuses
+further foreground work, and the session stops, restores and releases.
+
+### During and after the session
+
+- Record each app and test runner the session launches with `update --own PID`: `release` and
+  `recover` wait until those have exited.
+- The release says whether the previous frontmost app was restored (`--frontmost restored`) or the
+  session no longer owned the foreground (`not-ours`).
+- The screen and the CPU are separate resources. A foreground timing measurement needs both the
+  reservation and exclusive admission; a functional UI test needs only the reservation, with its
+  build admitted as heavy work as usual.
+- Approving a mechanism is distinct from the Mac being available now. Announce each start and when
+  the owner can resume work, and wait for the go-ahead.
+- An explicit, uninterrupted availability interval covers bounded sessions within it without
+  repeated requests. Never extend the interval yourself; keep its original deadline and restoration
+  requirements.
+- Guard every action by the exact app path and PID. Stop global navigation on foreground loss or
+  when a helper expires.
+- Restore the original settings before returning control.
+
+[Background Mac testing](https://github.com/vocaro/apple-engineering/blob/main/guides/background-mac-testing.md)
+and [Mac VoiceOver](https://github.com/vocaro/AXVerify/blob/main/guides/voiceover-mac.md) describe the
+drivers, key guards and VoiceOver restoration.

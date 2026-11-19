@@ -18,7 +18,7 @@ The packages are this checkout's core and plugin source roots, one per line in a
 there. A process that names another copy in QUEUEKEEPER_ROOT and runs it through scripts/qk still runs that copy,
 since the launcher puts it first.
 
-The CPU limit is `busyLimit` in this Mac's admission limits file (doc/guides/shared-host.md, Heavy-work admission).
+The CPU limit is `busyLimit` in this Mac's admission limits file (doc/guides/admission.md, Heavy-work admission).
 The script takes the Mac it runs on to be its owner's workstation and writes 70 there, below the default of 90 that
 a Mac added to the farm with `qk farm add` keeps, so that this Mac is loaded less than the Macs that only take work.
 A file that sets `busyLimit` already is left as it is, and so is one admission cannot read, which the script

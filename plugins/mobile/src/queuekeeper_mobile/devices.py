@@ -535,7 +535,7 @@ def named(words, known=(), root=None, *, commits=()):
 
 class BoundedRun:
     """One command on physical devices the session holds, stopped before their reservations end and
-    never releasing them (doc/guides/shared-host.md, Bounded device runs).
+    never releasing them (doc/guides/devices.md, Bounded device runs).
 
     Here the reservations come from this Mac's record: the session holds each with no run active,
     at revision when one is given. Each entry records the run: active,
@@ -1217,7 +1217,7 @@ def main(argv=None):
         elif args.action == "recover":
             if args.build_host_unchecked is not None:
                 raise ValueError("--build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, "
-                                 "and is no longer read: use --offload-unchecked (doc/guides/shared-host.md, Earlier names)")
+                                 "and is no longer read: use --offload-unchecked (doc/guides/another-mac-setup.md, Earlier names)")
             if args.host: return recover_there(args)
             entry = record.entry(args.key) or {}
             # Only once recovery would go ahead: never while its run's process still runs.

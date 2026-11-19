@@ -7,7 +7,7 @@ a slot: it waits while another run holds another Mac's mac-foreground entry, res
 which records no approval, runs the work with
 QUEUEKEEPER_DEVICE_OWNER naming the reservation, so that drivers' `devices check` passes, and releases it.
 This Mac is the owner's workstation. Its foreground needs a window the owner agreed beforehand, which
-the session reserves itself (doc/guides/shared-host.md, Attended Mac sessions), and queuekeeper never sends
+the session reserves itself (doc/guides/foreground.md, Attended Mac sessions), and queuekeeper never sends
 foreground work to it.
 
 Which Mac is which is each Mac's own setting, `takes.foreground` in its mac-settings.json, which
@@ -101,7 +101,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
         raise reservations.Refused("queuekeeper takes the foreground only on a Mac whose own settings say it takes "
                               "foreground work (`qk farm foreground NAME`); this Mac's needs a window the owner "
                               "agreed beforehand, which the session reserves as mac-foreground itself "
-                              "(doc/guides/shared-host.md, Attended Mac sessions)")
+                              "(doc/guides/foreground.md, Attended Mac sessions)")
     found = (ready or problems)()
     if found: raise refusal(found)
     owner = f"queuekeeper {os.getpid()} on {offload_host.mac_name()}"

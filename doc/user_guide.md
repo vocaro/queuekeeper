@@ -78,7 +78,7 @@ one lane, `gate`, the command every change must pass:
 
 The queue always reads its settings from `main`, so a branch cannot loosen its own gate. The one
 exception is the commit that adds `queuekeeper.json`, which is gated by its own file since `main`
-has none yet ([A project's first landing](guides/maintenance.md#a-projects-first-landing)).
+has none yet ([A project's first landing](guides/merge-queue.md#a-projects-first-landing)).
 
 Then check the setup:
 
@@ -307,7 +307,7 @@ preflight lanes and the documentation lanes, beside any code gate that is runnin
   `origin/main` so they land without waiting for code. Keep them in one entry when the document
   describes what the code change does.
 
-The full rule is in [Maintenance](guides/maintenance.md#the-merge-queue), under
+The full rule is in [the merge queue guide](guides/merge-queue.md#the-merge-queue), under
 *A docs-only batch runs the docs lanes*.
 
 ### Changes that build on each other
@@ -393,7 +393,7 @@ The most useful settings:
 | `resource` | `"exclusive"` for timing measurements that need the Mac to themselves; `"self"` for a script that admits its own parts |
 | `wholeHost` | The lane starts its own parallel jobs and needs the whole Mac |
 | `unlockedScreen` | Runs only on a Mac whose screen is unlocked ([Screen lock](#screen-lock)) |
-| `labels` | Runs only on a Mac whose settings give it every label, such as `["unity-license"]` ([what a Mac takes](guides/shared-host.md#what-a-mac-takes)) |
+| `labels` | Runs only on a Mac whose settings give it every label, such as `["unity-license"]` ([what a Mac takes](guides/another-mac.md#what-a-mac-takes)) |
 | `minimumTests` | Rarely needed: a typed floor beside the [count from history](guides/lanes.md#test-counts-from-history), which already fails a whole run that executes fewer tests than the lane's last pass on main |
 | `exactTests` | With `minimumTests`, a whole run must execute exactly that many, for a lane that picks its tests by name |
 | `arguments` | `false` refuses `qk run LANE -- ARGUMENTS` for a lane that selects its own tests |
@@ -432,7 +432,7 @@ So every lane, and every command run through `qk admit -- COMMAND`, first asks t
 
 Don't wait for a quiet Mac before starting work, and don't poll `uptime` or `top`: admission
 waits for a slot and chooses the Mac. [Scheduling](guides/scheduling.md) explains the rules and
-the reasons behind them; [Heavy-work admission](guides/shared-host.md#heavy-work-admission) has
+the reasons behind them; [Heavy-work admission](guides/admission.md#heavy-work-admission) has
 every detail.
 
 ### Process supervision
@@ -625,7 +625,7 @@ Every verification run goes through admission, so it takes a slot and shows in
 Never run `python3 -m unittest` directly, however small the run. It takes no slot, so other work
 waits behind load nobody can see, and it misses `qk unittest`'s summary, logs, progress and the
 suite's own setup. Only a test of a runner itself uses `--unadmitted`
-([Heavy-work admission](guides/shared-host.md#heavy-work-admission)).
+([Heavy-work admission](guides/admission.md#heavy-work-admission)).
 
 `qk run --expect N LANE -- FILTER` checks that exactly N tests *executed*. Skipped tests don't
 count: if executed plus skipped make N, the run is unmeasured (exit 3), and any other count fails
@@ -788,7 +788,7 @@ Common holds:
 - **An extension folder beside the project.** A run loads such a folder at its `origin/main`, not
   as your checkout stands. Test a change to it with `qk run --sibling FOLDER=WHERE LANE`, and land
   it before the change that needs it
-  ([Extension folders beside a project](guides/shared-host.md#extension-folders-beside-a-project)).
+  ([Extension folders beside a project](guides/another-mac.md#extension-folders-beside-a-project)).
 
 ### A queue that looks stuck
 
@@ -811,7 +811,7 @@ reports on each Mac, without changing its verdict.
 ### Disk space
 
 `qk disk` lists Queuekeeper's build caches, test results and simulator resources, with what is
-safe to delete ([Reclaiming disk space](guides/shared-host.md#reclaiming-disk-space)).
+safe to delete ([Reclaiming disk space](guides/disk-cleanup.md#reclaiming-disk-space)).
 
 ## Further reading
 

@@ -21,7 +21,7 @@ A run says what its sweep and its cleanup did in one line, with the folders left
 Not covered: xcodebuild without -derivedDataPath, whose shared default folder belongs to no run (the
 run says so); a copy of a build outside the folder; a folder removed before the cleanup, since
 nothing is left to name to lsregister; and an xcodebuild shorter than one sample that names a folder
-only in a script (doc/guides/shared-host.md, Registered Mac builds).
+only in a script (doc/guides/disk-cleanup.md, Registered Mac builds).
 """
 import contextlib
 import json
@@ -321,7 +321,7 @@ class Watch:
             elif builds_unnamed(args) and "unnamed" not in self.warned:
                 self.warned.add("unnamed")
                 self.say("an xcodebuild names no -derivedDataPath, so what it builds stays registered; give it a "
-                         "folder of its own (doc/guides/shared-host.md, Registered Mac builds)")
+                         "folder of its own (doc/guides/disk-cleanup.md, Registered Mac builds)")
 
     def directory(self, pid):
         """A process's working directory, against which its relative folder resolves, or None when it

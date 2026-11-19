@@ -840,7 +840,7 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
         refusal = f"{path} is not on {here}"
     elif not root.is_dir():
         refusal = (f"{root} is not on {here}: set up the farm's other Macs first, and run qk remote there once "
-                   "(doc/guides/shared-host.md, Setting up another Mac)")
+                   "(doc/guides/another-mac-setup.md, Setting up another Mac)")
     elif not terminal:
         refusal = "it asks for the password at a terminal, and this has none: run it in your own Terminal"
     if refusal:
@@ -2876,7 +2876,7 @@ def pool_of(name, pools, runtime=""):
     """The pool a simulator belongs to and as what: (POOL, "member") for a name `POOL LABEL N`, and
     (POOL, "template") for its kind's warmed template, `POOL LABEL template (RUNTIME)` on that runtime, as
     simulators/pool.py lists one; else (None, None). Reaping may shut down a template too, by the owner's
-    decision of 2026-11-04 (doc/guides/shared-host.md, Stale pool simulators)."""
+    decision of 2026-11-04 (doc/guides/disk-cleanup.md, Stale pool simulators)."""
     for pool in sorted(pools):
         if not name.startswith(pool + " "): continue
         rest = name[len(pool) + 1:]
@@ -3551,7 +3551,7 @@ def pressure():
     heavy-work admission finds no spare capacity, HEAVY_BUSY_LIMIT, the host's limits file or 90, as
     resources.busy_limit sets it (limits); its memory pressure level, None when unread; and its one-minute load,
     which the merge queue logs. The merge queue judges them as admission does (resources.judged) before it runs
-    again a lane that ran here and gave no verdict (doc/guides/maintenance.md, The merge queue)."""
+    again a lane that ran here and gave no verdict (doc/guides/merge-queue.md, The merge queue)."""
     try: load = round(os.getloadavg()[0], 2)
     except OSError: load = None
     sources = {}
@@ -4275,7 +4275,7 @@ def defer_devices(kit, mac, command=(), toolkit=None):
                       f"(`{spelled}`): the sending Mac's Queuekeeper and the toolkit it sent are different versions, "
                       "and no device record was read or changed",
                       "bring the sending Mac's Queuekeeper checkout to the toolkit it sends, which it follows once "
-                      "nothing runs from it (doc/guides/maintenance.md, The shared checkout follows each toolkit "
+                      "nothing runs from it (doc/guides/merge-queue.md, The shared checkout follows each toolkit "
                       "landing), and send the work again")
     try:
         deferred = subprocess.run([sys.executable, *command], capture_output=True,
@@ -4292,7 +4292,7 @@ def defer_devices(kit, mac, command=(), toolkit=None):
                           "that its device record is misconfigured")
         raise Refusal(f"its device record cannot defer physical devices to {mac}: {problem[0]}",
                       "decide which Mac's record holds physical devices and resolve that in another Mac's record "
-                      "(doc/guides/shared-host.md, Physical devices and another Mac)")
+                      "(doc/guides/devices.md, Physical devices and another Mac)")
     if deferred.stdout.strip(): say(deferred.stdout.strip())
 
 
@@ -4539,7 +4539,7 @@ def main(plan):
             version = lambda text: " ".join(text.split())
             raise Refusal(f"the Xcode at {plan['developerDir']} is {version(found or 'missing')}, not the dispatcher's "
                           f"{version(expected)}", "install this Mac's Xcode at that path on another Mac "
-                          "(doc/guides/shared-host.md, Setting up another Mac), or select with DEVELOPER_DIR an Xcode "
+                          "(doc/guides/another-mac-setup.md, Setting up another Mac), or select with DEVELOPER_DIR an Xcode "
                           "the Macs have at the same path")
         root, project, toolkit = Path.home() / plan["root"], plan["project"], plan.get("toolkit")
         screen_declined(plan)

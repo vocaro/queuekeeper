@@ -3166,7 +3166,7 @@ class RemoteTests(unittest.TestCase):
         # false to keep it here, is refused, rather than having its work go where it did not say.
         refused = ("queuekeeper: queuekeeper.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
                    "exclusive lane goes to another Mac unless it says why it stays, with \"here\": \"REASON\", so "
-                   "delete {}, and rebase a checkout older than that change onto main (doc/guides/shared-host.md, "
+                   "delete {}, and rebase a checkout older than that change onto main (doc/guides/another-mac-setup.md, "
                    "Earlier names)\n")
         original = (self.project / "queuekeeper.json").read_text()
         for marks, named, pronoun in [({"gate": True}, "gate", "it"), ({"gate": False}, "gate", "it"),
@@ -5184,7 +5184,7 @@ exec {shlex.quote(real)} "$@"
 
     def test_the_old_name_of_offload_only_is_refused_with_the_new_one_and_hidden_from_help(self):
         refused = ("queuekeeper: --build-host-only was --offload-only's name until vocaro-engineering#58, and is no longer "
-                   "read: use --offload-only (doc/guides/shared-host.md, Earlier names)\n")
+                   "read: use --offload-only (doc/guides/another-mac-setup.md, Earlier names)\n")
         # Refused whatever the lane and beside any other flag, before anything runs on any Mac.
         for arguments in (["gate"], ["failing"], ["build"], ["fail"], ["pair"], ["--here", "gate"],
                           ["--offload-only", "gate"], ["--if-free", "gate"], ["--serial", "pair"], ["missing"]):
@@ -5438,7 +5438,7 @@ exec {shlex.quote(real)} "$@"
         # kept one here, are refused alike, on a lane of any kind and on a group, before any other check.
         refused = ("queuekeeper.json gives {} \"buildHost\", which vocaro-engineering#58 removed: every heavy or "
                    "exclusive lane goes to another Mac unless it says why it stays, with \"here\": \"REASON\", so "
-                   "delete {}, and rebase a checkout older than that change onto main (doc/guides/shared-host.md, "
+                   "delete {}, and rebase a checkout older than that change onto main (doc/guides/another-mac-setup.md, "
                    "Earlier names)")
         heavy = {"command": ["true"], "resource": "heavy"}
         kinds = [{"lane": heavy}, {"lane": {"command": ["true"]}}, {"lane": {**heavy, "foreground": True}},

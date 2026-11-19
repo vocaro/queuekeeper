@@ -55,7 +55,7 @@ def fix_hosts(root, hosts):
             hosts.setdefault("errors", []).append(
                 f"{hosts['host']} has no ~/Development/{name}, which the project's extension loads from there, so "
                 f"every lane sent there fails to load it; make it there with {remote.sibling_clone(root, name)} "
-                "(doc/guides/shared-host.md, Extension folders beside a project)")
+                "(doc/guides/another-mac.md, Extension folders beside a project)")
         if found.get("state") == "unchecked":
             hosts.setdefault("unchecked", []).append(f"{hosts['host']}'s own toolkit checkout, which it did not "
                                                      f"report: {found.get('reason')}")
@@ -519,7 +519,7 @@ def declined_everywhere(name, why):
     remote.MISCONFIGURED: a cause in the Macs' settings and no verdict on any commit, which a merge queue holds for
     and does not send back (vocaro/queuekeeper#211)."""
     print(f"queuekeeper: {name} not run: {why}\nqueuekeeper: to fix it, have a Mac take it, in its "
-          f"{offload_host.MAC_SETTINGS} (doc/guides/shared-host.md, What a Mac takes), or change what the lane needs",
+          f"{offload_host.MAC_SETTINGS} (doc/guides/another-mac.md, What a Mac takes), or change what the lane needs",
           file=sys.stderr, flush=True)
     return remote.MISCONFIGURED
 
@@ -729,7 +729,7 @@ def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=No
 
 def here_because(args, inherited):
     """Why `qk admit` runs its command on this Mac without offering it to another Mac, or None to offer it there
-    first, as a lane is (the owner's decision, 2026-11-07; doc/guides/shared-host.md, Which Mac runs a lane)."""
+    first, as a lane is (the owner's decision, 2026-11-07; doc/guides/another-mac.md, Which Mac runs a lane)."""
     if args.here: return "qk admit --here"
     # Work another Mac runs for the Mac that sent it runs there, where it was sent.
     if os.environ.get(remote.DISPATCHER): return "sent here by the Mac that dispatched it"
@@ -808,7 +808,7 @@ def admit(root, args, config=None, *, device_window=None):
     # A command goes to the Mac with spare capacity for it and the most headroom, as a lane does, and runs there
     # in the checkout's directory that matches the current one; what it changed in the checkout's files that Git does
     # not ignore comes back (remote.brought_back). --here, its paths and devices, nested and foreground work, and a
-    # self lane's parts keep it here (doc/guides/shared-host.md, Which Mac runs a lane).
+    # self lane's parts keep it here (doc/guides/another-mac.md, Which Mac runs a lane).
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
     if not command: raise ValueError("Name the command: qk admit [--exclusive | --model] [--here] -- COMMAND")
@@ -1185,7 +1185,7 @@ def perform(argv, report):
     doctor = commands.add_parser("doctor")
     doctor.add_argument("--hooks", action="store_true", help="check and repair core.hooksPath alone, as a session-start "
         "hook asks: one line for each finding, each beginning repaired or warning, or one beginning fine; exit 0 "
-        "unless a warning is left (doc/guides/maintenance.md)")
+        "unless a warning is left (doc/guides/merge-queue.md)")
     hook = commands.add_parser("pre-push", help="a pre-push hook: run the lanes the project names for the paths a push "
         "changes, the docs lanes for a docs-only push, queue.lanes or gate for any other and none for a push that "
         "changes no path, and refuse the push "
@@ -1216,7 +1216,7 @@ def perform(argv, report):
         "Mac: the reference a failure seen only side by side is checked against")
     run.add_argument("--unlocked-screen", action="store_true", help="place the lane only on a Mac whose screen reads "
         "unlocked, and wait for one, as \"unlockedScreen\": true does: the merge queue's next run of a lane whose "
-        "run a locked screen left without a verdict (doc/guides/maintenance.md, A run with no verdict blames nobody)")
+        "run a locked screen left without a verdict (doc/guides/merge-queue.md, A run with no verdict blames nobody)")
     run.add_argument("--repeat", type=int, metavar="N", help="run a lane of qk simulator-tests N times, on one build, "
         "each run on a member taken from the pool afresh, and report each run's outcome, test counts and one-minute "
         "load (apple-engineering's guides/simulator-testing.md, Repeating a test to show a fix works). Its receipt is not a pass of the "
@@ -1231,7 +1231,7 @@ def perform(argv, report):
         "in the folder NAME beside it from WHERE for this run, in place of NAME's origin/main: a commit of this Mac's "
         "checkout of NAME, or a checkout's path, such as a session's worktree, taken as its working tree stands. A "
         "commit that NAME's origin does not hold runs on this Mac only. Refused in a lane of the merge queue, which "
-        "judges a project with its folders' origin/main (doc/guides/shared-host.md, Extension folders beside a project)")
+        "judges a project with its folders' origin/main (doc/guides/another-mac.md, Extension folders beside a project)")
     run.add_argument("lane")
     # Listed for help only: main passes everything after these to their own parsers.
     for name, (described, _) in extensions.COMMANDS.items(): commands.add_parser(name, help=described)
@@ -1260,7 +1260,7 @@ def perform(argv, report):
     admission.add_argument("--foreground", action="store_true", help="the command takes the screen, keyboard, "
         "pointer, focus or speech, as Mac VoiceOver and Mac UI tests do: on another Mac queuekeeper holds its foreground for "
         "the command, waiting while another run holds it; on this Mac the session must hold mac-foreground within "
-        "the owner's window (doc/guides/shared-host.md, Attended Mac sessions)")
+        "the owner's window (doc/guides/foreground.md, Attended Mac sessions)")
     admission.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under test, "
         "as a crash-report alert names its process; repeat for each. A failed run during which queuekeeper cleared such an "
         "alert for another process, one that stood longer than one look, is unmeasured; one for NAME stays failed "
@@ -1301,7 +1301,7 @@ def perform(argv, report):
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
         "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
         "record leaves unsettled still runs. A live owner's entry, an entry without a process record and a "
-        "guard that is unreadable or not in admission's format are left for inspection (doc/guides/shared-host.md, "
+        "guard that is unreadable or not in admission's format are left for inspection (doc/guides/process-supervision.md, "
         "Lock reclamation).")
     logged.add_argument("--since", type=resources.local_time, metavar="WHEN", help="count requests made from WHEN, "
                         "an ISO 8601 date or time, local unless it names a zone")
@@ -1347,7 +1347,7 @@ def perform(argv, report):
                             f"{extensions.DEVICES.device_owner})")
         choice.add_argument("--checkout-slot", metavar="N", help="run in this one of another Mac's checkouts of the "
                             f"project, 0 to {remote.CHECKOUTS - 1}, waiting for it under the checkout's lock, however "
-                            "many others are free, to repeat a check in a named checkout (doc/guides/shared-host.md, A "
+                            "many others are free, to repeat a check in a named checkout (doc/guides/another-mac.md, A "
                             "named checkout slot); by default the free checkout nearest the commit")
         choice.add_argument("--checkout-wait", type=float, metavar="SECONDS", help="with --checkout-slot, how long to "
                             f"wait for it (default {offload_host.CLAIM_TIMEOUT}); then exit {BUSY} without running")
@@ -1382,7 +1382,7 @@ def perform(argv, report):
     remote_prune.add_argument("--dry-run", action="store_true", help="list them; remove nothing")
     merge_queue.add_arguments(commands.add_parser("queue", help="land finished commits through the repository's one "
         "merge queue, which gates batches on origin/main and pushes them; a session adds its commit and moves on "
-        "(doc/guides/maintenance.md, The merge queue)"))
+        "(doc/guides/merge-queue.md, The merge queue)"))
     merge_queue.land_arguments(commands.add_parser("land", help="land a finished commit through the merge queue of this "
         "repository, or with --repo of another, and return at once: the queue gates it on origin/main and pushes it"))
     documentation = commands.add_parser("docs", help="check the project's Markdown: each link's file, anchor and "
@@ -1553,7 +1553,7 @@ def perform(argv, report):
             os.environ[PROJECT_CHECKOUT_VARIABLE] = project_checkout(root)
             if args.build_host_only:
                 raise ValueError("--build-host-only was --offload-only's name until vocaro-engineering#58, and is no "
-                                 "longer read: use --offload-only (doc/guides/shared-host.md, Earlier names)")
+                                 "longer read: use --offload-only (doc/guides/another-mac-setup.md, Earlier names)")
             lane = lane_to_run(config, args.lane, root)
             if lane is None: raise ValueError(f"No configured lane: {args.lane}")
             if args.expect is not None and args.expect < 1: raise ValueError("--expect needs at least 1 test")

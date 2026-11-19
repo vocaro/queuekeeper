@@ -2,7 +2,7 @@
 
 The queue's worker fast-forwards the shared checkout after each landing only while no process started from it still
 runs, since a process that keeps running could mix the toolkit it loaded with the one that replaced it
-(guides/maintenance.md, "The shared checkout follows each toolkit landing"). A process meant to stay up, such as
+(doc/guides/merge-queue.md, The shared checkout follows each toolkit landing). A process meant to stay up, such as
 the dashboard's server, would hold the checkout behind for as long as it runs (vocaro/queuekeeper#159). Such a
 process may instead register here and watch the checkout: once its HEAD moves, the process replaces itself, by
 exec, with the same command from the new code. The follow then passes over each process registered here (passed),

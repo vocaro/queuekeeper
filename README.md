@@ -107,7 +107,7 @@ can check their own project's queue with `qk queue status`.
 
 Run `qk disk` for a read-only inventory of Queuekeeper-managed build caches, test results and
 simulator resources, including safe cleanup candidates; see
-[Reclaiming disk space](doc/guides/shared-host.md#reclaiming-disk-space).
+[Reclaiming disk space](doc/guides/disk-cleanup.md#reclaiming-disk-space).
 
 ## Dashboard
 

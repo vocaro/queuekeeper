@@ -17,7 +17,7 @@ the toolkit's `eng disk` (decision E of vocaro/vocaro-engineering#403). It class
 `--dry-run` lists what `--delete` would remove. Without --delete nothing is changed.
 Progress goes to stderr (Progress), so stdout's report and --json are unchanged, and stdout is line-buffered,
 so a run whose output goes to a file or a pipe shows each line as it happens (vocaro/queuekeeper#212).
-doc/guides/shared-host.md § Reclaiming disk space has the rules.
+doc/guides/disk-cleanup.md § Reclaiming disk space has the rules.
 """
 import argparse
 from dataclasses import asdict, dataclass, field
@@ -637,7 +637,7 @@ def add_arguments(parser):
     action.add_argument("--delete", action="store_true", help="remove every candidate, checking each again first, "
                         "without asking; owner items are only listed, with their commands")
     action.add_argument("--prune-pins", action="store_true", help="remove the checkouts runs were pinned to that no "
-                        "run has used for a week and no process uses, and nothing else (doc/guides/shared-host.md, "
+                        "run has used for a week and no process uses, and nothing else (doc/guides/another-mac.md, "
                         "Extension folders beside a project)")
     parser.add_argument("--yes", nargs="?", const="", metavar="WHO",
                         help="with --delete, name in each ledger entry who asked for this run (such as 'owner, "

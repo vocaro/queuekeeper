@@ -9,7 +9,7 @@ in [lanes and admission](../user_guide.md#lanes-and-admission).
 `python3 scripts/qk run LANE` writes `.build/queuekeeper/LANE/source.json` beside the lane's
 `run.log`, or, for a run that starts while another run of the lane from the same checkout is still
 running on this Mac, both in a directory of that run's own, which its summary names
-([shared host](shared-host.md)). It records the project's and toolkit's commit with a SHA-256 of their working changes
+([heavy-work admission](admission.md)). It records the project's and toolkit's commit with a SHA-256 of their working changes
 (tracked diff and untracked files), the policy commit for a heavy or exclusive lane, the argv
 with any arguments given after `--` appended, those `arguments` on their own, and the exit
 status or `failed-or-interrupted`. A lane's `compileFirst` step that fails records the outcome
@@ -117,7 +117,7 @@ gate whose own timing check voided itself under load, says what it could not mea
 that begins `Unmeasured:`, after any spaces or tabs, as `Unmeasured: CHECK voided its own measurement; rerun
 on an idle Mac`. Such a line names no test and makes no run unmeasured by itself; when the log reports no
 test unmeasured, the merge queue quotes the last such line in its worker log, its hold and `qk queue
-status` ([maintenance](maintenance.md#the-merge-queue), [#30](https://github.com/vocaro/queuekeeper/issues/30)).
+status` ([maintenance](merge-queue.md#the-merge-queue), [#30](https://github.com/vocaro/queuekeeper/issues/30)).
 A line of any other prefix is not read. A lane's timeout is a wall-clock
 backstop that a busy host can reach
 ([core-wait time](https://github.com/vocaro/vocaro-engineering/blob/main/doc/guides/measurement.md#cpu-scheduling-and-core-wait-time)), and the log it cuts short
@@ -136,7 +136,7 @@ status and quotes the log's last error line in its summary and under `beforeTest
 stays 2. A command that never started, as when the system cannot start it or `python3` is given a
 file the checkout does not hold, exits 127 with `outcome` `not-started` and why under `notStarted`,
 and the queue blames no commit for it ([#108](https://github.com/vocaro/queuekeeper/issues/108);
-[maintenance](maintenance.md#the-merge-queue)). A `qk run` whose Queuekeeper could not start, because
+[maintenance](merge-queue.md#the-merge-queue)). A `qk run` whose Queuekeeper could not start, because
 its plugins or one of the project's extensions did not load, exits 70 before it reaches the lane and
 writes no receipt, and the queue blames no commit for that either
 ([#158](https://github.com/vocaro/queuekeeper/issues/158)).

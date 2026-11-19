@@ -4121,7 +4121,7 @@ class DefaultDocsOnly(Fixture):
         self.assertEqual(mq.docs_lanes(own, ["doc/user_guide.md"]), ["spelling", "docs", "setup-examples"])
         self.assertFalse(mq.carried_over("doc/user_guide.md", own, set()))
         self.assertEqual(run(ROOT, "git", "ls-files", "--", "guides"), "")
-        for path in ("doc/guides/maintenance.md", "doc/guides/shared-host.md", "doc/developer_guide.md", "README.md"):
+        for path in ("doc/guides/maintenance.md", "doc/guides/admission.md", "doc/developer_guide.md", "README.md"):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
                 self.assertEqual(mq.docs_lanes(own, [path]), ["spelling", "docs"])
@@ -5746,7 +5746,7 @@ class Changelogs(Fixture):
                          [["spelling", "docs"]] * 3)
         self.assertIsNone(mq.Queue(self.repo).held())
         # The first went in as it was; each settled one adds its very line beside other neighbors, which
-        # Closeout's landed.sh proves resolved, so its branch goes unasked (#164, doc/guides/maintenance.md).
+        # Closeout's landed.sh proves resolved, so its branch goes unasked (#164, doc/guides/merge-queue.md).
         contained = lambda branch: mq.landing_proofs.contained(lambda *words: mq.git(self.repo, *words), "origin/main", branch)
         self.assertNotIn(contained("b0"), (None, mq.landing_proofs.RESOLVED))
         self.assertEqual([contained("b1"), contained("b2")], [mq.landing_proofs.RESOLVED] * 2)
@@ -10479,7 +10479,7 @@ class RoundAccount(Fixture):
         said = mq.stuck({"waitingSince": late, "stranded": True}, at)
         self.assertEqual(said, "stuck: the gate has waited 16m00s for admission held up by dead or uncertain guard "
                                "entries that admission has not recovered; `python3 scripts/qk admissions recover` lists "
-                               "them (doc/guides/shared-host.md, Lock reclamation)")
+                               "them (doc/guides/process-supervision.md, Lock reclamation)")
         # Negative controls: before the threshold; a wait on no stranded entry; a gate with no wait recorded.
         self.assertIsNone(mq.stuck({"waitingSince": early, "stranded": True}, at))
         self.assertIsNone(mq.stuck({"waitingSince": late, "stranded": False}, at))

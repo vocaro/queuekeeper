@@ -4,7 +4,7 @@ A rented Apple Silicon Mac with SSH can serve as an overflow host for the merge 
 queue already sends the exact batch and toolkit commits, asks the destination to admit the
 lane, and collects its verdict and results. A persistent Mac can keep build products and
 simulator templates warm across runs. The worker still owns the push to `main`.
-[The farm's Macs](shared-host.md#the-farms-macs)
+[The farm's Macs](another-mac.md#the-farms-macs)
 
 For a first dedicated-host comparison, the 32 GB Scaleway M4 costs €6.96 for its minimum
 24-hour lease. NoMac offers shorter metered sessions when overflow is intermittent. Compare both
@@ -55,4 +55,4 @@ Ordinary remote gate lanes can use the configured build Mac list. A single proje
 one stacked gate alongside its current batch. More hosts can let different projects gate
 concurrently while that per-project limit stays in effect. Hardware-specific and foreground
 lanes retain their placement rules.
-[Stacked gates](maintenance.md#the-merge-queue), [Host placement](shared-host.md#which-mac-runs-a-lane)
+[Stacked gates](merge-queue.md#the-merge-queue), [Host placement](another-mac.md#which-mac-runs-a-lane)

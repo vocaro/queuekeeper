@@ -1,7 +1,7 @@
 """Log the stop signals this process receives, and spawn a child in its own session that does too.
 
 usage: siglog.py LOG ROLE [SECONDS]
-How to run it beside watch.py, and read both: doc/guides/shared-host.md, Probing stop signals.
+How to run it beside watch.py, and read both: doc/guides/process-supervision.md, Probing stop signals.
 """
 import os
 import signal
