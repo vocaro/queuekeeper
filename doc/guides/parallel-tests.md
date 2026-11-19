@@ -345,7 +345,8 @@ other of that group, one after another. Each process runs in the directory Queue
 imports from the top-level directory and then that one, as `python3 -m unittest discover` does. A
 module whose `load_tests` loads another module from its file, under a name no process can import,
 cannot be split: it runs whole in one process. Each process's output prints whole, under a line that
-names it. The summary is not a `Ran N tests` line, so a lane counts each test once, and a
+names it and its result, unittest's last `OK` or `FAILED` line, not one a failure message quotes
+(vocaro/queuekeeper#242). The summary is not a `Ran N tests` line, so a lane counts each test once, and a
 process that ran fewer tests than discovery found for it fails. The slowest module bounds the
 run, so split a module that dominates: one that sets `shard_by = "class"` (or `"test"`) runs that
 finely under any coarser `--split`, as the toolkit's tests/integration/test_merge_queue.py does, whose 126

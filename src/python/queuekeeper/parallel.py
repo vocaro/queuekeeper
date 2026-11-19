@@ -336,6 +336,14 @@ SHARD = f"import json, os, signal, sys, unittest; os.environ[{SHARD_VARIABLE!r}]
     "sys.argv[0] = 'python -m unittest'; unittest.main(module=None)"
 
 
+def own_result(output):
+    """A process's own result line, the last RESULT line in its output, which unittest prints last, or None. An
+    earlier one can be quoted in a failure message, such as another run's output (vocaro/queuekeeper#242)."""
+    found = None
+    for found in RESULT.finditer(output): pass
+    return found
+
+
 def selection(patterns):
     """unittest's -k patterns as fnmatch patterns: one without a * matches as a substring."""
     return [pattern if "*" in pattern else f"*{pattern}*" for pattern in patterns]
@@ -367,7 +375,7 @@ def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT, 
     # A stop can come between the pool taking this shard and this process seeing it: then it never starts.
     if stopping(): return None
     status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors, stop=stopping)
-    summary = RESULT.search(output)
+    summary = own_result(output)
     return {"name": name, "tests": list(tests), "status": status, "output": output,
             "ran": sum(int(count) for count in RAN.findall(output)),
             "result": stopped_result() if status is None and stop_requested()
@@ -632,7 +640,7 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
         if result is None: return
         # supervise sends its SIGTERM to each process as well as to this one, after it, so a process can end by it
         # before it looks at the stop: one that gave no result then was cut off by the stop, not failed.
-        if stop_requested() and result["status"] is not None and result["status"] < 0 and not RESULT.search(result["output"]):
+        if stop_requested() and result["status"] is not None and result["status"] < 0 and not own_result(result["output"]):
             result.update(status=None, result=stopped_result())
         results.append(result)
         # Each shard's own output, whole and in discovery order, under one line that names it.

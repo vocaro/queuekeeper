@@ -425,6 +425,21 @@ class UnittestRunnerTests(unittest.TestCase):
         # The control: with no test of the process named, as a load_tests module's, each failure read is kept.
         self.assertEqual(len(parallel.failure_reasons(output, ["test_elsewhere"])), 2)
 
+    def test_a_failure_message_that_quotes_an_ok_line_does_not_name_the_process_ok(self):
+        # A failure message that quotes another run's output can hold its OK line, before the process's own (#242).
+        root = self.suite(module("test_quotes", """
+            class Q(unittest.TestCase):
+                def test_quotes(self): self.fail("inner run said:\\nOK\\n")
+        """))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        self.assertIn("\nOK\n", output)
+        self.assertRegex(output, r"(?m)^== test_quotes: FAILED \(failures=1\) ")
+        self.assertIn(": FAILED: test_quotes (FAILED (failures=1), status 1)", output)
+        self.assertEqual(parallel.own_result("OK\nRan 1 test in 0s\n\nFAILED (failures=1)\n").group(0),
+                         "FAILED (failures=1)")
+        self.assertIsNone(parallel.own_result("Ran 1 test in 0s\n"))
+
     def test_the_queue_reads_a_failed_run_with_its_reasons_as_it_reads_one_without_them(self):
         # Each reason quotes a line the queue reads, from the start of a line; the block must not start any of them.
         decoys = ["FAIL: test_decoy (test_decoy.D.test_decoy)", "ERROR: test_decoy (test_decoy.D.test_decoy)",
