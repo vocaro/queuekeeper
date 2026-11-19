@@ -112,12 +112,15 @@
     edge(macs.length ? fx + fw : rx + rw, TOP + body / 2, mx, TOP + body / 2, "land", false);
     // What came back, as an arc from the rounds to whoever sent it
     if (back) {
-      // It leaves the foot of the rounds' lowest node, which may stand above the foot of a taller column, and comes in
-      // at the side of the agent's node, so it passes behind no other.
-      const index = agents.findIndex(one => one.name === back.agent), shown = Math.max(1, gates.length);
+      // It leaves the foot of the rounds' lowest node, which may stand above the foot of a taller column, runs level
+      // below the foot of every column, and rises in the gap between the agents and the queues to the side of the
+      // agent's node, so it passes behind no other, the idle queues' node included (#236).
+      const index = agents.findIndex(one => one.name === back.agent), shown = Math.max(1, gates.length), low = TOP + body + 14;
       const from = [rx + rw / 2, first(shown) + shown * PITCH - (PITCH - NODE)], to = [ax + aw, first(agents.length) + index * PITCH + NODE - 10];
+      const rise = to[0] + (qx - to[0]) / 2;
       // The map is an overview, so the arc says nothing of what came back; Needs attention says what and why.
-      edges.push(svg("path", { class: "edge back", d: `M${from[0]} ${from[1]} C ${from[0]} ${height - 6}, ${to[0] + 60} ${height - 6}, ${to[0]} ${to[1]}` }));
+      edges.push(svg("path", { class: "edge back", d: `M${from[0]} ${from[1]} C ${from[0]} ${low}, ${from[0]} ${low}, ${from[0] - 30} ${low}`
+        + ` H ${qx} C ${rise} ${low}, ${rise} ${to[1]}, ${to[0]} ${to[1]}` }));
     }
     return svg("svg", { viewBox: `0 0 ${W} ${height}`, role: "group", "aria-label": "Agents' entries flow through the queue"
       + (single ? "" : "s") + " and the gates on the farm's Macs to main" }, edges, dots, nodes);
