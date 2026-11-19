@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import host_isolation  # first, as every test module
 
-from queuekeeper import cli, extensions, resources
+from queuekeeper import cli, plugins, resources
 
 # A suite of one test, which passes only inside an admission.
 INSIDE = ("import os, unittest\n"
@@ -70,18 +70,18 @@ class WhichCommands(Folder):
         for command in (["doctor"], ["run", "gate"], ["admit", "--", "python3", "scripts/qk", "unittest"], []):
             with self.subTest(command): self.assertEqual(self.bare(*command), (command, False))
 
-    def test_an_extensions_runner_is_bare_and_its_other_commands_are_not(self):
-        with patch.object(extensions, "RUNNERS", {("unity", "test"), ("xctest",)}):
+    def test_a_plugins_runner_is_bare_and_its_other_commands_are_not(self):
+        with patch.object(plugins, "RUNNERS", {("unity", "test"), ("xctest",)}):
             self.assertTrue(self.bare("unity", "test", "--platform", "PlayMode")[1])
             self.assertTrue(self.bare("xctest", "-j", "4")[1])
             self.assertFalse(self.bare("unity", "open")[1])
             self.assertFalse(self.bare("unity")[1])
 
-    def test_the_shipped_extensions_name_their_runners(self):
+    def test_the_shipped_plugins_name_their_runners(self):
         import queuekeeper_apple as apple; import queuekeeper_unity as unity
         apple.register()
         unity.register()
-        self.assertLessEqual({("xctest",), ("simulator-tests",), ("unity", "test")}, extensions.RUNNERS)
+        self.assertLessEqual({("xctest",), ("simulator-tests",), ("unity", "test")}, plugins.RUNNERS)
 
     def test_a_runner_inside_an_admission_is_not_bare(self):
         with patch.dict(os.environ, {resources.TOKEN: "{}"}):
@@ -93,7 +93,7 @@ class WhichCommands(Folder):
                          (["--project", "p", "unittest", "-s", "tests"], False))
 
     def test_unadmitted_after_the_separator_belongs_to_the_command_there(self):
-        with patch.object(extensions, "RUNNERS", {("wrap",)}):
+        with patch.object(plugins, "RUNNERS", {("wrap",)}):
             command = ["wrap", "--", "tool", "--unadmitted"]
             self.assertEqual(self.bare(*command), (command, True))
 
@@ -182,7 +182,7 @@ class Runs(Folder):
         self.assertEqual(status, 0, said)
 
     def test_what_preparing_the_command_prints_comes_before_the_run_and_its_result_last(self):
-        """A project's artifact check prints as it prepares the command (extensions.PREPARE_LANE). Its line waited in
+        """A project's artifact check prints as it prepares the command (plugins.PREPARE_LANE). Its line waited in
         this process's buffer for standard output, a pipe into `tail` for one, and came out after the run's summary
         (vocaro/queuekeeper#139, #206)."""
         self.project()
@@ -196,7 +196,7 @@ class Runs(Folder):
             buffered = io.TextIOWrapper(io.BufferedWriter(io.FileIO(1, "w", closefd=False), 1 << 16))
             try:
                 with patch.object(cli, "refresh_policy", return_value=None), \
-                        patch.object(extensions, "PREPARE_LANE", [lambda root, config: print(note)]), \
+                        patch.object(plugins, "PREPARE_LANE", [lambda root, config: print(note)]), \
                         patch.object(sys, "stdout", buffered), patch.object(sys, "stderr", buffered):
                     status = cli.main(["--project", str(self.root), "unittest", "-s", "tests"])
                 buffered.flush()

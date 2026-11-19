@@ -334,7 +334,7 @@ def changed_at(path):
 def gather(root):
     """Read what assess judges, now: the queue, its journal, doctor's findings, each Mac's pressure (another Mac's
     over SSH) and the devices."""
-    from . import events, extensions, farm, lane_wait, merge_queue, offload_host, remote
+    from . import events, plugins, farm, lane_wait, merge_queue, offload_host, remote
     state = merge_queue.snapshot(root)
     journal = events.read(Path(root) / ".git" / "queuekeeper-queue")
     try: findings = merge_queue.diagnose(root)[0]
@@ -347,7 +347,7 @@ def gather(root):
         except Exception as error:  # noqa: BLE001 - unknown, never well
             answered = {"error": str(getattr(error, "problem", None) or error)}
         readings.append({"name": lane_wait.farm_mac(host), "reading": answered, "readAt": time.time()})
-    try: record = extensions.DEVICES.observations()
+    try: record = plugins.DEVICES.observations()
     except Exception as error:  # noqa: BLE001
         record = {"error": str(error)}
     return {"state": state, "journal": journal, "readings": readings, "record": record, "findings": findings}

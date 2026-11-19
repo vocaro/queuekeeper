@@ -2,7 +2,7 @@
 
 `qk unity test` keeps Unity's results.xml, NUnit's form, in the lane's results folder under unity/. A lane's output
 goes to its log, so `qk run` prints a line per test from that file when the lane ends, here or, for a run on another
-Mac, once its results have come back, as it does for the Apple extension's kept runs."""
+Mac, once its results have come back, as it does for the Apple plugin's kept runs."""
 from collections import Counter
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -56,5 +56,5 @@ def report(results, out=print):
 
 def register():
     """Have `qk run` print them when a lane ends."""
-    from queuekeeper import extensions
-    if report not in extensions.REPORT_RESULTS: extensions.REPORT_RESULTS.append(report)
+    from queuekeeper import plugins
+    if report not in plugins.REPORT_RESULTS: plugins.REPORT_RESULTS.append(report)

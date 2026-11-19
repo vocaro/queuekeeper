@@ -18,7 +18,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
 import host_isolation  # noqa: F401 -- isolates this module's host state as every test module's
-from queuekeeper import cli, extensions, farm, merge_queue as mq, offload_host, resources, trial
+from queuekeeper import cli, plugins, farm, merge_queue as mq, offload_host, resources, trial
 
 from test_support.queue import Fixture
 
@@ -105,7 +105,7 @@ class Trial(Fixture):
     def test_doctor_compares_no_second_mac_and_fixes_nothing(self):
         fixed = []
         with patch.object(cli, "fix_hosts", host_isolation.FIX_HOSTS), \
-                patch.object(extensions, "HOST_FIXES", [lambda root, hosts: fixed.append(hosts) or hosts]), \
+                patch.object(plugins, "HOST_FIXES", [lambda root, hosts: fixed.append(hosts) or hosts]), \
                 patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
                 patch.object(cli, "source_identity", return_value={}):
             status, said = self.main("doctor")

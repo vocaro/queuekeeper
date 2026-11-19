@@ -140,8 +140,8 @@ BEFORE_TESTS = 4
 # 127 (vocaro/queuekeeper#108).
 NOT_STARTED = 127
 # The exit status of any qk command when Queuekeeper itself could not start: composing its checkout's plugins or
-# loading one of the project's extensions raised, before the command was read, so no lane's command ran (cli.main):
-# sysexits' EX_SOFTWARE. On 2026-11-15 the adapter three projects load as an extension moved to a commit that refused
+# loading one of the project's plugins raised, before the command was read, so no lane's command ran (cli.main):
+# sysexits' EX_SOFTWARE. On 2026-11-15 the adapter three projects load as a plugin moved to a commit that refused
 # the older Queuekeeper their queue workers ran, every lane ended in that traceback with exit 1, and the queue sent at
 # least nine entries back as failing "on this commit" (vocaro/queuekeeper#158). The line that begins TOOL_SAID says
 # why. A lane's own command may exit 70 too, so the merge queue also reads that the run left no receipt of the lane

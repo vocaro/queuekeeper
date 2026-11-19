@@ -27,7 +27,7 @@ import threading
 import time
 import unittest
 
-from . import extensions, lane_results, processes, resources, run_progress, shims
+from . import plugins, lane_results, processes, resources, run_progress, shims
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
@@ -271,15 +271,15 @@ def loaded_from(module, folders):
 
 @contextlib.contextmanager
 def tree_imports(roots):
-    """While discovery imports the modules of the tree under test, whose folders are roots: no extension folder outside
+    """While discovery imports the modules of the tree under test, whose folders are roots: no plugin folder outside
     them on the import path, and none of the modules loaded from one, as a shard's own process has neither. A linked
-    worktree's extensions load from its main checkout (cli.load_extensions), so a package that is both the project's
-    and an extension's was otherwise the main checkout's copy, cached, and a test module importing a module or name
+    worktree's plugins load from its main checkout (cli.load_plugins), so a package that is both the project's
+    and a plugin's was otherwise the main checkout's copy, cached, and a test module importing a module or name
     only the tree under test has failed to import here though it imports in its shard (vocaro/queuekeeper#240). The
-    extensions' own copies come back afterwards, for their hooks, which still run the main checkout's code."""
+    plugins' own copies come back afterwards, for their hooks, which still run the main checkout's code."""
     # Never the folder this Queuekeeper runs from, whose modules are running this.
     roots = [Path(root).resolve() for root in (*roots, Path(__file__).resolve().parents[1])]
-    foreign = [folder for folder in extensions.FOLDERS
+    foreign = [folder for folder in plugins.FOLDERS
                if not any(Path(folder).resolve().is_relative_to(root) for root in roots)]
     if not foreign:
         yield
@@ -597,7 +597,7 @@ def discover_and_run(args, progress):
         return 1
     # Discovery imports every module here, as unittest's own would, and each shard imports its own
     # again: from the top-level directory, then the directory queuekeeper runs in (#74). It sees the tree under
-    # test's own copy of a package an extension loaded from elsewhere, as each shard does (tree_imports).
+    # test's own copy of a package a plugin loaded from elsewhere, as each shard does (tree_imports).
     with tree_imports((os.getcwd(), top, start)):
         discovered = discover(args, start, top)
     if isinstance(discovered, int): return discovered

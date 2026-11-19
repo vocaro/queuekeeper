@@ -11,7 +11,7 @@ whose members are its emulators named `POOL LABEL N` (emulators/pool.py).
 from pathlib import Path
 import re
 
-from queuekeeper import extensions
+from queuekeeper import plugins
 
 KEYS = {"directory", "module", "variant", "gradleArguments"}
 DEFAULTS = {"directory": ".", "module": "app", "variant": "debug", "gradleArguments": []}
@@ -47,4 +47,4 @@ def configured(config):
 
 
 def register():
-    extensions.CONFIG_KEYS.update(android=android, emulatorPool=emulator_pool)
+    plugins.CONFIG_KEYS.update(android=android, emulatorPool=emulator_pool)

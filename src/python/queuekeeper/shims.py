@@ -1,9 +1,9 @@
-"""Compose environment wrappers supplied by enabled extensions."""
-from . import extensions
+"""Compose environment wrappers supplied by enabled plugins."""
+from . import plugins
 
 
 def environment(base, root):
     values = dict(base)
-    for wrap in extensions.COMMAND_WRAPPERS:
+    for wrap in plugins.COMMAND_WRAPPERS:
         values = wrap(values, root)
     return values

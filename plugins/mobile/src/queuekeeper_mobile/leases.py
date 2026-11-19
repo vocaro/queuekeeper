@@ -1,10 +1,10 @@
-"""The physical devices a run on another Mac uses, and what else a dispatch asks of the mobile extensions' devices:
+"""The physical devices a run on another Mac uses, and what else a dispatch asks of the mobile plugins' devices:
 the hardware a command names and the project's simulator pool. The core's remote calls these through
-queuekeeper.extensions.DEVICES, which lane.py's Devices, built on the one here, fills."""
+queuekeeper.plugins.DEVICES, which lane.py's Devices, built on the one here, fills."""
 from pathlib import Path
 import sys
 
-from queuekeeper import extensions
+from queuekeeper import plugins
 from . import devices, platforms
 
 
@@ -128,7 +128,7 @@ def carrying(lease, root, host, work, name, send):
         return devices.UNMEASURED
 
 
-class Devices(extensions.Devices):
+class Devices(plugins.Devices):
     def lease(self, keys, owner, words, root=None, *, budget=None, commits=()):
         return lease(keys, owner or devices.default_owner(), words, root=root, budget=budget, commits=commits)
 

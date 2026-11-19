@@ -64,7 +64,7 @@ one lane, `gate`, the command every change must pass:
 {
   "schemaVersion": 1,
   "name": "my-project",
-  "extensions": [],
+  "plugins": [],
   "lanes": {
     "gate": {"command": ["scripts/test.sh"], "timeout": 1800}
   }
@@ -75,7 +75,7 @@ one lane, `gate`, the command every change must pass:
 |---|---|
 | `schemaVersion` | Always `1` |
 | `name` | The project's name |
-| `extensions` | The [plugins](../README.md#plugins) to load. `[]`, or leaving it out, loads the core alone |
+| `plugins` | The [plugins](../README.md#plugins) to load. `[]`, or leaving it out, loads the core alone. Its earlier name, `extensions`, is read while `plugins` is absent, and `qk doctor` and `qk land` warn of it; a later release refuses it |
 | `command` | An argument list, not a shell string |
 | `timeout` | Seconds. A lane that reaches it ends as *unmeasured*, not failed |
 
@@ -463,7 +463,7 @@ runs the lane again.
 - **A screen that locked during the run** does not count toward that bound. The lane runs next only
   on a Mac whose screen is unlocked; five such runs in a row hold the queue.
 - **A lane whose command could not start** (exit 127), and **a lane Queuekeeper itself could not
-  start** in (exit 70, a plugin or extension that did not load), hold the queue at once, since a
+  start** in (exit 70, a plugin that did not load), hold the queue at once, since a
   rerun would fail the same way. If the batch's own commits break loading, that entry is found by
   bisecting and sent back instead.
 - **Running out of disk space** holds the queue at once. Free space with `qk disk --delete` and
@@ -645,7 +645,7 @@ does not help, since the second is still judged by `main` as it was.
 - **Preflight lanes.** `qk land` runs the lanes `main`'s `queue.preflight` lists, as `main` has
   them, on the entry. To remove or replace a preflight lane, or what it reads, land the change to
   `queue.preflight` and the lane first. A refusal by a lane the entry drops or changes says so.
-- **Extensions loaded from inside the project**, such as `{"module": "NAME", "path": "src/python"}`.
+- **Plugins loaded from inside the project**, such as `{"module": "NAME", "path": "src/python"}`.
   A lane in a linked worktree, the queue's checkout included, loads them from the main checkout.
   A rejected entry that changes such a folder is told that main's copy judged it.
 - **A pre-push hook outside the queue's checkout.** When `core.hooksPath` is absolute and names
@@ -723,7 +723,7 @@ from the Mac. `qk run LANE` runs one, for an agent or for the queue.
 {
   "schemaVersion": 1,
   "name": "my-app",
-  "extensions": [],
+  "plugins": [],
   "lanes": {
     "unit":    {"command": ["qk", "unittest", "-s", "tests"], "timeout": 1800},
     "ui":      {"command": ["scripts/ui-tests.sh"], "timeout": 3600, "unlockedScreen": true},
@@ -886,7 +886,7 @@ sandbox, and its receipt says `{"inside": "OUTER"}`. For the same reason:
 
 - **A `self` lane** cannot have a sandbox: its script admits its parts, which may run on other Macs.
 - **Xcode and SwiftPM** apply sandboxes of their own (xcodebuild to script phases, SwiftPM to manifests
-  and plugins), and they write to `~/Library/Developer`. With the Apple extension, a lane with `idioms`, or
+  and plugins), and they write to `~/Library/Developer`. With the Apple plugin, a lane with `idioms`, or
   whose command or `compileFirst` runs `xcodebuild`, `xcrun`, `swift`, `simctl`, `devicectl`,
   `simulator-tests` or `xctest`, is refused a sandbox when the configuration is read. Run these lanes
   unsandboxed. A script that runs one of them inside a sandboxed lane fails when it starts it.
@@ -1461,8 +1461,8 @@ The owner prepares each added Mac once:
 7. **A GitHub token**, if lanes fetch private sources (below).
 8. **Keychain**, if its runs sign: `qk keychain keep-unlocked --target MAC`
    ([Keychains on another Mac](#keychains-on-another-mac)).
-9. **Extension folders.** Clone each folder the project's extensions load from beside it
-   ([Extension folders beside a project](#extension-folders-beside-a-project)).
+9. **Plugin folders.** Clone each folder the project's plugins load from beside it
+   ([Plugin folders beside a project](#plugin-folders-beside-a-project)).
 
 Then run `qk doctor` and a short lane there, such as `qk remote run LANE --host NAME`.
 
@@ -1476,7 +1476,7 @@ It puts Homebrew on the login shell's `PATH` in `~/.zprofile`, since work there 
 Mac's login shell, and installs Homebrew's Python, `uv`, `shellcheck`, `xcodegen`, `zstd` and
 each formula you name. A new login shell then checks every tool, each `--import` module and the
 Xcode, one line each, and the command fails while anything is missing. Without Homebrew it stops
-with nothing changed; `--check` only checks. It also checks for the project's extension folders
+with nothing changed; `--check` only checks. It also checks for the project's plugin folders
 and names the `git clone` to run, but clones nothing.
 
 #### Simulator runtimes
@@ -1658,7 +1658,7 @@ removes it.
 **Environment variables do not travel.** Another Mac runs work in its own login shell's
 environment, and a variable set here is silently lost. Pass lane settings as arguments after
 `--`, such as `qk run purchases -- --runtime ID`, and confirm them in the receipt. What a
-project's extensions add to every command's environment does reach it.
+project's plugins add to every command's environment does reach it.
 
 **What comes back:**
 
@@ -1818,9 +1818,9 @@ says nothing about signing over SSH. Never ask an owner for a password or put on
 command's arguments, an environment variable or a log. Partition lists, trust settings and
 certificates are the owner's to change; neither command touches them.
 
-### Extension folders beside a project
+### Plugin folders beside a project
 
-A project's extension may load from a folder beside it, named in `queuekeeper.json` as
+A project's plugin may load from a folder beside it, named in `queuekeeper.json` as
 `{"module": "NAME", "path": "../FOLDER/..."}`. Other projects share that folder and landings move
 it, so a run pins it: every lane of a `qk run`, a `qk remote run` or a queue round, on any Mac,
 loads the folder at the commit its `origin/main` named when the run started, never your
@@ -2439,7 +2439,7 @@ to their result.
 | 2 | Usage or configuration error |
 | 3 | Unmeasured |
 | 4 | Failed before any test started |
-| 70 | Queuekeeper itself could not start (a plugin or extension did not load), so nothing ran |
+| 70 | Queuekeeper itself could not start (a plugin did not load), so nothing ran |
 | 75 | Busy, held, or the wait reached its limit; from `qk queue status --idle`, the queue is not idle |
 | 78 | A Mac is misconfigured |
 | 127 | A lane's command could not start |
@@ -2788,14 +2788,14 @@ Common holds:
   The reason says on which Mac and why: the lane that timed out, the tests left unmeasured, the
   project's last `Unmeasured:` line, no admission, or the Mac's configuration.
 - **Queuekeeper itself could not start** in a lane (exit 70). No commit was tested. Bring
-  Queuekeeper and the folders the project's extensions load from to versions that work together.
+  Queuekeeper and the folders the project's plugins load from to versions that work together.
   `qk queue resume` starts a worker from the current checkout, which is often the whole repair.
 - **A lane's command could not start** (exit 127). Make the command start, or remove the entry
   that took away what it runs.
 - **Out of disk space.** Free space with `qk disk --delete` and resume.
 - **A refusal `qk unittest` gives every gate** with no entry to blame, such as a broken module
   that reached `main` past the queue. The reason quotes the line.
-- **An extension folder beside the project.** A run loads such a folder at its `origin/main`, not
+- **A plugin folder beside the project.** A run loads such a folder at its `origin/main`, not
   as your checkout stands. Test a change to it with `qk run --sibling FOLDER=WHERE LANE`, and land
   it before the change that needs it.
 
@@ -3027,7 +3027,7 @@ old store, and exits 1 saying why when it keeps it.
 ### Registered Mac builds
 
 Xcode registers a Mac app when it builds it, and macOS when it launches it, and neither is undone.
-Stale registrations make the system run an old build's extensions, document types or URL schemes.
+Stale registrations make the system run an old build's plugins, document types or URL schemes.
 
 So when `qk run` or `qk admit` ends, however it ends, Queuekeeper unregisters each Mac app
 (`lsregister -u`) and app extension (`pluginkit -r`) under the derived data its xcodebuilds named,

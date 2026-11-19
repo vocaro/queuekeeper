@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 import time
 
-from . import extensions
+from . import plugins
 
 VERSION = 1
 FILE, PREVIOUS, LOCK, LIMIT = "events.jsonl", "events.1.jsonl", "events.lock", 4 << 20
@@ -80,7 +80,7 @@ def emit(directory, kind, **fields):
             finally: os.close(fd)
     except Exception:  # noqa: BLE001
         return None
-    for told in extensions.AFTER_EVENT:
+    for told in plugins.AFTER_EVENT:
         with contextlib.suppress(Exception): told(directory, event)
     return event
 

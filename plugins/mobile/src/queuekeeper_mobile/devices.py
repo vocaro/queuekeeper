@@ -1,5 +1,5 @@
 """One device handoff record for the shared host, changed only under its lock. The record itself, and its
-mac-foreground entry, are the Mac desktop extension's (queuekeeper_mac_desktop.reservations); this module adds what the
+mac-foreground entry, are the Mac desktop plugin's (queuekeeper_mac_desktop.reservations); this module adds what the
 record holds of mobile devices, an iPhone's and an Android phone's alike, and has its command line. What differs
 between the platforms, how a device is named, silenced and watched, each platform plugin says (platforms.py).
 
@@ -269,7 +269,7 @@ def _merge(current, incoming):
 
 
 class Record(reservations.Record):
-    """The record with what the mobile extensions keep in it: physical devices, which one Mac's record holds for
+    """The record with what the mobile plugins keep in it: physical devices, which one Mac's record holds for
     both, the line a session waits in for a paired one, and the owner's notifications on it."""
 
     def _named(self, device):
@@ -943,7 +943,7 @@ def status(record, macs=None):
 
 
 def main(argv=None):
-    # Run alone, as another Mac runs it before a dispatch, no extension registered a platform.
+    # Run alone, as another Mac runs it before a dispatch, no plugin registered a platform.
     if not platforms.PLATFORMS: platforms.discover()
     parser = argparse.ArgumentParser(prog="qk devices",
                                      description="Read or change the shared device handoff record, or run a "

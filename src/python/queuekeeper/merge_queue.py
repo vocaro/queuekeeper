@@ -55,12 +55,12 @@ import unicodedata
 import urllib.request
 from xml.etree import ElementTree
 
-from . import budgets, disk, extensions, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
+from . import budgets, disk, plugins, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
 from . import events, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
-    lane_to_run, legacy_carried, legacy_unread_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
+    lane_to_run, legacy_carried, legacy_unread_warning, old_plugins_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
     siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
@@ -227,7 +227,7 @@ DOCS_SUFFIX = "-docs"
 # whose round of 2026-11-15 waited 34 min 33 s for admission to check spelling and 8 min 3 s to check docs. The spelling and docs checks took 0.2-1.3 s on this Mac at a load of
 # 15-44 on 2026-11-11; one that reaches this limit runs again admitted, as any lane, so a slow check is never a failure.
 DOCS_CHECK_LIMIT = 60
-# The seconds Queuekeeper may take to start in the worker's checkout, loading the project's extensions and running no
+# The seconds Queuekeeper may take to start in the worker's checkout, loading the project's plugins and running no
 # lane, when the worker asks whether a batch's commits are why it could not start (Worker.starts,
 # vocaro/queuekeeper#158). A start that reaches this limit says nothing, and the queue holds as it would unasked.
 START_LIMIT = 60
@@ -962,7 +962,7 @@ def preflight_run(queue, root, commit, name):
         lane = lanes.get(name)
         command = lane.get("command") if isinstance(lane, dict) else None
         if not (isinstance(command, list) and command) or (isinstance(lane, dict) and any(
-                lane.get(key) for key in (*NOT_PREFLIGHT, *extensions.LANE_KEYS))):
+                lane.get(key) for key in (*NOT_PREFLIGHT, *plugins.LANE_KEYS))):
             return None, [f"the project's {name} lane is not one command that qk land can run here"], None
         limit = min(lane.get("timeout", PREFLIGHT_LIMIT), PREFLIGHT_LIMIT) if isinstance(lane, dict) else PREFLIGHT_LIMIT
         log = path.parent / f"{name}.log"
@@ -982,6 +982,7 @@ def preflight_before_queued(root, queue, tip, config):
     round to judge, and so does a failure origin/main gives too, which is not the entry's to fix."""
     unread_warned = legacy_unread_warning(config)
     if unread_warned: print(f"queue: {unread_warned}", file=sys.stderr)
+    if old_plugins_warning(config): print(f"queue: {old_plugins_warning(config)}", file=sys.stderr)
     names = preflighted(config)
     if not names: return
     base = text(root, "rev-parse", MAIN)
@@ -1043,13 +1044,13 @@ def preflight_staged(root, base, tip, name):
 
 
 def main_copies(config, changed):
-    """A sentence naming the paths of changed under a folder inside the project that config's extensions load from, or
+    """A sentence naming the paths of changed under a folder inside the project that config's plugins load from, or
     "". A lane run in a linked worktree of the project's main checkout, as the queue's checkout is, loads such a folder
-    from the main checkout (config.extensions_of), so a round judges a change to it by main's copy, not the batch's,
+    from the main checkout (config.plugins_of), so a round judges a change to it by main's copy, not the batch's,
     and an entry that changes the folder and starts relying on the change fails there although it is right. That
     lands in two steps (vocaro/queuekeeper#186). A folder beside the project is pinned instead (pins), and not named."""
     found = []
-    for entry in config.get("extensions", []):
+    for entry in config.get("plugins", []):
         path = entry.get("path") if isinstance(entry, dict) else None
         if not isinstance(path, str) or not path or os.path.isabs(path): continue
         folder = os.path.normpath(path)
@@ -1062,7 +1063,7 @@ def main_copies(config, changed):
     paths = [name for _, _, under in found for name in under][:REJECTION_SHOWN]
     folders = " and ".join(f"{folder}, which {module} loads from" for folder, module, _ in found)
     return (f"This entry changes {', '.join(paths)}{f' and {more} more' if more > 0 else ''} in {folders}: the "
-            "round's lanes load the project's extensions from its main checkout, not from the batch, so main's copy "
+            "round's lanes load the project's plugins from its main checkout, not from the batch, so main's copy "
             "judged this entry. If the failure comes from that copy, land the change to the folder on its own first, "
             "and what relies on it once that is on main")
 
@@ -1256,7 +1257,7 @@ def placed_file(path, files):
 
 def named_in(path, output):
     """Whether output, a failing test's, names path, a repository path: whole, not inside a longer path or word,
-    and with a directory or an extension, so that a bare word such as a top-level file's name is not taken for it."""
+    and with a directory or a plugin, so that a bare word such as a top-level file's name is not taken for it."""
     if "/" not in path and "." not in path: return False
     return re.search(rf"(?<![\w./-]){re.escape(path)}(?![\w/-]|\.\w)", output) is not None
 
@@ -3451,7 +3452,7 @@ class Worker:
         if self.code and head != self.code: self.move_to(copy, head)
 
     def pin(self):
-        """Pin, for this round, the folders beside the project that its extensions load from, as main's
+        """Pin, for this round, the folders beside the project that its plugins load from, as main's
         queuekeeper.json names them: each at its origin/main, fetched now, in a checkout no session edits
         (pins.make), carried to every lane and the qk commands nested in them by QUEUEKEEPER_SIBLINGS. A lane
         otherwise loaded them from the shared checkouts beside the project as those stood when each command began, so
@@ -3473,7 +3474,7 @@ class Worker:
             if git(clone, "remote", "get-url", "origin").returncode == 0: reach(clone, *FETCH, say=self.say, check=True)
         try: made = pins.make(queue.main_checkout, names, fetch=fetch)
         except pins.Unpinned as error:
-            raise Hold(SESSION, f"a folder the project's extensions load from could not be pinned for the round: {error}")
+            raise Hold(SESSION, f"a folder the project's plugins load from could not be pinned for the round: {error}")
         if not made: return
         kit = git(self.toolkit_root(), "rev-parse", "HEAD")
         found = {"queuekeeper": kit.stdout.strip() if kit.returncode == 0 else None,
@@ -3481,7 +3482,7 @@ class Worker:
         said = ", ".join(f"{name} at {pin['commit'][:12]}" for name, pin in made.items())
         last = self.pins_started()
         if found != last:
-            self.drop_stacked("the folders the project's extensions load from are pinned afresh")
+            self.drop_stacked("the folders the project's plugins load from are pinned afresh")
             log = queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-pins.log"
             if self.pin_starts(made, log) is False:
                 held = (last or {}).get("siblings") or {}
@@ -3590,7 +3591,7 @@ class Worker:
     def follows(self):
         """Whether this queue fast-forwards its main checkout after a landing: the toolkit's own, which every
         session's queuekeeper reads, and a project whose main says so (queue.followLandings), such as one whose
-        checkout holds an extension other projects load."""
+        checkout holds a plugin other projects load."""
         if self.toolkits_own(): return True
         try: return config_at(self.queue.main_checkout, MAIN).get("queue", {}).get("followLandings") is True
         except ValueError: return False
@@ -4091,7 +4092,7 @@ class Worker:
             if lane != DOCS: return None
             command = self.implicit(lane)
         elif lane == DOCS and configured.get("command") != IMPLICIT_DOCS: return None
-        elif not isinstance(configured, dict) or any(configured.get(key) for key in (*NOT_PREFLIGHT, *extensions.LANE_KEYS)):
+        elif not isinstance(configured, dict) or any(configured.get(key) for key in (*NOT_PREFLIGHT, *plugins.LANE_KEYS)):
             return None
         else: command = configured.get("command")
         return command if isinstance(command, list) and command else None
@@ -4187,7 +4188,7 @@ class Worker:
 
     def tool_unstarted(self, lane, began, status, ran, log):
         """Why Queuekeeper itself could not start for lane, which began at began and exited status, or None. It
-        exited TOOL_NOT_STARTED, as cli.main does when composing its checkout or loading a project's extension raises
+        exited TOOL_NOT_STARTED, as cli.main does when composing its checkout or loading a project's plugin raises
         before any command is read, and the run left no receipt of the lane, which qk run writes for every lane whose
         command it reaches: here, none in the lane's folder since began; on another Mac, in ran, its dispatch's
         folder, the work stage's exit with no receipt come back (offload_host returns one only when the run wrote it).
@@ -4218,9 +4219,9 @@ class Worker:
 
     def starts(self, log):
         """Whether Queuekeeper starts in this checkout as it is now, on this Mac: True when the command every lane
-        begins with, the project's launcher or the toolkit's qk, loads the project's extensions and exits 0, False
+        begins with, the project's launcher or the toolkit's qk, loads the project's plugins and exits 0, False
         when it exits TOOL_NOT_STARTED, and None when it says neither, as one that did not end within START_LIMIT.
-        It runs no lane and waits for no admission: `--version` is read once the extensions have loaded (cli.main).
+        It runs no lane and waits for no admission: `--version` is read once the plugins have loaded (cli.main).
         What it printed is kept beside log."""
         command = toolkit_command(self.checkout, ["--version"], self.toolkit_root())
         try:
@@ -4233,7 +4234,7 @@ class Worker:
         """Whether the batch's own commits are why Queuekeeper could not start for the last gate's lane (tooling):
         on this Mac, with this Queuekeeper and the folders beside the project as they are, it starts in the project at
         base, without the batch, and not at head, with it. Then the lane's exit is a failure of the batch, as an entry
-        that names an extension that does not load is, and the batch is bisected and an entry sent back as for any
+        that names a plugin that does not load is, and the batch is bisected and an entry sent back as for any
         failed lane, where a hold would stop every project's entry behind it until a session found the one to remove
         (the owner's decision of 2026-11-15, vocaro/queuekeeper#158). Any other reading leaves the hold: it starts at
         neither, as on 2026-11-15, when a folder beside the project had moved; or the lane ran on another Mac and
@@ -4258,7 +4259,7 @@ class Worker:
         """What a session does about the lane the last gate could not start (unstarted), in a hold's reason."""
         if self.tooling:
             return ((f"{self.probed}: " if self.probed else "")
-                    + "bring Queuekeeper and the folders the project's extensions load from to commits that work "
+                    + "bring Queuekeeper and the folders the project's plugins load from to commits that work "
                     "together on that Mac, as `qk queue resume` does for the worker's own Queuekeeper by starting one "
                     "from the current checkout, or remove the entry whose commits changed what the project loads")
         return "make the lane's command start, or remove the entry whose commits took away what it runs"
@@ -4555,7 +4556,7 @@ class Worker:
 
     def keep_app(self, head):
         """Start keeping the app built at head, the gated commit just pushed, in the background, when head's
-        queuekeeper.json keeps one after landing (extensions.AFTER_LANDING): the round goes on while it builds, and a build
+        queuekeeper.json keeps one after landing (plugins.AFTER_LANDING): the round goes on while it builds, and a build
         that fails leaves the build kept before it. A docs-only or ungated landing keeps none. Head's settings, not
         main's at the batch's base as the gate's: keeping a build gates nothing, and so the commit that first gives
         `app` keeps its build too (Pagepour's, 2026-11-06, kept none)."""
@@ -4565,7 +4566,7 @@ class Worker:
             self.say(f"keeping no app build of {head[:12]}: {error}")
             return
         log = self.queue.logs / f"app-keep-{head[:12]}.log"
-        for keep in extensions.AFTER_LANDING:
+        for keep in plugins.AFTER_LANDING:
             try:
                 started = keep(self.checkout, config, head, log, self.environment)
             except OSError as error:

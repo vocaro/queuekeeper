@@ -2,7 +2,7 @@
 (queuekeeper_mobile.settings)."""
 from pathlib import Path
 import re
-from queuekeeper import config, extensions
+from queuekeeper import config, plugins
 
 APP_PLATFORMS = {"mac": True, "ios": False}
 
@@ -49,7 +49,7 @@ def app(declared):
             raise ValueError(f"app.{name}.afterLanding must be true or false")
 
 
-class Idioms(extensions.LaneKey):
+class Idioms(plugins.LaneKey):
     """A lane's "idioms": why it runs its whole selection on an iPhone and an iPad simulator, which `qk doctor`
     warns of otherwise (doctor.idiom_warnings). It changes nothing in the lane's run."""
     def check(self, name, lane):
@@ -83,6 +83,6 @@ def sandbox_refusal(lane):
 
 
 def register():
-    extensions.CONFIG_KEYS.update(app=app, simulatorPool=simulator_pool)
-    extensions.LANE_KEYS.update(idioms=Idioms())
-    if sandbox_refusal not in extensions.SANDBOX_REFUSALS: extensions.SANDBOX_REFUSALS.append(sandbox_refusal)
+    plugins.CONFIG_KEYS.update(app=app, simulatorPool=simulator_pool)
+    plugins.LANE_KEYS.update(idioms=Idioms())
+    if sandbox_refusal not in plugins.SANDBOX_REFUSALS: plugins.SANDBOX_REFUSALS.append(sandbox_refusal)

@@ -7,13 +7,13 @@ channel, a module of its own in `channels`, is one way of telling. A queue that 
 commands that reach the hosts also start, at most once every two minutes, a look for one that is stuck (check). The
 feature's settings are the `notify` object of the owner's visibility settings.
 """
-from queuekeeper import extensions
+from queuekeeper import plugins
 
 HELP = "tell the owner when the queue needs them, and say which rules and channels are on"
 
 
 def register():
     from . import check, commands, deliver
-    extensions.COMMANDS["notify"] = (HELP, commands.main)
-    extensions.AFTER_EVENT.append(deliver.spawn)
-    extensions.HOST_COMMAND.append(check.spawn)
+    plugins.COMMANDS["notify"] = (HELP, commands.main)
+    plugins.AFTER_EVENT.append(deliver.spawn)
+    plugins.HOST_COMMAND.append(check.spawn)

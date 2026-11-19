@@ -1,20 +1,20 @@
-"""What the Mac desktop extension does around a lane's run and an admitted command's: another Mac's foreground it
+"""What the Mac desktop plugin does around a lane's run and an admitted command's: another Mac's foreground it
 holds, and the crash-report alerts and notifications it clears. The core's lane runner calls these through
-queuekeeper.extensions.FOREGROUND."""
+queuekeeper.plugins.FOREGROUND."""
 import os
 import sys
 
-from queuekeeper import extensions, lane_results
+from queuekeeper import plugins, lane_results
 from queuekeeper.resources import BUSY
 from . import capture_approvals, crash_alerts, foreground, keychain, notification_center, reservations
 
 
 def this_mac():
-    from queuekeeper import cli  # cli loads the extension
+    from queuekeeper import cli  # cli loads the plugin
     return cli.this_mac()
 
 
-class Foreground(extensions.Foreground):
+class Foreground(plugins.Foreground):
     def foreground_mac(self):
         return foreground.farm_mac()
 
@@ -72,26 +72,26 @@ def notifications_arguments(parser):
 
 
 def register():
-    """Put the extension's lane hooks and commands in the core."""
-    extensions.provide("FOREGROUND", Foreground())
+    """Put the plugin's lane hooks and commands in the core."""
+    plugins.provide("FOREGROUND", Foreground())
     # A foreground run whose command died left crash-report dialogs off; the next command puts them back.
-    if crash_alerts.recover not in extensions.RECOVER: extensions.RECOVER.append(crash_alerts.recover)
+    if crash_alerts.recover not in plugins.RECOVER: plugins.RECOVER.append(crash_alerts.recover)
     # A run sent to another Mac unlocks its login keychain there, for its own session, before its command.
-    if keychain.unlock_run not in extensions.PREPARE_LANE: extensions.PREPARE_LANE.append(keychain.unlock_run)
-    # The device record's command line, for its foreground; the mobile extension, loaded after this one, replaces
+    if keychain.unlock_run not in plugins.PREPARE_LANE: plugins.PREPARE_LANE.append(keychain.unlock_run)
+    # The device record's command line, for its foreground; the mobile plugin, loaded after this one, replaces
     # it with one that adds its devices' actions.
-    extensions.COMMANDS["devices"] = (
+    plugins.COMMANDS["devices"] = (
         "read or change this Mac's device record, which reserves its foreground: qk devices "
         "status|show|reserve|update|release|check|recover; -h for the rest",
         lambda arguments, project: reservations.main(arguments))
-    extensions.PARSED_COMMANDS.update({
+    plugins.PARSED_COMMANDS.update({
         "keychain": ("before the owner unlocks a keychain, say which Mac's keychain the work needs and print commands "
                      "that run only there (recover); keep another Mac's login keychain unlocked for every qk "
                      "remote run (keep-unlocked); where the automation runs, check the keychain, the signing identity "
                      "and signing with it, without a prompt (check)",
                      keychain.add_arguments, lambda root, args, config: keychain.execute(args), False),
     })
-    extensions.HOST_READS["notifications"] = (
+    plugins.HOST_READS["notifications"] = (
         "list the Notification Center windows over this Mac's screen, exiting 0 when none is and 3 when one is; with "
         "--dismiss, on another Mac under the foreground lease the caller holds, close their notifications and "
         "confirm each window gone, as a foreground run does before it starts (exit 0, 3 naming a window left, 1 "

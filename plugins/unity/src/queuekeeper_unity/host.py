@@ -6,7 +6,7 @@ is not the same as stopped."""
 import json
 import re
 
-from queuekeeper import extensions
+from queuekeeper import plugins
 from . import editor, project, unity_cli
 
 PROJECT_PATH = re.compile(r"-projectPath (.+?)(?= -[A-Za-z]|$)", re.I)
@@ -65,6 +65,6 @@ def read(args, out=print):
 
 def register():
     """Add the reading to `qk host`."""
-    extensions.HOST_READS["editors"] = (
+    plugins.HOST_READS["editors"] = (
         "list the Unity editors and batch runs on this Mac, each with its project, version and Play state, and "
         "the editor versions installed", arguments, read)

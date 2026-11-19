@@ -8,7 +8,7 @@
   and a device pass's lane that would go to another Mac.
 
 A project's own tooling adds what else a landing warns of, such as a release gate's commit limit
-(extensions.LANDING_WARNINGS).
+(plugins.LANDING_WARNINGS).
 
 The queue's worker records each landed entry's gate run (Worker.gate): its wall time as the queue saw
 it, wherever the lane ran, any wait for admission included (seconds, the landing latency, which the warning reports
@@ -30,7 +30,7 @@ import statistics
 import subprocess
 from pathlib import Path
 
-from . import extensions
+from . import plugins
 
 GATE = "gate"
 # The passing gate runs the median is taken over, newest first, and the fewest that judge a budget.
@@ -258,10 +258,10 @@ def stale_mark(root, config):
 
 def landing_warnings(root, config, entries):
     """What a landing prints after its result, and doctor warns of too: the gate over its budget, and what the
-    project's tooling adds (extensions.LANDING_WARNINGS). A check that cannot be made says so rather than stopping
+    project's tooling adds (plugins.LANDING_WARNINGS). A check that cannot be made says so rather than stopping
     the landing."""
     warnings = []
-    for check in (lambda: gate_warnings(config, entries, stale_mark(root, config)), *(lambda added=added: added(root, config) for added in extensions.LANDING_WARNINGS)):
+    for check in (lambda: gate_warnings(config, entries, stale_mark(root, config)), *(lambda added=added: added(root, config) for added in plugins.LANDING_WARNINGS)):
         try: warnings += check()
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             warnings.append(f"could not check the gate's budget: {error}")

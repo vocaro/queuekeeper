@@ -1,4 +1,4 @@
-"""The Mac hardware extension: a lane's "chips", the chips its results are valid on, and where they put the lane.
+"""The Mac hardware plugin: a lane's "chips", the chips its results are valid on, and where they put the lane.
 No test reads this Mac's chip or reaches another Mac: both readings are stand-ins."""
 import contextlib
 import io
@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import host_isolation  # first, as every test module
 
-from queuekeeper import cli; from queuekeeper import config; from queuekeeper import extensions; import queuekeeper_mac_hardware as mac_hardware; from queuekeeper import remote
+from queuekeeper import cli; from queuekeeper import config; from queuekeeper import plugins; import queuekeeper_mac_hardware as mac_hardware; from queuekeeper import remote
 from queuekeeper_mac_hardware import chip, lane
 from test_support import farm as farm_fixture
 
@@ -33,7 +33,7 @@ class Macs(unittest.TestCase):
         return {"gate": {"command": ["./check.sh"], "resource": "exclusive", "chips": chips, **more}}
 
     def placed(self, chips):
-        return extensions.placement(self.lanes(chips), "gate")
+        return plugins.placement(self.lanes(chips), "gate")
 
 
 class ChipTests(unittest.TestCase):
@@ -68,13 +68,13 @@ class PlacementTests(Macs):
     def test_a_lane_that_lists_no_chips_or_both_macs_chips_is_placed_as_any_lane(self):
         self.assertIsNone(self.placed([M5, M1]))
         plain = {"gate": {"command": ["./check.sh"], "resource": "heavy"}}
-        self.assertIsNone(extensions.placement(plain, "gate"))
+        self.assertIsNone(plugins.placement(plain, "gate"))
         self.assertIsNone(config.stays(plain, "gate"))
         self.assertIsNone(config.stays(self.lanes([M5, M1]), "gate"))
 
     def test_a_lane_only_this_mac_s_chip_suits_stays_here_as_one_that_says_here(self):
         where, why = self.placed([M5])
-        self.assertEqual(where, {extensions.HERE})
+        self.assertEqual(where, {plugins.HERE})
         self.assertIn("this Mac has apple-m5-max, and studio has apple-m1-max", why)
         self.assertIn("gate.chips: its chips are apple-m5-max", config.stays(self.lanes([M5]), "gate"))
 
@@ -87,7 +87,7 @@ class PlacementTests(Macs):
         # Every Mac that has a listed chip, and none whose chip is another's or unread.
         self.assertEqual(self.placed([M1])[0], {"studio", "rented"})
         where, why = self.placed([M5])
-        self.assertEqual(where, {extensions.HERE, "mini"})
+        self.assertEqual(where, {plugins.HERE, "mini"})
         self.assertIn("this Mac has apple-m5-max, and studio has apple-m1-max, and mini has apple-m5-max, and rented "
                       "has apple-m1-max, and away has a chip that could not be read", why)
         # This Mac may run it, so it does not stay here alone, and is offered to mini and no other.
@@ -96,11 +96,11 @@ class PlacementTests(Macs):
             self.assertEqual(remote.eligible(where), ("mini",))
             self.assertEqual(remote.eligible(self.placed([M1])[0]), ("studio", "rented"))
         # Chips that every Mac but the unread one has leave that one out.
-        self.assertEqual(self.placed([M5, M1])[0], {extensions.HERE, "studio", "mini", "rented"})
+        self.assertEqual(self.placed([M5, M1])[0], {plugins.HERE, "studio", "mini", "rented"})
 
     def test_a_lane_stays_here_when_the_farm_mac_s_chip_cannot_be_read_or_there_is_none(self):
         self.macs(M5, "studio", None)
-        self.assertEqual(self.placed([M5])[0], {extensions.HERE})
+        self.assertEqual(self.placed([M5])[0], {plugins.HERE})
         self.assertIn("studio has a chip that could not be read", self.placed([M5])[1])
         self.macs(M5, None, None)
         self.assertIsNone(self.placed([M5]))
@@ -114,20 +114,20 @@ class PlacementTests(Macs):
     def test_a_group_goes_where_its_lane_must_and_lanes_that_must_run_apart_are_refused(self):
         lanes = {"all": {"parallel": ["fast", "gpu"]}, "fast": {"command": ["true"], "resource": "heavy"},
                  "gpu": {"command": ["true"], "resource": "heavy", "chips": [M1]}}
-        where, why = extensions.placement(lanes, "all")
+        where, why = plugins.placement(lanes, "all")
         self.assertEqual(where, {"studio"})
         self.assertIn("gpu.chips", why)
         lanes["fast"]["chips"] = [M5]
-        self.assertIn("fast.chips", extensions.placement(lanes, "fast")[1])
+        self.assertIn("fast.chips", plugins.placement(lanes, "fast")[1])
         with self.assertRaisesRegex(ValueError, "all runs its lanes on one Mac, and they must run apart"):
-            extensions.placement(lanes, "all")
+            plugins.placement(lanes, "all")
 
 
 class ConfigTests(Macs):
     BASE = {"schemaVersion": 1, "name": "Project"}
 
     def parse(self, chips, listed=("queuekeeper_mac_hardware",), **more):
-        return config.parse(json.dumps({**self.BASE, "extensions": list(listed), "lanes": self.lanes(chips, **more)}))
+        return config.parse(json.dumps({**self.BASE, "plugins": list(listed), "lanes": self.lanes(chips, **more)}))
 
     def test_a_lane_lists_chips_by_name_and_reading_the_configuration_asks_no_mac(self):
         with patch.object(lane, "reading", side_effect=AssertionError("a Mac was asked")):
@@ -139,10 +139,10 @@ class ConfigTests(Macs):
                 self.parse(chips)
         with self.assertRaisesRegex(ValueError, "gate.chips needs an admitted lane"): self.parse([M5], resource="self")
 
-    def test_the_key_without_the_extension_is_refused_naming_it(self):
-        with patch.dict(extensions.LANE_KEYS, {}, clear=True), \
-                patch.object(extensions, "LOADED", ["queuekeeper_mac_hardware"]), \
-                self.assertRaisesRegex(ValueError, "gate.chips is the queuekeeper_mac_hardware extension's key"):
+    def test_the_key_without_the_plugin_is_refused_naming_it(self):
+        with patch.dict(plugins.LANE_KEYS, {}, clear=True), \
+                patch.object(plugins, "LOADED", ["queuekeeper_mac_hardware"]), \
+                self.assertRaisesRegex(ValueError, "gate.chips is the queuekeeper_mac_hardware plugin's key"):
             self.parse([M5], listed=())
 
     def test_doctor_names_a_lane_no_mac_can_run_and_no_other(self):
@@ -151,7 +151,7 @@ class ConfigTests(Macs):
         self.assertEqual(len(found), 1)
         self.assertIn("gate.chips: no Mac has a chip the lane lists", found[0])
         self.assertIn("so the lane cannot run", found[0])
-        self.assertIn(lane.warnings, extensions.DOCTOR)
+        self.assertIn(lane.warnings, plugins.DOCTOR)
 
     def test_host_chip_prints_each_mac_s_chip_as_a_lane_names_it(self):
         lines = []
@@ -161,7 +161,7 @@ class ConfigTests(Macs):
         lines.clear()
         self.assertEqual(lane.read(None, out=lines.append), 2)
         self.assertEqual(lines, ["this Mac: could not be read"])
-        self.assertIs(extensions.HOST_READS["chip"][2], lane.read)
+        self.assertIs(plugins.HOST_READS["chip"][2], lane.read)
 
 
 class RunTests(Macs):
@@ -173,7 +173,7 @@ class RunTests(Macs):
         from pathlib import Path
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         (self.root / "queuekeeper.json").write_text(json.dumps({
-            "schemaVersion": 1, "name": "Project", "extensions": ["queuekeeper_mac_hardware"],
+            "schemaVersion": 1, "name": "Project", "plugins": ["queuekeeper_mac_hardware"],
             "lanes": self.lanes([M1])}))
         self.sent = []
         def execute(root, found, host, work, **options):

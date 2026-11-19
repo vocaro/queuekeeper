@@ -1,7 +1,7 @@
 """Inventory of the disk space Queuekeeper's own files take on a host, and removal only of what nobody owns.
 
-`qk disk` measures what Queuekeeper leaves: each repository's lane results kept by commit, and what an extension
-adds (the Apple extension: simulators and runtimes, Xcode's DerivedData, the SwiftPM cache and kept app builds).
+`qk disk` measures what Queuekeeper leaves: each repository's lane results kept by commit, and what a plugin
+adds (the Apple plugin: simulators and runtimes, Xcode's DerivedData, the SwiftPM cache and kept app builds).
 What sessions and the owner's workflow leave (worktrees, scratch folders, failure records, evidence archives) is
 the toolkit's `eng disk` (decision E of vocaro/vocaro-engineering#403). It classifies each item:
 
@@ -37,9 +37,9 @@ from .config import TOOLKIT_ROOT
 
 CANDIDATE, OWNER, KEPT = "candidate", "owner", "kept"
 STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
-# The categories, in the order a report lists them and --delete removes them. An extension adds its own (extend).
+# The categories, in the order a report lists them and --delete removes them. A plugin adds its own (extend).
 CATEGORIES = {"kept-results": "Lane results kept by commit beside the receipts (pruned by their rule)",
-              "pinned-checkouts": "Checkouts runs are pinned to, of the folders projects' extensions load from"}
+              "pinned-checkouts": "Checkouts runs are pinned to, of the folders projects' plugins load from"}
 # --delete removes every candidate category without asking (the owner's decision, 2026-11-05, widening that
 # of 2026-11-03 from simulators and runtimes to every candidate): a candidate is what the rules prove nobody
 # owns, so it needs no second judgment; what only the owner can judge is an owner item, never removed.
@@ -311,7 +311,7 @@ class Sizes:
 
 @dataclass
 class Host:
-    """Everything the inventory reads from the machine, so tests can supply it. An extension's items read more,
+    """Everything the inventory reads from the machine, so tests can supply it. A plugin's items read more,
     from a subclass it names in extend."""
     home: Path
     development: Path
@@ -334,28 +334,28 @@ class Host:
                    run=run)
 
 
-# What an extension adds to the inventory (extend): the functions that list its items, those that name the
+# What a plugin adds to the inventory (extend): the functions that list its items, those that name the
 # folders one du pass measures, and the Host its items read.
-EXTENSION_ITEMS, EXTENSION_PRIMES, EXTENSION_HOSTS = [], [], []
-EXTENSION_CATEGORIES = {}  # each of EXTENSION_ITEMS, to the categories it lists, which its progress line names
+PLUGIN_ITEMS, PLUGIN_PRIMES, PLUGIN_HOSTS = [], [], []
+PLUGIN_CATEGORIES = {}  # each of PLUGIN_ITEMS, to the categories it lists, which its progress line names
 
 
 def extend(categories, items, prime=None, host=None):
-    """Add an extension's disk items: `categories` maps each of its categories to its title; `items(host, usage,
+    """Add a plugin's disk items: `categories` maps each of its categories to its title; `items(host, usage,
     sizes, wanted)` lists the items of those in `wanted`; `prime(host)` gives the (folder, depth) pairs worth one
     du pass each; `host` is a subclass of Host that reads what its items need. Adding the same items twice
     changes nothing."""
-    if items in EXTENSION_ITEMS: return
+    if items in PLUGIN_ITEMS: return
     CATEGORIES.update(categories)
-    EXTENSION_ITEMS.append(items)
-    EXTENSION_CATEGORIES[items] = list(categories)
-    if prime: EXTENSION_PRIMES.append(prime)
-    if host: EXTENSION_HOSTS.append(host)
+    PLUGIN_ITEMS.append(items)
+    PLUGIN_CATEGORIES[items] = list(categories)
+    if prime: PLUGIN_PRIMES.append(prime)
+    if host: PLUGIN_HOSTS.append(host)
 
 
 def host_class():
-    """The Host the inventory reads: the last an extension named, or this module's."""
-    return EXTENSION_HOSTS[-1] if EXTENSION_HOSTS else Host
+    """The Host the inventory reads: the last a plugin named, or this module's."""
+    return PLUGIN_HOSTS[-1] if PLUGIN_HOSTS else Host
 
 
 def git_environment():
@@ -460,7 +460,7 @@ def kept_results(host, usage, sizes):
 
 
 def pinned_checkouts(host, usage, sizes):
-    """This Mac's checkouts of the folders projects' extensions load from, one for each commit a run pinned
+    """This Mac's checkouts of the folders projects' plugins load from, one for each commit a run pinned
     (offload_host.pinned_checkout), counted, with those no run has used for offload_host.PIN_DAYS days and no process
     uses as one candidate, which `qk disk --prune-pins` removes."""
     from . import offload_host  # which imports nothing of the toolkit
@@ -516,8 +516,8 @@ def inventory(host, sizes, categories=None):
     if "pinned-checkouts" in wanted:
         sizes.begin("pinned-checkouts")
         items += pinned_checkouts(host, usage, sizes)
-    for listed in EXTENSION_ITEMS:
-        named = [category for category in EXTENSION_CATEGORIES.get(listed, ()) if category in wanted]
+    for listed in PLUGIN_ITEMS:
+        named = [category for category in PLUGIN_CATEGORIES.get(listed, ()) if category in wanted]
         if named: sizes.begin(", ".join(named))
         items += listed(host, usage, sizes, wanted)
     return items
@@ -649,7 +649,7 @@ def add_arguments(parser):
 
 def prime_items(host, sizes):
     """One du pass over each folder that holds many small items; everything else is measured alone."""
-    roots = [(root, depth) for prime in EXTENSION_PRIMES for root, depth in prime(host) if root]
+    roots = [(root, depth) for prime in PLUGIN_PRIMES for root, depth in prime(host) if root]
     for place, (root, depth) in enumerate(roots, 1):
         sizes.prime(root, depth, f", {place} of {len(roots)}")
 

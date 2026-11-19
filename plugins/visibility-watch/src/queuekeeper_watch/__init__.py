@@ -12,14 +12,14 @@ import shutil
 import sys
 import time
 
-from queuekeeper import events, extensions, merge_queue
+from queuekeeper import events, plugins, merge_queue
 
 HELP = "show the queue's state in the terminal, drawn again as it changes"
 CLEAR = "\x1b[H\x1b[2J"
 
 
 def register():
-    extensions.COMMANDS["watch"] = (HELP, main)
+    plugins.COMMANDS["watch"] = (HELP, main)
 
 
 def span(seconds):

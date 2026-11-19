@@ -74,11 +74,11 @@ class MainCheckoutTests(Fixture):
 
 
 class SiblingRequestTests(Fixture):
-    def test_each_extension_folder_is_asked_to_follow_what_this_macs_checkout_of_it_calls_origin_main(self):
+    def test_each_plugin_folder_is_asked_to_follow_what_this_macs_checkout_of_it_calls_origin_main(self):
         project = self.root / "project"
         project.mkdir()
         (project / "queuekeeper.json").write_text(
-            '{"extensions": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../checkout/src/python"},'
+            '{"plugins": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../checkout/src/python"},'
             ' {"module": "absent.hooks", "path": "../absent/src"}]}')
         main = self.git(self.checkout, "rev-parse", "refs/remotes/origin/main")
         self.assertEqual(remote.sibling_requests(project),
@@ -87,7 +87,7 @@ class SiblingRequestTests(Fixture):
 
 
 class MissingSiblingTests(unittest.TestCase):
-    def test_doctor_asks_which_extension_folder_the_farm_mac_has_no_checkout_of_and_creates_none(self):
+    def test_doctor_asks_which_plugin_folder_the_farm_mac_has_no_checkout_of_and_creates_none(self):
         # What `qk doctor` asks before any dispatch (#117). A dispatch takes each folder's pinned commit from that
         # checkout (offload_host.place_siblings, tests/integration/test_pins.py).
         with tempfile.TemporaryDirectory() as directory:

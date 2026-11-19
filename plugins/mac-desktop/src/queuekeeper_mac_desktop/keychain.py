@@ -33,7 +33,7 @@ import subprocess
 import sys
 import tempfile
 
-from queuekeeper import farm, extensions, lane_results, host_context, offload_host, remote
+from queuekeeper import farm, plugins, lane_results, host_context, offload_host, remote
 
 DEFAULT = "~/Library/Keychains/login.keychain-db"
 # Seconds each of the check's commands, and the question to another Mac, may take.
@@ -368,13 +368,13 @@ UNLOCKED = "QUEUEKEEPER_KEYCHAIN_UNLOCKED"
 
 def unlock_run(root, config):
     """Before an admitted lane or command starts on another Mac, sent there from another (remote.DISPATCHER):
-    unlock the login keychain for its session when the owner kept its password (extensions.PREPARE_LANE). A kept
+    unlock the login keychain for its session when the owner kept its password (plugins.PREPARE_LANE). A kept
     password that does not unlock it leaves the run unmeasured, with the owner's fix, and nothing of it runs."""
     if not os.environ.get(remote.DISPATCHER) or os.environ.get(UNLOCKED): return
     try:
         unlocked = unlock_for_run(Path.home() / remote.ROOT)
     except offload_host.Refusal as refusal:
-        raise extensions.Unavailable(f"{refusal}: {refusal.fix}") from None
+        raise plugins.Unavailable(f"{refusal}: {refusal.fix}") from None
     if unlocked:
         os.environ[UNLOCKED] = unlocked
         print(f"queuekeeper: unlocked {unlocked} for this run's session, with the password keep-unlocked kept",

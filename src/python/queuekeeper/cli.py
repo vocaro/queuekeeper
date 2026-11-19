@@ -14,46 +14,46 @@ import sys
 import time
 import traceback
 
-from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
+from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
-from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
-    source_identity, lane_devices, legacy_unread_warning, project_checkout, \
+from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
+    source_identity, lane_devices, legacy_unread_warning, old_plugins_warning, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
-# The commands that reach the hosts, before each of which extensions.HOST_COMMAND runs.
+# The commands that reach the hosts, before each of which plugins.HOST_COMMAND runs.
 HOST_COMMANDS = {"run", "admit", "remote", "land", "queue", "disk"}
 
 
 def fix_hosts(root, hosts):
     """What `doctor` fixes of remote.compare_hosts' report itself, the owner's no longer (the owner's decision,
-    2026-11-03): what each extension fixes (extensions.HOST_FIXES), and another Mac's own toolkit checkout,
+    2026-11-03): what each plugin fixes (plugins.HOST_FIXES), and another Mac's own toolkit checkout,
     which it fast-forwards to origin/main when it can and reports in toolkitCheckout, an error when it cannot
     (remote.update_there, vocaro-engineering#203). On the same connection it asks which folder beside the project
-    that its extensions load from another Mac has no checkout of, each an error naming the clone that makes it,
+    that its plugins load from another Mac has no checkout of, each an error naming the clone that makes it,
     which it leaves to the owner; unchecked when another Mac is not reached (vocaro/queuekeeper#117).
     tests/host_isolation.py replaces it, so that no test changes any Mac. A trial fixes nothing, and says so
     (trial.py, vocaro/queuekeeper#34)."""
     if trial.active():
         hosts.pop("runtimesDiffer", None)
         return {**hosts, "reaped": [], "deletedDefaults": []}
-    for fix in extensions.HOST_FIXES: hosts = fix(root, hosts)
+    for fix in plugins.HOST_FIXES: hosts = fix(root, hosts)
     siblings = sibling_folders(root)
     # Another Mac's own toolkit checkout, which it fast-forwards to origin/main when it can; one it must
     # leave as it is is an error, the owner's to decide (vocaro-engineering#203).
     if "remote" in hosts:
         found, missing = remote.update_there(hosts["host"], siblings)
         hosts["toolkitCheckout"] = found
-        # Each folder the project's extensions load from that another Mac has no checkout of, which every lane
+        # Each folder the project's plugins load from that another Mac has no checkout of, which every lane
         # sent there would fail to load; making it is the owner's step (vocaro/queuekeeper#117).
         if siblings and missing is None:
             hosts.setdefault("unchecked", []).append(
                 f"whether {hosts['host']} has its own checkout of {', '.join(siblings)}, beside the project's checkout "
-                "for its extensions to load from, which it did not report")
+                "for its plugins to load from, which it did not report")
         for name in missing or []:
             hosts.setdefault("errors", []).append(
-                f"{hosts['host']} has no ~/Development/{name}, which the project's extension loads from there, so "
+                f"{hosts['host']} has no ~/Development/{name}, which the project's plugin loads from there, so "
                 f"every lane sent there fails to load it; make it there with {remote.sibling_clone(root, name)}")
         if found.get("state") == "unchecked":
             hosts.setdefault("unchecked", []).append(f"{hosts['host']}'s own toolkit checkout, which it did not "
@@ -67,7 +67,7 @@ def fix_hosts(root, hosts):
         why = "none is configured" if hosts.get("host") is None else f"{hosts['host']} did not answer the comparison"
         hosts.setdefault("unchecked", []).append(
             f"whether another Mac has its own checkout of {', '.join(siblings)}, beside the project's checkout for "
-            f"its extensions to load from, which was not asked since {why}")
+            f"its plugins to load from, which was not asked since {why}")
     return hosts
 
 
@@ -85,8 +85,8 @@ def split_warnings(root, config):
 
 def refresh_policy(root, stream=None):
     """What the project's policy reader read before a run, for its receipt, or None when none is registered
-    (extensions.POLICY)."""
-    return extensions.policy(root, stream)
+    (plugins.POLICY)."""
+    return plugins.policy(root, stream)
 
 
 def record(directory, receipt, work):
@@ -339,9 +339,9 @@ def said_notice(directory, name, lane, limit, stall=False):
 
 
 def lane_command(lane, extra=()):
-    """The command a lane runs, with extra appended, as the keys extensions add to a lane make it
-    (extensions.lane_command), such as the Mac desktop extension's "display". The receipt records it so."""
-    return extensions.lane_command(lane, [*lane["command"], *extra])
+    """The command a lane runs, with extra appended, as the keys plugins add to a lane make it
+    (plugins.lane_command), such as the Mac desktop plugin's "display". The receipt records it so."""
+    return plugins.lane_command(lane, [*lane["command"], *extra])
 
 
 def lane_label(root, config, lane):
@@ -862,14 +862,14 @@ def admit(root, args, config=None, *, device_window=None):
     if args.time_limit != processes.DEFAULT_LIMIT: kind += ["--time-limit", f"{args.time_limit:g}"]
     # Foreground work holds the foreground of the Mac it runs on: another Mac's, which queuekeeper takes for it, or this
     # Mac's, which the session holds within the owner's window. qk remote admit --foreground sends it there.
-    second = args.foreground and extensions.FOREGROUND.foreground_mac()
+    second = args.foreground and plugins.FOREGROUND.foreground_mac()
     if args.foreground and args.verify:
         raise ValueError("--verify never sends foreground work: send it to another Mac with "
                          "qk remote admit --foreground -- COMMAND")
     if args.app and not args.foreground:
         raise ValueError("--app names the app under test of foreground work, whose crash-report alerts queuekeeper clears: "
                          "add --foreground")
-    if args.foreground and not second: extensions.FOREGROUND.require_foreground()
+    if args.foreground and not second: plugins.FOREGROUND.require_foreground()
     # Nested work runs inside the admission it inherits, here.
     inherited = bool(os.environ.get(resources.TOKEN))
     reason = here_because(args, inherited)
@@ -899,20 +899,20 @@ def admit(root, args, config=None, *, device_window=None):
                "foreground": args.foreground, "timeLimit": args.time_limit, **placement(reason)}
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
         asked = time.monotonic()
-        waiting = extensions.DEVICES.window_wait("the command", device_window, " ".join(command))
+        waiting = plugins.DEVICES.window_wait("the command", device_window, " ".join(command))
         allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
-        closed = extensions.DEVICES.window_closed("the command", waiting)
+        closed = plugins.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
         # Another Mac's foreground first, so that a command waiting for it holds no slot.
-        waited = extensions.FOREGROUND.foreground_held(stack, "the command", " ".join(command), allowed(args.timeout),
+        waited = plugins.FOREGROUND.foreground_held(stack, "the command", " ".join(command), allowed(args.timeout),
                                                        again=shlex.join(["qk", "admit", "--foreground", "--", *command])) \
             if second else None
-        if waited is not None: return extensions.DEVICES.not_admitted("the command", waiting, waited)
-        closed = extensions.DEVICES.window_closed("the command", waiting)
+        if waited is not None: return plugins.DEVICES.not_admitted("the command", waiting, waited)
+        closed = plugins.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
         admission = admitted_here(stack, "the command", " ".join(command), allowed(args.timeout), offered, args.if_free,
                                   args.exclusive, args.model, placement=admission_placement(offered, reason))
-        if isinstance(admission, int): return extensions.DEVICES.not_admitted("the command", waiting, admission)
+        if isinstance(admission, int): return plugins.DEVICES.not_admitted("the command", waiting, admission)
         sent = offered.sent if offered is not None else {}
         # Once the tree here is no longer what was sent, the command runs from what was sent (#276).
         moved = remote.moved_trees(root, offered)
@@ -922,7 +922,7 @@ def admit(root, args, config=None, *, device_window=None):
             receipt["project"] = source_identity(root)
             if sent.get("commit"): receipt["sent"] = sent["commit"]
         receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
-        if device_window is not None: extensions.DEVICES.report_window(device_window, receipt["queueSeconds"])
+        if device_window is not None: plugins.DEVICES.report_window(device_window, receipt["queueSeconds"])
         if offered is not None:
             receipt["hereBecause"] = offered.status
             fell_back("the command", offered)
@@ -930,13 +930,13 @@ def admit(root, args, config=None, *, device_window=None):
         def work():
             # Finalize the alert report before record() writes the receipt, while admission still holds.
             with resources.child_requests(), contextlib.ExitStack() as alert_stack:
-                alerts = extensions.FOREGROUND.guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
+                alerts = plugins.FOREGROUND.guarded_alerts(alert_stack, " ".join(command), receipt, args.app or ()) \
                     if args.foreground else None
                 if isinstance(alerts, int): return alerts
                 # Another Mac's Notification Center windows, under the foreground queuekeeper holds there (#204).
-                blocked = extensions.FOREGROUND.cleared_notifications(receipt) if second else None
+                blocked = plugins.FOREGROUND.cleared_notifications(receipt) if second else None
                 if blocked is not None: return blocked
-                for prepare in extensions.PREPARE_LANE: prepare(root, config)
+                for prepare in plugins.PREPARE_LANE: prepare(root, config)
                 # What they printed, such as an artifact check's notes, comes before the command's output, not after
                 # whatever the command prints once this process exits and its buffer is written (#206).
                 sys.stdout.flush()
@@ -951,7 +951,7 @@ def admit(root, args, config=None, *, device_window=None):
                                                  admission.interrupted)
                     if provisioned: return provisioned
                 # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
-                with extensions.around_run([command], directory):
+                with plugins.around_run([command], directory):
                     status = processes.supervise(here_command(command), cwd=directory, env=variables,
                                                  on_stop=admission.interrupted, timeout=args.time_limit,
                                                  kill_after=processes.FOREGROUND_KILL_AFTER if args.foreground
@@ -971,19 +971,19 @@ def admit(root, args, config=None, *, device_window=None):
 # What a runner takes to run with no admission, on this Mac, as it is started: the one way around admission and
 # placement, which the caller has to write out.
 UNADMITTED = "--unadmitted"
-# The words that start each of the core's runners (extensions.RUNNERS holds the extensions').
+# The words that start each of the core's runners (plugins.RUNNERS holds the plugins').
 RUNNERS = {("unittest",)}
 
 
 def bare_runner(argv, first):
     """(argv, whether it names a runner that no admission holds), for argv whose command starts at first. A runner
     is a command that runs tests or other heavy work itself, as a lane's command does: `qk unittest`, and
-    those the extensions name (extensions.RUNNERS). Under `qk run` or `qk admit` it inherits their
+    those the plugins name (plugins.RUNNERS). Under `qk run` or `qk admit` it inherits their
     admission. Started by itself it would take no slot and run on this Mac whatever else ran there, so it is admitted
     first (admitted_runner). --unadmitted, which is taken out of argv, and a request for help run it as it is."""
     words = argv[first:]
     own = words[:words.index("--")] if "--" in words else words
-    if not any(tuple(words[:len(runner)]) == runner for runner in RUNNERS | extensions.RUNNERS): return argv, False
+    if not any(tuple(words[:len(runner)]) == runner for runner in RUNNERS | plugins.RUNNERS): return argv, False
     if UNADMITTED in own:
         at = first + own.index(UNADMITTED)
         return argv[:at] + argv[at + 1:], False
@@ -1054,7 +1054,7 @@ def admitted_run(root, argv, first):
 
 
 def main(argv=None):
-    # Claude Code's hooks and their setup read no project configuration and load no extension, so that a plugin that
+    # Claude Code's hooks and their setup read no project configuration and load no plugin, so that a plugin that
     # fails to load never stops a session, and a hook that runs before each command starts fast (agent_hooks).
     words = sys.argv[1:] if argv is None else list(argv)
     first = 2 if words[:1] == ["--project"] else 1 if words[:1] and words[0].startswith("--project=") else 0
@@ -1066,7 +1066,7 @@ def main(argv=None):
     if off_main: print(f"queuekeeper: {off_main}", file=sys.stderr, flush=True)
     report = lane_report.Report()
     try:
-        # The project's extensions first: they add commands, and what they add to a command's environment, such as
+        # The project's plugins first: they add commands, and what they add to a command's environment, such as
         # the host-local path XcodeGen expands before generating a project (#373), is read once they are loaded.
         try:
             # A trial's own namespaces first, before anything reads one (trial.py, vocaro/queuekeeper#34).
@@ -1074,14 +1074,14 @@ def main(argv=None):
             compose_checkout()
             refused = pin_run(argv)
             if refused is not None: return refused
-            # Before the extensions load: one loaded from its pinned folder finds further folders by these.
+            # Before the plugins load: one loaded from its pinned folder finds further folders by these.
             os.environ.update(pins.exported(pins.held()))
-            load_extensions(argv)
+            load_plugins(argv)
         except Exception as error:  # noqa: BLE001
             return could_not_start(error)
         # qk run names the project's main checkout in os.environ for its lane's commands; afterwards it is as it was, so
         # that a test calling qk in-process leaves no checkout behind for the next (vocaro/queuekeeper#186).
-        with patch_environment(extensions.command_environment()), \
+        with patch_environment(plugins.command_environment()), \
                 patch_environment({PROJECT_CHECKOUT_VARIABLE: os.environ.get(PROJECT_CHECKOUT_VARIABLE)}):
             status = perform(argv, report)
     except Exception as error:
@@ -1108,18 +1108,18 @@ def python_path(args):
 
 def could_not_start(error):
     """Say that Queuekeeper could not start, after error's traceback, and return TOOL_NOT_STARTED, which the command
-    then exits with. Composing this checkout's plugins or loading one of the project's extensions raised error, before
+    then exits with. Composing this checkout's plugins or loading one of the project's plugins raised error, before
     any command was read: no lane ran and no commit was tested. That is a fault of the set this process was put
-    together from, this Queuekeeper and the folders the project's extensions load from, which need not be the
+    together from, this Queuekeeper and the folders the project's plugins load from, which need not be the
     project's commit: on 2026-11-15 a sibling checkout's adapter refused the older Queuekeeper a queue worker ran,
     each lane ended in the traceback alone with exit 1, as a failed test does, and the queue sent the entries back
     (vocaro/queuekeeper#158). The status and the line tell the two apart."""
     traceback.print_exception(error)
     why = " ".join(f"{type(error).__name__}: {error}".split())
     print(f"{lane_results.TOOL_SAID}{why}", file=sys.stderr)
-    print("queuekeeper: that is Queuekeeper or one of the project's extensions failing to load, before the command "
+    print("queuekeeper: that is Queuekeeper or one of the project's plugins failing to load, before the command "
           f"ran, so nothing ran and this says nothing of the project's commits (exit {lane_results.TOOL_NOT_STARTED}): "
-          f"Queuekeeper is {TOOLKIT_ROOT}, and the extensions load from the folders the project's queuekeeper.json "
+          f"Queuekeeper is {TOOLKIT_ROOT}, and the plugins load from the folders the project's queuekeeper.json "
           "names; bring them to commits that work together", file=sys.stderr, flush=True)
     return lane_results.TOOL_NOT_STARTED
 
@@ -1152,7 +1152,7 @@ SIBLING = "--sibling"
 
 def pin_run(argv):
     """Pin, for a command that runs a lane, `qk run` or `qk remote run`, the folders beside the project that its
-    extensions load from, before they load: each at its origin/main, or as `--sibling NAME=WHERE` chooses, in
+    plugins load from, before they load: each at its origin/main, or as `--sibling NAME=WHERE` chooses, in
     QUEUEKEEPER_SIBLINGS for this process and every command the lane starts (pins). A run of hours otherwise loaded
     whatever landed in such a folder meanwhile, in its later lanes' nested qk commands (vocaro-engineering#497).
 
@@ -1209,11 +1209,11 @@ def working_configuration(root):
 # Run in a process of its own, so that registering every plugin leaves this one's registries as the project has them.
 EVERY_COMMAND = """
 import json
-from queuekeeper import checkout, extensions, visibility
+from queuekeeper import checkout, plugins, visibility
 for name in [*checkout.components(), *visibility.available().values()]:
-    try: extensions.load([name])
+    try: plugins.load([name])
     except Exception: pass
-print(json.dumps(sorted({*extensions.COMMANDS, *extensions.PARSED_COMMANDS})))
+print(json.dumps(sorted({*plugins.COMMANDS, *plugins.PARSED_COMMANDS})))
 """
 
 
@@ -1230,18 +1230,18 @@ def every_feature_command():
         return set()
 
 
-def load_extensions(argv):
-    """Load the extensions of the project argv names: its folder is --project's when that comes first, as a launcher
-    gives it, else the current one, and a linked worktree's extensions are found from its main checkout."""
+def load_plugins(argv):
+    """Load the plugins of the project argv names: its folder is --project's when that comes first, as a launcher
+    gives it, else the current one, and a linked worktree's plugins are found from its main checkout."""
     given = sys.argv[1:] if argv is None else list(argv)
     folder = Path(given[1] if given[:1] == ["--project"] and len(given) > 1 else
                   given[0].split("=", 1)[1] if given[:1] and given[0].startswith("--project=") else ".")
-    extensions.load(extensions_of(folder, git_state.main_checkout(folder)))
+    plugins.load(plugins_of(folder, git_state.main_checkout(folder)))
 
 
 def perform(argv, report):
     """Run the command argv names, telling report of a lane run's progress for the summary that ends it. The
-    project's extensions are loaded already (load_extensions)."""
+    project's plugins are loaded already (load_plugins)."""
     # The visibility features their owner turned on, which add commands too (visibility).
     visibility.load()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1293,15 +1293,15 @@ def perform(argv, report):
         "template before each run; a run the pool could only erase is unmeasured")
     run.add_argument("--only", action="append", default=[], metavar="TEST", help="with --repeat: run only this test, "
         "in place of the lane's own selection; repeat for each")
-    run.add_argument(SIBLING, action="append", default=[], metavar="NAME=WHERE", help="load the project's extension "
+    run.add_argument(SIBLING, action="append", default=[], metavar="NAME=WHERE", help="load the project's plugin "
         "in the folder NAME beside it from WHERE for this run, in place of NAME's origin/main: a commit of this Mac's "
         "checkout of NAME, or a checkout's path, such as a session's worktree, taken as its working tree stands. A "
         "commit that NAME's origin does not hold runs on this Mac only. Refused in a lane of the merge queue, which "
         "judges a project with its folders' origin/main")
     run.add_argument("lane")
     # Listed for help only: main passes everything after these to their own parsers.
-    for name, (described, _) in extensions.COMMANDS.items(): commands.add_parser(name, help=described)
-    for name, (described, add_arguments, _, _) in extensions.PARSED_COMMANDS.items():
+    for name, (described, _) in plugins.COMMANDS.items(): commands.add_parser(name, help=described)
+    for name, (described, add_arguments, _, _) in plugins.PARSED_COMMANDS.items():
         add_arguments(commands.add_parser(name, help=described))
     commands.add_parser("unittest", help="run a unittest suite's modules in processes of their own, side by side: "
         "qk unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; qk unittest -h for the rest. "
@@ -1415,7 +1415,7 @@ def perform(argv, report):
                             "(repeatable); the dispatch records the run in its entry and "
                             "stops it before the reservation ends")
         choice.add_argument("--device-owner", metavar="SESSION", help="the session holding --device (default: "
-                            f"{extensions.DEVICES.device_owner})")
+                            f"{plugins.DEVICES.device_owner})")
         choice.add_argument("--checkout-slot", metavar="N", help="run in this one of another Mac's checkouts of the "
                             f"project, 0 to {remote.CHECKOUTS - 1}, waiting for it under the checkout's lock, however "
                             "many others are free, to repeat a check in a named checkout; by default the free checkout nearest the commit")
@@ -1488,7 +1488,7 @@ def perform(argv, report):
     screen.add_argument("--host", help="the farm's Mac to read, by its name in `qk farm list`, or an SSH "
                         "destination, when not the first that takes work now")
     screen.add_argument("--json", action="store_true", help="print the reading as JSON")
-    for name, (described, add_arguments, _) in extensions.HOST_READS.items():
+    for name, (described, add_arguments, _) in plugins.HOST_READS.items():
         add_arguments(reads.add_parser(name, help=described))
     # Everything after the first -- belongs to the command. Python 3.9's argparse rejects options
     # before it and drops a later --, so argparse never sees it.
@@ -1502,8 +1502,8 @@ def perform(argv, report):
     if argv[first:first + 1] == ["unittest"]: return parallel.unittest_main(argv[first + 1:])
     if argv[first:first + 1] == ["progress"]: return run_progress.main(argv[first + 1:], project)
     if argv[first:first + 1] == ["timing"]: return lane_timing.main(Path(project or ".").resolve(), argv[first + 1:])
-    if argv[first:first + 1] and argv[first] in extensions.COMMANDS:
-        return extensions.COMMANDS[argv[first]][1](argv[first + 1:], project)
+    if argv[first:first + 1] and argv[first] in plugins.COMMANDS:
+        return plugins.COMMANDS[argv[first]][1](argv[first + 1:], project)
     # The farm's Macs are the owner's and this Mac's, and no project's.
     if argv[first:first + 1] == ["farm"]: return farm.main(argv[first + 1:])
     # The switch is the owner's and this Mac's, and reads no project.
@@ -1518,18 +1518,18 @@ def perform(argv, report):
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     # Only the remote work itself reports its admission. Provisioning and nested commands do not.
-    device_window = extensions.DEVICES.take_window()
+    device_window = plugins.DEVICES.take_window()
     args.passed = argv[split + 1:] if split < len(argv) else None
     if args.passed is not None and (args.action, getattr(args, "operation", None)) not in {
             ("run", None), ("admit", None), ("remote", "run"), ("remote", "admit")}:
         parser.error("only run and admit take arguments after --")
     # What the project's tooling does before each command that reaches the hosts, such as offering another Mac
-    # the evidence an offload found it unreachable for (extensions.HOST_COMMAND).
+    # the evidence an offload found it unreachable for (plugins.HOST_COMMAND).
     if args.action in HOST_COMMANDS:
-        for started in extensions.HOST_COMMAND: started()
+        for started in plugins.HOST_COMMAND: started()
     root = args.project.resolve()
     # What a run that died left changed on this Mac, the next command puts back.
-    extensions.recover()
+    plugins.recover()
     # What a lane's run holds until it ends, however it ends: its directory (lane_directory).
     held = contextlib.ExitStack()
     try:
@@ -1538,12 +1538,12 @@ def perform(argv, report):
         if args.action == "disk": return disk.execute(args)
         # The import path is this Queuekeeper's, whichever project's launcher asks.
         if args.action == "python-path": return python_path(args)
-        # Such a command of an extension's too, as a keychain's Mac and its session are the host's.
-        if args.action in extensions.PARSED_COMMANDS and not extensions.PARSED_COMMANDS[args.action][3]:
-            return extensions.PARSED_COMMANDS[args.action][2](root, args, None)
+        # Such a command of a plugin's too, as a keychain's Mac and its session are the host's.
+        if args.action in plugins.PARSED_COMMANDS and not plugins.PARSED_COMMANDS[args.action][3]:
+            return plugins.PARSED_COMMANDS[args.action][2](root, args, None)
         # A Mac's screen is the host's, not a project's.
-        if args.action == "host" and args.operation in extensions.HOST_READS:
-            return extensions.HOST_READS[args.operation][2](args)
+        if args.action == "host" and args.operation in plugins.HOST_READS:
+            return plugins.HOST_READS[args.operation][2](args)
         if args.action == "host": return host_screen(args)
         if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
         # The queue reads a project's settings from its commits, and never from this working tree,
@@ -1555,12 +1555,12 @@ def perform(argv, report):
             return remote.prune_results_main(args.checkout or root, args.dry_run)
         config = working_configuration(root)
         if args.action in {"run", "admit"} or (args.action == "remote" and args.operation in {"run", "admit"}):
-            for check in extensions.BEFORE_LANE: check(root, config)
-        if args.action in extensions.PARSED_COMMANDS: return extensions.PARSED_COMMANDS[args.action][2](root, args, config)
+            for check in plugins.BEFORE_LANE: check(root, config)
+        if args.action in plugins.PARSED_COMMANDS: return plugins.PARSED_COMMANDS[args.action][2](root, args, config)
         if args.action == "doctor" and args.hooks: return hooks_path(root, config)
         if args.action == "doctor":
             required = {"git", "python3"}
-            for needed in extensions.REQUIRED_COMMANDS: required |= set(needed(config))
+            for needed in plugins.REQUIRED_COMMANDS: required |= set(needed(config))
             missing = sorted(name for name in required if not shutil.which(name))
             # The Queuekeeper this ran, when it is a main checkout off main (#184).
             warnings = [off_main] if (off_main := git_state.off_main(TOOLKIT_ROOT)) else []
@@ -1577,6 +1577,7 @@ def perform(argv, report):
                                 "what a commit must pass before it lands gate")
             # A project still on queue.docsOnly or queue.carryOver, which queue.unread replaces.
             if legacy_unread_warning(config): warnings.append(legacy_unread_warning(config))
+            if old_plugins_warning(config): warnings.append(old_plugins_warning(config))
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
             warnings += split_warnings(root, config)
@@ -1592,9 +1593,9 @@ def perform(argv, report):
             if trial.active(): warnings.append(f"{trial.refusal('the fixes')}; its state is under {trial.folder()}")
             # Each lane no Mac of the farm takes by its own settings: its labels or its kind (vocaro/queuekeeper#224).
             warnings += remote.unplaceable_lanes(config)
-            for check in extensions.DOCTOR: warnings += check(root, config)
+            for check in plugins.DOCTOR: warnings += check(root, config)
             errors = []
-            for check in extensions.DOCTOR_CHECKS:
+            for check in plugins.DOCTOR_CHECKS:
                 found, said = check(root, config)
                 errors += found
                 warnings += said
@@ -1611,7 +1612,7 @@ def perform(argv, report):
             affected = lane_coverage.affected_paths(root, config)  # warnings only: an uncovered file gates everything
             warnings += lane_coverage.affected_warnings(affected)
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
-                "source": source_identity(TOOLKIT_ROOT), "extensions": list(extensions.LOADED),
+                "source": source_identity(TOOLKIT_ROOT), "plugins": list(plugins.LOADED),
                 "missingCommands": missing, "errors": errors, "warnings": warnings,
                 "notes": list(dict.fromkeys(note for hosts in compared for note in remote.python_crash_notes(hosts))),
                 "testLanes": test_lanes, **({"affectedPaths": affected} if affected else {}), "farm": compared},
@@ -1667,14 +1668,14 @@ def perform(argv, report):
             # workstation, only the session holding mac-foreground within the owner's window runs it, with --here;
             # otherwise it goes to a Mac of the farm that takes foreground work and waits there for its foreground,
             # never falling back to this Mac (foreground.py).
-            second = lane.get("foreground") and extensions.FOREGROUND.foreground_mac()
+            second = lane.get("foreground") and plugins.FOREGROUND.foreground_mac()
             # What keeps the lane from another Mac under this run's pin set, or None (--sibling).
             unsent = unsendable(args.lane)
             if lane.get("foreground") and not second:
                 if args.offload_only or not (args.here or lane.get("here")):
                     if unsent: raise ValueError(f"{args.lane} not run: it runs on another Mac, and {unsent}")
                     return remote.foreground_lane(root, config, args.lane, extra, args.expect)
-                extensions.FOREGROUND.require_foreground()
+                plugins.FOREGROUND.require_foreground()
             group = report.group = lane.get("parallel")
             if group is not None and (extra or args.expect):
                 raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
@@ -1682,12 +1683,12 @@ def perform(argv, report):
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
             # Why the lane runs only here, as its configuration says, or None: it goes to another Mac.
             reason = stays(config["lanes"], args.lane)
-            # Or why it runs only on another Mac, as a key an extension added says. It waits there for its
+            # Or why it runs only on another Mac, as a key a plugin added says. It waits there for its
             # admission and never falls back to this Mac, where its result would not be the one asked for.
-            placed = extensions.placement(config["lanes"], args.lane) if reason is None else None
+            placed = plugins.placement(config["lanes"], args.lane) if reason is None else None
             # The farm's Macs that may run it, when a key says only some may: it is offered to no other.
             only = remote.eligible(placed[0]) if placed else None
-            if placed and extensions.HERE not in placed[0]:
+            if placed and plugins.HERE not in placed[0]:
                 if args.here or args.serial or os.environ.get(resources.TOKEN):
                     raise ValueError(f"{args.lane} runs only on another Mac of the farm ({placed[1]}), so it cannot run here"
                                      + (" with --here" if args.here else ""))
@@ -1761,12 +1762,12 @@ def perform(argv, report):
             # when it ends unmeasured (vocaro-engineering#185). A nested lane rechecks its own requirement:
             # the outer admission may not have placed work for an unlocked screen (#366).
             needs = unlocked_screen(config["lanes"], args.lane)
-            reads_screen = needs or any(extensions.reads_screen(config["lanes"][name]) for name in (group or [args.lane]))
+            reads_screen = needs or any(plugins.reads_screen(config["lanes"][name]) for name in (group or [args.lane]))
             policy_commit = refresh_policy(root) if resource != "self" else None
             directory = lane_directory(held, root, args.lane)
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit, **placement(reason)}
-            # The commit of each folder beside the project that this run loads its extensions from (pins).
+            # The commit of each folder beside the project that this run loads its plugins from (pins).
             if pins.held(): receipt["siblings"] = pins.recorded(pins.held())
             # A run of the whole lane, which a pass of counts for its commit once kept (concluded).
             whole = not extra and args.expect is None and not args.serial
@@ -1790,18 +1791,18 @@ def perform(argv, report):
                 counts = whole and not (tree != root and offered.sent["commit"] != offered.sent.get("head"))
                 remote.keep_here(root, args.lane, receipt, status, counts, results=directory / "results")
                 # A lane's output goes to its log; the Mac that sent a dispatch prints these once they are back.
-                if not os.environ.get(remote.DISPATCHER): extensions.report_results(directory / "results")
+                if not os.environ.get(remote.DISPATCHER): plugins.report_results(directory / "results")
             def prepared(work):
                 # What an earlier run left in results/ is not this run's, here as on another Mac (remote.RESULTS).
                 # The lane finds the directory in QUEUEKEEPER_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 report.ran_here(directory)
                 if resource != "self":
-                    for prepare in extensions.PREPARE_LANE: prepare(tree, config)
+                    for prepare in plugins.PREPARE_LANE: prepare(tree, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else \
                     [lane["command"], *([lane["compileFirst"]] if "compileFirst" in lane else [])]
                 try:
-                    with resources.child_requests(), extensions.around_run(commands, tree): return work()
+                    with resources.child_requests(), plugins.around_run(commands, tree): return work()
                 finally:
                     # Nested in another lane, its results go into that lane's too, however it ended (#218).
                     parallel.hand_up(directory / "results", args.lane)
@@ -1859,7 +1860,7 @@ def perform(argv, report):
             try:
                 with processes.forwarding_signals():
                     if resource == "self":
-                        if device_window is not None: extensions.DEVICES.report_window(device_window, 0)
+                        if device_window is not None: plugins.DEVICES.report_window(device_window, 0)
                         scroll_bars_recorded(receipt, args.lane, inherited)
                         unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited)
                         if unprovisioned is not None: return unprovisioned
@@ -1874,22 +1875,22 @@ def perform(argv, report):
                             # The window the session holds the lane's devices for, here or leased by the Mac that
                             # sent it. Arguments such as a filter make a run no earlier one measures.
                             device_window = device_window if device_window is not None else \
-                                extensions.DEVICES.held_window(keys)
-                            waiting = extensions.DEVICES.window_wait(args.lane, device_window,
+                                plugins.DEVICES.held_window(keys)
+                            waiting = plugins.DEVICES.window_wait(args.lane, device_window,
                                                   lane_label(root, config, args.lane) if whole else None,
                                                   keys=keys or None,
                                                   budget=(lane.get("deviceRunMinutes", 0) * 60 or None) if whole else None,
                                                   fallback=limit if whole and keys else None)
                             allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
-                            closed = extensions.DEVICES.window_closed(args.lane, waiting)
+                            closed = plugins.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
                             # Another Mac's foreground first, so that a run waiting for it holds no slot.
-                            waited = extensions.FOREGROUND.foreground_held(stack, args.lane, lane_label(root, config, args.lane),
+                            waited = plugins.FOREGROUND.foreground_held(stack, args.lane, lane_label(root, config, args.lane),
                                                      allowed(remote.OVERFLOW_TIMEOUT),
                                                      expected=lane.get("timeout"),
                                                      again=f"qk run {args.lane}") if second else None
-                            if waited is not None: return extensions.DEVICES.not_admitted(args.lane, waiting, waited)
-                            closed = extensions.DEVICES.window_closed(args.lane, waiting)
+                            if waited is not None: return plugins.DEVICES.not_admitted(args.lane, waiting, waited)
+                            closed = plugins.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
                                                       allowed(remote.OVERFLOW_TIMEOUT), offered, args.if_free,
@@ -1899,23 +1900,23 @@ def perform(argv, report):
                                                       admission_placement(offered, reason),
                                                       (disk.DATA_VOLUME, str(root)) if fills_disk(lane, resource)
                                                       and not os.environ.get(resources.TOKEN) else None)
-                            if isinstance(admission, int): return extensions.DEVICES.not_admitted(args.lane, waiting, admission)
+                            if isinstance(admission, int): return plugins.DEVICES.not_admitted(args.lane, waiting, admission)
                             tree = admitted_tree(stack, root, args.lane, offered, receipt)
                             if isinstance(tree, int): return tree
                             # The wait in the queue, apart from what came before it (remote.execute).
                             receipt["queueSeconds"] = round(time.monotonic() - asked, 3)
-                            if device_window is not None: extensions.DEVICES.report_window(device_window, receipt["queueSeconds"])
+                            if device_window is not None: plugins.DEVICES.report_window(device_window, receipt["queueSeconds"])
                             if offered is not None:
                                 receipt["hereBecause"] = offered.status
                                 fell_back(args.lane, offered)
                             reap_here(root, inherited)
                             scroll_bars_recorded(receipt, args.lane, inherited)
-                            alerts = extensions.FOREGROUND.guarded_alerts(stack, args.lane, receipt, lane.get("apps", ())) \
+                            alerts = plugins.FOREGROUND.guarded_alerts(stack, args.lane, receipt, lane.get("apps", ())) \
                                 if lane.get("foreground") else None
                             if isinstance(alerts, int): return alerts
-                            blocked = extensions.FOREGROUND.cleared_notifications(receipt) if second else None
+                            blocked = plugins.FOREGROUND.cleared_notifications(receipt) if second else None
                             if blocked is not None: return blocked
-                            closed = extensions.DEVICES.window_closed(args.lane, waiting)
+                            closed = plugins.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
                             if reads_screen: receipt["screen"] = screen_reading()
                             if inherited and needs and receipt["screen"]["state"] != "unlocked":
@@ -2012,11 +2013,11 @@ def perform(argv, report):
                                    receipt["project"].get("revision"))
             concluded(status, **({"unmeasured": unmeasured} if status == lane_results.UNMEASURED else {}),
                       **({"beforeTests": before} if before is not None else {}))
-            if status == 0 and whole and keys and admission is not None and extensions.DEVICES.device_lane_passed(directory / "results", keys):
+            if status == 0 and whole and keys and admission is not None and plugins.DEVICES.device_lane_passed(directory / "results", keys):
                 admission.device_lane_passed(keys)
             return status
         return 0
-    except (remote.Lost, extensions.Unavailable) as error:
+    except (remote.Lost, plugins.Unavailable) as error:
         print(f"queuekeeper: {error}", file=sys.stderr)
         report.explain(error)
         return lane_results.UNMEASURED

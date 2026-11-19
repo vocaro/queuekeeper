@@ -85,8 +85,8 @@ class Packages(unittest.TestCase):
     def test_core_runs_without_any_plugin_on_its_import_path(self):
         probe = '''import importlib.util, json
 from queuekeeper import cli, config
-assert config.EXTENSIONS == ()
-assert config.parse(json.dumps({"schemaVersion": 1, "name": "core", "extensions": [], "lanes": {}}))
+assert config.PLUGINS == ()
+assert config.parse(json.dumps({"schemaVersion": 1, "name": "core", "plugins": [], "lanes": {}}))
 for name in %r:
     assert importlib.util.find_spec(name) is None, name
 assert cli.main(["--version"]) == 0
@@ -101,8 +101,8 @@ assert cli.main(["--version"]) == 0
         for name, item in COMPONENTS.items():
             names = [name, *item["requires"]]
             paths = [ROOT / "src/python", *(ROOT / COMPONENTS[dependency]["source"] for dependency in names)]
-            probe = ("from queuekeeper import extensions; extensions.load([" + repr(name) + "]); "
-                     "assert set(extensions.LOADED) == " + repr(set(names)))
+            probe = ("from queuekeeper import plugins; plugins.load([" + repr(name) + "]); "
+                     "assert set(plugins.LOADED) == " + repr(set(names)))
             with self.subTest(component=name), tempfile.TemporaryDirectory() as directory:
                 done = subprocess.run([sys.executable, "-S", "-c", probe], cwd=directory, text=True, capture_output=True,
                                       env={**os.environ, "PYTHONPATH": os.pathsep.join(map(str, paths))},
@@ -149,7 +149,7 @@ class Controls(unittest.TestCase):
             with self.subTest(source=source): self.assertTrue(violations(source, module))
 
     def test_declared_dependencies_and_internal_relative_imports_are_allowed(self):
-        for source, module in [("from queuekeeper import extensions", "queuekeeper_apple.lane"),
+        for source, module in [("from queuekeeper import plugins", "queuekeeper_apple.lane"),
                                ("from queuekeeper_mac_desktop import reservations", "queuekeeper_apple.devices"),
                                ("from . import devices", "queuekeeper_apple.lane"),
                                ("from .. import pool", "queuekeeper_apple.simulators.child")]:

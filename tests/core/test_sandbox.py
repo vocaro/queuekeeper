@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import host_isolation  # noqa: F401 (keeps the tests off the real hosts)
-from queuekeeper import cli, config, extensions, lane_results, sandbox
+from queuekeeper import cli, config, plugins, lane_results, sandbox
 
 SCHEMA = Path(__file__).resolve().parents[2] / "schemas/queuekeeper.schema.json"
 
@@ -43,8 +43,8 @@ class Settings(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unit.sandbox needs an admitted lane"):
             parsed(command=["true"], sandbox=True, resource="self")
 
-    def test_an_extension_refuses_it_for_the_lanes_it_knows_cannot_run_in_one(self):
-        with patch.object(extensions, "SANDBOX_REFUSALS", [lambda lane: "it runs xcodebuild" if "xcodebuild" in lane["command"] else None]):
+    def test_a_plugin_refuses_it_for_the_lanes_it_knows_cannot_run_in_one(self):
+        with patch.object(plugins, "SANDBOX_REFUSALS", [lambda lane: "it runs xcodebuild" if "xcodebuild" in lane["command"] else None]):
             parsed(command=["make"], sandbox=True)
             with self.assertRaisesRegex(ValueError, "unit.sandbox cannot be: it runs xcodebuild"):
                 parsed(command=["xcodebuild", "test"], sandbox=True)

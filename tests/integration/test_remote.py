@@ -34,7 +34,7 @@ from queuekeeper.checkout import source_paths
 from queuekeeper import budgets, cli, config, farm, lane_report, lane_results, merge_queue, offload_host, processes, remote, resources
 from queuekeeper_apple import device_notifications, disk as apple_disk, doctor as apple_doctor
 from queuekeeper_mobile import devices, leases
-from queuekeeper import disk as disk_module, extensions
+from queuekeeper import disk as disk_module, plugins
 from queuekeeper import waiting
 import host_isolation
 from host_isolation import stretched
@@ -652,7 +652,7 @@ class RemoteTests(unittest.TestCase):
                 "print([line for line in fill.splitlines() if line.startswith('username=')])"]},
         }
         (self.project / "queuekeeper.json").write_text(json.dumps(
-            {"schemaVersion": 1, "name": "Example", "extensions": ["queuekeeper_apple"], "lanes": lanes}, indent=2))
+            {"schemaVersion": 1, "name": "Example", "plugins": ["queuekeeper_apple"], "lanes": lanes}, indent=2))
         (self.project / ".gitignore").write_text(".build/\n")
         # A directory of the checkout's own, for a command that runs in one.
         (self.project / "pkg").mkdir()
@@ -719,7 +719,7 @@ class RemoteTests(unittest.TestCase):
         shutil.copyfile(config.TOOLKIT_ROOT / "queuekeeper-workspace.json", root / "queuekeeper-workspace.json")
         # Its .gitignore keeps out the bytecode that running it writes beside its source.
         shutil.copyfile(config.TOOLKIT_ROOT / ".gitignore", root / ".gitignore")
-        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "vocaro-engineering", "extensions": ["queuekeeper_apple"]}))
+        (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "vocaro-engineering", "plugins": ["queuekeeper_apple"]}))
         subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
         # The fixture can be removed as soon as its first commit returns. A detached repack can race that cleanup.
         git(root, "config", "maintenance.auto", "false")
@@ -2991,7 +2991,7 @@ class RemoteTests(unittest.TestCase):
         # unlocked screens, so the check is for that line.
         self.assertNotIn("for this run's session", output + error)
         # A kept password for a login keychain this second Mac does not have: the run does not start. The desktop
-        # extension unlocks before the first lane there, the provision lane, whose output says why and how to fix it.
+        # plugin unlocks before the first lane there, the provision lane, whose output says why and how to fix it.
         kept = self.home / remote.ROOT / offload_host.KEYCHAIN_PASSWORD
         kept.write_text("not a real password\n")
         status, output, error = self.qk("remote", "admit", "--", sys.executable, "-c", "print('the work ran')")
@@ -3261,10 +3261,10 @@ class RemoteTests(unittest.TestCase):
 
     def test_what_a_lane_writes_in_its_results_comes_back_from_the_farm_mac(self):
         results = self.project / ".build/queuekeeper/remote/transcripts"
-        with patch.object(remote.extensions, "report_results") as reported:
+        with patch.object(remote.plugins, "report_results") as reported:
             status, output, error = self.qk("remote", "run", "transcripts")
         self.assertEqual(status, 0, output + error)
-        # An extension reports this dispatch's own results, not the latest, which a run beside it may have replaced
+        # A plugin reports this dispatch's own results, not the latest, which a run beside it may have replaced
         # (vocaro/queuekeeper#9).
         [(reading,)] = [call.args for call in reported.call_args_list]
         self.assertEqual(reading.parent.parent.parent.resolve(), (results.parent / remote.DISPATCHES).resolve())
@@ -5504,7 +5504,7 @@ exec {shlex.quote(real)} "$@"
         for case, lanes in invalid.items():
             with self.subTest(case):
                 (self.project / "queuekeeper.json").write_text(json.dumps(
-                    {"schemaVersion": 1, "name": "Example", "extensions": ["queuekeeper_apple"], "lanes": lanes}))
+                    {"schemaVersion": 1, "name": "Example", "plugins": ["queuekeeper_apple"], "lanes": lanes}))
                 with self.assertRaises(ValueError): config.load(self.project)
         # The positive controls: a lane, and a group, that say why, a group that runs such a lane, and a
         # lane that says nothing, which goes to another Mac.
@@ -5513,7 +5513,7 @@ exec {shlex.quote(real)} "$@"
         lanes = {"goldens": goldens, "other": heavy,
                  "group": {"parallel": ["goldens", "other"], "resource": "heavy"},
                  "own": {"parallel": ["other"], "resource": "heavy", "here": "a measurement tied to this Mac"}}
-        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": ["queuekeeper_apple"], "lanes": lanes}))
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "plugins": ["queuekeeper_apple"], "lanes": lanes}))
         loaded = config.load(self.project)["lanes"]
         self.assertEqual([config.stays(loaded, name) for name in lanes],
                          ["the lane says: its goldens come from this Mac's GPU", None,
@@ -5825,27 +5825,27 @@ exec {shlex.quote(real)} "$@"
             status, output, error = self.admit_in(self.project, "--", *probe)
         self.assertEqual((status, self.ran_in()), (0, self.checkout(0).resolve()), output + error)
 
-    def test_admit_runs_its_command_with_what_the_extensions_add_on_the_mac_that_runs_it(self):
-        # A project's extension names, for every command, a folder of its own checkout, as the toolkit's hooks name
+    def test_admit_runs_its_command_with_what_the_plugins_add_on_the_mac_that_runs_it(self):
+        # A project's plugin names, for every command, a folder of its own checkout, as the toolkit's hooks name
         # its Swift package for XcodeGen (vocaro/queuekeeper#97). Each Mac sets it from its own checkout of the
-        # extension, whatever the calling shell set, so a sender's path never reaches another Mac.
-        hooks = "\n".join(["import pathlib", "from queuekeeper import extensions",
+        # plugin, whatever the calling shell set, so a sender's path never reaches another Mac.
+        hooks = "\n".join(["import pathlib", "from queuekeeper import plugins",
                            "def added(): return {'EXAMPLE_KIT_ROOT': str(pathlib.Path(__file__).resolve().parents[3])}",
-                           "def register(): extensions.COMMAND_ENVIRONMENT.append(added)", ""])
+                           "def register(): plugins.COMMAND_ENVIRONMENT.append(added)", ""])
         here, there = Path(self.temp.name) / "kit", self.home / "Development/kit"
         for kit in (here, there):
             (kit / "src/python/examplekit").mkdir(parents=True)
             (kit / "src/python/examplekit/__init__.py").write_text("")
             (kit / "src/python/examplekit/hooks.py").write_text(hooks)
         settings = json.loads((self.project / "queuekeeper.json").read_text())
-        settings["extensions"] = [{"module": "examplekit.hooks", "path": "../kit/src/python"}]
+        settings["plugins"] = [{"module": "examplekit.hooks", "path": "../kit/src/python"}]
         (self.project / "queuekeeper.json").write_text(json.dumps(settings))
         commit_all(self.project)
-        before, paths = list(extensions.COMMAND_ENVIRONMENT), list(sys.path)
+        before, paths = list(plugins.COMMAND_ENVIRONMENT), list(sys.path)
 
         def restore():
-            extensions.COMMAND_ENVIRONMENT[:] = before
-            extensions.LOADED[:] = [name for name in extensions.LOADED if name != "examplekit.hooks"]
+            plugins.COMMAND_ENVIRONMENT[:] = before
+            plugins.LOADED[:] = [name for name in plugins.LOADED if name != "examplekit.hooks"]
             sys.path[:] = paths
             for name in [name for name in sys.modules if name.split(".")[0] == "examplekit"]: del sys.modules[name]
         self.addCleanup(restore)
@@ -7023,25 +7023,25 @@ class RemoteSetupTests(unittest.TestCase):
         self.assertIn("MISSING Xcode 99.0 Build version 99A1 at /Applications/Xcode.app/Contents/Developer, "
                       "as on this Mac (found ", output)
 
-    def test_an_extension_folder_the_farm_mac_lacks_is_named_with_its_clone_and_left_to_the_owner(self):
-        # #117: setup checks another Mac's own checkout of each folder an extension loads from, and clones nothing.
+    def test_a_plugin_folder_the_farm_mac_lacks_is_named_with_its_clone_and_left_to_the_owner(self):
+        # #117: setup checks another Mac's own checkout of each folder a plugin loads from, and clones nothing.
         self.install_homebrew()
         (self.home / ".zprofile").write_text(f'eval "$({self.brew} shellenv)"\n')
-        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": [
-            {"module": "kit.extension", "path": "../kit/src"}, {"module": "tools.extension", "path": "../tools"}]}))
+        (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "plugins": [
+            {"module": "kit.plugin", "path": "../kit/src"}, {"module": "tools.plugin", "path": "../tools"}]}))
         url = "https://github.com/example/kit.git"
         kit = self.project.parent / "kit"
         kit.mkdir()
         git(kit, "init", "--quiet")
         git(kit, "remote", "add", "origin", url)
         (self.home / "Development/tools").mkdir(parents=True)
-        # The extensions themselves are not loaded here: only where they load from is read.
-        self.patches.append(patch.object(cli, "load_extensions"))
+        # The plugins themselves are not loaded here: only where they load from is read.
+        self.patches.append(patch.object(cli, "load_plugins"))
         self.patches[-1].start()
         status, output, error = self.qk()
         self.assertEqual(status, 1, output + error)
         self.assertIn("ok      ~/Development/tools", output)
-        self.assertIn("MISSING ~/Development/kit, the checkout the project's extension loads from there, which "
+        self.assertIn("MISSING ~/Development/kit, the checkout the project's plugin loads from there, which "
                       f"queuekeeper does not create: make it there with git clone {url} ~/Development/kit", output)
         self.assertIn("fake is not ready", output)
         self.assertFalse((self.home / "Development/kit").exists())
@@ -7196,7 +7196,7 @@ class FarmMacDoctorTests(unittest.TestCase):
                          found)
         self.assertEqual(git(checkout, "rev-parse", "HEAD"), tip)
         self.assertIsNone(missing)
-        # On the same connection, which folder an extension loads from it has no checkout of (#117).
+        # On the same connection, which folder a plugin loads from it has no checkout of (#117).
         (self.home / "Development/kit").mkdir(parents=True)
         found, missing = remote.update_there("fake", ["kit", "absent"])
         self.assertEqual((found["state"], missing), ("current", ["absent"]), found)
@@ -8030,18 +8030,18 @@ class DoctorFixTests(unittest.TestCase):
         fixed, _, _, _, _, _ = self.fix(first(), update={"state": "unchecked", "reason": "fake did not answer"})
         self.assertEqual(fixed["errors"], [])
         self.assertEqual(fixed["unchecked"], ["fake's own toolkit checkout, which it did not report: fake did not answer"])
-        # A project that lists no extension folder asks after none.
+        # A project that lists no plugin folder asks after none.
         self.assertEqual(self.siblings, [[]])
 
-    def test_an_extension_folder_the_farm_mac_has_no_checkout_of_is_an_error_naming_the_clone(self):
-        # As on 2026-11-13 (#117): extensions load from ../apple-engineering, which another Mac lacked.
+    def test_a_plugin_folder_the_farm_mac_has_no_checkout_of_is_an_error_naming_the_clone(self):
+        # As on 2026-11-13 (#117): plugins load from ../apple-engineering, which another Mac lacked.
         base = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, base, True)
         project, kit, other = base / "Example", base / "apple-engineering", base / "local-only"
         project.mkdir()
-        (project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": [
-            {"module": "apple_engineering.queuekeeper_extension", "path": "../apple-engineering/src/python"},
-            {"module": "local_only.extension", "path": "../local-only/src"}]}))
+        (project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "plugins": [
+            {"module": "apple_engineering.queuekeeper_plugin", "path": "../apple-engineering/src/python"},
+            {"module": "local_only.plugin", "path": "../local-only/src"}]}))
         url = "https://github.com/example/apple-engineering.git"
         for checkout, origin in [(kit, url), (other, str(base / "elsewhere"))]:
             checkout.mkdir()
@@ -8070,7 +8070,7 @@ class DoctorFixTests(unittest.TestCase):
                 self.assertEqual((fixed["errors"], self.updates), ([], []))
                 self.assertEqual(fixed["unchecked"], [
                     "whether another Mac has its own checkout of apple-engineering, local-only, beside the "
-                    f"project's checkout for its extensions to load from, which was not asked since {why}"])
+                    f"project's checkout for its plugins to load from, which was not asked since {why}"])
 
     def test_every_test_gets_a_doctor_that_changes_neither_mac(self):
         self.assertIsNot(cli.fix_hosts, host_isolation.FIX_HOSTS)

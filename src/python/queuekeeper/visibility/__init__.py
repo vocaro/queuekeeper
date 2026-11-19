@@ -4,8 +4,8 @@ A feature shows the queue to its owner in some way other than the command line a
 web page. Each is a module or package of its own in this one, found by its name, so adding one changes no other
 file. A feature:
 
-  - has a `register()`, which the command calls only while the feature is on (extensions.load), and which adds
-    the feature's commands to the core as an extension does;
+  - has a `register()`, which the command calls only while the feature is on (plugins.load), and which adds
+    the feature's commands to the core as a plugin does;
   - reads the queue only through its journal (events) and its snapshot (merge_queue.snapshot);
   - imports the core, and never another feature. The core imports none of them
     (tests/architecture/test_queuekeeper_imports.py).
@@ -22,7 +22,7 @@ import os
 from importlib.metadata import entry_points
 import sys
 
-from .. import extensions, resources
+from .. import plugins, resources
 
 FILE, SWITCH, OFF = "visibility.json", "QUEUEKEEPER_VISIBILITY", "off"
 
@@ -104,7 +104,7 @@ def load(say=lambda words: print(words, file=sys.stderr)):
     """Register each feature that is on. One that cannot be imported or registered is said and left out: a broken
     feature costs its owner that feature, and never the command."""
     for name in enabled():
-        try: extensions.load([available()[name]])
+        try: plugins.load([available()[name]])
         except Exception as error:  # noqa: BLE001
             say(f"queuekeeper: the visibility feature {name} did not load, and is left out: {error}; "
                 f"`qk visibility disable {name}` turns it off")

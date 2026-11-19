@@ -1,4 +1,4 @@
-"""The Unity extension's disk items for `qk disk`: the folders the editor generates in each checkout of a
+"""The Unity plugin's disk items for `qk disk`: the folders the editor generates in each checkout of a
 Unity project. Library/ is the import cache, several GB a worktree, which the editor rebuilds on its next open,
 taking minutes; Temp/ and Logs/ are small. The core lists and removes them with its own (queuekeeper.disk)."""
 import json
@@ -16,12 +16,14 @@ MODULE = __package__
 
 
 def unity_project(checkout):
-    """Where the Unity project is in a checkout whose queuekeeper.json switches this extension on, as a path
+    """Where the Unity project is in a checkout whose queuekeeper.json switches this plugin on, as a path
     relative to it; None for any other checkout."""
     try: found = json.loads((Path(checkout) / configuration.FILE).read_text())
     except (OSError, ValueError): return None
     if not isinstance(found, dict): return None
-    listed = [entry.get("module") if isinstance(entry, dict) else entry for entry in found.get("extensions") or []]
+    try: declared = configuration.listed_plugins(found) or []
+    except ValueError: return None
+    listed = [entry.get("module") if isinstance(entry, dict) else entry for entry in declared]
     if MODULE not in listed: return None
     try: settings.check(found.get(settings.KEY, {}))
     except ValueError: return None
@@ -41,7 +43,7 @@ def projects(host):
 
 
 def items(host, usage, sizes, wanted):
-    """The extension's items of the categories in wanted."""
+    """The plugin's items of the categories in wanted."""
     if CATEGORY not in wanted: return []
     found = []
     for project in projects(host):

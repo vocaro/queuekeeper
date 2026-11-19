@@ -1,13 +1,13 @@
-"""Queuekeeper's Android extension: an emulator pool, a runner that builds instrumented tests once and runs them on
+"""Queuekeeper's Android plugin: an emulator pool, a runner that builds instrumented tests once and runs them on
 several emulators side by side, and the Android phones and tablets the shared device record reserves. It builds on
-the mobile extension, which holds the device record, bounded runs and the device pass for every platform, and on the
-Mac desktop extension beneath it. It imports the core; the core never imports it."""
-# The extensions this one builds on, which load first (queuekeeper.extensions.load).
+the mobile plugin, which holds the device record, bounded runs and the device pass for every platform, and on the
+Mac desktop plugin beneath it. It imports the core; the core never imports it."""
+# The plugins this one builds on, which load first (queuekeeper.plugins.load).
 REQUIRES = ("queuekeeper_mac_desktop", "queuekeeper_mobile")
 
 
 def register():
-    """Add the extension to the core (queuekeeper.extensions.load)."""
+    """Add the plugin to the core (queuekeeper.plugins.load)."""
     from . import doctor, lane, settings
     settings.register()
     doctor.register()

@@ -1,15 +1,15 @@
-"""Queuekeeper's Apple extension: simulator pools, device reservations and the iOS test runners. It builds on the
-Mac desktop extension, which guards an unattended Mac's session. It imports the core; the core never imports it."""
-# The extensions this one builds on, which load first (queuekeeper.extensions.load).
+"""Queuekeeper's Apple plugin: simulator pools, device reservations and the iOS test runners. It builds on the
+Mac desktop plugin, which guards an unattended Mac's session. It imports the core; the core never imports it."""
+# The plugins this one builds on, which load first (queuekeeper.plugins.load).
 REQUIRES = ("queuekeeper_mac_desktop", "queuekeeper_mobile")
 
 
 def register():
-    """Add the extension to the core (queuekeeper.extensions.load)."""
+    """Add the plugin to the core (queuekeeper.plugins.load)."""
     from . import disk, doctor, lane, settings, shims
-    from queuekeeper import extensions
-    if shims.environment not in extensions.COMMAND_WRAPPERS:
-        extensions.COMMAND_WRAPPERS.append(shims.environment)
+    from queuekeeper import plugins
+    if shims.environment not in plugins.COMMAND_WRAPPERS:
+        plugins.COMMAND_WRAPPERS.append(shims.environment)
     settings.register()
     disk.register()
     doctor.register()

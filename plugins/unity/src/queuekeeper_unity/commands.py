@@ -22,7 +22,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
-from queuekeeper import config as configuration, extensions
+from queuekeeper import config as configuration, plugins
 from queuekeeper.lane_results import UNMEASURED
 from queuekeeper.parallel import RESULTS_VARIABLE
 from . import batch, editor, host, licensing, project as projects, results as results_kept, settings
@@ -352,8 +352,8 @@ def main(arguments, project=None):
 def register():
     """Add the command to the core."""
     # The batch run is heavy work, so one started outside an admission is admitted first (cli.bare_runner).
-    extensions.RUNNERS.add(("unity", "test"))
-    extensions.COMMANDS["unity"] = (
+    plugins.RUNNERS.add(("unity", "test"))
+    plugins.COMMANDS["unity"] = (
         "run a Unity project's editor unattended: qk unity test runs its tests in a batch editor, qk "
         "unity closed -- COMMAND runs COMMAND with its editor closed and opens it again, and qk unity open "
         "opens a linked worktree's editor once; -h for the rest", main)

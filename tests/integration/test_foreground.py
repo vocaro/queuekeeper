@@ -205,7 +205,7 @@ class SlotTests(unittest.TestCase):
         self.assertNotEqual(entry["state"], "released")
         self.assertIn("queuekeeper: foreground retained: a guard's restoration or owned-process state is unverified", self.said)
 
-    def test_the_apple_extension_s_guard_keeps_voiceover_s_state(self):
+    def test_the_apple_plugin_s_guard_keeps_voiceover_s_state(self):
         from queuekeeper_apple import lane
         self.assertIn(lane.preserved_voiceover, foreground.GUARDS)
 
@@ -796,7 +796,7 @@ class DeadlineTests(unittest.TestCase):
         with patch.object(foreground, "time", clock), patch.object(foreground, "datetime", clock.datetime), \
                 patch.object(foreground, "problems", return_value=[]), contextlib.ExitStack() as stack, \
                 contextlib.redirect_stderr(StringIO()) as error:
-            status = cli.extensions.FOREGROUND.foreground_held(stack, "voiceover-mac", "Project voiceover-mac",
+            status = cli.plugins.FOREGROUND.foreground_held(stack, "voiceover-mac", "Project voiceover-mac",
                                                                self.TIMEOUT, again="qk run voiceover-mac")
         # The status a waiter that ran out of time ends with: 75, nothing ran, no verdict for the queue.
         self.assertEqual(status, resources.BUSY)

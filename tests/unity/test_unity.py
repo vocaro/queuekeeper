@@ -1,4 +1,4 @@
-"""The Unity extension: the editor a project pins, its lock, the licensing helper, a batch run that goes silent, and
+"""The Unity plugin: the editor a project pins, its lock, the licensing helper, a batch run that goes silent, and
 the `qk unity` commands (vocaro/queuekeeper#6). No test starts, closes or signals a Unity process: the
 process list and the launch are stand-ins."""
 import contextlib
@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import host_isolation  # first, as every test module
 
-from queuekeeper import config; from queuekeeper import disk; from queuekeeper import extensions; import queuekeeper_unity as unity
+from queuekeeper import config; from queuekeeper import disk; from queuekeeper import plugins; import queuekeeper_unity as unity
 from queuekeeper.lane_results import UNMEASURED, executed_tests
 from queuekeeper_unity import batch, commands, disk as unity_disk, doctor, editor, host, lane, licensing, project, \
     results, settings, unity_cli
@@ -227,7 +227,7 @@ class BatchTests(Folder):
 
 
 class SettingsTests(unittest.TestCase):
-    BASE = {"schemaVersion": 1, "name": "Project", "extensions": ["queuekeeper_unity"]}
+    BASE = {"schemaVersion": 1, "name": "Project", "plugins": ["queuekeeper_unity"]}
 
     def parse(self, **changes):
         return config.parse(json.dumps({**self.BASE, **changes}))
@@ -244,14 +244,14 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "unity"):
                 self.parse(unity=value)
 
-    def test_the_key_without_the_extension_is_refused_naming_it(self):
-        with patch.dict(extensions.CONFIG_KEYS, {}, clear=True), patch.object(extensions, "LOADED", ["queuekeeper_unity"]), \
-                self.assertRaisesRegex(ValueError, "unity is the queuekeeper_unity extension's key"):
-            self.parse(extensions=[], unity={"project": "lab"})
+    def test_the_key_without_the_plugin_is_refused_naming_it(self):
+        with patch.dict(plugins.CONFIG_KEYS, {}, clear=True), patch.object(plugins, "LOADED", ["queuekeeper_unity"]), \
+                self.assertRaisesRegex(ValueError, "unity is the queuekeeper_unity plugin's key"):
+            self.parse(plugins=[], unity={"project": "lab"})
 
-    def test_the_extension_requires_the_desktop_extension_and_adds_its_command(self):
+    def test_the_plugin_requires_the_desktop_plugin_and_adds_its_command(self):
         self.assertEqual(unity.REQUIRES, ("queuekeeper_mac_desktop",))
-        self.assertIs(extensions.COMMANDS["unity"][1], commands.main)
+        self.assertIs(plugins.COMMANDS["unity"][1], commands.main)
 
     def test_the_schema_lists_the_key_s_own_keys(self):
         schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
@@ -274,7 +274,7 @@ class CommandTests(Folder):
         self.project = self.unity_project()
         self.root = self.project.parent
         (self.root / "queuekeeper.json").write_text(json.dumps({
-            "schemaVersion": 1, "name": "Project", "extensions": ["queuekeeper_unity"],
+            "schemaVersion": 1, "name": "Project", "plugins": ["queuekeeper_unity"],
             "unity": {"project": "lab", "layout": "layout.dwlt"}}))
         (self.root / "layout.dwlt").write_text("layout")
         self.binary = fake_editor(self.folder / "hub", "6000.6.0f1")
@@ -513,7 +513,7 @@ class CommandTests(Folder):
 
     def test_a_project_with_no_unity_project_where_it_says_is_told_the_key(self):
         (self.root / "queuekeeper.json").write_text(json.dumps({
-            "schemaVersion": 1, "name": "Project", "extensions": ["queuekeeper_unity"]}))
+            "schemaVersion": 1, "name": "Project", "plugins": ["queuekeeper_unity"]}))
         status, _, error = self.unity("test")
         self.assertEqual(status, 2)
         self.assertIn('"unity": {"project": "lab"}', error)
@@ -537,7 +537,7 @@ class DoctorTests(Folder):
     def test_a_project_whose_pinned_editor_both_macs_have_is_warned_of_nothing(self):
         fake_editor(self.folder / "hub", "6000.6.0f1")
         self.assertEqual(self.warnings(), [])
-        self.assertIn(doctor.warnings, extensions.DOCTOR)
+        self.assertIn(doctor.warnings, plugins.DOCTOR)
 
     def test_a_mac_without_the_pinned_editor_is_named(self):
         fake_editor(self.folder / "hub", "6000.6.1f1")
@@ -581,7 +581,7 @@ class DiskTests(Folder):
         self.lab = self.checkout(self.main)
         subprocess.run(["git", "init", "-q", "-b", "main", str(self.main)], check=True)
         (self.main / "queuekeeper.json").write_text(json.dumps({
-            "schemaVersion": 1, "name": "Game", "extensions": ["queuekeeper_unity"], "unity": {"project": "lab"}}))
+            "schemaVersion": 1, "name": "Game", "plugins": ["queuekeeper_unity"], "unity": {"project": "lab"}}))
 
     def checkout(self, root):
         lab = root / "lab"
@@ -620,7 +620,7 @@ class DiskTests(Folder):
         self.assertEqual(found[str(self.lab / "Library")].status, disk.KEPT)
         self.assertEqual(found[str(self.lab / "Temp")].status, disk.CANDIDATE)
 
-    def test_a_project_that_does_not_switch_the_extension_on_lists_nothing(self):
+    def test_a_project_that_does_not_switch_the_plugin_on_lists_nothing(self):
         (self.main / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Game"}))
         self.assertEqual(self.items(), {})
         self.assertEqual(unity_disk.items(None, None, None, {"simulator"}), [])
@@ -632,26 +632,26 @@ class LaneKeyTests(unittest.TestCase):
 
     def parse(self, value=True, listed=("queuekeeper_unity",)):
         lanes = {"gate": {"command": ["./check.sh"], "resource": "heavy", "unity": value}}
-        return config.parse(json.dumps({**self.BASE, "extensions": list(listed), "lanes": lanes}))["lanes"]["gate"]
+        return config.parse(json.dumps({**self.BASE, "plugins": list(listed), "lanes": lanes}))["lanes"]["gate"]
 
     def test_a_lane_that_says_unity_runs_under_the_readiness_check_and_no_other_does(self):
         gate = self.parse()
-        wrapped = extensions.lane_command(gate, gate["command"])
+        wrapped = plugins.lane_command(gate, gate["command"])
         self.assertEqual(wrapped[1:], [str(config.TOOLKIT_ROOT / "bin/qk"), "unity", "ready", "--", "./check.sh"])
         self.assertTrue((config.TOOLKIT_ROOT / "bin/qk").exists())
         self.assertEqual(lane.UnityLane().command({"unity": False}, ["./check.sh"]), ["./check.sh"])
-        self.assertEqual(extensions.lane_command({}, ["./check.sh"]), ["./check.sh"])
-        self.assertFalse(extensions.reads_screen(gate))
+        self.assertEqual(plugins.lane_command({}, ["./check.sh"]), ["./check.sh"])
+        self.assertFalse(plugins.reads_screen(gate))
 
     def test_an_exclusive_lane_is_also_checked_for_an_editor_in_play_mode(self):
         measured = {"command": ["./measure.sh"], "resource": "exclusive", "unity": True}
-        self.assertEqual(extensions.lane_command(measured, measured["command"])[2:],
+        self.assertEqual(plugins.lane_command(measured, measured["command"])[2:],
                          ["unity", "ready", "--exclusive", "--", "./measure.sh"])
 
-    def test_the_key_takes_true_or_false_and_is_refused_by_name_without_the_extension(self):
+    def test_the_key_takes_true_or_false_and_is_refused_by_name_without_the_plugin(self):
         with self.assertRaisesRegex(ValueError, "gate.unity must be true or false"): self.parse("yes")
-        with patch.dict(extensions.LANE_KEYS, {}, clear=True), patch.object(extensions, "LOADED", ["queuekeeper_unity"]), \
-                self.assertRaisesRegex(ValueError, "gate.unity is the queuekeeper_unity extension's key"):
+        with patch.dict(plugins.LANE_KEYS, {}, clear=True), patch.object(plugins, "LOADED", ["queuekeeper_unity"]), \
+                self.assertRaisesRegex(ValueError, "gate.unity is the queuekeeper_unity plugin's key"):
             self.parse(listed=())
 
 
@@ -702,7 +702,7 @@ class HostReadTests(Folder):
         def denied(): raise project.Unreadable("cannot inspect processes")
         status, lines = self.read(denied)
         self.assertEqual((status, lines), (2, ["queuekeeper: cannot inspect processes"]))
-        self.assertIs(extensions.HOST_READS["editors"][2], host.read)
+        self.assertIs(plugins.HOST_READS["editors"][2], host.read)
 
 
 class UnityCliTests(Folder):
@@ -780,7 +780,7 @@ class ResultsTests(Folder):
                                 "unity: skipped no time Lab.Grid.Skips (needs a GPU)",
                                 "unity: failed 1.500s Lab.Grid.Clamps (Expected: 4)",
                                 "unity: 1 passed, 1 failed, 1 skipped"])
-        self.assertIn(results.report, extensions.REPORT_RESULTS)
+        self.assertIn(results.report, plugins.REPORT_RESULTS)
 
     def test_a_group_s_lanes_are_each_printed_and_a_file_that_cannot_be_read_is_said(self):
         self.kept("edit", TIMED)

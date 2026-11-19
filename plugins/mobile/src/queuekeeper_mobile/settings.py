@@ -1,5 +1,5 @@
 """The lane keys of the mobile plugins: the physical devices a lane's run uses and the minutes it may hold them."""
-from queuekeeper import config, extensions
+from queuekeeper import config, plugins
 
 
 def device_keys(name, lane):
@@ -28,12 +28,12 @@ def lane_devices(lane):
             or (word == "--device" and index + 1 < len(words))]
 
 
-class DeviceKeys(extensions.LaneKey):
+class DeviceKeys(plugins.LaneKey):
     def check(self, name, lane):
         device_keys(name, lane)
 
 
-class DeviceMinutes(extensions.LaneKey):
+class DeviceMinutes(plugins.LaneKey):
     def check(self, name, lane):
         minutes = lane["deviceRunMinutes"]
         if type(minutes) is not int or minutes <= 0:
@@ -43,4 +43,4 @@ class DeviceMinutes(extensions.LaneKey):
 
 
 def register():
-    extensions.LANE_KEYS.update(devices=DeviceKeys(), deviceRunMinutes=DeviceMinutes())
+    plugins.LANE_KEYS.update(devices=DeviceKeys(), deviceRunMinutes=DeviceMinutes())

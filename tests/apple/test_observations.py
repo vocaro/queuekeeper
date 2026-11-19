@@ -1,4 +1,4 @@
-"""Apple contributes bounded device observations, which the mobile extension joins to the record, without a
+"""Apple contributes bounded device observations, which the mobile plugin joins to the record, without a
 dashboard dependency."""
 import json
 import subprocess

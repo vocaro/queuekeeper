@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
+from queuekeeper import cli, events, plugins, merge_queue as mq, visibility
 import queuekeeper_notify as notify
 from queuekeeper_notify import channels, check, commands, deliver, rules
 from queuekeeper_notify.channels import banner, command, webhook
@@ -45,8 +45,8 @@ class Settings:
         self.addCleanup(environment.stop)
         os.environ.pop(visibility.SWITCH, None)
 
-    def keep_extensions(self):
-        for kept in (extensions.COMMANDS, extensions.LOADED, extensions.AFTER_EVENT, extensions.HOST_COMMAND):
+    def keep_plugins(self):
+        for kept in (plugins.COMMANDS, plugins.LOADED, plugins.AFTER_EVENT, plugins.HOST_COMMAND):
             before = kept.copy()
             self.addCleanup(lambda kept=kept, before=before: (kept.clear(), kept.update(before) if isinstance(kept, dict)
                                                               else kept.extend(before)))
@@ -472,7 +472,7 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.assertIn(f"the check of {self.repo} stopped: no queue", deliver.log_path().read_text())
 
     def test_the_command_lists_the_findings_and_exits_1_when_there_are_any(self):
-        self.keep_extensions()
+        self.keep_plugins()
         printed = io.StringIO()
         with patch("sys.stdout", printed): status = cli.main(["--project", str(self.repo), "notify", "check"])
         self.assertEqual((status, printed.getvalue()), (0, "0 finding(s), 0 told of now\n"))
@@ -485,9 +485,9 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.assertTrue(printed.getvalue().endswith("1 finding(s), 0 told of now\n"))
 
     def test_the_feature_registers_the_look_with_the_commands_that_reach_the_hosts(self):
-        self.keep_extensions()
+        self.keep_plugins()
         visibility.load()
-        self.assertIn(check.spawn, extensions.HOST_COMMAND)
+        self.assertIn(check.spawn, plugins.HOST_COMMAND)
 
 
 class EndToEnd(Settings, test_merge_queue.Fixture):
@@ -496,9 +496,9 @@ class EndToEnd(Settings, test_merge_queue.Fixture):
     def test_an_entry_that_fails_its_gate_reaches_the_owners_command(self):
         argv, kept = self.recorder(self.base)
         self.configure(command={"argv": argv})
-        self.keep_extensions()
+        self.keep_plugins()
         visibility.load()
-        self.assertIn(deliver.spawn, extensions.AFTER_EVENT)
+        self.assertIn(deliver.spawn, plugins.AFTER_EVENT)
         self.status.write_text("1")
         self.commit("a.txt", "one")
         identifier, = self.add("one")
@@ -520,7 +520,7 @@ class Command(Settings, unittest.TestCase):
         self.base = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.base, True)
         self.configure()
-        self.keep_extensions()
+        self.keep_plugins()
 
     def command(self, *words):
         printed, errors, status = io.StringIO(), io.StringIO(), None
@@ -603,7 +603,7 @@ class Command(Settings, unittest.TestCase):
 
     def test_it_is_no_command_while_the_feature_is_off(self):
         visibility.switch("notify", False)
-        extensions.COMMANDS.pop("notify", None)
+        plugins.COMMANDS.pop("notify", None)
         status, _, errors = self.command("status")
         self.assertIsNone(status)
         self.assertIn("invalid choice: 'notify'", errors)

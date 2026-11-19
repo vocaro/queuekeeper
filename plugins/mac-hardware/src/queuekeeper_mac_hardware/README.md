@@ -8,7 +8,7 @@ Switch it on in `queuekeeper.json` and give such a lane its chips:
 
 ```json
 {
-  "extensions": ["queuekeeper_mac_hardware"],
+  "plugins": ["queuekeeper_mac_hardware"],
   "lanes": {
     "gate": {"command": ["./check.sh", "--gates"], "resource": "exclusive", "chips": ["apple-m5-max"]}
   }
@@ -49,7 +49,7 @@ This prints this Mac's chip and another Mac's, as a lane writes them.
 ## How it fits the core
 
 The core knows nothing of chips. A lane key a plugin adds may say where its lane must run
-(`LaneKey.placement` in `extensions.py`): on this Mac, only on another Mac, or either. This
+(`LaneKey.placement` in `plugins.py`): on this Mac, only on another Mac, or either. This
 plugin's `chips` key answers from the Macs' chips. Another plugin can restrict a lane the same
 way for its own reason.
 

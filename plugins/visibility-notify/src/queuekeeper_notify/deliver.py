@@ -58,7 +58,7 @@ def repository_of(directory):
 
 def spawn(directory, event):
     """Start a delivery for the queue kept in directory, apart from this process, when event is one a rule that is
-    on tells of (extensions.AFTER_EVENT). It returns at once."""
+    on tells of (plugins.AFTER_EVENT). It returns at once."""
     if visibility.switched_off() or rules.rule_of(event, rules.chosen(settings())) is None: return
     start(str(directory))
 

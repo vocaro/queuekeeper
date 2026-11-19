@@ -52,38 +52,38 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cases = [{"capabilities": ["simulator-pool"]}, {"toolkit": {"path": "../kit"}}, {"simulatorPool": " Example"},
-                     {"simulatorPool": ""}, {"extensions": "queuekeeper_apple"}, {"extensions": ["not a module"]},
-                     {"extensions": [{"path": "../kit/src/python"}]}, {"extensions": [{"module": "kit.hooks", "other": 1}]}]
+                     {"simulatorPool": ""}, {"plugins": "queuekeeper_apple"}, {"plugins": ["not a module"]},
+                     {"plugins": [{"path": "../kit/src/python"}]}, {"plugins": [{"module": "kit.hooks", "other": 1}]}]
             for case in cases:
                 with self.subTest(case):
                     (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", **case}))
                     with self.assertRaises(ValueError): config.load(root)
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "simulatorPool": "Example",
-                "extensions": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
+                "plugins": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
             self.assertEqual(config.load(root)["simulatorPool"], "Example")
-            self.assertEqual(config.extensions_of(root), [("queuekeeper_apple", None),
+            self.assertEqual(config.plugins_of(root), [("queuekeeper_apple", None),
                                                           ("kit.hooks", str((root / "../kit/src/python").resolve()))])
-            # A linked worktree's extensions are found from its main checkout, and a project that names none, or a
+            # A linked worktree's plugins are found from its main checkout, and a project that names none, or a
             # folder with no project, gets the default.
-            self.assertEqual(config.extensions_of(root, root / "main")[1][1], str((root / "main/../kit/src/python").resolve()))
+            self.assertEqual(config.plugins_of(root, root / "main")[1][1], str((root / "main/../kit/src/python").resolve()))
             # A queue may follow its landings, and says so only with true.
             for value, accepted in [(True, True), (False, False), ("yes", False)]:
                 (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "lanes": {"gate": {"command": ["true"]}}, "queue": {"followLandings": value},
-                    "extensions": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
+                    "plugins": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
                 with self.subTest(followLandings=value):
                     if accepted: self.assertIs(config.load(root)["queue"]["followLandings"], True)
                     else:
                         with self.assertRaises(ValueError): config.load(root)
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "simulatorPool": "Example",
-                "extensions": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
-            # The folders beside the project that its extensions load from, which another Mac links (sibling_folders).
+                "plugins": ["queuekeeper_apple", {"module": "kit.hooks", "path": "../kit/src/python"}]}))
+            # The folders beside the project that its plugins load from, which another Mac links (sibling_folders).
             self.assertEqual(config.sibling_folders(root), ["kit"])
             self.assertEqual(config.sibling_variables(root), {"kit": None})
             self.assertEqual(config.sibling_folders(root / "none"), [])
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example"}))
-            self.assertEqual(config.extensions_of(root), [])
-            self.assertEqual(config.extensions_of(root / "none"), [])
+            self.assertEqual(config.plugins_of(root), [])
+            self.assertEqual(config.plugins_of(root / "none"), [])
 
     def test_the_schema_lists_the_lane_and_group_keys_config_accepts(self):
         # vocaro-engineering#248: config took unlockedScreen, and lane groups, while the schema refused them.
@@ -851,10 +851,10 @@ def malformed_guards(identity, entry):
 
 
 class CommandEnvironmentTests(unittest.TestCase):
-    def test_a_command_runs_with_what_the_projects_extensions_add_to_its_environment(self):
-        # The extensions are loaded before their additions are read: a lane that generates an Xcode project needs
+    def test_a_command_runs_with_what_the_projects_plugins_add_to_its_environment(self):
+        # The plugins are loaded before their additions are read: a lane that generates an Xcode project needs
         # the path the toolkit's hooks name (vocaro-engineering#403).
-        from queuekeeper import extensions
+        from queuekeeper import plugins
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve() / "project"
             hooks = root.parent / "kit/src/python/examplekit"
@@ -862,15 +862,15 @@ class CommandEnvironmentTests(unittest.TestCase):
             root.mkdir()
             (hooks / "__init__.py").write_text("")
             (hooks / "hooks.py").write_text(
-                "from queuekeeper import extensions\n"
+                "from queuekeeper import plugins\n"
                 "def added(): return {'EXAMPLE_KIT_ROOT': 'from the kit'}\n"
-                "def register(): extensions.COMMAND_ENVIRONMENT.append(added)\n")
-            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": [
+                "def register(): plugins.COMMAND_ENVIRONMENT.append(added)\n")
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "plugins": [
                 {"module": "examplekit.hooks", "path": "../kit/src/python"}]}))
-            before, paths, seen = list(extensions.COMMAND_ENVIRONMENT), list(sys.path), []
+            before, paths, seen = list(plugins.COMMAND_ENVIRONMENT), list(sys.path), []
 
             def restore():
-                extensions.COMMAND_ENVIRONMENT[:] = before
+                plugins.COMMAND_ENVIRONMENT[:] = before
                 sys.path[:] = paths
                 for name in [name for name in sys.modules if name.split(".")[0] == "examplekit"]: del sys.modules[name]
             self.addCleanup(restore)
@@ -5489,8 +5489,8 @@ class LaneLabelTests(unittest.TestCase):
         def slot(purpose, **options):
             yield "owner"
             raise TimeoutError("the device record stayed locked for 30s; nothing was changed")
-        with patch.object(foreground, "slot", slot), patch.object(cli.extensions.FOREGROUND, "guarded_alerts", return_value=None), \
-                patch.object(cli.extensions.FOREGROUND, "cleared_notifications", return_value=None):
+        with patch.object(foreground, "slot", slot), patch.object(cli.plugins.FOREGROUND, "guarded_alerts", return_value=None), \
+                patch.object(cli.plugins.FOREGROUND, "cleared_notifications", return_value=None):
             status, error = self.run_lane(beta, "--here", "gate")
         self.assertEqual(status, 2, error)
         self.assertTrue(ran.exists())

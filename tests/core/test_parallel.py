@@ -861,8 +861,8 @@ class UnittestRunnerTests(unittest.TestCase):
 
 # A unittest module that records the file its process holds at each number PROBE_FDS names, by
 # inode or None for none, and whether it inherits an admission: True, False or why it is refused.
-class ExtensionCopyTests(unittest.TestCase):
-    """A linked worktree's extensions load from its main checkout, and so did its package where an extension is in
+class PluginCopyTests(unittest.TestCase):
+    """A linked worktree's plugins load from its main checkout, and so did its package where a plugin is in
     it: discovery then imported the main checkout's copy, a test module that imports what only the worktree has
     failed to import there though it imports in its own process, and the run failed with "ran 2 of 1" or, under a
     selection, "no result" (vocaro/queuekeeper#240)."""
@@ -871,17 +871,17 @@ class ExtensionCopyTests(unittest.TestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.main, self.linked = self.root / "main", self.root / "linked"
         self.git(self.root, "init", "-q", "-b", "main", str(self.main))
-        (self.main / "queuekeeper.json").write_text(json.dumps({"extensions": [{"module": "kit.hooks", "path": "src/python"}]}))
+        (self.main / "queuekeeper.json").write_text(json.dumps({"plugins": [{"module": "kit.hooks", "path": "src/python"}]}))
         package = self.main / "src/python/kit"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("WHERE = 'main'\n")
         (package / "hooks.py").write_text(textwrap.dedent("""
-            from queuekeeper import extensions
+            from queuekeeper import plugins
             import kit
             def where(argv, project):
                 print("kit from", kit.WHERE)
                 return 0
-            def register(): extensions.COMMANDS["kit-where"] = ("say which checkout kit loaded from", where)
+            def register(): plugins.COMMANDS["kit-where"] = ("say which checkout kit loaded from", where)
         """))
         # The project's own launcher, which names its checkout as the project, run with this Queuekeeper.
         (self.main / "scripts").mkdir()
@@ -916,7 +916,7 @@ class ExtensionCopyTests(unittest.TestCase):
                                   env={**os.environ, "QUEUEKEEPER_ROOT": str(ENG.parents[1])})
         return finished.returncode, finished.stderr + finished.stdout
 
-    def test_discovery_imports_the_worktrees_own_copy_of_a_package_an_extension_loads_from_the_main_checkout(self):
+    def test_discovery_imports_the_worktrees_own_copy_of_a_package_a_plugin_loads_from_the_main_checkout(self):
         status, output = self.qk("unittest", "--unadmitted", "-s", "tests")
         self.assertEqual(status, 0, output)
         self.assertIn("queuekeeper unittest: 3 tests (0 skipped) in 2 processes", output)
@@ -930,15 +930,15 @@ class ExtensionCopyTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertIn("== test_fresh: OK (1 tests", output)
 
-    def test_the_extension_still_loads_from_the_main_checkout_and_works(self):
+    def test_the_plugin_still_loads_from_the_main_checkout_and_works(self):
         status, output = self.qk("kit-where")
         self.assertEqual(status, 0, output)
         self.assertIn("kit from main", output)
 
-    def test_discovery_sets_the_extensions_copy_aside_and_puts_it_back_for_its_hooks(self):
+    def test_discovery_sets_the_plugins_copy_aside_and_puts_it_back_for_its_hooks(self):
         folder = str(self.main / "src/python")
         tree = self.linked / "src/python"
-        self.enterContext(patch.object(parallel.extensions, "FOLDERS", [folder]))
+        self.enterContext(patch.object(parallel.plugins, "FOLDERS", [folder]))
         self.enterContext(patch.object(sys, "path", [folder, *sys.path]))
         self.enterContext(patch.dict(sys.modules))
         import kit.hooks
@@ -951,7 +951,7 @@ class ExtensionCopyTests(unittest.TestCase):
             from kit import fresh
             import kit as discovered
             self.assertEqual((discovered.WHERE, fresh.VALUE), ("linked", "fresh"))
-        # The extension's own modules are back, and the worktree's copies are gone, its new module too.
+        # The plugin's own modules are back, and the worktree's copies are gone, its new module too.
         self.assertIs(sys.modules["kit"], loaded)
         self.assertIs(sys.modules["kit.hooks"], kit.hooks)
         self.assertNotIn("kit.fresh", sys.modules)

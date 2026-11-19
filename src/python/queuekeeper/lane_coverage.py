@@ -42,7 +42,7 @@ NOTHING = Selection(lambda test: False, False)
 
 # What hides code from a reading of Swift's declarations, in the order the language sees it.
 LITERAL = re.compile(r'""".*?"""|"(?:[^"\\\n]|\\.)*"|//[^\n]*|/\*.*?\*/', re.S)
-TOKEN = re.compile(r"@Suite\b|@Test\b|\bfunc\s+(test\w*)|\b(class|struct|enum|actor|extension|protocol)\s+([A-Za-z_][\w.]*)"
+TOKEN = re.compile(r"@Suite\b|@Test\b|\bfunc\s+(test\w*)|\b(class|struct|enum|actor|plugin|protocol)\s+([A-Za-z_][\w.]*)"
                    r"|[{}]")
 CLASS = re.compile(r"\bclass\s+(\w+)\s*(?:<[^>{]*>)?\s*:\s*([^{]+)\{")
 PYTHON_TEST = re.compile(r"^\s*(?:async\s+)?def\s+test|^\s*class\s+\w+\(.*TestCase.*\)\s*:", re.M)

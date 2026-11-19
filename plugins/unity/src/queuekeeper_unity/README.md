@@ -8,7 +8,7 @@ Switch it on in `queuekeeper.json`, and say where the Unity project is:
 
 ```json
 {
-  "extensions": ["queuekeeper_unity"],
+  "plugins": ["queuekeeper_unity"],
   "unity": {"project": "lab", "layout": "tools/unity/layouts/worktree-default.dwlt"}
 }
 ```

@@ -52,7 +52,7 @@ Changing Queuekeeper while other projects' work runs on it has its own rules:
 | `src/python/queuekeeper/remote.py`, `offload_host.py` | Placement and running work on another Mac |
 | `src/python/queuekeeper/config.py`, `schemas/queuekeeper.schema.json` | Project settings |
 | `src/python/queuekeeper/sandbox.py` | A lane's Seatbelt sandbox: its profile and the words that start its command under it |
-| `src/python/queuekeeper/extensions.py` | Extension hooks. The core never imports a plugin directly |
+| `src/python/queuekeeper/plugins.py` | Plugin hooks. The core never imports a plugin directly |
 | `src/python/queuekeeper/events.py` | The event journal |
 | `src/python/queuekeeper/visibility/` | The visibility switch and features |
 | `src/python/queuekeeper/docs.py` | The docs check |
@@ -110,10 +110,10 @@ a rule naming a Mac.
 the target Mac, runs the lane there under that Mac's admission, and journals the run on that Mac
 so the sender can reattach after a dropped connection.
 
-### Plugins and extensions
+### Plugins
 
-A plugin teaches Queuekeeper a platform. A project lists its package in `extensions`, and the
-plugin registers commands, lane behavior and checks through the hooks in `extensions.py`. The
+A plugin teaches Queuekeeper a platform. A project lists its package in `plugins`, and the
+plugin registers commands, lane behavior and checks through the hooks in `plugins.py`. The
 core never imports a plugin, and platform behavior stays in its plugin. A plugin that fails to
 load stops the run with exit 70 rather than running without it.
 
@@ -132,7 +132,7 @@ share, [Unity](../plugins/unity/src/queuekeeper_unity/README.md),
 [Mac hardware](../plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md).
 
 The [MCP server](../plugins/mcp/src/queuekeeper_mcp/README.md) is packaged the same way but is no
-extension: a project does not list it, and it imports nothing from Queuekeeper. It runs the
+plugin: a project does not list it, and it imports nothing from Queuekeeper. It runs the
 project's launcher with `--json` for each tool, so the commands stay the authority for every
 result, and it implements the stdio protocol with the standard library.
 
@@ -629,7 +629,7 @@ nothing of the file, such as the holder of a waiting gate's place, is a file of 
 
 - **Output** streams back as written, into `.build/queuekeeper/remote/LANE/`. Each dispatch also
   has its own copy in `.build/queuekeeper/remote/.dispatches/LANE/TIME-PID/` (newest eight kept);
-  `LANE/` holds whichever ended last, so summaries and extension results are always read from the
+  `LANE/` holds whichever ended last, so summaries and plugin results are always read from the
   run's own dispatch.
 - **Exit status** is the work's, or 1 for a run stopped before the work began.
 - **Passes by commit.** A whole lane's receipt is kept by commit in the repository's Git
@@ -699,12 +699,12 @@ connection, and `qk doctor`, fast-forward it to `origin/main` without hooks, onl
 `main`, clean, holds no commit `origin/main` lacks, is behind, and no process runs from it.
 Otherwise it is left as it is and a line says why; that case is the owner's. One 40 s deadline
 covers the steps, prompts are off, a lock lets one connection update at a time, and a failure
-never fails the dispatch. Extension folders beside a project, `~/Development/FOLDER` there, are
+never fails the dispatch. Plugin folders beside a project, `~/Development/FOLDER` there, are
 fast-forwarded the same way.
 
-### Extension pins
+### Plugin pins
 
-A run pins each extension folder beside the project, and each folder its `siblings` lists, at its
+A run pins each plugin folder beside the project, and each folder its `siblings` lists, at its
 `origin/main` as this Mac's checkout names it: fetched by the queue worker each round, taken as is
 by `qk run`. The pin set travels in `QUEUEKEEPER_SIBLINGS` (`pins.py`); a command that finds it
 set uses it, and the worker drops an inherited one and makes its own. Each pinned commit is
@@ -716,7 +716,7 @@ round adopts a new set, the worker starts Queuekeeper with it at `origin/main`; 
 last set that started. Without the pin, a landing mid-run could reach later lanes with an adapter
 that no longer matches.
 
-An extension folder inside the project is not pinned: `config.extensions_of` resolves it against
+A plugin folder inside the project is not pinned: `config.plugins_of` resolves it against
 the main checkout, so no command's hooks are an unlanded copy, and `qk unittest` sets it aside while
 it discovers the tree under test's own modules. A round therefore judges a change to that folder
 by main's copy, as `qk land` judges an entry by main's `queue.preflight` and the worker runs the
@@ -741,7 +741,7 @@ the suite starts, so results don't depend on which process tree runs the suite.
 empty unless the test writes a fake Mac. Stand-ins for `ssh` and `dns-sd` come first on `PATH` for
 the suite and everything it starts, so every connection fails as to an unresolvable name and
 Bonjour lists no Mac. A test that leaves a remote call unpatched fails the same way on every Mac.
-Fixtures map each extension to its own checkout rather than rewriting every `path` to the
+Fixtures map each plugin to its own checkout rather than rewriting every `path` to the
 toolkit's.
 
 ## Admission internals
@@ -1529,7 +1529,7 @@ Code: `queuekeeper_apple/simulators/pool.py` and `template.py`.
 
 ### Kept app builds internals
 
-`queuekeeper_apple/app_builds.py`. After a gated push, `keep_app` (an `extensions.AFTER_LANDING` hook)
+`queuekeeper_apple/app_builds.py`. After a gated push, `keep_app` (an `plugins.AFTER_LANDING` hook)
 spawns `qk app keep --after-landing`. Each build runs through `qk admit --here` on this Mac. The store's
 `source/` is a detached worktree locked with the reason "qk app's source checkout for kept app builds"
 (so `qk disk` keeps it); `vocaro-engineering` beside it links to the shared toolkit, and `app.links`
@@ -1564,7 +1564,7 @@ The [user guide](user_guide.md#watch-the-queue) covers using them.
   Adding one changes no other file, and deleting its folder removes it.
 - **A feature reads only the journal and the snapshot** (`merge_queue.snapshot(root)`, the same
   data as `qk queue status --json`). To act on an event as it is written, it adds a hook to
-  `extensions.AFTER_EVENT`. The hook must return at once, and its exceptions are dropped, so a
+  `plugins.AFTER_EVENT`. The hook must return at once, and its exceptions are dropped, so a
   slow or broken feature cannot slow or stop a round.
 - **A feature imports the core and never another feature**, and the core imports none of them.
   An architecture test enforces this.
@@ -1575,7 +1575,7 @@ The [user guide](user_guide.md#watch-the-queue) covers using them.
 
 A feature is a module `queuekeeper/visibility/NAME.py` or a package `queuekeeper/visibility/NAME/`
 with a docstring whose first line says what it does, and a `register()` function that adds its
-commands as an extension does. It reads the queue through `events.read`, `events.follow` and
+commands as a plugin does. It reads the queue through `events.read`, `events.follow` and
 `merge_queue.snapshot`.
 
 The three features are the examples:
@@ -1636,7 +1636,7 @@ schema only grows, so readers ignore what they do not know.
 - **The plugin lists.** `tests/core/test_plugin_lists.py` fails when a platform plugin, a folder
   under `plugins/` not named `visibility-*`, is missing from `queuekeeper-workspace.json`, is not
   linked from the README's [Plugins](../README.md#plugins) section, this guide's
-  [Plugins and extensions](#plugins-and-extensions) or the user guide's
+  [Plugins](#plugins) or the user guide's
   [Further reading](user_guide.md#further-reading), or has no box of its README name in
   `assets/overview.svg`. A documentation-only change to one of those three documents runs it
   through the `plugin-lists` lane.
@@ -1659,7 +1659,7 @@ It takes under a second here.
 - **Links.** Each link's file and anchor, and each `PATH:LINE` reference, must exist.
 - **Size.** An `AGENTS.md` must stay under 32 KiB.
 - **Commands.** Each `qk WORD` in a fenced shell block (`sh`, `bash`, `zsh`, `shell`, `console` or
-  none) or a code span must name a subcommand of the core, the project's extensions, or any plugin
+  none) or a code span must name a subcommand of the core, the project's plugins, or any plugin
   or visibility feature in the checkout, loaded or not. Any path to the command and a `--project`
   before the word are allowed. A word in capitals, as in `qk COMMAND`, is a placeholder. A hit names the file, the line
   and the command.

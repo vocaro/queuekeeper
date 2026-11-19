@@ -15,8 +15,35 @@
       "type": "string",
       "minLength": 1
     },
+    "plugins": {
+      "description": "The plugins the project switches on: each a module's name, or its name and the folder its package is in, relative to the project's main checkout. Without the key a project loads no plugins",
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "module"
+            ],
+            "properties": {
+              "module": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      }
+    },
     "extensions": {
-      "description": "The extensions the project switches on: each a module's name, or its name and the folder its package is in, relative to the project's main checkout. Without the key a project loads no extensions",
+      "description": "The key plugins had until vocaro/queuekeeper#48, read only when plugins is not given; a later release refuses it",
+      "deprecated": true,
       "type": "array",
       "items": {
         "oneOf": [
@@ -61,13 +88,13 @@
       "minLength": 1
     },
     "emulatorPool": {
-      "description": "The Android extension's key, which a project gets with queuekeeper_android: the name every member of the project's emulator pool starts with, as in 'NAME_Pixel_8_API_36_1'",
+      "description": "The Android plugin's key, which a project gets with queuekeeper_android: the name every member of the project's emulator pool starts with, as in 'NAME_Pixel_8_API_36_1'",
       "type": "string",
       "minLength": 1,
       "pattern": "^[^/]+$"
     },
     "android": {
-      "description": "The Android extension's key, which a project gets with queuekeeper_android: the Gradle build whose app and instrumented tests qk emulator-tests builds and runs",
+      "description": "The Android plugin's key, which a project gets with queuekeeper_android: the Gradle build whose app and instrumented tests qk emulator-tests builds and runs",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -78,7 +105,7 @@
       }
     },
     "unity": {
-      "description": "The Unity extension's key, which a project gets with queuekeeper_unity: where its Unity project is, and the window layout a new worktree's editor starts with",
+      "description": "The Unity plugin's key, which a project gets with queuekeeper_unity: where its Unity project is, and the window layout a new worktree's editor starts with",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -217,7 +244,7 @@
             "minimum": 1
           },
           "sandbox": {
-            "description": "Run an admitted lane's command, and its compileFirst, under a macOS Seatbelt sandbox (sandbox-exec) made on the Mac that runs it: it writes only to the checkout it runs in, its git directory, its run's directory, the temporary and cache folders and the paths write names, and reaches the network only as network says, by default not at all. true takes the defaults. A self lane cannot have one, and the Apple extension refuses one for a lane that runs Xcode or SwiftPM, which apply sandboxes of their own and cannot inside another",
+            "description": "Run an admitted lane's command, and its compileFirst, under a macOS Seatbelt sandbox (sandbox-exec) made on the Mac that runs it: it writes only to the checkout it runs in, its git directory, its run's directory, the temporary and cache folders and the paths write names, and reaches the network only as network says, by default not at all. true takes the defaults. A self lane cannot have one, and the Apple plugin refuses one for a lane that runs Xcode or SwiftPM, which apply sandboxes of their own and cannot inside another",
             "oneOf": [
               {
                 "type": "boolean"
@@ -381,11 +408,11 @@
             "type": "boolean"
           },
           "display": {
-            "description": "The Mac desktop extension's key, which a project gets with queuekeeper_mac_desktop or an extension that requires it, such as queuekeeper_apple. A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: qk run runs its command, on any Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
+            "description": "The Mac desktop plugin's key, which a project gets with queuekeeper_mac_desktop or a plugin that requires it, such as queuekeeper_apple. A heavy or exclusive lane whose tests wait for what the display's refresh times, such as a scroll view's animation: qk run runs its command, on any Mac and in a lane group too, under a one-second caffeinate -u, which wakes a sleeping display behind a lock too, and then caffeinate -d, which keeps it on for the command's life, and the lane's receipt shows them in its command. Neither unlocks the screen, so a test that reads its tree through the accessibility API still needs an unlocked one",
             "type": "boolean"
           },
           "unity": {
-            "description": "The Unity extension's key, which a project gets with queuekeeper_unity. A lane whose command runs the project's Unity editor: qk run runs its command under qk unity ready --, which checks on the Mac that runs it that an editor is installed, that no editor has the project open, that no stale lock is left and that no orphaned licensing helper remains, and ends the lane unmeasured, with nothing run, when one of them does not hold. An exclusive lane also ends unmeasured while an editor on that Mac is in Play mode",
+            "description": "The Unity plugin's key, which a project gets with queuekeeper_unity. A lane whose command runs the project's Unity editor: qk run runs its command under qk unity ready --, which checks on the Mac that runs it that an editor is installed, that no editor has the project open, that no stale lock is left and that no orphaned licensing helper remains, and ends the lane unmeasured, with nothing run, when one of them does not hold. An exclusive lane also ends unmeasured while an editor on that Mac is in Play mode",
             "type": "boolean"
           },
           "labels": {
@@ -399,7 +426,7 @@
             }
           },
           "chips": {
-            "description": "The Mac hardware extension's key, which a project gets with queuekeeper_mac_hardware. The chips the lane's results are valid on, such as [\"apple-m5-max\"], for a lane whose output differs by GPU. qk run runs the lane only on a Mac with one of them, waits for that Mac when it is busy, and never runs it on another. A lane without the key runs on any Mac. qk host chip prints a Mac's",
+            "description": "The Mac hardware plugin's key, which a project gets with queuekeeper_mac_hardware. The chips the lane's results are valid on, such as [\"apple-m5-max\"], for a lane whose output differs by GPU. qk run runs the lane only on a Mac with one of them, waits for that Mac when it is busy, and never runs it on another. A lane without the key runs on any Mac. qk host chip prints a Mac's",
             "type": "array",
             "minItems": 1,
             "items": {
@@ -693,7 +720,7 @@
           "minimum": 1
         },
         "followLandings": {
-          "description": "true has the queue fast-forward the project's main checkout to origin/main after each landing, when it is on main, clean and nothing runs from it: for a checkout other projects read, such as the folder an extension loads from. Read from main",
+          "description": "true has the queue fast-forward the project's main checkout to origin/main after each landing, when it is on main, clean and nothing runs from it: for a checkout other projects read, such as the folder a plugin loads from. Read from main",
           "const": true
         },
         "preflight": {

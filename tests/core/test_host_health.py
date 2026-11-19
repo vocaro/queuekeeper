@@ -208,8 +208,8 @@ class QueueDoctor(unittest.TestCase):
         self.assertNotIn("offload", shown)
         self.assertTrue(any(warning.startswith("mini is short of memory") for warning in shown["warnings"]))
 
-    def test_an_extension_s_doctor_check_fails_doctor_by_its_errors_and_warns_by_its_warnings(self):
-        # Such as the Apple extension's declared devices, one declared always reachable that no Mac reaches
+    def test_a_plugin_s_doctor_check_fails_doctor_by_its_errors_and_warns_by_its_warnings(self):
+        # Such as the Apple plugin's declared devices, one declared always reachable that no Mac reaches
         # (vocaro/queuekeeper#211).
         report = {"host": None, "errors": [], "unchecked": [], "pythonCrashes": {}}
         for found, expected in (((["iPad is reached by no Mac"], ["careful"]), 1), (([], ["careful"]), 0)):
@@ -218,7 +218,7 @@ class QueueDoctor(unittest.TestCase):
                     patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
                     patch.object(cli, "source_identity", return_value={}), \
                     patch.object(offload_host, "host_health", return_value=reading()), \
-                    patch.object(cli.extensions, "DOCTOR_CHECKS", [lambda root, config, found=found: found]), \
+                    patch.object(cli.plugins, "DOCTOR_CHECKS", [lambda root, config, found=found: found]), \
                     contextlib.redirect_stdout(StringIO()) as output:
                 Path(directory, "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
                     "integration": "direct-main", "lanes": {"gate": {"command": ["true"], "timeout": 60}}}))

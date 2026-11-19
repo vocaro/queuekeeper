@@ -649,7 +649,7 @@ class Summary(unittest.TestCase):
     def test_a_policy_that_cannot_be_fetched_is_unmeasured_and_never_passed(self):
         self.configure(lane=self.printing("Ran 1 test in 0.1s\n\nOK"))
         stream = StringIO()
-        with patch.object(cli, "refresh_policy", side_effect=cli.extensions.Unavailable("no policy")), \
+        with patch.object(cli, "refresh_policy", side_effect=cli.plugins.Unavailable("no policy")), \
                 patch.object(cli, "source_identity", return_value={}), \
                 contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             status = cli.main(["--project", str(self.root), "run", "--here", "lane"])

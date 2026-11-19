@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
+from queuekeeper import cli, events, plugins, merge_queue as mq, visibility
 from queuekeeper_dashboard import admission_ids, panels, registry, repository, server
 from queuekeeper_dashboard.panels import farm, history, home, logs, queue
 

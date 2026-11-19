@@ -807,7 +807,7 @@ class LandWaitsForAhead(Fixture):
 
         # What the project's tooling warns of after a landing reads the configuration main holds.
         warned = lambda root, read: [f"release lanes on main: {', '.join(read['release']['lanes'])}"]
-        with patch.object(mq, "wait", wait), patch.object(mq.budgets.extensions, "LANDING_WARNINGS", [warned]), \
+        with patch.object(mq, "wait", wait), patch.object(mq.budgets.plugins, "LANDING_WARNINGS", [warned]), \
                 patch.object(configuration, "LANE_KEYS", configuration.LANE_KEYS - {"compileFirst"}):
             result, said, _ = self.land("fix")
         self.assertEqual(result, 0, said)
@@ -4972,7 +4972,7 @@ class UnprovisionedWhereTheGateRuns(Fixture):
 
 
 class PinnedFolders(Fixture):
-    """vocaro-engineering#497: a round pins each folder beside the project that its extensions load from at its
+    """vocaro-engineering#497: a round pins each folder beside the project that its plugins load from at its
     origin/main, so that every lane of the round, and each qk command nested in one, loads one commit of it, whatever
     lands in the shared checkout or a session edits there meanwhile."""
     KIT = ("import os\n"
@@ -4991,8 +4991,8 @@ class PinnedFolders(Fixture):
         seeing.start()
         self.addCleanup(seeing.stop)
         config = json.loads((self.repo / "queuekeeper.json").read_text())
-        config["extensions"] = [{"module": "fixture_kit", "path": "../kit/src/python"}]
-        self.publish(config, "Load an extension from a folder beside the project")
+        config["plugins"] = [{"module": "fixture_kit", "path": "../kit/src/python"}]
+        self.publish(config, "Load a plugin from a folder beside the project")
 
     def kit_lands(self, value, here=True):
         """A commit of the kit that says value, on its origin's main, and with here in the shared checkout too."""
@@ -5075,13 +5075,13 @@ class PinnedFolders(Fixture):
 
 class QueuekeeperThatCannotStart(Fixture):
     """vocaro/queuekeeper#158: a lane in which Queuekeeper itself cannot start, as when a folder beside the project
-    that one of its extensions loads from moves to a commit this Queuekeeper cannot load, tested no commit: the queue
+    that one of its plugins loads from moves to a commit this Queuekeeper cannot load, tested no commit: the queue
     holds for a session with every entry waiting. On 2026-11-15 each such lane was a traceback with exit 1, and the
     queue bisected and sent back at least nine entries."""
 
     def setUp(self):
         super().setUp()
-        # An extension in a folder beside the project, which every lane's qk loads as it is now, whatever the commit.
+        # A plugin in a folder beside the project, which every lane's qk loads as it is now, whatever the commit.
         self.adapter = self.base / "adapter"
         self.adapter.mkdir()
         (self.adapter / "fixture_adapter.py").write_text(
@@ -5090,13 +5090,13 @@ class QueuekeeperThatCannotStart(Fixture):
             "    raise RuntimeError('Queuekeeper at /worker   predates standalone plugin composition')\n"
             "def register(): pass\n")
         config = json.loads((self.repo / "queuekeeper.json").read_text())
-        config["extensions"] = [{"module": "fixture_adapter", "path": str(self.adapter)}]
-        self.publish(config, "Load an extension from a folder beside the project")
+        config["plugins"] = [{"module": "fixture_adapter", "path": str(self.adapter)}]
+        self.publish(config, "Load a plugin from a folder beside the project")
 
     def qk(self, *words):
         return subprocess.run([sys.executable, "scripts/qk", *words], cwd=self.repo, capture_output=True, text=True)
 
-    def test_a_command_whose_extension_does_not_load_exits_70_and_says_so(self):
+    def test_a_command_whose_plugin_does_not_load_exits_70_and_says_so(self):
         (self.adapter / "moved").touch()
         ran = self.qk("run", "--here", "gate")
         self.assertEqual(ran.returncode, mq.lane_results.TOOL_NOT_STARTED, ran.stderr)
@@ -5120,7 +5120,7 @@ class QueuekeeperThatCannotStart(Fixture):
                       "this Mac, before the lane's command, with exit 70: RuntimeError: Queuekeeper at /worker "
                       "predates standalone plugin composition. Its command never ran", held)
         self.assertIn("says nothing of the batch's commits and none is sent back", held)
-        self.assertIn("bring Queuekeeper and the folders the project's extensions load from to commits that work "
+        self.assertIn("bring Queuekeeper and the folders the project's plugins load from to commits that work "
                       "together", held)
         self.assertIn("qk queue resume", held)
         # Asked without the batch, it does not start either, so no entry is why (batch_stops_start).
@@ -5136,10 +5136,10 @@ class QueuekeeperThatCannotStart(Fixture):
         self.assertIsNone(mq.Queue(self.repo).held())
 
     def breaking(self, branch):
-        """A commit on branch that has the project load an extension no folder holds, so that Queuekeeper starts on
+        """A commit on branch that has the project load a plugin no folder holds, so that Queuekeeper starts on
         main and not on the commit."""
         config = json.loads((self.repo / "queuekeeper.json").read_text())
-        config["extensions"].append({"module": "absent_adapter", "path": str(self.adapter)})
+        config["plugins"].append({"module": "absent_adapter", "path": str(self.adapter)})
         self.commit("queuekeeper.json", branch, content=json.dumps(config))
 
     def test_an_entry_whose_own_commit_stops_queuekeeper_is_sent_back_and_the_queue_is_not_held(self):
@@ -5212,7 +5212,7 @@ class QueuekeeperThatCannotStart(Fixture):
         self.assertIn("the queue's lanes fail on this commit", self.state(identifier)["why"])
         self.assertIsNone(mq.Queue(self.repo).held())
 
-    def test_a_failing_lane_with_the_extension_loaded_still_sends_the_commit_back(self):
+    def test_a_failing_lane_with_the_plugin_loaded_still_sends_the_commit_back(self):
         self.commit("bad", "bad")
         [identifier] = self.add("bad")
         with patch("builtins.print"): self.work()
@@ -6217,7 +6217,7 @@ class ToolkitCopy(Fixture):
 
     def code_of(self, checkout):
         """A toolkit checkout's config module, loaded apart from this process's, as one of the queuekeeper package,
-        whose hook points it reads (extensions.LANE_KEYS)."""
+        whose hook points it reads (plugins.LANE_KEYS)."""
         source = checkout / "src/python/queuekeeper/config.py"
         spec = importlib.util.spec_from_file_location(f"queuekeeper.config_of_{len(self.moves)}", source)
         module = importlib.util.module_from_spec(spec)
@@ -6611,7 +6611,7 @@ class ToolkitsOwnWorker(Fixture):
 
     def code_of(self, checkout):
         """A toolkit checkout's config module, loaded apart from this process's, as one of the queuekeeper package,
-        whose hook points it reads (extensions.LANE_KEYS)."""
+        whose hook points it reads (plugins.LANE_KEYS)."""
         source = checkout / "src/python/queuekeeper/config.py"
         spec = importlib.util.spec_from_file_location(f"queuekeeper.own_config_{len(self.moves)}_{checkout.name}", source)
         module = importlib.util.module_from_spec(spec)
@@ -8354,7 +8354,7 @@ class RejectionFacts(Fixture):
 
 
 class MainCheckoutCopies(Fixture):
-    """A rejection of an entry that changes a folder inside the project that its extensions load from says that the
+    """A rejection of an entry that changes a folder inside the project that its plugins load from says that the
     round's lanes loaded main's copy of it, not the entry's, and names the staged landing (vocaro/queuekeeper#186)."""
 
     def setUp(self):
@@ -8363,8 +8363,8 @@ class MainCheckoutCopies(Fixture):
         (self.repo / "kit/fixture_inside.py").write_text("def register(): pass\n")
         run(self.repo, "git", "add", "kit")
         config = self.config()
-        config["extensions"] = [{"module": "fixture_inside", "path": "kit"}]
-        self.publish(config, "Load an extension from a folder inside the project")
+        config["plugins"] = [{"module": "fixture_inside", "path": "kit"}]
+        self.publish(config, "Load a plugin from a folder inside the project")
 
     def rejected(self, path, content):
         """The why of one entry that commits content to path, whose gate fails."""
@@ -8379,7 +8379,7 @@ class MainCheckoutCopies(Fixture):
     def test_an_entry_that_changes_the_folder_is_told_main_judged_it(self):
         why = self.rejected("kit/fixture_inside.py", "def register(): pass\n# changed\n")
         self.assertIn("This entry changes kit/fixture_inside.py in kit, which fixture_inside loads from: the round's "
-                      "lanes load the project's extensions from its main checkout, not from the batch, so main's copy "
+                      "lanes load the project's plugins from its main checkout, not from the batch, so main's copy "
                       "judged this entry. If the failure comes from that copy, land the change to the folder on its "
                       "own first, and what relies on it once that is on main.", why)
 
@@ -8390,10 +8390,10 @@ class MainCheckoutCopies(Fixture):
 
     def test_a_folder_beside_the_project_or_a_module_with_no_folder_is_not_named(self):
         changed = {"kit/a.py", "../kit/a.py", "src/a.py"}
-        self.assertEqual(mq.main_copies({"extensions": ["fixture_inside", {"module": "beside", "path": "../kit"},
+        self.assertEqual(mq.main_copies({"plugins": ["fixture_inside", {"module": "beside", "path": "../kit"},
                                                         {"module": "absolute", "path": "/kit"}]}, changed), "")
         self.assertIn("src/a.py in src, which inside loads from",
-                      mq.main_copies({"extensions": [{"module": "inside", "path": "./src/"}]}, changed))
+                      mq.main_copies({"plugins": [{"module": "inside", "path": "./src/"}]}, changed))
 
 
 class SummaryFacts(Fixture):
@@ -9439,7 +9439,7 @@ class FlakyParts(unittest.TestCase):
             with self.subTest(why=why):
                 self.assertEqual(mq.failed_tests(log), (None, why))
 
-    def test_a_path_is_named_only_whole_and_with_a_directory_or_an_extension(self):
+    def test_a_path_is_named_only_whole_and_with_a_directory_or_a_plugin(self):
         for output in ("docs/a.md:3: misspelling wrongword", "see docs/a.md.", "'docs/a.md'", "(docs/a.md)"):
             with self.subTest(output=output):
                 self.assertTrue(mq.named_in("docs/a.md", output))
@@ -10891,7 +10891,7 @@ class ClosedQueue(Fixture):
         """(exit status, standard output, standard error) of `qk queue WORDS` or `qk land WORDS`, starting no worker."""
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), patch.object(mq.Queue, "start"), \
-                patch.object(cli.extensions, "recover"), contextlib.chdir(self.repo):
+                patch.object(cli.plugins, "recover"), contextlib.chdir(self.repo):
             code = cli.main(["--project", str(self.repo), *words])
         return code, out.getvalue(), err.getvalue()
 

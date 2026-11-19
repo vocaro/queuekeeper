@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "queuekeeper",
   "integration": "direct-main",
-  "extensions": ["queuekeeper_apple"],
+  "plugins": ["queuekeeper_apple"],
   "simulatorPool": "Queuekeeper",
   "lanes": {
     "gate": {

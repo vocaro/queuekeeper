@@ -1,4 +1,4 @@
-"""What the Apple extension warns of in `qk doctor` from a project's lanes alone."""
+"""What the Apple plugin warns of in `qk doctor` from a project's lanes alone."""
 import json
 import unittest
 import host_isolation
@@ -56,7 +56,7 @@ class TwoIdiomLanes(unittest.TestCase):
 
     def test_a_lanes_idioms_is_the_reason_in_words(self):
         lane = {"command": [*QK, *PHONE, *PAD, "--"], "idioms": "Every class it selects draws a view"}
-        source = {"schemaVersion": 1, "name": "Beta", "extensions": ["queuekeeper_apple"], "lanes": {"ios": lane}}
+        source = {"schemaVersion": 1, "name": "Beta", "plugins": ["queuekeeper_apple"], "lanes": {"ios": lane}}
         self.assertEqual(config.parse(json.dumps(source))["lanes"]["ios"]["idioms"], lane["idioms"])
         for wrong in ("", "  ", True, ["why"], 1):
             with self.subTest(wrong), self.assertRaisesRegex(ValueError, "ios.idioms must say why"):

@@ -64,8 +64,8 @@ are evidence, not caches.
 - `src/python/queuekeeper/agent_setup.py` and `agent_hooks.py`: `qk agents` and the Claude Code hooks it installs.
 - `src/python/queuekeeper/config.py` and `schemas/queuekeeper.schema.json`: project settings;
   keep the parser and schema consistent.
-- `src/python/queuekeeper/extensions.py`: extension hooks. Keep platform behavior in its extension;
-  the core does not import extensions directly.
+- `src/python/queuekeeper/plugins.py`: plugin hooks. Keep platform behavior in its plugin;
+  the core does not import plugins directly.
 - `src/python/queuekeeper/visibility/`: optional visibility features.
 - `plugins/`: separately packaged platform and visibility plugins; `queuekeeper-workspace.json` declares checkout composition.
 - `tests/`: component suites, `integration/`, architecture checks, and `test_support/` fixtures. Follow neighboring tests' `host_isolation` setup.

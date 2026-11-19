@@ -68,7 +68,7 @@ import time
 import uuid
 import zlib
 
-from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
+from . import disk, plugins, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
 from . import count_history, window_placement
 from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_folders, sibling_variables, unadmitted, unlocked_screen
 from . import farm
@@ -1805,7 +1805,7 @@ def clock_line(config, lane, arguments=()):
     if words and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name):
         words = words[1:]
     if len(words) >= 2 and Path(words[0]).name == "qk" and words[1] == "simulator-tests":
-        allowance = extensions.test_allowance([*words[2:], *arguments])
+        allowance = plugins.test_allowance([*words[2:], *arguments])
         if allowance is not None:
             limits += f" and the default test allowance is set to {allowance}s"
     return f"{lane}'s log is arriving: {limits}; a heartbeat every {PROGRESS_INTERVAL:g}s says whether the log has grown"
@@ -1957,7 +1957,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                          "pinned for this run at a commit its origin does not hold, which another Mac cannot "
                          "fetch; push it, or run on this Mac with --here")
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
-            # The folders beside the project its extensions load from, each at the commit this run pinned, which another
+            # The folders beside the project its plugins load from, each at the commit this run pinned, which another
             # Mac takes from its own checkout of the folder (pins.dispatched, offload_host.place_siblings).
             "siblings": pins.dispatched(root, sibling_variables(root)),
             "decline": decline, "busy": BUSY,
@@ -1969,7 +1969,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "receipt": f".build/queuekeeper/{name}/source.json",
             "returns": {"directory": f".build/queuekeeper/{name}", "paths": returns} if returns else None,
             "changes": f".build/queuekeeper/{name}/{CHANGES}" if changes else None,
-            "deviceRecord": local["name"], "deviceSetup": extensions.DEVICES.remote_setup(local["name"]), "lease": lease.plan(local["name"]) if lease is not None else None,
+            "deviceRecord": local["name"], "deviceSetup": plugins.DEVICES.remote_setup(local["name"]), "lease": lease.plan(local["name"]) if lease is not None else None,
             "dispatcher": local["name"], "subdirectory": subdirectory, "silence": HEARTBEAT_SILENCE,
             # The lanes' timing history marked stale here, which that Mac's history does not hold (lane_timing).
             **({"timingStale": stale} if (stale := timing_marks(root, config)) else {}),
@@ -2238,7 +2238,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         print(f"remote: {len(files)} file{'s' if len(files) != 1 else ''} the run wrote in its {RESULTS} came back in "
               f"{results / RESULTS}" + (f", from {', '.join(wrote)}" if wrote else ""), file=sys.stderr, flush=True)
         # This dispatch's own: another run of the lane from this checkout may since have filed its own as the latest.
-        extensions.report_results(own / RESULTS)
+        plugins.report_results(own / RESULTS)
     if members and result.get("stage") == "work":
         members = config["lanes"][lane]["parallel"]
         came = [member for member in members if f"lanes/{member}.log" in returned]
@@ -2379,7 +2379,7 @@ def main(root, config, args):
         work = ["run", "--here", *(["--serial"] if args.serial else []),
                 *(["--expect", str(args.expect)] if args.expect else []), args.lane, *(["--", *extra] if extra else [])]
         budget = lane.get("timeout") if "parallel" not in lane else None
-        held = extensions.DEVICES.lease(args.device or [], args.device_owner, extra, root=root, budget=budget)
+        held = plugins.DEVICES.lease(args.device or [], args.device_owner, extra, root=root, budget=budget)
         # A leased run sent again, after a notification reached it, offers the same commits (carrying).
         sent = {}
         send = lambda: execute(root, config, host, work, lane=args.lane, arguments=extra, expect=args.expect,
@@ -2389,7 +2389,7 @@ def main(root, config, args):
             sending = send
             send = lambda: not_run_if_busy(args.lane, sending, called(host))
         with processes.forwarding_signals():
-            return extensions.DEVICES.carrying(held, root, host, work, args.lane, lambda: offering_here(
+            return plugins.DEVICES.carrying(held, root, host, work, args.lane, lambda: offering_here(
                 f"qk run --here {args.lane}", send) if lane.get("foreground") else send())
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
     command = args.command + ([] if args.passed is None else ["--", *args.passed]) if args.command else args.passed
@@ -2406,7 +2406,7 @@ def main(root, config, args):
     refused = exclusive_refusal(config, command) if args.exclusive else None
     if refused: raise ValueError(f"qk remote admit --exclusive refused: {refused}")
     commits = commit_arguments(getattr(args, "git_commit", None) or [])
-    held = extensions.DEVICES.lease(args.device or [], args.device_owner, command, root=root,
+    held = plugins.DEVICES.lease(args.device or [], args.device_owner, command, root=root,
                                      budget=args.time_limit, commits=commits)
     work = ["admit", *kind, "--", *command]
     sent = {}
@@ -2425,7 +2425,7 @@ def main(root, config, args):
         sending = send
         send = lambda: not_run_if_busy("the command", sending, called(host))
     with processes.forwarding_signals():
-        return extensions.DEVICES.carrying(held, root, host, work, "admit", lambda: offering_here(
+        return plugins.DEVICES.carrying(held, root, host, work, "admit", lambda: offering_here(
             "qk admit --foreground -- COMMAND", send) if args.foreground else send())
 
 
@@ -2502,7 +2502,7 @@ def farm_mac(host):
 
 
 def eligible(macs):
-    """The SSH destinations among macs, the Macs that may run a lane (extensions.placement), in the farm's order."""
+    """The SSH destinations among macs, the Macs that may run a lane (plugins.placement), in the farm's order."""
     return tuple(host for host in farm.destinations() if host in macs)
 
 
@@ -2580,7 +2580,7 @@ def foreground_report(host):
     print(f"{found.get('mac')}'s foreground: {holder}")
     for line in crash_dialog_report(found.get("crashDialogs"), entry): print(line)
     if "captureApprovals" in found:  # another Mac whose toolkit predates them says nothing
-        for line in extensions.FOREGROUND.capture_lines(found["captureApprovals"]): print(line)
+        for line in plugins.FOREGROUND.capture_lines(found["captureApprovals"]): print(line)
     for problem, fix in found.get("problems", []):
         print(f"- {problem}: {fix}")
     if found.get("problems"):
@@ -2658,7 +2658,7 @@ def verify_script(formulae, modules, developer=None, siblings=()):
     """One `ok` or `MISSING` line for each thing the gates need, read by a fresh login shell, as
     `qk remote` reads another Mac; exit 1 when anything is missing. The last line is the
     version of the Xcode at developer, the path a run there uses, which the caller compares. siblings are
-    (name, clone) for each folder beside the project that its extensions load from, whose checkout there
+    (name, clone) for each folder beside the project that its plugins load from, whose checkout there
     setup only checks: making it is the owner's step, clone the command that does (vocaro/queuekeeper#117)."""
     lines = ["fail=0",
              "prefix=$(brew --prefix 2>/dev/null) || { echo \"MISSING Homebrew on the login shell's PATH\"; exit 1; }",
@@ -2681,7 +2681,7 @@ def verify_script(formulae, modules, developer=None, siblings=()):
         lines.append(f'if python3 -c "import {module}" >/dev/null 2>&1; then echo "ok      import {module}"; '
                      f'else echo "MISSING import {module} in python3"; fail=1; fi')
     for name, clone in siblings:
-        missing = (f"MISSING ~/Development/{name}, the checkout the project's extension loads from there, which "
+        missing = (f"MISSING ~/Development/{name}, the checkout the project's plugin loads from there, which "
                    f"queuekeeper does not create: make it there with {clone}")
         lines.append(f'if [ -d "$HOME/Development/"{shlex.quote(name)} ]; then '
                      f'echo {shlex.quote(f"ok      ~/Development/{name}")}; '
@@ -2695,7 +2695,7 @@ def setup(host, formulae, modules, check, runtimes=False, root=None):
     """Install what the gates use on another Mac, then check it as `qk remote` will see it.
     With check, only check. With runtimes, give the Macs the same simulator runtimes instead
     (match_runtimes). With root, it also checks that another Mac has its own checkout of each folder
-    beside the project that its extensions load from, and names the clone that makes one it lacks, which it
+    beside the project that its plugins load from, and names the clone that makes one it lacks, which it
     leaves to the owner (vocaro/queuekeeper#117)."""
     if runtimes:
         if formulae or modules:
@@ -2765,7 +2765,7 @@ def runtime_images(host, side, developer, clear=False):
     return ask(host, {"images": developer, "staging": RUNTIME_STAGING, "clear": clear, "pinned": runtime_pins()})
 
 
-# What names runtime builds to keep: each returns {build: where}. The Apple extension adds its disk items' pins.
+# What names runtime builds to keep: each returns {build: where}. The Apple plugin adds its disk items' pins.
 PINNED_BUILDS = []
 # Seconds Git may take to say what kind of object a hash names.
 OBJECT_TIMEOUT = 10
@@ -3073,7 +3073,7 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     # A run that names a physical device uses it here, or there only by `qk remote run --device`.
-    named = extensions.DEVICES.reserved_devices(arguments)
+    named = plugins.DEVICES.reserved_devices(arguments)
     refused = (f"its arguments name the physical device of {', '.join(named)}, which another Mac uses only under "
                "a reservation `qk remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
@@ -3212,7 +3212,7 @@ def first_command(root, config, command, kind):
         relative = directory.relative_to(top).as_posix()
     except ValueError:
         relative = None
-    refused, named = None, sorted(extensions.DEVICES.named_devices(command, top))
+    refused, named = None, sorted(plugins.DEVICES.named_devices(command, top))
     if relative is None:
         refused = f"its directory {directory} is outside the checkout {top}"
     elif relative != "." and subprocess.run(["git", "-C", str(top), "check-ignore", "-q", relative], env=environment(),
@@ -3872,7 +3872,7 @@ def toolkit_qk(host, arguments, *, project=False, timeout=CENSUS_TIMEOUT):
     status. A command ssh starts finds only sshd's PATH, whose python3 is the system's, too old for the launcher:
     on 2026-11-15 `ssh build-host 'python3 --version'` answered Python 3.9.6, and the login shell's PATH has the one
     remote setup installed (vocaro/queuekeeper#145, #167). With project, the toolkit's checkout there is the
-    project, whose extensions add their commands, such as the Apple extension's `devices`."""
+    project, whose plugins add their commands, such as the Apple plugin's `devices`."""
     checkout = '"$HOME"/' + shlex.quote(offload_host.TOOLKIT_CHECKOUT)
     script = " ".join([f"python3 {checkout}/bin/qk", *([f"--project {checkout}"] if project else []),
                        *(shlex.quote(str(argument)) for argument in arguments)])
@@ -4048,7 +4048,7 @@ def unplaceable_lanes(config, read_here=settings_here, read_there=None):
     judged by this Mac's settings alone. This Mac's settings are read once (read_here) and each of the farm's Macs
     that take work now once (read_there, capacity_there), only when some lane needs something a Mac may decline. A
     Mac that cannot be read is unknown, never one that declines: a lane that only such a Mac might take is said to
-    run only if it does. A lane's "chips" is checked by its own extension."""
+    run only if it does. A lane's "chips" is checked by its own plugin."""
     read_there = read_there or capacity_there
     lanes = config.get("lanes") if isinstance(config.get("lanes"), dict) else {}
     readings = {}
@@ -4366,7 +4366,7 @@ def dispatch(root, name, since, pid=None):
 def reap_request(root):
     """What a dispatch from root asks of offload_host.reap: the project's pool, besides those the second
     Mac's checkouts name."""
-    pool = extensions.DEVICES.pool(root)
+    pool = plugins.DEVICES.pool(root)
     return {"pools": [pool] if isinstance(pool, str) and pool else []}
 
 
@@ -4379,7 +4379,7 @@ def census_command(advertise=None, reap=None, update=None, stop_leftovers=True, 
     stop_leftovers false only lists them (offload_host.stop_leftovers); with update, update_request's, it
     fast-forwards another Mac's own toolkit checkout when it can, and says what became of it
     (offload_host.update_toolkit); with siblings, sibling_requests', it does the same for each folder a project's
-    extensions load from, which that Mac links beside a dispatched checkout."""
+    plugins load from, which that Mac links beside a dispatched checkout."""
     request = {"leftovers": ROOT, **({"advertise": list(advertise)} if advertise else {}),
                **({"reap": reap} if reap is not None else {}), **({"toolkitCheckout": update} if update else {}),
                **({"siblingCheckouts": siblings} if siblings else {}),
@@ -4400,7 +4400,7 @@ def update_request(want=True):
 
 def sibling_requests(root):
     """What a connection asks of offload_host.update_toolkit for each folder beside the project that its
-    extensions load from (config.sibling_folders): another Mac's own ~/Development/NAME, and the commit this Mac's
+    plugins load from (config.sibling_folders): another Mac's own ~/Development/NAME, and the commit this Mac's
     checkout of it names as origin/main, which spares the fetch there when that checkout holds it already."""
     requests = []
     for name in sibling_folders(root):
@@ -4431,7 +4431,7 @@ def toolkit_line(host, found, what="toolkit checkout"):
 def update_there(host, siblings=()):
     """offload_host.update_toolkit's answer from host, for `qk doctor` (cli.fix_hosts), which fetches whatever
     this Mac's origin/main says; one that cannot be had is an answer of state unchecked, saying why. With it,
-    which of siblings, the folders a project's extensions load from (config.sibling_folders), host has no checkout
+    which of siblings, the folders a project's plugins load from (config.sibling_folders), host has no checkout
     of (offload_host.missing_siblings), asked on the same connection (vocaro/queuekeeper#117): a list, or None when
     none were asked of or host did not say."""
     request = {"toolkitCheckout": update_request(want=False), **({"siblingFolders": list(siblings)} if siblings else {})}
@@ -4446,7 +4446,7 @@ def update_there(host, siblings=()):
 
 
 def sibling_clone(root, name):
-    """How another Mac's own checkout of name, a folder beside the project at root that its extensions load
+    """How another Mac's own checkout of name, a folder beside the project at root that its plugins load
     from, is made: a `git clone` of the origin this Mac's checkout of it names, run there. queuekeeper does not run
     it; making that checkout is the owner's step (vocaro/queuekeeper#117)."""
     here = (git_state.main_checkout(root) or Path(root)).resolve().parent / name

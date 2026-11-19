@@ -12,7 +12,7 @@ import subprocess
 import threading
 import time
 
-from queuekeeper import extensions, farm, host_health, offload_host, remote, resources
+from queuekeeper import plugins, farm, host_health, offload_host, remote, resources
 from .. import admission_ids
 
 TITLE, ORDER = "Farm", 20
@@ -74,7 +74,7 @@ def read_detail():
 
 def read_devices():
     """Read the active device provider, or an empty inventory without one."""
-    return extensions.DEVICES.observations()
+    return plugins.DEVICES.observations()
 
 def project_of(found):
     """The project a holder's or waiter's work is for, by its origin, or None when it names none."""

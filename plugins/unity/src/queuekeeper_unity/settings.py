@@ -7,7 +7,7 @@ Both are paths relative to the checkout. "project" is the folder that holds Proj
 itself when left out."""
 from pathlib import Path, PurePosixPath
 
-from queuekeeper import extensions
+from queuekeeper import plugins
 
 KEY = "unity"
 KEYS = {"project", "layout"}
@@ -36,4 +36,4 @@ def layout(root, config):
 
 def register():
     """Add the key to the core."""
-    extensions.CONFIG_KEYS[KEY] = check
+    plugins.CONFIG_KEYS[KEY] = check

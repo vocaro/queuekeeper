@@ -10,13 +10,13 @@ simulating on the GPU. So an exclusive lane is also checked for that (`ready --e
 editor, and ends unmeasured while one plays."""
 import sys
 
-from queuekeeper import extensions
+from queuekeeper import plugins
 from queuekeeper.config import TOOLKIT_ROOT
 
 KEY = "unity"
 
 
-class UnityLane(extensions.LaneKey):
+class UnityLane(plugins.LaneKey):
     def check(self, name, lane):
         if type(lane[KEY]) is not bool: raise ValueError(f"{name}.{KEY} must be true or false")
 
@@ -28,4 +28,4 @@ class UnityLane(extensions.LaneKey):
 
 def register():
     """Add the key to the core."""
-    if not isinstance(extensions.LANE_KEYS.get(KEY), UnityLane): extensions.LANE_KEYS[KEY] = UnityLane()
+    if not isinstance(plugins.LANE_KEYS.get(KEY), UnityLane): plugins.LANE_KEYS[KEY] = UnityLane()

@@ -1,12 +1,12 @@
 """One record of reservations on a Mac, changed only under its lock: who holds what, and until when.
 
 An entry reserves one thing for one session at a time. This module's own entry is mac-foreground, a Mac's screen,
-keyboard, pointer, focus and speech. An extension adds entries of its own kinds to the same record by building on
-Record, as the mobile extension does for physical devices and simulator pools (queuekeeper_mobile.devices).
+keyboard, pointer, focus and speech. A plugin adds entries of its own kinds to the same record by building on
+Record, as the mobile plugin does for physical devices and simulator pools (queuekeeper_mobile.devices).
 
 `qk devices` is the record's command line, and this module's main is its part for every entry: path, status, show,
-reserve, update, release, check and recover. A project that lists only an extension built on this one, such as
-Unity, has it for its foreground; the mobile extension adds its devices' actions to it (add_actions, act).
+reserve, update, release, check and recover. A project that lists only a plugin built on this one, such as
+Unity, has it for its foreground; the mobile plugin adds its devices' actions to it (add_actions, act).
 
 The record lives in the account's Application Support directory, found independently of HOME
 and TMPDIR so that every session finds the same one. A change takes an exclusive lock, reads the
@@ -25,7 +25,7 @@ call require_foreground before acting; release waits for the processes the sessi
 its own, and says whether the previous frontmost app was restored.
 
 A record that names another Mac under DEFERRED is another Mac's: every run sent there makes it so
-(offload_host.defer_devices), and what it defers to that Mac's record is the extension's to say. It says nothing
+(offload_host.defer_devices), and what it defers to that Mac's record is the plugin's to say. It says nothing
 of the Mac's foreground: whether queuekeeper takes that for a run is the Mac's own setting (takes_foreground).
 """
 import argparse
@@ -429,7 +429,7 @@ class Record:
     def recover(self, key, *, by, revision, verified, unchecked=None, users=None, notifications=None):
         """Attended recovery of an entry whose owner cannot release it, once its work has stopped.
 
-        An extension's record may make an entry wait for a check elsewhere too (_checked_elsewhere), which
+        A plugin's record may make an entry wait for a check elsewhere too (_checked_elsewhere), which
         unchecked and users are for. notifications, what was done to put the owner's notifications back, joins
         the entry's notifications."""
         if not by or not verified:
@@ -508,7 +508,7 @@ def require_foreground(owner, record=None):
     return require_window(FOREGROUND, entry)
 
 
-# The record's command line, `qk devices`: the actions every entry takes. An extension that adds entries of its own
+# The record's command line, `qk devices`: the actions every entry takes. A plugin that adds entries of its own
 # kinds adds its own actions beside these (add_actions) and handles these through act.
 
 
@@ -539,7 +539,7 @@ def report(key, entry):
 
 
 def describe(key, entry, line=(), window=True, held=(), notes=(), hints=()):
-    """One line of status for entry: its condition and holder, then held, what an extension says of a held entry
+    """One line of status for entry: its condition and holder, then held, what a plugin says of a held entry
     of its own kind; notes, what it says of any; the sessions in line; and hints, what to run to take it."""
     state = condition(entry)
     parts = [f"{key}: {state}"]
@@ -713,7 +713,7 @@ def act(args, record, *, restore=None, said=None):
 
 
 def main(argv=None):
-    """`qk devices` where no extension adds devices to the record: its foreground and any entry already in it."""
+    """`qk devices` where no plugin adds devices to the record: its foreground and any entry already in it."""
     parser = argparse.ArgumentParser(prog="qk devices", description="Read or change this Mac's device record, "
                                      f"which reserves its foreground, {FOREGROUND}.")
     add_actions(parser.add_subparsers(dest="action", required=True))

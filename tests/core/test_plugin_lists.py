@@ -13,7 +13,7 @@ from queuekeeper import config
 ROOT = Path(__file__).resolve().parents[2]
 # Each document that lists the plugins, the heading of the section holding its list, and how it reaches plugins/.
 LISTS = [("README.md", "## Plugins", ""),
-         ("doc/developer_guide.md", "### Plugins and extensions", "../"),
+         ("doc/developer_guide.md", "### Plugins", "../"),
          ("doc/user_guide.md", "## Further reading", "../")]
 DIAGRAM = "assets/overview.svg"
 
@@ -80,15 +80,15 @@ class PluginLists(unittest.TestCase):
             (root / "README.md").write_text(f"# Q\n\n## Plugins\n\n- **[New]({readme})** does things.\n\n## Next\n")
             # The developer guide links it only after its section ends; the user guide names it with no link.
             (root / "doc/developer_guide.md").write_text(
-                f"# D\n\n### Plugins and extensions\n\nNone.\n\n## Later\n\n[New](../{readme})\n")
+                f"# D\n\n### Plugins\n\nNone.\n\n## Later\n\n[New](../{readme})\n")
             (root / "doc/user_guide.md").write_text("# U\n\n## Further reading\n\n- The New plugin.\n")
             (root / DIAGRAM).write_text('<svg><text x="1">Plugins</text><text x="2">Newer</text></svg>')
             self.assertEqual(omissions(root), [
                 "plugins/stray is not in queuekeeper-workspace.json",
-                f"doc/developer_guide.md's Plugins and extensions does not link {readme}",
+                f"doc/developer_guide.md's Plugins does not link {readme}",
                 f"doc/user_guide.md's Further reading does not link {readme}",
                 f"{DIAGRAM} has no box for the New plugin"])
-            (root / "doc/developer_guide.md").write_text(f"# D\n\n### Plugins and extensions\n\n[New](../{readme})\n")
+            (root / "doc/developer_guide.md").write_text(f"# D\n\n### Plugins\n\n[New](../{readme})\n")
             (root / "doc/user_guide.md").write_text(f"# U\n\n## Further reading\n\n- [New](../{readme})\n")
             (root / DIAGRAM).write_text('<svg><text x="2">New</text></svg>')
             (root / "plugins/stray").rmdir()

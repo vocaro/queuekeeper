@@ -1,6 +1,6 @@
-"""A run's pin set: one commit for each folder beside the project that its extensions load from.
+"""A run's pin set: one commit for each folder beside the project that its plugins load from.
 
-A project's queuekeeper.json may load an extension from a folder beside it, `../NAME/...`, and that folder's own
+A project's queuekeeper.json may load a plugin from a folder beside it, `../NAME/...`, and that folder's own
 queuekeeper.json may name, under "siblings", further folders its code loads from, each with the environment variable
 it finds the folder by (config.sibling_variables).
 Queuekeeper itself is held still for a run by QUEUEKEEPER_ROOT; those folders were not, so a landing in one while a
@@ -11,7 +11,7 @@ What runs lanes pins them: the merge queue's worker for each round, `qk run`, an
 another, such as the toolkit's `eng checkpoint`. Each folder is pinned at its origin/main, as this Mac's own checkout of
 it names that, unless `qk run --sibling NAME=WHERE` chooses another commit or checkout. The set travels in
 QUEUEKEEPER_SIBLINGS, {NAME: {"commit", "root"}} as JSON, and every qk command that finds it set loads the project's
-extensions from each root in place of the folder (config.extensions_of), sets each folder's variable, where it has
+plugins from each root in place of the folder (config.plugins_of), sets each folder's variable, where it has
 one, to its root for itself and what it starts (exported), and makes no set of its own. A root is the Mac's one
 checkout of that folder at that commit (offload_host.pinned_checkout), which nothing moves.
 
@@ -63,7 +63,7 @@ def verify(pins):
 
 
 def folder(path, pins):
-    """Where an extension's folder `../NAME/REST` is under pins: REST in NAME's pinned root, or None for a path
+    """Where a plugin's folder `../NAME/REST` is under pins: REST in NAME's pinned root, or None for a path
     that names no pinned folder, which is then found beside the project as ever."""
     parts = Path(path).parts
     if not pins or len(parts) < 2 or parts[0] != ".." or parts[1] not in pins: return None
@@ -103,7 +103,7 @@ def chosen(root, names, given):
         name, _, where = entry.partition("=")
         if not name or not where: raise ValueError(f"--sibling {entry} names no folder and commit: --sibling NAME=WHERE")
         if name not in names:
-            raise ValueError(f"--sibling names {name}, which is no folder the project's extensions load from"
+            raise ValueError(f"--sibling names {name}, which is no folder the project's plugins load from"
                              + (f": they load from {', '.join(names)}" if names else ", as they load from none"))
         if name in choices: raise ValueError(f"--sibling names {name} twice")
         path = Path(where).expanduser()
@@ -130,11 +130,11 @@ def make(root, names, choices=None, fetch=False, say=None):
     one that code finds by an environment variable names it ("variable").
 
     Each folder a pinned one declares in turn, in its queuekeeper.json at the commit pinned
-    (config.further_siblings), is pinned by the same rules: the toolkit, loaded as a project's extension, loads
+    (config.further_siblings), is pinned by the same rules: the toolkit, loaded as a project's plugin, loads
     from two more.
 
     A folder that is no Git checkout, or whose checkout names no origin/main, has no commit to pin: it is left out,
-    and loads as it stands. So is a folder found by a variable that this Mac has nothing of. An extension's folder
+    and loads as it stands. So is a folder found by a variable that this Mac has nothing of. A plugin's folder
     this Mac has nothing of, or a commit that cannot be checked out, is Unpinned."""
     from . import config  # which imports this module
     wanted = dict(names) if isinstance(names, dict) else dict.fromkeys(names)
@@ -147,7 +147,7 @@ def make(root, names, choices=None, fetch=False, say=None):
             if say: say(f"no {name}: this Mac has no {own}")
             continue
         if not own.is_dir():
-            raise Unpinned(f"this Mac has no {own}, which the project's extension loads from: clone it there")
+            raise Unpinned(f"this Mac has no {own}, which the project's plugin loads from: clone it there")
         if commit is None:
             further = config.further_siblings(own)
             if (own / ".git").exists():

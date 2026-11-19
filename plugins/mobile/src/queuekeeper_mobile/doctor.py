@@ -1,5 +1,5 @@
-"""What the mobile extensions add to `qk doctor`: the devices the owner declared, as each Mac reaches them now."""
-from queuekeeper import extensions
+"""What the mobile plugins add to `qk doctor`: the devices the owner declared, as each Mac reaches them now."""
+from queuekeeper import plugins
 
 
 def declared_devices(root, config):
@@ -23,5 +23,5 @@ def overdue_silences(root, config, record=None):
 
 
 def register():
-    if overdue_silences not in extensions.DOCTOR: extensions.DOCTOR.append(overdue_silences)
-    if declared_devices not in extensions.DOCTOR_CHECKS: extensions.DOCTOR_CHECKS.append(declared_devices)
+    if overdue_silences not in plugins.DOCTOR: plugins.DOCTOR.append(overdue_silences)
+    if declared_devices not in plugins.DOCTOR_CHECKS: plugins.DOCTOR_CHECKS.append(declared_devices)

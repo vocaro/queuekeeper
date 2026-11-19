@@ -106,7 +106,7 @@ See [the user guide](doc/user_guide.md#the-dashboard) for details.
 ## Plugins
 
 A plugin teaches Queuekeeper a platform. A project switches one on by listing its package in the
-`extensions` of its `queuekeeper.json`, such as `"extensions": ["queuekeeper_apple"]`. Omitting that
+`plugins` of its `queuekeeper.json`, such as `"plugins": ["queuekeeper_apple"]`. Omitting that
 key loads the core alone.
 
 - **[Apple](plugins/apple/src/queuekeeper_apple/README.md)** lets agents build and test iOS and Mac

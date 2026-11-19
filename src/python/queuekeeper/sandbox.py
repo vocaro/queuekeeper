@@ -15,7 +15,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import extensions
+from . import plugins
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 # Set in the environment of a sandboxed command, to the lane's name. A sandbox cannot be applied inside another
@@ -54,13 +54,13 @@ def settings(name, lane):
 
 def check(name, lane):
     """Refuse a sandbox the lane cannot run under (config.parse): a self lane admits its parts, which may go to other
-    Macs over SSH and run nested lanes; an extension refuses one for the lanes it knows cannot run in one
-    (extensions.SANDBOX_REFUSALS)."""
+    Macs over SSH and run nested lanes; a plugin refuses one for the lanes it knows cannot run in one
+    (plugins.SANDBOX_REFUSALS)."""
     if settings(name, lane) is None: return
     if lane.get("resource") == "self":
         raise ValueError(f"{name}.sandbox needs an admitted lane: a self lane's script admits its parts, which may "
                          "run on other Macs, outside any sandbox")
-    for refusal in extensions.SANDBOX_REFUSALS:
+    for refusal in plugins.SANDBOX_REFUSALS:
         why = refusal(lane)
         if why: raise ValueError(f"{name}.sandbox cannot be: {why}")
 

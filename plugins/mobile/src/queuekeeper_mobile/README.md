@@ -21,7 +21,7 @@ platform that owns a device's identifier:
 | How is a run watched for one? | `idevicesyslog`, for a banner | `adb logcat -b events` |
 | How does a Mac list what it reaches? | `devicectl list devices` | `adb devices -l` |
 
-Queuekeeper has one device slot, `extensions.DEVICES`, and a slot takes one provider. The mobile plugin provides it
+Queuekeeper has one device slot, `plugins.DEVICES`, and a slot takes one provider. The mobile plugin provides it
 and hands each question to the platform that owns the device, so a project can list both platforms.
 
 ## What it adds

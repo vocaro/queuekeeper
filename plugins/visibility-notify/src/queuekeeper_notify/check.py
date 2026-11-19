@@ -44,7 +44,7 @@ def write(directory, state):
 
 def spawn():
     """Start a look at the repository this command runs in, apart from this process, unless one was started within
-    EVERY seconds (extensions.HOST_COMMAND). It returns at once, and does nothing where the rule is off or the
+    EVERY seconds (plugins.HOST_COMMAND). It returns at once, and does nothing where the rule is off or the
     folder has no queue."""
     if visibility.switched_off() or RULE not in rules.chosen(deliver.settings()): return
     folder = Path.cwd()

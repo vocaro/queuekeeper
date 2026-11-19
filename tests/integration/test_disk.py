@@ -68,7 +68,7 @@ SCRATCH = "Test scratch folders"
 
 
 def scratch_items(root):
-    """An extension's items for these tests: each folder under root/tmp, a candidate once nothing uses it."""
+    """A plugin's items for these tests: each folder under root/tmp, a candidate once nothing uses it."""
     def items(host, usage, sizes, wanted):
         if "scratch" not in wanted: return []
         return [disk.cache_item(host, usage, sizes, "scratch", path, "a test's scratch folder")
@@ -77,7 +77,7 @@ def scratch_items(root):
 
 
 class Extended(Fixture):
-    """The inventory with one extension's category, and none of the Apple extension's, which the command would add."""
+    """The inventory with one plugin's category, and none of the Apple plugin's, which the command would add."""
 
     def setUp(self):
         super().setUp()
@@ -85,10 +85,10 @@ class Extended(Fixture):
         for folder in (self.scratch, self.other): folder.mkdir(parents=True)
         self.ledger = self.root / "ledger.jsonl"
         listed = scratch_items(self.root)
-        for patched in (patch.object(cli, "extensions_of", lambda *folders: []), patch.object(disk, "EXTENSION_HOSTS", []),
-                        patch.object(disk, "EXTENSION_PRIMES", []),
-                        patch.object(disk, "EXTENSION_ITEMS", [listed]),
-                        patch.dict(disk.EXTENSION_CATEGORIES, {listed: ["scratch"]}),
+        for patched in (patch.object(cli, "plugins_of", lambda *folders: []), patch.object(disk, "PLUGIN_HOSTS", []),
+                        patch.object(disk, "PLUGIN_PRIMES", []),
+                        patch.object(disk, "PLUGIN_ITEMS", [listed]),
+                        patch.dict(disk.PLUGIN_CATEGORIES, {listed: ["scratch"]}),
                         patch.dict(disk.CATEGORIES, {"scratch": SCRATCH, "simulator": "Simulators",
                                                      "runtime": "Simulator runtimes"})):
             patched.start()
@@ -284,7 +284,7 @@ class ProgressTests(Extended):
     def test_json_carries_no_progress_and_stdout_is_line_buffered(self):
         stdout, stderr = TextIOWrapper(BytesIO(), encoding="utf-8"), StringIO()
         with patch.object(disk.Host, "current", return_value=self.host()), \
-                patch.object(disk, "EXTENSION_PRIMES", [lambda host: [(self.root / "tmp", 1)]]), \
+                patch.object(disk, "PLUGIN_PRIMES", [lambda host: [(self.root / "tmp", 1)]]), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             self.assertEqual(cli.main(["--project", str(self.root), "disk", "--json"]), 0)
         self.assertTrue(stdout.line_buffering)
@@ -314,10 +314,10 @@ class CommandTests(Extended):
         self.assertIn(f"$ rm -rf -- {self.scratch}", text)
         self.assertTrue(self.scratch.exists())
 
-    def test_disk_measures_only_the_folders_an_extension_names(self):
+    def test_disk_measures_only_the_folders_a_plugin_names(self):
         scanned, text = self.run_disk()
         self.assertEqual(scanned, set())
-        with patch.object(disk, "EXTENSION_PRIMES", [lambda host: [(self.root / "tmp", 1), (None, 2)]]):
+        with patch.object(disk, "PLUGIN_PRIMES", [lambda host: [(self.root / "tmp", 1), (None, 2)]]):
             scanned, text = self.run_disk()
         self.assertEqual(scanned, {(str(self.root / "tmp"), 1)})
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):

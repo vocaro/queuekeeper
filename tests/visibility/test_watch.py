@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
+from queuekeeper import cli, events, plugins, merge_queue as mq, visibility
 import queuekeeper_watch as watch
 from test_support import queue as test_merge_queue
 
@@ -94,7 +94,7 @@ class Command(test_merge_queue.Fixture):
         settings = patch.object(visibility, "settings_path", lambda: self.base / "settings" / visibility.FILE)
         settings.start()
         self.addCleanup(settings.stop)
-        for kept in (extensions.COMMANDS, extensions.LOADED):
+        for kept in (plugins.COMMANDS, plugins.LOADED):
             before = kept.copy()
             self.addCleanup(lambda kept=kept, before=before: (kept.clear(), kept.update(before) if isinstance(kept, dict)
                                                               else kept.extend(before)))
@@ -102,8 +102,8 @@ class Command(test_merge_queue.Fixture):
         environment.start()
         self.addCleanup(environment.stop)
         os.environ.pop(visibility.SWITCH, None)
-        extensions.COMMANDS.pop("watch", None)
-        if watch.__name__ in extensions.LOADED: extensions.LOADED.remove(watch.__name__)
+        plugins.COMMANDS.pop("watch", None)
+        if watch.__name__ in plugins.LOADED: plugins.LOADED.remove(watch.__name__)
 
     def command(self, *words, project=None):
         """(its status, or None when the command's parser refused it, what it printed, what it said of errors)."""

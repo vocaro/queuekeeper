@@ -10,7 +10,7 @@ import sys
 
 
 def execute(root, operation, command, *, reference=None, identifiers=(), details=None):
-    from . import agent_results, merge_queue as queue, recovery, remote, extensions
+    from . import agent_results, merge_queue as queue, recovery, remote, plugins
 
     details = {} if details is None else details
     requested = list(dict.fromkeys(identifiers))
@@ -60,7 +60,7 @@ def execute(root, operation, command, *, reference=None, identifiers=(), details
             payload = error_result("submission-refused", str(error), "refused")
             payload["waitsFor"] = list(error.waits_for)
             if error.closed: payload["recovery"] = recovery.for_closed(error.closed, str(error))
-        except (remote.Lost, extensions.Unavailable) as error:
+        except (remote.Lost, plugins.Unavailable) as error:
             status = queue.lane_results.UNMEASURED
             print(f"queuekeeper: {error}", file=sys.stderr)
             payload = error_result("unmeasured", str(error))

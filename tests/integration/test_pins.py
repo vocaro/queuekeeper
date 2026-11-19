@@ -17,15 +17,15 @@ sys.path.insert(0, str(ROOT / "src/python"))
 from queuekeeper import config, disk, lane_results, offload_host, pins
 import host_isolation
 
-# An extension that says which of its versions loaded: `qk kit-says` prints VALUE, and names the file it came from.
+# A plugin that says which of its versions loaded: `qk kit-says` prints VALUE, and names the file it came from.
 KIT = ("from pathlib import Path\n"
-       "from queuekeeper import extensions\n"
+       "from queuekeeper import plugins\n"
        "VALUE = {value!r}\n"
        "def says(arguments, project):\n"
        "    print(f'kit-says {{VALUE}} from {{Path(__file__).resolve()}}')\n"
        "    return 0\n"
-       "def register(): extensions.COMMANDS['kit-says'] = ('say which kit loaded', says)\n")
-# A lane that asks the extension by a nested qk command, has a change land in this Mac's checkout of its folder as a
+       "def register(): plugins.COMMANDS['kit-says'] = ('say which kit loaded', says)\n")
+# A lane that asks the plugin by a nested qk command, has a change land in this Mac's checkout of its folder as a
 # fast-forward does, and asks again.
 LANE = ("import subprocess, sys\n"
         "qk = [sys.executable, sys.argv[1], '--project', '.', 'kit-says']\n"
@@ -42,7 +42,7 @@ def git(directory, *words):
 
 
 class Fixture(unittest.TestCase):
-    """A home whose Development holds a project and kit, the folder its extension loads from, a clone of an origin."""
+    """A home whose Development holds a project and kit, the folder its plugin loads from, a clone of an origin."""
 
     def setUp(self):
         self.home = Path(tempfile.mkdtemp(prefix="pins")).resolve()
@@ -62,7 +62,7 @@ class Fixture(unittest.TestCase):
         self.project.mkdir()
         (self.project / "queuekeeper.json").write_text(json.dumps({
             "schemaVersion": 1, "name": "fixture",
-            "extensions": [{"module": "fixture_kit", "path": "../kit/src/python"}],
+            "plugins": [{"module": "fixture_kit", "path": "../kit/src/python"}],
             "lanes": {"nested": {"command": ["python3", "lane.py", str(ROOT / "bin/qk"), str(self.kit)]}}}))
         (self.project / "lane.py").write_text(LANE)
         git(self.project, "init", "-q", "-b", "main")
@@ -356,22 +356,22 @@ class FurtherFolderTests(Fixture):
 
 
 class HeldTests(Fixture):
-    def test_extensions_load_from_the_pinned_root_and_a_set_that_is_not_what_it_says_is_refused(self):
+    def test_plugins_load_from_the_pinned_root_and_a_set_that_is_not_what_it_says_is_refused(self):
         live = [("fixture_kit", str(self.kit / "src/python"))]
-        self.assertEqual(config.extensions_of(self.project), live)
+        self.assertEqual(config.plugins_of(self.project), live)
         made = pins.make(self.project, ["kit"])
         with patch.dict(os.environ, {pins.VARIABLE: pins.encoded(made)}):
-            self.assertEqual(config.extensions_of(self.project),
+            self.assertEqual(config.plugins_of(self.project),
                              [("fixture_kit", str(self.pinned("kit", self.one) / "src/python"))])
         # A folder the set does not name, as one of another project's run, is found beside the project as ever.
         with patch.dict(os.environ, {pins.VARIABLE: pins.encoded({"other": made["kit"]})}):
-            self.assertEqual(config.extensions_of(self.project), live)
+            self.assertEqual(config.plugins_of(self.project), live)
         gone = {"kit": {"commit": self.one, "root": str(self.home / "gone")}}
         moved = {"kit": {"commit": "3" * 40, "root": made["kit"]["root"]}}
         for held, why in (pins.encoded(gone), "has no checkout at"), (pins.encoded(moved), f"is at {self.one[:12]} in"), \
                 ("[]", "holds no pin set"), ("{", "holds no pin set"):
             with patch.dict(os.environ, {pins.VARIABLE: held}), self.assertRaisesRegex(pins.Unpinned, why):
-                config.extensions_of(self.project)
+                config.plugins_of(self.project)
 
     def test_a_command_under_a_set_whose_checkout_is_gone_could_not_start(self):
         gone = pins.encoded({"kit": {"commit": self.one, "root": str(self.home / "gone")}})
@@ -409,7 +409,7 @@ class RunTests(Fixture):
                       ran.stderr)
         ran = self.qk("run", "--here", "--sibling=other=main", "nested")
         self.assertEqual(ran.returncode, 2, ran.stderr)
-        self.assertIn("queuekeeper: --sibling names other, which is no folder the project's extensions load from: "
+        self.assertIn("queuekeeper: --sibling names other, which is no folder the project's plugins load from: "
                       "they load from kit\n", ran.stderr)
         self.assertFalse((self.project / ".build/queuekeeper/nested/run.log").exists())
 

@@ -6,31 +6,49 @@ import re
 import sys
 from pathlib import Path, PurePosixPath
 
-from . import extensions as hooks, lane_timing, pins, sandbox
+from . import plugins as hooks, lane_timing, pins, sandbox
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
-# The extensions a project gets when its queuekeeper.json names none, and that a command with no project loads.
-EXTENSIONS = ()
+# The plugins a project gets when its queuekeeper.json names none, and that a command with no project loads.
+PLUGINS = ()
 FILE = "queuekeeper.json"
+# The key plugins had until vocaro/queuekeeper#48. It is read only while no "plugins" is given, so that a project's
+# main, which its merge queue reads, can land the commit that renames it; a later release refuses it.
+OLD_PLUGINS = "extensions"
 
 
-def extensions(declared):
-    """A project's extensions, checked: each a module's dotted name, or {"module": NAME, "path": FOLDER} for one
+def listed_plugins(value, default=()):
+    """What a queuekeeper.json's value lists under "plugins", or under OLD_PLUGINS when it gives no "plugins";
+    default when it gives neither. Both is refused."""
+    if "plugins" in value and OLD_PLUGINS in value:
+        raise ValueError(f"queuekeeper.json gives both plugins and {OLD_PLUGINS}: keep plugins alone")
+    return value.get("plugins", value.get(OLD_PLUGINS, list(default)))
+
+
+def old_plugins_warning(config):
+    """qk doctor's and qk land's warning for a project that still lists its plugins under OLD_PLUGINS, or None."""
+    if OLD_PLUGINS not in config: return None
+    return (f"{OLD_PLUGINS} is now plugins, and a later release refuses it: rename the key in queuekeeper.json, "
+            "which lists the same modules (vocaro/queuekeeper#48)")
+
+
+def plugins(declared):
+    """A project's plugins, checked: each a module's dotted name, or {"module": NAME, "path": FOLDER} for one
     whose package is in FOLDER, a path relative to the project's main checkout."""
-    if not isinstance(declared, list): raise ValueError("extensions must be a list")
+    if not isinstance(declared, list): raise ValueError("plugins must be a list")
     normalized = []
     for entry in declared:
         named = entry.get("module") if isinstance(entry, dict) else entry
         if not isinstance(named, str) or not re.fullmatch(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", named) or (
                 isinstance(entry, dict) and (set(entry) - {"module", "path"} or not isinstance(entry.get("path", ""), str))):
-            raise ValueError('extensions lists module names, or {"module": NAME, "path": FOLDER}')
+            raise ValueError('plugins lists module names, or {"module": NAME, "path": FOLDER}')
         unknown(named)
         normalized.append(dict(entry) if isinstance(entry, dict) else named)
     return normalized
 
 
 def unknown(named):
-    """Refuse an extension named as a module of Queuekeeper's own package that it does not have, such as
+    """Refuse a plugin named as a module of Queuekeeper's own package that it does not have, such as
     queuekeeper.apple: the plugins are packages of their own, named with an underscore (vocaro/queuekeeper#187).
     A folder with no module in it, such as one a checkout keeps from before the plugins left the core with only
     ignored files in it, imports as a namespace package, which has no origin, and is no module either."""
@@ -39,20 +57,20 @@ def unknown(named):
     except ModuleNotFoundError: found = False
     if found: return
     plugin = __package__ + "_" + named.removeprefix(__package__ + ".")
-    raise ValueError(f"extensions names {named}, which is no module of Queuekeeper's"
+    raise ValueError(f"plugins names {named}, which is no module of Queuekeeper's"
                      + (f"; the plugin is the package {plugin}: list {plugin}" if "." not in plugin and
                         importlib.util.find_spec(plugin) is not None else ""))
 
 
-def extensions_of(root, base=None):
-    """What the project at root switches on, as (module, folder or None) pairs: its queuekeeper.json's extensions,
-    or EXTENSIONS when it names none or there is no readable project. A folder is resolved against base, the
+def plugins_of(root, base=None):
+    """What the project at root switches on, as (module, folder or None) pairs: its queuekeeper.json's plugins,
+    or PLUGINS when it names none or there is no readable project. A folder is resolved against base, the
     project's main checkout when root is a linked worktree of it, else against root; but a folder beside the project
     that the run this process belongs to pinned (pins.held) is that run's checkout of it, so that every command of
     a run loads what the run started with (vocaro-engineering#497). A pin set that is not what it says is
     pins.Unpinned."""
-    try: declared = extensions(json.loads((Path(root) / FILE).read_text()).get("extensions", list(EXTENSIONS)))
-    except (OSError, ValueError, AttributeError): declared = list(EXTENSIONS)
+    try: declared = plugins(listed_plugins(json.loads((Path(root) / FILE).read_text()), PLUGINS))
+    except (OSError, ValueError, AttributeError): declared = list(PLUGINS)
     pinned = pins.held()
     pins.verify({name: pinned[name] for name in sibling_folders(root) if name in pinned} if pinned else None)
     return [(entry["module"], (pins.folder(entry["path"], pinned) or str((Path(base or root) / entry["path"]).resolve()))
@@ -83,11 +101,11 @@ def sibling_variables(root):
 
 def siblings_in(configuration):
     """The folders beside a project that its configuration declares, {NAME: VARIABLE or None}, as the merge queue
-    reads them from main's commit: NAME for each extension folder "../NAME/...", and each NAME of "siblings", a folder
+    reads them from main's commit: NAME for each plugin folder "../NAME/...", and each NAME of "siblings", a folder
     the project's own code loads from, found by the environment variable VARIABLE, which a run that pins the folder
     sets to its checkout of it (pins.exported). A ValueError says what is wrong with either."""
     found = {}
-    for entry in extensions(configuration.get("extensions", [])):
+    for entry in plugins(listed_plugins(configuration)):
         parts = Path(entry.get("path") or "").parts if isinstance(entry, dict) else ()
         if len(parts) > 1 and parts[0] == ".." and parts[1] not in ("..", "."): found.setdefault(parts[1], None)
     found.update(siblings(configuration.get("siblings", {})))
@@ -122,13 +140,13 @@ LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foregr
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms", "exactTests",
                        "failedTests", "labels", "sandbox", "timing", "notice"})
-# The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
-# without the extension is told which to switch on.
-EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
+# The lane keys above that a plugin shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
+# without the plugin is told which to switch on.
+PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
                        "chips": "queuekeeper_mac_hardware", "devices": "queuekeeper_mobile",
                        "deviceRunMinutes": "queuekeeper_mobile", "idioms": "queuekeeper_apple"}
-# The top-level keys an extension shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
-EXTENSION_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple",
+# The top-level keys a plugin shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
+PLUGIN_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple",
                          "android": "queuekeeper_android", "emulatorPool": "queuekeeper_android"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen",
                         "labels", "failFast"})
@@ -145,25 +163,25 @@ def parse(source):
     value = json.loads(source)
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
-    allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository",
+    allowed = {"schemaVersion", "name", "plugins", OLD_PLUGINS, "lanes", "integration", "repository",
                "queue", "release", "testLanes", "gitHooks", "docs", "siblings"}
     if "spelling" in value: raise ValueError(f"spelling {SPELLING_GONE}")
-    if set(value) - allowed - set(EXTENSION_CONFIG_KEYS):
-        raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(EXTENSION_CONFIG_KEYS))}")
+    if set(value) - allowed - set(PLUGIN_CONFIG_KEYS):
+        raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(PLUGIN_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:
         raise ValueError("Project name must be a nonempty string")
-    declared = extensions(value.get("extensions", list(EXTENSIONS)))
-    if "extensions" in value: value["extensions"] = declared
+    declared = plugins(listed_plugins(value, PLUGINS))
+    if "plugins" in value or OLD_PLUGINS in value: value["plugins"] = declared
     siblings(value.get("siblings", {}))
-    # The extensions shipped here that the project switches on add keys to its lanes, so they are loaded before the
+    # The plugins shipped here that the project switches on add keys to its lanes, so they are loaded before the
     # lanes are checked, whichever command reads the configuration. One in a folder of the project's is the
     # command's to load (cli.perform), which knows the folder.
-    hooks.load([named for named in declared if isinstance(named, str) and (named.startswith(__package__ + ".") or named in set(EXTENSION_CONFIG_KEYS.values()) | set(EXTENSION_LANE_KEYS.values()))])
-    for key, module in EXTENSION_CONFIG_KEYS.items():
+    hooks.load([named for named in declared if isinstance(named, str) and (named.startswith(__package__ + ".") or named in set(PLUGIN_CONFIG_KEYS.values()) | set(PLUGIN_LANE_KEYS.values()))])
+    for key, module in PLUGIN_CONFIG_KEYS.items():
         if key not in value: continue
         if key not in hooks.CONFIG_KEYS:
-            raise ValueError(f"{key} is the {module} extension's key, and the project does not switch that extension "
-                             f"on: list {module} in extensions")
+            raise ValueError(f"{key} is the {module} plugin's key, and the project does not switch that plugin "
+                             f"on: list {module} in plugins")
         hooks.CONFIG_KEYS[key](value[key])
     git_hooks(value.get("gitHooks"))
     if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
@@ -197,7 +215,7 @@ def parse(source):
         lane_timing.check(name, lane)
         failed_tests_setting(name, lane)
         sandbox.check(name, lane)
-        extension_keys(name, lane)
+        plugin_keys(name, lane)
         command = lane.get("command")
         if not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command):
             raise ValueError(f"Lane {name} needs an argv list, never shell source")
@@ -358,15 +376,15 @@ def self_lane_warnings(root, config):
     return warnings
 
 
-def extension_keys(name, lane):
-    """Check each key of a lane that an extension adds (hooks.LANE_KEYS), by the extension's own rule. A key of
-    EXTENSION_LANE_KEYS whose extension the project has not switched on is refused, naming the extension."""
+def plugin_keys(name, lane):
+    """Check each key of a lane that a plugin adds (hooks.LANE_KEYS), by the plugin's own rule. A key of
+    PLUGIN_LANE_KEYS whose plugin the project has not switched on is refused, naming the plugin."""
     for key in lane:
         if key in hooks.LANE_KEYS: hooks.LANE_KEYS[key].check(name, lane)
-        elif key in EXTENSION_LANE_KEYS:
-            raise ValueError(f"{name}.{key} is the {EXTENSION_LANE_KEYS[key]} extension's key, and the project does not "
-                             f"switch that extension on: list {EXTENSION_LANE_KEYS[key]}, or an extension that requires "
-                             "it, in extensions")
+        elif key in PLUGIN_LANE_KEYS:
+            raise ValueError(f"{name}.{key} is the {PLUGIN_LANE_KEYS[key]} plugin's key, and the project does not "
+                             f"switch that plugin on: list {PLUGIN_LANE_KEYS[key]}, or a plugin that requires "
+                             "it, in plugins")
 
 
 def unadmitted(lane):
@@ -668,7 +686,7 @@ def merge_queue(queue, lanes):
     if "affected" in queue: affected_rules(queue, lanes)
     if "followLandings" in queue and queue["followLandings"] is not True:
         raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
-                         "checkout after each landing, for a checkout other projects read, such as an extension's")
+                         "checkout after each landing, for a checkout other projects read, such as a plugin's")
     if "noVerdictRuns" in queue and (type(queue["noVerdictRuns"]) is not int or queue["noVerdictRuns"] < 1):
         raise ValueError("queue.noVerdictRuns is how many runs in a row may give no verdict before the queue holds, "
                          "a positive integer")
@@ -910,7 +928,7 @@ def stays(lanes, name):
     if lane.get("here"): return f"the lane says: {lane['here']}"
     for member in lane.get("parallel", []):
         if lanes[member].get("here"): return f"its lane {member} says: {lanes[member]['here']}"
-    # A key an extension added may keep the lane here too, such as the chips its results are valid on.
+    # A key a plugin added may keep the lane here too, such as the chips its results are valid on.
     placed = hooks.placement(lanes, name)
     return placed[1] if placed and placed[0] == {hooks.HERE} else None
 

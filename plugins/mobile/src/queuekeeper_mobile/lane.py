@@ -1,18 +1,18 @@
-"""What the mobile extensions do around a lane's run and an admitted command's: the device windows it waits in, the
-reservations a dispatch to another Mac carries and the device pass it reads (queuekeeper.extensions.DEVICES), for
-every platform switched on (platforms.py). A slot has one provider, so this extension provides it, and the Apple and
-Android extensions each register a platform with it instead."""
+"""What the mobile plugins do around a lane's run and an admitted command's: the device windows it waits in, the
+reservations a dispatch to another Mac carries and the device pass it reads (queuekeeper.plugins.DEVICES), for
+every platform switched on (platforms.py). A slot has one provider, so this plugin provides it, and the Apple and
+Android plugins each register a platform with it instead."""
 import json
 import os
 import sys
 
-from queuekeeper import extensions, resources
+from queuekeeper import plugins, resources
 from queuekeeper.resources import BUSY
 from . import device_pass, devices, leases
 
 
 def this_mac():
-    from queuekeeper import cli  # cli loads the extension
+    from queuekeeper import cli  # cli loads the plugin
     return cli.this_mac()
 
 
@@ -70,8 +70,8 @@ class Devices(leases.Devices):
 
 def register():
     """Put the device slot and the device commands in the core."""
-    extensions.provide("DEVICES", Devices())
-    extensions.COMMANDS.update({
+    plugins.provide("DEVICES", Devices())
+    plugins.COMMANDS.update({
         "device-pass": ("a release's physical-device pass, as a release lane's command: run COMMAND once on each paired "
                         "device named, an iPhone, an iPad or an Android phone, in turn, under its reservation, taking a "
                         "paired device in turn and using one the session reserved within the owner's window: qk "

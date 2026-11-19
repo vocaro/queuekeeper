@@ -20,7 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
 from test_support import farm as farm_fixture
-from queuekeeper import cli, events, extensions, merge_queue as mq, visibility
+from queuekeeper import cli, events, plugins, merge_queue as mq, visibility
 from queuekeeper import __version__ as queuekeeper_version
 from queuekeeper_dashboard import admission_ids, panels, registry, repository, server
 from queuekeeper_dashboard.panels import activity, farm, history, home, logs, queue
@@ -1008,7 +1008,7 @@ class Command(Fixture):
         settings = patch.object(visibility, "settings_path", lambda: self.base / "settings" / visibility.FILE)
         settings.start()
         self.addCleanup(settings.stop)
-        for kept in (extensions.COMMANDS, extensions.LOADED, extensions.AFTER_EVENT):
+        for kept in (plugins.COMMANDS, plugins.LOADED, plugins.AFTER_EVENT):
             before = kept.copy()
             self.addCleanup(lambda kept=kept, before=before: (kept.clear(), kept.update(before) if isinstance(kept, dict)
                                                               else kept.extend(before)))
@@ -1016,7 +1016,7 @@ class Command(Fixture):
         environment.start()
         self.addCleanup(environment.stop)
         os.environ.pop(visibility.SWITCH, None)
-        extensions.COMMANDS.pop("serve", None)
+        plugins.COMMANDS.pop("serve", None)
 
     def command(self, *words, project=None):
         printed, errors, status = io.StringIO(), io.StringIO(), None

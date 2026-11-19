@@ -133,8 +133,8 @@ class Together:
 
 PLATFORMS = []
 NONE = Platform()
-# The platforms shipped beside this extension, by the module that registers each when imported. A process that loads
-# no extension, such as `python3 -m queuekeeper_mobile.devices defer` that another Mac runs before a dispatch, switches
+# The platforms shipped beside this plugin, by the module that registers each when imported. A process that loads
+# no plugin, such as `python3 -m queuekeeper_mobile.devices defer` that another Mac runs before a dispatch, switches
 # on each that is installed (discover), so that the record still knows an iPhone or an Android phone it holds.
 SHIPPED = ("queuekeeper_apple.apple_platform", "queuekeeper_android.android_platform")
 

@@ -42,7 +42,7 @@ def checkout_of(directory):
 
 
 def note(directory, event):
-    """Add the repository whose queue wrote event to the list, once a process (extensions.AFTER_EVENT)."""
+    """Add the repository whose queue wrote event to the list, once a process (plugins.AFTER_EVENT)."""
     if directory in NOTED or visibility.switched_off(): return
     NOTED.add(directory)
     root = checkout_of(directory)

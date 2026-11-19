@@ -1,6 +1,6 @@
 """What the Android plugin adds to `qk doctor`: whether this Mac has the SDK, its tools and a JDK that the project's
 configuration needs."""
-from queuekeeper import extensions
+from queuekeeper import plugins
 from . import sdk
 
 
@@ -18,4 +18,4 @@ def warnings(root, config):
 
 
 def register():
-    if warnings not in extensions.DOCTOR: extensions.DOCTOR.append(warnings)
+    if warnings not in plugins.DOCTOR: plugins.DOCTOR.append(warnings)

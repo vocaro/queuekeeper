@@ -39,7 +39,7 @@ EXPECTED = 3 * 3600
 # minutes than in any others of the holder's window, so a longer grace would only spend the waiter's time.
 GRACE = 180
 # Each (owner, record=, said=, **options) -> a context held for the run while it holds the foreground: what an
-# extension that builds on this one saves before the run and puts back after it, as the Apple extension does
+# plugin that builds on this one saves before the run and puts back after it, as the Apple plugin does
 # VoiceOver's state. options are slot's own, passed on. A guard that could not put back what it changed raises
 # an error whose `restored` is False, and the foreground then stays held for attended recovery.
 GUARDS = []
@@ -96,7 +96,7 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
     TimeoutError naming the release and again, the command to run after it (vocaro/queuekeeper#95). A new holder is
     judged anew. A stop raises processes.Interrupted before taking
     the foreground. An orphaned or uncertain entry needs attended recovery, except a case that a guard's own
-    extension lets the run recover itself, while it runs. Only after acquisition, each of GUARDS
+    plugin lets the run recover itself, while it runs. Only after acquisition, each of GUARDS
     is entered for the run, with options, and left before the release.
     The entry records this process as its active run, so that the entry outlives a run that
     dies only as an orphan, and QUEUEKEEPER_DEVICE_OWNER names it for the block. The release records the

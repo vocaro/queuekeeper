@@ -181,7 +181,7 @@ class CitationSettingTests(unittest.TestCase):
             for setting, status in [({}, 0), ({"docs": {"citations": False}}, 0), ({"docs": {"citations": True}}, 1)]:
                 with self.subTest(setting=setting):
                     (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
-                                                                       "extensions": [], **setting}))
+                                                                       "plugins": [], **setting}))
                     with contextlib.redirect_stdout(io.StringIO()) as printed:
                         self.assertEqual(cli.main(["--project", str(root), "docs", "check"]), status,
                                          printed.getvalue())
@@ -215,7 +215,7 @@ class CommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             subprocess.run(["git", "init", "-q", str(root)], check=True)
-            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "extensions": []}))
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example", "plugins": []}))
             # serve and watch are visibility features' commands, unity a plugin's, none of them loaded here.
             (root / "README.md").write_text("`qk land`, `qk docs check`, `qk serve --open`, `qk watch`, `qk unity test`\n")
             with contextlib.redirect_stdout(io.StringIO()) as printed:

@@ -6,7 +6,7 @@ The lane runs only on a Mac whose chip it lists. When every Mac has one it is pl
 have, it is placed among those, and waits for them while they are busy; it never runs on another. When none has, it
 is refused, and `qk doctor` says so beforehand. `qk host chip` prints a Mac's chip as a lane names
 it."""
-from queuekeeper import extensions, farm
+from queuekeeper import plugins, farm
 from queuekeeper.config import unadmitted
 from . import chip
 
@@ -27,7 +27,7 @@ def named(mine, theirs):
     return ", and ".join([here, *(f"{farm.named(host)} has {found or unread}" for host, found in theirs.items())])
 
 
-class Chips(extensions.LaneKey):
+class Chips(plugins.LaneKey):
     def check(self, name, lane):
         chips = lane[KEY]
         if not isinstance(chips, list) or not chips or any(
@@ -41,7 +41,7 @@ class Chips(extensions.LaneKey):
     def placement(self, lane):
         wanted = lane[KEY]
         mine, theirs = reading()
-        macs = {host for host, found in theirs.items() if found in wanted} | ({extensions.HERE} if mine in wanted else set())
+        macs = {host for host, found in theirs.items() if found in wanted} | ({plugins.HERE} if mine in wanted else set())
         if len(macs) == len(theirs) + 1: return None
         listed = f"its chips are {', '.join(wanted)}; {named(mine, theirs)}"
         if not macs: raise ValueError(f"no Mac has a chip the lane lists: {listed}")
@@ -73,8 +73,8 @@ def read(args, out=print):
 
 def register():
     """Add the key, its doctor check and the host read to the core."""
-    if not isinstance(extensions.LANE_KEYS.get(KEY), Chips): extensions.LANE_KEYS[KEY] = Chips()
-    if warnings not in extensions.DOCTOR: extensions.DOCTOR.append(warnings)
-    extensions.HOST_READS["chip"] = (
+    if not isinstance(plugins.LANE_KEYS.get(KEY), Chips): plugins.LANE_KEYS[KEY] = Chips()
+    if warnings not in plugins.DOCTOR: plugins.DOCTOR.append(warnings)
+    plugins.HOST_READS["chip"] = (
         "print this Mac's chip and each of the farm's Macs', as a lane's \"chips\" names them, such as apple-m5-max",
         arguments, read)

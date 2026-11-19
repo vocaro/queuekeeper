@@ -212,14 +212,14 @@ MEMBER = re.compile(r".+ [1-9][0-9]*")
 TEMPLATE = re.compile(r"(?P<label>.+) template \((?P<runtime>[^()]+)\)")
 SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 # The toolkit's own checkout on each Mac, relative to its home, which update_toolkit keeps at origin/main
-# there (vocaro-engineering#203); and the shell words that run the Apple extension's `qk devices` from any folder
+# there (vocaro-engineering#203); and the shell words that run the Apple plugin's `qk devices` from any folder
 # on any Mac: that checkout's own launcher, which puts its plugins on the import path, with that checkout as the
-# project, which declares the extension. `python3 -m queuekeeper_mobile.devices` finds no such module outside a
+# project, which declares the plugin. `python3 -m queuekeeper_mobile.devices` finds no such module outside a
 # process qk started, since the plugins left src/python (vocaro/queuekeeper#167).
 TOOLKIT_CHECKOUT = "Development/queuekeeper"
 QK_DEVICES = f"python3 ~/{TOOLKIT_CHECKOUT}/bin/qk --project ~/{TOOLKIT_CHECKOUT} devices"
 # Where a Mac keeps the checkouts runs are pinned to, under the home: NAME/COMMIT/NAME for each folder a project's
-# extensions load from and each commit a run pinned it at, with NAME/COMMIT.ready beside one that is whole
+# plugins load from and each commit a run pinned it at, with NAME/COMMIT.ready beside one that is whole
 # (pinned_checkout); the days one stays unused before it is pruned; and the variable that carries a run's pin set to
 # every qk command under it, {NAME: {"commit", "root"}} as JSON (pins).
 PINS, PIN_READY, PIN_DAYS, PIN_VARIABLE = "Development/queuekeeper-pins", ".ready", 7, "QUEUEKEEPER_SIBLINGS"
@@ -826,7 +826,7 @@ def keep_unlocked(request, ask=None, unlock=security_unlock, run=subprocess.run,
     """`qk keychain keep-unlocked` on another Mac, in the owner's Terminal there or through the
     `ssh -t` the sending Mac runs: ask for this Mac's login password, and once it has unlocked the login
     keychain, keep it in request["root"], under the home, readable only by this account, for each qk
-    remote run to unlock that keychain in its own session (the Mac desktop extension's keychain.unlock_for_run). Then set the keychain to
+    remote run to unlock that keychain in its own session (the Mac desktop plugin's keychain.unlock_for_run). Then set the keychain to
     lock neither after a time nor on sleep, so that the owner's own session keeps it unlocked too. The
     password goes only to Security and that file. Exit 0 when both are done, 1 when no password given
     unlocked the keychain, which changes nothing, or the settings were not changed, and 2 when it
@@ -3648,7 +3648,7 @@ def answer(request):
             found.update(git=output(["git", "--version"]),
                          advertised={path: advertise(Path.home() / path) for path in request["advertise"]})
         if request.get("toolkitCheckout"): found["toolkitCheckout"] = guarded_update(request["toolkitCheckout"])
-        # The folders a project's extensions load from, of which a dispatch's pinned checkouts are worktrees (place_siblings).
+        # The folders a project's plugins load from, of which a dispatch's pinned checkouts are worktrees (place_siblings).
         if request.get("siblingCheckouts"):
             found["siblingCheckouts"] = [guarded_update(each) for each in request["siblingCheckouts"]]
         return found
@@ -3885,7 +3885,7 @@ def pin_head(checkout):
 
 
 def pin_git(clone, *arguments, environment=None, timeout=120):
-    """Git in clone, a Mac's own checkout of a folder a project's extensions load from: its output, stripped. It
+    """Git in clone, a Mac's own checkout of a folder a project's plugins load from: its output, stripped. It
     never prompts, and a failure or a timeout is a RuntimeError saying git's own words."""
     variables = {key: value for key, value in (os.environ if environment is None else environment).items()
                  if key not in GIT_LOCATION}
@@ -3994,7 +3994,7 @@ def remove_pin(checkout, ready, clone):
 
 
 def place_siblings(slot, siblings, environment=None, home=None):
-    """Put beside a dispatched checkout, in its slot, the folders its project's extensions load from, each at the
+    """Put beside a dispatched checkout, in its slot, the folders its project's plugins load from, each at the
     commit the sending Mac pinned for the run ({"name", "commit"}; pins.dispatched): a link to this Mac's one
     checkout of that folder at that commit (pinned_checkout), made from this Mac's own ~/Development/NAME, which is
     not sent. It is no longer a link to that folder itself, which every connection fast-forwards and which a landing
@@ -4016,7 +4016,7 @@ def place_siblings(slot, siblings, environment=None, home=None):
             # A folder the sending Mac had no commit to pin, as one that is no Git checkout there: this Mac's own,
             # as it stands.
             if not clone.is_dir():
-                say(f"this Mac has no {clone} for the project's extension to load from")
+                say(f"this Mac has no {clone} for the project's plugin to load from")
                 continue
             if not (link.is_symlink() and link.resolve() == clone.resolve()):
                 if link.is_symlink(): link.unlink()
@@ -4029,7 +4029,7 @@ def place_siblings(slot, siblings, environment=None, home=None):
                 raise RuntimeError(f"this Mac has no {clone}, its own checkout, to take it from")
             checkout = pinned_checkout(clone, name, commit, home=home, environment=environment)
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-            say(f"no checkout of {name} at {commit[:12]} for the project's extension to load from: {error}")
+            say(f"no checkout of {name} at {commit[:12]} for the project's plugin to load from: {error}")
             pins[name] = {"commit": commit, "root": str(pin_path(name, commit, home)), "error": str(error)}
             continue
         if not (link.is_symlink() and link.resolve() == checkout.resolve()):
@@ -4043,7 +4043,7 @@ def place_siblings(slot, siblings, environment=None, home=None):
 
 
 def missing_siblings(names, home=None):
-    """Those of names, the folders a project's extensions load from (config.sibling_folders), that this Mac has no
+    """Those of names, the folders a project's plugins load from (config.sibling_folders), that this Mac has no
     ~/Development/NAME of for place_siblings to take a pinned checkout from, which `qk doctor` asks before any dispatch finds it
     (vocaro/queuekeeper#117). It only looks: nothing is fetched or created."""
     home = Path.home() if home is None else Path(home)
@@ -4606,7 +4606,7 @@ def main(plan):
         if pins: result["siblings"] = pins
         say(f"{checkout} at {project['commit'][:12]}")
         environment = {**os.environ, "QUEUEKEEPER_ROOT": str(kit), **NO_BYTECODE}
-        # The run's pin set, which every qk command of it loads the project's extensions by (pins.held).
+        # The run's pin set, which every qk command of it loads the project's plugins by (pins.held).
         # An empty one too: a qk run here is a command of the sending Mac's run, and pins nothing of its own.
         if "siblings" in plan: environment[PIN_VARIABLE] = json.dumps(pins)
         if "requestAge" in plan:

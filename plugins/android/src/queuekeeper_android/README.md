@@ -13,7 +13,7 @@ verified on hardware.
 ## Setting it up
 
 ```json
-"extensions": ["queuekeeper_android"],
+"plugins": ["queuekeeper_android"],
 "emulatorPool": "Pagepour",
 "android": {"directory": "android", "module": "app", "variant": "debug"}
 ```

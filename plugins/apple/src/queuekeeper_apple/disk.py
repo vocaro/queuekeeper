@@ -1,4 +1,4 @@
-"""The Apple extension's disk items for `qk disk`: simulators and their runtimes, Xcode's DerivedData, the SwiftPM
+"""The Apple plugin's disk items for `qk disk`: simulators and their runtimes, Xcode's DerivedData, the SwiftPM
 cache and kept app builds (decision E of vocaro/vocaro-engineering#403). The core lists and removes them with its
 own (queuekeeper.disk); `register` adds them."""
 from dataclasses import dataclass, field
@@ -276,7 +276,7 @@ PINNED = []
 
 
 def pinned_builds():
-    """The runtime builds something outside the extension names, each with where (PINNED)."""
+    """The runtime builds something outside the plugin names, each with where (PINNED)."""
     found = {}
     for pinned in PINNED: found.update(pinned())
     return found
@@ -482,7 +482,7 @@ def swiftpm_cache(host, usage, sizes):
 
 @dataclass
 class Host(disk.Host):
-    """The core's Host, with what the extension's items read from the machine."""
+    """The core's Host, with what the plugin's items read from the machine."""
     simulators: dict = None
     runtimes: dict = None
     default_devices: frozenset = frozenset()
@@ -512,7 +512,7 @@ class Host(disk.Host):
 
 
 def items(host, usage, sizes, wanted):
-    """The extension's items of the categories in wanted."""
+    """The plugin's items of the categories in wanted."""
     found = []
     if "simulator" in wanted: found += simulators(host, usage, sizes)
     if "runtime" in wanted: found += runtimes(host)

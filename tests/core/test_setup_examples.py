@@ -22,7 +22,7 @@ class SetupExamples(unittest.TestCase):
         for example in examples:
             project = config.parse(example)
             self.assertIn("gate", project["lanes"])
-            self.assertEqual(project["extensions"], [])
+            self.assertEqual(project["plugins"], [])
 
     def test_a_docs_only_change_to_the_setup_guide_runs_this_module(self):
         # A docs-only landing skips the gate, which runs this module; a change to the guide it reads must run it

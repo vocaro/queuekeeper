@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import cli, events, extensions, merge_queue as mq
+from queuekeeper import cli, events, plugins, merge_queue as mq
 from test_support import queue as test_merge_queue
 
 
@@ -63,11 +63,11 @@ class Journal(unittest.TestCase):
         told = []
         def raising(directory, event): raise RuntimeError("a hook's fault")
         def reading(directory, event): told.append((directory, event, events.read(directory)))
-        with patch.object(extensions, "AFTER_EVENT", [raising, reading]):
+        with patch.object(plugins, "AFTER_EVENT", [raising, reading]):
             event = events.emit(self.directory, "queue.resumed")
         self.assertEqual(told, [(self.directory, event, [event])])
         # An event that was not written is told to none.
-        with patch.object(extensions, "AFTER_EVENT", [reading]):
+        with patch.object(plugins, "AFTER_EVENT", [reading]):
             self.assertIsNone(events.emit(self.directory / "missing", "queue.resumed"))
         self.assertEqual(len(told), 1)
 

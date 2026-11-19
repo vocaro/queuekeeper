@@ -40,7 +40,7 @@ keeps VoiceOver's state this way. If a guard cannot put back what it changed, th
 reserved until a person checks the Mac.
 
 A plugin can also add a key to a lane in `queuekeeper.json`, as this one adds `display`: it
-registers a `queuekeeper.extensions.LaneKey`, which checks the key's value and can wrap the lane's
+registers a `queuekeeper.plugins.LaneKey`, which checks the key's value and can wrap the lane's
 command. A project that uses the key without the plugin is told which plugin to list.
 
 ## Reservations

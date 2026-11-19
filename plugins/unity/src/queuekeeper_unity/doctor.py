@@ -7,7 +7,7 @@ read the keychain that holds the session, so another Mac's is not asked. A sign-
 warned of. A run on a Mac that is not signed in ends unmeasured, by its log (licensing.never_started)."""
 import shlex
 
-from queuekeeper import extensions, farm, remote
+from queuekeeper import plugins, farm, remote
 from . import editor, settings, unity_cli
 
 # Without a graphics device Unity never loads compute shaders, and a project that has them fails to open.
@@ -35,7 +35,7 @@ def warnings(root, config):
             found.append(f"{name} passes {NO_GRAPHICS}: without a graphics device Unity never loads compute shaders, "
                          "and a project that has them fails to open")
     if not (project / "ProjectSettings").is_dir():
-        return found + [f"the Unity extension is on, but there is no Unity project at {project}: name its folder, as "
+        return found + [f"the Unity plugin is on, but there is no Unity project at {project}: name its folder, as "
                         f"\"{settings.KEY}\": {{\"project\": \"lab\"}}"]
     want = editor.pinned(project)
     if not want:
@@ -57,4 +57,4 @@ def warnings(root, config):
 
 def register():
     """Add these checks to `doctor`."""
-    if warnings not in extensions.DOCTOR: extensions.DOCTOR.append(warnings)
+    if warnings not in plugins.DOCTOR: plugins.DOCTOR.append(warnings)

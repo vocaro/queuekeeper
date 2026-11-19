@@ -582,19 +582,19 @@ class KeepUnlockedTests(unittest.TestCase):
         self.assertEqual(said.getvalue().count("for this run's session"), 1)
 
     def test_a_kept_password_that_does_not_unlock_leaves_a_sent_run_unmeasured_with_the_fix(self):
-        from queuekeeper import extensions
+        from queuekeeper import plugins
         self.kept.write_bytes(b"an old one")
         with patch.object(offload_host, "security_unlock", Unlocks()), \
                 patch.dict(os.environ, {remote.DISPATCHER: "workstation"}):
             os.environ.pop(keychain.UNLOCKED, None)
-            with self.assertRaises(extensions.Unavailable) as unavailable: keychain.unlock_run(self.root, {})
+            with self.assertRaises(plugins.Unavailable) as unavailable: keychain.unlock_run(self.root, {})
             self.assertNotIn(keychain.UNLOCKED, os.environ)
         self.assertIn("does not unlock", str(unavailable.exception))
         self.assertIn("`python3 scripts/qk keychain keep-unlocked --target ", str(unavailable.exception))
 
-    def test_the_desktop_extension_unlocks_before_a_lane_s_command(self):
-        from queuekeeper import extensions
-        self.assertIn(keychain.unlock_run, extensions.PREPARE_LANE)
+    def test_the_desktop_plugin_unlocks_before_a_lane_s_command(self):
+        from queuekeeper import plugins
+        self.assertIn(keychain.unlock_run, plugins.PREPARE_LANE)
 
     def test_security_reports_a_missing_keychain_and_unlocks_nothing(self):
         # Security itself, as a run calls it, on a keychain file that is not there: no keychain is touched.

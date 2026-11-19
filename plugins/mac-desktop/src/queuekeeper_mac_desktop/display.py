@@ -3,14 +3,14 @@
 A lane that says it waits for what the display's refresh times, such as a scroll view's animation. Its command
 runs under a one-second caffeinate -u, which wakes a sleeping display, behind a lock too, and then caffeinate -d,
 which keeps an awake one on but wakes none, and no other assertion. It unlocks nothing: a lane whose tests need an unlocked screen says "unlockedScreen" too."""
-from queuekeeper import extensions
+from queuekeeper import plugins
 from queuekeeper.config import unadmitted
 
 KEY = "display"
 AWAKE = ["sh", "-c", 'caffeinate -u -t 1; exec caffeinate -d -- "$@"', "sh"]
 
 
-class Display(extensions.LaneKey):
+class Display(plugins.LaneKey):
     # Such a lane's result depends on the screen, which is read on the Mac that runs it (vocaro-engineering#185).
     reads_screen = True
 
@@ -52,5 +52,5 @@ def warnings(root, config):
 
 def register():
     """Add the key and its doctor check to the core."""
-    if not isinstance(extensions.LANE_KEYS.get(KEY), Display): extensions.LANE_KEYS[KEY] = Display()
-    if warnings not in extensions.DOCTOR: extensions.DOCTOR.append(warnings)
+    if not isinstance(plugins.LANE_KEYS.get(KEY), Display): plugins.LANE_KEYS[KEY] = Display()
+    if warnings not in plugins.DOCTOR: plugins.DOCTOR.append(warnings)

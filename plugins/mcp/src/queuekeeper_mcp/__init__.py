@@ -4,5 +4,5 @@ See README.md here for registering it with Claude Code and Codex, and server.py 
 
 
 def register():
-    """Add nothing: the server is a program of its own, which runs the project's launcher, and no extension. This
+    """Add nothing: the server is a program of its own, which runs the project's launcher, and no plugin. This
     lets the checkout load it like every other component it is composed of."""

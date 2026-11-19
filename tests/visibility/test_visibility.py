@@ -11,16 +11,16 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import cli, extensions, visibility
+from queuekeeper import cli, plugins, visibility
 
 FEATURE = '''"""Says hello, for a test."""
-from queuekeeper import extensions
+from queuekeeper import plugins
 REGISTERED = []
 
 
 def register():
     REGISTERED.append(1)
-    extensions.COMMANDS["hello"] = ("say hello", lambda argv, project: print("hello") or 0)
+    plugins.COMMANDS["hello"] = ("say hello", lambda argv, project: print("hello") or 0)
 '''
 BROKEN = '"""Cannot be imported."""\nraise RuntimeError("broken on purpose")\n'
 
@@ -43,7 +43,7 @@ class Switch(unittest.TestCase):
                 patcher = patch.object(what, name, replacement)
                 patcher.start()
                 self.addCleanup(patcher.stop)
-        for kept in (extensions.COMMANDS, extensions.LOADED):
+        for kept in (plugins.COMMANDS, plugins.LOADED):
             before = kept.copy()
             self.addCleanup(lambda kept=kept, before=before: (kept.clear(), kept.update(before) if isinstance(kept, dict)
                                                               else kept.extend(before)))
@@ -95,7 +95,7 @@ class Switch(unittest.TestCase):
         self.command("status")
         visibility.load()
         self.assertNotIn("qk_hello", sys.modules)
-        self.assertNotIn("hello", extensions.COMMANDS)
+        self.assertNotIn("hello", plugins.COMMANDS)
 
     def test_the_environment_switch_turns_every_feature_off(self):
         visibility.switch("hello", True)
@@ -112,7 +112,7 @@ class Switch(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("the visibility feature broken did not load, and is left out: broken on purpose", errors)
         self.assertIn("`qk visibility disable broken`", errors)
-        self.assertIn("hello", extensions.COMMANDS)
+        self.assertIn("hello", plugins.COMMANDS)
 
     def test_settings_that_cannot_be_read_turn_nothing_on(self):
         path = visibility.settings_path()

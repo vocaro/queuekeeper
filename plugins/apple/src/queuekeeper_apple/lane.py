@@ -1,10 +1,10 @@
-"""What the Apple extension does around a lane's run and an admitted command's: the app registrations it keeps and
+"""What the Apple plugin does around a lane's run and an admitted command's: the app registrations it keeps and
 the VoiceOver state it puts back. The device windows a run waits in and the device pass it reads are the mobile
-extension's (queuekeeper_mobile.lane), which asks this one's platform about an iPhone or iPad (apple_platform). The
-foreground a run holds is the Mac desktop extension's (queuekeeper_mac_desktop.lane)."""
+plugin's (queuekeeper_mobile.lane), which asks this one's platform about an iPhone or iPad (apple_platform). The
+foreground a run holds is the Mac desktop plugin's (queuekeeper_mac_desktop.lane)."""
 import contextlib
 
-from queuekeeper import extensions
+from queuekeeper import plugins
 from queuekeeper_mobile import platforms
 from . import app_builds, app_registrations, apple_platform, run_results, xctest_shards
 from queuekeeper_mac_desktop import foreground, reservations
@@ -30,15 +30,15 @@ def preserved_voiceover(owner, *, record, said, voiceover=None):
 
 
 def register():
-    """Put the extension's lane hooks and commands in the core."""
+    """Put the plugin's lane hooks and commands in the core."""
     platforms.register(apple_platform.PLATFORM)
     if preserved_voiceover not in foreground.GUARDS: foreground.GUARDS.append(preserved_voiceover)
-    for hooks, hook in ((extensions.AROUND_RUN, app_registrations.around_run), (extensions.REPORT_RESULTS, run_results.report),
-                        (extensions.TEST_ALLOWANCE, matrix.default_test_allowance)):
+    for hooks, hook in ((plugins.AROUND_RUN, app_registrations.around_run), (plugins.REPORT_RESULTS, run_results.report),
+                        (plugins.TEST_ALLOWANCE, matrix.default_test_allowance)):
         if hook not in hooks: hooks.append(hook)
     # Each runs tests itself, so one started outside an admission is admitted first (cli.bare_runner).
-    extensions.RUNNERS.update({("simulator-tests",), ("xctest",)})
-    extensions.COMMANDS.update({
+    plugins.RUNNERS.update({("simulator-tests",), ("xctest",)})
+    plugins.COMMANDS.update({
         "simulator-tests": ("build a scheme's tests once and run them on several members of the project's simulator "
                             "pool side by side: qk simulator-tests --scheme S --runtime R --device T --device T; "
                             "-h for the rest", matrix.main),
@@ -52,14 +52,14 @@ def register():
                    "side by side, each reporting its skips: qk xctest [-j JOBS] [--filter REGEX]; "
                    "qk xctest -h for the rest", lambda arguments, project: xctest_shards.main(arguments)),
     })
-    extensions.PARSED_COMMANDS.update({
+    plugins.PARSED_COMMANDS.update({
         "app": ("run the last good build of the project's app: qk app run opens the newest kept Mac build, and "
                 "qk app run --iphone or --ipad installs and launches the device build on that paired device, "
                 "building origin/main first when the kept build is older; qk app keep builds and keeps one, as "
                 "the merge queue does after each gated landing; qk app status lists them",
                 app_builds.add_arguments, app_builds.execute, True),
     })
-    if keep_app not in extensions.AFTER_LANDING: extensions.AFTER_LANDING.append(keep_app)
+    if keep_app not in plugins.AFTER_LANDING: plugins.AFTER_LANDING.append(keep_app)
 
 
 def keep_app(checkout, config, head, log, environment):

@@ -1,11 +1,11 @@
-"""What the Apple extension adds to `doctor`: the simulator runtimes it evens out between the Macs, the stale pool
+"""What the Apple plugin adds to `doctor`: the simulator runtimes it evens out between the Macs, the stale pool
 simulators it shuts down, and Xcode's default simulators, which it deletes and warns of."""
 import contextlib
 import json
 import subprocess
 import sys
 
-from queuekeeper import disk, extensions, remote
+from queuekeeper import disk, plugins, remote
 from . import disk as apple_disk
 from .simulators import pool as simulator_pool
 
@@ -111,6 +111,6 @@ def required_commands(config):
 
 def register():
     """Add these checks and fixes to `doctor`."""
-    if required_commands not in extensions.REQUIRED_COMMANDS: extensions.REQUIRED_COMMANDS.append(required_commands)
-    if fix_hosts not in extensions.HOST_FIXES: extensions.HOST_FIXES.append(fix_hosts)
-    if simulator_warnings not in extensions.DOCTOR: extensions.DOCTOR.append(simulator_warnings)
+    if required_commands not in plugins.REQUIRED_COMMANDS: plugins.REQUIRED_COMMANDS.append(required_commands)
+    if fix_hosts not in plugins.HOST_FIXES: plugins.HOST_FIXES.append(fix_hosts)
+    if simulator_warnings not in plugins.DOCTOR: plugins.DOCTOR.append(simulator_warnings)

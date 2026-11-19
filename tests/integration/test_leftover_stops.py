@@ -41,7 +41,7 @@ class Fixture(unittest.TestCase):
         self.environment.start()
         self.uid = os.getuid()
         self.table, self.directories, self.killed = {}, {}, []
-        # The Preview extension a UI test of the slot's app launched, which launchd adopted (parent 1).
+        # The Preview plugin a UI test of the slot's app launched, which launchd adopted (parent 1).
         self.appex = (f"{self.slot}/Example/.build/Products/Debug/Example.app/Contents/PlugIns/Preview.appex/"
                       "Contents/MacOS/Preview")
         self.run_start, self.claimed, self.started, self.seen = ago(7300), time.time() - 7200, ago(7000), time.time() - 6990
@@ -138,7 +138,7 @@ class StopTests(Fixture):
         self.assertKept(self.stop(), "names no holder that can be read")
 
     def test_a_live_admission_accounts_for_it_and_nothing_is_signaled(self):
-        # A live admission whose owner works in the slot, admitted before the extension started, holds it.
+        # A live admission whose owner works in the slot, admitted before the plugin started, holds it.
         owner = 104000
         self.process(owner, 1, "python3 bin/qk run ui-tests", cwd=str(self.slot / "Example"), start=ago(7100))
         Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard").write_text(json.dumps({
@@ -148,7 +148,7 @@ class StopTests(Fixture):
         self.assertEqual((self.killed, report["stopped"], report["kept"], report["problem"]), ([], [], [], None))
 
     def test_a_process_no_run_recorded_is_kept_as_started_by_hand(self):
-        # The same extension, launched by hand (a Finder preview) after the run ended: no run saw it start.
+        # The same plugin, launched by hand (a Finder preview) after the run ended: no run saw it start.
         (self.checkouts / f"1.{offload_host.LAUNCHED}").unlink()
         self.assertKept(self.stop(), "no run's record names this process")
         self.record(LEFTOVER + 1, self.started, self.appex)

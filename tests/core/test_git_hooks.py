@@ -184,7 +184,7 @@ class FreshCloneTests(Repository):
 
     def test_the_key_is_a_folder_inside_the_checkout(self):
         def parse(folder):
-            return config.parse(json.dumps({"schemaVersion": 1, "name": "p", "extensions": [], "gitHooks": folder}))
+            return config.parse(json.dumps({"schemaVersion": 1, "name": "p", "plugins": [], "gitHooks": folder}))
         self.assertEqual(parse("tools/repository/hooks")["gitHooks"], "tools/repository/hooks")
         for folder in ["", "/abs/hooks", "../hooks", ".", " hooks", 3]:
             with self.subTest(folder=folder), self.assertRaisesRegex(ValueError, "gitHooks must be the folder"):

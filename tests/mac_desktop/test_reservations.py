@@ -47,8 +47,8 @@ class ForegroundCommandTests(unittest.TestCase):
 
     def test_a_project_with_only_the_desktop_plugin_has_the_command(self):
         # Unity builds on the Mac desktop plugin and on no device plugin, so `qk devices` is this plugin's.
-        program = ("import json, sys\nfrom queuekeeper import extensions\nextensions.load(['queuekeeper_unity'])\n"
-                   "code = extensions.COMMANDS['devices'][1](['status'], None)\n"
+        program = ("import json, sys\nfrom queuekeeper import plugins\nplugins.load(['queuekeeper_unity'])\n"
+                   "code = plugins.COMMANDS['devices'][1](['status'], None)\n"
                    "print(json.dumps({'code': code, 'mobile': 'queuekeeper_mobile' in sys.modules}))\n")
         environment = {**os.environ, "PYTHONPATH": host_isolation.pythonpath()}
         found = subprocess.run([sys.executable, "-c", program], env=environment, capture_output=True, text=True,

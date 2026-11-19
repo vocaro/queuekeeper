@@ -17,7 +17,7 @@ class AgentCli(Fixture):
     def invoke(self, *words):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
-                patch.object(mq.Queue, "start"), patch.object(cli.extensions, "recover"), contextlib.chdir(self.repo):
+                patch.object(mq.Queue, "start"), patch.object(cli.plugins, "recover"), contextlib.chdir(self.repo):
             status = cli.main(["--project", str(self.repo), *words])
         # json.loads also rejects multiple result documents or stray text on stdout.
         payload = json.loads(out.getvalue())
@@ -178,7 +178,7 @@ class Outcomes(Fixture):
     def text(self, *words):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
-                patch.object(mq.Queue, "start"), patch.object(cli.extensions, "recover"), contextlib.chdir(self.repo):
+                patch.object(mq.Queue, "start"), patch.object(cli.plugins, "recover"), contextlib.chdir(self.repo):
             status = cli.main(["--project", str(self.repo), *words])
         return status, out.getvalue()
 
