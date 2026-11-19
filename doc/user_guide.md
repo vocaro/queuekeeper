@@ -424,7 +424,12 @@ that ran the lane. Any edit, staged or not, a deletion, or a moved `HEAD` sends 
 like a failure, without reruns. The rejection names the lane and the changed files. The queue
 pushes the commit it built, not the tree a lane leaves, so a lane that rewrites sources, such as
 a formatter, would otherwise test one tree and land another. Files Git does not track, like
-build products and results, don't count.
+build products and results, don't count. Before sending anything back, the worker runs that lane
+once more on `origin/main` without the batch. When `main` changes its own tree too, as a formatter
+lane added to `main` that rewrites files `main` already has does, no entry is at fault: the queue
+holds for a session, with every entry still waiting, and the hold names the lane and files. Queue a
+change that leaves `main` as the lane leaves it, such as the lane's rewrite committed, then resume
+the queue.
 
 An entry that is sent back is told the failed tests, whether its commits touch their files, and
 the Mac's load during the run. One that fails together with others is told their entry IDs and

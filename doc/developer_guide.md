@@ -301,7 +301,10 @@ For a lane run on another Mac, `offload_host.altered` makes the same comparison 
 dispatch receipt carries the result back as `result.altered`. Any tracked change fails the lane
 with `ALTERED`. `weigh_failure` skips reruns, and `rejection_facts` names the changed files. The
 push sends the commit the worker built, so without this check a lane that rewrote sources would
-land a tree it never tested.
+land a tree it never tested. Before `older` reruns or blames, `Worker.main_alters` resets the
+checkout to the base, gates that one lane there, and restores the failed gate's fields and head.
+When the lane changes the base's tree too, the change is `main`'s, so the batch is queued again
+and the queue holds for a session instead of bisecting every entry back (vocaro/queuekeeper#264).
 
 ### Flakes, blame and bisecting
 

@@ -419,7 +419,9 @@ class HostCommandTests(unittest.TestCase):
         self.assertEqual(self.unresolved(source), {})
         self.assertEqual(self.unresolved(program), {"answer": {"top"}, "keep_unlocked": {"top"}})
         kept = {node.name for node in ast.parse(program).body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
-        self.assertLessEqual({"main", "reattach", "claim", "place", "step", "watch", "Journal", "screen"}, kept)
+        # altered too, by which a gate's lane on another Mac says what it changed of its tree (vocaro/queuekeeper#264).
+        self.assertLessEqual({"main", "reattach", "claim", "place", "step", "watch", "Journal", "screen", "altered"},
+                             kept)
         self.assertFalse(kept & {"answer", "admissions_now", "capacity", "leftovers", "update_toolkit", "keep_unlocked"})
 
     def test_the_part_a_plan_is_sent_follows_what_its_entries_read(self):

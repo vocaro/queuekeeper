@@ -420,9 +420,41 @@ class LaneChangesItsTree(Fixture):
         self.assertNotIn("product.o", why)
         self.assertNotIn("rerunning", said.getvalue())
         self.assertIn("gate changed the tree it tested, which the same tree does again: no rerun", said.getvalue())
+        # origin/main, without the batch, leaves its tree as it was, so the batch's commits are why (#264).
+        self.assertIn("on origin/main at", said.getvalue())
+        self.assertIn("without changing its tree: the batch's commits change it", said.getvalue())
+        self.assertIsNone(mq.Queue(self.repo).held())
         self.assertNotIn("rewrite", self.main_files())
         run(self.repo, "git", "fetch", "-q", "origin")
         self.assertEqual(run(self.repo, "git", "show", "origin/main:AGENTS.md"), "# Fixture")
+
+    def test_a_lane_that_changes_main_itself_holds_and_sends_no_entry_back(self):
+        """vocaro/queuekeeper#264: when the lane changes origin/main's tree too, without the batch, the change is
+        main's, so the queue holds for a session with every entry waiting, and a change that fixes main lands them."""
+        (self.repo / "rewrite").write_text("x")
+        run(self.repo, "git", "add", "rewrite")
+        self.publish(json.loads((self.repo / "queuekeeper.json").read_text()), "Rewrite AGENTS.md in the gate")
+        base = run(self.repo, "git", "rev-parse", "HEAD")
+        self.commit("a", "a"); self.commit("c", "c")
+        ids = self.add("a", "c")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["queued", "queued"])
+        self.assertFalse(any(self.state(i).get("why") for i in ids))
+        self.assertIn("gate changes origin/main's tree too, without the batch: no entry is sent back", said.getvalue())
+        held = mq.Queue(self.repo).held()
+        self.assertIn(f"for a session, not the owner: gate changes the tracked files it tests on origin/main at "
+                      f"{base[:12]} itself, without any entry: AGENTS.md. ", held)
+        self.assertIn("so none is sent back", held)
+        self.assertIn("-origin-main-gate.log", held)
+        self.assertNotIn("bisect", said.getvalue())
+        # A change that leaves main as the lane leaves it, queued and resumed, lands with the rest.
+        self.commit("AGENTS.md", "fix", content="# Formatted\n")
+        ids += self.add("fix")
+        mq.Queue(self.repo).hold_file.unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "landed", "landed"])
 
     def test_untracked_products_are_no_change(self):
         self.commit("a", "a")

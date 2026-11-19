@@ -4066,7 +4066,7 @@ class Worker:
         self.failed_results = None
         self.failed_dispatch = None
         self.tooling = None
-        self.altered_files = None
+        self.altered_files = self.altered_paths = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
         if quick is None: quick = self.checks
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
@@ -4220,9 +4220,45 @@ class Worker:
             elif files: where = f" on {self.ran_on or 'another Mac'}"
         if not files: return 0
         self.altered_files = altered_words(lane, files, where)
+        self.altered_paths = (files, where)
         self.say(self.altered_files)
         with contextlib.suppress(OSError), log.open("a") as kept: kept.write(f"\nqueuekeeper: {self.altered_files}\n")
         return ALTERED
+
+    def main_alters(self, base, round_name, config):
+        """The hold's reason when the lane that changed the tree a gate tested (unaltered) changes origin/main's, base,
+        too, without the batch, or None when it does not or that cannot be told: the change is then main's, from its
+        own configuration or files, such as a formatter lane that rewrites files main already has, and a bisect would
+        send back every entry, one by one, for what none of them brings (vocaro/queuekeeper#264). It runs the lane
+        once at base in this checkout, as any gate's lane runs, here or on another Mac, and leaves the checkout, and
+        what the failed gate recorded, as it found them."""
+        lane, head = self.failed_lane, self.head()
+        if not lane or not base or head == base or not self.altered_files: return None
+        kept = {name: getattr(self, name, None) for name in (
+            "ran_on", "measured", "timed_out", "ran_where", "failed_lane", "failed_load", "withdrawn", "ahead",
+            "failed_results", "failed_dispatch", "tooling", "altered_files", "altered_paths", "lane_now")}
+        self.say(f"{lane} changed the tree it tested: running it on origin/main at {base[:12]}, without the batch")
+        try:
+            self.reset(base)
+            status_, log = self.gate([lane], f"{round_name}-origin-main", quick=quick_lanes(config))
+            found = self.altered_paths
+        except (OSError, subprocess.SubprocessError, processes.TimedOut) as error:
+            self.say(f"whether {lane} changes origin/main's tree too could not be determined: {error}")
+            return None
+        finally:
+            for name, value in kept.items(): setattr(self, name, value)
+            with contextlib.suppress(OSError, subprocess.SubprocessError): self.reset(head)
+        if not found:
+            self.say(f"{lane} exited {status_} on origin/main at {base[:12]}, without changing its tree: the batch's "
+                     "commits change it")
+            return None
+        self.say(f"{lane} changes origin/main's tree too, without the batch: no entry is sent back")
+        files, where = found
+        named = ", ".join(files[:10]) + (f" and {len(files) - 10} more" if len(files) > 10 else "")
+        return (f"{lane} changes the tracked files it tests on origin/main at {base[:12]} itself, without any "
+                f"entry{where}: {named}. Every batch fails {lane} so, whatever its entries, so none is sent back. Queue "
+                f"a change that leaves main as {lane} leaves it, such as {lane}'s own rewrite committed, or one that "
+                f"stops {lane} writing tracked files, and resume the queue once it waits; see {log}")
 
     def quick(self, lane, log, cancel=None):
         """The status of lane, one of a batch's quick lanes (quick_lanes), run in this checkout without
@@ -5940,6 +5976,13 @@ class Worker:
             return NO_VERDICT_OUTCOME
         self.no_verdicts = self.locked_screens = 0
         if result:
+            held = runner.main_alters(base, round_name, config) if runner.altered_files else None
+            if held:
+                # main's own lane changes main's tree, which no entry brings, so none is sent back (#264).
+                queue.mark(applied, QUEUED)
+                if not self.alone: self.limit, self.suspects = None, 0
+                queue.hold(worded(SESSION, held))
+                return QUEUED
             # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
             if not reran: flakes = runner.rerun(config, applied, base, head, log, round_name)
             if not flakes and runner.regate:
