@@ -1142,6 +1142,10 @@ def python_crash_reports(directory=None, now=None):
 HEALTH_LARGEST = 5
 # What host_health lists every process with: no process's arguments, which a slow `ps ... args=` waits on.
 HEALTH_LISTING = ("ps", "-A", "-o", "pid=,rss=,etime=,comm=")
+# A JSON file to read in place of this Mac's memory, for tests: a reading as host_health returns it. A suite's own load
+# brings memory pressure to warning and fills swap, so a `qk doctor` a test runs found this Mac short of memory and
+# exited 1 (vocaro/queuekeeper#215).
+HEALTH_RECORDING = "QUEUEKEEPER_HOST_HEALTH_RECORDING"
 # vm.swapusage's sizes, as `total = 32768.00M  used = 31744.00M  free = 1024.00M  (encrypted)`.
 SWAP_SIZE = re.compile(r"(total|used)\s*=\s*([\d.]+)([KMGT]?)")
 
@@ -1159,7 +1163,13 @@ def host_health():
     None when unread, and its HEALTH_LARGEST largest processes by resident
     memory, each with its PID, executable name, resident bytes and seconds since it started. It lists processes
     without their arguments. On 2026-11-15 another Mac's fseventsd held 34 of its 64 GB after 15 days and swap
-    was full, so a gate timed out with none of its tests failed; nothing named the process."""
+    was full, so a gate timed out with none of its tests failed; nothing named the process. With HEALTH_RECORDING
+    set, the reading it names, or None when it cannot be read."""
+    recording = os.environ.get(HEALTH_RECORDING)
+    if recording:
+        try: found = json.loads(Path(recording).read_text())
+        except (OSError, ValueError): return None
+        return found if isinstance(found, dict) else None
     memory = output(["sysctl", "-n", "hw.memsize"])
     swap = swap_usage(output(["sysctl", "-n", "vm.swapusage"]))
     reading = {"memoryBytes": int(memory) if memory and memory.isdigit() else None,

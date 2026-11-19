@@ -5885,16 +5885,13 @@ class LaggingCheckout(Fixture):
         run(self.repo, "git", "commit", "-q", "--allow-empty", "-m", "Before Queuekeeper")
         self.assertFalse((self.repo / "queuekeeper.json").exists())
         project = ["python3", str(ROOT / "scripts/qk"), "--project", str(self.repo)]
+        # qk queue doctor exits 1 on any finding. It reads this Mac's memory from host_isolation's recording, not from
+        # the Mac, whose swap and memory pressure a gate's own load raises (vocaro/queuekeeper#215), so it is healthy.
         for words in (["queue", "status", "--json"], ["queue", "placement", "gate", "--json"],
-                      ["queue", "events", "--json"]):
+                      ["queue", "events", "--json"], ["queue", "doctor", "--json"]):
             done = subprocess.run([*project, *words], cwd=self.base, capture_output=True, text=True)
             self.assertEqual(done.returncode, 0, f"{words}: {done.stdout}{done.stderr}")
-        # qk queue doctor exits 1 on any finding, and it too reads the Mac this suite runs on: short of memory, which a
-        # gate's own xctests bring, is a finding (vocaro/queuekeeper#221). What is checked here is that it read the
-        # project and answered, its exit status the one its own JSON's health gives.
-        done = subprocess.run([*project, "queue", "doctor", "--json"], cwd=self.base, capture_output=True, text=True)
-        self.assertIn(done.returncode, (0, 1), f"queue doctor: {done.stdout}{done.stderr}")
-        self.assertEqual(int(not json.loads(done.stdout)["healthy"]), done.returncode, done.stdout)
+        self.assertTrue(json.loads(done.stdout)["healthy"], done.stdout)
         # qk queue health answers by its exit status whether the Macs are healthy, and it reads the Mac this suite
         # runs on: at a memory pressure of warning, which a gate's own load brings, it says `slow` and exits 1
         # (vocaro/queuekeeper#221). What is checked here is that it read the project and answered, not that Mac.

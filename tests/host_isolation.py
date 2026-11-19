@@ -200,6 +200,11 @@ os.environ['QUEUEKEEPER_QUIT_OPENED_APPS'] = "off"
     "defaults": [1, "", "Error: Could not find key 'AppleShowScrollBars' in domain 'kCFPreferencesAnyApplication'.\n"],
     "ioreg": [0, "", ""]}))
 os.environ[offload_host.SCROLL_BARS_RECORDING] = str(ROOT / "scroll-bars.json")
+# Nor does any `doctor` or `queue doctor` a test runs read this Mac's memory, which the suite's own load can leave short
+# (vocaro/queuekeeper#215): it reads 64 GB, no swap, normal pressure and no process. A test of the reading clears it.
+(ROOT / "host-health.json").write_text(json.dumps({"memoryBytes": 64 * 1024 ** 3, "swapUsedBytes": 0, "swapTotalBytes": 0,
+                                                   "memoryLevel": 1, "largest": []}))
+os.environ[offload_host.HEALTH_RECORDING] = str(ROOT / "host-health.json")
 # Nor does any `devices status`, `doctor` or health reading a test makes list this Mac's devices with devicectl, or
 # read the owner's device record and write what it read beside it (vocaro/queuekeeper#211): it reads that this Mac
 # lists none, in a record of its own that holds nothing. A test of the reading or the record names its own.
@@ -321,7 +326,7 @@ ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS", "HEAVY_BUSY_LIMIT", "QUEUEKEEPER_START_FREE_GB",
     "QUEUEKEEPER_RUN_FREE_GB",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
-    "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD,
+    offload_host.HEALTH_RECORDING, "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD,
     remote.RESPONSIBLE, "QUEUEKEEPER_DEVICE_LISTING", "QUEUEKEEPER_ADB_LISTING", "QUEUEKEEPER_DEVICE_PROBE",
     "QUEUEKEEPER_DEVICE_RECORD")}
 

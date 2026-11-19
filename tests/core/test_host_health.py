@@ -3,6 +3,7 @@ import host_isolation  # noqa: F401 -- first, as every test module
 from test_support import farm as farm_fixture
 import contextlib
 import math
+import os
 from io import StringIO
 import json
 from pathlib import Path
@@ -108,7 +109,8 @@ class Reading(unittest.TestCase):
                        "   77     1024       00:05 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                        "  bad line"])}
         asked = []
-        with patch.object(offload_host, "output", lambda command, *_: asked.append(tuple(command)) or answers[tuple(command)]):
+        with patch.object(offload_host, "output", lambda command, *_: asked.append(tuple(command)) or answers[tuple(command)]), \
+                patch.dict(os.environ, {offload_host.HEALTH_RECORDING: ""}):
             found = offload_host.host_health()
         self.assertNotIn("args", " ".join(offload_host.HEALTH_LISTING))
         self.assertEqual((found["memoryBytes"], found["swapUsedBytes"]), (64 * GB, 31744 * 1024 ** 2))
@@ -117,8 +119,20 @@ class Reading(unittest.TestCase):
                                                "seconds": 15 * DAY + 2 * 3600})
         self.assertEqual([one["name"] for one in found["largest"]], ["fseventsd", "Xcode", "Google Chrome"])
 
+    def test_a_recording_stands_in_for_this_macs_memory(self):
+        """host_isolation's recording keeps a suite's own load from making a doctor a test runs warn (#215)."""
+        with tempfile.TemporaryDirectory() as folder:
+            recording = Path(folder) / "health.json"
+            recording.write_text(json.dumps(SWAPPING))
+            with patch.object(offload_host, "output", side_effect=AssertionError("read this Mac")), \
+                    patch.dict(os.environ, {offload_host.HEALTH_RECORDING: str(recording)}):
+                self.assertEqual(offload_host.host_health(), SWAPPING)
+                recording.write_text("not json")
+                self.assertIsNone(offload_host.host_health())
+
     def test_a_listing_that_fails_leaves_the_processes_unread(self):
-        with patch.object(offload_host, "output", return_value=None):
+        with patch.object(offload_host, "output", return_value=None), \
+                patch.dict(os.environ, {offload_host.HEALTH_RECORDING: ""}):
             self.assertEqual(offload_host.host_health(), {"memoryBytes": None, "swapUsedBytes": None,
                                                           "swapTotalBytes": None, "memoryLevel": None,
                                                           "largest": None})
