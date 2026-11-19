@@ -55,7 +55,7 @@ import unicodedata
 import urllib.request
 from xml.etree import ElementTree
 
-from . import budgets, disk, extensions, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, pins, processes, remote, \
+from . import budgets, disk, extensions, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
 from . import events, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
@@ -1581,6 +1581,7 @@ class GateWatch:
         self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingKind=record.get("kind") if waiting else None,
                              waitingOn=record.get("mac") if waiting else None, waitingSince=since, stranded=stranded,
                              progress=lane_progress.current(lane_wait.path_of(self.checkout, self.lane), self.began),
+                             timing=lane_timing.live(lane_wait.path_of(self.checkout, self.lane), self.began),
                              moved=latest(run_progress.moved(self.checkout, self.began),
                                           run_progress.logs_moved(self.checkout, self.began)))
 
@@ -2298,6 +2299,7 @@ def round_lines(state, at=None):
         for observation in gate.get("progress", []):
             if lane_progress.valid(observation, gate.get("began"), at):
                 line += "\n    progress: " + lane_progress.words(observation)
+        if timing_words(gate): line += f"\n    timing: {timing_words(gate)}"
         if stuck(gate, at): line += f"\n    {stuck(gate, at)}"
         if gate.get("log"): line += f"\n    log: {gate['log']}"
         lines.append(line)
@@ -2485,7 +2487,9 @@ def situation(queue, entry, state, at=None):
         if identifier not in gate.get("entries", []): continue
         where = f"{gate.get('lane')} lane on {gate.get('mac') or 'no Mac yet'}"
         if gate.get("waiting"): where += f", waiting: {gate['waiting']}"
-        key = ("gate", name, role, gate.get("lane"), gate.get("mac"), gate.get("waitingKind") or bool(gate.get("waiting")))
+        if timing_words(gate): where += f"; timing: {timing_words(gate)}"
+        key = ("gate", name, role, gate.get("lane"), gate.get("mac"), gate.get("waitingKind") or bool(gate.get("waiting")),
+               (gate.get("timing") or {}).get("state") if isinstance(gate.get("timing"), dict) else None)
         count = entries_word(len(gate.get("entries", [])))
         if role == "stacked": return key, f"gates stacked on round {name}'s batch, {count}: {where}"
         if role in ("older half", "newer half"):
@@ -2516,6 +2520,14 @@ def situation(queue, entry, state, at=None):
         return (("behind", name, tuple(ahead)),
                 f"waits behind round {name} ({', '.join(ahead)}), which has run {ago(state.get('started', 0), at)}")
     return ("between", entry["state"]), f"is {entry['state']}, and the worker is between rounds"
+
+
+def timing_words(gate):
+    """What a running gate's live timing record (lane_timing.live) says, such as that it has run past its baseline,
+    or None."""
+    timing = gate.get("timing")
+    if not isinstance(timing, dict) or not isinstance(timing.get("words"), str): return None
+    return ("failed: " if timing.get("state") == "failed" else "warning: ") + timing["words"]
 
 
 def round_facts(state, identifier, at=None):

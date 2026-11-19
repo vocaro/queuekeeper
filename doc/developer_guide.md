@@ -1007,6 +1007,23 @@ or `overflow`, `unreachable` or `alone` while waiting on an offer), `mac`, `star
 on under other words is one wait. `qk admissions waits --there LOG` reads a copy of the first farm
 Mac's history instead of asking it.
 
+### The timing history
+
+`lane_timing.py` keeps each Mac's `timings.jsonl` beside its admission log, moved to
+`timings.1.jsonl` at 2 MiB. `qk run` appends a `run` line (`time`, `project`, `lane`, `seconds`,
+`commit`) for each passing whole run on that Mac, timed from the lane's own work, compile step
+included, to its end. `qk timing stale` appends a `stale` line (`lane`, or `*`, and `reason`). A
+lane's baseline is the nearest-rank p90 of its newest 20 runs after its latest mark, given at least 5.
+
+While the lane's command runs, `processes.supervise` asks a `lane_timing.Pace` once a second
+(`pace`), as it reads a stall monitor. A warning goes to the run log, stderr and `LANE.json.timing`
+beside the lane's wait record. `offload_host.relay_wait` sends that file back with the wait record,
+`lane_wait.relayed` writes it here, and `GateWatch` copies it into the round's account as the gate's
+`timing`. Past a fail threshold the run raises `processes.TooSlow`, a `TimedOut` whose stop and
+cleanup are a timeout's but which `qk run` concludes as a failure. A dispatch carries this Mac's
+stale marks in its plan (`timingStale`), which the other Mac reads from `QUEUEKEEPER_TIMING_STALE`.
+`budgets.gate_warnings` drops entries settled before the gate's mark.
+
 ### How agents' tools stop commands
 
 Measured with the probes below. The rule that follows for every agent is in the [user

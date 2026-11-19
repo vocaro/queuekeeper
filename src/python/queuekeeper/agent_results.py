@@ -9,7 +9,7 @@ import re
 import stat
 import sys
 
-from . import lane_report
+from . import lane_report, lane_timing
 
 VERSION = 1
 # The most of a log a result reads. The largest queue log on the owner's Macs on 2026-11-15 was 5 MB, so
@@ -69,7 +69,7 @@ def entry_artifacts(queue, entry):
     if entry["state"] in WAITING and queue.working():
         for gate in (queue.round_state() or {}).get("gates", {}).values():
             if entry["id"] not in gate.get("entries", []): continue
-            gates.append({key: gate.get(key) for key in ("lane", "mac", "began", "waiting")})
+            gates.append({key: gate.get(key) for key in ("lane", "mac", "began", "waiting", "timing")})
             if gate.get("log"):
                 artifacts.append({**artifact("queue-log", gate["log"], gate.get("mac")),
                                   "current": True, "lane": gate.get("lane")})
@@ -119,6 +119,10 @@ def entry_result(queue, entry):
     for text, _ in [] if failures else texts:
         for name, place in lane_report.failing(text):
             if name not in failures or place: failures[name] = place
+    # The timing warnings, failures and limit notices the run's logs hold (lane_timing), each once.
+    timing = []
+    for text, _ in texts:
+        timing += [line for line in lane_timing.found_in(text) if line not in timing]
     failure = None
     # The entries this one fails together with, though each passes alone (merge_queue.Worker.together).
     partners = [dict(partner) for partner in entry.get("conflictWith") or []]
@@ -135,6 +139,7 @@ def entry_result(queue, entry):
             "subject": entry.get("subject"), "branch": entry.get("branch"),
             "submitted": entry.get("submitted"), "settled": entry.get("settled"),
             "failure": failure, "conflictWith": partners, "tests": counts, "logTruncated": truncated,
+            "timing": timing[:SHOWN],
             "flakes": [{**flake, "reruns": {"status": "passed", "count": len(flake["rerunLogs"])
                                            if "rerunLogs" in flake else None}}
                        for flake in entry.get("flakes", [])],

@@ -753,6 +753,8 @@ The most useful settings:
 | `budgetMinutes` | Warns when the gate's median time drifts past this target, naming the slowest parts |
 | `failedTests` | Lets the queue rerun a non-Python lane's failed tests ([When a batch fails](#when-a-batch-fails)) |
 | `stall` | Reports, and optionally stops, a lane that has gone quiet ([Time limits](#time-limits-and-the-gates-budget)) |
+| `timing` | Warns while a lane runs past its usual time, and optionally fails it past a threshold ([Time limits](#time-limits-and-the-gates-budget)) |
+| `notice` | What an agent is shown when the lane's timeout, stall bound or timing threshold stops it |
 
 [`schemas/queuekeeper.schema.json`](../schemas/queuekeeper.schema.json) lists every setting.
 
@@ -1096,6 +1098,58 @@ left out, except whole-host gates. The warning repeats while the median stays ov
 project's existing issue about the gate's budget rather than opening a new one each time.
 
 `qk doctor` also warns of a `gate` with no budget, and of a `gate` that takes a physical device.
+
+**Running past its usual time.** Each passing whole run of a lane adds its own time, from its
+command's start to its end without the wait for admission, to the Mac's timing history. A lane's
+baseline is the 90th percentile (p90) of its last 20 passing runs on that Mac, once there are at
+least 5. While a lane runs, it warns once when it passes its baseline:
+
+```text
+queuekeeper timing: warning: gate has run 14m10s, past its p90 of 12m05s over its last 20 passing runs on this Mac (median 11m30s)
+```
+
+The warning goes to the lane's log and to `qk run`'s output, which the queue's gate log keeps.
+`qk queue status` and `qk land --wait` (or `qk queue wait`) show it beside the running gate as
+`timing: warning: ...`, including for a gate on another Mac. Their JSON results include it under
+the gate's `timing`, and `qk queue result --json` lists it with any notice in `timing`. A warning
+only informs; the lane goes on.
+
+A lane can also fail when it runs too far past its baseline:
+
+```json
+"gate": {"command": ["..."], "timeout": 3600, "timing": {"fail": "+25%", "minSamples": 10}}
+```
+
+`fail` is relative to the p90: a percentage (`+25%`) or a time (`+90s`, `+2m`, `+1h`). It applies
+only once the baseline has `minSamples` runs (10 by default, at least 5). Past it, the lane is
+stopped as a stall is, and fails (exit 1) rather than going unmeasured: a lane that became that
+much slower is the change's to explain. A busy Mac can push a run past it too, so leave room.
+`"warn": false` turns the warning off and keeps a `fail` threshold.
+
+**What a stopped lane tells an agent.** When a lane's `timeout`, stall bound or timing threshold
+stops it, it prints a notice to its log and its output:
+
+```text
+queuekeeper notice: gate reached its timeout: do not raise the limit just to make the gate pass: ...
+```
+
+By default the notice says not to raise the limit just to make the gate pass, but to find what made
+the lane slower. A lane's `notice` replaces it, and a stall's own `"notice"` replaces it for
+a stall. Raising a limit is the owner's call.
+
+**After a deliberate change to a lane's work.** When a change makes a lane do more on purpose, mark
+its timing history stale so that earlier, shorter runs stop setting off warnings, thresholds and the
+gate's budget:
+
+```sh
+python3 scripts/qk timing stale gate --reason "UI tests moved into the gate"
+```
+
+Use `--all` in place of lane names to mark every lane. The baseline then waits for 5 new passing
+runs, the fail threshold for `minSamples`, and the gate's budget median leaves out gate runs that
+settled before the mark. A run sent to another Mac carries the mark there. The mark is kept on the
+Mac where you ran the command, which is also where the queue's worker runs. `qk timing show` (or
+`--json`) lists each lane's baseline, fail threshold and latest stale mark.
 
 ### Every test has a lane
 
@@ -2415,6 +2469,10 @@ wake you.
   `heartbeat:` line comes at most every five minutes. With `--json`, these lines go to stderr.
 - **A send-back ends the wait within seconds**, naming the conflicting files and entries, or the
   failed tests and the log.
+- **A gate running past its usual time** shows `timing: warning: ...` in these lines. A lane stopped
+  by a limit prints a `queuekeeper notice:`. Do not raise a `timeout`, stall bound or timing threshold
+  just to make the gate pass; find what made it slower, or after a deliberate change to the lane's
+  work run `qk timing stale LANE --reason WHY` ([Time limits](#time-limits-and-the-gates-budget)).
 - **An interrupted wait withdraws nothing.** The worker lands the entry whether or not anyone is
   waiting. Pick up the result with `qk queue wait ID`, which behaves like `qk land --wait`, or
   find it in `qk queue status`. Queue the commits again only after confirming the entry came back
@@ -2440,7 +2498,8 @@ exits 0 whenever the lookup succeeds, so check `state` and `terminal` for the ou
 ID exits 2). Use `queue wait` when the exit status must reflect the verdict.
 
 An entry's result names its `commit`, `landedAs`, failure details, the entries it fails together
-with (`conflictWith`, empty for others), test counts, flaky tests (`flakes`) and the run's artifacts. A missing or pruned artifact is listed with
+with (`conflictWith`, empty for others), test counts, flaky tests (`flakes`), timing warnings and limit notices
+from its logs (`timing`) and the run's artifacts. A missing or pruned artifact is listed with
 `available: false`. Results carry `schemaVersion: 1`; tolerate added keys and unknown states.
 
 Every result has a `recovery` object that says what to do next:

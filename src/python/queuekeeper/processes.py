@@ -44,6 +44,8 @@ DEFAULT_LIMIT = 7200
 SETTLE_WAIT = 30
 # Seconds between supervise's readings of free disk space while a command it watches for space runs (space).
 SPACE_POLL = 10
+# Seconds between supervise's readings of a running lane's place against its timing baseline (pace).
+PACE_POLL = 1
 # The signals forwarding_signals carries out as a supervised stop. SIGKILL cannot be caught.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 _stops = []
@@ -238,6 +240,12 @@ class Stalled(TimedOut):
     """A lane's explicit quiet bound stopped it, and ownership cleanup confirmed every process ended."""
 
 
+class TooSlow(TimedOut):
+    """A lane ran past its fail threshold over its timing baseline (supervise's pace, lane_timing.Pace), and then the
+    command and every observed descendant ended. Unlike a timeout, it is the lane's failure: a lane that became that
+    much slower than its own recent passing runs is a change's to explain."""
+
+
 class OutOfSpace(TimedOut):
     """The disk ran short of space while the command ran (supervise's space), and then the command and every observed
     descendant ended, as after a timeout: the host's fault, which says nothing of the work, so the run is unmeasured,
@@ -321,7 +329,7 @@ def logged(log, line):
 
 
 def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None, on_start=None,
-              kill_after=KILL_AFTER, cancel=None, progress=None, space=None):
+              kill_after=KILL_AFTER, cancel=None, progress=None, space=None, pace=None):
     """Wait for the owned root and observed descendants, including separate process groups.
 
     on_start(pid) runs once the root's process exists and before its command does, so the command
@@ -348,7 +356,10 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     With an opt-in progress monitor, a confirmed quiet bound uses that same stop and cleanup,
     raising Stalled only once the owned tree ended. Missing samples never establish a stall.
     space, called every SPACE_POLL seconds while the root runs, says why the disk is too full to go on, or None;
-    once it says why, the same stop and cleanup follow, and the run raises OutOfSpace. Inside an admission this
+    once it says why, the same stop and cleanup follow, and the run raises OutOfSpace.
+    pace, a lane's timing baseline (lane_timing.Pace), is asked every PACE_POLL seconds while the root runs: a line it
+    gives goes to the log and standard error, and once it says the lane ran past its fail threshold the same stop and
+    cleanup follow, and the run raises TooSlow. Inside an admission this
     process holds, it defaults to the admission's own (resources.Admission.short_of_space).
     Any SIGKILL waits up to SETTLE_WAIT seconds more while the root or an observed descendant is
     an admission owner the guard records: a nested admission stops its own command and then
@@ -412,6 +423,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     # root's group, and who else had it.
     expired, stopped, group_forwarded, forwarded = None, None, False, set()
     canceled, stalled, exhausted, spaced = False, None, None, time.monotonic()
+    slow, paced = None, time.monotonic()
     # Whether the stop's or timeout's first signal went out, and when its SIGKILL began.
     signaled, killed = False, None
     # Each process seen as an admission owner, as (PID, start), and the PIDs SIGKILL was reported waiting for.
@@ -524,6 +536,17 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     expired, exhausted = time.monotonic(), short
                     logged(stdout, f"supervise: out of disk space: {short}; sending SIGTERM to the command (PID "
                            f"{child.pid}) and its observed descendants, then SIGKILL after {kill_after:g}s")
+            if pace is not None and root_active and expired is None and stopped is None \
+                    and time.monotonic() - paced >= PACE_POLL:
+                paced = time.monotonic()
+                said, failed = pace.observe()
+                if said:
+                    logged(stdout, said)
+                    print(said, file=sys.stderr, flush=True)
+                if failed and child.poll() is None:
+                    expired, slow = time.monotonic(), failed
+                    logged(stdout, f"supervise: past its timing threshold: {failed}; sending SIGTERM to the command "
+                           f"(PID {child.pid}) and its observed descendants, then SIGKILL after {kill_after:g}s")
             if cancel is not None and exited is None and expired is None and cancel.is_set():
                 # Carried out as a timeout is, and reported as the caller's cancel.
                 expired, canceled = time.monotonic(), True
@@ -561,6 +584,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
             cause = (f"Stopped by {signal.Signals(signum).name}" if signum is not None
                      else "Canceled" if canceled else f"Stalled: {stalled}" if stalled is not None
                      else f"Out of disk space: {exhausted}" if exhausted is not None
+                     else f"Past its timing threshold: {slow}" if slow is not None
                      else f"Timed out after {timeout:g}s" if expired is not None
                      else f"{command[0]} exited with status {result}")
             # Ended by its own timeout or quiet bound, a backstop a busy host can reach, not by a stop.
@@ -584,7 +608,7 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                                        + "; reservation retained", bounded)
                 # Confirmed, so recovery has nothing of this command to check.
                 note(settled="stopped" if signum is not None else "stalled" if stalled is not None
-                     else "out-of-space" if exhausted is not None
+                     else "out-of-space" if exhausted is not None else "too-slow" if slow is not None
                      else "timed-out" if expired is not None else "exited")
                 if signum is not None: raise Interrupted(signum, "after its command and observed descendants ended")
                 if canceled:
@@ -594,6 +618,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                 if exhausted is not None:
                     raise OutOfSpace(f"Owned command stopped as the disk ran short of space: {command[0]}; {exhausted}; "
                                      "it and its observed descendants ended")
+                if slow is not None:
+                    raise TooSlow(f"Owned command ran past its timing threshold: {command[0]}; {slow}; it and its "
+                                  "observed descendants ended")
                 if expired is not None:
                     raise TimedOut(f"Owned command timed out after {timeout:g}s: {command[0]}; it and its observed "
                                    "descendants ended")
@@ -735,7 +762,7 @@ def end_tree(child, kill_after=KILL_AFTER):
 
 
 def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_after=KILL_AFTER, cancel=None,
-        stall=None, progress_path=None, space=None):
+        stall=None, progress_path=None, space=None, pace=None):
     path = Path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if stall is not None:
@@ -746,7 +773,7 @@ def run(command, *, cwd, log_path, timeout=None, env=None, on_stop=None, kill_af
     with path.open("w") as log:
         try:
             result = supervise(command, cwd=cwd, stdout=log, timeout=timeout, env=env, on_stop=on_stop,
-                               kill_after=kill_after, cancel=cancel, space=space,
+                               kill_after=kill_after, cancel=cancel, space=space, pace=pace,
                                **({"progress": monitor} if monitor else {}))
         except BaseException as error:
             if monitor is not None:

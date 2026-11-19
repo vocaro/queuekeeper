@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 
-from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
+from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_unread_warning, project_checkout, \
@@ -328,6 +328,14 @@ def held_to_history(root, name, lane, receipt):
     why = count_history.dropped(root, store, name, receipt, remote.HERE,
                                 say=lambda words: print(f"queuekeeper: {words}", file=sys.stderr, flush=True))
     if why is not None: raise ValueError(why)
+
+
+def said_notice(directory, name, lane, limit, stall=False):
+    """Show the lane's notice (lane_timing.notice) where its reader looks once a limit stopped it: on standard error,
+    which the queue's gate log keeps, and at the end of the lane's log."""
+    line = lane_timing.notice_line(name, lane, limit, stall)
+    print(line, file=sys.stderr, flush=True)
+    with contextlib.suppress(OSError), (directory / "run.log").open("a") as log: log.write(line + "\n")
 
 
 def lane_command(lane, extra=()):
@@ -1299,6 +1307,9 @@ def perform(argv, report):
         "qk unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; qk unittest -h for the rest. "
         "Started outside an admission it is admitted and placed first, as qk admit would run it; --unadmitted "
         "runs it with none, on this Mac")
+    commands.add_parser("timing", help="each lane's timing baseline on this Mac, its p90 over its recent passing "
+        "runs, which a run warns past live, and its fail threshold: qk timing show [--json]; and qk timing stale "
+        "LANE ... | --all --reason WHY, after a deliberate change to a lane's work")
     commands.add_parser("progress", help="say how far each long run started here has got, from another shell: qk "
         "unittest's processes finished, failed and running, and when it last moved, or an admitted runner's output; "
         "qk progress [--all] [RUN ...]")
@@ -1490,6 +1501,7 @@ def perform(argv, report):
     if bare: return admitted_runner(Path(project or ".").resolve(), argv, first)
     if argv[first:first + 1] == ["unittest"]: return parallel.unittest_main(argv[first + 1:])
     if argv[first:first + 1] == ["progress"]: return run_progress.main(argv[first + 1:], project)
+    if argv[first:first + 1] == ["timing"]: return lane_timing.main(Path(project or ".").resolve(), argv[first + 1:])
     if argv[first:first + 1] and argv[first] in extensions.COMMANDS:
         return extensions.COMMANDS[argv[first]][1](argv[first + 1:], project)
     # The farm's Macs are the owner's and this Mac's, and no project's.
@@ -1758,6 +1770,8 @@ def perform(argv, report):
             if pins.held(): receipt["siblings"] = pins.recorded(pins.held())
             # A run of the whole lane, which a pass of counts for its commit once kept (concluded).
             whole = not extra and args.expect is None and not args.serial
+            # The run's lane_timing.Pace, once its own work starts, which a passing whole run adds to its history.
+            timed = {"pace": None}
             keys = lane_devices(lane)
             admission = None
             # remote.asleep()'s reading as the lane's command starts, for the sleep its run spans (slept_since).
@@ -1797,6 +1811,11 @@ def perform(argv, report):
                 def execute(on_stop=None):
                     def work():
                         env = shims.environment(parallel.results_environment(directory / "results"), tree)
+                        # The lane's place against its own recent passing runs, from the start of its own work
+                        # (lane_timing): a series or a filtered run is no run its baseline measures.
+                        timed["pace"] = lane_timing.Pace(args.lane, lane, project_name(root, config)) \
+                            if whole and not extra else None
+                        pace = timed["pace"] if timed["pace"] is not None and timed["pace"].active() else None
                         kill_after = processes.FOREGROUND_KILL_AFTER if lane.get("foreground") else processes.KILL_AFTER
                         # Made here, on the Mac that runs it, for the tree it reads (sandbox.py).
                         try: wrap, sandboxed = sandbox.prepared(args.lane, lane, tree, directory)
@@ -1809,7 +1828,7 @@ def perform(argv, report):
                         if why: return not_started(directory, receipt, args.lane, why)
                         try:
                             return processes.run([*wrap, *command], cwd=tree, log_path=directory / "run.log", timeout=left,
-                                                 on_stop=on_stop, env=env, kill_after=kill_after,
+                                                 on_stop=on_stop, env=env, kill_after=kill_after, pace=pace,
                                                  **({"stall": lane["stall"], "progress_path": directory / "results/progress.json"}
                                                     if "stall" in lane else {}))
                         except processes.NotStarted as error:
@@ -1918,6 +1937,16 @@ def perform(argv, report):
                 if isinstance(error, processes.OutOfSpace):
                     report.explain(error, complete=False)
                     return out_of_space(args.lane, error)
+                # A lane past its own fail threshold over its timing baseline fails: it became that much slower.
+                if isinstance(error, processes.TooSlow):
+                    said_notice(directory, args.lane, lane, "timing fail threshold")
+                    pace = timed["pace"]
+                    concluded(1, error=str(error), **({"timing": pace.summary()} if pace is not None else {}))
+                    print(f"queuekeeper: failed: {error}", file=sys.stderr)
+                    report.explain(error, complete=False)
+                    return 1
+                said_notice(directory, args.lane, lane, "stall bound" if isinstance(error, processes.Stalled)
+                            else "timeout", isinstance(error, processes.Stalled))
                 print(f"queuekeeper: unmeasured: {error}", file=sys.stderr)
                 slept = slept_since(asleep_began)
                 if slept: print(f"queuekeeper: {this_mac()} slept for {slept:.0f} s of that", file=sys.stderr)
@@ -1974,6 +2003,13 @@ def perform(argv, report):
             before = lane_report.before_tests(log) if status > 0 and status != USAGE and status not in merge_queue.NO_VERDICT \
                 and not compile_failed(receipt) and not lane_report.records(directory / "results") else None
             if before is not None: status = lane_results.BEFORE_TESTS
+            pace = timed["pace"]
+            if pace is not None and pace.base is not None:
+                receipt["timing"] = {**pace.summary(), "seconds": round(time.monotonic() - pace.began, 1)}
+            # A passing whole run is one more in the lane's timing history on this Mac (lane_timing).
+            if pace is not None and status == 0:
+                lane_timing.record(project_name(root, config), args.lane, time.monotonic() - pace.began,
+                                   receipt["project"].get("revision"))
             concluded(status, **({"unmeasured": unmeasured} if status == lane_results.UNMEASURED else {}),
                       **({"beforeTests": before} if before is not None else {}))
             if status == 0 and whole and keys and admission is not None and extensions.DEVICES.device_lane_passed(directory / "results", keys):
@@ -1996,6 +2032,9 @@ def perform(argv, report):
         # backstop a busy host reached, not a verdict on the commit (processes.Unconfirmed).
         if isinstance(error, processes.Unconfirmed) and error.timed_out:
             print("queuekeeper: unmeasured: the lane reached its limit", file=sys.stderr)
+            with contextlib.suppress(Exception):
+                lane = config["lanes"][args.lane]
+                print(lane_timing.notice_line(args.lane, lane, "limit"), file=sys.stderr, flush=True)
             report.explain(error, complete=False)
             return lane_results.UNMEASURED
         report.explain(error)

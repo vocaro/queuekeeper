@@ -136,7 +136,9 @@
                 "exactTests",
                 "failedTests",
                 "labels",
-                "sandbox"
+                "sandbox",
+                "timing",
+                "notice"
               ]
             }
           },
@@ -278,6 +280,32 @@
               }
             }
           },
+          "timing": {
+            "description": "The lane's timing guidance against its baseline, the p90 of its recent passing runs on the Mac that runs it: a live warning past it, and an optional fail threshold relative to it.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "warn": {
+                "type": "boolean",
+                "description": "Warn while the lane runs past its baseline; true unless false."
+              },
+              "fail": {
+                "type": "string",
+                "pattern": "^\\+[0-9]+(\\.[0-9]+)?(%|s|m|h)$",
+                "description": "Fail the lane once it runs this far past its baseline, such as +25% or +2m."
+              },
+              "minSamples": {
+                "type": "integer",
+                "minimum": 5,
+                "description": "The passing runs the baseline needs before the fail threshold applies; 10 unless given."
+              }
+            }
+          },
+          "notice": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What an agent is shown when the lane's timeout, stall bound or timing fail threshold stops it. The default says not to raise the limit just to make the gate pass."
+          },
           "stall": {
             "description": "Opt-in quiet monitoring for an admitted leaf lane. Report-only by default; stopping requires a healthy-run measurement and a reviewed bound.",
             "type": "object",
@@ -303,6 +331,11 @@
               "primaryControl": {
                 "type": "boolean",
                 "description": "Explicitly declare that the supervised primary process only coordinates descendant work. Its CPU cannot mask quiet descendants; no descendants leaves the observation unavailable. Omit for serial or primary-process computation."
+              },
+              "notice": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What an agent is shown when the stall bound stops the lane, in place of the lane's notice."
               }
             },
             "allOf": [

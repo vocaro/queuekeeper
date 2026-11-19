@@ -6,7 +6,7 @@ import re
 import sys
 from pathlib import Path, PurePosixPath
 
-from . import extensions as hooks, pins, sandbox
+from . import extensions as hooks, lane_timing, pins, sandbox
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
 # The extensions a project gets when its queuekeeper.json names none, and that a command with no project loads.
@@ -121,7 +121,7 @@ def load(root):
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall", "unity", "chips", "arguments", "idioms", "exactTests",
-                       "failedTests", "labels", "sandbox"})
+                       "failedTests", "labels", "sandbox", "timing", "notice"})
 # The lane keys above that an extension shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the extension is told which to switch on.
 EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity",
@@ -194,6 +194,7 @@ def parse(source):
         screen(name, lane)
         compile_first(name, lane)
         stall(name, lane)
+        lane_timing.check(name, lane)
         failed_tests_setting(name, lane)
         sandbox.check(name, lane)
         extension_keys(name, lane)
@@ -235,8 +236,10 @@ def stall(name, lane):
     """Quiet monitoring is opt-in on the admitted work, never on a polling/group wrapper."""
     if "stall" not in lane: return
     settings = lane["stall"]
-    if not isinstance(settings, dict) or set(settings) - {"seconds", "action", "reason", "primaryControl"}:
-        raise ValueError(f"{name}.stall supports seconds, action, reason and primaryControl")
+    if not isinstance(settings, dict) or set(settings) - {"seconds", "action", "reason", "primaryControl", "notice"}:
+        raise ValueError(f"{name}.stall supports seconds, action, reason, primaryControl and notice")
+    if "notice" in settings and (not isinstance(settings["notice"], str) or not settings["notice"].strip()):
+        raise ValueError(f"{name}.stall.notice must be the words shown when the stall bound stops the lane")
     if "primaryControl" in settings and type(settings["primaryControl"]) is not bool:
         raise ValueError(f"{name}.stall.primaryControl must be a boolean declaring the primary process only coordinates work")
     if type(settings.get("seconds")) is not int or settings["seconds"] <= 0:

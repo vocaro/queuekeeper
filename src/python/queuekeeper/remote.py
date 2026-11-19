@@ -1865,6 +1865,17 @@ class Progress:
         self.tell("heartbeat", f"{self.lane} on {self.host}, {since} in: {said}")
 
 
+def timing_marks(root, config):
+    """The newest stale mark of each lane of the project in this Mac's timing history (lane_timing.stale_marks), or
+    nothing when it cannot be read."""
+    from . import lane_timing
+    try:
+        name = config.get("name") or (git_state.main_checkout(root) or Path(root)).name
+        return lane_timing.stale_marks(name)
+    except Exception:  # noqa: BLE001 - a mark that cannot be read sends nothing
+        return {}
+
+
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
             serial=False, subdirectory=None, sent=None, changes=False, slot=None, slot_wait=None, says_load=False):
     """Run queuekeeper's work on another Mac and return its exit status, with the log and receipt kept here.
@@ -1960,6 +1971,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "changes": f".build/queuekeeper/{name}/{CHANGES}" if changes else None,
             "deviceRecord": local["name"], "deviceSetup": extensions.DEVICES.remote_setup(local["name"]), "lease": lease.plan(local["name"]) if lease is not None else None,
             "dispatcher": local["name"], "subdirectory": subdirectory, "silence": HEARTBEAT_SILENCE,
+            # The lanes' timing history marked stale here, which that Mac's history does not hold (lane_timing).
+            **({"timingStale": stale} if (stale := timing_marks(root, config)) else {}),
             # Its admissions there name the repository, branch, worktree and session here (resources.work_origin).
             **({"origin": sender} if (sender := resources.work_origin()) else {}),
             **({"checkoutSlot": slot, "checkoutWait": slot_wait} if slot is not None else {})}

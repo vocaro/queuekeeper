@@ -218,9 +218,13 @@ def relayed(data, host):
     nothing to wait for, in this Mac's record of the lane, named for the Mac it is on and by this Mac's clock."""
     try: record = json.loads(data)
     except ValueError: return
-    if isinstance(record, dict) and "progress" in record:
-        from . import lane_progress
-        lane_progress.relayed(record["progress"], host)
+    if isinstance(record, dict) and "timing" in record:
+        from . import lane_timing
+        lane_timing.relayed(record["timing"], os.environ.get(VARIABLE))
+    if isinstance(record, dict) and ("progress" in record or "timing" in record):
+        if "progress" in record:
+            from . import lane_progress
+            lane_progress.relayed(record["progress"], host)
         if "kind" not in record: return
     if isinstance(record, dict) and record.get("kind") in WORDS:
         waiting(record["kind"], record.get("reason"), farm_mac(host), bool(record.get("stranded")))

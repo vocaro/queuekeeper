@@ -4358,6 +4358,15 @@ def wait_state(path):
             "admitted": record.get("admitted") is True}
 
 
+def timing_state(path):
+    """The lane's live timing record beside its wait record at path (lane_timing.LIVE), to send back, or None."""
+    try:
+        data = Path(str(path) + ".timing").read_bytes()
+        record = json.loads(data) if len(data) <= 65536 else None
+    except (OSError, ValueError): return None
+    return record if isinstance(record, dict) and isinstance(record.get("words"), str) else None
+
+
 def progress_state(path):
     """A bounded snapshot of exact live reporter identities beside the lane's wait record."""
     records = []
@@ -4412,6 +4421,8 @@ def relay_wait(path, done, work):
             if fresh_progress or last_progress:
                 state = {**(state or {}), "progress": fresh_progress}
             last_progress = fresh_progress
+            timing = timing_state(path)
+            if timing is not None: state = {**(state or {}), "timing": timing}
         if state != last and not (finished and state is None):
             if state is None:
                 if last is not None and last.get("kind"): emit(b"W", b"null")
@@ -4608,6 +4619,8 @@ def main(plan):
         if plan.get("developerDir"): environment["DEVELOPER_DIR"] = plan["developerDir"]
         # A receipt the work writes here says that it ran on another Mac, sent from this Mac (remote.DISPATCHER).
         if plan.get("dispatcher"): environment["QUEUEKEEPER_DISPATCHED_FROM"] = plan["dispatcher"]
+        # The lanes' timing history marked stale on the sending Mac (lane_timing.STALE_VARIABLE).
+        if isinstance(plan.get("timingStale"), dict): environment["QUEUEKEEPER_TIMING_STALE"] = json.dumps(plan["timingStale"])
         # Where the work comes from on the sending Mac, which this Mac's admissions name (resources.ORIGIN).
         if isinstance(plan.get("origin"), dict): environment["QUEUEKEEPER_ADMISSION_ORIGIN"] = json.dumps(plan["origin"])
         if (root / "git-credentials").is_file(): credentials(environment, root / "git-credentials")

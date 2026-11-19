@@ -141,6 +141,9 @@ for variable in (cli.parallel.RESULTS_VARIABLE, "QUEUEKEEPER_STALE_MODULES_ROOT"
 # Nor does a lane a test runs take itself to be inside the sandbox of the lane that runs the suite, and so start its
 # command under no sandbox of its own: the tests of a lane's sandbox would pass without one.
 os.environ.pop(cli.sandbox.INSIDE, None)
+# Nor does a lane a test runs read the stale marks a dispatch carried to the Mac running the suite: a test's timing
+# history would start where the real lane's was marked stale.
+os.environ.pop(cli.lane_timing.STALE_VARIABLE, None)
 # Nor does a dispatch a test sends count the keychain as unlocked because the dispatch that runs the suite on the second
 # Mac unlocked the real one: it would unlock nothing, and a test of a kept password that cannot unlock would pass the run.
 os.environ.pop('QUEUEKEEPER_KEYCHAIN_UNLOCKED', None)

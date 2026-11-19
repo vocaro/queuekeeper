@@ -138,15 +138,19 @@ def busy_words(busy):
                     "median counts it" if busy.get("wholeHost") is True and busy["cpuBusy"] >= busy["busyLimit"] else ""))
 
 
-def gate_warnings(config, entries):
+def gate_warnings(config, entries, stale=None):
     """A warning when the median own work (own) of the gate's RECENT_RUNS latest passing runs made on an unloaded host
     (loaded) exceeds its budget, giving their median wait for admission beside it, and their median landing latency,
     the wall time as the queue saw it, which the budget does not judge, and saying how many loaded runs newer
     than the oldest of them it left out. A run recorded without its own work is no run here (vocaro/queuekeeper#112).
     None without a budget, or with fewer than FEWEST_RUNS such runs to judge it by. The warning sends the reader to the
-    project's open budget proposal, to add to it rather than open another (vocaro/queuekeeper#96)."""
+    project's open budget proposal, to add to it rather than open another (vocaro/queuekeeper#96). stale, an epoch
+    time, is when the gate's timing history was last marked stale (lane_timing): runs that settled before it are left
+    out, as a deliberate change to the gate's work came after them."""
     budget = config.get("lanes", {}).get(GATE, {}).get("budgetMinutes")
     if budget is None: return []
+    if stale is not None:
+        entries = [entry for entry in entries if number(entry.get("settled")) and entry["settled"] > stale]
     recent, left_out = [], 0
     for run in runs(entries):
         if len(recent) == RECENT_RUNS: break
@@ -242,12 +246,22 @@ def doctor_warnings(config):
     return warnings
 
 
+def stale_mark(root, config):
+    """When the gate's timing history was last marked stale on this Mac (lane_timing), or None."""
+    from . import git_state, lane_timing
+    try:
+        name = config.get("name") or (git_state.main_checkout(root) or Path(root)).name
+        return lane_timing.stale_since(lane_timing.stale_marks(name), GATE)
+    except Exception:  # noqa: BLE001 - an unreadable history marks nothing stale
+        return None
+
+
 def landing_warnings(root, config, entries):
     """What a landing prints after its result, and doctor warns of too: the gate over its budget, and what the
     project's tooling adds (extensions.LANDING_WARNINGS). A check that cannot be made says so rather than stopping
     the landing."""
     warnings = []
-    for check in (lambda: gate_warnings(config, entries), *(lambda added=added: added(root, config) for added in extensions.LANDING_WARNINGS)):
+    for check in (lambda: gate_warnings(config, entries, stale_mark(root, config)), *(lambda added=added: added(root, config) for added in extensions.LANDING_WARNINGS)):
         try: warnings += check()
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             warnings.append(f"could not check the gate's budget: {error}")
