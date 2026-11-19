@@ -65,7 +65,7 @@ class Agents(unittest.TestCase):
         self.assertEqual(text.count("queuekeeper:agents begin"), 1)
         settings = json.loads(self.settings.read_text())
         commands = [hook["command"] for group in settings["hooks"]["SessionStart"] for hook in group["hooks"]]
-        self.assertEqual(commands, ["make hello", "python3 scripts/qk hook session-start"])
+        self.assertEqual(commands, ["make hello", 'python3 "$CLAUDE_PROJECT_DIR"/scripts/qk hook session-start'])
         self.assertNotIn("PreToolUse", settings["hooks"])
         self.assertEqual(self.qk("remove")[0], 0)
         self.assertEqual((self.root / "CLAUDE.md").read_text(), "# Project\n\nOur own rules.\n")
@@ -93,6 +93,46 @@ class Agents(unittest.TestCase):
         self.assertIn("another version", self.qk("check")[1])
         self.assertEqual(self.qk("setup")[0], 0)
         self.assertEqual(path.read_text(), "Intro.\n\n" + agent_setup.block() + "\nOutro.\n")
+
+    def test_a_relative_launcher_is_anchored_on_the_project(self):
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/qk").write_text("")
+        (self.root / "qk.py").write_text("")
+        self.assertEqual(agent_setup.anchored("qk", self.root), "qk")
+        self.assertEqual(agent_setup.anchored("/opt/bin/qk", self.root), "/opt/bin/qk")
+        self.assertEqual(agent_setup.anchored("python3 ./scripts/qk", self.root),
+                         'python3 "$CLAUDE_PROJECT_DIR"/scripts/qk')
+        self.assertEqual(agent_setup.anchored("python3 qk.py", self.root), 'python3 "$CLAUDE_PROJECT_DIR"/qk.py')
+        self.assertEqual(agent_setup.anchored("tools/my\\ qk", self.root), "\"$CLAUDE_PROJECT_DIR\"/'tools/my qk'")
+        self.assertEqual(self.qk("setup", "--guard", "--launcher", "python3 scripts/qk")[0], 0)
+        settings = json.loads(self.settings.read_text())
+        self.assertEqual(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+                         'python3 "$CLAUDE_PROJECT_DIR"/scripts/qk hook pre-tool-use')
+        self.assertEqual(self.qk("check")[0], 0)
+
+    def test_a_hook_written_with_a_relative_launcher_is_caught_anchored_and_removable(self):
+        self.qk("setup")
+        older = {"hooks": {event: [{**({"matcher": matcher} if matcher else {}), "hooks": [
+            {"type": "command", "command": f"python3 scripts/qk hook {name}", "timeout": 15}]}]
+            for name, (event, matcher) in agent_setup.EVENTS.items()}}
+        self.settings.write_text(json.dumps(older))
+        status, said = self.qk("check")
+        self.assertEqual(status, 1)
+        self.assertIn("relative to the session's directory", said)
+        self.assertEqual(self.qk("remove")[0], 0)
+        self.assertFalse(self.settings.exists())
+        self.qk("setup")
+        self.settings.write_text(json.dumps(older))
+        status, said = self.qk("setup", "--launcher", "python3 scripts/qk")
+        self.assertEqual(status, 0, said)
+        self.assertIn("anchored", said)
+        commands = [hook["command"] for groups in json.loads(self.settings.read_text())["hooks"].values()
+                    for group in groups for hook in group["hooks"]]
+        self.assertEqual(commands, ['python3 "$CLAUDE_PROJECT_DIR"/scripts/qk hook session-start',
+                                    'python3 "$CLAUDE_PROJECT_DIR"/scripts/qk hook pre-tool-use'])
+        self.assertEqual(self.qk("check")[0], 0)
+        self.assertEqual(self.qk("remove")[0], 0)
+        self.assertFalse(self.settings.exists())
 
     def test_settings_that_are_not_json_are_left_as_they_are(self):
         self.settings.parent.mkdir()

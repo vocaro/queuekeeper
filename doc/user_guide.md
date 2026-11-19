@@ -125,9 +125,12 @@ hook. Commit both files and land them, so that every worktree has them.
 - **`qk agents remove`** takes out the block, unless it was edited, and only the hooks setup
   adds. A file left empty is deleted.
 - **`qk agents check`** says what is in place, and exits 0 when the rule and the session-start
-  hook both are.
+  hook both are, and no hook runs its launcher by a relative path.
 - **`--launcher`** names the command the hooks run, `qk` unless you say otherwise, for example
-  `--launcher "python3 scripts/qk"`.
+  `--launcher "python3 scripts/qk"`. Claude Code runs a hook wherever the session has `cd`'d to,
+  so setup anchors a path relative to the project on `$CLAUDE_PROJECT_DIR`: that example is
+  written as `python3 "$CLAUDE_PROJECT_DIR"/scripts/qk`. Running setup again anchors a hook an
+  earlier version wrote with a relative path.
 
 For other agents, add the rule to the instructions they read yourself, adapting the lane names:
 

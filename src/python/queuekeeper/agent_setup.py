@@ -7,7 +7,11 @@ refuses landing on main by hand (agent_hooks.pre_tool_use).
 
 The begin marker records a hash of what was written. Setup run again rewrites a block that still matches it, so the
 rule follows Queuekeeper's; removal deletes only such a block, never one a person edited since. Removal takes out of
-settings.json only the hook commands setup writes, and leaves every other entry as it was."""
+settings.json only the hook commands setup writes, and leaves every other entry as it was.
+
+Claude Code runs a hook in the session's current directory, which a Bash `cd` moves, so a launcher path relative to the
+project is written anchored on $CLAUDE_PROJECT_DIR (vocaro/queuekeeper#275). Check reports a hook written before that, and setup run
+again anchors it."""
 import argparse
 import hashlib
 import json
@@ -112,6 +116,34 @@ def remove_rule(path):
     return 0, f"{path}: removed the Queuekeeper rule" + ("" if updated.strip() else ", and the file, now empty")
 
 
+# Claude Code runs a hook in the session's current directory, which a Bash `cd` moves, and sets this to the project.
+PROJECT_DIR = '"$CLAUDE_PROJECT_DIR"'
+
+
+def relative_words(words, root):
+    """The indexes of the words of a launcher that name a path relative to the project: one with a slash that starts at
+    neither /, ~ nor a variable, or an argument naming a file in the project. Such a launcher fails once a session
+    leaves the project root (vocaro/queuekeeper#275); a bare command, found on PATH, does not."""
+    return [index for index, word in enumerate(words)
+            if not word.startswith(("/", "~", "$", "-"))
+            and ("/" in word or (index and root is not None and (root / word).exists()))]
+
+
+def anchored(launcher, root):
+    """The launcher with each word relative to the project anchored on $CLAUDE_PROJECT_DIR, quoted for the shell."""
+    words = shlex.split(launcher)
+    relative = set(relative_words(words, root))
+    return " ".join(PROJECT_DIR + "/" + shlex.quote(word.removeprefix("./")) if index in relative else shlex.quote(word)
+                    for index, word in enumerate(words))
+
+
+def unanchored(command, root):
+    """True when a hook command of ours runs its launcher by a path relative to the session's directory."""
+    launcher = command.strip().removesuffix(f" hook {OURS.search(command.strip()).group(1)}")
+    try: return bool(relative_words(shlex.split(launcher), root))
+    except ValueError: return False
+
+
 def hook_command(launcher, name):
     return f"{launcher} hook {name}"
 
@@ -151,9 +183,15 @@ def installed(settings, name):
     return [hook["command"] for _, hook in commands_of(settings, EVENTS[name][0]) if ours(hook) == name]
 
 
-def add_hook(settings, name, launcher):
-    """Add the hook name in settings unless one of ours is there already. True when it changed settings."""
-    if installed(settings, name): return False
+def add_hook(settings, name, launcher, root=None):
+    """Add the hook name in settings unless one of ours is there already, anchoring one that an earlier setup wrote
+    with a relative launcher. True when it changed settings."""
+    changed = False
+    for _, hook in commands_of(settings, EVENTS[name][0]):
+        if ours(hook) == name and unanchored(hook["command"], root):
+            hook["command"] = hook_command(launcher, name)
+            changed = True
+    if installed(settings, name): return changed
     event, matcher = EVENTS[name]
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict): raise ValueError("settings.json's hooks is not an object")
@@ -195,13 +233,21 @@ def setup(root, args):
         status = max(status, found)
         lines.append(said)
     path = root / SETTINGS
+    launcher = anchored(args.launcher, root)
+    if launcher != args.launcher:
+        lines.append(f"the hooks run `{launcher}`, anchored on the project, since Claude Code runs a hook wherever "
+                     "the session has gone")
     try:
         settings = read_settings(path)
-        added = [name for name in (SESSION_START, *([PRE_TOOL_USE] if args.guard else ()))
-                 if add_hook(settings, name, args.launcher)]
+        before = {name: installed(settings, name) for name in EVENTS}
+        # A guard there already is anchored too, with or without --guard.
+        added = [name for name in (SESSION_START, *([PRE_TOOL_USE] if args.guard or before[PRE_TOOL_USE] else ()))
+                 if add_hook(settings, name, launcher, root)]
         if added: write_settings(path, settings)
         for name in (SESSION_START, PRE_TOOL_USE):
-            if name in added: lines.append(f"{path}: added the {EVENTS[name][0]} hook `{hook_command(args.launcher, name)}`")
+            if name in added and before[name]:
+                lines.append(f"{path}: anchored the {EVENTS[name][0]} hook on the project: `{installed(settings, name)[0]}`")
+            elif name in added: lines.append(f"{path}: added the {EVENTS[name][0]} hook `{hook_command(launcher, name)}`")
             elif installed(settings, name): lines.append(f"{path}: the {EVENTS[name][0]} hook was there already")
     except (OSError, ValueError) as error:
         status = 2
@@ -253,11 +299,17 @@ def check(root, args):
     except (OSError, ValueError) as error:
         print(f"{path}: unreadable: {error}")
         return 1
-    hooked = {}
+    hooked, broken = {}, False
     for name in (SESSION_START, PRE_TOOL_USE):
         hooked[name] = installed(settings, name)
         print(f"{path}: {EVENTS[name][0]} " + (f"hook `{hooked[name][0]}`" if hooked[name] else "hook absent"))
-    return 0 if rule and hooked[SESSION_START] else 1
+        for command in hooked[name]:
+            if unanchored(command, root):
+                broken = True
+                print(f"{path}: the {EVENTS[name][0]} hook `{command}` runs its launcher by a path relative to the "
+                      "session's directory, so it fails once a session leaves the project root; `qk agents setup` "
+                      "anchors it on $CLAUDE_PROJECT_DIR")
+    return 0 if rule and hooked[SESSION_START] and not broken else 1
 
 
 def main(argv, project=None):
@@ -276,7 +328,8 @@ def main(argv, project=None):
             action.add_argument("--guard", action="store_true", help="add the PreToolUse guard, which refuses git push "
                                 "to main, git merge on main, moving main with update-ref or branch -f, and gh pr merge")
             action.add_argument("--launcher", default="qk", help="the command that runs Queuekeeper in the hooks "
-                                "(default qk; for example python3 scripts/qk)")
+                                "(default qk; for example python3 scripts/qk). A path in it relative to the project is anchored "
+                                "on $CLAUDE_PROJECT_DIR, so that the hooks run wherever the session has gone")
             action.add_argument("--force", action="store_true", help="replace a block edited since it was written")
     args = parser.parse_args(argv)
     if getattr(args, "launcher", "qk") and not shlex.split(getattr(args, "launcher", "qk")):
