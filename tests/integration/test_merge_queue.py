@@ -181,16 +181,46 @@ class Landing(Fixture):
         self.assertLessEqual({"a", "c", "d"}, self.main_files())
         failed = self.state(ids[1])
         self.assertIn("bad: ['bad']", Path(failed["log"]).read_text())
-        # all four fail, [a bad] fail, [a] passes, [bad] fails, then [c d] pass: not one gate per commit plus.
-        self.assertEqual(self.gates(), 5)
+        # all four fail, [a bad] fail, [a] passes, [bad] fails, [bad] fails on the main before a landed too, so it
+        # comes back alone (vocaro/queuekeeper#263), then [c d] pass: not one gate per commit plus.
+        self.assertEqual(self.gates(), 6)
+        self.assertNotIn("conflictWith", failed)
         self.assertTrue(run(self.repo, "git", "rev-parse", "--verify", f"refs/queuekeeper/queue/{ids[1]}"))
 
     def test_two_that_pass_alone_and_fail_together(self):
+        """One half at a time, left passes and lands before right gates, which then fails alone on a main that holds
+        left; it passes on the main before left landed, so it comes back naming left, landed (vocaro/queuekeeper#263):
+        the pair, left, right, and right on the main before left, 4 gates."""
         self.commit("left", "left"); self.commit("right", "right")
         ids = self.add("left", "right")
-        self.work()
-        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed"])
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        left, right = (self.state(i) for i in ids)
+        self.assertEqual([left["state"], right["state"]], ["landed", "failed"])
         self.assertNotIn("right", self.main_files())
+        self.assertEqual(right["conflictWith"], [{"id": ids[0], "sha": left["tip"], "state": "landed"}])
+        self.assertIn(f"which now holds {ids[0]} at {left['tip']}, landed in the same bisect, though this commit passes "
+                      "on ", right["why"])
+        self.assertIn("Rebase onto origin/main", right["why"])
+        self.assertIn(f"{ids[1]} sent back naming 1 landed entry after 1 probe", said.getvalue())
+        self.assertEqual(self.gates(), 4)
+        result = agent_results.lookup(mq.Queue(self.repo), ids[1])
+        self.assertEqual(result["failure"]["category"], "fails-together")
+        self.assertEqual(result["recovery"]["conflictWith"], right["conflictWith"])
+
+    def test_of_several_landed_the_one_that_breaks_a_later_entry_is_named(self):
+        """[a left right] fail; one half at a time, a and then left land, and right fails alone. It passes on the main
+        before both, so the search of the landed drops a, and right names left alone (vocaro/queuekeeper#263)."""
+        for name in ("a", "left", "right"): self.commit(name, name)
+        ids = self.add("a", "left", "right")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        a, left, right = (self.state(i) for i in ids)
+        self.assertEqual([a["state"], left["state"], right["state"]], ["landed", "landed", "failed"], said.getvalue())
+        self.assertEqual(right.get("conflictWith"), [{"id": ids[1], "sha": left["tip"], "state": "landed"}],
+                         said.getvalue())
+        # right on the main before both, then [left right] there: a dropped with one probe.
+        self.assertIn(f"{ids[2]} sent back naming 1 landed entry after 2 probes", said.getvalue())
 
     def test_a_conflict_comes_back_without_costing_the_others_a_gate(self):
         self.commit("same", "one", "one"); self.commit("same", "two", "two"); self.commit("c", "c")
@@ -10186,8 +10216,10 @@ class BothHalves(Fixture):
         ids = self.add("a", "b", "bad", "d")
         log = self.worked()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "landed", "failed", "landed"])
-        self.assertEqual(self.gates(), 5)
+        # And bad on the main before a b landed, where it fails too, so it names neither (vocaro/queuekeeper#263).
+        self.assertEqual(self.gates(), 6)
         self.assertEqual(self.rounds(log), 3, log)
+        self.assertIn("comes back alone", log)
         self.assertIn("testing the newer 2 entries of the bisect", log)
         self.assertIn("newer half: 2 commits fail together here too: they bisect once the older half has", log)
         self.assertIn("testing the newer 1 entry of the bisect", log)
@@ -10223,8 +10255,8 @@ class BothHalves(Fixture):
         log = self.worked()
         left, right = (self.state(i) for i in ids)
         self.assertEqual([left["state"], right["state"]], ["failed", "failed"])
-        self.assertEqual(left["conflictWith"], [{"id": ids[1], "sha": right["tip"]}])
-        self.assertEqual(right["conflictWith"], [{"id": ids[0], "sha": left["tip"]}])
+        self.assertEqual(left["conflictWith"], [{"id": ids[1], "sha": right["tip"], "state": "failed"}])
+        self.assertEqual(right["conflictWith"], [{"id": ids[0], "sha": left["tip"], "state": "failed"}])
         self.assertIn(f"the queue's lanes fail on this commit together with {ids[1]} at {right['tip']}, though each "
                       "passes alone on top of origin/main", left["why"])
         self.assertIn(f"together with {ids[0]} at {left['tip']}", right["why"])
@@ -10236,7 +10268,7 @@ class BothHalves(Fixture):
         for entry, other in ((left, right), (right, left)):
             result = agent_results.lookup(mq.Queue(self.repo), entry["id"])
             self.assertEqual(result["failure"]["category"], "fails-together")
-            self.assertEqual(result["conflictWith"], [{"id": other["id"], "sha": other["tip"]}])
+            self.assertEqual(result["conflictWith"], [{"id": other["id"], "sha": other["tip"], "state": "failed"}])
             self.assertEqual(result["recovery"]["reasonCode"], "entry-fails-together")
             self.assertEqual(result["recovery"]["conflictWith"], result["conflictWith"])
             self.assertIn(["qk", "--project", str(self.repo.resolve()), "queue", "result", other["id"], "--json"],
@@ -10250,11 +10282,75 @@ class BothHalves(Fixture):
         log = self.worked()
         states = [self.state(i) for i in ids]
         self.assertEqual([state["state"] for state in states], ["landed", "failed", "failed", "landed"])
-        self.assertEqual(states[1]["conflictWith"], [{"id": ids[2], "sha": states[2]["tip"]}])
-        self.assertEqual(states[2]["conflictWith"], [{"id": ids[1], "sha": states[1]["tip"]}])
-        self.assertIn("2 of the 4 sent back after", log)
+        self.assertEqual(states[1]["conflictWith"], [{"id": ids[2], "sha": states[2]["tip"], "state": "failed"}])
+        self.assertEqual(states[2]["conflictWith"], [{"id": ids[1], "sha": states[1]["tip"], "state": "failed"}])
+        # The whole, [left right d], [left d], [left right], then left and right alone, two at once
+        # (vocaro/queuekeeper#262), and the search's cost in the round's events.
+        self.assertIn("2 of the 4 sent back after 6 probes, 1 pair of them at once, in ", log)
         self.assertIn("the other 2 gate again", log)
         self.assertLessEqual({"a", "d"}, self.main_files())
+        searches = mq.events.read(mq.Queue(self.repo).directory, kinds=["round.together"])
+        self.assertEqual([(event["probes"], event["atOnce"]) for event in searches], [(6, 1)])
+
+    def test_a_probe_that_fails_only_by_tests_that_pass_alone_drops_no_entry(self):
+        """[a left right d]: the probe of [left d] fails, but its failed test passes alone on rerun, so it is no proof
+        and right, which left needs, stays; until vocaro/queuekeeper#260 it was dropped, and left and d came back
+        naming each other."""
+        for name in ("a", "left", "right", "d"): self.commit(name, name)
+        ids = self.add("a", "left", "right", "d")
+        flaky = frozenset((ids[1], ids[3]))
+        gate, rerun, flaked = mq.Probe.gate, mq.Probe.rerun, []
+        def flaky_gate(worker, lanes, round_name, where=(), cancel=None, quick=None):
+            if frozenset(worker.gating) == flaky:
+                flaked.append(round_name)
+                log = self.base / f"{round_name}.log"
+                log.write_text("a flaky failure\n")
+                worker.failed_lane = "gate"
+                return 1, log
+            return gate(worker, lanes, round_name, where, cancel, quick)
+        def flaky_rerun(worker, config, applied, base, head, log, round_name):
+            if frozenset(entry["id"] for entry in applied) == flaky:
+                worker.repeated, worker.passed_alone = False, True
+                return None
+            return rerun(worker, config, applied, base, head, log, round_name)
+        with patch.object(mq.Probe, "gate", flaky_gate), patch.object(mq.Probe, "rerun", flaky_rerun):
+            log = self.worked()
+        self.assertEqual(len(flaked), 1)
+        states = [self.state(i) for i in ids]
+        self.assertEqual([state["state"] for state in states], ["landed", "failed", "failed", "landed"], log)
+        self.assertEqual(states[1]["conflictWith"], [{"id": ids[2], "sha": states[2]["tip"], "state": "failed"}])
+        self.assertIn(f"{ids[1]}, {ids[3]} fail only by tests that pass alone, which is no proof, so none of them is "
+                      "dropped", log)
+
+    def test_a_half_that_passes_by_its_flakes_still_starts_the_search(self):
+        """The newer half [right] fails a test that passes alone on rerun, and the older [left] passes: both count as
+        passed, so the two come back naming each other, the flake named apart, rather than left landing and right
+        coming back alone (vocaro/queuekeeper#261)."""
+        self.commit("left", "left"); self.commit("right", "right")
+        ids = self.add("left", "right")
+        gate, rerun, flaked = mq.Beside.gate, mq.Beside.rerun, []
+        test = "tests.test_fixture.Fixture.test_flaky"
+        def flaky_gate(worker, lanes, round_name, where=(), cancel=None, quick=None):
+            if worker.label == "newer half" and not flaked:
+                flaked.append(round_name)
+                log = self.base / f"{round_name}.log"
+                log.write_text("a flaky failure\n")
+                return 1, log
+            return gate(worker, lanes, round_name, where, cancel, quick)
+        def flaky_rerun(worker, config, applied, base, head, log, round_name):
+            if worker.label == "newer half":
+                return [{"test": test, "commit": head, "gateLog": str(log), "rerunLogs": [], "mac": "fixture"}]
+            return rerun(worker, config, applied, base, head, log, round_name)
+        with patch.object(mq.Beside, "gate", flaky_gate), patch.object(mq.Beside, "rerun", flaky_rerun):
+            log = self.worked()
+        self.assertEqual(len(flaked), 1)
+        left, right = (self.state(i) for i in ids)
+        self.assertEqual([left["state"], right["state"]], ["failed", "failed"], log)
+        self.assertEqual(right["conflictWith"], [{"id": ids[0], "sha": left["tip"], "state": "failed"}])
+        self.assertIn(f"each half passed, though the 2 failed together (once {test} passed alone on rerun)", log)
+        self.assertIn(f"The bisect's halves passed only once {test} passed alone on rerun, flakes this failure is not.",
+                      right["why"])
+        self.assertNotIn("left", self.main_files())
 
     def test_a_probe_with_no_verdict_starts_the_bisect_again_from_its_halves(self):
         """A probe that gives no verdict blames nobody: every entry waits again, and the next round gates the halves
@@ -10295,14 +10391,15 @@ class BothHalves(Fixture):
 
     def test_a_lane_that_runs_only_here_keeps_one_half_at_a_time(self):
         """Negative control: a lane that runs only on this Mac (offerable, whose own cases the test below covers)
-        sends no newer half beside the older, and the bisect is as before: 5 gates in 5 rounds."""
+        sends no newer half beside the older, and the bisect is as before: 5 gates in 5 rounds, and one more of bad on
+        the main before a landed (vocaro/queuekeeper#263)."""
         self.commit("a", "a"); self.commit("bad", "bad"); self.commit("c", "c"); self.commit("d", "d")
         ids = self.add("a", "bad", "c", "d")
         why = "gate runs only on this Mac: the lane says: the fixture's reason"
         with patch.object(mq, "offerable", lambda config, lanes: why):
             log = self.worked()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed", "landed", "landed"])
-        self.assertEqual(self.gates(), 5)
+        self.assertEqual(self.gates(), 6)
         self.assertEqual(self.rounds(log), 5, log)
         self.assertIn(f"the newer 2 of the bisect wait for the older half, since {why}", log)
         self.assertIn(f"the newer 1 of the bisect wait for the older half, since {why}", log)

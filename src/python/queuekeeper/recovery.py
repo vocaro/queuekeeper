@@ -104,8 +104,9 @@ def for_entry(entry, held=None, *, limit_reached=False, unverified=False):
                       entry.get("why") or "Resolve the conflict and submit the corrected commits.",
                       [["qk", "queue", "result", identifier, "--json"]])
     if state == "failed" and entry.get("conflictWith"):
-        # It fails only together with these entries, each sent back too (merge_queue.Worker.together): their IDs
-        # and commits, to rebase onto, and how to read why each came back.
+        # It fails only together with these entries, each sent back too (merge_queue.Worker.together) or landed
+        # already (Worker.partners_landed), as each one's state says: their IDs and commits, to rebase onto, and how
+        # to read why each came back.
         partners = [dict(partner) for partner in entry["conflictWith"]]
         return {**advice("entry-fails-together", "session", False, "fix-interaction",
                          entry.get("why") or "Rebase onto the entries it fails with, fix how the changes combine, "

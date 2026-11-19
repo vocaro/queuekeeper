@@ -45,6 +45,8 @@ KINDS = {
     "batch.passed": "passed at {head}: {entries}",
     "batch.pushed": "pushed {head}: {entries}",
     "test.flaky": "flaky: {test} at {commit}",
+    "round.together": "searched for the entries that fail together in {probes} probes, {atOnce} pairs at once, "
+                      "{seconds}s",
     "queue.held": "held {why}",
     "queue.resumed": "resumed",
     "queue.closed": "closed to new entries by {by}: {why}",

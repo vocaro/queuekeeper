@@ -265,15 +265,29 @@ start it now (`qk run --offload-only` when the older half is on this Mac, otherw
 `qk run --if-free` with that Mac left out). Whichever half passes lands. When both fail, the older
 is bisected first.
 
-**When both halves pass,** no entry fails alone: the entries fail together. `Worker.together` gates
-the whole set again in the `-beside` checkout, since `main` may have moved, then subsets of it one
-at a time, keeping each subset's verdict. `fewest` drops runs of entries while the rest still fail,
-halves first (whose verdicts the bisect already has) and single entries last, so every entry left
-is needed; each one left is then gated alone. One that fails alone comes back alone. Otherwise each
-comes back with `conflictWith`, the other entries' IDs and commits, and the rest gate again. A
-subset that does not apply to `main` by itself counts as no proof, so its entries stay. A probe
-with no verdict ends the search as any such gate ends a round, and the next round gates the halves
-again. The search follows mergetrain's `minimize_joint_failure` (MIT; see `THIRD_PARTY_NOTICES.md`). The newer half waits behind the older instead when no other Mac can start it, a
+**When both halves pass,** no entry fails alone: the entries fail together. A half counts as
+passed when its failed tests all pass alone on rerun, as a batch with flakes does; the newer half's
+failed tests are rerun before either half lands, so a flake in one half does not hide the
+interaction. `Worker.together` gates the whole set again in the `-beside` checkout, since `main`
+may have moved, then subsets of it, keeping each subset's verdict (`Joint`). `fewest` drops runs of
+entries while the rest still fail, halves first (whose verdicts the bisect already has) and single
+entries last, so every entry left is needed; each one left is then gated alone, two at a time, one
+in the worker's checkout and one in `-beside` on another Mac, as the halves are. One that fails
+alone comes back alone. Otherwise each comes back with `conflictWith`, the other entries' IDs,
+commits and `state` (`failed`), and the rest gate again. A subset that fails counts only once a
+rerun of its failed tests alone fails again (`Probe.confirm`); one whose failed tests all pass alone
+counts as no proof, as does one that does not apply to `main` by itself, so their entries stay. A
+probe with no verdict ends the search as any such gate ends a round, and the next round gates the
+halves again. The search's gates and wall time go in the round's account (`together`) and a
+`round.together` event.
+
+**When a bisect gates one half at a time,** a passing older half lands at once, so a newer entry
+that breaks only with it fails alone on a `main` that holds it. The worker remembers what the bisect
+landed and the `main` before it. When an entry it gates alone then fails, the worker gates it on that
+earlier `main` (`Worker.partners_landed`); if it passes there, `fewest` finds the landed entries it
+fails with, and it comes back naming them in `conflictWith` with `state` `landed`, to rebase onto
+`origin/main`. This costs one gate for each entry that fails alone after the bisect landed something,
+more when several entries landed. The search follows mergetrain's `minimize_joint_failure` (MIT; see `THIRD_PARTY_NOTICES.md`). The newer half waits behind the older instead when no other Mac can start it, a
 lane must run on this Mac, the round is docs-only, ungated or `--front`, or a newer entry applies
 only on top of an older one.
 
@@ -1255,8 +1269,9 @@ each uses.
 24. One worker per repository takes everything waiting, oldest first, as one batch with one gate.
 25. A failed batch tries failed tests alone, then one suspect entry, then a bisect. *A bisect costs
     about a gate per halving.* When both halves pass, a search gates subsets for the fewest entries
-    that fail together and sends each back naming the others. *An agent told its partner can rebase
-    onto it; one blamed alone cannot tell why it failed.*
+    that fail together and sends each back naming the others, and an entry that fails alone after
+    the bisect landed its partner names that partner. *An agent told its partner can rebase onto it;
+    one blamed alone cannot tell why it failed.*
 26. A bisect's halves gate at once on two different Macs, and entries arriving during a gate are
     gated on its tip on any Mac but the one that admitted it. *The next gate is under way before this
     one lands.*
@@ -1677,6 +1692,7 @@ schema only grows, so readers ignore what they do not know.
 | `batch.passed` | A batch's lanes passed, before its push | `head`, `base`, `entries` |
 | `batch.pushed` | A batch was pushed to `main`, or a push without an answer was found there (`reconciled`) | `head`, `base`, `entries`, `ungated`, `reconciled` |
 | `test.flaky` | A failed test passed alone | `test`, `commit`, `issue`, `landed`, `entries` |
+| `round.together` | A search for the entries that fail together ended | `probes`, `atOnce`, `seconds` |
 | `queue.held` | The queue stopped | `why`, `for` (`owner` or `session`) |
 | `queue.resumed` | A hold was cleared | `was` |
 | `queue.closed` | The queue was closed to new entries | `why`, `by`, `until` |

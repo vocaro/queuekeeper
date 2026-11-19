@@ -3469,6 +3469,9 @@ class Worker:
         self.group_failed = []  # the lanes of the last group lane that did not pass (read_group)
         self.group_cut = []  # the lanes its first failed lane cut short, under the group's failFast (read_group)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
+        # Whether the last rerun ran a failed test that failed again, and whether every failed test it ran passed alone
+        # (rerun_each), which a probe of the search for entries that fail together reads (Probe.confirm, #260).
+        self.repeated = self.passed_alone = False
         self.added = None  # (entry, why) of the entry that adds the tests the last rerun passed alone, for blame (rerun)
         self.refused = None  # (lane, line, config) of the last gate qk unittest refused before running, for blame (rerun)
         self.unblamed = None  # {"key", "line"} of that refusal when blame found no one entry that brings it (blame)
@@ -3488,6 +3491,8 @@ class Worker:
         self.gating = ()  # the IDs of the entries integrate last put on top, which the gate tests (Removal)
         self.withdrawn = []  # those of them that left the queue, which stopped the last gate (gate)
         self.role = "batch"  # what its gate is in the round's account (GateWatch): the batch, or a bisect's older half
+        # {"base", "entries"}: the entries the bisect going on landed, and the main before the first (bisected).
+        self.bisect_landed = None
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
@@ -4988,7 +4993,7 @@ class Worker:
     def weigh_failure(self, config, applied, base, head, log, round_name):
         """rerun's verdict."""
         self.confirmed = self.refused = self.added = None
-        self.regate = False
+        self.regate = self.repeated = self.passed_alone = False
         lane = self.failed_lane
         if self.altered_files:
             self.say(f"{lane} changed the tree it tested, which the same tree does again: no rerun")
@@ -5143,12 +5148,14 @@ class Worker:
                              f"see {path}")
                     # Only a rerun that ran and failed confirms the failure, whose output blame reads.
                     real[test] = path if isinstance(status_, int) else None
+                    if isinstance(status_, int): self.repeated = True
                     break
             if test in real:
                 if len(applied) == 1: return None
                 continue
             flakes.append({"test": test, "commit": head, "gateLog": str(log), "rerunLogs": logs,
                            "mac": offload_host.mac_name()})
+        self.passed_alone = not real
         return flakes, real
 
     def keep_flakes(self, flakes, applied, touching, outcome):
@@ -5684,6 +5691,7 @@ class Worker:
             if why: self.drop_stacked(why)
         batch = self.stacked.entries if self.stacked else self.choose(waiting)
         if not batch: return False
+        if not self.limit: self.bisect_landed = None
         passed = [entry for entry in batch if entry["state"] == PASSED] if not self.stacked else []
         if not fetch_main(queue.main_checkout, self.say): return self.first_landing(batch[0])
         self.prepare()
@@ -5747,9 +5755,6 @@ class Worker:
             result, log = self.watched(self, config, lanes, base, head, applied,
                                        lambda: self.gate(lanes, round_name))
         self.prune()
-        if beside and not result and beside.result[0] == 0 and self.together(config, base, applied, beside, lanes,
-                                                                             round_name):
-            return True
         if not beside:
             if self.back_in_line(applied, result): return True
             outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name)
@@ -5759,6 +5764,12 @@ class Worker:
         if result and result not in NO_VERDICT and result != WITHDRAWN:
             flakes = self.rerun(config, applied, base, head, log, round_name)
         older_passes = not result or bool(flakes)
+        # The newer half's failed tests are rerun before either half lands, so that a half that passed only by its
+        # flakes counts as passed here too, and both passing starts the search for the entries that fail together
+        # (vocaro/queuekeeper#261). Until then a flake in either half landed the older and blamed a newer alone.
+        if older_passes and (beside.result[0] == 0 or beside.counted(config, base)) \
+                and self.together(config, base, applied, beside, lanes, round_name, flakes or []):
+            return True
         # What passed beside lands at once while the older half bisects on; after the older half's push when both
         # passed, since the older go first when both can (Beside.weigh).
         if not older_passes: beside.weigh(config, base, older_landed=False)
@@ -5965,6 +5976,7 @@ class Worker:
                          entries=[entry["id"] for entry in applied], bisect=bisect, adopted=adopted, waiting=None,
                          waitingSince=None)
             state.pop("failure", None)
+            state.pop("together", None)
             state.setdefault("gates", {})
         self.queue.note(change)
         self.queue.emit("round.began", round=round_name, head=head, base=base, adopted=adopted or None,
@@ -6077,6 +6089,8 @@ class Worker:
             if not flakes and runner.regate:
                 queue.mark(applied, QUEUED)
                 return QUEUED
+            if not flakes and len(applied) == 1 and self.partners_landed(config, applied[0], base, log, runner):
+                return FAILED
             if not flakes:
                 blamed = runner.blame(applied)
                 if blamed:
@@ -6100,6 +6114,7 @@ class Worker:
         if flakes: head = runner.mark_flaky(flakes, base)
         runner.keep(applied, base, head, docs, ungated, flakes)
         if runner.push(config, applied, base, docs, ungated, flakes):
+            self.bisected(applied, base)
             self.passed(len(applied))
             return LANDED
         queue.mark(applied, QUEUED)
@@ -6370,93 +6385,126 @@ class Worker:
         elif beside.outcome == PASSED and outcome == LANDED:
             self.limit, self.suspects = None, 0
 
-    def together(self, config, base, older, beside, lanes, round_name):
+    def together(self, config, base, older, beside, lanes, round_name, flakes=()):
         """Whether the search for the fewest entries that fail together settled the bisect whose two halves, older
-        here and beside.newer, both passed outright though all of them failed together (TOGETHER): False, to go on as
-        before, when an entry left the queue meanwhile. The search gates the whole again, since main may have moved
-        since its failure; when it passes now, every entry gates again. Otherwise it drops entries greedily while the
-        rest still fail (fewest), and gates each one left alone: one that fails alone comes back alone, as a bisect
-        sends one back; else each comes back naming the others, by ID and commit, and the rest gate again. A probe
-        with no verdict, or stopped, ends the search as such a gate ends any round (Worker.older), and the bisect
-        starts again from its halves."""
+        here and beside.newer, both passed, outright or by flakes (older's flakes, beside.flakes), though all of them
+        failed together (TOGETHER): False, to go on as before, when an entry left the queue meanwhile. The search gates
+        the whole again, since main may have moved since its failure; when it passes now, every entry gates again.
+        Otherwise it drops entries greedily while the rest still fail (fewest), and gates each one left alone, two at
+        a time on two Macs where it can (Joint, vocaro/queuekeeper#262): one that fails alone comes back alone, as a
+        bisect sends one back; else each comes back naming the others, by ID and commit, and the rest gate again. A
+        failed probe counts only once a rerun of its failed tests repeats the failure (Probe.confirm,
+        vocaro/queuekeeper#260). A probe with no verdict, or stopped, ends the search as such a gate ends any round
+        (Worker.older), and the bisect starts again from its halves."""
         entries = [*older, *beside.newer]
         current = [self.queue.read(entry["id"]) for entry in entries]
         if any(entry is None or entry["state"] not in WAITING for entry in current): return False
-        runner = Beside(self, label=TOGETHER, settles=False)
-        runner.checks = self.checks
-        runner.prepare()
-        order = {entry["id"]: index for index, entry in enumerate(entries)}
-        # Each subset's verdict, by its entries' IDs: (True when it failed, False when it passed, None when its entries
-        # do not apply to origin/main by themselves; its log; what rejection_facts reads of its gate).
-        known = {frozenset(entry["id"] for entry in older): (False, None, {}),
-                 frozenset(entry["id"] for entry in beside.newer): (False, beside.result[1], {})}
-        probes = 0
-        def fails(subset):
-            nonlocal probes
-            members = sorted(subset, key=lambda entry: order[entry["id"]])
-            key = frozenset(entry["id"] for entry in members)
-            if key not in known:
-                runner.unreachable = []
-                applied = runner.integrate(members, base)
-                ids = ", ".join(entry["id"] for entry in members)
-                if runner.unreachable or len(applied) != len(members):
-                    runner.say(f"{ids} do not apply to origin/main by themselves, so none of them is dropped")
-                    known[key] = (None, None, {})
-                else:
-                    probes += 1
-                    head = runner.head()
-                    runner.say(f"probe {probes}: gating {ids} at {head[:12]} on {base[:12]}")
-                    result, log = runner.gate(lanes, f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}")
-                    if result and (result in NO_VERDICT or result == WITHDRAWN or (
-                            runner.unstarted(result)
-                            and not (runner.tooling and runner.batch_stops_start(base, head, log)))):
-                        raise Unsettled(members, result, log, head)
-                    known[key] = (bool(result), log, {"failed_load": runner.failed_load, "failed_lane": runner.failed_lane,
-                                                      "failed_dispatch": runner.failed_dispatch})
-                    runner.say(f"probe {probes}: {ids} {'fail' if result else 'pass'}")
-            return known[key][0] is True
-        def failure(subset):
-            """The log of the probe of subset, which failed, with runner's account of its gate put back."""
-            failed, log, account = known[frozenset(entry["id"] for entry in subset)]
-            for name, value in account.items(): setattr(runner, name, value)
-            return log
-        self.say(f"each half passed, though the {len(entries)} failed together: gating subsets of them for the fewest "
-                 "that fail together")
+        search = Joint(self, config, base, lanes, entries)
+        search.known[search.key(older)] = (False, None, {}, None)
+        search.known[search.key(beside.newer)] = (False, beside.result[1], {}, None)
+        known_flakes = sorted({flake["test"] for flake in [*flakes, *(beside.flakes or [])]})
+        flaky = (f" The bisect's halves passed only once {', '.join(known_flakes)} passed alone on rerun, flakes this "
+                 "failure is not." if known_flakes else "")
+        self.say(f"each half passed, though the {len(entries)} failed together"
+                 + (f" (once {', '.join(known_flakes)} passed alone on rerun)" if known_flakes else "")
+                 + ": gating subsets of them for the fewest that fail together")
         try:
-            if not fails(entries):
-                self.say(f"the {len(entries)} pass together on {base[:12]}: gating them again")
+            if not search.fails(entries):
+                self.say(f"the {len(entries)} pass together on {base[:12]}, or fail only by tests that pass alone: "
+                         "gating them again")
                 self.queue.mark(entries, QUEUED)
                 self.limit, self.suspects = None, 0
+                search.account()
                 return True
-            fewest_ = fewest(entries, fails)
-            alone = [entry for entry in fewest_ if len(fewest_) == 1 or fails([entry])]
+            fewest_ = fewest(entries, search.fails)
+            # Each one left alone, two at a time where two Macs can take them (vocaro/queuekeeper#262).
+            if len(fewest_) > 1: search.learn([[entry] for entry in fewest_])
+            alone = [entry for entry in fewest_ if len(fewest_) == 1 or search.fails([entry])]
         except Unsettled as unsettled:
+            search.account()
             self.queue.mark(entries, QUEUED)
             self.say(f"the search for the entries that fail together ended without a verdict on "
                      f"{', '.join(entry['id'] for entry in unsettled.entries)}: the bisect starts again from its halves")
             self.older(config, unsettled.entries, base, unsettled.head, None, None, unsettled.result, unsettled.log,
-                       round_name, reran=True, runner=runner)
+                       round_name, reran=True, runner=unsettled.runner)
             self.suspects, self.limit = len(entries), len(older)
             return True
         sent = alone or fewest_
         for entry in alone:
-            log = failure([entry])
+            log, runner = search.failure([entry])
             why = (f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again."
                    + runner.rejection_facts(entry, log, config, base))
             self.say(f"{entry['id']}: {why}")
             self.settle_failure(entry, log, why, runner)
         if not alone:
-            log = failure(fewest_)
+            log, runner = search.failure(fewest_)
             for entry in fewest_:
                 partners = [other for other in fewest_ if other["id"] != entry["id"]]
-                why = together_words(partners) + runner.rejection_facts(entry, log, config, base)
+                why = together_words(partners) + flaky + runner.rejection_facts(entry, log, config, base)
                 self.say(f"{entry['id']}: {why}")
-                self.settle_failure(entry, log, why, runner,
-                                    conflictWith=[{"id": other["id"], "sha": other["tip"]} for other in partners])
+                self.settle_failure(entry, log, why, runner, conflictWith=[
+                    {"id": other["id"], "sha": other["tip"], "state": FAILED} for other in partners])
         rest = [entry for entry in entries if entry not in sent]
         self.queue.mark(rest, QUEUED)
-        self.say(f"{len(sent)} of the {len(entries)} sent back after {probes} probe{'' if probes == 1 else 's'}"
+        self.say(f"{len(sent)} of the {len(entries)} sent back after {search.said()}"
                  + (f"; the other {len(rest)} gate again" if rest else ""))
+        search.account()
+        self.limit, self.suspects = None, 0
+        return True
+
+    def bisected(self, entries, base):
+        """Remember entries, which landed on base while a bisect goes on, and base, the main before the first of them,
+        for a lone entry that fails later in the bisect (partners_landed, vocaro/queuekeeper#263)."""
+        if not self.limit or self.alone: return
+        if self.bisect_landed is None: self.bisect_landed = {"base": base, "entries": []}
+        self.bisect_landed["entries"] += [dict(entry) for entry in entries]
+
+    def partners_landed(self, config, entry, base, log, runner):
+        """Whether entry, which a bisect gated alone, and which fails on top of origin/main, came back naming the
+        entries this bisect landed before it that it fails with, as it passes on the main before they landed
+        (vocaro/queuekeeper#263). When a bisect gates one half at a time, a passing older half lands at once, and a
+        newer entry that breaks only with it then fails alone on a main that holds it. The worker gates entry on the
+        main before the bisect's first landing; when it passes there, it searches the landed entries for the fewest it
+        fails with (fewest), and entry comes back naming them, each by ID and commit, landed (conflictWith). False to
+        send it back alone, as before: nothing landed in this bisect, it fails there too, or a probe gave no verdict.
+        Only the landed entries base, the main entry failed on, holds count: a newer half that landed beside entry's
+        gate is not under it. Costs a gate, and one or more for each landed entry beyond the first."""
+        landed = self.bisect_landed
+        if not landed or self.alone or not landed["entries"] or base is None: return False
+        partners = [other for other in landed["entries"] if other["id"] != entry["id"] and landing_proofs.contained(
+            lambda *words: git(self.checkout, *words), base, other["tip"])]
+        if not partners: return False
+        before = landed["base"]
+        ids = ", ".join(other["id"] for other in partners)
+        self.say(f"{entry['id']} fails alone on origin/main, which holds {ids}, landed by this bisect: gating it on "
+                 f"{before[:12]}, the main before them, for whether it fails with them")
+        members = sorted([*partners, entry], key=lambda other: (other.get("submitted") or 0, other["id"]))
+        try: lanes = lanes_of(config, set().union(*(self.own_paths(other) for other in members)))
+        except ValueError as error:
+            self.say(f"the lanes for {entry['id']} and the entries landed before it cannot be chosen: {error}")
+            return False
+        search = Joint(self, config, before, lanes, members, watched=[entry["id"]])
+        try:
+            search.learn([[entry]])
+            if search.known[search.key([entry])][0] is not False:
+                self.say(f"{entry['id']} fails on {before[:12]} too, or gives no proof there: it comes back alone")
+                search.account()
+                return False
+            search.known[search.key([*partners, entry])] = (True, log, {}, runner)
+            fewest_ = fewest(partners, lambda subset: search.fails([*subset, entry]))
+        except Unsettled as unsettled:
+            self.say(f"the search for the landed entries {entry['id']} fails with ended without a verdict on "
+                     f"{', '.join(other['id'] for other in unsettled.entries)} (exit {unsettled.result}): it comes back "
+                     "alone")
+            search.account()
+            return False
+        why = landed_words(fewest_, before) + runner.rejection_facts(entry, log, config)
+        self.say(f"{entry['id']}: {why}")
+        self.settle_failure(entry, log, why, runner, conflictWith=[
+            {"id": other["id"], "sha": other["tip"], "state": LANDED} for other in fewest_])
+        self.say(f"{entry['id']} sent back naming {len(fewest_)} landed entr{'y' if len(fewest_) == 1 else 'ies'} "
+                 f"after {search.said()}")
+        search.account()
         self.limit, self.suspects = None, 0
         return True
 
@@ -6735,10 +6783,159 @@ BISECT = "bisect"
 
 class Unsettled(Exception):
     """A probe of Worker.together whose gate gave no verdict, was stopped or could not start: entries at head, and
-    the gate's (result, log)."""
-    def __init__(self, entries, result, log, head):
+    the gate's (result, log), which runner, the Probe that gated it, holds the account of."""
+    def __init__(self, entries, result, log, head, runner):
         super().__init__(f"exit {result}")
-        self.entries, self.result, self.log, self.head = entries, result, log, head
+        self.entries, self.result, self.log, self.head, self.runner = entries, result, log, head, runner
+
+
+class Joint:
+    """The probes of a search for the fewest entries that fail together (Worker.together, Worker.partners_landed):
+    each subset of entries, oldest first by entries' order, put on base and gated on lanes, its verdict kept (known).
+    A subset that fails counts only once a rerun of its failed tests alone repeats the failure, or none can be rerun;
+    one whose failed tests all pass alone is no proof (None), as is one whose entries do not apply to base by
+    themselves, and either keeps its entries (Probe.confirm, vocaro/queuekeeper#260). learn gates two subsets at once,
+    one in the newer half's checkout and one in the worker's own, the second on another Mac than the first as a
+    bisect's halves are (apart, vocaro/queuekeeper#262); once no other Mac can start the second, the rest go one at a
+    time. A probe with no verdict, or stopped, raises Unsettled. account records the search's gates and wall time in
+    the round's account, and its events."""
+    def __init__(self, worker, config, base, lanes, entries, watched=None):
+        self.worker, self.config, self.base, self.lanes = worker, config, base, lanes
+        self.order = {entry["id"]: index for index, entry in enumerate(entries)}
+        # The entries whose removal from the queue stops a probe (Removal): all of them, but those already landed.
+        self.watched = set(self.order) if watched is None else set(watched)
+        # Each subset's verdict, by its entries' IDs: (True when it failed, False when it passed, None when it is no
+        # proof; its log; what rejection_facts reads of its gate; the Probe that gated it).
+        self.known = {}
+        self.runners = [Probe(worker)]
+        self.runners[0].prepare()
+        self.probes = self.paired = 0
+        self.at_once = True  # whether the second probe of a pair may still go to another Mac
+        self.began = time.monotonic()
+
+    def key(self, subset):
+        return frozenset(entry["id"] for entry in subset)
+
+    def fails(self, subset):
+        """Whether subset fails together, once its probe confirms it."""
+        self.learn([subset])
+        return self.known[self.key(subset)][0] is True
+
+    def learn(self, subsets):
+        """Gate each of subsets whose verdict is not known yet, two at a time where it can."""
+        pending, seen = [], set()
+        for subset in subsets:
+            key = self.key(subset)
+            if key in self.known or key in seen: continue
+            seen.add(key)
+            pending.append(sorted(subset, key=lambda entry: self.order[entry["id"]]))
+        while pending:
+            take = 2 if self.at_once and len(pending) > 1 else 1
+            pair, pending = pending[:take], pending[take:]
+            placed = []
+            for index, members in enumerate(pair):
+                runner = self.runner(index)
+                runner.unreachable = []
+                applied = runner.integrate(members, self.base)
+                ids = ", ".join(entry["id"] for entry in members)
+                if runner.unreachable or len(applied) != len(members):
+                    runner.say(f"{ids} do not apply to {self.base[:12]} by themselves, so none of them is dropped")
+                    self.known[self.key(members)] = (None, None, {}, None)
+                    continue
+                runner.gating = tuple(entry["id"] for entry in applied if entry["id"] in self.watched)
+                placed.append((runner, members, runner.head()))
+            if not placed: continue
+            names = [f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}" for _, _, head in placed]
+            for (runner, members, head), number in zip(placed, range(self.probes + 1, self.probes + len(placed) + 1)):
+                runner.say(f"probe {number}: gating {', '.join(entry['id'] for entry in members)} at {head[:12]} on "
+                           f"{self.base[:12]}" + (", two at once" if len(placed) == 2 else ""))
+            if len(placed) == 2:
+                results = self.both(placed, names)
+                if results[1] is None:
+                    # No other Mac could start the second now: it gates on its own, and the rest one at a time.
+                    self.at_once = False
+                    pending.insert(0, placed[1][1])
+                    placed, results = placed[:1], results[:1]
+                else: self.paired += 1
+            else: results = [placed[0][0].gate(self.lanes, names[0])]
+            for (runner, members, head), (result, log), name in zip(placed, results, names):
+                self.probes += 1
+                self.judge(runner, members, head, result, log, name)
+
+    def runner(self, index):
+        """The Probe in the newer half's checkout (0) or the worker's own (1), made when first needed."""
+        if index >= len(self.runners):
+            self.runners.append(Probe(self.worker, self.worker.checkout))
+            self.runners[-1].prepare()
+        return self.runners[index]
+
+    def both(self, placed, names):
+        """The (result, log) of each of two probes gated at once, the first offered as any gate is and the second on
+        a Mac other than the one that admitted the first's final lane, as Beside.both gates a bisect's halves: None for
+        the second when no such Mac could start it now, which then gates after."""
+        (first, _, _), (second, _, _) = placed
+        box, ended = {}, threading.Event()
+        first.lane_now = None
+        kept = second.environment
+        def gate():
+            try:
+                where = second.apart_from(first, self.lanes[-1], ended)
+                if where is None: return
+                options, excluded, said_where = where
+                if excluded is not None: second.environment = {**kept, remote.QUEUE_GATE_EXCLUDE: excluded}
+                second.say(f"its lanes go {said_where.replace(' them ', ' it ')}")
+                result = second.gate(self.lanes, names[1], where=options)
+                # A Mac that declined ran nothing: the probe gates after, not as one with no verdict.
+                if not (result[0] == resources.BUSY and not second.ran_where): box["result"] = result
+            except BaseException as error: box["error"] = error
+        thread = threading.Thread(target=gate, name="probe beside", daemon=True)
+        thread.start()
+        try: one = first.gate(self.lanes, names[0])
+        finally:
+            ended.set()
+            thread.join()
+            second.environment = kept
+        error = box.get("error")
+        if isinstance(error, processes.Interrupted): raise error
+        if error is not None: second.say(f"its lanes could not run: {error}")
+        return [one, box.get("result")]
+
+    def judge(self, runner, members, head, result, log, name):
+        """Keep the verdict of members' probe, which runner gated at head, its lanes exiting result."""
+        ids = ", ".join(entry["id"] for entry in members)
+        if result and (result in NO_VERDICT or result == WITHDRAWN or (
+                runner.unstarted(result) and not (runner.tooling and runner.batch_stops_start(self.base, head, log)))):
+            raise Unsettled(members, result, log, head, runner)
+        account = {"failed_load": runner.failed_load, "failed_lane": runner.failed_lane,
+                   "failed_dispatch": runner.failed_dispatch, "altered_files": runner.altered_files}
+        failed = runner.confirm(self.config, members, self.base, head, log, name) if result else False
+        self.known[self.key(members)] = (failed, log, account, runner)
+        runner.say(f"probe {self.probes}: {ids} "
+                   + ("fail" if failed else "pass" if failed is False else "fail only by tests that pass alone, which is "
+                      "no proof, so none of them is dropped"))
+
+    def failure(self, subset):
+        """(the log of subset's probe, which failed, and the Probe that gated it, its account of that gate put
+        back), for the reason sent back. A subset known without a probe of this search counts as gated here."""
+        _, log, account, runner = self.known[self.key(subset)]
+        runner = runner or self.runners[0]
+        for name, value in account.items(): setattr(runner, name, value)
+        return log, runner
+
+    def said(self):
+        """The search's cost, as the worker's log says it."""
+        seconds = time.monotonic() - self.began
+        return (f"{self.probes} probe{'' if self.probes == 1 else 's'}"
+                + (f", {self.paired} pair{'' if self.paired == 1 else 's'} of them at once" if self.paired else "")
+                + f", in {seconds:.0f}s")
+
+    def account(self):
+        """Record the search's gates and wall time in the round's account (ROUND_FILE) and the queue's events, so that
+        searches with and without two Macs can be compared (vocaro/queuekeeper#262)."""
+        record = {"probes": self.probes, "atOnce": self.paired, "seconds": round(time.monotonic() - self.began, 1)}
+        self.worker.queue.note(lambda state: state.update(together=record))
+        self.worker.queue.emit("round.together", **record)
+
 
 
 def fewest(entries, fails):
@@ -6770,6 +6967,17 @@ def together_words(partners):
             f"{'it' if one else 'them'} to land and rebase onto origin/main.")
 
 
+def landed_words(partners, before):
+    """Why an entry that fails on a main holding partners, which landed in the same bisect, though it passes on before,
+    the main without them, comes back (Worker.partners_landed), naming each by ID and commit."""
+    named = ", ".join(f"{partner['id']} at {partner['tip']}" for partner in partners)
+    one = len(partners) == 1
+    return (f"the queue's lanes fail on this commit on top of origin/main, which now holds {named}, landed in the "
+            f"same bisect, though this commit passes on {before}, the main before {'it' if one else 'them'}: the "
+            f"changes break each other. Rebase onto origin/main, fix how the changes combine, and add the result "
+            f"again.")
+
+
 class Beside(Worker):
     """A bisect's newer half, gated in a checkout beside the worker's, on a Mac other than the older half's when one
     can start it now (owner's decision of 2026-11-07, vocaro-engineering#241; any two Macs since
@@ -6792,6 +7000,7 @@ class Beside(Worker):
         self.result = None  # (status, log) of its lanes (both)
         self.ran_where, self.round_name = "", None  # where its lanes ran (gate), and its round's name (both)
         self.outcome = None  # LANDED, FAILED, BISECT, PASSED (passed, gating again) or QUEUED (weigh)
+        self.reran, self.flakes = False, None  # whether its failed tests were rerun, and the flakes found (counted)
         self.prior = dict(worker.refusals)  # the refusals the gate before this round gave and blamed no entry for
 
     def say(self, words):
@@ -6901,7 +7110,7 @@ class Beside(Worker):
             return
         flakes = None
         if result:
-            flakes = self.rerun(config, self.newer, base, self.tip, log, self.round_name)
+            flakes = self.counted(config, base)
             if not flakes and self.regate:
                 self.queue.mark(self.newer, QUEUED)
                 self.outcome = QUEUED
@@ -6933,10 +7142,23 @@ class Beside(Worker):
         head = self.mark_flaky(flakes, base) if flakes else self.head()
         self.keep(self.newer, base, head, None, None, flakes)
         if self.push(config, self.newer, base, None, None, flakes):
+            self.worker.bisected(self.newer, base)
             self.outcome = LANDED
         else:
             self.queue.mark(self.newer, QUEUED)
             self.outcome = PASSED
+
+    def counted(self, config, base):
+        """The flakes the newer half passes by, once its gate failed with a verdict, its failed tests rerun alone
+        (Worker.rerun) at most once a round: before either half lands, so that the worker can tell whether both
+        halves count as passed (Worker.round, vocaro/queuekeeper#261), and weigh then reads the same verdict. None when
+        a failure stands, or the gate passed or gave no verdict."""
+        if self.reran: return self.flakes
+        self.reran = True
+        result, log = self.result
+        if result and result not in NO_VERDICT and result != WITHDRAWN and not self.unstarted(result):
+            self.flakes = self.rerun(config, self.newer, base, self.tip, log, self.round_name)
+        return self.flakes
 
     def repeats(self, log):
         """Whether the refusal no newer entry brings (unblamed) is the one the gate before this round gave, or the
@@ -6957,6 +7179,30 @@ class Beside(Worker):
         why = f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again.{facts}"
         self.say(f"{applied[0]['id']}: {why}")
         self.settle_failure(applied[0], log, why)
+
+
+class Probe(Beside):
+    """A gate of the search for the entries that fail together (Joint), in the newer half's checkout or, with checkout,
+    the worker's own; it settles nothing, and the flakes its reruns find say what became of the search's probe."""
+    def __init__(self, worker, checkout=None):
+        super().__init__(worker, checkout, label=TOGETHER, settles=False)
+        self.checks = worker.checks
+
+    def confirm(self, config, members, base, head, log, round_name):
+        """Whether members, whose probe at head failed, fail together, by a rerun of the failed tests alone
+        (Worker.rerun, vocaro/queuekeeper#260): True when a rerun fails again, or when no failed test can be rerun, as
+        a round's bisect counts a failure; None, no proof, when every failed test passed alone, so that a flaky test
+        drops no entry the failure needs."""
+        self.rerun(config, members, base, head, log, round_name)
+        if self.repeated: return True
+        if self.passed_alone:
+            self.say(f"every failed test of {', '.join(entry['id'] for entry in members)} passed alone on rerun")
+            return None
+        return True
+
+    def keep_flakes(self, flakes, applied, touching, outcome):
+        super().keep_flakes(flakes, applied, touching, "It failed a probe of the search for the entries that fail "
+                                                       "together, which counted that probe as no proof.")
 
 
 class Stack:

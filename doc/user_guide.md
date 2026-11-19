@@ -433,10 +433,12 @@ the queue.
 
 An entry that is sent back is told the failed tests, whether its commits touch their files, and
 the Mac's load during the run. One that fails together with others is told their entry IDs and
-commits in its reason and, in `--json`, in `conflictWith` (`[{"id": ..., "sha": ...}]`), with
-`failure.category` `fails-together` and `recovery.reasonCode` `entry-fails-together`. Rebase onto
-their commits (each entry's `refs/queuekeeper/queue/ID` stays until it is removed), fix how the
-changes combine, and land the result once; or wait for them to land and rebase onto `origin/main`. When a preflight or docs lane failed, it is also told whether
+commits in its reason and, in `--json`, in `conflictWith` (`[{"id": ..., "sha": ..., "state": ...}]`),
+with `failure.category` `fails-together` and `recovery.reasonCode` `entry-fails-together`. A
+partner whose `state` is `failed` came back too: rebase onto its commit (each entry's
+`refs/queuekeeper/queue/ID` stays until it is removed), fix how the changes combine, and land the
+result once; or wait for it to land and rebase onto `origin/main`. A partner whose `state` is
+`landed` is already on `main`: rebase onto `origin/main` and fix how the changes combine. When a preflight or docs lane failed, it is also told whether
 `origin/main` fails that lane on its own, so the fix may belong on `main`. The entry keeps its ref
 until `qk queue remove ID`; fix it, rebase and land it again.
 
