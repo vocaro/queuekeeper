@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import time
+import warnings
 
 from . import opened_apps, reservations
 from queuekeeper import lane_wait, offload_host, processes
@@ -50,6 +51,14 @@ def farm_mac(record=None):
     vocaro/queuekeeper#211). record is no longer read: until then a Mac was one when its device record deferred
     physical devices to another Mac's."""
     return reservations.takes_foreground()
+
+
+def second_mac(record=None):
+    """farm_mac's name until 2026-11-16, kept until 2027-02-16 so that the projects' drivers and tests still calling
+    or patching it keep working until they change (vocaro/queuekeeper#103, #213)."""
+    warnings.warn("queuekeeper_mac_desktop.foreground.second_mac is now farm_mac; call that instead. The old name "
+                  "stays until 2027-02-16 (vocaro/queuekeeper#103).", DeprecationWarning, stacklevel=2)
+    return farm_mac(record)
 
 
 def front():

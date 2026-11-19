@@ -1663,6 +1663,31 @@ it off: a project fixes its own hits before turning it on.
   stderr (`queuekeeper: Queuekeeper loads from PATH, on branch NAME at COMMIT, not main, ...`) and
   `qk doctor` lists it among its warnings.
 
+### Moving a module
+
+Projects import Queuekeeper's modules by name, in their scripts and tests and as the module given to `python3 -m`
+in a string, and each Mac's checkout takes a move on its own. A move with nothing left at the old name breaks each
+project on that Mac the moment its checkout updates, whatever its queue holds (#103, #116, #213). So:
+
+- **Leave a forwarder at the old name** for three months: a module whose body is one call,
+  `forwarding.forward(__name__, "NEW.NAME", moved="DATE", until="DATE")`
+  ([forwarding.py](../src/python/queuekeeper/forwarding.py)). The old name then is the new module, for
+  imports, `mock.patch` and `python3 -m` alike, and warns with a DeprecationWarning naming the new one.
+  [queuekeeper_apple/leases.py](../plugins/apple/src/queuekeeper_apple/leases.py) is one.
+- **List it** under `forwarded` in
+  [tests/architecture/module_names.json](../tests/architecture/module_names.json), which lists the module names
+  of the core and the plugins. `tests/architecture/test_module_names.py` fails when a listed name is gone with
+  no forwarder, and when a forwarder does not stand for its module or does not warn. Add a new module to
+  `modules` there so that it is held too; a module not yet listed is no failure, since entries gated together
+  often each add one.
+- **A renamed function keeps its old name** the same way: a function under the old name that warns and calls the
+  new one, as `foreground.second_mac` calls `farm_mac`.
+- **Search the projects** for the old name, as an import and as a string, and land their changes while the
+  forwarder stands. Once `until` passes and no project uses the old name, remove the forwarder and its entry.
+
+A forwarder may only import what its own component may (see `test_queuekeeper_imports.py`), so the old
+`queuekeeper.apple` and `queuekeeper.mac_desktop` names, which became plugins of their own, cannot have one.
+
 ### Copies in each project
 
 Every project carries copies of two files: `scripts/qk`, from this repository, and, in the owner's

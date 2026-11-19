@@ -120,6 +120,15 @@ class SlotTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Invalid Mac settings"): offload_host.mark_foreground(True)
             self.assertEqual(file.read_text(), "{")
 
+    def test_second_mac_the_old_name_still_answers_as_farm_mac_does_and_warns(self):
+        """Projects' drivers called foreground.second_mac() until it became farm_mac, and broke the day a Mac's
+        checkout took the rename (vocaro/queuekeeper#103, #213)."""
+        for takes in (False, True):
+            with patch.object(reservations, "takes_foreground", return_value=takes):
+                with self.assertWarnsRegex(DeprecationWarning, "second_mac is now farm_mac") as caught:
+                    self.assertIs(foreground.second_mac(self.record), takes)
+                self.assertEqual(caught.filename, __file__)
+
     def test_a_run_holds_the_foreground_without_asking_and_releases_it(self):
         self.farm_mac()
         with self.slot() as owner:
