@@ -9175,18 +9175,125 @@ class FlakyReruns(Fixture):
         self.assertIn("2 commits fail together", log)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
 
-    def test_a_flake_beside_a_real_failure_blames_no_commit(self):
-        # The flaky test fails in the gate only; the spelling failure is real and names a.
+    def test_a_flake_beside_a_real_failure_that_points_at_one_entry_sends_it_back_and_files_the_flake(self):
+        # The flaky test fails in the gate only; the spelling failure is real and names a. Until 2026-11-19 the flake
+        # stopped the blame and the batch bisected, which cost about an hour in vocaro/queuekeeper#88; now a is sent
+        # back at once, the flake is filed, and b gates again.
         self.plan.write_text("F")
         self.commit("docs/a.md", "a", "The wrongword\n")
         self.commit("b", "b")
         ids = self.add("a", "b")
         with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
         log = said.getvalue()
-        self.assertIn(f"{self.TEST} passed alone beside the real failure, so no commit is blamed", log)
+        self.assertIn(f"{self.TEST} passed alone beside the real failure, so blame weighs the confirmed failures "
+                      "alone, and the flakes are filed only if one entry is blamed", log)
+        self.assertIn(f"blaming {ids[0]} (Add docs/a.md): {self.WORDS}, which failed alone, as its failure names "
+                      f"docs/a.md, which only {ids[0]} changes; it passed alone without this entry", log)
+        self.assertNotIn("fail together", log)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["failed", "landed"])
+        self.assertIn(f"{self.TEST} failed the gate too but passed alone, a flake filed apart from this entry",
+                      entries[0]["why"])
+        # The flake is filed as any, once, and recorded in both entries of the batch it failed.
+        self.assertIn(f"flaky: {self.TEST} failed the gate at", log)
+        [tracked] = self.tracked
+        self.assertEqual(tracked["test"], self.TEST)
+        self.assertIn(f"blamed on {ids[0]}", tracked["outcome"])
+        for entry in entries: self.assertEqual([flake["test"] for flake in entry["flakes"]], [self.TEST])
+        # The gate, its reruns, and b's gate: no half was gated.
+        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS + 1)
+
+    def test_a_flake_beside_a_real_failure_that_points_at_no_entry_still_bisects_and_files_nothing(self):
+        # The spelling failure is real, but it names docs/old.md, which origin/main already has and no entry changes.
+        self.plan.write_text("F")
+        self.commit("docs/old.md", "old", "The wrongword\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"{self.TEST} passed alone beside the real failure", log)
+        self.assertIn(f"{self.WORDS} reaches no entry of the batch's 2, so no commit is blamed: bisecting", log)
         self.assertIn("2 commits fail together", log)
         self.assertNotIn("blaming", log)
-        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
+        self.assertNotIn("flaky:", log)
+        self.assertEqual(self.tracked, [])
+        self.assertTrue(all("flakes" not in self.state(identifier) for identifier in ids))
+
+    def test_a_flake_beside_real_failures_that_point_at_two_entries_still_bisects(self):
+        self.plan.write_text("F")
+        self.commit("docs/a.md", "a", "The wrongword\n")
+        self.commit("docs/b.md", "b", "The wrongword\n")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"{self.TEST} passed alone beside the real failure", log)
+        self.assertIn(f"{self.WORDS} reaches 2 entries of the batch's 2", log)
+        self.assertIn("2 commits fail together", log)
+        self.assertNotIn("blaming", log)
+        self.assertEqual(self.tracked, [])
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "failed"])
+
+    def changing(self, note, module=None):
+        """tests/test_flaky.py, or module, with test_sometimes's own body given one more statement, naming note."""
+        module = module if module is not None else self.main_module()
+        line = "    def test_sometimes(self):\n"
+        return module.replace(line, f"{line}        note = {note!r}\n", 1)
+
+    def test_a_test_whose_body_one_entry_changes_that_fails_once_sends_that_entry_back_and_files_nothing(self):
+        # Owner's decision of 2026-11-19 on vocaro/queuekeeper#129: a test origin/main has, whose method exactly one
+        # entry changes, fails the gate and passes alone: that entry answers for it, as for a test it adds.
+        self.plan.write_text("F")
+        self.commit("b", "b")
+        self.commit("tests/test_flaky.py", "a", self.changing("a"))
+        ids = self.add("b", "a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"{self.TEST} passed alone, but of the batch's 2 only {ids[1]} changes its body, so it is no "
+                      "flake and no issue is filed", log)
+        self.assertIn(f"blaming {ids[1]} (Add tests/test_flaky.py), which changes {self.TEST}; sending it back and "
+                      "gating the other 1 at once instead of bisecting", log)
+        self.assertNotIn("fail together", log)
+        self.assertNotIn("flaky:", log)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "failed"])
+        self.assertIn(f"{self.TEST}, a test whose body this entry alone of the batch changes, failed the gate and then "
+                      f"passed alone {mq.RERUNS} times on that commit", entries[1]["why"])
+        self.assertEqual(self.tracked, [])
+        self.assertTrue(all("flakes" not in entry for entry in entries))
+        # The gate, its reruns and b's gate alone.
+        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS + 1)
+
+    def test_a_test_whose_module_but_not_body_one_entry_changes_is_still_a_flake_and_bisects(self):
+        # a changes test_steady beside it, not test_sometimes: changing only the module is not enough to be blamed.
+        self.plan.write_text("F")
+        module = self.main_module().replace("        self.assertEqual(helper.VALUE, 1)\n",
+                                            "        self.assertEqual(helper.VALUE, 1)\n        self.assertTrue(True)\n")
+        self.commit("b", "b")
+        self.commit("tests/test_flaky.py", "a", module)
+        ids = self.add("b", "a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertNotIn("changes its body", log)
+        self.assertNotIn("blaming", log)
+        self.assertIn(f"flaky: {self.TEST} failed the gate at", log)
+        self.assertIn("2 commits fail together", log)
+        [tracked] = self.tracked
+        self.assertEqual(tracked["test"], self.TEST)
+
+    def test_a_test_whose_body_two_entries_change_is_still_a_flake_and_bisects(self):
+        self.plan.write_text("F")
+        self.commit("tests/test_flaky.py", "a", self.changing("a"))
+        self.commit("tests/test_flaky.py", "b", self.changing("b", (self.repo / "tests/test_flaky.py").read_text()),
+                    start="a")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertNotIn("changes its body", log)
+        self.assertNotIn("blaming", log)
+        self.assertIn(f"flaky: {self.TEST} failed the gate at", log)
+        self.assertIn("2 commits fail together", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
 
     def test_a_test_module_the_batch_adds_that_fails_once_and_passes_alone_sends_its_entry_back_and_files_nothing(self):
         # On 2026-11-13 a test a batch added failed its first gate and passed alone, and the queue filed it as a

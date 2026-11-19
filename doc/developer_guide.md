@@ -329,14 +329,23 @@ with `failedTests`.
   `Flaky-test:` trailer, and the tracker (a comment on the open issue naming the test, or a new
   issue), quoting at most `FAILURE_EXCERPT_LIMIT` (4,000) characters of the failure. A tracker
   `gh` cannot reach stops nothing.
-- **A test the batch adds** (its class and method defined in the batch and absent on
-  `origin/main`) is never a flake. When it alone explains the failure, the entry that adds it is
-  sent back; any doubt bisects.
+- **A test the batch adds or one entry changes** is never a flake. A test the batch adds has its
+  class and method defined in the batch and absent on `origin/main`. A test one entry changes is
+  on `origin/main`, and exactly one entry's commits change its method's own definition, compared
+  as a syntax tree from before the entry's first commit to its tip (`Worker.changer`), so a
+  comment is no change. Changing only the test's module elsewhere is not enough; a test that no
+  entry or several change is judged as any flake. When such tests alone explain the failure, the
+  one entry that adds or changes them is sent back and the rest gate again at once; any doubt
+  bisects (vocaro/queuekeeper#129).
 - **One culprit.** A failed test points at an entry when that entry changes a path the rerun's
-  output names, the test's module, or a file it imports. When every failed test points at one
-  entry, the worker picks the other entries onto the base without it and reruns each failed test
-  once; only if each passes is that entry sent back. The confirmation exists because a test can read
-  a file neither its imports nor its output name. Any doubt bisects.
+  output names, the test's module, or a file it imports. When every failed test whose rerun failed
+  points at one entry, the worker picks the other entries onto the base without it and reruns each
+  such test once; only if each passes is that entry sent back. The confirmation exists because a
+  test can read a file neither its imports nor its output name. Failed tests that passed alone
+  beside the real failures do not stop the blame: once it stands, they are filed as flakes, and the
+  rest of the batch gates again at once (vocaro/queuekeeper#88). One that another entry adds or
+  changes bisects instead. Any doubt bisects: real failures that point at several entries or none,
+  or a rerun with no verdict.
 - **A refused gate.** A `qk unittest` lane whose log has no summary and a refusal ending
   `nothing ran` is not rerun. The worker sends back the one entry whose tree alone gives the
   refusal or that changes a module it names; with none or several, it bisects. The same refusal in

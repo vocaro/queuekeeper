@@ -8,7 +8,9 @@ gate gated stacked on its tip on another Mac, landing once it has (Stack, vocaro
 qk unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
 of the files they import lands, with the flakes recorded (vocaro-engineering#231), and a batch whose real failures
 all point at one entry, by a path their output names or a file they import, sends that entry back and gates the
-rest at once instead of bisecting (Worker.blame). Only a lane's
+rest at once instead of bisecting, even beside flakes, which it files (Worker.blame, vocaro/queuekeeper#88), as
+does a failed test that passed alone but that one entry adds or whose body one entry alone changes
+(vocaro/queuekeeper#129). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
 until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
 owner (a run a locked screen voided is not counted, and its lane runs next only on a Mac whose screen reads
@@ -1192,19 +1194,27 @@ def module_of_test(top, test):
     return None
 
 
-def defines(source, names):
-    """Whether source, a test module's text, defines names, a test's class and then its method, each in the body of
-    the one before: a test a base class gives, or one made at run time, is not found. None when source does not
+def definition(source, names):
+    """The text of the definition in source, a test module's text, of names, a test's class and then its method, each
+    in the body of the one before, as its syntax tree, so that a comment or a moved line is no change: False when
+    source does not define it, as for a test a base class gives or one made at run time, and None when source does not
     parse."""
     try: tree = ast.parse(source)
     except (SyntaxError, ValueError): return None
-    body = tree.body
+    node, body = None, tree.body
     for name in names:
         node = next((node for node in body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
                      and node.name == name), None)
         if node is None: return False
         body = node.body
-    return True
+    return ast.dump(node) if node is not None else False
+
+
+def defines(source, names):
+    """Whether source, a test module's text, defines names, a test's class and then its method (definition). None
+    when source does not parse."""
+    found = definition(source, names)
+    return found if found is None or found is False else True
 
 
 def added_test(checkout, top, test, base):
@@ -4724,8 +4734,12 @@ class Worker:
         entries, a rerun that fails goes on to rerun the other failed tests, so that blame can weigh them all. A test
         that passes alone but that origin/main at base lacks, as the batch adds it (added_test), has no history to be
         a flake by: it is recorded nowhere, and when every test that passed alone is such a test, the one entry that
-        adds them is sent back by blame (adder, vocaro/queuekeeper#129). Beside an old test that passed alone, which
-        is recorded as a flake, no entry explains them all, and the batch bisects (vocaro/queuekeeper#88).
+        adds them is sent back by blame (adder, vocaro/queuekeeper#129). So is a test origin/main has whose method's
+        own body exactly one entry changes (changer, owner's decision of 2026-11-19 on #129); one no entry or several
+        change is a flake as any. Beside an old test that passed alone, which is recorded as a flake, no entry explains
+        them all, and the batch bisects. Beside a real failure, though, the flakes stop no blame: when the confirmed
+        failures all point at one entry, blame sends it back, files the flakes and gates the rest at once (owner's
+        decision of 2026-11-19, vocaro/queuekeeper#88); when they point at several entries or none, it bisects.
 
         Meanwhile the round's account has a failure record (failure_note), which `qk queue status` and `qk land
         --wait` read: the failed lane, its entries and log, then the failed tests, and each rerun's test, count, log
@@ -4798,29 +4812,28 @@ class Worker:
         if ran is None: return None
         flakes, real = ran
         top = self.suite_top(command)
+        added, changed = self.owned_tests(flakes, applied, top, base)
         if real:
-            if flakes:
-                self.say(f"{', '.join(flake['test'] for flake in flakes)} passed alone beside the real failure, so "
-                         "no commit is blamed")
-            elif None in real.values():
+            if None in real.values():
                 self.say("a rerun ended with no verdict, so no commit is blamed")
-            else:
-                self.confirmed = {"tests": real, "top": top, "command": command, "base": base, "head": head,
-                                  "round": round_name}
-            return None
-        added = {}
-        for flake in flakes:
-            found = added_test(self.checkout, top, flake["test"], base)
-            if found: added[flake["test"]] = found
-        if added:
-            one = len(added) == 1
-            self.say(f"{', '.join(added)} passed alone, but origin/main has no such test, as the batch adds "
-                     f"{'it' if one else 'them'}, so {'it is' if one else 'they are'} no flake and no issue is filed")
-            flakes = [flake for flake in flakes if flake["test"] not in added]
-            if not flakes:
-                self.added = self.adder(applied, added)
                 return None
-        changed = {path for path in text(self.checkout, "log", "--format=", "--name-only", "--no-renames",
+            owners = self.owners(applied, added, changed) if added or changed else {}
+            if owners is None: return None
+            # Flakes beside a real failure no longer stop blame: the confirmed failures alone name the entry, and the
+            # flakes are filed once it is sent back (owner's decision of 2026-11-19, vocaro/queuekeeper#88).
+            rest = [flake for flake in flakes if flake["test"] not in owners]
+            if rest:
+                self.say(f"{', '.join(flake['test'] for flake in rest)} passed alone beside the real failure, so blame "
+                         "weighs the confirmed failures alone, and the flakes are filed only if one entry is blamed")
+            self.confirmed = {"tests": real, "top": top, "command": command, "base": base, "head": head,
+                              "round": round_name, "flakes": rest, "owners": owners}
+            return None
+        if added or changed:
+            flakes = [flake for flake in flakes if flake["test"] not in added and flake["test"] not in changed]
+            if not flakes:
+                self.added = self.adder(applied, added, changed)
+                return None
+        paths = {path for path in text(self.checkout, "log", "--format=", "--name-only", "--no-renames",
                                          f"{base}..{head}").splitlines() if path}
         touching = {}
         # A gate --fail-fast stopped at a failure that repeated alone there ran only part of the suite, as did a group
@@ -4828,18 +4841,21 @@ class Worker:
         # gates again, once for its commit, and then bisects.
         short = cut_short(said) or bool(self.group_cut)
         again = short and head not in self.regated
-        # Old tests that passed alone beside a test the batch adds are flakes, recorded as any; but no one entry
-        # explains every failed test, so none is blamed and the batch bisects (owner's decision of 2026-11-07;
-        # whether to relax it is vocaro/queuekeeper#88).
+        # Old tests that passed alone beside a test the batch adds, or one whose body one entry changes, are flakes,
+        # recorded as any; but no one entry explains every failed test, so none is blamed and the batch bisects (owner's
+        # decision of 2026-11-07, which vocaro/queuekeeper#88 relaxed only beside a confirmed real failure).
         for test in added: touching[test] = "which the batch adds, so origin/main has no such test"
+        for test, entry in changed.items(): touching[test] = f"whose body only {entry['id']} changes"
         for flake in flakes:
             files = imported_files(self.checkout, top, flake["test"])
-            reached = sorted(changed & set(files)) if files is not None else None
+            reached = sorted(paths & set(files)) if files is not None else None
             if reached is None: touching[flake["test"]] = "whose module the worker cannot find"
             elif reached: touching[flake["test"]] = f"which changes {', '.join(reached[:5])}, which it imports"
         self.keep_flakes(flakes, applied, touching,
                          "The batch was bisected, as it also adds a failed test that passed alone, which is no flake."
                          if added else
+                         "The batch was bisected, as one of its entries alone also changes a failed test that passed "
+                         "alone, which is no flake." if changed else
                          "The batch was bisected, as one of its commits changes the module of a failed test, or a file "
                          "it imports." if touching else
                          f"The gate had stopped at this failure before the rest of {self.unfinished()} ran, so the "
@@ -4987,13 +5003,56 @@ class Worker:
                  "depend on: landing the batch")
         return flakes
 
-    def adder(self, applied, added):
-        """(the one entry of applied that adds every test of added, {test: (its module's file, its class and method)},
-        why), to send back while the rest gate again at once; or None to bisect (vocaro/queuekeeper#129). An entry adds
-        a test when its commits change the test's module; among several that do, the one whose own tip defines the
-        test. A lone entry is the one."""
-        tests, plural = ", ".join(added), len(added) > 1
-        found = set()
+    def owned_tests(self, flakes, applied, top, base):
+        """({test: (its module's file, its class and method)} of the tests of flakes, each of which passed alone,
+        that origin/main at base lacks, as the batch adds them (added_test, vocaro/queuekeeper#129), {test: the one
+        entry of applied that changes its method's own body} of the others (changer, the owner's decision of
+        2026-11-19 on #129)). Neither is a flake: each has an entry to answer for it."""
+        added, changed = {}, {}
+        for flake in flakes:
+            found = added_test(self.checkout, top, flake["test"], base)
+            if found: added[flake["test"]] = found
+            else:
+                entry = self.changer(applied, top, flake["test"], base)
+                if entry: changed[flake["test"]] = entry
+        if added:
+            one = len(added) == 1
+            self.say(f"{', '.join(added)} passed alone, but origin/main has no such test, as the batch adds "
+                     f"{'it' if one else 'them'}, so {'it is' if one else 'they are'} no flake and no issue is filed")
+        for test, entry in changed.items():
+            self.say(f"{test} passed alone, but of the batch's {len(applied)} only {entry['id']} changes its body, so "
+                     "it is no flake and no issue is filed")
+        return added, changed
+
+    def changer(self, applied, top, test, base):
+        """The one entry of applied whose own commits change the definition of test, a test id that origin/main at base
+        defines: its method, compared from before the entry's first commit to its tip as a syntax tree, so that a
+        comment is no change (definition). None when no entry or several do, or when any cannot be told, as for a
+        module that does not parse; changing only the test's module, elsewhere, is not enough (owner's decision of
+        2026-11-19, vocaro/queuekeeper#129)."""
+        found = module_of_test(top, test)
+        if found is None or not found[1]: return None
+        path, names = found
+        try: relative = path.resolve().relative_to(Path(self.checkout).resolve()).as_posix()
+        except (OSError, ValueError): return None
+        # base is the queue's own checkout's, which fetched it; an entry's commits are the project's (blob_at).
+        try: shown = git(self.checkout, "show", f"{base}:{relative}")
+        except (UnicodeDecodeError, subprocess.SubprocessError): return None
+        if shown.returncode or not definition(shown.stdout, names): return None
+        changers = []
+        for entry in applied:
+            if not entry.get("commits") or relative not in self.changed_by(entry): continue
+            before = definition(self.blob_at(f"{entry['commits'][0]}^", relative), names)
+            after = definition(self.blob_at(entry["tip"], relative), names)
+            if before is None or after is None: return None
+            if before != after: changers.append(entry)
+        return changers[0] if len(changers) == 1 else None
+
+    def owners(self, applied, added, changed):
+        """{test: the id of the one entry of applied that answers for it} of the tests added and changed (owned_tests)
+        hold, or None to bisect. An entry adds a test when its commits change the test's module; among several that do,
+        the one whose own tip defines the test. A lone entry is the one."""
+        found = {test: entry["id"] for test, entry in changed.items()}
         for test, (relative, names) in added.items():
             candidates = applied if len(applied) == 1 else [entry for entry in applied
                                                             if relative in self.changed_by(entry)]
@@ -5004,19 +5063,41 @@ class Worker:
                          f"{'no entry' if not candidates else f'{len(candidates)} entries'} of the batch's "
                          f"{len(applied)} that the worker can tell, so no commit is blamed: bisecting")
                 return None
-            found.add(candidates[0]["id"])
-        if len(found) != 1:
-            self.say(f"the tests the batch adds, {tests}, come from different entries, so no commit is blamed: bisecting")
+            found[test] = candidates[0]["id"]
+        return found
+
+    def adder(self, applied, added, changed):
+        """(the one entry of applied that adds every test of added, {test: (its module's file, its class and method)},
+        and changes the body of every test of changed, {test: entry}, why), to send back while the rest gate again at
+        once; or None to bisect (vocaro/queuekeeper#129, owners)."""
+        found = self.owners(applied, added, changed)
+        if found is None: return None
+        if len(set(found.values())) != 1:
+            self.say(f"the failed tests that passed alone, {', '.join(found)}, which the batch adds or changes, come "
+                     "from different entries, so no commit is blamed: bisecting")
             return None
-        [identifier] = found
+        [identifier] = set(found.values())
         entry = next(entry for entry in applied if entry["id"] == identifier)
-        why = (f"{tests}, {'tests' if plural else 'a test'} this entry adds, failed the gate and then passed alone "
-               f"{RERUNS} times on that commit. origin/main has no such test, so {'they have' if plural else 'it has'} "
-               f"no history to call {'them' if plural else 'it'} flaky by, and no flaky-test issue is filed: fix "
-               f"{'them' if plural else 'it'} before this entry lands")
+        whys, done = [], []
+        if added:
+            tests, plural = ", ".join(added), len(added) > 1
+            whys.append(f"{tests}, {'tests' if plural else 'a test'} this entry adds, failed the gate and then passed "
+                        f"alone {RERUNS} times on that commit. origin/main has no such test, so "
+                        f"{'they have' if plural else 'it has'} no history to call {'them' if plural else 'it'} flaky "
+                        "by")
+            done.append(f"adds {tests}")
+        if changed:
+            tests, plural = ", ".join(changed), len(changed) > 1
+            whys.append(f"{tests}, {'tests' if plural else 'a test'} whose body this entry alone of the batch changes, "
+                        f"failed the gate and then passed alone {RERUNS} times on that commit, so "
+                        f"{'they go' if plural else 'it goes'} back with this entry rather than be called flaky")
+            done.append(f"changes {tests}")
+        whole = len(added) + len(changed) > 1
+        why = (". ".join(whys) + f", and no flaky-test issue is filed: fix {'them' if whole else 'it'} before this "
+               "entry lands")
         rest = len(applied) - 1
-        self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}), which adds {tests}; sending it "
-                 "back" + (f" and gating the other {rest} at once instead of bisecting" if rest else ""))
+        self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}), which {' and '.join(done)}; "
+                 "sending it back" + (f" and gating the other {rest} at once instead of bisecting" if rest else ""))
         return entry, why
 
     def blob_at(self, commit, relative):
@@ -5031,8 +5112,10 @@ class Worker:
         commits change a path its failing rerun's output names, as a preflight lane's `PATH:LINE:` lines do, or a file
         its module is or imports (imported_files); the blame stands only once the tests pass without it
         (passes_without). Any doubt bisects: no confirmed failure, a module the worker cannot find, a test that reaches
-        no entry or several, tests that reach different entries, or tests that fail without the entry too. A gate qk
-        unittest refused before running anything is blamed by its refusal instead (blame_refusal)."""
+        no entry or several, tests that reach different entries, or tests that fail without the entry too. Failed tests
+        that passed alone beside them do not stop it (vocaro/queuekeeper#88): a flake is filed once the blame stands
+        (keep_flakes), and a test another entry adds or changes (owned_tests) bisects. A gate qk unittest refused
+        before running anything is blamed by its refusal instead (blame_refusal)."""
         confirmed, self.confirmed = self.confirmed, None
         refused, self.refused, self.unblamed = self.refused, None, None
         added, self.added = self.added, None
@@ -5070,10 +5153,31 @@ class Worker:
             self.say(f"the failed tests reach different entries ({'; '.join(whys)}), so no commit is blamed: bisecting")
             return None
         [identifier] = found
+        others = {test: owner for test, owner in confirmed.get("owners", {}).items() if owner != identifier}
+        if others:
+            self.say(f"the confirmed failures reach {identifier}, but {', '.join(others)}, which passed alone, "
+                     f"{'is' if len(others) == 1 else 'are'} {', '.join(sorted(set(others.values())))}'s, which the "
+                     "batch adds or changes, so no commit is blamed: bisecting")
+            return None
         entry = next(entry for entry in applied if entry["id"] == identifier)
         without = self.passes_without(entry, applied, confirmed)
         if without is None: return None
-        why = f"{'; '.join(whys)}; {without}"
+        extra = []
+        owned = list(confirmed.get("owners", {}))
+        if owned:
+            one = len(owned) == 1
+            extra.append(f"{', '.join(owned)}, which this entry adds or changes, failed the gate and then passed alone, "
+                         f"and {'goes' if one else 'go'} back with it rather than be called flaky")
+        flakes = confirmed.get("flakes") or []
+        if flakes:
+            # The flakes beside the failure are filed as any (vocaro/queuekeeper#88); the batch did not land as it was.
+            self.keep_flakes(flakes, applied, {flake["test"]: "beside a real failure" for flake in flakes},
+                             f"The batch's real failure was blamed on {identifier}, which was sent back while the "
+                             f"other {len(applied) - 1} gated again at once.")
+            one = len(flakes) == 1
+            extra.append(f"{', '.join(flake['test'] for flake in flakes)} failed the gate too but passed alone, "
+                         f"{'a flake' if one else 'flakes'} filed apart from this entry")
+        why = "; ".join([*whys, without, *extra])
         self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}): {why}; sending it back and "
                  f"gating the other {len(applied) - 1} at once instead of bisecting")
         return entry, why
