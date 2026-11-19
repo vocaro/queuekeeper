@@ -1490,7 +1490,7 @@ spawns `qk app keep --after-landing`. Each build runs through `qk admit --here` 
 links other checkouts the build names by relative path. `kept/PLATFORM/SHORT/` holds the newest two
 builds with `kept.json` (commit, bundle identifier, build time). A keep holds `lock` while it builds, and
 `qk app run` waits on it rather than building alongside. `prepare_steps` accepts one argument list or a
-list of them.
+list of them, as `settings.app` and the schema's `oneOf` for `app.prepare` do; a test checks that the schema and the parser agree.
 
 ### Rules the Unity plugin keeps
 

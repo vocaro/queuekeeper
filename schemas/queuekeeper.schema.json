@@ -728,13 +728,31 @@
           "minLength": 1
         },
         "prepare": {
-          "description": "A command run in directory before each build, such as generating the project",
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "description": "What runs in directory before each build, such as generating the project: one command as an argument list, or a list of them run in order",
+          "oneOf": [
+            {
+              "description": "One command, as an argument list",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            {
+              "description": "Several commands, each an argument list, run in order",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
         },
         "mac": {
           "type": "object",

@@ -2181,7 +2181,9 @@ Configure it with `app` in `queuekeeper.json`:
 
 - `project` or `workspace` (one of them) is a path inside the checkout; `directory` is where the build
   runs, by default the checkout's top. `prepare` is a command run there before each build, as an argument
-  list.
+  list, or a list of argument lists run in order, such as
+  `[["xcodegen", "generate"], ["pod", "install"]]`; the first to fail stops the rest and the build. Each
+  command's output goes to its own log beside the build's.
 - `mac` and `ios` each name the `scheme`, and optionally the `product` (when the build makes more than
   one app) and `settings` for xcodebuild's command line. `configuration` defaults to Debug.
 - `afterLanding` on each platform says whether the queue keeps it after each landing: by default the Mac

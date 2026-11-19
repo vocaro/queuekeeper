@@ -81,6 +81,31 @@ class Validation(unittest.TestCase):
             with self.subTest(app=app), self.assertRaisesRegex(ValueError, words):
                 self.parse(app)
 
+    def test_the_schema_takes_the_prepare_forms_the_parser_takes(self):
+        # queuekeeper#251: the parser and the build ran a list of commands while the schema took only one.
+        def conforms(value, schema):
+            """Enough of JSON Schema for app.prepare: oneOf, type (array or string), minItems, items and minLength."""
+            if "oneOf" in schema:
+                return sum(conforms(value, option) for option in schema["oneOf"]) == 1
+            if schema["type"] == "string":
+                return isinstance(value, str) and len(value) >= schema.get("minLength", 0)
+            return isinstance(value, list) and len(value) >= schema.get("minItems", 0) \
+                and all(conforms(item, schema["items"]) for item in value)
+
+        schema = json.loads((config.TOOLKIT_ROOT / "schemas/queuekeeper.schema.json").read_text())
+        prepare = schema["properties"]["app"]["properties"]["prepare"]
+        for value in [["xcodegen", "generate"], [["xcodegen", "generate"]],
+                      [["xcodegen", "generate"], ["pod", "install"]], "xcodegen generate", [], [[]],
+                      [["xcodegen"], []], [["xcodegen"], "generate"], ["xcodegen", ""], [["xcodegen", ""]],
+                      ["xcodegen", ["generate"]], [1]]:
+            with self.subTest(prepare=value):
+                try:
+                    self.parse({**APP, "prepare": value})
+                    parsed = True
+                except ValueError:
+                    parsed = False
+                self.assertEqual(conforms(value, prepare), parsed)
+
     def test_the_mac_build_is_kept_after_landing_and_a_device_build_only_when_asked(self):
         self.assertEqual(app_builds.after_landing(project()), ["mac"])
         self.assertEqual(app_builds.after_landing(project({**APP, "mac": {"scheme": "Demo", "afterLanding": False},
