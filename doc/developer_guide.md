@@ -131,6 +131,11 @@ share, [Unity](../plugins/unity/src/queuekeeper_unity/README.md),
 [Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md) and
 [Mac hardware](../plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md).
 
+The [MCP server](../plugins/mcp/src/queuekeeper_mcp/README.md) is packaged the same way but is no
+extension: a project does not list it, and it imports nothing from Queuekeeper. It runs the
+project's launcher with `--json` for each tool, so the commands stay the authority for every
+result, and it implements the stdio protocol with the standard library.
+
 ## The merge queue
 
 How the worker in `merge_queue.py` runs a round, settles a failure, pushes and recovers. The user

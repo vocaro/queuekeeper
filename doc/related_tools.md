@@ -41,7 +41,7 @@ described only in general terms because they change often.
 | **Pause** | Holds itself with a reason; no manual pause | Not documented | Pause and scheduled freeze | Not documented | Pause, drain, resume | Pause per repository or branch | Pause |
 | **Simulators, devices, Xcode** | Apple plugin | Not documented | Not documented | Runner setup guide only | Not in the queue | Not documented | Not documented |
 | **Admission by machine load** | Yes | Left to CI | Left to CI | Left to CI | Left to CI | Left to CI | Left to CI |
-| **Interface** | CLI with exit codes and JSON | Web, `gh`, API | Web, CLI, API, agent skills | Web, API | Web, CLI, API | Web, API | Web, CLI |
+| **Interface** | CLI with exit codes and JSON; [MCP server](../plugins/mcp/src/queuekeeper_mcp/README.md) | Web, `gh`, API | Web, CLI, API, agent skills | Web, API | Web, CLI, API | Web, API | Web, CLI |
 | **Price** | Free, Apache 2.0 | Included with GitHub; private repositories need the enterprise plan | Free tier for small teams; paid per seat | Paid tiers only | Free tier for small teams | Paid per developer | Paid per user, on the higher plans |
 
 [gh]: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue
@@ -74,8 +74,9 @@ tool's source and documentation showed in November 2026. None was installed or r
 | [SelfCI](https://app.radicle.xyz/nodes/radicle.dpc.pw/rad:z2tDzYbAXxTQEKTGFVwiJPajkbeDU) | Local-first CI for Git and Jujutsu with a merge queue daemon that checks one candidate at a time and moves the local branch. Jobs and steps started from a script, deadlines that warn before they fail, and deadlines relative to past run times. Support for several machines is planned. MPL-2.0. |
 | [sluice](https://github.com/boomdrivedev/sluice) | Merge queue for agents in worktrees, for macOS and Linux. Tests each submission on top of those queued ahead, several at once or in batches, and blames one culprit. A Git hook and a Claude Code hook stop sessions from moving protected branches. Optional Seatbelt sandbox, reuse of earlier results, and hosts that share one queue through the Git remote. MIT. |
 
-They are simpler to set up than Queuekeeper, and several offer an MCP server or hooks that wire
-themselves into Claude Code, which Queuekeeper does not. Most run on one machine and gate one change
+They are simpler to set up than Queuekeeper, and several offer hooks that wire themselves into
+Claude Code, which Queuekeeper does not. Like merge-queue and mergetrain, Queuekeeper offers an
+[MCP server](../plugins/mcp/src/queuekeeper_mcp/README.md). Most run on one machine and gate one change
 at a time. mergetrain bisects, and sluice tests several changes at once across hosts, but none admits
 work by machine load or knows about simulators or devices. If one machine and one check command are
 enough, start with one of them.

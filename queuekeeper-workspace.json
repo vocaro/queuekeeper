@@ -39,6 +39,11 @@
       "queuekeeper_mac_desktop"
     ]
   },
+  "queuekeeper_mcp": {
+    "source": "plugins/mcp/src",
+    "tests": "tests/mcp",
+    "requires": []
+  },
   "queuekeeper_dashboard": {
     "source": "plugins/visibility-dashboard/src",
     "tests": "tests/visibility",

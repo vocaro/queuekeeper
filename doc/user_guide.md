@@ -2387,6 +2387,11 @@ to their result.
 - **`qk queue status --idle`** answers by exit status: 0 only when no worker runs and nothing is
   queued, testing or passed, and 75 otherwise.
 
+An agent that cannot keep a command running in the background can use the
+[MCP server](../plugins/mcp/src/queuekeeper_mcp/README.md) instead, which offers `land`,
+`queue wait`, `queue result`, `queue status` and `queue logs` as tools, with progress while it
+waits.
+
 ### Following a landing
 
 `qk land --wait` follows a commit to its result, so start it in the background and let its end
