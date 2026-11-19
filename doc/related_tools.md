@@ -3,6 +3,21 @@
 Several good merge queues exist, and for most teams one of them is the right choice. This page
 compares them with Queuekeeper and says where each is the better fit.
 
+You may not need a new queue at all. A hosted queue can already drive your own Mac. Mergify's and
+Trunk's free tiers cover a solo developer's private repositories, and both work with a GitHub Actions
+self-hosted runner on a Mac. GitHub's own queue cannot do this for a personal account: it needs an
+organization-owned repository, and the enterprise plan when that repository is private. GitLab
+documents Mac runners for iOS work, with merge trains on its paid tiers.
+
+That setup still goes through pull requests and a CI service, and the queue knows nothing about the
+Mac it runs on. The gaps Queuekeeper fills are:
+
+- admission that counts everything the agents run, not only gates;
+- placement across Macs by measured load;
+- a screen-lock check, so a locked Mac is not mistaken for a failing test;
+- the [Apple plugin](../plugins/apple/src/queuekeeper_apple/README.md)'s simulator pool and device
+  reservations.
+
 The facts below were read from each tool's own documentation in November 2026. Follow the links to
 check for changes. "Not documented" means the documentation does not mention it. Prices are
 described only in general terms because they change often.
@@ -28,7 +43,6 @@ described only in general terms because they change often.
 | **Admission by machine load** | Yes | Left to CI | Left to CI | Left to CI | Left to CI | Left to CI | Left to CI |
 | **Interface** | CLI with exit codes and JSON | Web, `gh`, API | Web, CLI, API, agent skills | Web, API | Web, CLI, API | Web, API | Web, CLI |
 | **Price** | Free, Apache 2.0 | Included with GitHub; private repositories need the enterprise plan | Free tier for small teams; paid per seat | Paid tiers only | Free tier for small teams | Paid per developer | Paid per user, on the higher plans |
-| **Maturity** | One user, its author | Widely used | Widely used | Widely used | Widely used | Widely used | Widely used |
 
 [gh]: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue
 [mergify]: https://docs.mergify.com/merge-queue/
@@ -47,23 +61,24 @@ Also worth knowing:
 
 ## Local merge queues for AI agents
 
-Queuekeeper is not the only local merge queue written for AI coding agents. The tools below queue
-commits instead of pull requests and run a check command on your machine. The table gives what each
-tool's own README or announcement says. None was installed or run for this comparison.
+Queuekeeper is not the only local merge queue written for AI coding agents. The tools below run a
+check command on your own machine instead of in a hosted CI service. The table gives what each
+tool's source and documentation showed in November 2026. None was installed or run for this comparison.
 
-| Tool | What it documents |
+| Tool | What it does |
 |---|---|
-| [merge-queue](https://github.com/chlwys/merge-queue) | Local Git queue for Claude Code and Codex agents in worktrees. Queues committed HEADs. Runs policy checks in an isolated candidate worktree. First in, first out, plus a fast lane. MCP server, CLI with JSON output and defined exit codes, macOS menu-bar monitor. MIT. One machine. |
-| [mergetrain](https://github.com/Drezzler/mergetrain-pr) | Local queue for parallel agents. Queues exact commits. Batch or ordered mode, shell-command gates, runs that isolate conflicting pairs. CLI, JSON, MCP. State in SQLite. MIT. One operator, no remote runners. |
-| [claude-code-merge-queue](https://github.com/funador/claude-code-merge-queue) | Local first-in, first-out queue for Claude Code. One check command in a pre-push hook. MIT. Describes itself as for one machine, not a fleet. |
-| [jjq](https://pauladamsmith.com/blog/2026/02/introducing-jjq-a-local-merge-queue-for-jj.html) | Local merge queue for Jujutsu repositories, aimed at agents. One check command, one item at a time. |
-| [SelfCI](https://docs.rs/crate/selfci/latest/source/README.md) | Local-first CI with a local merge queue daemon. Support for several machines is planned. |
-| [sluice](https://github.com/agentplot/sluice) | Describes itself as a merge queue for agents in worktrees. Not read for this comparison. |
+| [merge-queue](https://github.com/chlwys/merge-queue) | Local Git queue for Claude Code and Codex agents in worktrees. Queues committed HEADs one at a time, first in, first out, plus an optional fast lane. Picks checks by changed path and refuses a change no rule covers. Fails a check that changes the candidate. Lands with a local fast-forward and does not push. MCP server, CLI with JSON output and defined exit codes, a SessionStart hook that reports failed requests, macOS menu-bar monitor. Python with runtime dependencies. MIT. One machine. |
+| [mergetrain](https://github.com/yongjip/mergetrain) | Local queue for parallel agents on macOS, Linux and Windows. Queues exact commits. Batch or ordered mode, shell-command gates, gates by changed path. Bisects a failed train and, when both halves pass, finds the smallest set of entries that fail together and names each one's partner. Atomic push with recovery of an interrupted push. CLI, JSON, MCP, a hub across repositories. State in SQLite. MIT. One operator, no remote runners. |
+| [claude-code-merge-queue](https://github.com/funador/claude-code-merge-queue) | A first-in, first-out lock rather than a queue: `land` rebases and pushes from the agent's own worktree, and one check command runs in a pre-push hook. One `init` command writes the Claude Code hooks, the CLAUDE.md block and the pre-push hook, and removes them again. Prunes landed worktrees. MIT. One machine. |
+| [jjq](https://github.com/paulsmith/jjq) | Local merge queue for Jujutsu repositories, aimed at agents. One check command, one item at a time, or several speculative checks with the merge strategy. Moves a local bookmark and does not push. No daemon: someone runs the queue. Reject with a reason, JSON status, an agent skill. BSD-2-Clause. |
+| [SelfCI](https://app.radicle.xyz/nodes/radicle.dpc.pw/rad:z2tDzYbAXxTQEKTGFVwiJPajkbeDU) | Local-first CI for Git and Jujutsu with a merge queue daemon that checks one candidate at a time and moves the local branch. Jobs and steps started from a script, deadlines that warn before they fail, and deadlines relative to past run times. Support for several machines is planned. MPL-2.0. |
+| [sluice](https://github.com/boomdrivedev/sluice) | Merge queue for agents in worktrees, for macOS and Linux. Tests each submission on top of those queued ahead, several at once or in batches, and blames one culprit. A Git hook and a Claude Code hook stop sessions from moving protected branches. Optional Seatbelt sandbox, reuse of earlier results, and hosts that share one queue through the Git remote. MIT. |
 
-They are much smaller than Queuekeeper and simpler to set up, and several offer an MCP server,
-which Queuekeeper does not. As documented, each runs on one machine, and none describes bisection,
-flaky-test handling, admission by load, or anything about simulators or devices. If one machine and
-one check command are enough, start with one of them.
+They are simpler to set up than Queuekeeper, and several offer an MCP server or hooks that wire
+themselves into Claude Code, which Queuekeeper does not. Most run on one machine and gate one change
+at a time. mergetrain bisects, and sluice tests several changes at once across hosts, but none admits
+work by machine load or knows about simulators or devices. If one machine and one check command are
+enough, start with one of them.
 
 ## Where the others are better
 
@@ -79,22 +94,3 @@ one check command are enough, start with one of them.
   Mac being awake, logged in and unlocked.
 - **Flaky-test history.** Trunk, Mergify and Aviator track flaky tests across runs and can
   quarantine them. Queuekeeper proves a flake by rerunning it, for one kind of lane.
-- **Maturity.** They have many users, support and a web interface you manage the queue from.
-  Queuekeeper has one user, a command line and a web page that only shows.
-
-## You may not need a new queue
-
-A hosted queue can already drive your own Mac. Mergify's and Trunk's free tiers cover a solo
-developer's private repositories, and both work with a GitHub Actions self-hosted runner on a Mac.
-GitHub's own queue cannot do this for a personal account: it needs an organization-owned repository,
-and the enterprise plan when that repository is private. GitLab documents Mac runners for iOS work,
-with merge trains on its paid tiers.
-
-That setup still goes through pull requests and a CI service, and the queue knows nothing about the
-Mac it runs on. The gaps Queuekeeper fills are:
-
-- admission that counts everything the agents run, not only gates;
-- placement across Macs by measured load;
-- a screen-lock check, so a locked Mac is not mistaken for a failing test;
-- the [Apple plugin](../plugins/apple/src/queuekeeper_apple/README.md)'s simulator pool and device
-  reservations.
