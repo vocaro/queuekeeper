@@ -378,6 +378,14 @@ A gate that `qk unittest` refused with `nothing ran` is not rerun: the worker se
 entry that brings the refusal, or bisects. When the same refusal comes back with no entry to blame,
 the queue holds for a session.
 
+A lane that passes but changes the tracked files it tested fails too. After each lane, the worker
+compares the checkout with the commit it built, both on this Mac and in another Mac's checkout
+that ran the lane. Any edit, staged or not, a deletion, or a moved `HEAD` sends the batch back
+like a failure, without reruns. The rejection names the lane and the changed files. The queue
+pushes the commit it built, not the tree a lane leaves, so a lane that rewrites sources, such as
+a formatter, would otherwise test one tree and land another. Files Git does not track, like
+build products and results, don't count.
+
 An entry that is sent back is told the failed tests, whether its commits touch their files, and
 the Mac's load during the run. One that fails together with others is told their entry IDs and
 commits in its reason and, in `--json`, in `conflictWith` (`[{"id": ..., "sha": ...}]`), with

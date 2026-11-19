@@ -382,6 +382,107 @@ class Landing(Fixture):
         self.assertEqual(self.gates(), 1)
 
 
+# A gate lane that runs LANE's gate, then, when the tree it tests has a file named rewrite, rewrites the tracked
+# AGENTS.md, as a formatter would, and leaves an untracked build product either way, which is no change.
+REWRITING = """import pathlib, subprocess, sys
+subprocess.run([sys.executable, "lane.py", *sys.argv[1:]], check=True)
+pathlib.Path("product.o").write_text("built")
+if pathlib.Path("rewrite").exists(): pathlib.Path("AGENTS.md").write_text("# Formatted\\n")
+"""
+
+
+class LaneChangesItsTree(Fixture):
+    """A lane that passes but changes the tracked tree it tested sends the batch back, as the queue pushes the
+    commit it built, not the tree the lane leaves; files Git does not track are no change."""
+    def setUp(self):
+        super().setUp()
+        (self.repo / "rewriting.py").write_text(REWRITING)
+        (self.repo / ".gitignore").write_text("product.o\n")
+        run(self.repo, "git", "add", "rewriting.py", ".gitignore")
+        config = self.config()
+        config["lanes"]["gate"]["command"] = ["python3", "rewriting.py", str(self.counter), str(self.status)]
+        self.publish(config, "Gate through rewriting.py")
+
+    def test_a_lane_that_rewrites_a_tracked_file_sends_its_entry_back_and_the_rest_land(self):
+        self.commit("a", "a"); self.commit("rewrite", "rewrite"); self.commit("c", "c")
+        ids = self.add("a", "rewrite", "c")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed", "landed"])
+        why = self.state(ids[1])["why"]
+        self.assertIn("gate passed but changed the tracked files it tested: AGENTS.md.", why)
+        self.assertNotIn("product.o", why)
+        self.assertNotIn("rerunning", said.getvalue())
+        self.assertIn("gate changed the tree it tested, which the same tree does again: no rerun", said.getvalue())
+        self.assertNotIn("rewrite", self.main_files())
+        run(self.repo, "git", "fetch", "-q", "origin")
+        self.assertEqual(run(self.repo, "git", "show", "origin/main:AGENTS.md"), "# Fixture")
+
+    def test_untracked_products_are_no_change(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_what_altered_finds_here_and_on_another_mac(self):
+        """altered names staged and unstaged edits and deletions, and a moved HEAD, as offload_host.altered does in
+        another Mac's checkout, whose finding a dispatch's receipt carries back (altered_remotely)."""
+        head = run(self.repo, "git", "rev-parse", "HEAD")
+        for find in (mq.altered, lambda checkout, commit: offload_host.altered(checkout, commit)):
+            with self.subTest(find=find):
+                self.assertEqual(find(self.repo, head), [])
+                (self.repo / "product.o").write_text("built")
+                (self.repo / "untracked").write_text("new")
+                self.assertEqual(find(self.repo, head), [])
+                (self.repo / "AGENTS.md").write_text("changed\n")
+                (self.repo / "lane.py").unlink()
+                (self.repo / "rewriting.py").write_text("staged\n")
+                run(self.repo, "git", "add", "rewriting.py")
+                self.assertEqual(find(self.repo, head), ["AGENTS.md", "lane.py", "rewriting.py"])
+                run(self.repo, "git", "commit", "-qam", "moved")
+                self.assertEqual(find(self.repo, head), ["HEAD", "AGENTS.md", "lane.py", "rewriting.py"])
+                run(self.repo, "git", "reset", "-q", "--hard", head)
+                (self.repo / "untracked").unlink()
+        dispatch = self.base / "dispatch"
+        dispatch.mkdir()
+        self.assertIn("could not be read", mq.altered_remotely(dispatch))
+        for receipt, found in (({"result": {"exitStatus": 0}}, []),
+                               ({"result": {"altered": ["HEAD", "a.py"]}}, ["HEAD", "a.py"]),
+                               ({"result": {"altered": {"error": "git diff failed"}}}, "git diff failed")):
+            with self.subTest(receipt=receipt):
+                (dispatch / "source.json").write_text(json.dumps(receipt))
+                self.assertEqual(mq.altered_remotely(dispatch), found)
+        self.assertEqual(mq.altered_words("gate", [f"f{n}" for n in range(12)], " on build-host"),
+                         "gate passed but changed the tracked files it tested on build-host: f0, f1, f2, f3, f4, f5, "
+                         "f6, f7, f8, f9 and 2 more. The queue lands the commit it built, not the tree a lane leaves, "
+                         "so a lane must leave tracked files as it found them")
+
+    def test_a_lane_on_another_mac_that_changed_its_checkout_fails_the_gate(self):
+        """The receipt of the lane's dispatch says what it changed there, which fails the gate as a change here does."""
+        worker = mq.Worker.__new__(mq.Worker)
+        worker.checkout, worker.ran_on, worker.altered_files = self.repo, "build-host", None
+        worker.say = lambda line: None
+        head = run(self.repo, "git", "rev-parse", "HEAD")
+        dispatch, log = self.base / "dispatch", self.base / "gate.log"
+        dispatch.mkdir()
+        (dispatch / "source.json").write_text(json.dumps({"result": {"altered": []}}))
+        self.assertEqual(worker.unaltered("gate", head, log, dispatch), 0)
+        self.assertIsNone(worker.altered_files)
+        (dispatch / "source.json").write_text(json.dumps({"result": {"altered": ["Sources/App.swift"]}}))
+        self.assertEqual(worker.unaltered("gate", head, log, dispatch), mq.ALTERED)
+        self.assertIn("changed the tracked files it tested on build-host: Sources/App.swift.", worker.altered_files)
+        self.assertIn(worker.altered_files, log.read_text())
+
+    def test_queue_remove_says_it_stops_a_gate_in_progress(self):
+        parser = argparse.ArgumentParser()
+        mq.add_arguments(parser)
+        operations = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+        said = next(choice.help for choice in operations._choices_actions if choice.dest == "remove")
+        self.assertIn("stops within seconds", said)
+        self.assertNotIn("finishes", said)
+
+
 class CheckedWhenQueued(Fixture):
     """qk land's trial integration finds a conflict with the entries ahead when the entry is queued, not when its
     round starts (vocaro-engineering#178)."""

@@ -230,6 +230,9 @@ START_LIMIT = 60
 # whose lane still waits to start is stopped the same way for an entry qk land --front --no-gate put first, which then
 # lands ahead of it (Worker.first_ungated, vocaro/queuekeeper#26).
 WITHDRAWN = "withdrawn"
+# A gate's status for a lane that passed but changed the tracked tree it tested (Worker.unaltered): a failure of the
+# batch, which no rerun clears.
+ALTERED = 1
 REMOVAL_POLL = 5
 # A failed qk unittest gate's failed tests are each rerun alone on the batch's commit this many times before a
 # bisect, and any rerun's failure makes the failure real; a gate that failed more tests than RERUN_MOST bisects at
@@ -482,6 +485,32 @@ def git_operations():
 
 def text(directory, *arguments):
     return git(directory, *arguments, check=True).stdout.strip()
+
+
+def altered(checkout, head):
+    """The tracked paths checkout no longer has as head has them, staged or not, with "HEAD" first when its HEAD moved
+    off head: what a lane that passed changed of the tree it tested. The queue pushes head, the commit it built, so a
+    lane that rewrote it tested a tree that would not land (Worker.gate). Files Git does not track, such as a lane's
+    build products and results, are no change."""
+    files = [name for name in git(checkout, "diff", "--name-only", "--no-renames", "-z", head, hooks=False,
+                                  check=True).stdout.split("\0") if name]
+    return (["HEAD"] if text(checkout, "rev-parse", "HEAD") != head else []) + files
+
+
+def altered_remotely(dispatch):
+    """What offload_host.altered found a lane changed in another Mac's checkout, by the dispatch directory's receipt:
+    a list of paths, empty for none or when the receipt says nothing of it, or a string, why it could not be read."""
+    try: found = json.loads((Path(dispatch) / "source.json").read_text()).get("result", {}).get("altered") or []
+    except (OSError, ValueError, AttributeError) as error: return f"its receipt could not be read: {error}"
+    if isinstance(found, dict): return found.get("error") or "it could not be read"
+    return [name for name in found if isinstance(name, str)] if isinstance(found, list) else []
+
+
+def altered_words(lane, files, where=""):
+    """The sentence that sends a batch back for files, the tracked paths lane changed (altered)."""
+    named = ", ".join(files[:10]) + (f" and {len(files) - 10} more" if len(files) > 10 else "")
+    return (f"{lane} passed but changed the tracked files it tested{where}: {named}. The queue lands the commit it "
+            "built, not the tree a lane leaves, so a lane must leave tracked files as it found them")
 
 
 def configured(config, name):
@@ -3734,6 +3763,7 @@ class Worker:
         self.failed_results = None
         self.failed_dispatch = None
         self.tooling = None
+        self.altered_files = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
         if quick is None: quick = self.checks
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
@@ -3751,8 +3781,9 @@ class Worker:
             with contextlib.suppress(OSError): lane_log.unlink()
             lane_wait.remove(lane_wait.path_of(self.checkout, lane))
             shutil.rmtree(lane_log.parent / "lanes", ignore_errors=True)
-            self.say(f"{lane} on {self.head()[:12]}")
-            self.queue.emit("gate.began", lane=lane, round=round_name, role=self.role, head=self.head(),
+            tested = self.head()
+            self.say(f"{lane} on {tested[:12]}")
+            self.queue.emit("gate.began", lane=lane, round=round_name, role=self.role, head=tested,
                             entries=list(self.gating))
             if lane in quick:
                 # In the round's account while it runs, as any lane is, with no wait to read (GateWatch).
@@ -3761,6 +3792,7 @@ class Worker:
                 finally: watch.finish()
                 if status_ is not None:
                     self.gate_ended(lane, round_name, status_, log)
+                    if not status_: status_ = self.unaltered(lane, tested, log)
                     if not status_: continue
                     self.failed_lane = lane
                     # The check is Queuekeeper's own command, so its exit is Queuekeeper's and leaves no receipt.
@@ -3838,6 +3870,10 @@ class Worker:
             admitted = admission.finish() if admission else None
             self.say(f"{lane} exited {status_}{self.placed(lane, began)}")
             self.gate_ended(lane, round_name, status_, log, ended - started)
+            if not status_: status_ = self.unaltered(lane, tested, log, ran)
+            if status_ and self.altered_files is not None:
+                self.failed_lane = lane
+                return status_, log
             if status_:
                 self.failed_lane = lane
                 # Its results folder came back beside what it printed, here or from another Mac.
@@ -3866,6 +3902,24 @@ class Worker:
                     self.say(said)
                     if self.measured: self.measured.update(results=said, log=str(log))
         return 0, log
+
+    def unaltered(self, lane, tested, log, ran=None):
+        """0 when lane, which passed on tested, left the tracked tree as it found it, here and, when ran names its
+        dispatch, on the Mac that ran it; else ALTERED, with self.altered_files saying what changed, which the batch's
+        rejection names (rejection_facts). The queue pushes tested, so a lane that rewrote it ran on a tree that would
+        not land."""
+        where, files = "", altered(self.checkout, tested)
+        if not files and ran is not None:
+            files = altered_remotely(ran)
+            if isinstance(files, str):
+                self.say(f"{lane}: what it changed on {self.ran_on or 'another Mac'} is unknown, as {files}")
+                files = []
+            elif files: where = f" on {self.ran_on or 'another Mac'}"
+        if not files: return 0
+        self.altered_files = altered_words(lane, files, where)
+        self.say(self.altered_files)
+        with contextlib.suppress(OSError), log.open("a") as kept: kept.write(f"\nqueuekeeper: {self.altered_files}\n")
+        return ALTERED
 
     def quick(self, lane, log, cancel=None):
         """The status of lane, one of a batch's quick lanes (quick_lanes), run in this checkout without
@@ -4407,6 +4461,9 @@ class Worker:
         self.confirmed = self.refused = self.added = None
         self.regate = False
         lane = self.failed_lane
+        if self.altered_files:
+            self.say(f"{lane} changed the tree it tested, which the same tree does again: no rerun")
+            return None
         lanes = config.get("lanes", {})
         member = unittest_member(lanes, lane) if lane else None
         command = rerun_command(lanes[member].get("command")) if member else None
@@ -4886,7 +4943,8 @@ class Worker:
         the lane from a load-sensitive test (vocaro-engineering#273): the load during the failed lane, whether
         entry changes a file of the failed tests, and, for a check that takes seconds, whether origin/main, base,
         fails it too (main_fails). Only information: what it cannot read it says so, and nothing it raises reaches the
-        rejection."""
+        rejection. A lane that passed but changed the tree it tested (unaltered) is said instead."""
+        if self.altered_files: return f" {self.altered_files}."
         load = self.failed_load or "The load during the failed lane could not be determined"
         try: touched = self.touched_words(entry, log, config)
         except Exception as error:  # noqa: BLE001
@@ -6590,7 +6648,8 @@ def add_arguments(parser):
     told.add_argument("--kind", action="append", default=[], metavar="KIND", help="only events of KIND, such as "
                       "entry.landed, or of every kind that begins with it when it ends in a dot, such as entry.; "
                       "repeatable")
-    removing = operations.add_parser("remove", help="take an entry out; a run in progress finishes, and lands nothing")
+    removing = operations.add_parser("remove", help="take an entry out; a gate testing it stops within "
+                                   "seconds on whichever Mac runs it, and the rest of its batch gates again")
     removing.add_argument("id")
     operations.add_parser("resume", help="clear a hold and start the worker: any session does this itself once the "
                           "hold's cause is dealt with or gone, and asks the owner only for a hold that says it is his")

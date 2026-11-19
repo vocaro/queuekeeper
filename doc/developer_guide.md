@@ -263,6 +263,14 @@ stops that gate's lanes on whichever Mac, freeing admission, and gates the rest 
 counted. The same poll lets `--front --no-gate` overtake a gate still waiting for admission, an
 unlocked screen or a Mac.
 
+**A lane that changes its tree.** After each lane that passes, `Worker.unaltered` compares the
+checkout with the commit the gate tests (`altered`: `git diff --name-only` against it, and `HEAD`).
+For a lane run on another Mac, `offload_host.altered` makes the same comparison there, and the
+dispatch receipt carries the result back as `result.altered`. Any tracked change fails the lane
+with `ALTERED`. `weigh_failure` skips reruns, and `rejection_facts` names the changed files. The
+push sends the commit the worker built, so without this check a lane that rewrote sources would
+land a tree it never tested.
+
 ### Flakes, blame and bisecting
 
 These apply to a failing `qk unittest` lane, or a group whose only failure is one, and to a lane

@@ -3681,6 +3681,14 @@ def changes(checkout):
     return git("status", "--porcelain", "--untracked-files=normal", cwd=checkout) if checkout.exists() else ""
 
 
+def altered(checkout, commit):
+    """The tracked paths a run left different from commit in checkout, the one placed there, with "HEAD" first when it
+    moved off commit: what the merge queue refuses of a gate's lane, since it pushes commit, not the tree the lane
+    left (Worker.gate). Files Git does not track, such as build products, are no change."""
+    files = [name for name in git("diff", "--name-only", "--no-renames", "-z", commit, cwd=checkout).split("\0") if name]
+    return (["HEAD"] if git("rev-parse", "HEAD", cwd=checkout) != commit else []) + files
+
+
 def gather_changes(checkout, path):
     """Write to path, as a binary-safe patch against the commit the checkout holds, the changes a command left in
     its files that Git does not ignore: tracked edits and deletions, and new untracked files no .gitignore names,
@@ -4653,6 +4661,10 @@ def main(plan):
                 result["changes"] = {"files": gather_changes(checkout, checkout / plan["changes"])}
             except (OSError, RuntimeError) as error:
                 result["changes"] = {"error": str(error)}
+        # What a lane changed of the tracked tree it tested, which a gate must not push untested (Worker.gate).
+        elif result.get("stage") == "work" and result["exitStatus"] == 0:
+            try: result["altered"] = altered(checkout, project["commit"])
+            except (OSError, RuntimeError) as error: result["altered"] = {"error": str(error)}
         receipt = checkout / plan["receipt"]
         # A command that failed before it wrote a receipt leaves the previous run's in place.
         fresh = receipt.is_file() and receipt.stat().st_mtime >= result["started"]
