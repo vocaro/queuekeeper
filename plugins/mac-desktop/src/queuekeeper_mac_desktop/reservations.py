@@ -2,8 +2,11 @@
 
 An entry reserves one thing for one session at a time. This module's own entry is mac-foreground, a Mac's screen,
 keyboard, pointer, focus and speech. An extension adds entries of its own kinds to the same record by building on
-Record, as the Apple extension does for physical devices and its simulator pool (queuekeeper_apple.devices, which
-also has the record's command line).
+Record, as the mobile extension does for physical devices and simulator pools (queuekeeper_mobile.devices).
+
+`qk devices` is the record's command line, and this module's main is its part for every entry: path, status, show,
+reserve, update, release, check and recover. A project that lists only an extension built on this one, such as
+Unity, has it for its foreground; the mobile extension adds its devices' actions to it (add_actions, act).
 
 The record lives in the account's Application Support directory, found independently of HOME
 and TMPDIR so that every session finds the same one. A change takes an exclusive lock, reads the
@@ -25,6 +28,7 @@ A record that names another Mac under DEFERRED is another Mac's: every run sent 
 (offload_host.defer_devices), and what it defers to that Mac's record is the extension's to say. It says nothing
 of the Mac's foreground: whether queuekeeper takes that for a run is the Mac's own setting (takes_foreground).
 """
+import argparse
 import contextlib
 from datetime import datetime, timezone
 import fcntl
@@ -32,6 +36,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import subprocess
 import sys
 import tempfile
 import time
@@ -501,3 +506,224 @@ def require_foreground(owner, record=None):
         raise Refused(f"the window agreed for {FOREGROUND} ended at {entry.get('expectedReleaseBy')}; stop, restore "
                       "the owner's settings and release")
     return require_window(FOREGROUND, entry)
+
+
+# The record's command line, `qk devices`: the actions every entry takes. An extension that adds entries of its own
+# kinds adds its own actions beside these (add_actions) and handles these through act.
+
+
+def fields(pairs):
+    """{FIELD: VALUE} from --set FIELD=VALUE pairs, each value read as JSON when it is JSON."""
+    result = {}
+    for pair in pairs or []:
+        name, separator, text = pair.partition("=")
+        if not separator or not name:
+            raise ValueError(f"--set takes FIELD=VALUE, not {pair}")
+        try:
+            result[name] = json.loads(text)
+        except ValueError:
+            result[name] = text
+    return result
+
+
+def given_approval(args):
+    """The owner's window the --approved-* options name, or None."""
+    given = {"by": args.approved_by, "at": args.approved_at, "until": args.approved_until,
+             "words": args.approval_words}
+    return {name: value for name, value in given.items() if value is not None} or None
+
+
+def report(key, entry):
+    print(json.dumps({"key": key, "revision": (entry or {}).get("revision", 0),
+                      "condition": condition(entry) if entry else None, "entry": entry}, indent=2))
+
+
+def describe(key, entry, line=(), window=True, held=(), notes=(), hints=()):
+    """One line of status for entry: its condition and holder, then held, what an extension says of a held entry
+    of its own kind; notes, what it says of any; the sessions in line; and hints, what to run to take it."""
+    state = condition(entry)
+    parts = [f"{key}: {state}"]
+    if state == "released":
+        parts.append(f"last owner {entry.get('lastOwnerChatID') or entry.get('ownerChatID') or 'unrecorded'}, "
+                     f"released {entry.get('releasedAt') or 'at an unrecorded time'}")
+    else:
+        parts.append(f"owner {entry.get('ownerChatID')}, state {entry.get('state')}, "
+                     f"expected release {entry.get('expectedReleaseBy')}")
+        deadline = moment(entry.get("expectedReleaseBy"))
+        if deadline is not None and deadline < datetime.now(timezone.utc):
+            parts.append("overdue, which releases nothing")
+        if entry.get("approval"):
+            approval = entry["approval"]
+            parts.append(f"approved by {approval.get('by')} at {approval.get('at')} until {approval.get('until')}")
+        if key == FOREGROUND and window and window_ended(entry):
+            parts.append("its window has ended; foreground actions are refused")
+        elif key == FOREGROUND and approval_ended(entry):
+            parts.append("approval ended; foreground actions are refused")
+        parts.extend(held)
+        alive = running(entry)
+        if alive:
+            parts.append(f"own processes running: {', '.join(str(item['pid']) for item in alive)}")
+        if state == "orphan":
+            parts.append(f"run process {entry.get('hostProcessIdentifier')} is gone or unrecorded; kept for attended recovery")
+        if state == "uncertain":
+            parts.append((entry.get("uncertainReason") or "termination or restoration is unverified")
+                         + "; kept for attended recovery")
+        if entry.get("launchedApps"):
+            parts.append(f"launched apps: {', '.join(entry['launchedApps'])}")
+    parts.extend(notes)
+    if line:
+        parts.append("waiting: " + ", ".join(f"{item['owner']} ({item.get('purpose')})" for item in line))
+    parts.extend(hints)
+    parts.append(f"revision {entry.get('revision', 0)}")
+    return "; ".join(parts)
+
+
+def recoverable_lines(entries):
+    """What to say of each held entry whose process is gone and whose release has passed. When the
+    processes cannot be listed, nothing can be said of any entry, and it says that."""
+    listed = offload_host.listing(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="])
+    if listed is None: return ["The processes could not be listed, so no held entry that nothing keeps can be named"]
+    return [f"Recoverable: {offload_host.recoverable_line(item)}"
+            for item in offload_host.recoverable(entries, offload_host.process_table(listed))]
+
+
+def status(record, describe=describe):
+    """Print the record's revision, the foreground's condition, held or free, then every other entry's, each as
+    describe says it, and the held entries nothing keeps. Returns the record as read."""
+    value = record.load()
+    source = f" (from {OVERRIDE})" if os.environ.get(OVERRIDE) else ""
+    print(f"Device record {record.path}{source}: revision {value.get('revision', 0)}, updated {value.get('updatedAt', 'never')}")
+    if value.get(DEFERRED):
+        print(f"Physical devices are reserved in {value[DEFERRED]}'s device record; this one refuses them")
+    # The owner's screen first, held or free, so a session about to take it sees who has it.
+    foreground = value["devices"].get(FOREGROUND)
+    taken = takes_foreground()
+    print(describe(FOREGROUND, foreground, window=not taken) if foreground is not None else
+          f"{FOREGROUND}: free; " + ("queuekeeper reserves it for each run" if taken else
+                                     "agree a window with the owner, then reserve it until the window ends"))
+    for key, entry in value["devices"].items():
+        if key != FOREGROUND: print(describe(key, entry, waiting(value, key)))
+    for line in recoverable_lines(value["devices"]): print(line)
+    return value
+
+
+def recover_there(args):
+    """`qk devices recover --host HOST`: the same recovery, with the same checks, in the record of the Mac with that
+    SSH name, run by its own toolkit checkout in its login shell (remote.toolkit_qk); what it printed and its status
+    come back unchanged. A connection that fails or times out leaves the outcome unknown, and nothing is recovered
+    here in its place: `devices show` there says what became of the entry (vocaro/queuekeeper#167)."""
+    from queuekeeper import remote
+    arguments = ["devices", "recover", args.key, "--by", args.by, "--revision", args.revision, "--verified", args.verified]
+    if args.offload_unchecked is not None: arguments += ["--offload-unchecked", args.offload_unchecked]
+    try:
+        return remote.toolkit_qk(args.host, arguments, project=True, timeout=remote.SURVEY_TIMEOUT)
+    except subprocess.SubprocessError as error:
+        raise RuntimeError(f"{args.host} did not answer, so whether {args.key} was recovered there is not known: {error}")
+
+
+def add_actions(commands, *, status_help="every entry's condition and the held entries nothing keeps"):
+    """Add the actions every entry takes to commands, a parser's subparsers."""
+    commands.add_parser("path", help="print the record's location")
+    commands.add_parser("status", help=status_help)
+    show = commands.add_parser("show", help="one entry with the revision a change must name")
+    show.add_argument("key")
+    reserve = commands.add_parser("reserve", help="claim a released or new entry")
+    reserve.add_argument("key")
+    reserve.add_argument("--owner", required=True)
+    reserve.add_argument("--revision", type=int, required=True)
+    reserve.add_argument("--purpose", required=True)
+    reserve.add_argument("--release-by", required=True)
+    reserve.add_argument("--device")
+    reserve.add_argument("--title")
+    reserve.add_argument("--set", action="append", metavar="FIELD=JSON")
+    # Refused since 2026-11-06: a reservation records no approval. Kept so the refusal can say why.
+    for option in ("--approved-by", "--approved-at", "--approved-until", "--approval-words"):
+        reserve.add_argument(option, help=argparse.SUPPRESS)
+    update = commands.add_parser("update", help="change your own held entry")
+    update.add_argument("key")
+    update.add_argument("--owner", required=True)
+    update.add_argument("--revision", type=int, required=True)
+    update.add_argument("--set", action="append", metavar="FIELD=JSON")
+    update.add_argument("--own", action="append", type=int, metavar="PID", default=[],
+                        help="a process this session launched, which release waits for")
+    update.add_argument("--launched", action="append", metavar="BUNDLE", default=[],
+                        help="an app this session launched on the device, which release says it quit")
+    release = commands.add_parser("release", help="release your own entry")
+    release.add_argument("key")
+    release.add_argument("--owner", required=True)
+    release.add_argument("--revision", type=int, required=True)
+    release.add_argument("--outcome", required=True)
+    release.add_argument("--restoration", required=True)
+    release.add_argument("--frontmost", choices=FRONTMOST, help=f"required for {FOREGROUND}: whether the previous "
+                         "frontmost app was restored, or the session no longer owned the foreground")
+    release.add_argument("--apps-quit", help="required when the entry records launched apps: how they were quit")
+    check = commands.add_parser("check", help=f"refuse unless OWNER holds {FOREGROUND}, on this Mac within its window")
+    check.add_argument("--owner", default=os.environ.get(OWNER), help=f"the session; default ${OWNER}")
+    recover = commands.add_parser("recover", help="attended release of an entry its owner cannot release")
+    recover.add_argument("key")
+    recover.add_argument("--by", required=True)
+    recover.add_argument("--revision", type=int, required=True)
+    recover.add_argument("--verified", required=True)
+    recover.add_argument("--host", metavar="HOST", help="recover the entry in this SSH host's record, using its "
+                         "login shell and ~/Development/queuekeeper/bin/qk; without it, in this Mac's")
+    recover.add_argument("--offload-unchecked", metavar="REASON", help="the owner's reason to recover without "
+                         "checking another Mac the entry's run went to, such as that it is gone")
+    # Its name until vocaro-engineering#58, which act refuses, naming the new one.
+    recover.add_argument("--build-host-unchecked", metavar="REASON", help=argparse.SUPPRESS)
+
+
+def act(args, record, *, restore=None, said=None):
+    """Carry out one of add_actions' actions on record; its exit status. restore(key, entry, said), when given,
+    puts back what an entry's run changed on its device before its recovery and says what to record of it."""
+    if args.action == "path":
+        print(record.path)
+    elif args.action == "status":
+        status(record)
+    elif args.action == "show":
+        report(args.key, record.entry(args.key))
+    elif args.action == "reserve":
+        report(args.key, record.reserve(args.key, owner=args.owner, revision=args.revision, purpose=args.purpose,
+                                        release_by=args.release_by, device=args.device, title=args.title,
+                                        details=fields(args.set), approval=given_approval(args)))
+    elif args.action == "update":
+        if not args.set and not args.own and not args.launched:
+            raise ValueError("update takes --set FIELD=JSON, --own PID or --launched BUNDLE")
+        report(args.key, record.update(args.key, owner=args.owner, revision=args.revision, own=args.own,
+                                       launched=args.launched, **fields(args.set)))
+    elif args.action == "release":
+        report(args.key, record.release(args.key, owner=args.owner, revision=args.revision, outcome=args.outcome,
+                                        restoration=args.restoration, frontmost=args.frontmost,
+                                        apps_quit=args.apps_quit))
+    elif args.action == "check":
+        entry = require_foreground(args.owner, record)
+        print(f"{FOREGROUND}: held by {args.owner} for {entry.get('purpose')}, expected release "
+              f"{entry.get('expectedReleaseBy')}")
+    elif args.action == "recover":
+        if args.build_host_unchecked is not None:
+            raise ValueError("--build-host-unchecked was --offload-unchecked's name until vocaro-engineering#58, "
+                             "and is no longer read: use --offload-unchecked")
+        if args.host: return recover_there(args)
+        entry = record.entry(args.key) or {}
+        # Only once recovery would go ahead: never while its run's process still runs.
+        restored = restore(args.key, entry, said) if restore and entry.get("revision") == args.revision and \
+            condition(entry) in ("orphan", "uncertain", "held") and not running(entry) else None
+        report(args.key, record.recover(args.key, by=args.by, revision=args.revision, verified=args.verified,
+                                        unchecked=args.offload_unchecked, notifications=restored))
+    return 0
+
+
+def main(argv=None):
+    """`qk devices` where no extension adds devices to the record: its foreground and any entry already in it."""
+    parser = argparse.ArgumentParser(prog="qk devices", description="Read or change this Mac's device record, "
+                                     f"which reserves its foreground, {FOREGROUND}.")
+    add_actions(parser.add_subparsers(dest="action", required=True))
+    args = parser.parse_args(sys.argv[1:] if argv is None else list(argv))
+    try:
+        return act(args, Record())
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"devices: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

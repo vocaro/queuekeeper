@@ -48,3 +48,7 @@ command. A project that uses the key without the plugin is told which plugin to 
 The foreground is reserved in one locked record per Mac, which says who holds what and until when.
 A plugin that builds on this one keeps its own reservations in the same record, as the Apple plugin
 does for physical devices and simulators.
+
+`qk devices` is the record's command line, and this plugin provides it: `status`, `show`, `reserve`,
+`update`, `release`, `check` and `recover` work on the foreground in any project that lists a plugin
+built on this one. A plugin that adds devices to the record adds their actions to the same command.

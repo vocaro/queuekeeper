@@ -78,6 +78,12 @@ def register():
     if crash_alerts.recover not in extensions.RECOVER: extensions.RECOVER.append(crash_alerts.recover)
     # A run sent to another Mac unlocks its login keychain there, for its own session, before its command.
     if keychain.unlock_run not in extensions.PREPARE_LANE: extensions.PREPARE_LANE.append(keychain.unlock_run)
+    # The device record's command line, for its foreground; the mobile extension, loaded after this one, replaces
+    # it with one that adds its devices' actions.
+    extensions.COMMANDS["devices"] = (
+        "read or change this Mac's device record, which reserves its foreground: qk devices "
+        "status|show|reserve|update|release|check|recover; -h for the rest",
+        lambda arguments, project: reservations.main(arguments))
     extensions.PARSED_COMMANDS.update({
         "keychain": ("before the owner unlocks a keychain, say which Mac's keychain the work needs and print commands "
                      "that run only there (recover); keep another Mac's login keychain unlocked for every qk "

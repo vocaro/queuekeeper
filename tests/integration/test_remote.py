@@ -9816,7 +9816,7 @@ class EarlierNameTests(unittest.TestCase):
                 'run.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)',
                 "if args.build_host_only:",
                 'raise ValueError("--build-host-only was --offload-only\'s name until vocaro-engineering#58, and is no "'],
-            "devices.py": [
+            "reservations.py": [
                 'recover.add_argument("--build-host-unchecked", metavar="REASON", help=argparse.SUPPRESS)',
                 "if args.build_host_unchecked is not None:",
                 'raise ValueError("--build-host-unchecked was --offload-unchecked\'s name until '

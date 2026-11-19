@@ -1882,7 +1882,9 @@ shortcuts to set up.
 A paired iPhone or iPad, a simulator pool's members and a Mac's foreground are used only under a
 reservation in the Mac's one **device record**:
 `~/Library/Application Support/queuekeeper/device-handoff.json`, outside every repository.
-`qk devices` reads and changes it in any project that uses the Apple or Android plugin.
+`qk devices` reads and changes it. The Mac desktop plugin provides it, so every project that
+takes a Mac's foreground has it, a Unity project included; the Apple and Android plugins add the
+actions for physical devices (`take`, `declare`, `defer`, `import`, `notifications` and `run`).
 
 ```sh
 qk devices status                 # every entry, overdue ones, declarations and what each Mac reaches

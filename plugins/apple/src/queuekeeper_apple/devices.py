@@ -1,7 +1,8 @@
 """The device record as the Apple plugin uses it: the shared record of mobile devices (queuekeeper_mobile.devices),
 whose names this module gives under its earlier one, and what only a Mac's VoiceOver adds to its mac-foreground
-entry. `qk devices` is the shared module's command line; `python3 -m queuekeeper_apple.devices` still runs it, for a
-Mac that sends work with an earlier toolkit's command (offload_host.defer_devices)."""
+entry. `qk devices` is the record's command line (queuekeeper_mac_desktop.reservations, which the shared module adds
+to); `python3 -m queuekeeper_apple.devices` still runs it, for a Mac that sends work with an earlier toolkit's
+command (offload_host.defer_devices)."""
 from queuekeeper_mobile.devices import *  # noqa: F401,F403
 from queuekeeper_mobile.devices import _owned, main  # noqa: F401
 from queuekeeper_mobile.devices import FOREGROUND, Refused, now, process_start
