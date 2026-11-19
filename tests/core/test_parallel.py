@@ -440,6 +440,23 @@ class UnittestRunnerTests(unittest.TestCase):
                          "FAILED (failures=1)")
         self.assertIsNone(parallel.own_result("Ran 1 test in 0s\n"))
 
+    def test_a_failure_message_that_quotes_a_ran_line_does_not_add_to_the_count(self):
+        # A quoted run's "Ran N tests" line comes before the process's own, and is not its tests (#242).
+        root = self.suite(module("test_quotes_count", """
+            class Q(unittest.TestCase):
+                def test_quotes(self): self.fail("inner run said:\\nRan 4 tests in 0.1s\\n\\nOK\\n")
+        """), module("test_plain", """
+            class P(unittest.TestCase):
+                def test_plain(self): pass
+        """))
+        status, output = self.run_suite(root)
+        self.assertEqual(status, 1, output)
+        self.assertIn("\nRan 4 tests in 0.1s\n", output)
+        self.assertRegex(output, r"queuekeeper unittest: 2 tests ")
+        self.assertEqual(parallel.own_count("Ran 4 tests in 0.1s\n\nOK\nRan 1 test in 0s\n\nFAILED (failures=1)\n"), 1)
+        self.assertEqual(parallel.own_count("Ran 3 tests in 0s\n\nOK\n"), 3)
+        self.assertEqual(parallel.own_count("no summary\n"), 0)
+
     def test_the_queue_reads_a_failed_run_with_its_reasons_as_it_reads_one_without_them(self):
         # Each reason quotes a line the queue reads, from the start of a line; the block must not start any of them.
         decoys = ["FAIL: test_decoy (test_decoy.D.test_decoy)", "ERROR: test_decoy (test_decoy.D.test_decoy)",

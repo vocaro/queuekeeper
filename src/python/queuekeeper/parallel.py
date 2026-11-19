@@ -344,6 +344,15 @@ def own_result(output):
     return found
 
 
+def own_count(output):
+    """A process's own test count, from the last "Ran N tests" line in its output, which unittest prints with its
+    result, or 0. An earlier one can be quoted in a failure message, as own_result's RESULT line can, and adding it
+    would count another run's tests (vocaro/queuekeeper#242)."""
+    found = None
+    for found in RAN.finditer(output): pass
+    return int(found.group(1)) if found else 0
+
+
 def selection(patterns):
     """unittest's -k patterns as fnmatch patterns: one without a * matches as a substring."""
     return [pattern if "*" in pattern else f"*{pattern}*" for pattern in patterns]
@@ -377,7 +386,7 @@ def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT, 
     status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors, stop=stopping)
     summary = own_result(output)
     return {"name": name, "tests": list(tests), "status": status, "output": output,
-            "ran": sum(int(count) for count in RAN.findall(output)),
+            "ran": own_count(output),
             "result": stopped_result() if status is None and stop_requested()
                       else HALTED if status is None and halted()
                       else f"timed out after {timeout:g}s" if status is None
