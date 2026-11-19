@@ -14,12 +14,23 @@
     "setup-examples": {
       "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "core.test_setup_examples"],
       "timeout": 300
+    },
+    "plugin-lists": {
+      "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "core.test_plugin_lists"],
+      "timeout": 300
     }
   },
   "queue": {
     "preflight": [],
-    "unread": {"paths": {"doc/user_guide.md": {
-      "why": "only test_setup_examples reads it, for the JSON setup example agents copy (vocaro/queuekeeper#147)",
-      "lanes": ["setup-examples"]}}}
+    "unread": {"paths": {
+      "doc/user_guide.md": {
+        "why": "only test_setup_examples (the JSON setup example agents copy, vocaro/queuekeeper#147) and test_plugin_lists (its Further reading) read it",
+        "lanes": ["setup-examples", "plugin-lists"]},
+      "doc/developer_guide.md": {
+        "why": "only test_plugin_lists reads it, for its plugin list (vocaro/queuekeeper#253)",
+        "lanes": ["plugin-lists"]},
+      "README.md": {
+        "why": "only test_plugin_lists reads it, for its Plugins section (vocaro/queuekeeper#253)",
+        "lanes": ["plugin-lists"]}}}
   }
 }

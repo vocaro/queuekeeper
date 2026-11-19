@@ -1619,6 +1619,13 @@ schema only grows, so readers ignore what they do not know.
   `queuekeeper.json` example in the [user guide](user_guide.md), since agents copy it. A
   documentation-only change to the user guide runs that test through the `setup-examples` lane
   (see `queue.unread` in [queuekeeper.json](../queuekeeper.json)).
+- **The plugin lists.** `tests/core/test_plugin_lists.py` fails when a platform plugin, a folder
+  under `plugins/` not named `visibility-*`, is missing from `queuekeeper-workspace.json`, is not
+  linked from the README's [Plugins](../README.md#plugins) section, this guide's
+  [Plugins and extensions](#plugins-and-extensions) or the user guide's
+  [Further reading](user_guide.md#further-reading), or has no box of its README name in
+  `assets/overview.svg`. A documentation-only change to one of those three documents runs it
+  through the `plugin-lists` lane.
 - **The README's screenshots.** Retake them after changing how the dashboard looks; see
   [The README's screenshots](#the-readmes-screenshots).
 
