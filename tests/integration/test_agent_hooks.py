@@ -117,7 +117,9 @@ class SessionStart(Repository):
         (self.store / "entries" / "broken.json").write_text("{")
         self.assertIsNone(self.context())
         output = io.StringIO()
-        with patch.object(sys, "stdin", io.StringIO("not json")), contextlib.redirect_stdout(output):
+        # Unreadable input leaves the hook the process's directory, which must not be a real worktree with real entries.
+        with patch.object(sys, "stdin", io.StringIO("not json")), contextlib.redirect_stdout(output), \
+                contextlib.chdir(self.root):
             self.assertEqual(cli.main(["hook", "session-start"]), 0)
         self.assertEqual(output.getvalue(), "")
 
