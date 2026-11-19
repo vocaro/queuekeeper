@@ -254,8 +254,12 @@ behind it, and once the batch's last lane is admitted, gates them stacked on the
 `-beside` checkout, on another Mac. The batch's push makes the stack's base `origin/main`, so the
 next round adopts it. Anything else throws it away and requeues its entries: the batch fails, gives
 no verdict or lands at another commit; the stack gives no verdict; an entry is removed or put
-first; `main`'s lanes change; the queue holds; or the worker stops or moves. When no Mac admits a
-stack's next lane, the worker waits two minutes before trying another. A stack settles nothing: an
+first; `main`'s lanes change; the queue holds; or the worker stops or moves. Before it integrates
+a stack, the worker reads each Mac the stack may go to, every Mac but the batch's, as the settle
+wait does (`resources.pressure`, `remote.pressure_there`). When none is under its heavy busy limit
+with normal memory pressure, it starts nothing, says so once, and waits two minutes before looking
+again: most stacks used to integrate, mark their entries testing, and wait only to be declined.
+When no Mac admits a stack's next lane, the worker waits two minutes before trying another. A stack settles nothing: an
 entry that conflicts with the batch below waits for its own round. A bisect never stacks.
 
 **Removal.** The worker looks every `REMOVAL_POLL` (5 s) for an entry that has left a running gate,

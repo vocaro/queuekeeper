@@ -9871,6 +9871,7 @@ class PooledStack(Fixture):
             record = {"mac": mac, "kind": None, "pid": os.getpid(), "admitted": False}
             with self.subTest(mac=mac), farm_fixture.only("build-host", "gate-03", "gate-04"), patch.object(worker.queue, "waiting", return_value=waiting), \
                     patch.object(mq.lane_wait, "current", return_value=record), \
+                    patch.object(mq.remote, "pressure_there", return_value=(None, 1.0)), \
                     patch.object(mq, "Stack") as stack:
                 worker.stack(worker, config, ["gate"], "head", [], threading.Event(), set())
                 stack.assert_not_called()
@@ -9880,6 +9881,64 @@ class PooledStack(Fixture):
                 self.assertEqual(stack.call_args.args[5], where)
                 self.assertEqual(runner.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
             worker.pending = None
+
+    def stacked(self, mac, busy, said=None, clock=100):
+        """(Stack's mock, the worker's log, its stack_retry_after) of one look at a stack, the batch admitted on mac,
+        the farm build-host, gate-03 and gate-04, and busy the farm Macs and this Mac (None) that have no room."""
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.lane_now = ("gate", time.time(), ())
+        worker.environment = {}
+        record = {"mac": mac, "kind": None, "pid": os.getpid(), "admitted": True}
+        read = []
+        def there(host):
+            read.append(host)
+            if host == "gate-04" and "gate-04" in busy: raise mq.remote.Unavailable("gate-04 did not answer")
+            return (("cpu", "the CPU is 95% busy") if host in busy else None), 1.0
+        here = ("memory", "memory pressure is level 2 (warn), not 1 (normal)") if None in busy else None
+        with farm_fixture.only("build-host", "gate-03", "gate-04"), \
+                patch.object(worker.queue, "waiting", return_value=[{"id": "new", "state": mq.QUEUED}]), \
+                patch.object(mq.lane_wait, "current", return_value=record), \
+                patch.object(mq.remote, "pressure_there", side_effect=there), \
+                patch.object(mq.resources, "pressure", return_value=here), \
+                patch.object(mq.time, "monotonic", return_value=clock), \
+                patch.object(mq, "Stack") as stack, contextlib.redirect_stdout(io.StringIO()) as log:
+            worker.stack(worker, {"lanes": {"gate": {"resource": "heavy"}}}, ["gate"], "head", [], threading.Event(),
+                         set() if said is None else said)
+        return stack, log.getvalue(), worker.stack_retry_after, read
+
+    def test_a_stack_waits_without_integrating_while_every_mac_it_may_go_to_is_busy(self):
+        """Most stacked gates used to integrate, wait and be declined (exit 75) while the farm was busy: none starts
+        now unless a Mac it may go to has room, and the next look waits STACK_ADMISSION_BACKOFF, as after a decline."""
+        said = set()
+        stack, log, after, read = self.stacked(mq.lane_wait.farm_mac("gate-03"), {"build-host", "gate-04", None}, said)
+        stack.assert_not_called()
+        self.assertEqual(after, 100 + mq.STACK_ADMISSION_BACKOFF)
+        # The batch's Mac is never read; this Mac is, as the stack may go there.
+        self.assertEqual(read, ["build-host", "gate-04"])
+        self.assertIn("the entries behind the batch wait, since no Mac that may take them has spare capacity now", log)
+        self.assertIn("the CPU is 95% busy", log)
+        self.assertIn("gate-04 did not answer", log)
+        self.assertIn("on this Mac, memory pressure is level 2", log)
+        # Said once while it lasts.
+        _, again, _, _ = self.stacked(mq.lane_wait.farm_mac("gate-03"), {"build-host", "gate-04", None}, said)
+        self.assertEqual(again, "")
+
+    def test_a_stack_kept_off_this_mac_ignores_this_macs_room(self):
+        stack, _, after, read = self.stacked(mq.lane_wait.HERE, {"build-host", "gate-03", "gate-04"})
+        stack.assert_not_called()
+        self.assertEqual(read, ["build-host", "gate-03", "gate-04"])
+        self.assertEqual(after, 100 + mq.STACK_ADMISSION_BACKOFF)
+
+    def test_a_stack_starts_when_one_mac_it_may_go_to_has_room(self):
+        """Negative control: one Mac with room, here this Mac or gate-04, is enough."""
+        for busy in ({"build-host", "gate-04"}, {"build-host", None}):
+            with self.subTest(busy=busy):
+                said = {mq.STACK_ROOMLESS}
+                stack, _, after, _ = self.stacked(mq.lane_wait.farm_mac("gate-03"), busy, said)
+                stack.assert_called_once()
+                stack.return_value.begin.assert_called_once()
+                self.assertEqual(after, 0)
+                self.assertNotIn(mq.STACK_ROOMLESS, said)
 
 
 class Stacked(Fixture):
@@ -9955,6 +10014,7 @@ class Stacked(Fixture):
         check = waits.path_of(worker.checkout, "check")
         gate = waits.path_of(worker.checkout, "gate")
         with (patch.object(mq, "apart", APART), farm_fixture.only("build-host"),
+              patch.object(mq.remote, "pressure_there", return_value=(None, 1.0)),
               patch.object(mq, "Stack") as stack,
               patch.dict(os.environ, {waits.VARIABLE: str(check)})):
             worker.stack(*args)

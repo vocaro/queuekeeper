@@ -212,6 +212,10 @@ STACK_POLL = 30
 # A busy Mac can stay busy over many polls. Wait four polls before reintegrating a declined stack (#348).
 STACK_ADMISSION_BACKOFF = 4 * STACK_POLL
 STACK_ADMISSION_DECLINED = "queue: no Mac admitted the last lane of this stacked gate"
+# Most stacks used to wait to be declined (exit 75) on a busy farm. A stack starts only when a Mac it may go to is
+# under its heavy busy limit with normal memory pressure (Worker.stack_room), and else backs off as a declined one.
+STACK_ROOMLESS = "no room for a stack"
+NO_ROOM = "no Mac but the batch's"
 # A docs-only entry never rides a code gate (owner's rule of 2026-11-11, vocaro-engineering#394). Queued beside code
 # entries, it lands first in a round of docs entries alone (Worker.docs_ahead); while a code batch gates, it lands
 # beside the gate in a checkout of its own with this suffix (Worker.docs_beside), and the code batch's pass carries over
@@ -5608,12 +5612,34 @@ class Worker:
             if why not in said: self.say(f"the entries behind the batch wait for it, since {why}")
             said.add(why)
             return
+        # No Mac that could take it has room: an attempt would only wait to be declined (STACK_ROOMLESS).
+        busy = self.stack_room(hosts, excluded, where)
+        if busy:
+            if STACK_ROOMLESS not in said: self.say(f"the entries behind the batch wait, since {busy}")
+            said.add(STACK_ROOMLESS)
+            self.stack_retry_after = time.monotonic() + STACK_ADMISSION_BACKOFF
+            return
+        said.discard(STACK_ROOMLESS)
         other = Beside(self, self.queue.checkout if runner.checkout != self.queue.checkout else None, "stacked",
                        settles=False)
         if excluded is not None: other.environment = {**other.environment, remote.QUEUE_GATE_EXCLUDE: excluded}
         other.checks = quick_lanes(config, code=True)
         stacked = Stack(self, other, fresh, head, lanes, where, below=applied, paths=paths, said_where=said_where)
         if not stop.is_set() and stacked.begin(): self.pending = stacked
+
+    def stack_room(self, hosts, excluded, where):
+        """None when a Mac a stacked gate may go to (apart: hosts but excluded, and this Mac unless where keeps it
+        off) has spare capacity by admission's test, its CPU under its heavy busy limit with normal memory pressure,
+        as settle reads it (resources.pressure, remote.pressure_there); else why none has. A Mac that cannot be
+        read has none."""
+        macs = [host for host in hosts if host != excluded] + ([] if "--offload-only" in where else [None])
+        said = []
+        for host in macs:
+            try: busy = resources.pressure() if host is None else remote.pressure_there(host)[0]
+            except remote.Unavailable as error: busy = "unknown", str(error)
+            if busy is None: return None
+            said.append(f"on this Mac, {busy[1]}" if host is None else f"on {remote.called(host)}, {busy[1]}")
+        return f"no Mac that may take them has spare capacity now ({'; '.join(said) or NO_ROOM})"
 
     def admitted_mac(self, runner, final_lane):
         """The Mac that admitted the primary's final lane. Earlier lanes can use a different Mac."""
