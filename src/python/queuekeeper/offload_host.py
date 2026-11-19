@@ -1890,7 +1890,8 @@ def capacity(own=None, *, diagnostic=False, before=None):
     HEAVY_SETTLE_SECONDS (settle) and its memory pressure level, None when unread (memory), by which its admission
     withholds a slot beyond the guaranteed ones (resources.Admission._extra_refusal, vocaro-engineering#201); and
     its console screen (screen), which a lane that needs it unlocked reads; and the kinds of work it takes, its
-    labels and where its settings are (takes, takesSet, labels, settingsFile; mac_settings), by which placement
+    labels, where its settings are and the keys of them it passes over (takes, takesSet, labels, settingsFile,
+    settingsIgnored; mac_settings), by which placement
     passes over a Mac that does not take the work (remote.unfit). A reading it cannot take says why, as
     error, as pressure does. A diagnostic keeps no CPU sample and identifies blockers by admission and process,
     since their command labels can be long and need not identify the work."""
@@ -1927,7 +1928,7 @@ def capacity(own=None, *, diagnostic=False, before=None):
             "sinceAdmission": since_admission(directory, found["slotsMax"]), "settle": found["settleSeconds"],
             "memory": memory_level(), "screen": screen(), **limit_sources(sources),
             "takes": settings["takes"], "takesSet": settings["set"], "labels": settings["labels"],
-            "settingsFile": settings["file"],
+            "settingsFile": settings["file"], "settingsIgnored": settings["ignored"],
             **({"blockers": blockers} if diagnostic else {})}
 
 

@@ -233,6 +233,131 @@ class CommandTests(FarmCase):
         self.assertIn("A checkout there was not repaired: source.git: no\n", self.qk("add", "mini.local")[1])
 
 
+class LaneFitTests(FarmCase):
+    """`qk doctor` warns of a lane no Mac of the farm takes by its own settings: its labels, or its kind of work
+    (remote.unplaceable_lanes, vocaro/queuekeeper#224). A Mac that cannot be read is unknown, never one that lacks."""
+    LANES = {"build": {"command": ["true"]},
+             "gate": {"command": ["true"], "resource": "exclusive", "wholeHost": True},
+             "suite": {"command": ["true"], "wholeHost": True},
+             "unity": {"command": ["true"], "labels": ["unity-license"]},
+             "story": {"command": ["true"], "model": True},
+             "screen": {"command": ["true"], "foreground": True},
+             "parts": {"command": ["true"], "resource": "self", "labels": ["unity-license"]}}
+
+    def setUp(self):
+        super().setUp()
+        self.add("studio.local"), self.add("mini.local")
+        self.asked = []
+
+    def settings(self, file, takes=None, labels=()):
+        return {"takes": {"wholeHost": True, "exclusive": True, "model": True, "foreground": False, **(takes or {})},
+                "takesSet": sorted(takes or {}), "labels": list(labels), "settingsFile": f"/Users/o/{file}/mac-settings.json"}
+
+    def warnings(self, here, there, lanes=None):
+        def read(host):
+            self.asked.append(host)
+            if isinstance(there[host], Exception): raise there[host]
+            return there[host]
+        return remote.unplaceable_lanes({"lanes": lanes or self.LANES}, read_here=lambda: here, read_there=read)
+
+    def test_a_lane_no_mac_takes_is_named_with_what_it_needs_and_what_each_mac_has(self):
+        here = self.settings("here", {"wholeHost": False, "model": False})
+        there = {"studio.local": self.settings("studio", {"wholeHost": False}, ["apple-m5-max"]),
+                 "mini.local": self.settings("mini", {"wholeHost": False, "exclusive": False})}
+        found = {warning.split(":")[0]: warning for warning in self.warnings(here, there)}
+        # Each Mac is read once, however many lanes ask.
+        self.assertEqual(self.asked, ["studio.local", "mini.local"])
+        self.assertEqual(sorted(found), ["screen", "suite", "unity"])
+        self.assertEqual(found["unity"],
+            "unity: the lane needs a Mac of the farm that has the label unity-license, and none does, so the lane "
+            "cannot run: this Mac lacks the label unity-license that the work needs (its labels: none, by its settings "
+            "(/Users/o/here/mac-settings.json)); Studio lacks the label unity-license that the work needs (its labels: "
+            "apple-m5-max, by its settings (/Users/o/studio/mac-settings.json)); Mini lacks the label unity-license "
+            "that the work needs (its labels: none, by its settings (/Users/o/mini/mac-settings.json)); give a Mac what "
+            "the lane needs in its mac-settings.json, or correct the lane")
+        self.assertIn("suite: the lane needs a Mac of the farm that takes whole-host gates, and none does", found["suite"])
+        self.assertIn("Studio takes no whole-host gates, by its settings (/Users/o/studio/mac-settings.json)", found["suite"])
+        self.assertIn("takes foreground work, and none does", found["screen"])
+        self.assertIn("or `qk farm foreground NAME` for foreground work", found["screen"])
+        # The positive controls beside them: Studio takes exclusive work and this Mac's limits model runs aside,
+        # Studio and Mini take them; an ordinary heavy lane and a self lane are never judged.
+        for name in ("gate", "story", "build", "parts"): self.assertNotIn(name, found)
+        # A lane, and a group by its lanes', that needs labels and a kind says both, and each Mac's labels.
+        lanes = {"group": {"parallel": ["unity", "suite"], "wholeHost": True, "resource": "exclusive"},
+                 "unity": self.LANES["unity"], "suite": self.LANES["suite"]}
+        there["mini.local"] = self.settings("mini", {"exclusive": False}, ["unity-license"])
+        [group] = [warning for warning in self.warnings(here, there, lanes) if warning.startswith("group")]
+        self.assertIn("the lane needs a Mac of the farm that takes exclusive work and has the label unity-license", group)
+        self.assertIn("Mini takes no exclusive work, by its settings (/Users/o/mini/mac-settings.json) (its labels: "
+                      "unity-license)", group)
+
+    def test_a_lane_some_mac_takes_is_not_named_and_nothing_is_read_when_no_lane_needs_it(self):
+        here = self.settings("here")
+        there = {"studio.local": self.settings("studio", {"foreground": True}),
+                 "mini.local": self.settings("mini", labels=["unity-license"])}
+        self.assertEqual(self.warnings(here, there), [])
+        # A project whose lanes need nothing a Mac may decline asks no Mac at all.
+        self.asked.clear()
+        self.assertEqual(self.warnings(here, there, {"build": self.LANES["build"], "parts": self.LANES["parts"]}), [])
+        self.assertEqual(self.asked, [])
+
+    def test_a_mac_that_cannot_be_read_is_unknown_and_never_said_to_lack(self):
+        here = self.settings("here")
+        # Mini cannot be reached, and Studio's toolkit reports no settings, as one before them.
+        there = {"studio.local": {"slots": 3, "slotsMax": 9, "busy": []},
+                 "mini.local": remote.Unreachable("mini.local cannot be reached", "wake it")}
+        unity, screen = sorted(self.warnings(here, there), reverse=True)
+        self.assertIn("screen: the lane needs a Mac of the farm that takes foreground work, and none that could be "
+                      "read does, so it runs only if Studio or Mini does", screen)
+        self.assertTrue(unity.startswith("unity: the lane needs a Mac of the farm that has the label unity-license, "
+                                         "and none that could be read does, so it runs only if Studio or Mini does: "
+                                         "this Mac lacks the label unity-license"), unity)
+        self.assertIn("whether Studio takes it is unknown: its toolkit does not report its settings", unity)
+        self.assertIn("whether Mini takes it is unknown: mini.local cannot be reached", unity)
+        self.assertNotIn("Mini lacks", unity)
+        self.assertNotIn("Studio lacks", unity)
+        # One Mac that is read and takes it is enough, whatever the others.
+        there["studio.local"] = self.settings("studio", {"foreground": True}, labels=["unity-license"])
+        self.assertEqual(self.warnings(here, there), [])
+        # This Mac's own settings that cannot be read are unknown too.
+        there["studio.local"] = self.settings("studio", {"foreground": True})
+        [unity] = self.warnings("Invalid Mac settings: /x is not JSON", there)
+        self.assertIn("whether this Mac takes it is unknown: Invalid Mac settings: /x is not JSON", unity)
+
+    def test_a_lane_that_stays_here_is_judged_by_this_macs_settings_alone(self):
+        lanes = {"local": {"command": ["true"], "here": "it reads this Mac's keychain", "labels": ["unity-license"]},
+                 "screen": {"command": ["true"], "here": "it uses this Mac's display", "foreground": True}}
+        there = {"studio.local": self.settings("studio", labels=["unity-license"]), "mini.local": self.settings("mini")}
+        [local] = self.warnings(self.settings("here"), there, lanes)
+        self.assertTrue(local.startswith("local: the lane needs this Mac, where the lane says it runs, that has the "
+                                         "label unity-license, and none does"), local)
+        self.assertNotIn("Studio", local)
+        # Its foreground runs within the owner's window whatever the settings say, so it is not judged by them.
+        self.assertFalse(any(warning.startswith("screen") for warning in self.warnings(self.settings("here"), there, lanes)))
+        self.assertEqual(self.warnings(self.settings("here", labels=["unity-license"]), there, lanes), [])
+
+    def test_doctor_warns_of_the_lane_by_this_macs_own_settings_file(self):
+        (offload_host.admission_directory() / offload_host.MAC_SETTINGS).write_text(json.dumps({"labels": ["other"]}))
+        with farm.changing() as macs: macs.clear()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(remote, "compare_hosts", return_value={"host": None, "errors": [], "unchecked": [],
+                                                                    "pythonCrashes": {}}), \
+                patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
+                patch.object(cli, "source_identity", return_value={}), \
+                patch.object(offload_host, "host_health", return_value={}), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            Path(directory, "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                "integration": "direct-main", "lanes": {"gate": {"command": ["true"], "timeout": 60},
+                                                        "unity": {"command": ["true"], "timeout": 60,
+                                                                  "labels": ["unity-license"]}}}))
+            cli.main(["--project", directory, "doctor"])
+        warnings = json.loads(output.getvalue())["warnings"]
+        [unity] = [warning for warning in warnings if warning.startswith("unity:")]
+        self.assertIn("this Mac lacks the label unity-license that the work needs (its labels: other, by its "
+                      f"settings ({offload_host.admission_directory() / offload_host.MAC_SETTINGS}))", unity)
+        self.assertFalse([warning for warning in warnings if warning.startswith("gate:")])
+
+
 class AdoptRootTests(unittest.TestCase):
     """A Mac joining the farm moves the directory it kept under its earlier name, with its checkouts in use again."""
 

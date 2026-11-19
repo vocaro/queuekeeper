@@ -2182,20 +2182,57 @@ def capacity_lines(readings):
                 "exclusive": ", ".join(reading.get("exclusive") or []) or "none",
                 "queued ahead": reading.get("kept") or reading.get("queuedExclusive") or "none",
                 "heavy lane": remote.spare(reading, short) or "spare capacity",
-                "whole-host lane": remote.spare(reading, short, whole_host=True) or "spare capacity"}
+                "whole-host lane": remote.spare(reading, short, whole_host=True) or "spare capacity",
+                **settings_cells(reading)}
     columns = [cells(name, short, reading) for name, short, reading in readings]
     rows = list(dict.fromkeys(key for column in columns for key in column))
     width = max(len(row) for row in rows)
     return [f"  {row:<{width}}  " + " | ".join(column.get(row, "-") for column in columns) for row in rows]
 
 
-def usage(here, there, since, until, out=print):
+def settings_cells(reading):
+    """What a Mac's capacity reading says of its own settings, as rows of capacity_lines: the kinds of work it takes
+    and declines, which of them its file sets, its labels, and the file with any key of it this toolkit passes over
+    (offload_host.mac_settings, vocaro/queuekeeper#224). A reading that carries no settings, as an older toolkit's,
+    says they are unknown, never that the Mac lacks them."""
+    from queuekeeper import offload_host, remote
+    why = remote.settings_reading(reading)
+    if why is not None: return {"takes": f"unknown: {why}", "labels": "unknown"}
+    takes, chosen = reading["takes"], reading.get("takesSet") or []
+    taken = [words for kind, words in offload_host.KINDS.items() if takes.get(kind, kind != "foreground")]
+    refused = [words for kind, words in offload_host.KINDS.items() if not takes.get(kind, kind != "foreground")]
+    whence = f"{', '.join(chosen)} set, the rest by default" if chosen else "all by default"
+    ignored = reading.get("settingsIgnored") or []
+    return {"takes": f"{', '.join(taken) or 'no kind of work'}" + (f"; not {', '.join(refused)}" if refused else "")
+                     + f" ({whence})",
+            "labels": ", ".join(label for label in reading["labels"] if isinstance(label, str)) or "none",
+            "settings": str(reading.get("settingsFile") or "unnamed")
+                        + (f" (ignored: {', '.join(map(str, ignored))})" if ignored else "")}
+
+
+def foreground_line(readings):
+    """Where foreground lanes go, by the readings capacity_lines prints, as `qk farm foreground` says after it marks a
+    Mac: each of the farm's Macs whose settings take foreground work, then this Mac when its own do. A Mac whose
+    settings are unknown is named as unknown (vocaro/queuekeeper#224)."""
+    from queuekeeper import remote
+    taken, unknown = [], []
+    for _name, short, reading in [*readings[1:], readings[0]]:
+        if remote.settings_reading(reading) is not None: unknown.append(short)
+        elif reading["takes"].get("foreground") is True: taken.append(short)
+    return (f"Foreground lanes go to: {', '.join(taken) or 'no Mac'}"
+            + (f"; unknown whether {' or '.join(unknown)} takes them, whose settings could not be read" if unknown else ""))
+
+
+def usage(here, there, since, until, out=print, farm=True):
     """Print the usage report: here, and each of there, the farm's other Macs in order (or the one of them), is
-    (name, short name, capacity reading or why unavailable, admission log entries or why unavailable)."""
+    (name, short name, capacity reading or why unavailable, admission log entries or why unavailable). Without farm,
+    there says only why the farm has no other Mac to read."""
     shown = lambda moment: moment.astimezone().strftime("%Y-%m-%d %H:%M %Z")
     others = there if isinstance(there, list) else [there]
     out("Capacity now:")
     for line in capacity_lines([here[:3], *(other[:3] for other in others)]): out(line)
+    # A farm with no other Mac has none to name, and the report says so above.
+    out(foreground_line([here[:3], *(other[:3] for other in others)] if farm else [here[:3]]))
     out(f"Admitted heavy jobs from {shown(since)} to {shown(until)} (time at N heavy jobs at once):")
     for name, _short, _reading, entries in [here, *others]:
         if isinstance(entries, str): out(f"  {name}: log unavailable: {entries}")
@@ -2229,7 +2266,7 @@ def usage_main(argv=None, out=print):
     try: macs = farm.active()
     except ValueError as error: macs, why = [], str(error)
     else: why = "the farm has no other Mac that takes work now"
-    if not macs: return usage(here, ("the farm's other Macs", "another Mac", why, why), since, until, out)
+    if not macs: return usage(here, ("the farm's other Macs", "another Mac", why, why), since, until, out, farm=False)
     there = []
     for index, mac in enumerate(macs):
         host = mac["ssh"]

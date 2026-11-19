@@ -1058,7 +1058,7 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(set(json.loads(done.stdout.splitlines()[-1])),
                          {"slots", "slotsMax", "busy", "load", "cpuBusy", "busyLimit", "wholeHost", "exclusive", "kept",
                           "queuedExclusive", "sinceAdmission", "settle", "memory", "screen", "limitsFrom", "limitsFile",
-                          "takes", "takesSet", "labels", "settingsFile"})
+                          "takes", "takesSet", "labels", "settingsFile", "settingsIgnored"})
 
     def test_a_busy_cpu_memory_pressure_or_an_unsettled_admission_withholds_extra_slots(self):
         self.hold(0, 1)
@@ -3101,7 +3101,11 @@ class MacSettingsTests(unittest.TestCase):
         self.file.write_text(json.dumps({"takes": {"model": False, "gpuWork": True}, "labels": ["a"], "devices": {}}))
         found = offload_host.mac_settings()
         self.assertEqual((found["takes"]["model"], found["ignored"]), (False, ["devices", "takes.gpuWork"]))
-        self.assertNotIn("error", offload_host.capacity())
+        # The reading another Mac takes of this one names them too, which `qk admissions usage` prints there
+        # (vocaro/queuekeeper#224).
+        reading = offload_host.capacity()
+        self.assertNotIn("error", reading)
+        self.assertEqual(reading["settingsIgnored"], ["devices", "takes.gpuWork"])
 
     def test_settings_that_cannot_be_read_stop_the_reading_rather_than_guess_what_the_mac_takes(self):
         from queuekeeper import offload_host
@@ -4055,6 +4059,58 @@ class UsageTests(unittest.TestCase):
         # Another Mac whose log cannot be fetched says why.
         lines = self.report(self.IDLE, self.IDLE, [], "build-host did not send its admission log")
         self.assertIn("  build-host: log unavailable: build-host did not send its admission log", lines)
+
+
+class UsageSettingsTests(unittest.TestCase):
+    """qk admissions usage prints what each Mac takes and its labels beside its capacity, from the reading it takes
+    already, and where foreground lanes go (vocaro/queuekeeper#224)."""
+    UNTIL, SINCE, IDLE, report = UsageTests.UNTIL, UsageTests.SINCE, UsageTests.IDLE, UsageTests.report
+
+    def settings(self, file, takes=None, labels=(), ignored=()):
+        return {**self.IDLE, "takes": {"wholeHost": True, "exclusive": True, "model": True, "foreground": False,
+                                       **(takes or {})},
+                "takesSet": sorted(takes or {}), "labels": list(labels), "settingsFile": file,
+                "settingsIgnored": list(ignored)}
+
+    def rows(self, lines):
+        return {line.split("  ")[1].strip(): line for line in lines[2:] if line.startswith("  ") and " | " in line}
+
+    def test_each_macs_kinds_labels_and_settings_are_shown_and_where_foreground_lanes_go(self):
+        here = self.settings("/here/mac-settings.json", {"wholeHost": False})
+        there = self.settings("/there/mac-settings.json", {"foreground": True}, ["unity-license", "apple-m5-max"],
+                              ["takes.gpuWork"])
+        lines = self.report(here, there, [], [])
+        rows = self.rows(lines)
+        self.assertEqual(rows["takes"].split("  ", 2)[-1].strip(),
+                         "exclusive work, model runs; not whole-host gates, foreground work (wholeHost set, the rest by "
+                         "default) | whole-host gates, exclusive work, model runs, foreground work (foreground set, the "
+                         "rest by default)")
+        self.assertTrue(rows["labels"].endswith("none | unity-license, apple-m5-max"), rows["labels"])
+        self.assertTrue(rows["settings"].endswith("/here/mac-settings.json | /there/mac-settings.json (ignored: "
+                                                  "takes.gpuWork)"), rows["settings"])
+        self.assertIn("Foreground lanes go to: build-host", lines)
+        # This Mac too, after the farm's Macs, as `qk farm foreground` says; and no Mac when none takes them.
+        here["takes"]["foreground"] = True
+        self.assertIn("Foreground lanes go to: build-host, this Mac", self.report(here, there, [], []))
+        here["takes"]["foreground"] = there["takes"]["foreground"] = False
+        self.assertIn("Foreground lanes go to: no Mac", self.report(here, there, [], []))
+
+    def test_a_mac_whose_settings_are_not_read_is_unknown_never_lacking(self):
+        # A reading from an older toolkit carries no settings, and one that could not be taken says why.
+        for there in (self.IDLE, "build-host did not report its capacity: it answered None"):
+            with self.subTest(there=there):
+                lines = self.report(self.settings("/here/mac-settings.json"), there, [], [])
+                rows = self.rows(lines)
+                self.assertNotIn("none", rows["labels"].split("|")[-1])
+                self.assertIn("Foreground lanes go to: no Mac; unknown whether build-host takes them, whose settings "
+                              "could not be read", lines)
+        lines = self.report(self.settings("/here/mac-settings.json"), self.IDLE, [], [])
+        self.assertTrue(self.rows(lines)["takes"].endswith("| unknown: its toolkit does not report its settings"))
+        # A farm with no other Mac names none as unknown.
+        with contextlib.redirect_stdout(StringIO()) as output:
+            resources.usage(("this Mac (Here)", "this Mac", self.settings("/here/mac-settings.json"), []),
+                            ("the farm's other Macs", "another Mac", "none", "none"), self.SINCE, self.UNTIL, farm=False)
+        self.assertIn("Foreground lanes go to: no Mac\n", output.getvalue())
 
 
 class RecoveryTests(unittest.TestCase):

@@ -1511,6 +1511,8 @@ def perform(argv, report):
             compared = [fix_hosts(root, remote.compare_hosts(host)) for host in farm.destinations()] \
                 or [fix_hosts(root, remote.compare_hosts())]
             if trial.active(): warnings.append(f"{trial.refusal('the fixes')}; its state is under {trial.folder()}")
+            # Each lane no Mac of the farm takes by its own settings: its labels or its kind (vocaro/queuekeeper#224).
+            warnings += remote.unplaceable_lanes(config)
             for check in extensions.DOCTOR: warnings += check(root, config)
             errors = []
             for check in extensions.DOCTOR_CHECKS:

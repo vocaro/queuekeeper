@@ -70,7 +70,7 @@ import zlib
 
 from . import disk, extensions, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
 from . import count_history, window_placement
-from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_folders, sibling_variables, unlocked_screen
+from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_folders, sibling_variables, unadmitted, unlocked_screen
 from . import farm
 from .resources import BUSY, FREE_WAIT
 
@@ -3957,6 +3957,93 @@ def lane_needs(lanes, name):
     lane = lanes.get(name, {})
     return {"model": bool(lane.get("model")), "labels": needed_labels(lanes, name),
             "foreground": bool(lane.get("foreground"))}
+
+
+def settings_reading(reading):
+    """Why reading, a Mac's capacity reading or why it could not be taken, says nothing of what the Mac takes, or
+    None when it says: a Mac that could not be read, or whose toolkit reports no settings, is unknown, never one
+    that declines (vocaro/queuekeeper#224)."""
+    if isinstance(reading, str): return reading
+    if not isinstance(reading, dict) or "error" in reading: return str((reading or {}).get("error") or reading)
+    if not isinstance(reading.get("takes"), dict) or not isinstance(reading.get("labels"), list):
+        return "its toolkit does not report its settings"
+    return None
+
+
+def settings_here():
+    """This Mac's own settings as a capacity reading carries them (offload_host.mac_settings), or why they cannot be
+    read."""
+    try: found = offload_host.mac_settings()
+    except ValueError as error: return str(error)
+    return {"takes": found["takes"], "takesSet": found["set"], "labels": found["labels"], "settingsFile": found["file"],
+            "settingsIgnored": found["ignored"]}
+
+
+def unplaceable_lanes(config, read_here=settings_here, read_there=None):
+    """`qk doctor`'s warning for each admitted lane that no Mac of the farm takes by its own settings (unfit): its
+    labels, as a group's are its lanes' too, that no Mac has, or its kind of work, whole-host gate, exclusive work,
+    model run or foreground work, that every Mac declines. Run, such a lane ends as for a misconfigured Mac (exit
+    78), and a queue holds for it; this says so beforehand (vocaro/queuekeeper#224). A lane that says "here" is
+    judged by this Mac's settings alone. This Mac's settings are read once (read_here) and each of the farm's Macs
+    that take work now once (read_there, capacity_there), only when some lane needs something a Mac may decline. A
+    Mac that cannot be read is unknown, never one that declines: a lane that only such a Mac might take is said to
+    run only if it does. A lane's "chips" is checked by its own extension."""
+    read_there = read_there or capacity_there
+    lanes = config.get("lanes") if isinstance(config.get("lanes"), dict) else {}
+    readings = {}
+
+    def macs(here_only):
+        if not readings:
+            readings[HERE] = read_here()
+            try: hosts = farm.destinations()
+            except ValueError as error: hosts, readings["the farm's other Macs"] = (), str(error)
+            for host in hosts:
+                try: readings[farm.named(host)] = read_there(host)
+                except Unavailable as error: readings[farm.named(host)] = str(getattr(error, "problem", error))
+        return {HERE: readings[HERE]} if here_only else readings
+
+    found = []
+    for name, lane in sorted(lanes.items()):
+        if not isinstance(lane, dict) or unadmitted(lane): continue
+        here_only = bool(lane.get("here")) or any(isinstance(lanes.get(member), dict) and lanes[member].get("here")
+                                                  for member in lane.get("parallel", []))
+        exclusive = lane.get("resource") == "exclusive"
+        needs = {**lane_needs(lanes, name), "whole_host": bool(lane.get("wholeHost")), "exclusive": exclusive}
+        # A lane that stays here and takes the foreground runs only within its owner's window, whatever the settings.
+        if here_only: needs["foreground"] = False
+        kinds = [offload_host.KINDS[kind] for kind, asked in (
+            ("exclusive", exclusive), ("wholeHost", needs["whole_host"] and not exclusive), ("model", needs["model"]),
+            ("foreground", needs["foreground"])) if asked]
+        if not kinds and not needs["labels"]: continue
+        declined, unknown = [], []
+        for mac, reading in macs(here_only).items():
+            why = settings_reading(reading)
+            if why is not None:
+                unknown.append((mac, why))
+                continue
+            reason = unfit(reading, mac, **needs)
+            if reason is None: break
+            has = [label for label in reading["labels"] if isinstance(label, str)]
+            declined.append(str(reason) if not needs["labels"] or "lacks the label" in reason
+                            else f"{reason} (its labels: {', '.join(has) or 'none'})")
+        else:
+            wanted = " and ".join(filter(None, [
+                f"takes {', '.join(kinds)}" if kinds else "",
+                f"has the label{'s' if len(needs['labels']) > 1 else ''} {', '.join(needs['labels'])}"
+                if needs["labels"] else ""]))
+            where = "this Mac, where the lane says it runs," if here_only else "a Mac of the farm"
+            said = [*declined, *(f"whether {mac} takes it is unknown: {why}" for mac, why in unknown)]
+            fix = (f"give a Mac what the lane needs in its {offload_host.MAC_SETTINGS}"
+                   + (", or `qk farm foreground NAME` for foreground work" if needs["foreground"] else "")
+                   + ", or correct the lane")
+            if unknown:
+                found.append(f"{name}: the lane needs {where} that {wanted}, and none that could be read does, so it "
+                             f"runs only if {' or '.join(mac for mac, _ in unknown)} does: {'; '.join(said)}; "
+                             f"if not, {fix}")
+            else:
+                found.append(f"{name}: the lane needs {where} that {wanted}, and none does, so the lane cannot run: "
+                             f"{'; '.join(said)}; {fix}")
+    return found
 
 
 def spare(reading, mac, whole_host=False, exclusive=False, screen=False, model=False, labels=(), foreground=False):

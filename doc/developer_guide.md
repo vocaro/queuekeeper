@@ -438,7 +438,8 @@ send work the same way.
 Every Mac, this one included, is judged by one test: what its own admission would admit now. The
 reading is `offload_host.py`'s `capacity` answer, run in the Mac's login shell: guaranteed slots
 and their maximum, busy slots, `cpuBusy` (sampled over up to two seconds), `busyLimit`, the
-whole-host and exclusive work running, its screen, and its `takes`, `labels` and `settingsFile`.
+whole-host and exclusive work running, its screen, and its `takes`, `labels`, `settingsFile` and
+`settingsIgnored`.
 A Mac has spare capacity when:
 
 - a guaranteed slot is free (every one for a whole-host lane, every one up to `HEAVY_SLOTS_MAX`
