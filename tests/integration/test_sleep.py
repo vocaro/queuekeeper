@@ -35,12 +35,13 @@ class ClockTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "the clocks are macOS's")
     def test_the_clock_that_stops_in_sleep_is_monotonic_and_the_other_runs_on(self):
         """time.monotonic() is mach_absolute_time(), CLOCK_UPTIME_RAW, which stops while the Mac sleeps; the
-        difference CLOCK_MONOTONIC_RAW less it is asleep()'s reading, never negative."""
+        difference CLOCK_MONOTONIC_RAW less it is asleep()'s reading, never negative but by the moment between its two
+        readings: under load it once read -2.5e-07 s in a gate."""
         self.assertEqual(time.get_clock_info("monotonic").implementation, "mach_absolute_time()")
         before = time.clock_gettime(time.CLOCK_UPTIME_RAW)
         now = time.monotonic()
         self.assertLess(abs(now - before), 1)
-        self.assertGreaterEqual(remote.asleep(), 0)
+        self.assertGreater(remote.asleep(), -0.001)
 
     def test_a_sleep_shorter_than_the_noted_one_or_unreadable_is_none(self):
         with patch.object(cli.remote, "asleep", return_value=1000.0 + remote.SLEEP_NOTED - 1):
