@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -354,6 +355,74 @@ class Configured(Fixture):
         git(self.root, "push", "-q", "origin", "HEAD:main")
         self.assertEqual(self.status(), 2)
         self.assertEqual(self.said, ["queuekeeper.json configures no app: add `app`"])
+
+
+class OldSource(Fixture):
+    """The locked source registrations the store's place before Queuekeeper had its own names left, their folders
+    gone, which `git worktree prune` does not take while locked (vocaro/queuekeeper#138)."""
+    def old(self, reason=app_builds.OLD_SOURCE_REASONS[1]):
+        old_root = self.temp / "vocaro-engineering-apps"
+        old = old_root / "Demo" / "source"
+        git(self.root, "worktree", "add", "-q", "--detach", "--lock", "--reason", reason, str(old), "HEAD")
+        return old_root, old
+
+    def listed(self):
+        return git(self.root, "worktree", "list", "--porcelain")
+
+    def retire(self, old_root, **options):
+        return app_builds.retire_old_source(self.root, self.store, old_root, **options)
+
+    def test_its_registration_is_forgotten_only_once_the_stores_own_source_replaces_it(self):
+        old_root, old = self.old()
+        shutil.rmtree(old)
+        path, why = self.retire(old_root)
+        self.assertEqual(path, old)
+        self.assertIn("not in place as its replacement", why)
+        self.assertIn(f"worktree {old}", self.listed())
+        app_builds.ensure_source(self.root, self.store)
+        self.assertEqual(self.retire(old_root, dry_run=True), (old, None))
+        self.assertIn(f"worktree {old}", self.listed())
+        self.assertEqual(self.retire(old_root), (old, None))
+        self.assertNotIn(f"worktree {old}", self.listed())
+        self.assertIn(f"worktree {self.store.source}", self.listed())
+        self.assertEqual(self.retire(old_root), (None, None))
+
+    def test_one_still_there_locked_for_another_reason_or_holding_a_commit_main_lacks_stays(self):
+        app_builds.ensure_source(self.root, self.store)
+        old_root, old = self.old()
+        path, why = self.retire(old_root)
+        self.assertIn("still there", why)
+        git(self.root, "worktree", "unlock", str(old))
+        git(self.root, "worktree", "lock", "--reason", "someone's checkout", str(old))
+        shutil.rmtree(old)
+        path, why = self.retire(old_root)
+        self.assertIn("does not say it is qk app's source", why)
+        git(self.root, "worktree", "unlock", str(old))
+        git(self.root, "worktree", "prune")
+        old_root, old = self.old()
+        (old / "unlanded").write_text("work")
+        git(old, "add", "unlanded")
+        git(old, "commit", "-q", "-m", "unlanded")
+        shutil.rmtree(old)
+        path, why = self.retire(old_root)
+        self.assertIn("no equal patch on origin/main", why)
+        self.assertIn(f"worktree {old}", self.listed())
+
+    def test_the_command_says_what_it_did(self):
+        old_root, old = self.old()
+        shutil.rmtree(old)
+        app_builds.ensure_source(self.root, self.store)
+        with patch.object(app_builds, "old_store_root", return_value=old_root), \
+                patch.object(app_builds, "Store", return_value=self.store), \
+                contextlib.redirect_stdout(StringIO()) as said:
+            self.assertEqual(app_builds.execute(self.root, SimpleNamespace(operation="status"), project()), 0)
+            self.assertIn("`qk app retire-old-source` forgets it", said.getvalue())
+            self.assertEqual(app_builds.execute(self.root, SimpleNamespace(operation="retire-old-source",
+                                                                           dry_run=False), project()), 0)
+            self.assertEqual(app_builds.execute(self.root, SimpleNamespace(operation="retire-old-source",
+                                                                           dry_run=False), project()), 0)
+        self.assertIn(f"forgot the registration of {old}", said.getvalue())
+        self.assertIn("no source registration of the old store is left", said.getvalue())
 
 
 class Ps:

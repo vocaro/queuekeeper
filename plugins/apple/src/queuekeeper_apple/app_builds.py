@@ -55,7 +55,7 @@ import time
 
 from queuekeeper_mobile import device_pass, devices
 from . import apple_platform  # noqa: F401 -- switches the Apple platform on
-from queuekeeper import processes
+from queuekeeper import processes, worktree_ownership
 from .settings import APP_PLATFORMS
 from queuekeeper.checkout import python_path
 from queuekeeper.config import TOOLKIT_ROOT, load
@@ -68,6 +68,10 @@ MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
 # What locks the store's source worktree, so that no sweep removes it (disk.worktree keeps a locked worktree).
 SOURCE_REASON = "qk app's source checkout for kept app builds (app_builds.py)"
+# The reasons that locked the source worktree of the store's place before Queuekeeper had its own names (OLD_STORE),
+# whose registrations a migrated Mac still lists, locked, after their folders went (vocaro/queuekeeper#138).
+OLD_SOURCE_REASONS = (SOURCE_REASON, "eng app's source checkout for kept app builds (app_builds.py)")
+OLD_STORE = "vocaro-engineering/apps"
 DESTINATIONS = {"mac": "generic/platform=macOS", "ios": "generic/platform=iOS"}
 # The folder under Build/Products that holds each platform's product, after the configuration's name.
 PRODUCT_SUFFIX = {"mac": "", "ios": "-iphoneos"}
@@ -220,6 +224,39 @@ def ensure_source(root, store):
     store.source.parent.mkdir(parents=True, exist_ok=True)
     git(repository(root), "worktree", "add", "--detach", "--lock", "--reason", SOURCE_REASON, str(store.source), "HEAD")
     return store.source
+
+
+def old_store_root():
+    """Where the store was before Queuekeeper had its own names, beside store_root; None for a store a test names."""
+    if os.environ.get(OVERRIDE): return None
+    return store_root().parent.parent / OLD_STORE
+
+
+def retire_old_source(root, store, old_root=None, dry_run=False):
+    """Forget the old store's source registration for this project, whose folder went with the move to the store's
+    own place: (its path, None) when it went, or would with dry_run, (its path, why it stays), or (None, None) when no
+    such registration is left. It goes only when its folder is gone, its lock is the source checkout's, the store's own
+    source is in place as the replacement, registered and locked as the source, and the old registration's HEAD is
+    proven landed; then exactly its administrative folder goes, never another worktree's
+    (worktree_ownership.forget_missing). Nothing else of the old store is touched."""
+    old_root = old_root if old_root is not None else old_store_root()
+    if old_root is None: return None, None
+    old = Path(old_root) / store.path.name / "source"
+    main = repository(root)
+    common = worktree_ownership.common_dir(main)
+    found = worktree_ownership.registration(common, old)
+    if found is None: return None, None
+    if os.path.lexists(old): return old, f"{old} is still there, so it is a checkout to look at, not a registration left"
+    if found["reason"] not in OLD_SOURCE_REASONS:
+        return old, "its lock does not say it is qk app's source checkout"
+    replacement = worktree_ownership.registration(common, store.source)
+    if worktree_ownership.canonical(old) == worktree_ownership.canonical(store.source):
+        return old, "it is the store's own source"
+    if replacement is None or replacement["reason"] != SOURCE_REASON or not (store.source / ".git").exists():
+        return old, (f"the store's own source, {store.source}, is not in place as its replacement yet: "
+                     "`qk app keep` makes it")
+    if dry_run: return old, worktree_ownership.unlanded(main, found["head"])
+    return old, worktree_ownership.forget_missing(main, old, OLD_SOURCE_REASONS)
 
 
 def link_beside(root, store, config):
@@ -547,7 +584,7 @@ def spawn_keep(checkout, commit, log, env=None):
 
 
 def add_arguments(parser):
-    operations = parser.add_subparsers(dest="operation", required=True, metavar="{run,keep,status}")
+    operations = parser.add_subparsers(dest="operation", required=True, metavar="{run,keep,status,retire-old-source}")
     running = operations.add_parser("run", help="open the newest kept Mac build, or install and launch the device "
         "build on the paired iPhone or iPad, building origin/main first when the newest kept build is older")
     target = running.add_mutually_exclusive_group()
@@ -570,6 +607,11 @@ def add_arguments(parser):
     keeping.add_argument("--after-landing", action="store_true", help="only the platforms kept after each landing, "
                          "as the merge queue runs it")
     operations.add_parser("status", help="list the kept builds and how far each is behind origin/main")
+    retiring = operations.add_parser("retire-old-source", help="forget the locked source registration the store's "
+                                     "old place under vocaro-engineering left, once its folder is gone, the store's "
+                                     "own source replaces it and its commit is on origin/main: 0 forgotten or none "
+                                     "left, 1 kept, saying why")
+    retiring.add_argument("--dry-run", action="store_true", help="say whether it would, changing nothing")
     # The step a device pass runs on the reserved device (device_command), not a command of its own.
     device = operations.add_parser("device")
     device.add_argument("--udid", required=True)
@@ -602,6 +644,21 @@ def execute(root, args, config=None):
     try:
         if args.operation == "status":
             print("\n".join(describe(store, config, root)))
+            try: old, why = retire_old_source(root, store, dry_run=True)
+            except (RuntimeError, OSError, subprocess.SubprocessError): old = None
+            if old is not None:
+                print(f"  the old store's source registration {old} " + (
+                    f"stays: {why}" if why else "has no folder left: `qk app retire-old-source` forgets it"))
+            return 0
+        if args.operation == "retire-old-source":
+            old, why = retire_old_source(root, store, dry_run=args.dry_run)
+            if old is None:
+                print("no source registration of the old store is left")
+                return 0
+            if why:
+                say(f"{old} stays registered: {why}")
+                return 1
+            print(f"{'would forget' if args.dry_run else 'forgot'} the registration of {old}, whose folder had gone")
             return 0
         if args.operation == "keep":
             chosen = [name for name in platforms(config) if name in (args.platform or [])]

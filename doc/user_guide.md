@@ -2811,6 +2811,48 @@ python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper dev
 For another Mac's entry the command adds `--host HOST`, which runs the recovery through that Mac's
 `qk` (a plain `ssh HOST` finds a Python too old to start it).
 
+### Scratch worktrees an interrupted landing left
+
+`qk land` checks a new entry, and replays a branch, in a locked scratch worktree of the repository
+in a temporary folder, removed when it ends. A process killed in between leaves it, locked, and Git's
+own pruning never takes a locked worktree. So each scratch worktree has a record, written before it
+is added, under the queue's folder in the Git directory: the repository, the path, this Mac, the PID
+and start of the process that made it, and what it was for. Its lock's reason names the record.
+
+Each worker removes what it can when it starts, and any session may run:
+
+```sh
+python3 scripts/qk queue reclaim [--dry-run] [--json]
+```
+
+It removes a scratch worktree only when its record names this repository and this Mac, its maker
+has ended (its PID is gone, or runs a process started at another time), the registration's lock
+names the record, no process uses it, it holds no change, untracked or ignored file and no
+operation under way, and each commit of its HEAD that no ref holds has an equal patch on
+origin/main. It removes it without `--force`, and its folder only when nothing else is in it, since
+a preflight lane's log there is evidence. A registration whose folder has gone is forgotten alone,
+never by a `git worktree prune` of every registration. Anything else is kept with why. It exits 0
+when nothing is left but worktrees whose makers still run, and 1 otherwise.
+
+**Older scratch worktrees** were locked with `qk land's trial integration of a new entry, removed
+when it ends` (or `eng land's`) and no record. Nothing proves who made them, so `reclaim` lists them
+as `legacy` and removes none. The owner resolves each by hand, by its path, never by unlocking or
+pruning every worktree:
+
+1. `lsof +D PATH` and `ps -Aww -o pid,args | grep PATH` find no process using it.
+2. `git -C PATH status --porcelain --ignored` prints nothing.
+3. `git -C REPOSITORY cherry origin/main HEAD_SHA` prints no `+` line, for the HEAD that
+   `git worktree list` shows.
+4. `git -C REPOSITORY worktree unlock PATH` and `git -C REPOSITORY worktree remove PATH`, without
+   `--force`, then remove its empty temporary folder.
+
+**The old store's app source.** Before Queuekeeper had its own names, `qk app` kept its source
+worktree under `~/Library/Application Support/vocaro-engineering/apps/NAME/source`. A Mac moved
+since lists that registration, locked, with its folder gone. From the project, `qk app status` names
+it, and `qk app retire-old-source [--dry-run]` forgets it once the store's own `source` worktree
+replaces it, registered and locked, and its HEAD is on origin/main. It touches nothing else of the
+old store, and exits 1 saying why when it keeps it.
+
 ### Registered Mac builds
 
 Xcode registers a Mac app when it builds it, and macOS when it launches it, and neither is undone.

@@ -46,6 +46,7 @@ Changing Queuekeeper while other projects' work runs on it has its own rules:
 | `src/python/queuekeeper/cli.py` | Command dispatch and lane execution |
 | `src/python/queuekeeper/merge_queue.py` | Submission, batching, workers and landing |
 | `src/python/queuekeeper/agent_cli.py`, `agent_results.py`, `agent_logs.py`, `recovery.py` | Structured results, resumable log reads and recovery advice |
+| `src/python/queuekeeper/worktree_ownership.py` | Records of who made each scratch worktree, and recovery of one its maker left |
 | `src/python/queuekeeper/resources.py` | Heavy-work admission on one Mac |
 | `src/python/queuekeeper/remote.py`, `offload_host.py` | Placement and running work on another Mac |
 | `src/python/queuekeeper/config.py`, `schemas/queuekeeper.schema.json` | Project settings |
@@ -398,6 +399,7 @@ State lives under `queuekeeper-queue` in the repository's common Git directory:
 | `closed.json` | A closure, with why, who and when |
 | `worker.log` | The worker's log |
 | `logs/ROUND-LANE.log` | Each gate's log, which `qk queue status` names |
+| `scratch/ID.json` | The record of each scratch worktree `qk land` has made and not yet removed |
 
 What a gate waits for comes from `.build/queuekeeper/.waits/LANE.json`, which `qk run` keeps on
 any Mac (another Mac sends it back as it changes). It says only what a lane waits for, never how it
@@ -408,6 +410,12 @@ gate's log when the lane ends.
 
 - A worker starts with `qk land`, `qk queue wait` or `qk queue resume`, and exits when nothing
   waits. After taking the lock, it requests a stop for each run whose dispatcher is proven gone.
+- After that, it removes each scratch worktree whose maker its record proves gone
+  (`worktree_ownership.reclaim`, as `qk queue reclaim` runs it). A scratch worktree's lock names its
+  record and the record its path, so neither a path nor a lock's words alone is authority to delete.
+  A maker counts as gone only when its PID is gone or runs another start; one that cannot be read
+  counts as running. The record is written before `git worktree add` and removed only once the
+  worktree is no longer registered, so a kill at any point leaves a record for anything it left.
 - What a dead worker was testing was never pushed, so the next worker tests it again.
 - A batch whose lanes passed is recorded `passed`, with its commit and base, before its push. After
   a hold and `qk queue resume`, the next worker pushes it without gating again while the batch is

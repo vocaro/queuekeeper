@@ -36,6 +36,7 @@ import collections
 import contextlib
 import fcntl
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -56,7 +57,7 @@ from xml.etree import ElementTree
 
 from . import budgets, disk, extensions, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
-from . import events, pre_push, recovery, restartable
+from . import events, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, legacy_carried, legacy_unread_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
@@ -6570,18 +6571,41 @@ def trial(queue, entry, ahead, base):
 @contextlib.contextmanager
 def scratch(queue, base, kind):
     """A detached worktree of the repository at base, locked with TRIAL_REASON so that no sweep takes it, in a
-    folder of its own outside every checkout, which goes when the block ends (vocaro-engineering#178)."""
-    folder = Path(tempfile.mkdtemp(prefix=f"eng-land-{kind}-"))
-    path = folder / queue.main_checkout.name
-    try:
-        git(queue.root, "worktree", "add", "--detach", "--lock", "--reason", TRIAL_REASON, str(path), base,
-            hooks=False, check=True)
+    folder of its own outside every checkout, which goes when the block ends (vocaro-engineering#178). Its record
+    names this process as its maker, so that `qk queue reclaim` and the next worker can remove one a killed process
+    left, and only such a one (worktree_ownership, vocaro/queuekeeper#138)."""
+    with worktree_ownership.scratch(queue.root, base, kind, TRIAL_REASON, queue.main_checkout.name,
+                                    git=functools.partial(git, hooks=False)) as path:
         yield path
-    finally:
-        # Unlocked first, so that a worktree the removal leaves registered is one Git's own pruning takes.
-        git(queue.root, "worktree", "unlock", str(path), hooks=False)
-        git(queue.root, "worktree", "remove", "--force", "--force", str(path), hooks=False)
-        shutil.rmtree(folder, ignore_errors=True)
+
+
+def reclaim_scratch(queue, say):
+    """Remove the scratch worktrees whose makers have ended, as a worker does when it starts, saying what it removed
+    and what it keeps for a reason other than a maker that still runs. A failure changes nothing and stops nothing."""
+    try: results = worktree_ownership.reclaim(queue.root, quiet_running=True)
+    except Exception as error:  # noqa: BLE001 -- what only tidies up never stops a worker
+        say(f"could not look for scratch worktrees left behind: {error}")
+        return []
+    for result in results: say(f"scratch worktree {worktree_ownership.words(result)}")
+    return results
+
+
+def reclaim(root, dry_run=False, as_json=False, out=print):
+    """`qk queue reclaim`: recover the scratch worktrees whose makers have ended, and list those made before records
+    were kept, which nothing removes. 0 when nothing is kept but for a maker that still runs, 1 otherwise."""
+    results = worktree_ownership.reclaim(root, dry_run=dry_run)
+    older = worktree_ownership.legacy(root)
+    if as_json:
+        out(json.dumps({"schemaVersion": 1, "dryRun": dry_run, "records": results, "legacy": older}, default=str))
+    else:
+        for result in results:
+            out(("would be " if dry_run and result["outcome"] != worktree_ownership.KEPT else "")
+                + worktree_ownership.words(result))
+        for each in older: out(f"legacy {each['path']}: {each['why']}")
+        if not results and not older: out("no scratch worktree is left behind")
+    needs = [result for result in results
+             if result["outcome"] == worktree_ownership.KEPT and result.get("maker") != "running"]
+    return 1 if needs or older else 0
 
 
 def linear(queue, root, tip):
@@ -6682,6 +6706,8 @@ def run(root, *, if_waiting=False):
             if if_waiting and (queue.held() or not queue.waiting()): return 0
             # A gate its worker's crash left running holds a slot and admission this worker needs.
             remote.stop_dead_dispatches()
+            # And a scratch worktree a killed `qk land` or worker left, once its record proves its maker gone.
+            reclaim_scratch(queue, lambda words: print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True))
             # Whatever a worker that died left testing was never pushed. What it left passed is pushed first,
             # and a push that had gone through lands it then, as a push of what main already has.
             queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
@@ -6893,6 +6919,12 @@ def add_arguments(parser):
     closing.add_argument("--by", metavar="WHO", help="who closes it, for the same lines (default: the repository, "
                          "branch, worktree, agent session and Mac the command ran in)")
     operations.add_parser("reopen", help="take new entries again after `close`; it clears no hold")
+    reclaiming = operations.add_parser("reclaim", help="remove each scratch worktree qk land left when its process "
+                                       "was killed, once its record proves that process gone and nothing uses or "
+                                       "needs it, and list older ones no record proves: 0 nothing left to look at, "
+                                       "1 otherwise")
+    reclaiming.add_argument("--dry-run", action="store_true", help="say what it would remove, removing nothing")
+    reclaiming.add_argument("--json", action="store_true")
     running = operations.add_parser("run", help="be the worker in the foreground; `add` starts one by itself")
     running.add_argument("--if-waiting", action="store_true", help="do nothing when the queue is empty or held")
     launcher = operations.add_parser("launcher-plist", help="print this queue's LaunchAgent for a signed launcher app")
@@ -6937,6 +6969,7 @@ def main(root, args):
     if args.operation == "resume": return resume(root)
     if args.operation == "close": return close(root, args.why, args.by)
     if args.operation == "reopen": return reopen(root)
+    if args.operation == "reclaim": return reclaim(root, args.dry_run, args.json)
     if args.operation == "launcher-plist":
         sys.stdout.write(plistlib.dumps(Queue(root).launcher_plist(args.app)).decode())
         return 0

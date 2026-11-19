@@ -654,6 +654,31 @@ class CheckedWhenQueued(Fixture):
         self.assertIn("stopped", said)
         self.assertEqual(self.worktrees(), before)
         self.assertEqual(self.state(identifier)["state"], "queued")
+        # Nor is its record of its maker left, once the worktree has gone (worktree_ownership, #138).
+        common = Path(run(self.repo, "git", "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        self.assertEqual(list(mq.worktree_ownership.records(common).glob("*.json")), [])
+
+    def test_a_worker_removes_the_scratch_worktree_a_killed_qk_land_left(self):
+        common = Path(run(self.repo, "git", "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        maker = subprocess.Popen(["true"])
+        maker.wait()
+        # What a `qk land` killed inside its trial leaves: a locked worktree, and its record naming a maker now gone.
+        with patch.object(mq.worktree_ownership, "maker", return_value={"pid": maker.pid, "start": "then"}):
+            blocked = mq.worktree_ownership.scratch(self.repo, "refs/remotes/origin/main", "trial", mq.TRIAL_REASON,
+                                                    "project")
+            path = blocked.__enter__()
+        records = list(mq.worktree_ownership.records(common).glob("*.json"))
+        self.assertEqual(len(records), 1)
+        said = []
+        with patch.object(mq.worktree_ownership, "Census",
+                          lambda real=mq.worktree_ownership.Census: real(take=lambda: [])):
+            [result] = mq.reclaim_scratch(mq.Queue(self.repo), said.append)
+        self.assertEqual(result["outcome"], "reclaimed", result)
+        self.assertFalse(path.exists())
+        self.assertEqual(list(mq.worktree_ownership.records(common).glob("*.json")), [])
+        self.assertIn(f"scratch worktree reclaimed {path}", said[0])
+        # The block's own end, had it come, finds nothing left to remove.
+        blocked.__exit__(None, None, None)
 
     def test_eng_land_and_eng_queue_add_exit_1_for_a_refusal_as_for_an_entry_that_came_back(self):
         import argparse
