@@ -5633,11 +5633,18 @@ class DeviceWindowWaitTests(unittest.TestCase):
                         patch.object(cli, "source_identity", return_value={}), \
                         contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
                     clock.now.side_effect = lambda zone: now.astimezone(zone)
+                    started = time.monotonic()
                     status = cli.main(["--project", str(root), "run", "--if-free", "device"])
+                    spent = time.monotonic() - started
                 said = error.getvalue()
                 self.assertEqual(status, resources.BUSY, said)
                 admission.assert_called_once()
-                self.assertEqual((now - began).total_seconds(), cli.FREE_WAIT if remaining is None else remaining)
+                # The probe waits the cap, less at most the real time the run took before it, which a wait that counts
+                # down on time.monotonic loses, and timedelta's rounding to a microsecond: on a loaded Mac an exact
+                # comparison failed with 4.999999 != 5 (vocaro/queuekeeper#258).
+                cap, probed = cli.FREE_WAIT if remaining is None else remaining, (now - began).total_seconds()
+                self.assertLessEqual(probed, cap)
+                self.assertGreaterEqual(probed, cap - spent - 1e-6)
                 self.assertRegex(said, r"queuekeeper: device not run on this Mac .*: Resource queue busy")
                 self.assertEqual("queuekeeper: device stopped waiting: the window on iPhone ends " in said, remaining is not None)
                 self.assertEqual("No device result was recorded" in said, remaining is not None)
