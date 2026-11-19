@@ -270,7 +270,7 @@ is needed; each one left is then gated alone. One that fails alone comes back al
 comes back with `conflictWith`, the other entries' IDs and commits, and the rest gate again. A
 subset that does not apply to `main` by itself counts as no proof, so its entries stay. A probe
 with no verdict ends the search as any such gate ends a round, and the next round gates the halves
-again. The search follows mergetrain's `minimize_joint_failure` (MIT; see `NOTICE`). The newer half waits behind the older instead when no other Mac can start it, a
+again. The search follows mergetrain's `minimize_joint_failure` (MIT; see `THIRD_PARTY_NOTICES.md`). The newer half waits behind the older instead when no other Mac can start it, a
 lane must run on this Mac, the round is docs-only, ungated or `--front`, or a newer entry applies
 only on top of an older one.
 

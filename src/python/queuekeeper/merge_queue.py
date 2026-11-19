@@ -208,7 +208,8 @@ BESIDE_POLL = 2
 # while the rest still fail, down to the fewest that fail together; it sends each of those back naming the others,
 # by ID and commit (conflictWith), and the rest gate again (Worker.together). Until then the older half landed and the
 # newer gated again on top of it, to come back alone with no word of the entry it fails with. The search follows
-# mergetrain's minimize_joint_failure (yongjip/mergetrain, src/mergetrain/git_runner.py, MIT License; see NOTICE).
+# mergetrain's minimize_joint_failure (yongjip/mergetrain, src/mergetrain/git_runner.py, MIT License; see
+# THIRD_PARTY_NOTICES.md).
 TOGETHER = "fails together"
 # While a batch gates, the entries that arrive behind it gate stacked on its tip, on another Mac, in the checkout
 # its gate does not use; the batch's push makes that tip origin/main, so the stacked gate's pass lands, and its
@@ -6405,7 +6406,7 @@ def fewest(entries, fails):
     (Worker.together): greedy, dropping each run of entries the rest still fail without, the longest runs first and
     then shorter ones, down to single entries, so that every entry left is needed. One run of halves is each half of a
     bisect, whose verdicts are known, so a pair costs no probe here. Follows mergetrain's minimize_joint_failure
-    (NOTICE), which drops one entry at a time."""
+    (THIRD_PARTY_NOTICES.md), which drops one entry at a time."""
     kept = list(entries)
     size = len(kept) // 2
     while size:
