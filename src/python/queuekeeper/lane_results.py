@@ -14,6 +14,11 @@ SUITE_TOTAL = re.compile(r"^Test Suite '([^'\n]*)' (?:passed|failed) at [^\n]*\n
 EXECUTED = re.compile(r"Executed (\d+) tests?\b(?:, with (\d+) tests? skipped|, (\d+) skipped\b)?")
 # A repeat series recaps each device's result after that result has already been printed.
 SERIES_RUN_RECAP = re.compile(r"^[ \t]*SERIES \S+ run \d+ of \d+:[^\n]*$", re.M)
+# qk simulator-tests' line for a device or build that failed, `FAIL KIND: DETAIL; log: PATH`, and the last lines of
+# that log it quotes under it, each indented by four spaces. The device's line counts its tests already: read again,
+# the quoted Swift Testing run line made one filtered test that failed `2 ran, and the log does not say how many of
+# them failed` (vocaro/queuekeeper#81).
+QUOTED_TAIL = re.compile(r"^(FAIL [^\n]*; log: [^\n]*\n)((?:    [^\n]*(?:\n|$))+)", re.M)
 # Swift Testing's total counts a test it skipped or that canceled itself, and names neither: each
 # has a line of its own instead (Swift 6.4, October 2026).
 SWIFT_TESTING_RUN = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? (?:passed|failed)")
@@ -50,6 +55,13 @@ def outside_unittest(text):
     return UNITTEST_PROCESS.sub("", text)
 
 
+def unquoted(text, keep=False):
+    """text without the log tails qk simulator-tests quotes under a FAIL line (QUOTED_TAIL), which count no test, or
+    with keep, with them unindented, as what names a failed test reads them."""
+    if not keep: return QUOTED_TAIL.sub(r"\1", text)
+    return QUOTED_TAIL.sub(lambda match: match.group(1) + re.sub(r"^    ", "", match.group(2), flags=re.M), text)
+
+
 def counted(text):
     """(ran, skipped) over the counts a log reports, or None when it reports no count.
 
@@ -61,7 +73,7 @@ def counted(text):
     (EXECUTED). pytest names each outcome apart, its skips among them. Within a qk unittest
     process's output only unittest's own total counts (outside_unittest)."""
     whole = text
-    text = outside_unittest(SERIES_RUN_RECAP.sub("", text))
+    text = outside_unittest(unquoted(SERIES_RUN_RECAP.sub("", text)))
     suites = list(SUITE_TOTAL.finditer(text))
     top = [(int(match.group(2)), int(match.group(3) or 0)) for match in suites
            if match.group(1) in ("All tests", "Selected tests")]

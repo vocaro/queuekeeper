@@ -153,6 +153,30 @@ class Parsing(unittest.TestCase):
                 "PASS iPhone-17-Pro: Executed 3 tests, 1 skipped in 40s\n")
         self.assert_counts(text, 3, 2, 1)
 
+    def test_a_device_logs_tail_quoted_under_its_fail_line_counts_no_more_tests_and_names_the_failure(self):
+        # An unsharded `qk simulator-tests` run quotes the last lines of the device's log under its line. BreezEPUB's
+        # one filtered Swift Testing test read `2 ran, and the log does not say how many of them failed` and named
+        # no test, from the quoted run line (vocaro/queuekeeper#81).
+        tail = """Test Suite 'BreezEPUBTests.xctest' passed at 2026-11-13 10:00:00.001.
+\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+✘ Test siriOpensTheBrowserAndOpenBookKeepsItsTile() recorded an issue at BookReaderTests.swift:90:9: Expectation failed: ...
+✘ Test siriOpensTheBrowserAndOpenBookKeepsItsTile() failed after 0.005 seconds with 2 issues.
+✘ Test run with 1 test in 1 suite failed after 0.009 seconds with 2 issues.
+
+Failing tests:
+\tBookReaderTests.siriOpensTheBrowserAndOpenBookKeepsItsTile()
+\tBookReaderTests.siriOpensTheBrowserAndOpenBookKeepsItsTile()
+
+** TEST EXECUTE FAILED **"""
+        text = ("TEST iPhone-17-Pro (UDID); log: /logs/iPhone-17-Pro.log\n"
+                "FAIL iPhone-17-Pro: the tests failed with status 65, Executed 1 tests, 1 failed in 4s; "
+                "log: /logs/iPhone-17-Pro.log\n" + "".join(f"    {line}\n" for line in tail.splitlines()) +
+                "Simulator tests (wall-clock 60s, 1 at a time): iPhone-17-Pro FAIL\n")
+        self.assert_counts(text, 0, 1, 0)
+        self.assertEqual(lane_report.failing(text),
+                         [("siriOpensTheBrowserAndOpenBookKeepsItsTile()", "BookReaderTests.swift:90")])
+        self.assertEqual(lane_results.executed_tests(text), 1)
+
     def test_a_qk_unittest_gate_counts_what_its_runner_counts_whatever_its_tests_print(self):
         # A test's fake runner prints another runner's totals into its process's output (vocaro/queuekeeper#153).
         text = ("== test_device_pass.DevicePass[1]: OK (2 tests, 0.5s)\n"

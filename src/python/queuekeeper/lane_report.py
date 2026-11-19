@@ -98,11 +98,12 @@ SUMMARY_ENDS = ("  details: ", "  receipt: ")
 def failed_tests(text):
     """(the tests a log reports failed, or None when its totals say some failed but name none, the errors pytest
     counts apart from its tests). Within a qk unittest process's output only unittest's own totals count, as for the
-    tests that ran (lane_results.outside_unittest)."""
+    tests that ran (lane_results.outside_unittest), and a device's log that qk simulator-tests quotes counts nothing
+    beside the device's own line (lane_results.unquoted)."""
     total, errors = 0, 0
     for match in lane_results.RAN.finditer(text):
         total += sum(int(n) for n in re.findall(r"\b(?:failures|errors)=(\d+)", match.group(2) or ""))
-    text = lane_results.outside_unittest(text)
+    text = lane_results.outside_unittest(lane_results.unquoted(text))
     for match in lane_results.PYTEST_SUMMARY.finditer(text):
         items = {word: int(n) for n, word in re.findall(r"(\d+) (\w+)", match.group(1))}
         total += items.get("failed", 0) + items.get("error", 0) + items.get("errors", 0)
@@ -132,8 +133,9 @@ def counts(text):
 
 
 def failing(text):
-    """Each failing test a log names, once, as (name, FILE:LINE or None)."""
-    found = {}
+    """Each failing test a log names, once, as (name, FILE:LINE or None), the device logs qk simulator-tests quotes
+    among them (lane_results.unquoted)."""
+    found, text = {}, lane_results.unquoted(text, keep=True)
     places = {name: f"{path}:{line}" for path, line, name in reversed(XCTEST_ISSUE.findall(text))}
     for name in XCTEST_FAILED.findall(text):
         found.setdefault(name, places.get(name.removeprefix("-[").removesuffix("]")))

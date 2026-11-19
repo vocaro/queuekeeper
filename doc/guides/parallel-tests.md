@@ -275,7 +275,10 @@ python3 scripts/qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
   leaving them out, which a lane's `minimumTests` counts, and `, F failed` when any of the N failed,
   which the summary that ends `qk run` counts: the lines that name a failed test are in the device's
   log alone, so without it a failed Swift Testing test beside its bundle's empty XCTest run was
-  counted passed (vocaro/queuekeeper#81). It counts them from the device's result
+  counted passed (vocaro/queuekeeper#81). Under a failed device's line, the last lines of its log
+  print indented by four spaces; the summary names the failed tests they name but counts none of
+  their totals, which the device's line has counted already: read again, one failed Swift Testing
+  test was `2 ran` with no count of failures (vocaro/queuekeeper#81). It counts them from the device's result
   bundle (`xcrun xcresulttool get test-results`), and from the console only when the bundle cannot
   be read. What a test process itself prints is in that bundle's action log
   (`xcrun xcresulttool get log --path DEVICE.xcresult --type action`), not in the device's
