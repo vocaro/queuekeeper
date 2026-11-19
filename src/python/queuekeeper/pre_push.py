@@ -7,8 +7,11 @@ A project's pre-push hook is then one line, and holds no second copy of what its
 
 Git gives the hook the remote's name and URL, and on standard input a line per ref pushed. The paths the push
 changes pick the lanes, as they do for a landing: a push that changes only paths no code lane reads, by
-queue.unread and its Markdown defaults, runs the docs lanes, and any other runs queue.lanes, or gate. The
-lanes run with `qk run` in this checkout, so they are admitted and placed as always.
+queue.unread and its Markdown defaults, runs the docs lanes, and any other runs the lanes of queue.lanes, or gate,
+that queue.affected selects for its paths: every one when a path no rule covers changed. The lanes run with
+`qk run` in this checkout, so they are admitted and placed as always. Unlike the queue, which reads main's,
+the hook reads this checkout's queuekeeper.json, as it does queue.unread: it is a check before a push, which
+--no-verify skips, not the gate.
 
 A push that changes no path runs nothing and says so: its files are ones the remote already has, as when a merge
 keeps a landed branch's commits and has the remote's own tree (vocaro/queuekeeper#165). Paths that Git could not
@@ -27,7 +30,7 @@ import subprocess
 import sys
 
 from . import git_state, lane_results
-from .config import TOOLKIT_ROOT
+from .config import TOOLKIT_ROOT, affected_lanes
 
 ZERO = "0" * 40
 # Set to skip to run nothing.
@@ -62,13 +65,13 @@ def pushed(root, lines, remote="origin", git=git_state.git):
 
 
 def lanes_for(config, changed):
-    """The lanes a push that changes these paths runs: the docs lanes for a docs-only one, else the gate's, with the
-    docs lanes first for one that changes documents too, as the queue runs them (merge_queue.docs_also)."""
+    """The lanes a push that changes these paths runs: the docs lanes for a docs-only one, else the gate lanes its
+    paths select by queue.affected (affected_lanes), with the docs lanes first for one that changes documents too, as
+    the queue runs them (merge_queue.docs_also)."""
     from . import merge_queue
     docs = merge_queue.docs_lanes(config, changed)
     if docs: return docs, "it changes only documentation paths"
-    queue = config.get("queue", {})
-    named = list(queue.get("lanes") or (["gate"] if "gate" in config.get("lanes", {}) else []))
+    named = affected_lanes(config, changed)
     also = merge_queue.docs_also(config, changed, named) if named else []
     if also: return also + named, "it changes code paths and documentation paths"
     return named, "it changes code paths"

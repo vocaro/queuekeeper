@@ -535,7 +535,8 @@ lanes, the lanes of `queue.lanes`:
   `queue.lanes` order. `qk land` and the round's log say which lanes were selected.
 - **A path no rule covers selects every gate lane**, so a file nobody thought of is gated, not
   skipped. Paths `queue.unread` takes select no gate lane; they run the documentation lanes.
-- **`queue.hookCoveredBy` skips the pre-push hook only when every lane it names ran.**
+- **`queue.hookCoveredBy` skips the pre-push hook only when every lane it names ran.** `qk pre-push`
+  selects lanes by the same rules.
 - **`qk doctor` lists tracked files no rule covers**, which gate everything, and globs that match
   no tracked file, as warnings. Its JSON's `affectedPaths` holds the full lists.
 
@@ -557,8 +558,9 @@ After a gate passes, the worker runs the project's pre-push hook itself, as Git 
 status it got rather than 1.
 
 **A hook that only repeats the lanes** can be one line, which runs the right lanes for the paths a
-push changes: the docs lanes for documents, `queue.lanes` or `gate` for anything else, nothing for a
-push that changes no path. It exits 0 on a pass, 1 on a failure and 3 when a lane was unmeasured,
+push changes: the docs lanes for documents, `queue.lanes` or `gate` for anything else, narrowed by
+`queue.affected` as the queue narrows them, nothing for a push that changes no path. It reads the
+checkout's own `queuekeeper.json`, not `main`'s. It exits 0 on a pass, 1 on a failure and 3 when a lane was unmeasured,
 which refuses the push. Under the queue's worker it runs nothing, since the lanes just ran.
 `QUEUEKEEPER_PREPUSH=skip git push` skips it and says nothing was verified.
 

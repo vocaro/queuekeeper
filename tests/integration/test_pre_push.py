@@ -89,6 +89,19 @@ class PrePushTests(unittest.TestCase):
         self.assertEqual(pre_push.lanes_for(config, ["src/a.py", "README.md"])[0], ["fast", "gate"])
         self.assertEqual(pre_push.lanes_for(config, ["README.md"])[0], merge_queue.docs_lanes(config, ["README.md"]) or ["fast", "gate"])
 
+    def test_queue_affected_selects_the_gate_lanes_as_the_queue_does(self):
+        config = {**CONFIG, "lanes": {**CONFIG["lanes"], "app": {"command": ["x"]}},
+                  "queue": {"lanes": ["gate", "app"],
+                            "affected": [{"paths": ["src/**"], "lanes": ["gate"]}, {"paths": ["app/**"], "lanes": ["app"]}]}}
+        cases = [(["app/a.swift"], ["app"]), (["src/a.py"], ["gate"]), (["src/a.py", "app/b.swift"], ["gate", "app"]),
+                 (["src/a.py", "Makefile"], ["gate", "app"]), (["app/a.swift", "README.md"], ["docs", "app"]),
+                 ([], ["gate", "app"])]
+        for changed, expected in cases:
+            with self.subTest(changed=changed):
+                self.assertEqual(pre_push.lanes_for(config, changed)[0], expected)
+                if changed and not merge_queue.docs_lanes(config, changed):
+                    self.assertEqual(expected, [lane for lane in merge_queue.lanes_of(config, changed)])
+
     def test_a_lane_that_fails_or_is_unmeasured_refuses_the_push_and_later_lanes_do_not_run(self):
         code = self.commit({"src/a.py": "b\n"})
         config = {**CONFIG, "queue": {"lanes": ["docs", "gate"]}}
