@@ -141,7 +141,25 @@ def entry_result(queue, entry):
             "artifacts": artifacts, "gates": gates,
             "resultsSummary": (entry.get("gate") or {}).get("results"),
             "docsOnly": entry.get("docsOnly"), "docsNamed": entry.get("docsNamed"), "ungated": entry.get("ungated"),
-            "recovery": recovery.in_project(recovery.for_entry(entry, held), queue.root)}
+            "publication": publication(queue, entry) if pending else None,
+            "recovery": recovery.in_project(recovery.for_entry(entry, held, unverified=unverified(queue, entry)),
+                                            queue.root)}
+
+
+def unverified(queue, entry):
+    """Whether entry, still waiting, was pushed without an answer: its push timed out or lost its connection
+    (unanswered), or no worker runs to hear one, as when the worker died mid-push."""
+    marker = entry.get("publishing") if entry.get("state") in WAITING else None
+    return bool(marker) and (bool(marker.get("unanswered")) or not queue.working())
+
+
+def publication(queue, entry):
+    """The push a waiting entry's record keeps until it is answered (Worker.push's publishing): unverified, as
+    unverified says, or pushing; None when there is none."""
+    marker = entry.get("publishing")
+    if not marker: return None
+    return {"status": "unverified" if unverified(queue, entry) else "pushing",
+            "heads": [attempt.get("head") for attempt in marker.get("attempts", [])]}
 
 
 def read_entry(queue, identifier):

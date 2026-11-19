@@ -253,6 +253,13 @@ worker that dies loses nothing: what it was testing was never pushed, and the ne
 it again. A batch that passed is recorded before its push, so an outage at the remote does not
 throw the result away.
 
+A push can also be cut off before its answer comes back, by a timeout, a dropped connection or
+the worker's death, after the remote took it. Such an entry is **publication-unverified**: it
+stays waiting, and nothing is pushed or gated for it until a fetch of `origin/main` says whether
+the push landed. The worker's next round checks. If `main`'s history holds the pushed commit, even
+with more landings after it, the entry lands as that commit. If not, the passed batch is pushed
+again, or gated again when it is no longer the batch that passed. Don't queue such an entry again.
+
 ### Checks before queuing
 
 `qk land` refuses an entry within seconds, with nothing queued, when a round would only send it
@@ -2308,13 +2315,19 @@ Every result has a `recovery` object that says what to do next:
 
 | Key | Meaning |
 |---|---|
-| `reasonCode` | A category such as `queue-held`, `wait-limit` or `entry-failed` |
+| `reasonCode` | A category such as `queue-held`, `wait-limit`, `entry-failed` or `publication-unverified` |
 | `responsibleParty` | `owner`, `session`, `unknown`, or null when no action is needed |
 | `retryable` | Whether the same operation can simply be repeated |
 | `action`, `message`, `suggestedCommands` | The next step, with commands as argument lists |
 
 A held queue suggests a diagnosis, never a blind resume. An expired wait leaves the entry queued
 and suggests following it again.
+
+A waiting entry whose push got no answer has `reasonCode: "publication-unverified"`, and its
+`publication` object has `status: "unverified"` and the pushed `heads`. (`status: "pushing"`
+means a push is in flight right now.) The worker settles the entry by fetching `origin/main`, so
+follow it with `qk queue wait ID --json` and never submit it again. If the queue is held as well,
+the advice is the hold's, since the next round can't check until the hold's cause is fixed.
 
 ### Reading logs without losing earlier output
 

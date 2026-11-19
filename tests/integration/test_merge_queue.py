@@ -7557,6 +7557,212 @@ class PassedThroughAHold(Fixture):
         self.assertEqual(self.gates(), 2)
 
 
+class Killed(BaseException):
+    """The worker's death at a point, which nothing in the worker catches, as SIGKILL leaves nothing to."""
+
+
+class PublicationUnverified(Fixture):
+    """A push cut off before its answer came, by the worker's death, a timeout or a dropped connection, may have
+    landed: its entries keep the push (publishing), publication-unverified, until a fetch of origin/main says, and
+    the next round lands what main holds without pushing or gating it again, and pushes the rest."""
+    def pushes(self, then=None, calls=None):
+        """git with each push run as then says: "before" dies before it runs, "after" dies once it went through,
+        "timeout" times out once it went through, "timeout-unsent" times out without it; None runs it. calls, the
+        pushes made, numbered from 1, that then applies to (every push when None); seen gets each push made."""
+        real, seen = mq.git, []
+        def git(directory, *arguments, **options):
+            if not arguments or arguments[0] != "push": return real(directory, *arguments, **options)
+            seen.append(arguments)
+            if then is None or (calls is not None and len(seen) not in calls):
+                return real(directory, *arguments, **options)
+            if then in ("after", "timeout"): self.assertEqual(real(directory, *arguments, **options).returncode, 0)
+            if then.startswith("timeout"): raise subprocess.TimeoutExpired(["git", *arguments], mq.GIT_TIMEOUT)
+            raise Killed(then)
+        return patch.object(mq, "git", git), seen
+
+    def die(self, then, *branches):
+        """Queue branches and run a worker that dies at then of its push (pushes)."""
+        ids = self.add(*branches)
+        dying, _ = self.pushes(then)
+        with dying, patch("builtins.print"), self.assertRaises(Killed): self.work()
+        return ids
+
+    def restart(self):
+        """The next worker, with the pushes it makes."""
+        counting, seen = self.pushes()
+        with counting, patch("builtins.print"): self.assertEqual(self.work(), 0)
+        return seen
+
+    def origin_main(self):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return run(self.repo, "git", "rev-parse", "origin/main")
+
+    def move_main(self, name="later"):
+        """Another landing on top of origin/main, by a file the gate's lane reads."""
+        self.commit(name, name)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def reconciled(self):
+        return [event for event in mq.events.read(mq.Queue(self.repo).directory, None, ())
+                if event.get("kind") == "batch.pushed" and event.get("reconciled")]
+
+    def test_a_worker_killed_before_its_push_leaves_it_unverified_and_the_next_pushes_it(self):
+        self.commit("a", "a")
+        [identifier] = self.die("before", "a")
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "passed")
+        head = entry["passed"]["head"]
+        self.assertEqual([attempt["head"] for attempt in entry["publishing"]["attempts"]], [head])
+        self.assertNotEqual(self.origin_main(), head)
+        result = agent_results.lookup(mq.Queue(self.repo), identifier)
+        self.assertEqual(result["publication"], {"status": "unverified", "heads": [head]})
+        self.assertEqual(result["recovery"]["reasonCode"], "publication-unverified")
+        self.assertIn("publication-unverified", mq.describe(entry))
+        self.assertEqual(len(self.restart()), 1)
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"]), ("landed", head))
+        self.assertNotIn("publishing", entry)
+        self.assertEqual(self.origin_main(), head)
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.reconciled(), [])
+
+    def test_a_worker_killed_after_its_push_went_through_lands_it_without_pushing_again(self):
+        self.commit("a", "a")
+        [identifier] = self.die("after", "a")
+        head = self.state(identifier)["passed"]["head"]
+        self.assertEqual(self.origin_main(), head)
+        self.assertEqual(self.restart(), [])
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"], entry["landedTip"]), ("landed", head, head))
+        self.assertEqual(entry["gatedOn"], entry["passed"]["base"])
+        self.assertEqual(self.gates(), 1)
+        [event] = self.reconciled()
+        self.assertEqual((event["head"], event["entries"]), (head, [identifier]))
+
+    def test_a_push_that_landed_before_main_moved_on_lands_without_a_gate_or_a_second_copy(self):
+        """Main moved past the push by a file the lane reads, and by a change to the batch's own file, which a carry
+        or a second gate would cherry-pick onto main again: the fetch finds the push in main's history instead."""
+        self.commit("a", "a")
+        [identifier] = self.die("after", "a")
+        head = self.state(identifier)["passed"]["head"]
+        self.commit("a", "edit", content="edited", start="origin/main")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.move_main()
+        moved = self.origin_main()
+        self.assertEqual(self.restart(), [])
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"]), ("landed", head))
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.origin_main(), moved)
+        self.assertEqual(run(self.repo, "git", "show", "origin/main:a"), "edited")
+
+    def test_a_worker_killed_while_settling_the_batch_lands_the_rest(self):
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        real, settled = mq.Queue.settle, []
+        def settle(queue, entry, state, **fields):
+            if settled: raise Killed("settling")
+            settled.append(entry["id"])
+            return real(queue, entry, state, **fields)
+        with patch.object(mq.Queue, "settle", settle), patch("builtins.print"), self.assertRaises(Killed):
+            self.work()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "passed"])
+        head = self.state(ids[1])["passed"]["head"]
+        self.assertEqual(self.restart(), [])
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "landed"])
+        self.assertEqual([self.state(i)["landedTip"] for i in ids], [head, head])
+        self.assertEqual(self.state(ids[1])["landedAs"], head)
+        self.assertEqual(self.gates(), 1)
+
+    def test_a_worker_killed_mid_carry_pushes_the_whole_batch_that_passed(self):
+        """A carry resets the checkout and picks the batch again; a worker that died between picks left part of it
+        there, which the next worker must not push as what passed."""
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        refusing, _ = self.pushes("before")
+        with refusing, patch("builtins.print"), self.assertRaises(Killed): self.work()
+        self.commit("records/note", "note")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        real, picked = mq.Worker.pick, []
+        def pick(worker, entry, ahead=()):
+            if picked: raise Killed("carrying")
+            picked.append(entry["id"])
+            return real(worker, entry, ahead)
+        with patch.object(mq.Worker, "pick", pick), patch("builtins.print"), self.assertRaises(Killed): self.work()
+        self.assertEqual(picked, [ids[0]])
+        self.restart()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "landed"])
+        self.assertLessEqual({"a", "b", "records"}, self.main_files())
+        self.assertEqual(self.gates(), 1)
+
+    def test_a_push_that_timed_out_after_landing_settles_on_the_rounds_next_try(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        timing_out, seen = self.pushes("timeout", calls={1})
+        said = io.StringIO()
+        with timing_out, patch.object(mq, "pause"), contextlib.redirect_stdout(said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(len(seen), 1)
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"]), ("landed", self.origin_main()))
+        self.assertIn("publication-unverified: the push of", said.getvalue())
+        self.assertIn("pushed before its answer came", said.getvalue())
+        self.assertEqual(len(self.reconciled()), 1)
+
+    def test_a_push_that_timed_out_unsent_is_pushed_again_on_the_rounds_next_try(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        timing_out, seen = self.pushes("timeout-unsent", calls={1})
+        with timing_out, patch.object(mq, "pause"), patch("builtins.print"): self.assertEqual(self.work(), 0)
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.reconciled(), [])
+
+    def test_pushes_that_never_answer_hold_as_unverified_until_a_fetch_settles_them(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        timing_out, _ = self.pushes("timeout-unsent")
+        with timing_out, patch.object(mq, "pause"), patch("builtins.print"): self.assertEqual(self.work(), 1)
+        held = mq.Queue(self.repo).held()
+        self.assertIn("publication-unverified", held)
+        self.assertTrue(held.endswith(f"which the resume pushes without gating again{HoldKinds.SESSION_RESUMES}"), held)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "passed")
+        self.assertTrue(entry["publishing"]["unanswered"])
+        result = agent_results.lookup(mq.Queue(self.repo), identifier)
+        self.assertEqual(result["publication"]["status"], "unverified")
+        self.assertEqual(result["recovery"]["reasonCode"], "publication-unverified")
+        self.assertEqual(result["recovery"]["action"], "inspect-hold")
+        mq.Queue(self.repo).hold_file.unlink()
+        self.assertEqual(len(self.restart()), 1)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+
+    def test_a_dropped_connection_whose_push_landed_before_main_moved_lands_as_it_is(self):
+        """The push went through and its answer was lost; by the retry main had moved on, so the retry is rejected,
+        and the fetch after it finds the first push in main's history rather than carrying the batch over."""
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        real, seen = mq.git, []
+        def git(directory, *arguments, **options):
+            if arguments and arguments[0] == "push":
+                seen.append(arguments)
+                done = real(directory, *arguments, **options)
+                if len(seen) == 1:
+                    self.move_main()
+                    hung_up = "fatal: the remote end hung up unexpectedly\n"
+                    return subprocess.CompletedProcess(done.args, 128, "", hung_up)
+                return done
+            return real(directory, *arguments, **options)
+        with patch.object(mq, "git", git), patch.object(mq, "pause"), patch("builtins.print"):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(len(seen), 2)
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"]), ("landed", entry["passed"]["head"]))
+        self.assertEqual(self.gates(), 1)
+
+
 class PushRefusedInAnIncident(Fixture):
     """A push refused for its credentials, seconds after a fetch from the same URL went through, is tried again:
     after each of BACKOFF, then, on GitHub, while its status says Git Operations is not operational, for up to

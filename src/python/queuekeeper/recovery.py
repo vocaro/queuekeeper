@@ -71,10 +71,21 @@ def read_hold(path, why):
     return for_hold(why)
 
 
-def for_entry(entry, held=None, *, limit_reached=False):
-    """Recovery for a specific entry; a settled entry is unaffected by a later queue hold."""
+def for_entry(entry, held=None, *, limit_reached=False, unverified=False):
+    """Recovery for a specific entry; a settled entry is unaffected by a later queue hold. unverified says a
+    waiting entry was pushed without an answer, which the worker settles by a fetch of origin/main."""
     state = entry.get("state")
     identifier = entry["id"]
+    if state in ("queued", "testing", "passed") and unverified:
+        message = ("The entry was pushed but no answer came, so whether it landed is unknown. The worker's next "
+                   "round fetches origin/main and lands it if main holds that push, or pushes or gates it again. "
+                   "Do not submit it again.")
+        if held:
+            hold = for_hold(held) if isinstance(held, str) else dict(held)
+            return advice("publication-unverified", hold["responsibleParty"], False, "inspect-hold",
+                          f"{message} The queue is held: {hold['message']}", hold["suggestedCommands"])
+        return advice("publication-unverified", "session", True, "wait", message,
+                      [["qk", "queue", "wait", identifier, "--json"]])
     if state in ("queued", "testing", "passed"):
         if held: return for_hold(held) if isinstance(held, str) else dict(held)
         code = "wait-limit" if limit_reached else "entry-pending"

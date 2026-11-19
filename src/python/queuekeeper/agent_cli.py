@@ -30,7 +30,8 @@ def execute(root, operation, command, *, reference=None, identifiers=(), details
                 row = agent_results.entry_result(store, entry)
                 if status == queue.resources.BUSY and entry["state"] in queue.WAITING:
                     row["recovery"] = recovery.for_entry(entry, recovery.read_hold(store.hold_file, store.held()),
-                                                         limit_reached=not bool(store.held()))
+                                                         limit_reached=not bool(store.held()),
+                                                         unverified=agent_results.unverified(store, entry))
                 results.append(row)
             if len(results) == 1:
                 payload = results[0]

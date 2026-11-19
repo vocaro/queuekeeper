@@ -75,6 +75,9 @@ QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
     "queued", "testing", "passed", "landed", "failed", "conflict", "removed"
 # Passed is a batch whose lanes passed and whose push has not landed it: Worker.keep and Worker.push_passed.
 WAITING = {QUEUED, TESTING, PASSED}
+# A waiting entry whose push may have landed, cut off before its answer came by a timeout, a dropped connection or
+# the worker's death: its record keeps the push (publishing) until a fetch of origin/main says (Worker.reconcile).
+PUBLICATION_UNVERIFIED = "publication-unverified"
 # What an entry's record gives the event of its final state (Queue.settle), where it has them. The tip lets a reader,
 # such as health.came_back, count one commit added again as one (vocaro/queuekeeper#219).
 EVENT_FIELDS = ("tip", "why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated",
@@ -1581,6 +1584,7 @@ class Queue:
         with self.locked():
             current = self.read(entry["id"]) or entry
             if current["state"] not in WAITING: return current
+            current.pop("publishing", None)  # a settled entry's push is answered
             current.update(state=state, settled=time.time(), **fields)
             self.save(current)
         self.emit(f"entry.{state}", entry=current["id"], subject=current.get("subject"),
@@ -1595,6 +1599,19 @@ class Queue:
             if current and current["state"] in WAITING:
                 current.update(fields)
                 self.save(current)
+
+    def mark_publishing(self, entries, marker):
+        """Record marker, the push about to go (Worker.push), on each of entries still waiting."""
+        for entry in entries: self.record(entry, publishing=marker)
+
+    def drop_field(self, entries, key):
+        """Drop key from the records of entries still waiting."""
+        with self.locked():
+            for entry in entries:
+                current = self.read(entry["id"])
+                if current and current["state"] in WAITING and key in current:
+                    current.pop(key)
+                    self.save(current)
 
     def mark(self, entries, state):
         """Queued or testing, for the entries nobody has removed meanwhile. An entry that goes back to the
@@ -2154,6 +2171,8 @@ def describe(entry):
         verdict = entry["passed"]
         line += (f"\n         passed at {verdict['head'][:12]} on {verdict['base'][:12]}: the push lands it without "
                  "gating it again")
+    if entry["state"] in WAITING and entry.get("publishing"):
+        line += f"\n         {unverified_said(entry['publishing'])}"
     if entry.get("docsOnly"):
         line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
         if entry.get("docsNamed"): line += f"; queue.unread.paths named {named_said(entry['docsNamed'])}"
@@ -2383,6 +2402,10 @@ def situation(queue, entry, state, at=None):
     """Where entry, still waiting, stands by the round's account (round_lines), as (what makes it this situation and
     no other, the words that follow its ID). state is the round's account, or None when no worker runs. The first
     leaves out times and counts that change while nothing else does, so that a wait says a situation once (Follow)."""
+    marker = entry.get("publishing")
+    if marker and (marker.get("unanswered") or state is None):
+        return (PUBLICATION_UNVERIFIED,), unverified_said(marker)
+    if marker: return ("pushing",), f"is being pushed as {marker['attempts'][-1]['head'][:12]}"
     if entry["state"] == PASSED: return ("passed",), "passed its gate and waits for the push"
     if state is None: return ("no worker",), f"is {entry['state']}, and no worker runs yet: the wait starts one"
     identifier, name = entry["id"], state.get("round")
@@ -4264,7 +4287,25 @@ class Worker:
         do and it skips; its entry records ungated, and its tip carries the UNGATED trailer, again after a carry-over.
         A landing whose gate failed only flaky tests (rerun) carries a FLAKY trailer for each, again after a carry-over.
         Any other landing records gatedOn, the base its gate ran on, by which `qk queue status` knows that a gate on
-        main has passed over an earlier ungated landing (covered)."""
+        main has passed over an earlier ungated landing (covered).
+        Before each push its entries record it (publishing): a push cut off before its answer came, by a timeout, a
+        dropped connection or the worker's death, may have landed, and is publication-unverified until a fetch of
+        origin/main says. The fetch at the top of each try asks first, so that a push that landed before main moved
+        on settles as landed rather than carrying over or gating commits main already holds, and the next round's
+        start asks for what a hold or a dead worker left (reconcile)."""
+        attempts = []
+        try:
+            pushed = self.pushing(config, batch, base, docs, ungated, flakes, attempts)
+        except Hold as hold:
+            # Only a remote out of reach leaves a push's answer unknown: any other hold had one, or pushed nothing.
+            if hold.kind == CLEARS: self.unanswered(batch)
+            else: self.queue.drop_field(batch, "publishing")
+            raise
+        if not pushed: self.queue.drop_field(batch, "publishing")
+        return pushed
+
+    def pushing(self, config, batch, base, docs, ungated, flakes, attempts):
+        """push's tries, each attempt it pushes added to attempts."""
         head = self.head()
         gated_on = base
         changed = [path for path in text(self.checkout, "diff", "--name-only", "--no-renames", base,
@@ -4284,6 +4325,11 @@ class Worker:
             covered = None
         for _ in range(CARRIES):
             reach(self.checkout, *FETCH, say=self.say, check=True)
+            landed = self.landed_attempt(attempts)
+            if landed:
+                self.say(f"origin/main holds {landed['head'][:12]}, pushed before its answer came: it landed")
+                self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated, self.measured)
+                return True
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
                 carried = self.carry(config, batch, base, head, ran)
                 if carried is None: return False
@@ -4309,34 +4355,94 @@ class Worker:
                     raise Hold(SESSION, f"the pre-push hook gave no verdict, exit {result}, twice on {head[:12]}; see {log}")
                 if result: raise Hold(SESSION, f"the pre-push hook refused {head[:12]}, exit {result}; see {log}")
                 checked = head
+            attempts.append({"head": head, "base": base, "at": time.time()})
+            self.queue.mark_publishing(batch, {
+                "batch": [entry["id"] for entry in batch], "attempts": attempts, "gatedOn": gated_on,
+                **({"docsOnly": docs} if docs else {}), **({"docsNamed": named} if named else {}),
+                **({"ungated": ungated} if ungated else {}), **({"gate": self.measured} if self.measured else {})})
             # A connection that dropped pushes again here, without running the hook again.
-            pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say)
-            pushed, status = self.push_again(pushed)
+            try:
+                pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say)
+                pushed, status = self.push_again(pushed)
+            except subprocess.TimeoutExpired as error:
+                raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: the push of {head[:12]} gave no answer in "
+                                   f"{error.timeout:g}s, so whether origin/main took it is unknown until a fetch "
+                                   "says") from error
             if pushed.returncode == 0:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}" + (", landed without the gate, which the next gate on main covers"
                                                   if ungated else ""))
-                own = self.landed(batch, base, head)
-                self.queue.emit("batch.pushed", head=head, base=base, entries=[entry["id"] for entry in batch],
-                                ungated=bool(ungated) or None)
-                for entry in batch:
-                    commit, count = own.get(entry["id"], (head, 0))
-                    self.queue.settle(entry, LANDED, landedAs=commit, landedTip=head,
-                                      **({"landedCommits": count} if count else {}),
-                                      **({"docsOnly": docs} if docs else {}),
-                                      **({"docsNamed": named} if named else {}),
-                                      **({"ungated": ungated} if ungated else {}),
-                                      **({"gate": self.measured} if self.measured and not docs else {}),
-                                      **({} if docs or ungated else {"gatedOn": gated_on}))
-                if not docs and not ungated: self.keep_app(head)
-                if self.follows(): self.follow()
+                self.settle_pushed(batch, base, head, gated_on, docs, named, ungated, self.measured)
                 return True
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
             if unreached(said):
-                raise Hold(CLEARS, f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: {said}")
+                raise Hold(CLEARS, f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: "
+                                   f"{said}; {PUBLICATION_UNVERIFIED} until a fetch says whether it landed")
             raise Hold(OWNER, f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
         return False
+
+    def settle_pushed(self, batch, base, head, gated_on, docs, named, ungated, gate, reconciled=False):
+        """Settle batch as landed by head, pushed on base: each entry its own commit (landed), the push's event,
+        the app kept and the shared checkout followed, as after any landing. reconciled says the push's answer
+        never came, and a later fetch found head on origin/main (reconcile)."""
+        own = self.landed(batch, base, head)
+        self.queue.emit("batch.pushed", head=head, base=base, entries=[entry["id"] for entry in batch],
+                        ungated=bool(ungated) or None, reconciled=reconciled or None)
+        for entry in batch:
+            commit, count = own.get(entry["id"], (head, 0))
+            self.queue.settle(entry, LANDED, landedAs=commit, landedTip=head,
+                              **({"landedCommits": count} if count else {}),
+                              **({"docsOnly": docs} if docs else {}),
+                              **({"docsNamed": named} if named else {}),
+                              **({"ungated": ungated} if ungated else {}),
+                              **({"gate": gate} if gate and not docs else {}),
+                              **({} if docs or ungated else {"gatedOn": gated_on}))
+        if not docs and not ungated: self.keep_app(head)
+        if self.follows(): self.follow()
+
+    def landed_attempt(self, attempts):
+        """The newest of attempts, a push's {head, base, at}, whose head origin/main holds as last fetched: a push
+        that landed, whatever came after it there. None when it holds none of them."""
+        return next((attempt for attempt in reversed(attempts) if not git(
+            self.queue.main_checkout, "merge-base", "--is-ancestor", attempt["head"], MAIN).returncode), None)
+
+    def unanswered(self, batch):
+        """Mark the push batch's entries record as one whose answer did not come (publication-unverified)."""
+        for entry in batch:
+            current = self.queue.read(entry["id"])
+            if current and current["state"] in WAITING and current.get("publishing"):
+                self.queue.record(entry, publishing={**current["publishing"], "unanswered": time.time()})
+
+    def reconcile(self):
+        """Settle what a push whose answer never came left publishing, as a timeout, a dropped connection or a worker
+        that died mid-push leaves it, by a fetch of origin/main: entries whose push it holds land as that push would
+        have landed them, without a push or a gate of commits main already has; the others forget it, and are pushed
+        or gated as before. Whether it landed anything, a remote out of reach holding as for any fetch."""
+        marked = [entry for entry in self.queue.waiting() if entry.get("publishing")]
+        if not marked: return False
+        reach(self.queue.main_checkout, *FETCH, say=self.say, check=True)
+        main, landed = text(self.queue.main_checkout, "rev-parse", MAIN), False
+        while marked:
+            marker = marked[0]["publishing"]
+            order = marker.get("batch", [])
+            group = sorted((entry for entry in marked if entry["publishing"] == marker),
+                           key=lambda entry: order.index(entry["id"]) if entry["id"] in order else len(order))
+            marked = [entry for entry in marked if entry["publishing"] != marker]
+            ids = ", ".join(entry["id"] for entry in group)
+            attempts = marker.get("attempts", [])
+            attempt = self.landed_attempt(attempts)
+            if attempt is None:
+                self.say(f"origin/main at {main[:12]} holds no push of {', '.join(a['head'][:12] for a in attempts)}, "
+                         f"whose answer never came: {ids} did not land, and are pushed or gated as before")
+                self.queue.drop_field(group, "publishing")
+                continue
+            self.say(f"origin/main at {main[:12]} holds {attempt['head'][:12]}, pushed before its answer came: "
+                     f"{ids} landed")
+            self.settle_pushed(group, attempt["base"], attempt["head"], marker.get("gatedOn"), marker.get("docsOnly"),
+                      marker.get("docsNamed"), marker.get("ungated"), marker.get("gate"), reconciled=True)
+            landed = True
+        return landed
 
     def keep_app(self, head):
         """Start keeping the app built at head, the gated commit just pushed, in the background, when head's
@@ -5024,6 +5130,8 @@ class Worker:
 
     def round(self):
         queue = self.queue
+        # What a push whose answer never came left, before anything is pushed or gated again.
+        if not self.stacked and self.reconcile(): return True
         waiting = queue.waiting()
         if self.stacked:
             why = self.stacked.stale(waiting)
@@ -5915,6 +6023,8 @@ class Worker:
         self.alone = bool(verdict.get("alone"))
         self.say(f"{len(batch)} entr{'y' if len(batch) == 1 else 'ies'} passed at {head[:12]} on {base[:12]}: "
                  "pushing without gating again")
+        # What passed, not whatever the checkout holds: a worker that died mid-carry left part of a batch there.
+        if self.head() != head: self.reset(head)
         if self.push(config, batch, base, docs, ungated, flakes): self.passed(len(batch))
         else: self.queue.mark(batch, QUEUED)
         return True
@@ -6527,9 +6637,24 @@ def journal(root, as_json=False, since=None, kinds=(), following=False, out=prin
 
 
 def passed_push(queue):
-    """What a hold keeps of a batch that passed, for its reason: the push it waits for."""
+    """What a hold keeps of a batch that passed, for its reason: the push it waits for, and a push whose answer
+    never came (publication-unverified)."""
+    marked = next((entry for entry in queue.waiting() if entry.get("publishing")), None)
+    unverified = f"; {unverified_said(marked['publishing'])}" if marked else ""
     passed = [entry for entry in queue.all() if entry["state"] == PASSED]
-    if not passed: return ""
+    # The resume's words last, which a hold's reason ends with before whom it is for.
+    return unverified + (passed_words(passed) if passed else "")
+
+
+def unverified_said(marker):
+    """Words for a push whose answer never came, by its record (Worker.push's publishing)."""
+    heads = ", ".join(attempt["head"][:12] for attempt in marker.get("attempts", []))
+    return (f"{PUBLICATION_UNVERIFIED}: pushed as {heads or 'nothing'} without an answer; the worker's next round "
+            "fetches origin/main and lands it if main holds that push, or pushes or gates it again if not")
+
+
+def passed_words(passed):
+    """passed_push's words for the entries of a batch that passed."""
     verdict = passed[0]["passed"]
     return (f"; passed {verdict['head'][:12]} on {verdict['base'][:12]} ({len(passed)} "
             f"entr{'y' if len(passed) == 1 else 'ies'}), which the resume pushes without gating again")

@@ -392,6 +392,30 @@ gate's log when the lane ends.
 - A batch whose lanes passed is recorded `passed`, with its commit and base, before its push. After
   a hold and `qk queue resume`, the next worker pushes it without gating again while the batch is
   unchanged.
+- Before each `git push`, `Worker.push` records the attempt on every entry of the batch, in a
+  `publishing` field that lists each pushed head with the base it went on. A push whose answer
+  never comes leaves that field behind: a timeout (`GIT_TIMEOUT`, as a hold that clears by
+  itself), a connection dropped past `BACKOFF`, or the worker's death. Such an entry is
+  `publication-unverified`. The field goes away when the entry settles, when the remote answers
+  with a refusal, or when a carry gives up.
+- `Worker.reconcile` runs at the start of every round, before anything is pushed or gated. It
+  fetches `origin/main` and asks `git merge-base --is-ancestor` whether main holds any recorded
+  head. If it does, the entries land as that push would have landed them (`Worker.settle_pushed`, with
+  `batch.pushed` marked `reconciled`), with no push, pre-push hook or gate. This works even when
+  main has moved on since. Otherwise the field is dropped and the round goes on as before. The
+  fetch at the top of each try in `Worker.push` asks the same question, so a push whose connection
+  dropped after it landed is recognised there, even once main has moved past it.
+- Without this, a landed push was recognised only while `origin/main` was still its commit. Once
+  main moved on, the batch was carried over or gated again, cherry-picking commits main already
+  held, or sent back as a conflict with itself. A worker that died while settling a batch left
+  entries that `push_passed` no longer took for the batch that passed. `push_passed` also resets
+  the checkout to the commit that passed: a worker that died mid-carry left part of the batch
+  there.
+- The push stays a plain fast-forward push, without `--atomic` or `--force-with-lease`. It updates
+  one ref, so `--atomic` adds nothing. A fast-forward-only push already refuses any `main` that is
+  not an ancestor of the pushed commit. A lease would add only a refusal of a `main` that moved
+  forward to an ancestor of it, which the push lands correctly anyway. Its "stale info" refusal
+  would also arrive as a hold rather than the carry a rejection gets.
 - The closure is read by `qk land` and `qk queue add` twice, before the conflict check and under the
   lock that saves an entry, which `qk queue close` takes too, so an entry is either saved before
   the close returns or refused. The worker does not read it.
@@ -1570,7 +1594,7 @@ schema only grows, so readers ignore what they do not know.
 | `gate.ended` | A lane of a gate ended | `lane`, `round`, `role`, `status`, `log`, `mac`, `seconds` |
 | `gate.stuck` | A gate's wait for admission is held up by dead entries | `lane`, `role`, `why`, `waitingSince` |
 | `batch.passed` | A batch's lanes passed, before its push | `head`, `base`, `entries` |
-| `batch.pushed` | A batch was pushed to `main` | `head`, `base`, `entries`, `ungated` |
+| `batch.pushed` | A batch was pushed to `main`, or a push without an answer was found there (`reconciled`) | `head`, `base`, `entries`, `ungated`, `reconciled` |
 | `test.flaky` | A failed test passed alone | `test`, `commit`, `issue`, `landed`, `entries` |
 | `queue.held` | The queue stopped | `why`, `for` (`owner` or `session`) |
 | `queue.resumed` | A hold was cleared | `was` |
