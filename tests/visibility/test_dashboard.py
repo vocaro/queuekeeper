@@ -450,6 +450,10 @@ class Panels(Fixture):
                          "The queue's lanes fail on this commit on top of origin/main.")
         self.assertEqual((found[2]["log"], found[4]["issue"], found[4]["text"]), ("r-gate.log", "https://x/issues/7", "t.T.test_x"))
         self.assertEqual(queue.attention({}, [], now), [])
+        # A closure, which refuses every landing until it lapses (vocaro/queuekeeper#286), says when that is.
+        closed = queue.attention({"closed": {"by": "a session", "why": "a move", "at": now - 60, "until": now + 3540}}, [], now)
+        self.assertEqual([(one["level"], one["title"]) for one in closed], [("warning", "Closed")])
+        self.assertIn("Closed to new entries by a session: a move. It reopens by itself at ", closed[0]["text"])
 
     def test_a_mac_short_of_memory_makes_the_farms_line_a_warning(self):
         self.read_farm()

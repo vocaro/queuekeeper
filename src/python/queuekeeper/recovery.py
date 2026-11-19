@@ -41,9 +41,11 @@ def for_hold(why, responsible_party=None):
 
 def for_closed(closure, message):
     """A submission refused by a queue closed to new entries: the same submission works once whoever closed the queue
-    reopens it, which the refused session watches for and does not do itself."""
-    return {**advice("queue-closed", "unknown", False, "wait-for-reopen", message, [["qk", "queue", "status", "--json"]]),
-            "closed": dict(closure)}
+    reopens it, or once the closure lapses at reopensAt, its deadline (vocaro/queuekeeper#286), which the refused
+    session waits for with `qk queue closed`, exit 1 once the queue is open."""
+    until = closure.get("until") if isinstance(closure, dict) else None
+    return {**advice("queue-closed", "unknown", False, "wait-for-reopen", message, [["qk", "queue", "closed", "--json"]]),
+            "closed": dict(closure), "reopensAt": until if isinstance(until, (int, float)) else None}
 
 
 def write_hold(path, why, responsible_party=None):

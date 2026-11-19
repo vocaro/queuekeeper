@@ -12,7 +12,7 @@ from . import each
 
 TITLE, ORDER = "Activity", 90
 ROUNDS = 60  # the rounds a repository's feed shows, newest first; ?more asks for that many again
-NOTICES = ("queue.held", "queue.resumed", "queue.closed", "queue.reopened")
+NOTICES = ("queue.held", "queue.resumed", "queue.closed", "queue.renewed", "queue.lapsed", "queue.reopened")
 STALE = 6 * 3600  # seconds after which a lane that began and never ended is no longer shown as running
 SETTLED = {"entry.landed": "landed", "entry.failed": "back", "entry.conflict": "conflict", "entry.removed": "removed"}
 
@@ -22,6 +22,8 @@ def notice(event):
     if kind == "queue.held": return f"The queue was held {event.get('why') or ''}".strip()
     if kind == "queue.resumed": return "The queue resumed" + (f" after it was held {event['was']}" if event.get("was") else "")
     if kind == "queue.closed": return f"The queue was closed to new entries by {event.get('by') or 'someone'}" + (f": {event['why']}" if event.get("why") else "")
+    if kind == "queue.renewed": return f"The closure by {event.get('by') or 'someone'} was renewed"
+    if kind == "queue.lapsed": return f"The queue reopened by itself: the closure by {event.get('by') or 'someone'} lapsed"
     return "The queue reopened to new entries"
 
 

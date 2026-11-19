@@ -11157,8 +11157,11 @@ class ClosedQueue(Fixture):
         self.assertIn("0 waiting", said)
         error = self.refused("one")
         self.assertRegex(str(error), rf"^{tip[:12]} is not queued: the queue is closed to new entries by {self.BY} "
-                         rf"since \d{{4}}-\d\d-\d\d \d\d:\d\d:\d\d: {self.WHY}\. Entries already in it finish\.")
-        self.assertIn("`qk queue reopen`", str(error))
+                         rf"since \d{{4}}-\d\d-\d\d \d\d:\d\d:\d\d \(\d+s ago\): {self.WHY}\. Entries already in it "
+                         r"finish, and it reopens by itself at \S+ \S+, in (59m\d\ds|1h00m), unless its closer renews it with "
+                         r"`qk queue close --extend`\.")
+        self.assertIn("`qk queue reopen` once done; if that session is gone, any session may", str(error))
+        self.assertIn("once `qk queue closed` exits 1", str(error))
         self.assertEqual(error.waits_for, [])
         self.assertEqual((error.closed["why"], error.closed["by"]), (self.WHY, self.BY))
         for words in (("land", "one"), ("land", "one", "--wait", "--limit", "0"), ("queue", "add", "one")):
@@ -11221,8 +11224,9 @@ class ClosedQueue(Fixture):
         code, said, _ = self.command("queue", "status")
         lines = said.splitlines()
         self.assertEqual((code, lines[0]), (0, "worker: none"))
-        self.assertRegex(lines[1], rf"^closed to new entries by {self.BY} since \S+ \S+: {self.WHY}; entries already in "
-                         r"it finish, and `qk queue reopen` takes new ones again$")
+        self.assertRegex(lines[1], rf"^closed to new entries by {self.BY} since \S+ \S+ \(\d+s ago\): {self.WHY}; entries "
+                         r"already in it finish, it reopens by itself at \S+ \S+, in (59m\d\ds|1h00m), unless its closer renews "
+                         r"it with `qk queue close --extend`, and `qk queue reopen` takes new ones sooner$")
         state = json.loads(self.command("queue", "status", "--json")[1])
         self.assertEqual((state["closed"]["why"], state["closed"]["by"]), (self.WHY, self.BY))
         self.assertAlmostEqual(state["closed"]["at"], time.time(), delta=600)
@@ -11329,6 +11333,138 @@ class ClosedQueue(Fixture):
         self.assertEqual([(event["kind"], event["why"], event["by"]) for event in told],
                          [("queue.closed", self.WHY, self.BY), ("queue.reopened", self.WHY, self.BY)])
         self.assertTrue(mq.events.words(told[0]).endswith(f"closed to new entries by {self.BY}: {self.WHY}"))
+
+    def lapsed(self, before=1):
+        """Move the closure's deadline before seconds ago, as if that much time had passed."""
+        queue = mq.Queue(self.repo)
+        queue.write_closure({**queue.closure(), "until": time.time() - before})
+
+    def test_a_closure_lapses_by_itself_at_its_deadline_and_the_queue_takes_entries_again(self):
+        """vocaro/queuekeeper#286: a closer that is gone cannot refuse every landing forever."""
+        self.commit("a.txt", "one")
+        self.close()
+        closure = mq.Queue(self.repo).closed()
+        self.assertAlmostEqual(closure["until"] - closure["at"], mq.CLOSE_SECONDS, delta=1)
+        # The negative control: before its deadline the closure refuses, whatever time has passed since it was made.
+        mq.Queue(self.repo).write_closure({**closure, "at": time.time() - 3 * mq.CLOSE_SECONDS})
+        self.assertIn("closed to new entries", str(self.refused("one")))
+        self.assertEqual(self.command("queue", "closed")[0], 0)
+        self.lapsed()
+        self.assertIsNone(mq.Queue(self.repo).closed())
+        self.assertNotIn("closed to new entries", self.command("queue", "status")[1])
+        identifier, = self.add("one")
+        self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+        # Tidied away and journaled once, as having lapsed rather than been reopened.
+        self.assertFalse(mq.Queue(self.repo).closed_file.exists())
+        told = mq.events.read(mq.Queue(self.repo).directory, kinds=["queue."])
+        self.assertEqual([(event["kind"], event["by"]) for event in told], [("queue.closed", self.BY), ("queue.lapsed", self.BY)])
+        self.assertIn(f"reopened by itself: the closure by {self.BY} lapsed: {self.WHY}", mq.events.words(told[1]))
+        # A lapsed closure is no closure: a new close takes its place, and reopen says it had lapsed.
+        self.close()
+        self.lapsed()
+        self.assertEqual(self.command("queue", "close", "--why", "again", "--by", "another")[0], 0)
+        self.assertEqual(mq.Queue(self.repo).closed()["by"], "another")
+        self.lapsed()
+        code, said, _ = self.command("queue", "reopen")
+        self.assertEqual(code, 0)
+        self.assertIn("the queue was not closed: its closure by another lapsed at ", said)
+
+    def test_for_sets_the_deadline_within_a_day_and_refuses_anything_else(self):
+        cases = {"90": 90, "45s": 45, "30m": 1800, "2h": 7200, "1h30m": 5400, "24h": 86400}
+        for words, seconds in cases.items():
+            with self.subTest(words=words):
+                self.assertEqual(self.command("queue", "close", "--why", self.WHY, "--for", words)[0], 0)
+                closure = mq.Queue(self.repo).closed()
+                self.assertAlmostEqual(closure["until"] - closure["at"], seconds, delta=1)
+                self.command("queue", "reopen")
+        for words in ("0", "0m", "25h", "86401", "soon", "1d", ""):
+            with self.subTest(words=words):
+                code, _, err = self.command("queue", "close", "--why", self.WHY, "--for", words)
+                self.assertEqual(code, 2)
+                self.assertIn("--for takes", err)
+                self.assertIsNone(mq.Queue(self.repo).closed())
+
+    def test_its_closer_renews_it_with_extend_and_nothing_else_does(self):
+        self.assertEqual(self.command("queue", "close", "--why", self.WHY, "--by", self.BY, "--for", "10m")[0], 0)
+        first = mq.Queue(self.repo).closed()
+        code, said, _ = self.command("queue", "close", "--extend", "--for", "2h")
+        self.assertEqual(code, 0)
+        self.assertIn("It reopens by itself at ", said)
+        renewed = mq.Queue(self.repo).closed()
+        self.assertEqual({key: renewed[key] for key in ("why", "by", "at")}, {key: first[key] for key in ("why", "by", "at")})
+        self.assertAlmostEqual(renewed["until"], time.time() + 7200, delta=60)
+        # Without --for, an hour from now.
+        self.assertEqual(self.command("queue", "close", "--extend")[0], 0)
+        self.assertAlmostEqual(mq.Queue(self.repo).closed()["until"], time.time() + mq.CLOSE_SECONDS, delta=60)
+        told = mq.events.read(mq.Queue(self.repo).directory, kinds=["queue.renewed"])
+        self.assertEqual(len(told), 2)
+        # A second close is not a renewal, and leaves the deadline as it was.
+        before = mq.Queue(self.repo).closed()["until"]
+        self.assertEqual(self.command("queue", "close", "--why", "x", "--for", "24h")[0], 1)
+        self.assertEqual(mq.Queue(self.repo).closed()["until"], before)
+        # There is nothing to renew once the queue is open, by reopen or by lapsing.
+        self.lapsed()
+        code, _, err = self.command("queue", "close", "--extend")
+        self.assertEqual(code, 1)
+        self.assertIn("the queue is not closed", err)
+        self.assertIsNone(mq.Queue(self.repo).closed())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as usage:
+            cli.main(["--project", str(self.repo), "queue", "close", "--extend", "--why", self.WHY])
+        self.assertEqual(usage.exception.code, 2)
+
+    def test_closed_answers_whether_the_queue_is_closed_and_for_how_long(self):
+        code, said, _ = self.command("queue", "closed")
+        self.assertEqual((code, said), (1, "open: the queue takes new entries\n"))
+        state = json.loads(self.command("queue", "closed", "--json")[1])
+        self.assertEqual(state, {"schemaVersion": 1, "closed": False, "closure": None, "closedSeconds": None,
+                                 "reopensInSeconds": None})
+        self.close()
+        queue = mq.Queue(self.repo)
+        queue.write_closure({**queue.closed(), "at": time.time() - 600})
+        code, said, _ = self.command("queue", "closed")
+        self.assertEqual(code, 0)
+        self.assertRegex(said, rf"^closed to new entries by {self.BY} since \S+ \S+ \(10m0\ds ago\): {self.WHY}; it "
+                         r"reopens by itself at \S+ \S+, in (59m\d\ds|1h00m), unless its closer renews it with "
+                         r"`qk queue close --extend`\n$")
+        code, out, _ = self.command("queue", "closed", "--json")
+        state = json.loads(out)
+        self.assertEqual((code, state["closed"], state["closure"]["by"]), (0, True, self.BY))
+        self.assertAlmostEqual(state["closedSeconds"], 600, delta=60)
+        self.assertAlmostEqual(state["reopensInSeconds"], mq.CLOSE_SECONDS, delta=60)
+        self.lapsed()
+        self.assertEqual(self.command("queue", "closed")[0], 1)
+
+    def test_a_closure_from_before_deadlines_or_unreadable_lapses_an_hour_after_it_was_made(self):
+        queue = mq.Queue(self.repo)
+        now = time.time()
+        for made, closed in ((now - 60, True), (now - mq.CLOSE_SECONDS - 60, False)):
+            with self.subTest(made=made):
+                queue.closed_file.write_text(json.dumps({"schemaVersion": 1, "why": self.WHY, "by": self.BY, "at": made}))
+                self.assertEqual(bool(queue.closed()), closed)
+                self.assertEqual(queue.closure()["until"], made + mq.CLOSE_SECONDS)
+        queue.closed_file.write_text("{")
+        self.assertIn("cannot be read", queue.closed()["why"])
+        os.utime(queue.closed_file, (now - mq.CLOSE_SECONDS - 60,) * 2)
+        self.assertIsNone(queue.closed())
+        self.assertEqual(self.command("queue", "closed")[0], 1)
+        self.assertFalse(queue.closed_file.exists())
+
+    def test_doctor_names_a_closure_and_a_closer_whose_worktree_is_gone(self):
+        self.assertNotIn("closed", [finding["signal"] for finding in mq.diagnose(self.repo)[0]])
+        gone = self.repo.parent / "a-worktree-since-removed"
+        with patch.object(mq.resources, "work_origin", return_value={"worktree": str(gone), "branch": "work"}):
+            self.assertEqual(self.command("queue", "close", "--why", self.WHY)[0], 0)
+        self.assertEqual(mq.Queue(self.repo).closed()["worktree"], str(gone))
+        finding, = [finding for finding in mq.diagnose(self.repo)[0] if finding["signal"] == "closed"]
+        self.assertIn(f"{self.WHY}, and refuses every new entry; it reopens by itself at ", finding["diagnosis"])
+        self.assertIn(f"the worktree it was closed from, {gone}, is gone", finding["diagnosis"])
+        self.assertIn("any session runs `qk queue reopen`", finding["remedy"])
+        # A closer whose worktree is still there is not said to be gone.
+        self.command("queue", "reopen")
+        with patch.object(mq.resources, "work_origin", return_value={"worktree": str(self.repo)}):
+            self.command("queue", "close", "--why", self.WHY)
+        finding, = [finding for finding in mq.diagnose(self.repo)[0] if finding["signal"] == "closed"]
+        self.assertNotIn("is gone", finding["diagnosis"])
 
 
 class RoundAccount(Fixture):

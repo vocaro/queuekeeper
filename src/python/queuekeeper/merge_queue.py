@@ -28,7 +28,7 @@ each waiting commit, so a branch that moves or goes takes nothing with it:
     <common>/queuekeeper-queue/entries/ID.json   one commit range and its state
     <common>/queuekeeper-queue/logs/             what each round's lanes printed
     <common>/queuekeeper-queue/hold              why the queue stopped, until `qk queue resume`
-    <common>/queuekeeper-queue/closed.json       who closed the queue to new entries and why, until `qk queue reopen`
+    <common>/queuekeeper-queue/closed.json       who closed the queue to new entries, why and until when, until `qk queue reopen` or then
     refs/queuekeeper/queue/ID                    the range's tip, until it lands or is removed
     ../queuekeeper-workers/NAME/NAME            the worker's checkout, in a folder beside the main checkouts
     ../queuekeeper-workers/NAME/TOOLKIT         its copy of the toolkit, which ../TOOLKIT names from the checkout
@@ -413,20 +413,58 @@ class Refused(ValueError):
         self.closed = closed
 
 
+# How long a closure lasts without --for, and the most --for may ask (vocaro/queuekeeper#286). A closure with no end
+# refused every `qk land` once its closer was gone: on 2026-11-19 a session closed the queue at 13:04 to rewrite
+# main's history, and two hours later it was still closed with no worker running. An hour covers waiting out a round
+# and the maintenance after it; a closer that needs longer says so with --for or renews with --extend. A day bounds
+# even a closure that asks: no closure outlives its closer by more.
+CLOSE_SECONDS, CLOSE_LIMIT_SECONDS = 3600, 86400
+
+
+def closing_seconds(text):
+    """The seconds a --for DURATION names, such as 90s, 30m, 2h or 1h30m, or bare seconds. A ValueError for anything
+    else, for no time at all, or for more than CLOSE_LIMIT_SECONDS."""
+    words = text.strip().lower() if isinstance(text, str) else ""
+    if re.fullmatch(r"\d+", words): seconds = int(words)
+    elif re.fullmatch(r"(\d+[hms])+", words):
+        seconds = sum(int(number) * {"h": 3600, "m": 60, "s": 1}[unit] for number, unit in re.findall(r"(\d+)([hms])", words))
+    else: raise ValueError(f"--for takes a duration such as 30m, 2h or 1h30m, not {text!r}")
+    if not 0 < seconds <= CLOSE_LIMIT_SECONDS:
+        raise ValueError(f"--for takes more than no time and at most {resources.duration(CLOSE_LIMIT_SECONDS)}, so that "
+                         f"no closure outlives its closer for long; {text} is {resources.duration(seconds)}")
+    return seconds
+
+
+def local_time(at):
+    """A time as the queue's lines say it."""
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(at))
+
+
 def closed_words(closure):
-    """A closure (Queue.closed) as `qk queue status` and a refusal say it: who closed the queue, when and why."""
+    """A closure (Queue.closed) as `qk queue status` and a refusal say it: who closed the queue, when, for how long so
+    far, and why."""
     since = closure.get("at")
-    when = f" since {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(since))}" if isinstance(since, (int, float)) else ""
+    when = (f" since {local_time(since)} ({resources.duration(max(0, time.time() - since))} ago)"
+            if isinstance(since, (int, float)) else "")
     return (f"closed to new entries by {closure.get('by') or 'an unnamed session'}{when}: "
             f"{closure.get('why') or 'no reason given'}")
 
 
+def lapse_words(closure):
+    """When a closure (Queue.closed) reopens the queue by itself, and how its closer keeps it closed for longer."""
+    until = closure["until"]
+    return (f"it reopens by itself at {local_time(until)}, in {resources.duration(max(0, until - time.time()))}, unless its "
+            "closer renews it with `qk queue close --extend`")
+
+
 def closed_refusal(tip, closure, also=""):
     """The refusal of tip by a queue closed to new entries (vocaro/queuekeeper#32): nothing was queued, the entries
-    already in the queue finish, and whoever closed it reopens it, not the session it refused."""
+    already in the queue finish, and the queue reopens by itself at the closure's deadline (#286), or sooner when
+    whoever closed it reopens it. Any session may reopen a closure whose closer is gone."""
     return Refused(f"{tip[:12]} is not queued: the queue is {closed_words(closure)}{also}. Entries already in it "
-                   "finish. Whoever closed it runs `qk queue reopen`; run `qk land` again once `qk queue status` no "
-                   "longer says closed", closed=closure)
+                   f"finish, and {lapse_words(closure)}. Whoever closed it runs `qk queue reopen` once done; if that "
+                   "session is gone, any session may. Run `qk land` again once `qk queue closed` exits 1",
+                   closed=closure)
 
 
 def worded(kind, cause):
@@ -1767,36 +1805,88 @@ class Queue:
         print(f"queue: held: {why}", flush=True)
         self.emit("queue.held", why=why, **{"for": OWNER if why.startswith("for the owner") else SESSION})
 
-    def closed(self):
-        """Who closed the queue to new entries, when and why (close), or None while it is open. A record that cannot
-        be read still closes the queue: whoever wrote it meant no entry to arrive."""
-        try: found = json.loads(self.closed_file.read_text())
+    def closure(self):
+        """The closure record on disk (close), whether or not its deadline has passed, with until, the time it lapses,
+        always a number, or None when there is none. A record from before deadlines (vocaro/queuekeeper#286) lapses
+        CLOSE_SECONDS after it was made, and one that cannot be read CLOSE_SECONDS after its file was written: it still
+        closes the queue, since whoever wrote it meant no entry to arrive, but not forever."""
+        try:
+            written = self.closed_file.stat().st_mtime
+            found = json.loads(self.closed_file.read_text())
         except FileNotFoundError: return None
         except (OSError, ValueError): found = None
-        if isinstance(found, dict) and isinstance(found.get("why"), str) and isinstance(found.get("by"), str): return found
-        return {"schemaVersion": 1, "why": f"{self.closed_file} cannot be read", "by": "an unknown session", "at": None}
+        if not (isinstance(found, dict) and isinstance(found.get("why"), str) and isinstance(found.get("by"), str)):
+            return {"schemaVersion": 1, "why": f"{self.closed_file} cannot be read", "by": "an unknown session",
+                    "at": None, "until": written + CLOSE_SECONDS}
+        until = found.get("until")
+        if not isinstance(until, (int, float)) or isinstance(until, bool):
+            at = found.get("at")
+            until = (at if isinstance(at, (int, float)) and not isinstance(at, bool) else written) + CLOSE_SECONDS
+        return {**found, "until": until}
 
-    def close(self, why, by):
-        """Close the queue to new entries (vocaro/queuekeeper#32): add refuses each from now on, while the worker
-        finishes the entries the queue has, and holds stay as they are. Under the entries' lock, so that an entry is
-        either saved before this returns, and `qk queue status --idle` counts it, or refused. Returns the closure
-        already there, which stays as it was, or None when this one was written."""
+    def closed(self, now=None):
+        """Who closed the queue to new entries, when, why and until when (closure), or None while it is open, as it is
+        once that closure's deadline has passed: a closure lapses by itself, so that one whose closer is gone cannot
+        refuse every landing forever (vocaro/queuekeeper#286)."""
+        found = self.closure()
+        return found if found and found["until"] > (time.time() if now is None else now) else None
+
+    def lapse(self):
+        """Remove a closure whose deadline has passed and journal that the queue reopened by itself. closed reads such
+        a closure as open whether or not this has run; this only tidies it and says so, once. Never under the entries'
+        lock, which it takes."""
+        if not self.closed_file.exists(): return None
         with self.locked():
-            already = self.closed()
+            found = self.closure()
+            if not found or found["until"] > time.time(): return None
+            with contextlib.suppress(FileNotFoundError): self.closed_file.unlink()
+        self.lapsed(found)
+        return found
+
+    def lapsed(self, closure):
+        self.emit("queue.lapsed", by=closure.get("by"), why=closure.get("why"), until=closure["until"])
+
+    def write_closure(self, closure):
+        staged = self.closed_file.with_suffix(f".{os.getpid()}.tmp")
+        staged.write_text(json.dumps(closure, indent=2) + "\n")
+        os.replace(staged, self.closed_file)
+
+    def close(self, why, by, seconds=CLOSE_SECONDS, worktree=None):
+        """Close the queue to new entries for seconds (vocaro/queuekeeper#32, #286): add refuses each until then, or
+        until reopen, while the worker finishes the entries the queue has, and holds stay as they are. Under the
+        entries' lock, so that an entry is either saved before this returns, and `qk queue status --idle` counts it, or
+        refused. worktree is the closer's, which `qk queue doctor` says is gone once it is. Returns the closure already
+        there, which stays as it was, or None when this one was written."""
+        with self.locked():
+            already, ended = self.closed(), self.closure()
             if already: return already
-            closure = {"schemaVersion": 1, "why": why, "by": by, "at": round(time.time(), 3)}
-            staged = self.closed_file.with_suffix(f".{os.getpid()}.tmp")
-            staged.write_text(json.dumps(closure, indent=2) + "\n")
-            os.replace(staged, self.closed_file)
-        self.emit("queue.closed", why=why, by=by)
+            now = time.time()
+            self.write_closure({"schemaVersion": 1, "why": why, "by": by, "at": round(now, 3),
+                                "until": round(now + seconds, 3), **({"worktree": worktree} if worktree else {})})
+        if ended: self.lapsed(ended)
+        self.emit("queue.closed", why=why, by=by, until=round(now + seconds, 3))
         return None
 
-    def reopen(self):
-        """Take new entries again, and return the closure that ended, or None when the queue was open."""
+    def extend(self, seconds=CLOSE_SECONDS):
+        """Renew the closure: it lapses seconds from now, as a lease does when its holder renews it. Returns the
+        renewed closure, or None when the queue is not closed, which a closure past its deadline no longer is."""
         with self.locked():
-            was = self.closed()
+            found = self.closed()
+            if not found: return None
+            now = time.time()
+            found = {**found, "until": round(now + seconds, 3), "renewed": round(now, 3)}
+            self.write_closure(found)
+        self.emit("queue.renewed", by=found.get("by"), why=found.get("why"), until=found["until"])
+        return found
+
+    def reopen(self):
+        """Take new entries again, and return the closure that ended, or None when the queue was open. A closure past
+        its deadline had already ended: it is journaled as having lapsed and returned with its until in the past."""
+        with self.locked():
+            was = self.closure()
             with contextlib.suppress(FileNotFoundError): self.closed_file.unlink()
-        if was: self.emit("queue.reopened", by=was.get("by"), why=was.get("why"))
+        if was and was["until"] <= time.time(): self.lapsed(was)
+        elif was: self.emit("queue.reopened", by=was.get("by"), why=was.get("why"))
         return was
 
     @contextlib.contextmanager
@@ -2096,7 +2186,9 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         queue.start()
         return same["id"]
     # A closed queue takes nothing new, whatever its options, and replaces nothing (vocaro/queuekeeper#32): before the
-    # checks, which cost a trial and a preflight run, and again under the lock that saves the entry.
+    # checks, which cost a trial and a preflight run, and again under the lock that saves the entry. A closure past its
+    # deadline is open (#286), and is tidied away and journaled here.
+    queue.lapse()
     closure = queue.closed()
     if closure: raise closed_refusal(tip, closure)
     # A branch added again replaces what it added before; main names nobody's work in particular.
@@ -2490,6 +2582,7 @@ def reading(root, recent=5):
     done = sorted((entry for entry in entries if entry["state"] not in WAITING),
                   key=lambda entry: entry.get("settled", 0))[-recent:]
     working, why = queue.working(), queue.held()
+    queue.lapse()
     # Shown until a gate on main passes over it, however long ago it landed.
     ungated = [entry for entry in entries if entry["state"] == LANDED and entry.get("ungated")
                and not covered(root, entry, entries)]
@@ -2528,7 +2621,8 @@ def status(root, as_json=False, recent=5, idle=False):
     working, why, current, waiting, done = (state[key] for key in ("worker", "held", "round", "waiting", "recent"))
     print(f"worker: {'running' if working else 'none'}" + (f"; held {why}" if why else ""))
     if state["closed"]:
-        print(f"{closed_words(state['closed'])}; entries already in it finish, and `qk queue reopen` takes new ones again")
+        print(f"{closed_words(state['closed'])}; entries already in it finish, {lapse_words(state['closed'])}, and "
+              "`qk queue reopen` takes new ones sooner")
     if waiting and not working and not why: print("waiting with no worker: `qk queue resume` starts one")
     for line in round_lines(current or {}): print(line)
     for entry in ungated:
@@ -2966,6 +3060,16 @@ def diagnose(root):
     elif waiting and not working:
         found("no worker", f"{entries_word(len(waiting))} wait and no worker runs, so nothing gates them "
               "(vocaro-engineering#287)", "`qk queue resume` starts one")
+    # A closure refuses every landing until it lapses (vocaro/queuekeeper#286): said, with whether its closer's
+    # worktree is gone, so that a closure that has outlived its closer is reopened rather than waited out.
+    closure = queue.closed()
+    if closure:
+        gone = closure.get("worktree")
+        gone = gone if isinstance(gone, str) and not Path(gone).is_dir() else None
+        found("closed", f"the queue is {closed_words(closure)}, and refuses every new entry; {lapse_words(closure)}"
+              + (f"; the worktree it was closed from, {gone}, is gone" if gone else ""),
+              "once its maintenance is over, or the session that closed it is gone, any session runs "
+              "`qk queue reopen`; its closer keeps it closed with `qk queue close --extend`")
     # Before a project's first landing, main has no configuration to be wrong (#10).
     try: suites = unittest_lanes(config := config_at(root, MAIN)) if has_config(root, MAIN) else {}
     except ValueError as error:
@@ -7129,30 +7233,71 @@ def resume(root):
     return 0
 
 
-def close(root, why, by=None):
-    """`qk queue close --why TEXT`: refuse new entries from now on, for maintenance that needs the queue empty, which
-    then waits for `qk queue status --idle` and reopens it (vocaro/queuekeeper#32). by names who closes it, the
-    session and worktree the command ran in unless --by says. A queue already closed stays as it was closed, with
-    status 1, so that two sessions do not each think the closure theirs and reopen under the other."""
-    if not why or not why.strip(): raise ValueError("qk queue close needs --why TEXT, which each refused `qk land` is told")
+def close(root, why, by=None, lasting=None, extend=False):
+    """`qk queue close --why TEXT [--for DURATION]`: refuse new entries for DURATION, an hour unless it says, for
+    maintenance that needs the queue empty, which then waits for `qk queue status --idle` and reopens it
+    (vocaro/queuekeeper#32). The closure lapses by itself at its deadline, so that one whose closer is gone does not
+    refuse every landing forever (#286); with --extend, its closer renews it for DURATION from now instead. by names
+    who closes it, the session and worktree the command ran in unless --by says. A queue already closed stays as it
+    was closed, with status 1, so that two sessions do not each think the closure theirs and reopen under the other;
+    --extend on a queue that is not closed is status 1 too."""
+    seconds = closing_seconds(lasting) if lasting is not None else CLOSE_SECONDS
     queue = Queue(root)
-    by = " ".join((by or resources.whence(resources.work_origin()) or "an unnamed session").split())
-    already = queue.close(" ".join(why.split()), by)
+    if extend:
+        renewed = queue.extend(seconds)
+        if not renewed:
+            print("queuekeeper: the queue is not closed, so there is no closure to extend; `qk queue close --why TEXT` "
+                  "closes it", file=sys.stderr)
+            return 1
+        print(f"{closed_words(renewed)}\n{lapse_words(renewed)[0].upper()}{lapse_words(renewed)[1:]}")
+        return 0
+    if not why or not why.strip(): raise ValueError("qk queue close needs --why TEXT, which each refused `qk land` is told")
+    origin = resources.work_origin()
+    by = " ".join((by or resources.whence(origin) or "an unnamed session").split())
+    already = queue.close(" ".join(why.split()), by, seconds, (origin or {}).get("worktree"))
     if already:
-        print(f"queuekeeper: the queue is already {closed_words(already)}; it stays as that closed it, and one "
-              "`qk queue reopen` opens it for everyone", file=sys.stderr)
+        print(f"queuekeeper: the queue is already {closed_words(already)}; it stays as that closed it, "
+              f"{lapse_words(already)}, and one `qk queue reopen` opens it for everyone", file=sys.stderr)
         return 1
-    waiting = len(queue.waiting())
-    print(f"{closed_words(queue.closed())}\n{waiting} waiting, which the worker finishes; `qk queue status --idle` "
-          "exits 0 once none is left and no worker runs, and `qk queue reopen` takes new entries again")
+    waiting, closure = len(queue.waiting()), queue.closed()
+    print(f"{closed_words(closure)}\n{waiting} waiting, which the worker finishes; `qk queue status --idle` exits 0 "
+          f"once none is left and no worker runs, and `qk queue reopen` takes new entries again. Until then "
+          f"{lapse_words(closure)}")
     return 0
 
 
 def reopen(root):
-    """`qk queue reopen`: take new entries again. It touches no hold and starts no worker."""
+    """`qk queue reopen`: take new entries again. It touches no hold and starts no worker. Any session may run it,
+    and should once the session that closed the queue is gone."""
     was = Queue(root).reopen()
-    print(f"reopened: the queue was {closed_words(was)}" if was else "the queue was not closed")
+    if not was: print("the queue was not closed")
+    elif was["until"] <= time.time():
+        print(f"the queue was not closed: its closure by {was.get('by')} lapsed at {local_time(was['until'])}")
+    else: print(f"reopened: the queue was {closed_words(was)}")
     return 0
+
+
+def closed_state(root):
+    """`qk queue closed --json`'s answer: whether the queue is closed, its closure (Queue.closed) or None, how many
+    seconds it has been closed and how many are left before it reopens by itself."""
+    queue = Queue(root)
+    queue.lapse()
+    closure, now = queue.closed(), time.time()
+    at = (closure or {}).get("at")
+    return {"schemaVersion": 1, "closed": bool(closure), "closure": closure,
+            "closedSeconds": round(now - at) if isinstance(at, (int, float)) else None,
+            "reopensInSeconds": max(0, round(closure["until"] - now)) if closure else None}
+
+
+def closed(root, as_json=False):
+    """`qk queue closed`: whether the queue is closed to new entries, and if so by whom, why, for how long so far and
+    when it reopens by itself (vocaro/queuekeeper#286). 0 when it is closed and 1 when it is open, so that a script
+    can wait with `while qk queue closed; do sleep 30; done`."""
+    state = closed_state(root)
+    if as_json: print(json.dumps(state, indent=2))
+    elif state["closed"]: print(f"{closed_words(state['closure'])}; {lapse_words(state['closure'])}")
+    else: print("open: the queue takes new entries")
+    return 0 if state["closed"] else 1
 
 
 def land_arguments(parser):
@@ -7248,15 +7393,24 @@ def add_arguments(parser):
     confirming.add_argument("--json", action="store_true", help="one versioned JSON result")
     operations.add_parser("resume", help="clear a hold and start the worker: any session does this itself once the "
                           "hold's cause is dealt with or gone, and asks the owner only for a hold that says it is his")
-    closing = operations.add_parser("close", help="refuse new entries from now on, saying why and who closed it, "
-                                    "while the worker finishes the entries the queue has; for maintenance that needs "
-                                    "the queue empty, which waits for `status --idle` and then runs `reopen`: 0 "
+    closing = operations.add_parser("close", help="refuse new entries for an hour, or --for, saying why and who "
+                                    "closed it, while the worker finishes the entries the queue has; for maintenance "
+                                    "that needs the queue empty, which waits for `status --idle` and then runs "
+                                    "`reopen`. It reopens by itself at its deadline unless renewed with --extend: 0 "
                                     "closed, 1 already closed")
-    closing.add_argument("--why", required=True, metavar="TEXT", help="the reason, which each refused `qk land` and "
-                         "`qk queue status` say")
+    closing.add_argument("--for", dest="lasting", metavar="DURATION", help="how long until the queue reopens by "
+                         "itself, such as 30m or 2h, at most 24h (default: 1h); with --extend, from now")
+    chosen = closing.add_mutually_exclusive_group(required=True)
+    chosen.add_argument("--why", metavar="TEXT", help="the reason, which each refused `qk land` and `qk queue status` say")
+    chosen.add_argument("--extend", action="store_true", help="renew the closure, as its closer does while the "
+                        "maintenance runs: it lapses --for from now; 1 when the queue is not closed")
     closing.add_argument("--by", metavar="WHO", help="who closes it, for the same lines (default: the repository, "
                          "branch, worktree, agent session and Mac the command ran in)")
-    operations.add_parser("reopen", help="take new entries again after `close`; it clears no hold")
+    operations.add_parser("reopen", help="take new entries again after `close`; it clears no hold. Any session may, "
+                          "once the session that closed the queue is gone")
+    asking = operations.add_parser("closed", help="whether the queue is closed to new entries, by whom, why, for how "
+                                   "long so far and when it reopens by itself: 0 closed, 1 open")
+    asking.add_argument("--json", action="store_true", help="one versioned JSON result")
     reclaiming = operations.add_parser("reclaim", help="remove each scratch worktree qk land left when its process "
                                        "was killed, once its record proves that process gone and nothing uses or "
                                        "needs it, and list older ones no record proves: 0 nothing left to look at, "
@@ -7309,7 +7463,8 @@ def main(root, args):
         if args.operation == "inbox": return agent_results.inbox(root, args.json)
         return agent_results.confirm(root, args.id, args.json)
     if args.operation == "resume": return resume(root)
-    if args.operation == "close": return close(root, args.why, args.by)
+    if args.operation == "close": return close(root, args.why, args.by, args.lasting, args.extend)
+    if args.operation == "closed": return closed(root, args.json)
     if args.operation == "reopen": return reopen(root)
     if args.operation == "reclaim": return reclaim(root, args.dry_run, args.json)
     if args.operation == "launcher-plist":

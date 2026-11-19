@@ -427,7 +427,7 @@ State lives under `queuekeeper-queue` in the repository's common Git directory:
 |---|---|
 | the entries and the lock | Every entry, its ref and its state |
 | `round.json` | The worker's account of its round: bisect suspects, each gate's lane, Mac, age, what it waits for and since when, any stack |
-| `closed.json` | A closure, with why, who and when |
+| `closed.json` | A closure: why, who, when, `until` (its deadline) and the closer's `worktree` |
 | `worker.log` | The worker's log |
 | `logs/ROUND-LANE.log` | Each gate's log, which `qk queue status` names |
 | `scratch/ID.json` | The record of each scratch worktree `qk land` has made and not yet removed |
@@ -478,6 +478,19 @@ gate's log when the lane ends.
 - The closure is read by `qk land` and `qk queue add` twice, before the conflict check and under the
   lock that saves an entry, which `qk queue close` takes too, so an entry is either saved before
   the close returns or refused. The worker does not read it.
+- A closure lapses at its `until`, which `close` sets an hour ahead, or `--for` ahead, at most
+  24 hours (`CLOSE_SECONDS`, `CLOSE_LIMIT_SECONDS`; vocaro/queuekeeper#286). `Queue.closed()`
+  reads a closure past its deadline as open, with no side effects, so nothing depends on a lapse
+  being tidied. `Queue.lapse()` removes such a file under the entries' lock and journals
+  `queue.lapsed` once. `qk land`, `qk queue add`, the snapshot and `qk queue closed` call it.
+  A record without `until`, written before deadlines existed, lapses an hour after its `at`. A
+  record that cannot be read lapses an hour after its file's modification time. Either way it
+  still closes the queue until then. `close --extend` (`Queue.extend`) rewrites `until` under the
+  same lock. It renews only a closure that has not lapsed.
+- The closer that matters is the agent session that ran `close`, not the command itself, which
+  exits at once. No process can be checked for whether that session is alive, so the deadline is
+  the backstop. `qk queue doctor` adds a hint by checking whether the closer's recorded worktree
+  still exists.
 - A project with `"integration": "pull-request"`, or with no gate lane, is refused.
 
 **`qk queue doctor`** reads the entries, the hold, whether a worker runs, and the logs of up to the
@@ -1643,8 +1656,10 @@ schema only grows, so readers ignore what they do not know.
 | `test.flaky` | A failed test passed alone | `test`, `commit`, `issue`, `landed`, `entries` |
 | `queue.held` | The queue stopped | `why`, `for` (`owner` or `session`) |
 | `queue.resumed` | A hold was cleared | `was` |
-| `queue.closed` | The queue was closed to new entries | `why`, `by` |
-| `queue.reopened` | The queue takes new entries again | `why`, `by` (the closure that ended) |
+| `queue.closed` | The queue was closed to new entries | `why`, `by`, `until` |
+| `queue.renewed` | A closure's deadline moved, by `close --extend` | `why`, `by`, `until` |
+| `queue.lapsed` | A closure passed its deadline, so the queue takes new entries again | `why`, `by`, `until` |
+| `queue.reopened` | The queue takes new entries again by `qk queue reopen` | `why`, `by` (the closure that ended) |
 
 ## Checks this repository runs
 

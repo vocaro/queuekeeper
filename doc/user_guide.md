@@ -234,7 +234,7 @@ session starts the worker itself.
 Close the queue, wait until it is idle, then boot the agent out and remove its plist:
 
 ```sh
-python3 scripts/qk queue close --why "removing the queue's LaunchAgent" && {
+python3 scripts/qk queue close --why "removing the queue's LaunchAgent" --for 2h && {
   until python3 scripts/qk queue status --idle; do sleep 30; done &&
     /bin/launchctl bootout "gui/$(id -u)/$label" &&
     rm "$HOME/Library/LaunchAgents/$label.plist"
@@ -685,21 +685,39 @@ queue first. Checking that the queue is idle and then acting on it would leave a
 entry could arrive.
 
 ```sh
-qk queue close --why "moving the queue's state" && {  # refuse new entries from here on
-  until qk queue status --idle; do sleep 30; done     # let the worker finish what it has
+qk queue close --why "moving the queue's state" --for 2h && {  # refuse new entries for up to 2 hours
+  until qk queue status --idle; do sleep 30; done              # let the worker finish what it has
   # ... the maintenance ...
   qk queue reopen
 }
 ```
 
-- **A closed queue refuses new entries** with
-  `COMMIT is not queued: the queue is closed to new entries by WHO since WHEN: WHY` and exit 1.
+- **A closure has a deadline.** It lasts an hour unless `--for DURATION` says otherwise, for
+  example `--for 30m` or `--for 2h`. The longest allowed is 24 hours. When the deadline passes,
+  the queue reopens by itself, so a session that crashes or forgets to reopen cannot block every
+  landing. The journal records this as `queue.lapsed`.
+- **Renew a closure for longer maintenance.** `qk queue close --extend [--for DURATION]` moves
+  the deadline to DURATION from now (an hour by default), like a lease renewal. A long
+  maintenance script runs it inside its wait loop. `--extend` exits 1 when the queue is not
+  closed, including once the closure has lapsed. A second `close` without `--extend` exits 1 and
+  leaves the first closure, and its deadline, unchanged.
+- **A closed queue refuses new entries** with exit 1:
+  `COMMIT is not queued: the queue is closed to new entries by WHO since WHEN (AGE ago): WHY`.
+  The refusal then says when the queue reopens by itself. The JSON `recovery` gives the
+  deadline as `reopensAt` and suggests `qk queue closed --json`.
+- **`qk queue closed` says whether the queue is closed:** by whom, why, how long it has been
+  closed, and when it reopens by itself. It exits 0 while the queue is closed and 1 while it is
+  open, so `while qk queue closed; do sleep 30; done` waits for the reopening. With `--json` it
+  gives `closed`, `closure`, `closedSeconds` and `reopensInSeconds`.
 - **Entries already queued still reach their verdict.** Closing is not a hold: `qk queue resume`
   leaves a closed queue closed, and `qk queue reopen` clears no hold.
-- **`qk queue status` shows the closure** on its second line, and in `--json` as `closed`, which
-  is null while the queue is open.
-- **Whoever closed the queue reopens it.** A session whose entry was refused waits for the
-  reopening and lands again.
+- **`qk queue status` shows the closure** on its second line, with its deadline. In `--json` it
+  is `closed`, which is null while the queue is open. `qk queue doctor` reports a closure as a
+  finding and says if the worktree it was closed from is gone. The dashboard shows it under
+  attention.
+- **Whoever closed the queue reopens it** when the maintenance is done. If that session is gone,
+  any session may run `qk queue reopen`. A session whose entry was refused waits for the queue to
+  reopen, then lands again.
 
 ### Entry names
 

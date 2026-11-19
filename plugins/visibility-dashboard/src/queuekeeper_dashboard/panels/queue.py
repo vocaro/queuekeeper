@@ -196,12 +196,20 @@ def reason(why):
 
 
 def attention(state, journal, now):
-    """What is open and needs someone, newest first within each level, danger first: a hold, entries waiting with no
-    worker, a gate that looks stuck, each entry that came back within OPEN and whose branch has not been queued again
+    """What is open and needs someone, newest first within each level, danger first: a hold, a closure, entries waiting
+    with no worker, a gate that looks stuck, each entry that came back within OPEN and whose branch has not been queued again
     since, and each test found flaky within OPEN with its issue. Each is {level, title, text, at} with the entry, the
     log or the issue it is about when it has one."""
     found = []
     if state.get("held"): found.append({"level": "danger", "title": "Held", "text": f"The queue is held {state['held']}"})
+    closure = state.get("closed")
+    if isinstance(closure, dict):
+        # It reopens by itself at until (vocaro/queuekeeper#286); until then every `qk land` is refused.
+        until = closure.get("until")
+        found.append({"level": "warning", "title": "Closed", "at": closure.get("at"),
+                      "text": f"Closed to new entries by {closure.get('by') or 'someone'}: {closure.get('why') or 'no reason given'}"
+                      + (f". It reopens by itself at {time.strftime('%H:%M', time.localtime(until))}, or sooner with "
+                         "`qk queue reopen`" if isinstance(until, (int, float)) else "")})
     if state.get("waiting") and not state.get("worker"):
         found.append({"level": "warning", "title": "No worker", "text": f"{len(state['waiting'])} waiting with no worker; "
                       "`qk queue resume` starts one"})

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
@@ -154,7 +155,10 @@ class AgentCli(Fixture):
                 self.assertEqual((advice["closed"]["why"], advice["closed"]["by"]),
                                  ("a host goes away", "the maintenance session"))
                 self.assertEqual(advice["suggestedCommands"],
-                                 [["qk", "--project", str(self.repo.resolve()), "queue", "status", "--json"]])
+                                 [["qk", "--project", str(self.repo.resolve()), "queue", "closed", "--json"]])
+                # When the closure lapses by itself (vocaro/queuekeeper#286): an hour from its close by default.
+                self.assertEqual(advice["reopensAt"], advice["closed"]["until"])
+                self.assertAlmostEqual(advice["reopensAt"], time.time() + mq.CLOSE_SECONDS, delta=600)
                 self.assertIn("is not queued: the queue is closed to new entries", progress)
         self.assertEqual(mq.Queue(self.repo).all(), [])
         mq.Queue(self.repo).reopen()
