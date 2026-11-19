@@ -112,7 +112,9 @@ core never imports a plugin, and platform behavior stays in its plugin. A plugin
 load stops the run with exit 70 rather than running without it.
 
 Each plugin has a README of its own: [Apple](../plugins/apple/src/queuekeeper_apple/README.md),
-[Unity](../plugins/unity/src/queuekeeper_unity/README.md),
+[Android](../plugins/android/src/queuekeeper_android/README.md),
+[Mobile](../plugins/mobile/src/queuekeeper_mobile/README.md), which the Apple and Android plugins
+share, [Unity](../plugins/unity/src/queuekeeper_unity/README.md),
 [Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md) and
 [Mac hardware](../plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md).
 

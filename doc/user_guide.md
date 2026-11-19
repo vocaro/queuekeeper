@@ -827,6 +827,8 @@ safe to delete ([Reclaiming disk space](guides/disk-cleanup.md#reclaiming-disk-s
 
 - [Related tools](related_tools.md) compares Queuekeeper with other merge queues.
 - The plugins: [Apple](../plugins/apple/src/queuekeeper_apple/README.md),
+  [Android](../plugins/android/src/queuekeeper_android/README.md),
+  [Mobile](../plugins/mobile/src/queuekeeper_mobile/README.md),
   [Unity](../plugins/unity/src/queuekeeper_unity/README.md),
   [Mac desktop](../plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md) and
   [Mac hardware](../plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md).
