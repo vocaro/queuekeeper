@@ -29,14 +29,24 @@ refused, not saved.
 Run it directly on this Mac, as above, not through `qk admit`. It needs this Mac's Chrome, it writes into this
 checkout, and it is light: one headless Chrome for a few seconds, which admission is not for. `qk admit` may send it
 to another Mac, which may have no Chrome and would keep the pictures in its own checkout; there it refuses
-(vocaro/queuekeeper#172)."""
+(vocaro/queuekeeper#172).
+
+    python3 tools/dashboard-screenshots.py --check-motion FOLDER
+
+checks that Home's dots move. Headless Chrome's --virtual-time-budget does not advance SVG's animation, so two pictures
+taken that way show the dots in one place however fine the image is. This instead opens assets/dashboard-home.svg (the
+one in --out) in headless Chrome over its DevTools pipe, pauses the image's clock and sets it to each of MOTION_TIMES,
+saves the Flow map then as FOLDER/flow-at-Ts.png, and says where each dot was: exit 0 when a dot is somewhere else at
+each time, 1 when none moved (vocaro/queuekeeper#237)."""
 import argparse
 import base64
 import copy
 import html
+import json
 import os
 from pathlib import Path
 import re
+import select
 import subprocess
 import sys
 import tempfile
@@ -509,6 +519,106 @@ def moving(picture, drawn, theme):
             + drawing + "\n</svg>\n</svg>\n")
 
 
+# The image's clock, in seconds, set for each still: apart by less than every dot's shortest round, 1.6 seconds.
+MOTION_TIMES = (0, 0.5)
+# Where each dot is, and the Flow map's box, after the clock is set and the image drawn again at that time.
+DOTS = """(async () => { const image = document.documentElement; image.pauseAnimations(); image.setCurrentTime(%s);
+  await new Promise(done => setTimeout(done, 200));
+  const map = image.querySelector("svg").getBoundingClientRect();
+  return {map: [map.x, map.y, map.width, map.height], dots: [...image.querySelectorAll("circle.moving")].map(dot => {
+    const box = dot.getBoundingClientRect(); return [+(box.x + box.width / 2).toFixed(1), +(box.y + box.height / 2).toFixed(1)]; })}; })()"""
+
+
+class DevTools:
+    """A headless Chrome driven over the DevTools protocol on a pipe (--remote-debugging-pipe: it reads from its file
+    3 and writes to its file 4, each message ended by a NUL), with one tab open at address."""
+
+    def __init__(self, binary, profile, address, timeout=60):
+        theirs_in, self.out = os.pipe()
+        self.into, theirs_out = os.pipe()
+
+        def pipes():
+            reads, writes = os.dup(theirs_in), os.dup(theirs_out)
+            os.dup2(reads, 3); os.dup2(writes, 4)
+        self.process = subprocess.Popen([binary, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-pipe",
+                                         f"--user-data-dir={profile}", f"--window-size={WIDTH},800", "about:blank"],
+                                        pass_fds=(3, 4, theirs_in, theirs_out), preexec_fn=pipes,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        os.close(theirs_in); os.close(theirs_out)
+        self.timeout, self.sent, self.unread, self.session = timeout, 0, b"", None
+        target = self.call("Target.createTarget", url=address)["targetId"]
+        self.session = self.call("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
+        deadline = time.monotonic() + timeout
+        while self.evaluate("document.readyState") != "complete":
+            if time.monotonic() > deadline: raise TimeoutError(f"Chrome did not finish loading {address}")
+            time.sleep(0.1)
+
+    def call(self, method, **params):
+        self.sent += 1
+        message = {"id": self.sent, "method": method, "params": params, **({"sessionId": self.session} if self.session else {})}
+        os.write(self.out, json.dumps(message).encode() + b"\0")
+        while True:
+            while b"\0" not in self.unread:
+                if not select.select([self.into], [], [], self.timeout)[0]: raise TimeoutError(f"Chrome did not answer {method}")
+                read = os.read(self.into, 1 << 16)
+                if not read: raise ConnectionError(f"Chrome closed its pipe before answering {method}")
+                self.unread += read
+            line, self.unread = self.unread.split(b"\0", 1)
+            answer = json.loads(line)
+            if answer.get("id") != self.sent: continue
+            if "error" in answer: raise RuntimeError(f"{method}: {answer['error'].get('message')}")
+            return answer["result"]
+
+    def evaluate(self, expression):
+        return self.call("Runtime.evaluate", expression=expression, awaitPromise=True, returnByValue=True)["result"].get("value")
+
+    def close(self):
+        self.process.kill(); self.process.wait()
+        os.close(self.out); os.close(self.into)
+
+
+def dots(binary, image, folder):
+    """Where each of the Flow map's dots is in the SVG image, at each of MOTION_TIMES on its clock, saving the map at
+    each time to folder as flow-at-Ts.png: [(the time, the still, [[x, y] of each dot])]."""
+    found = []
+    with tempfile.TemporaryDirectory() as profile:
+        browser = DevTools(binary, profile, image.resolve().as_uri())
+        try:
+            for at in MOTION_TIMES:
+                drawn = browser.evaluate(DOTS % at)
+                x, y, width, height = drawn["map"]
+                still = folder / f"flow-at-{at:g}s.png"
+                shot = browser.call("Page.captureScreenshot", captureBeyondViewport=True,
+                                    clip={"x": x, "y": y, "width": width, "height": height, "scale": SCALE})
+                still.write_bytes(base64.b64decode(shot["data"]))
+                found.append((at, still, drawn["dots"]))
+        finally:
+            browser.close()
+    return found
+
+
+def moved(found):
+    """Why the dots found by dots() do not show the map moving, or None when they do: there are some, and some dot is
+    somewhere else at each time than at the time before."""
+    if not found or not found[0][2]: return "the image has no moving dots"
+    for (before, _, was), (at, _, now) in zip(found, found[1:]):
+        if was == now: return f"every dot is where it was at {before:g}s again at {at:g}s"
+    return None
+
+
+def check_motion(binary, image, folder):
+    if not image.is_file():
+        print(f"dashboard-screenshots: no image at {image}; take it first, or name its folder with --out", file=sys.stderr)
+        return 2
+    folder.mkdir(parents=True, exist_ok=True)
+    found = dots(binary, image, folder)
+    for at, still, where in found:
+        print(f"dashboard-screenshots: at {at:g}s: {still}: dots at " + " ".join(f"{x:g},{y:g}" for x, y in where))
+    why = moved(found)
+    print(f"dashboard-screenshots: {image}: " + (why or "the dots move"), file=sys.stderr if why else sys.stdout)
+    return 1 if why else 0
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog="dashboard-screenshots.py", description="Retake the README's screenshots "
                                      "of the dashboard, from made-up data.")
@@ -518,6 +628,8 @@ def main(argv):
     parser.add_argument("--out", type=Path, default=CHECKOUT / "assets", metavar="FOLDER",
                         help="where the pictures go (default: this checkout's assets)")
     parser.add_argument("--chrome", default=CHROME, metavar="PATH", help="the Chromium browser to take them with")
+    parser.add_argument("--check-motion", type=Path, metavar="FOLDER", help="take no pictures; check that the Flow map's "
+                        "dots in --out's dashboard-home.svg move, saving a still of the map at each time to FOLDER")
     args = parser.parse_args(argv)
     if os.environ.get(DISPATCHER):
         print(f"dashboard-screenshots: sent to this Mac by {os.environ[DISPATCHER]}, whose checkout the pictures "
@@ -527,6 +639,7 @@ def main(argv):
     if not Path(args.chrome).is_file():
         print(f"dashboard-screenshots: no browser at {args.chrome}; name one with --chrome", file=sys.stderr)
         return 2
+    if args.check_motion: return check_motion(args.chrome, args.out / "dashboard-home.svg", args.check_motion)
     args.out.mkdir(parents=True, exist_ok=True)
     made, failed = serve(args.theme), 0
     try:

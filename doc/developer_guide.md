@@ -1621,6 +1621,12 @@ It needs Google Chrome and writes, in the dark theme, `assets/dashboard-home.svg
 view, with its Flow map animated by SVG and still where the viewer asks for reduced motion) and
 `dashboard-farm.png`.
 
+**Check that the Flow map moves with `--check-motion FOLDER`**, not with two headless screenshots:
+headless Chrome's `--virtual-time-budget` does not advance SVG animation, so such pictures show the
+dots in one place even when the image is fine. The flag sets the image's own clock to two times,
+saves a still of the map at each to `FOLDER`, and exits 1 when no dot moved and 2 when there is no
+image (#237).
+
 **Run it directly, not through `qk admit`.** It runs one headless Chrome for a few seconds and
 writes into this checkout; through admission it might go to another Mac with no Chrome, so there it
 refuses with exit 2. Its test, `tests/visibility/test_dashboard_screenshots.py`, does run through

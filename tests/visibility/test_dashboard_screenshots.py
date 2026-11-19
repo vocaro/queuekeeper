@@ -2,7 +2,7 @@
 each panel gives its script, so that a panel which changes is noticed here and not in a picture.
 
 No browser is run here: the pictures themselves are looked at when they are retaken."""
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import os
@@ -121,6 +121,49 @@ class Served(test_dashboard.Fixture):
             self.addCleanup(connection.close)
             connection.request("GET", path, headers={"Host": f"localhost:{made.server_address[1]}"})
             self.assertEqual(connection.getresponse().status, 200, path)
+
+
+class CheckMotion(unittest.TestCase):
+    """--check-motion: that it passes when a dot is elsewhere at each time and fails when none moved. Chrome is not
+    run; dots() is replaced by where it would say the dots are."""
+
+    def setUp(self):
+        self.script = loaded()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        (self.folder / "dashboard-home.svg").write_text("<svg/>")
+        self.chrome = self.folder / "chrome"
+        self.chrome.write_text("")
+
+    def check(self, found):
+        arguments = ["--out", str(self.folder), "--chrome", str(self.chrome), "--check-motion", str(self.folder / "stills")]
+        with patch.object(self.script, "dots", return_value=found) as dots, patch.object(self.script, "serve") as serve, \
+                redirect_stderr(io.StringIO()) as said, redirect_stdout(io.StringIO()) as told:
+            code = self.script.main(arguments)
+        serve.assert_not_called()
+        return code, dots, said.getvalue() + told.getvalue()
+
+    def test_dots_somewhere_else_at_each_time_pass(self):
+        code, dots, said = self.check([(0, Path("a.png"), [[1, 2], [3, 4]]), (0.5, Path("b.png"), [[1, 2], [5, 6]])])
+        self.assertEqual(code, 0, said)
+        dots.assert_called_once_with(str(self.chrome), self.folder / "dashboard-home.svg", self.folder / "stills")
+        self.assertIn("the dots move", said)
+
+    def test_dots_in_the_same_place_or_none_fail(self):
+        code, _, said = self.check([(0, Path("a.png"), [[1, 2]]), (0.5, Path("b.png"), [[1, 2]])])
+        self.assertEqual(code, 1)
+        self.assertIn("every dot is where it was at 0s again at 0.5s", said)
+        code, _, said = self.check([(0, Path("a.png"), []), (0.5, Path("b.png"), [])])
+        self.assertEqual(code, 1)
+        self.assertIn("no moving dots", said)
+
+    def test_no_image_is_refused_before_chrome_starts(self):
+        (self.folder / "dashboard-home.svg").unlink()
+        code, dots, said = self.check([])
+        self.assertEqual(code, 2)
+        dots.assert_not_called()
+        self.assertIn("no image at", said)
 
 
 class SentToAnotherMac(unittest.TestCase):
