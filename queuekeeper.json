@@ -11,10 +11,6 @@
       "timeout": 2400,
       "budgetMinutes": 15
     },
-    "spelling": {
-      "command": ["python3", "scripts/check_spelling.py"],
-      "timeout": 300
-    },
     "setup-examples": {
       "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "core.test_setup_examples"],
       "timeout": 300
@@ -25,6 +21,5 @@
     "unread": {"paths": {"doc/user_guide.md": {
       "why": "only test_setup_examples reads it, for the JSON setup example agents copy (vocaro/queuekeeper#147)",
       "lanes": ["setup-examples"]}}}
-  },
-  "testLanes": {"selects": {"spelling": []}}
+  }
 }

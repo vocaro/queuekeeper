@@ -1564,10 +1564,6 @@ check of its own as a preflight lane ([preflight lanes](user_guide.md#preflight-
 [#69](https://github.com/vocaro/queuekeeper/issues/69)). The American English check and its rules
 belong to vocaro-engineering, as `eng spelling`.
 
-This repository's old copy, `scripts/check_spelling.py`, no longer runs before the gate and goes
-in the next change. Its `spelling` lane stays until then, because the queue judges a landing by
-`main`'s `queue.preflight`, which still names it.
-
 ### Docs check
 
 `python3 scripts/qk docs check [PATHS]` checks a project's Markdown. With no paths it reads the
