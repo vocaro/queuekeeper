@@ -20,7 +20,7 @@ import time
 import types
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
@@ -6569,6 +6569,39 @@ class ToolkitCopy(Fixture):
         self.assertNotIn("QUEUEKEEPER_ROOT", worker.environment)
         self.assertFalse(self.copy.exists())
 
+    def test_the_toolkits_own_queue_puts_off_its_move_for_the_round_that_adopts_a_kept_stack(self):
+        """vocaro/queuekeeper#276: the landing that made a stack adoptable moved the toolkit's own copy, and the move,
+        a new worker process, threw the stack away before the next round adopted it, 30 times of 30. No lane of the
+        toolkit's own reads the copy, so the worker settles the stack on the code that gated it, stacks nothing on it,
+        and moves the round after."""
+        head = run(self.repo, "git", "rev-parse", "origin/main")
+        stacked = SimpleNamespace(base=head, drop=Mock())
+        with patch.object(mq, "TOOLKIT_ROOT", self.repo), contextlib.redirect_stdout(io.StringIO()) as said:
+            worker = mq.Worker(mq.Queue(self.repo))
+            worker.code, worker.stacked = "0" * 40, stacked
+            with patch.object(worker, "refuses", return_value=None), patch.object(worker, "move_to") as moved:
+                worker.toolkit()
+                moved.assert_not_called()
+                stacked.drop.assert_not_called()
+                self.assertIs(worker.stacked, stacked)
+                self.assertEqual(worker.lagging, head)
+                self.assertIn(f"moving to the toolkit at {head[:12]}, origin/main, after this round, which settles the "
+                              f"gate stacked on {head[:12]} with the toolkit at {'0' * 12} that gated it", said.getvalue())
+                # The adopted round gates the stack with nothing stacked on it.
+                worker.stacked = SimpleNamespace(base=head, tip=head, entries=[], paths=set(), lanes=["gate"],
+                                                 name="n", runner=worker, wait=None, drop=Mock(),
+                                                 not_admitted=lambda: True, void=lambda: "no verdict")
+                with patch.object(mq, "config_at", return_value={"lanes": {"gate": {}}}), \
+                        patch.object(mq, "lanes_of", return_value=["gate"]), patch.object(worker, "begun"), \
+                        patch.object(worker, "prune"), patch.object(worker, "after_stack"), \
+                        patch.object(worker, "watched", return_value=(75, None)) as watched:
+                    worker.adopted()
+                self.assertIs(watched.call_args.kwargs["stacks"], False)
+                # The positive control: the next round, with no stack kept, moves, and its rounds stack again.
+                worker.toolkit()
+                self.assertIsNone(worker.lagging)
+                moved.assert_called_once()
+
     def test_a_toolkit_at_origin_that_does_not_start_is_not_moved_to(self):
         """A toolkit commit pushed by hand whose worker code does not import: the project's worker stays on its own
         code, and its lanes run the toolkit it was started from, rather than a gate that sends every entry back."""
@@ -10217,11 +10250,12 @@ class BothHalves(Fixture):
         self.assertFalse(hasattr(mq, "HERE") or hasattr(mq, "BESIDE"))
         near, far = mq.lane_wait.farm_mac("build-host"), mq.lane_wait.farm_mac("gate-03")
         for hosts in ((), ("build-host",), ("build-host", "gate-03")):
-            # The first gate on this Mac: any other, which starts it now or not at all, whether or not it may wait,
-            # since a request waits only in the queue of the Mac its process runs on.
-            for waits in (True, False):
-                self.assertEqual(APART(mq.HERE_MAC, hosts, waits),
-                                 (("--offload-only",), None, "on another Mac if it can start them now"))
+            # The first gate on this Mac: any other. A stacked gate waits in another Mac's queue (vocaro/queuekeeper#274);
+            # a bisect's newer half starts there now or not at all.
+            self.assertEqual(APART(mq.HERE_MAC, hosts, True),
+                             (("--offload-wait",), None, "on another Mac, waiting there for one to admit them"))
+            self.assertEqual(APART(mq.HERE_MAC, hosts, False),
+                             (("--offload-only",), None, "on another Mac if it can start them now"))
         for hosts in (("build-host",), ("build-host", "gate-03")):
             # On another Mac: every Mac but that one, this Mac among them. A stacked gate waits for one, as any gate
             # does; a bisect's newer half starts now or not at all.
@@ -10319,7 +10353,7 @@ class PooledStack(Fixture):
         waiting = [{"id": "new", "state": mq.QUEUED}]
         config = {"lanes": {"gate": {"resource": "heavy"}}}
         for mac, where, excluded in [
-            (mq.lane_wait.HERE, ("--offload-only",), None),
+            (mq.lane_wait.HERE, ("--offload-wait",), None),
             # Every Mac but the batch's, this Mac among them, waiting for one as any gate does.
             (mq.lane_wait.farm_mac("gate-03"), (), "gate-03"),
         ]:
@@ -10506,7 +10540,7 @@ class Stacked(Fixture):
             waits.running()
             worker.stack(*args)
             stack.assert_called_once()
-            self.assertEqual(stack.call_args.args[-1], ("--offload-only",))
+            self.assertEqual(stack.call_args.args[-1], ("--offload-wait",))
             self.assertIsNone(stack.call_args.args[1].environment.get(mq.remote.QUEUE_GATE_EXCLUDE))
 
     def test_an_entry_that_arrives_during_a_gate_lands_on_its_gate_stacked_on_the_batch(self):

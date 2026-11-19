@@ -1586,11 +1586,13 @@ def apart(mac, hosts, waits):
     it, and a stacked gate ran on this Mac whenever the farm had one other Mac and the batch gated there.
 
     waits says whether the second gate may wait for a Mac. A stacked gate may, since the batch below it gates on
-    meanwhile; a bisect's newer half may not (--if-free), since the round ends only when both halves have. What
-    remains of where a command starts is not a rule but how a request waits: it waits in the queue of the Mac its
-    process runs on, with a place in the others' queues for a whole-host lane (remote.Places). So a gate kept off
-    this Mac (--offload-only) starts on another Mac now or not at all, whatever waits says."""
-    if mac == HERE_MAC: return ("--offload-only",), None, "on another Mac if it can start them now"
+    meanwhile; a bisect's newer half may not (--if-free, --offload-only), since the round ends only when both halves
+    have. A stacked gate kept off this Mac waits in another Mac's queue (--offload-wait), as a lane placed only there
+    does: with one try at another Mac and no wait (--offload-only), a stack the Mac's room let start was declined when
+    its final lane asked a minute later, that Mac busy by then with other projects' gates (vocaro/queuekeeper#274)."""
+    if mac == HERE_MAC:
+        if waits: return ("--offload-wait",), None, "on another Mac, waiting there for one to admit them"
+        return ("--offload-only",), None, "on another Mac if it can start them now"
     excluded = next((host for host in hosts if mac == lane_wait.farm_mac(host)), None)
     if excluded is None: return None
     if waits: return (), excluded, f"on a Mac other than {mac}, which gates the batch below them"
@@ -3447,6 +3449,9 @@ class Worker:
         self.checks = ()  # the lanes the gate runs unadmitted first, by the round's batch (quick_lanes, gate)
         self.stacked = None  # a Stack whose batch below landed, which the next round adopts as its own (after_stack)
         self.pending = None  # the Stack started on this round's batch while it gates (watched)
+        # The toolkit commit the toolkit's own worker put off moving to so that this round adopts self.stacked
+        # (toolkit), or None: the round stacks nothing on its batch, and the next round moves.
+        self.lagging = None
         self.jumped = {}  # by docs entry of a round of docs entries, the older entries it went ahead of (docs_ahead)
         self.stack_retry_after = 0  # monotonic time before which this round does not retry a declined stack
         self.gating = ()  # the IDs of the entries integrate last put on top, which the gate tests (Removal)
@@ -3595,8 +3600,18 @@ class Worker:
         (vocaro-engineering#177). A toolkit at origin/main that does not start, or that a worker moved to and
         stopped in before it finished a round, is not moved to (refuses): the worker goes on with its own code, and
         a project's lanes with the toolkit it was started from, so that the fix can land through this queue. A
-        toolkit that is no repository, or an explicit root, keeps the code the worker runs."""
+        toolkit that is no repository, or an explicit root, keeps the code the worker runs.
+
+        The toolkit's own queue puts off a move for one round when it keeps a stacked gate for the round to adopt
+        (lagging). The landing that made the stack adoptable is the one the copy would move to, and the move, a new
+        process, threw away every such stack before it was adopted: 30 of 30 on 2026-11-19, one after its gate's
+        twenty minutes had passed (vocaro/queuekeeper#276). No lane of the toolkit's own reads the copy, which only
+        the worker runs from, and the stack's lanes ran on the tip of that landing, from their own checkout. So the
+        worker that gated the batch below the stack settles the stack too, starts no stack of its own meanwhile, and
+        moves in the next round, lagging origin/main by that one landing at most. A project's lanes do read its copy
+        (QUEUEKEEPER_ROOT), so a project's stack is still thrown away before its copy moves."""
         self.environment = environment()
+        self.lagging = None
         if os.environ.get(TOOLKIT_VARIABLE): return
         common = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
         if common.returncode: return  # a toolkit that is no repository has no origin/main to follow
@@ -3607,6 +3622,12 @@ class Worker:
         head = text(TOOLKIT_ROOT, "rev-parse", MAIN)
         if self.code and head != self.code and self.refuses(head): head = self.code
         if own and (not self.code or head == self.code): return
+        if own and self.stacked:
+            self.lagging = head
+            self.say(f"moving to the toolkit at {head[:12]}, origin/main, after this round, which settles the gate "
+                     f"stacked on {self.stacked.base[:12]} with the toolkit at {self.code[:12]} that gated it, and "
+                     "stacks nothing on it")
+            return
         if own:
             # Beside the queue's checkout, which already has the toolkit's own name.
             copy = self.queue.home / f"{self.queue.main_checkout.name}-toolkit"
@@ -6073,7 +6094,9 @@ class Worker:
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {stacked.tip[:12]} on "
                  f"{base[:12]}, whose gate began on top of the batch that just landed")
         self.begun(stacked.name, stacked.tip, base, applied, adopted=True)
-        result, log = self.watched(stacked.runner, config, lanes, base, stacked.tip, applied, stacked.wait)
+        # A worker that put off its move (lagging) stacks nothing, so that the next round moves with nothing to drop.
+        result, log = self.watched(stacked.runner, config, lanes, base, stacked.tip, applied, stacked.wait,
+                                   stacks=self.lagging is None)
         self.prune()
         if stacked.not_admitted():
             # The speculative offer never started. Gate the entries normally without charging a no-verdict run.
@@ -6184,7 +6207,8 @@ class Worker:
         needs = bool(settings.get("wholeHost")), settings.get("resource") == "exclusive", unlocked_screen(lanes, lane)
         fits = remote.lane_needs(lanes, lane)
         said = []
-        for host in [host for host in hosts if host != excluded] + ([] if "--offload-only" in where else [None]):
+        off = "--offload-only" in where or "--offload-wait" in where
+        for host in [host for host in hosts if host != excluded] + ([] if off else [None]):
             if host is None:
                 reading = offload_host.capacity()
                 reason = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")

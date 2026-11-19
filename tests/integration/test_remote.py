@@ -5209,6 +5209,42 @@ exec {shlex.quote(real)} "$@"
         with self.assertRaises(SystemExit):
             self.run_here("--offload-only", "--here", "gate")
 
+    def test_offload_wait_runs_the_lane_on_another_mac_waiting_there_and_never_here(self):
+        """vocaro/queuekeeper#274: the stacked gate kept off this Mac waits in another Mac's queue, as a lane placed
+        only there does, rather than having one try at it (--offload-only). Exit 75 when no Mac but the batch's can
+        be sent it or reached, MISCONFIGURED when one is misconfigured, and never a run here."""
+        status, output, error = self.run_here("--offload-wait", "gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("queuekeeper: gate runs only on fake (--offload-wait never runs it here)", error)
+        self.assertEqual(json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())["ranOn"],
+                         "fake")
+        # Not as --if-free work: it waits for the Mac's admission there.
+        self.assertEqual(self.run_here("--offload-wait", "failing")[0], 5)
+        for lane in ["gate", "failing"]:
+            self.assertFalse((self.project / ".build/queuekeeper" / lane).exists())
+        # The batch's Mac, the farm's only other one, is left out: no verdict, which the queue tries again later.
+        with patch.dict(os.environ, {remote.QUEUE_GATE_EXCLUDE: "fake"}):
+            status, output, error = self.run_here("--offload-wait", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("queuekeeper: gate not run: --offload-wait never runs it here, and the farm has no Mac", error)
+        with farm_fixture.only():
+            self.assertEqual(self.run_here("--offload-wait", "gate")[0], resources.BUSY)
+        with patch.dict(os.environ, {"FAKE_UNREACHABLE": "1"}):
+            status, output, error = self.run_here("--offload-wait", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertIn("queuekeeper: gate not run: fake cannot be reached", error)
+        with patch.dict(os.environ, {"FAKE_DENIED": "1"}):
+            status, output, error = self.run_here("--offload-wait", "gate")
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
+        # A lane another Mac never takes contradicts the mode, as it does --offload-only's; so does --here.
+        status, _output, error = self.run_here("--offload-wait", "build")
+        self.assertEqual(status, 2)
+        self.assertIn("build stays on this Mac (the lane says: its goldens", error)
+        self.assertIn("so --offload-wait cannot offer it", error)
+        with self.assertRaises(SystemExit):
+            self.run_here("--offload-wait", "--offload-only", "gate")
+
     def test_the_old_name_of_offload_only_is_refused_with_the_new_one_and_hidden_from_help(self):
         refused = ("queuekeeper: --build-host-only was --offload-only's name until vocaro-engineering#58, and is no longer "
                    "read: use --offload-only\n")

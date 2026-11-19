@@ -554,6 +554,30 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         if place is not None: place.leave()
 
 
+def offload_wait(root, config, name, extra, expect, exclude, only):
+    """`qk run --offload-wait`: run lane name on another Mac of the farm, waiting in its queue for admission as a
+    lane placed only there does (remote.there_lane), never here. The merge queue's stacked gate runs so while the
+    batch below it gates on this Mac: --offload-only gave it one try at another Mac and no wait, and the Mac read
+    free when the stack started was often busy a minute later, when its final lane asked (vocaro/queuekeeper#274).
+    Only hosts in only, when given, and never exclude. No Mac to send it to, or none reached, is BUSY: no verdict,
+    which the queue tries again later."""
+    others = tuple(host for host in (only if only is not None else remote.farm.destinations()) if host != exclude)
+    if not others:
+        print(f"queuekeeper: {name} not run: --offload-wait never runs it here, and {remote.NO_MAC}", file=sys.stderr,
+              flush=True)
+        return BUSY
+    try:
+        return remote.there_lane(root, config, name, extra, expect, "--offload-wait never runs it here", hosts=others)
+    except remote.Declined as error:
+        return declined_everywhere(name, str(error))
+    except remote.Misconfigured as error:
+        print(f"queuekeeper: {name} not run: {error}", file=sys.stderr, flush=True)
+        return remote.MISCONFIGURED
+    except remote.Unavailable as error:
+        print(f"queuekeeper: {name} not run: {error}", file=sys.stderr, flush=True)
+        return BUSY
+
+
 def declined_everywhere(name, why):
     """Say that name did not run because the Macs' own settings leave no Mac to run it, why, and return
     remote.MISCONFIGURED: a cause in the Macs' settings and no verdict on any commit, which a merge queue holds for
@@ -1274,6 +1298,10 @@ def perform(argv, report):
         f"only if it can start it now, and never run it here: exit {BUSY} when another Mac declines it, cannot be "
         f"reached or none is configured, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status "
         "there; for a caller that holds or will take its own admission here")
+    where.add_argument("--offload-wait", action="store_true", help="send the lane to another Mac and wait there for "
+        f"its admission, as a lane placed only there does, and never run it here: exit {BUSY} when no other Mac can "
+        f"be reached or none is configured, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status "
+        "there; for the merge queue's stacked gate while the batch below it gates on this Mac")
     # Its name until vocaro-engineering#58, which main refuses, naming the new one, beside --here too.
     run.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("--if-free", action="store_true", help=f"run only if another Mac's heavy-work admission, or "
@@ -1672,7 +1700,7 @@ def perform(argv, report):
             # What keeps the lane from another Mac under this run's pin set, or None (--sibling).
             unsent = unsendable(args.lane)
             if lane.get("foreground") and not second:
-                if args.offload_only or not (args.here or lane.get("here")):
+                if args.offload_only or args.offload_wait or not (args.here or lane.get("here")):
                     if unsent: raise ValueError(f"{args.lane} not run: it runs on another Mac, and {unsent}")
                     return remote.foreground_lane(root, config, args.lane, extra, args.expect)
                 plugins.FOREGROUND.require_foreground()
@@ -1707,7 +1735,7 @@ def perform(argv, report):
                 # Not by foreground work, which this Mac runs only as its foreground allows, above.
                 declined = remote.here_unfit(bool(lane.get("wholeHost")), admission_of(lane) == "exclusive",
                                              **{**remote.lane_needs(config["lanes"], args.lane), "foreground": False})
-            if declined is not None and not args.offload_only:
+            if declined is not None and not (args.offload_only or args.offload_wait):
                 if args.here or args.serial:
                     asked = "--here" if args.here else "--serial runs the serial reference here"
                     raise ValueError(f"{args.lane} not run: it runs on this Mac ({asked}), and {declined}")
@@ -1731,13 +1759,15 @@ def perform(argv, report):
                     return remote.there_lane(root, config, args.lane, extra, args.expect, declined, hosts=others)
                 except remote.Declined as error:
                     return declined_everywhere(args.lane, str(error))
-            if args.offload_only and unsent:
-                raise ValueError(f"{args.lane} not run: --offload-only never runs it here, and {unsent}")
-            if args.offload_only:
+            away = "--offload-wait" if args.offload_wait else "--offload-only"
+            if (args.offload_only or args.offload_wait) and unsent:
+                raise ValueError(f"{args.lane} not run: {away} never runs it here, and {unsent}")
+            if args.offload_only or args.offload_wait:
                 if reason is not None:
-                    raise ValueError(f"{args.lane} stays on this Mac ({reason}), so --offload-only cannot offer it "
+                    raise ValueError(f"{args.lane} stays on this Mac ({reason}), so {away} cannot offer it "
                                      "to another Mac")
-                if args.serial: raise ValueError("--serial runs a lane group here, and --offload-only never does")
+                if args.serial: raise ValueError(f"--serial runs a lane group here, and {away} never does")
+                if args.offload_wait: return offload_wait(root, config, args.lane, extra, args.expect, exclude, only)
                 # The caller runs the lane under its own admission when another Mac declines it.
                 return remote.first(root, config, args.lane, extra, args.expect, fallback=False,
                                     queue_gate=queue_gate, exclude=exclude, hosts=only).status

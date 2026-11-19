@@ -232,7 +232,11 @@ inputs a provisioning lane made. Older `../NAME-queue` checkouts move here by th
   set where the worker started is left alone.
 - **The worker follows its copy.** A worker whose code came from another commit restarts from the
   copy, with the same arguments and bisect, before touching any entry, so an old worker never
-  refuses a setting the new code accepts.
+  refuses a setting the new code accepts. Queuekeeper's own worker puts the move off for one round
+  when it keeps a stacked gate: the landing that made the stack adoptable is the commit it would move
+  to, and the new process would throw the stack away. No lane of Queuekeeper's own reads the copy, and
+  the stack ran on that landing's tip, so the old worker settles the stack, stacks nothing on it, and
+  moves in the next round. A project's lanes do read its copy, so its stack is thrown away first.
 - **It never moves to a commit that could leave the queue without a worker.** It first imports the
   worker's code from that commit in a separate process, and records the commit as `moved` until a
   worker started there finishes a round. A commit that does not import, or on which a moved worker
@@ -276,17 +280,21 @@ only on top of an older one.
 
 **Stacked gates.** While a batch gates, the worker looks every `STACK_POLL` (30 s) for entries
 behind it, and once the batch's last lane is admitted, gates them stacked on the batch's tip in the
-`-beside` checkout, on another Mac. The batch's push makes the stack's base `origin/main`, so the
+`-beside` checkout, on another Mac, where it waits for admission as any gate does: with the batch
+on this Mac, `qk run --offload-wait` sends each lane to another Mac to wait in its queue. The batch's push makes the stack's base `origin/main`, so the
 next round adopts it. Anything else throws it away and requeues its entries: the batch fails, gives
 no verdict or lands at another commit; the stack gives no verdict; an entry is removed or put
-first; `main`'s lanes change; the queue holds; or the worker stops or moves. Before it integrates
+first; `main`'s lanes change; the queue holds; or the worker stops or moves (except the move
+Queuekeeper's own worker puts off, above). Before it integrates
 a stack, the worker reads the capacity of each Mac the stack may go to, every Mac but the batch's,
 and judges it for the stack's final lane by the test placement uses before it offers a lane
 (`remote.spare`): a free slot, the CPU under the Mac's heavy busy limit while admitted work runs
 there, a settled Mac and normal memory pressure. When none has room, it starts nothing, says so
 once, and waits two minutes before looking again: most stacks used to integrate, mark their entries
 testing, and wait only to be declined. A check of the CPU alone still let stacks through to a Mac
-already running other work, which admission then declined.
+already running other work, which admission then declined. A reading can still be a minute old when
+the final lane asks. With one try at another Mac and no wait (`--offload-only`), a stack kept off
+this Mac was declined then, so it waits there instead.
 When no Mac admits a stack's next lane, the worker waits two minutes before trying another. A stack settles nothing: an
 entry that conflicts with the batch below waits for its own round. A bisect never stacks.
 
