@@ -40,6 +40,16 @@ skipped`, with N leaving them out. Only the lane's own log is counted. A gate th
 of its own leaves no count there, so its lane either puts that output on its own output as well,
 as PDFReflowLib's gate lanes do by running the steps serially, or is held to no count.
 
+A lane group writes no `LANE/source.json` for its lanes, and its own receipt has no `tests`. `parallel.lanes`
+records each lane's counts as `executedTests` and `skippedTests`, `null` when its log reports none, under
+`lanes.NAME` in the group's `source.json` and in `lanes/NAME.json` beside `lanes/NAME.log`
+([#249](https://github.com/vocaro/queuekeeper/issues/249)). A group run on another Mac brings its `lanes/`
+back under `.build/queuekeeper/remote/GROUP/`; the dispatch's own `source.json` has no counts.
+
+```json
+"lanes": {"tests": {"status": 0, "outcome": "passed", "executedTests": 112, "skippedTests": 0, …}}
+```
+
 ### Test counts from history
 
 A gate that passes without testing, because nothing ran, every test skipped, or a bundle, module or file
