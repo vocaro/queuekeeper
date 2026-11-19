@@ -52,7 +52,7 @@ class LaneResultTests(unittest.TestCase):
                  ("Ran 5 tests in 0.01s\n\nFAILED (failures=1, skipped=2, expected failures=1)\n", 3, 2),
                  ("Ran 3 tests in 0.01s\n\nOK (expected failures=1)\n", 3, 0),
                  # A wrapper that counts skips apart already left them out of its N.
-                 ("Passed: iPhone: Executed 7 tests, 9 skipped\n", 7, 0)]
+                 ("Passed: iPhone: Executed 7 tests, 9 skipped\n", 7, 9)]
         for text, executed, skipped in cases:
             with self.subTest(text):
                 self.assertEqual((lane_results.executed_tests(text), lane_results.skipped_tests(text)), (executed, skipped))
@@ -72,6 +72,37 @@ class LaneResultTests(unittest.TestCase):
         self.assertEqual(lane_results.executed_tests(xctest("All tests", 3, 2) + swift_testing), 2)
         with self.assertRaisesRegex(ValueError, "at least 16 executed tests; observed 7"):
             lane_results.require_tests(xctest("All tests", 16, 9), 16)
+
+    def test_a_simulator_matrix_line_counts_the_skips_it_names_beside_its_count(self):
+        # qk simulator-tests's line for a device leaves its skips out of N and names them after it
+        # (BreezEPUB's gate on the second Mac, 2026-11-18, vocaro/queuekeeper#250).
+        cases = [("PASS iPhone-17-Pro: Executed 57 tests, 5 skipped in 106s; log: /x/iPhone-17-Pro.log\n", (62, 5)),
+                 ("PASS iPhone-17-Pro: Executed 57 tests, 0 skipped in 106s\n", (57, 0)),
+                 ("PASS iPhone-17-Pro: Executed 57 tests in 106s\n", (57, 0)),
+                 ("FAIL iPad: Executed 5 tests, 1 skipped, 2 failed in 40s\n", (6, 1)),
+                 ("FAIL iPad: Executed 0 tests, 3 skipped in 40s\n", (3, 3)),
+                 ("FAIL iPhone: Executed 62 tests, 5 skipped, 1 failed in 3 shards; iPhone-2 failed with status 65\n", (67, 5)),
+                 # Two devices' lines add up.
+                 ("PASS iPhone: Executed 3 tests, 1 skipped in 9s\nPASS iPad: Executed 4 tests, 2 skipped in 9s\n", (10, 3)),
+                 # Controls: numbers that follow the count but are not its skips.
+                 ("FAIL iPad: Executed 5 tests, 2 failed in 40s\n", (5, 0)),
+                 ("PASS iPad: Executed 5 tests in 3 shards, 2 skipped\n", (5, 0)),
+                 ("PASS iPad: Executed 5 tests, 2 failed, 3 skipped in 40s\n", (5, 0)),
+                 ("PASS iPad: Executed 5 tests, 3 skippedness\n", (5, 0)),
+                 ("PASS iPad: Executed 5 tests, 12 shards skipped\n", (5, 0)),
+                 # XCTest's wording counts its skips within N.
+                 ("Executed 5 tests, with 2 tests skipped and 0 failures (0 unexpected) in 0.1 (0.1) seconds\n", (5, 2))]
+        for text, found in cases:
+            with self.subTest(text):
+                self.assertEqual(lane_results.counted(text), found)
+        line = cases[0][0]
+        self.assertEqual((lane_results.executed_tests(line), lane_results.skipped_tests(line)), (57, 5))
+        self.assertEqual(lane_results.require_tests(line, expected=57), 57)
+        # A device whose every test skipped establishes nothing, and says why.
+        with self.assertRaisesRegex(ValueError, r"observed 0 \(3 skipped, which do not count\)"):
+            lane_results.require_tests(cases[4][0])
+        # The shard's own line is no count, so the device's line alone counts.
+        self.assertIsNone(lane_results.counted("SHARD iPad-1: status 0, ran 5 tests, 2 skipped in 9s; log: /x\n"))
 
     def test_an_expected_count_must_match_exactly(self):
         self.assertEqual(lane_results.require_tests("Executed 0 tests\nTest run with 3 tests in 1 suite passed", expected=3), 3)

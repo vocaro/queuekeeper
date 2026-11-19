@@ -8,7 +8,10 @@ import re
 # and xcodebuild run each bundle under its own top suite, All tests, or Selected tests when filtered.
 SKIPPED = r"(?:, with (\d+) tests? skipped)?"
 SUITE_TOTAL = re.compile(r"^Test Suite '([^'\n]*)' (?:passed|failed) at [^\n]*\n\s*Executed (\d+) tests?\b" + SKIPPED, re.M)
-EXECUTED = re.compile(r"Executed (\d+) tests?\b" + SKIPPED)
+# A wrapper's own line counts like XCTest's, or names its skips beside a count that already leaves them out, as
+# qk simulator-tests's line for a device does: `PASS iPhone-17-Pro: Executed 57 tests, 5 skipped in 106s`
+# (vocaro/queuekeeper#250). The second group is skips within the count, the third skips beside it.
+EXECUTED = re.compile(r"Executed (\d+) tests?\b(?:, with (\d+) tests? skipped|, (\d+) skipped\b)?")
 # A repeat series recaps each device's result after that result has already been printed.
 SERIES_RUN_RECAP = re.compile(r"^[ \t]*SERIES \S+ run \d+ of \d+:[^\n]*$", re.M)
 # Swift Testing's total counts a test it skipped or that canceled itself, and names neither: each
@@ -54,16 +57,17 @@ def counted(text):
     run. A wrapper's own "Executed N tests" line, one per simulator for example, counts only when
     the log holds no XCTest totals, which it would repeat. XCTest's, unittest's and Swift Testing's
     totals include their skips; XCTest and unittest name them apart, and Swift Testing gives each
-    skipped or canceled test a line. pytest names each outcome apart, its skips among them. Within
-    a qk unittest process's output only unittest's own total counts (outside_unittest)."""
+    skipped or canceled test a line. A wrapper's line names its skips within its count or beside it
+    (EXECUTED). pytest names each outcome apart, its skips among them. Within a qk unittest
+    process's output only unittest's own total counts (outside_unittest)."""
     whole = text
     text = outside_unittest(SERIES_RUN_RECAP.sub("", text))
     suites = list(SUITE_TOTAL.finditer(text))
     top = [(int(match.group(2)), int(match.group(3) or 0)) for match in suites
            if match.group(1) in ("All tests", "Selected tests")]
     within = {match.start(2) for match in suites}
-    wrapper = [(int(match.group(1)), int(match.group(2) or 0)) for match in EXECUTED.finditer(text)
-               if match.start(1) not in within]
+    wrapper = [(int(match.group(1)) + int(match.group(3) or 0), int(match.group(2) or match.group(3) or 0))
+               for match in EXECUTED.finditer(text) if match.start(1) not in within]
     counts = top or wrapper
     runs = [int(n) for n in SWIFT_TESTING_RUN.findall(text)]
     if runs: counts.append((sum(runs), len(SWIFT_TESTING_SKIP.findall(text))))
