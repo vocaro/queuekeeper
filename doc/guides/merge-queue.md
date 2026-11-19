@@ -438,13 +438,17 @@ failed tests alone on the same batch commit (owner's decision, 2026-11-07,
 
 - It reads their IDs from unittest's `FAIL:` and `ERROR:` lines, waits for this Mac to settle (as for
   [a retry with no verdict](#runs-with-no-verdict)), then runs each test by itself with the lane's
-  `-s`, `-p`, `-t`, `--split`, `--batch-size` and `--timeout`, up to `RERUNS` (3) times.
+  `-s`, `-p`, `-t`, `--split`, `--batch-size` and `--timeout`, without `--fail-fast`, up to `RERUNS` (3)
+  times.
 - Any rerun that fails or ends unmeasured makes the failure real.
 - When every rerun passes, each test is a flake, and the batch lands only if none of its commits
   changes the test's module or a project file that module imports (option (b)). Only the module's own
   import statements count, at any depth, looked up under the suite's top-level directory,
   `src/python`, `src` and the checkout, with each package's `__init__.py`. A batch that changes one
   bisects.
+- A batch whose gate `--fail-fast` stopped never lands this way, since the rest of its suite never ran:
+  it gates again, once for its commit, and then bisects
+  ([Parallel tests](parallel-tests.md#tests-within-one-suite)).
 - Either way the flake is recorded in the entry's `flakes` (shown by `qk queue status`), the worker's
   log, a `Flaky-test:` trailer per test on the landed tip, and the tracker: a comment on the first open
   issue naming the test, or a new hardening issue. It quotes the test's first `FAIL:` or `ERROR:` block,

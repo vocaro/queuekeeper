@@ -21,6 +21,7 @@ import re
 import shlex
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -50,6 +51,19 @@ SHARD_VARIABLE = "QUEUEKEEPER_UNITTEST_PROCESS"
 # they stay well under the TAIL lines a failed lane shows, and that lane's summary stays among them.
 REASONS_SHOWN = 20
 REASON_WIDTH = 300
+# What a --fail-fast run's verdict adds, after what failed, once a failed test failed again alone and the run stopped
+# without the rest, and what it calls the processes that stop left. The merge queue reads it: such a run's failed
+# tests are blamed as any are, but a batch whose failures all pass alone gates again rather than land, as the rest of
+# its suite never ran (merge_queue.failed_tests, Worker.rerun).
+STOPPED = "STOPPED: "
+HALTED = "stopped after a failed test failed again alone"
+# Seconds the git command that finds a --fail-fast run's failure history may take (history_place).
+GIT_SECONDS = 30
+# The file in a repository's common git directory that keeps when each test a --fail-fast run saw fail last failed,
+# by suite, and how long and how many of them it keeps (record_failures).
+HISTORY_FILE = "queuekeeper-unittest-failures.json"
+HISTORY_DAYS = 14
+HISTORY_MOST = 500
 
 
 def outcome(status):
@@ -337,24 +351,27 @@ def selected(test, patterns, names):
         (not names or any(identity == name or identity.startswith(f"{name}.") for name in names))
 
 
-def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT, chosen=None):
+def run_shard(name, tests, top, verbose, descriptors=(), timeout=PROCESS_LIMIT, chosen=None, halt=None):
     """Run a shard's tests in a process of its own, which inherits descriptors and no other. It runs
     in this process's directory, with top and then that directory on its sys.path, as `python3 -m
     unittest discover` does. A name listed more than once runs once. With chosen, the ids of the
     shard's selected tests, a module the shard names whole runs only those. One still running after
-    timeout seconds, or when a stop signal reaches this process (processes.forwarding_signals), is stopped,
-    and its status is None. None when the stop came before it started."""
+    timeout seconds, or when a stop signal reaches this process (processes.forwarding_signals) or halt, a
+    threading.Event, is set, is stopped, and its status is None. None when the stop came before it started."""
     patterns = None if chosen is None else [glob.escape(identity) for identity in dict.fromkeys(chosen)]
     command = [sys.executable, "-c", SHARD, str(top), json.dumps(patterns), *(["-v"] if verbose else []),
                *dict.fromkeys(tests)]
     began = time.monotonic()
+    halted = (lambda: False) if halt is None else halt.is_set
+    stopping = lambda: stop_requested() or halted()
     # A stop can come between the pool taking this shard and this process seeing it: then it never starts.
-    if stop_requested(): return None
-    status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors, stop=stop_requested)
+    if stopping(): return None
+    status, output = processes.bounded(command, timeout=timeout, pass_fds=descriptors, stop=stopping)
     summary = RESULT.search(output)
     return {"name": name, "tests": list(tests), "status": status, "output": output,
             "ran": sum(int(count) for count in RAN.findall(output)),
             "result": stopped_result() if status is None and stop_requested()
+                      else HALTED if status is None and halted()
                       else f"timed out after {timeout:g}s" if status is None
                       else summary.group(0) if summary else "no result",
             "seconds": time.monotonic() - began}
@@ -466,6 +483,10 @@ def unittest_main(argv):
     parser.add_argument("-k", dest="selectors", action="append", default=[], metavar="PATTERN",
                         help="run only tests whose id matches PATTERN, as unittest's -k does: an fnmatch "
                         "pattern, or a substring when it has no *; repeat it to run tests matching any")
+    parser.add_argument("--fail-fast", action="store_true",
+                        help="run first the processes holding a class that failed in the repository's recent "
+                        "--fail-fast runs, rerun alone the failed tests of a process that fails, and stop the run "
+                        "once one fails again")
     parser.add_argument("names", nargs="*", metavar="NAME",
                         help="run only this module, class or test and what it holds, such as "
                         "test_merge_queue.Landing; each must name a discovered test")
@@ -542,6 +563,7 @@ def discover(args, start, top):
     if not found:
         print(f"queuekeeper unittest: no tests found in {start} matching {' or '.join(patterns)}", file=sys.stderr)
         return NO_TESTS
+    if args.fail_fast: found = recent_failures_first(found, members, start)
     return tests, found, members, chosen
 
 
@@ -554,7 +576,8 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
     """Run found, {shard: tests}, args.jobs at a time, print each one's output and then the run's summary, and return
     its status. tests are the discovered tests the run selected, members is {shard: test ids}, and chosen is
     members for a run that selects tests, else None. progress, a run_progress.Tracker, records each process as it
-    starts and ends, in whatever order they end."""
+    starts and ends, in whatever order they end. With args.fail_fast, a process that fails has its failed tests run
+    alone at once, and when one fails again the run stops what runs and starts nothing more (confirm)."""
     expected = {name: len(tests) for name, tests in found.items()}
     # The shards that stand for a module that failed to import in discovery, which unittest gave a placeholder.
     placeholders = {test.id(): test for test in tests if type(test).__module__ == "unittest.loader"}
@@ -566,6 +589,24 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
     if progress is not None:
         with contextlib.suppress(OSError): progress.planned(len(found), len(tests), args.jobs)
 
+    halt = threading.Event() if getattr(args, "fail_fast", False) else None
+    stopping = lambda: stop_requested() or (halt is not None and halt.is_set())
+
+    def confirm(result):
+        """Run alone the failed tests of result, a process that failed, and set halt once one fails again. A process
+        whose failures are not each one of its own tests by its id, as a module that did not load is, or one that
+        timed out, is left for the merge queue to weigh as any run's."""
+        if halt.is_set() or not result["status"]: return
+        ids = failed_ids(result["output"], found[result["name"]])
+        if not ids: return
+        again = run_shard(f"{result['name']} again", ids, top, False, descriptors, args.timeout, halt=halt)
+        if again is None or halt.is_set(): return
+        repeated = failed_ids(again["output"], ids) if again["status"] else []
+        result["again"] = (f"-- {', '.join(repeated)} failed again alone ({again['result']}, {again['seconds']:.1f}s): "
+                           "the run stops here" if repeated else
+                           f"-- {', '.join(ids)} run alone: {again['result']} ({again['seconds']:.1f}s): the run goes on")
+        if repeated: halt.set()
+
     def tracked(name, *arguments):
         if progress is not None:
             with contextlib.suppress(OSError): progress.started(name)
@@ -573,7 +614,8 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
         try:
             # Under a selection, its process would select none of the module's tests and say only that none ran.
             result = unimported_result(name, unimported[name]) if chosen is not None and name in unimported \
-                else run_shard(name, *arguments)
+                else run_shard(name, *arguments, halt=halt)
+            if halt is not None and result is not None: confirm(result)
             return result
         finally:
             if progress is not None:
@@ -594,9 +636,10 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
             result.update(status=None, result=stopped_result())
         results.append(result)
         # Each shard's own output, whole and in discovery order, under one line that names it.
-        report.extend([f"== {result['name']}: {result['result']} ({result['ran']} tests, {result['seconds']:.1f}s)",
-                       result["output"].rstrip("\n")])
-        print(*report[-2:], sep="\n", flush=True)
+        shown = [f"== {result['name']}: {result['result']} ({result['ran']} tests, {result['seconds']:.1f}s)",
+                 result["output"].rstrip("\n"), *([result["again"]] if result.get("again") else [])]
+        report.extend(shown)
+        print(*shown, sep="\n", flush=True)
 
     pool = ThreadPoolExecutor(max_workers=args.jobs)
     try:
@@ -605,21 +648,21 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
                    for name, tests in found.items()]
         waiting = len(futures)
         for index, future in enumerate(futures):
-            while not future.done() and not stop_requested():
+            while not future.done() and not stopping():
                 concurrent.futures.wait([future], timeout=processes.STOP_POLL)
             if not future.done():
                 waiting = index
                 break
             show(future.result())
-        if stop_requested():
+        if stopping():
             # What has not started never starts (run_shard), and what runs ends at its next look at the stop.
             concurrent.futures.wait(futures, timeout=STOP_WAIT)
             for future in futures[waiting:]:
                 if future.done() and future.exception() is None: show(future.result())
     finally:
         # A stopped run waits on no process that has not ended: its summary comes first.
-        pool.shutdown(wait=not stop_requested(), cancel_futures=True)
-    stopped = stopped_result() if stop_requested() else None
+        pool.shutdown(wait=not stopping(), cancel_futures=True)
+    stopped = stopped_result() if stop_requested() else HALTED if stopping() else None
     failed, unmeasured, reasons = [], [], []
 
     def fail(result, detail):
@@ -643,12 +686,18 @@ def run_shards(args, top, tests, found, members, chosen, progress=None):
     # unreached_lines groups. A process that timed out by itself keeps its own.
     timed_out = {result["name"] for result in results if result["status"] is None and result["result"] != stopped}
     cut = [name for name in unfinished if name not in timed_out]
-    if cut: unmeasured.append(f"{len(cut)} of {len(found)} processes not run or not finished ({stopped})")
+    left = f"{len(cut)} of {len(found)} processes not run or not finished ({stopped})" if cut else None
+    # A run --fail-fast stopped measured what it set out to: a failure that repeats alone.
+    if left and stopped != HALTED: unmeasured.append(left)
+    if halt is not None:
+        record_failures(Path(args.start_directory).resolve(),
+                        [identity for result in results if result["status"]
+                         for identity in failed_ids(result["output"], found[result["name"]])])
     total = sum(result["ran"] for result in results)
     skipped = sum(lane_results.skipped_tests(result["output"]) for result in results)
     # Not "Ran N tests": the shards' own lines already count every test once.
     summary = (f"queuekeeper unittest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
-               f"{time.monotonic() - began:.1f}s: " + verdict(failed, unmeasured))
+               f"{time.monotonic() - began:.1f}s: " + verdict(failed, unmeasured, left if stopped == HALTED else None))
     print(summary, flush=True)
     if progress is not None: progress.summary = summary
     if failed:
@@ -847,8 +896,88 @@ def unisolated(paths, root=None):
     return found
 
 
-def verdict(failed, unmeasured):
-    """A runner's last words: OK, or what failed and what a timeout left unmeasured."""
+def verdict(failed, unmeasured, halted=None):
+    """A runner's last words: OK, or what failed, what a timeout left unmeasured and, last, what --fail-fast left
+    unrun, halted, once a failed test failed again alone."""
     words = ([f"FAILED: {', '.join(failed)}"] if failed else []) + \
-        ([f"UNMEASURED: {', '.join(unmeasured)}"] if unmeasured else [])
+        ([f"UNMEASURED: {', '.join(unmeasured)}"] if unmeasured else []) + ([f"{STOPPED}{halted}"] if halted else [])
     return "; ".join(words) or "OK"
+
+
+def failed_ids(output, entries):
+    """The ids of the tests unittest reports failed in output, a process's, in order, when each is one of entries,
+    the names that process was given, so that each can run alone by its id; else none, as for a module that did not
+    load, or a whole module run by its own name (shards)."""
+    lines, ids = output.splitlines(), []
+    for index, line in enumerate(lines[1:], 1):
+        heading = FAILURE.match(line) if lines[index - 1] == unittest.TextTestResult.separator1 else None
+        if not heading: continue
+        method, where, _ = heading.groups()
+        identity = where if where.endswith(f".{method}") else f"{where}.{method}"
+        if identity not in entries: return []
+        ids.append(identity)
+    return list(dict.fromkeys(ids))
+
+
+def history_place(start):
+    """(the failure history of the repository that holds start, the suite's key in it: start relative to the
+    repository's root), or (None, None) when git cannot tell. The history is in the repository's common git directory,
+    which its worktrees and its merge queue's checkouts on one Mac share, beside queuekeeper-queue/."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        common, root = subprocess.run(["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir",
+                                       "--show-toplevel"], capture_output=True, text=True, check=True,
+                                      timeout=GIT_SECONDS, env=environment).stdout.split("\n")[:2]
+        key = Path(start).resolve().relative_to(Path(root).resolve()).as_posix()
+    except (OSError, subprocess.SubprocessError, ValueError): return None, None
+    return Path(common) / HISTORY_FILE, key
+
+
+def recent_failures(path, key, now):
+    """{test id: when it last failed} of the suite key in the history at path, within HISTORY_DAYS of now; {} when
+    there is none or it cannot be read."""
+    try: suite = json.loads(path.read_text()).get(key)
+    except (OSError, ValueError, AttributeError): return {}
+    if not isinstance(suite, dict): return {}
+    return {test: when for test, when in suite.items()
+            if isinstance(when, (int, float)) and 0 <= now - when < HISTORY_DAYS * 86400}
+
+
+def record_failures(start, ids, now=None):
+    """Add ids, the tests a --fail-fast run saw fail, to the failure history of the repository that holds start at
+    now, keeping the HISTORY_MOST that failed last within HISTORY_DAYS. Two runs that end at once can lose one's
+    record, and a history that cannot be written fails nothing: it only orders runs (recent_failures_first)."""
+    path, key = history_place(start)
+    if path is None or not ids: return
+    now = time.time() if now is None else now
+    try: whole = json.loads(path.read_text())
+    except (OSError, ValueError): whole = {}
+    if not isinstance(whole, dict): whole = {}
+    suite = {**recent_failures(path, key, now), **dict.fromkeys(ids, now)}
+    whole[key] = dict(sorted(suite.items(), key=lambda item: -item[1])[:HISTORY_MOST])
+    with contextlib.suppress(OSError):
+        written = path.with_name(f"{path.name}.{os.getpid()}")
+        written.write_text(json.dumps(whole, indent=1) + "\n")
+        os.replace(written, path)
+
+
+def recent_failures_first(found, members, start, now=None):
+    """found, {shard: tests}, with the shards first that hold a test of a class a --fail-fast run saw fail within
+    HISTORY_DAYS (record_failures), the class that failed last first, and the rest in discovery order. A failure
+    tends to come back where one just was, as in a bisect's halves and in a batch that gates again: on the toolkit's
+    failed gates of 2026-11-12 to 18 the first failure came a median 13% of the way into a run so ordered, against
+    29% in discovery order. A class, not a module: one failure in a module as large as test_merge_queue would put half
+    the suite first. found as it was with no history."""
+    path, key = history_place(start)
+    if path is None: return found
+    classes = {}
+    for test, when in recent_failures(path, key, time.time() if now is None else now).items():
+        owner = test.rsplit(".", 1)[0]
+        classes[owner] = max(when, classes.get(owner, 0))
+    latest = {name: max((classes.get(identity.rsplit(".", 1)[0], 0) for identity in members.get(name, ())), default=0)
+              for name in found}
+    first = sorted((name for name in found if latest[name]), key=lambda name: -latest[name])
+    if not first: return found
+    print(f"qk unittest --fail-fast: {len(first)} of {len(found)} processes run first, as a class of each failed in this "
+          f"repository's --fail-fast runs in the last {HISTORY_DAYS} days", flush=True)
+    return {**{name: found[name] for name in first}, **{name: found[name] for name in found if not latest[name]}}

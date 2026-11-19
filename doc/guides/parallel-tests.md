@@ -360,6 +360,26 @@ With `--split class`, `--batch-size N` limits each class process to N tests in d
 Modules that require a process per test, explicit serial groups, and modules that cannot be split
 keep their own process boundaries.
 
+`--fail-fast` makes a failing run end early rather than at the end of the suite. When a process
+fails, its failed tests run again, alone, at once. If one fails again, the run stops what is
+running, starts nothing more, and ends with its summary. The summary adds `STOPPED:` and what was
+not run, and lists the tests left out with the command that runs only them. A failure that passes
+alone, or that names no test it can run alone, such as a module that did not load, lets the run go
+on.
+
+How early depends on where the failure runs, so a `--fail-fast` run first runs the processes that
+hold a test class that failed in such a run in the last 14 days, the class that failed last first.
+Each run records its failed tests in `queuekeeper-unittest-failures.json` in the repository's
+common git directory, which its worktrees and its merge queue's checkouts on one Mac share; another
+Mac keeps its own. A failure tends to come back where one just was, as in a bisect's halves and a
+batch that gates again. On the toolkit's failed gates of 2026-11-12 to 18, the first failure came a
+median 13% of the way into a run ordered this way, against 29% in discovery order. Ordering by
+module, or by what a change imports, did worse: one recent failure in a module as large as
+`test_merge_queue` puts half the suite first, and every test module here imports nearly all of the
+toolkit. The order costs time when it guesses wrong, never a verdict. The toolkit's `gate` lane runs
+with `--fail-fast`; see [When a batch fails](../user_guide.md#when-a-batch-fails) for how the queue
+reads a run it stopped.
+
 To run part of a suite, name modules, classes or tests after the options, as `python3 scripts/qk
 unittest -s tests integration.test_merge_queue.Landing` does, or select them with `-k PATTERN`, repeated as
 unittest's own `-k` is: an fnmatch pattern on the test's id, or a substring when it has no `*`. A

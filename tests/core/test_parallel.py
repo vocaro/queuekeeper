@@ -452,6 +452,84 @@ class UnittestRunnerTests(unittest.TestCase):
         unindented = without + "\n".join(decoys) + "\n"
         self.assertNotEqual(merge_queue.failed_tests(unindented), (ids, None))
 
+    LATER = module("test_z", "class Z(unittest.TestCase):\n    def test_later(self): (HERE / 'later').touch()\n")
+
+    def test_fail_fast_stops_the_run_once_a_failed_test_fails_again_alone(self):
+        """A failing gate ran its whole 15 to 25 minutes before the merge queue weighed the failure. With --fail-fast,
+        a failed test that fails again alone stops the run, which the queue reads as any failed run's, but cut short."""
+        modules = (module("test_a", "class A(unittest.TestCase):\n    def test_broken(self): self.assertEqual(1, 2)\n"),
+                   self.LATER)
+        root = self.suite(*modules)
+        status, output = self.run_suite(root, "-j", "1", "--fail-fast")
+        self.assertEqual(status, 1, output)
+        self.assertIn("-- test_a.A.test_broken failed again alone (FAILED (failures=1)", output)
+        self.assertIn(f"; {parallel.STOPPED}1 of 2 processes not run or not finished ({parallel.HALTED})", output)
+        self.assertNotIn("UNMEASURED", output)
+        self.assertFalse((root / "later").exists(), output)
+        self.assertIn(f"Not reached or not finished, 1 of 2 tests in 1 modules ({parallel.HALTED})", output)
+        self.assertEqual(merge_queue.failed_tests(output), (["test_a.A.test_broken"], None))
+        self.assertTrue(merge_queue.cut_short(output))
+        # The negative control: without --fail-fast the same suite runs to its end.
+        root = self.suite(*modules)
+        status, output = self.run_suite(root, "-j", "1")
+        self.assertEqual(status, 1, output)
+        self.assertTrue((root / "later").exists(), output)
+        self.assertNotIn(parallel.STOPPED, output)
+        self.assertFalse(merge_queue.cut_short(output))
+
+    def test_fail_fast_goes_on_after_a_failure_that_passes_alone_or_that_no_test_id_can_run_alone(self):
+        once = """
+            class A(unittest.TestCase):
+                def test_once(self):
+                    mark = HERE / "failed once"
+                    if not mark.exists():
+                        mark.touch()
+                        self.fail("the first run only")
+        """
+        root = self.suite(module("test_a", once), self.LATER)
+        status, output = self.run_suite(root, "-j", "1", "--fail-fast")
+        self.assertEqual(status, 1, output)
+        self.assertIn("-- test_a.A.test_once run alone: OK", output)
+        self.assertTrue((root / "later").exists(), output)
+        self.assertNotIn(parallel.STOPPED, output)
+        # The queue reruns it as it would any failure, and lands the batch when it is a flake.
+        self.assertEqual(merge_queue.failed_tests(output), (["test_a.A.test_once"], None))
+        self.assertFalse(merge_queue.cut_short(output))
+        # A module that did not load names no test to run alone: the run goes on, and the queue bisects as before.
+        root = self.suite(("test_a", "import no_such_module_anywhere\n"), self.LATER)
+        status, output = self.run_suite(root, "-j", "1", "--fail-fast")
+        self.assertEqual(status, 1, output)
+        self.assertTrue((root / "later").exists(), output)
+        self.assertNotIn(parallel.STOPPED, output)
+
+    def test_fail_fast_runs_first_the_classes_that_failed_in_the_repositorys_recent_runs(self):
+        writes = ("class {0}(unittest.TestCase):\n    def test_{1}(self):\n        (HERE / 'order').open('a').write('{1}')\n"
+                  "        if (HERE / 'break {1}').exists(): self.fail('planted')\n")
+        root = self.suite(module("test_a", writes.format("A", "a")), module("test_z", writes.format("Z", "z")))
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        history = root / ".git" / parallel.HISTORY_FILE
+
+        def order(*arguments):
+            (root / "order").unlink(missing_ok=True)
+            status, output = self.run_suite(root, "-j", "1", *arguments)
+            return status, (root / "order").read_text(), output
+
+        # No history: discovery order. test_z fails, alone too, and its failure is recorded.
+        (root / "break z").touch()
+        status, found, output = order("--fail-fast")
+        self.assertEqual((status, found), (1, "azz"), output)
+        self.assertEqual(list(json.loads(history.read_text())["."]), ["test_z.Z.test_z"])
+        # Now its class runs first.
+        (root / "break z").unlink()
+        status, found, output = order("--fail-fast")
+        self.assertEqual((status, found), (0, "za"), output)
+        self.assertIn("qk unittest --fail-fast: 1 of 2 processes run first, as a class of each failed", output)
+        # Negative controls: without --fail-fast, and with the failure older than the history keeps.
+        self.assertEqual(order()[:2], (0, "az"))
+        old = time.time() - parallel.HISTORY_DAYS * 86400 - 60
+        history.write_text(json.dumps({".": {"test_z.Z.test_z": old}}))
+        self.assertEqual(order("--fail-fast")[:2], (0, "az"))
+
     def test_a_failed_run_that_cannot_save_its_output_says_so_and_keeps_its_result(self):
         root = self.suite(module("test_fail", "class F(unittest.TestCase):\n    def test_a(self): self.fail('planted')\n"))
         (root / ".build").write_text("a file where the folder would go")

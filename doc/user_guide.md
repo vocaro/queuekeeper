@@ -266,6 +266,13 @@ step 2:
 - `paths` lists the files the tests depend on (a directory ends in `/`). A batch lands on passing
   reruns only if it changes none of them.
 
+A `qk unittest` gate run with `--fail-fast` stops once a failed test fails again alone, and runs
+the recently failed test classes first, so a failing batch usually reaches these steps well before
+the end of the suite ([Parallel tests](guides/parallel-tests.md#tests-within-one-suite)). Its
+failed tests are rerun and blamed as any run's. If they then all pass alone, the batch does not
+land, because the rest of its suite never ran: it gates again, once for that commit, and bisects
+if the gate stops that way again.
+
 An entry that is sent back is told the failed tests, whether its commits touch their files, and
 the Mac's load during the run. When a preflight or docs lane failed, it is also told whether
 `origin/main` fails that lane on its own, so the fix may belong on `main`.

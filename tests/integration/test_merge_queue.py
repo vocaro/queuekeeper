@@ -8214,6 +8214,32 @@ class FlakyReruns(Fixture):
         self.assertEqual(self.main_messages().count(f"{mq.FLAKY}:"), 1)
         self.assertIn("flaky: test_flaky.Flaky.test_sometimes failed the gate at", mq.describe(entries[0]))
 
+    def test_a_gate_fail_fast_stopped_at_a_failure_that_then_passes_alone_gates_again_rather_than_land(self):
+        """--fail-fast stops the gate once a failed test fails again alone there, before the rest of the suite runs.
+        When the worker's reruns then pass, nothing ran the rest, so the batch gates again rather than land as flaky."""
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["lanes"]["gate"]["command"] += ["-j", "1", "--fail-fast"]
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", "Stop the gate at a failure that fails again alone")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        # The gate's run and the runner's own run alone fail; every run after them passes.
+        self.plan.write_text("FF")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertEqual(self.state(identifier)["state"], "landed", log)
+        # The gate and its run alone, the worker's reruns, and the second gate, which passes whole.
+        self.assertEqual(self.runs_of_the_test(), 2 + mq.RERUNS + 1, log)
+        self.assertIn(f"rerunning each alone up to {mq.RERUNS} times", log)
+        self.assertIn("before the rest of the suite ran: gating the batch again", log)
+        self.assertNotIn("it imports: landing the batch", log)
+        [tracked] = self.tracked
+        self.assertIn("so the batch gated again", tracked["outcome"])
+        # Landed by a gate that ran whole, so with no flaky trailer.
+        self.assertNotIn(f"{mq.FLAKY}:", self.tip_message())
+
     @contextlib.contextmanager
     def farm_mac(self):
         """On collection, move the lane's unittest log into a fake second-Mac dispatch. The live observers
@@ -8833,6 +8859,8 @@ class FlakyParts(unittest.TestCase):
                          ["qk", "unittest", "-p", "test_x*.py", "--timeout=60", "-t", ".", "-j", "1", "-v"])
         batched = ["qk", "unittest", "--split", "class", "--batch-size", "4"]
         self.assertEqual(mq.rerun_command(batched + ["-j", "8"]), batched + ["-j", "1", "-v"])
+        # One test alone has nothing to stop early: a gate's --fail-fast stays with the gate.
+        self.assertEqual(mq.rerun_command(batched + ["-j", "8", "--fail-fast"]), batched + ["-j", "1", "-v"])
         # Negative controls: a lane that is not qk unittest, an option the rerun cannot carry, a value left out.
         for command in (["python3", "lane.py"], ["python3", "scripts/qk", "xctest"], ["python3", "-m", "unittest"],
                         ["python3", "scripts/qk", "unittest", "--failfast"], ["python3", "scripts/qk", "unittest", "-s"],

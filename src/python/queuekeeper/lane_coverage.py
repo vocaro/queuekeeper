@@ -231,6 +231,8 @@ def unittest_discovery(root, words, discover_form):
     parser.add_argument("-t", "--top-level-directory")
     parser.add_argument("-k", dest="selectors", action="append", default=[])
     parser.add_argument("-v", "--verbose", action="store_true")
+    # Only the order and an early stop: it selects what it would without.
+    parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("-j", "--jobs")
     parser.add_argument("--split")
     parser.add_argument("--batch-size")

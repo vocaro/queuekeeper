@@ -248,6 +248,8 @@ FAILED_TEST = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)", re.M)
 RERUN_KEPT = {"-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "--split", "--batch-size",
               "--timeout"}
 RERUN_DROPPED = {"-j", "--jobs", "-k"}
+# The options of qk unittest that take no value and that a rerun drops: one test alone has nothing to stop early.
+RERUN_DROPPED_FLAGS = {"-v", "--verbose", "--fail-fast"}
 GH_TIMEOUT = 60
 # Seconds between readings of the CPU busy share of the Mac a gate lane runs on, which the gate's record keeps
 # beside its wall time, so that the budget's median can leave out runs made on a loaded host (vocaro-engineering#235).
@@ -731,7 +733,7 @@ def rerun_command(command):
     while index < len(words):
         word = words[index]
         name, equals, _ = word.partition("=")
-        if word in ("-v", "--verbose"):
+        if word in RERUN_DROPPED_FLAGS:
             index += 1
         elif name in RERUN_KEPT | RERUN_DROPPED:
             taken = words[index:index + 1] if equals else words[index:index + 2]
@@ -970,10 +972,12 @@ def preflight_lane_before_queued(root, queue, tip, replayed, base, name):
 def failed_tests(log):
     """(the ids of the tests an qk unittest lane's log reports failed, None), or (None, why it reports none it
     can rerun): its last summary must say FAILED, with nothing UNMEASURED, and each failed process's output must
-    name at least one failed test, none of them a module that did not load, and none ran other than it was given."""
+    name at least one failed test, none of them a module that did not load, and none ran other than it was given.
+    What a --fail-fast run left unrun after a failure that repeated alone (parallel.STOPPED) is no failure: the
+    tests that did fail are read as any run's (cut_short)."""
     summaries = UNITTEST_SUMMARY.findall(log)
     if not summaries: return None, "its log has no qk unittest summary"
-    verdict = summaries[-1]
+    verdict = summaries[-1].split(f"; {parallel.STOPPED}", 1)[0]
     if "UNMEASURED: " in verdict: return None, "qk unittest also left tests unmeasured"
     if not verdict.startswith("FAILED: "): return None, f"qk unittest's verdict is {verdict}"
     shards = FAILED_SHARD.findall(verdict[len("FAILED: "):])
@@ -995,6 +999,14 @@ def failed_tests(log):
         if any(identity.startswith("unittest.") for identity in ids): return None, f"{name} did not load"
         found += ids
     return list(dict.fromkeys(found)), None
+
+
+def cut_short(log):
+    """Whether an qk unittest lane's log ends with a run that --fail-fast stopped, once a failed test failed again
+    alone, before the rest of its suite ran (parallel.STOPPED): its failed tests passing alone then cannot land a
+    batch, as nothing ran the tests it left (Worker.rerun)."""
+    summaries = UNITTEST_SUMMARY.findall(log)
+    return bool(summaries) and f"; {parallel.STOPPED}" in summaries[-1]
 
 
 def junit_failures(path):
@@ -3012,6 +3024,9 @@ class Worker:
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
         self.no_verdicts = 0  # the runs in a row that gave no verdict, held at no_verdict_runs
         self.locked_screens = 0  # the runs in a row a screen locked during, held at LOCKED_SCREEN_RUNS (older)
+        # The commits whose gate --fail-fast cut short gated again once, as their failed tests all passed alone
+        # (rerun), and whether the last rerun asked for that.
+        self.regated, self.regate = set(), False
         if progress:  # what the worker this one replaces had reached (progress)
             self.limit, self.suspects = progress.get("limit"), progress.get("suspects", 0)
             self.no_verdicts = progress.get("no_verdicts", 0)
@@ -4300,6 +4315,7 @@ class Worker:
         adds them is sent back by blame (adder, vocaro/queuekeeper#129). Beside an old test that passed alone, which
         is recorded as a flake, no entry explains them all, and the batch bisects (vocaro/queuekeeper#88)."""
         self.confirmed = self.refused = self.added = None
+        self.regate = False
         lane = self.failed_lane
         lanes = config.get("lanes", {})
         member = unittest_member(lanes, lane) if lane else None
@@ -4365,6 +4381,10 @@ class Worker:
         changed = {path for path in text(self.checkout, "log", "--format=", "--name-only", "--no-renames",
                                          f"{base}..{head}").splitlines() if path}
         touching = {}
+        # A gate --fail-fast stopped at a failure that repeated alone there ran only part of the suite, so failures
+        # that all pass alone here cannot land the batch: it gates again, once for its commit, and then bisects.
+        short = cut_short(said)
+        again = short and head not in self.regated
         # Old tests that passed alone beside a test the batch adds are flakes, recorded as any; but no one entry
         # explains every failed test, so none is blamed and the batch bisects (owner's decision of 2026-11-07;
         # whether to relax it is vocaro/queuekeeper#88).
@@ -4379,10 +4399,21 @@ class Worker:
                          if added else
                          "The batch was bisected, as one of its commits changes the module of a failed test, or a file "
                          "it imports." if touching else
+                         "The gate had stopped at this failure before the rest of the suite ran, so the batch gated "
+                         "again." if again else
+                         "The gate had stopped at this failure before the rest of the suite ran, again, so the batch "
+                         "was bisected." if short else
                          f"No commit of the batch's {len(applied)} changes its module or a file it imports, so the "
                          "batch landed.")
         if touching:
             self.say(f"every failed test passed alone, but the batch reaches {'; '.join(f'{test}, {why}' for test, why in touching.items())}: bisecting")
+            return None
+        if short:
+            self.regated.add(head)
+            self.regate = again
+            self.say(f"every failed test passed alone {RERUNS} times, but {lane} stopped at the first that failed again "
+                     "alone there, before the rest of the suite ran: "
+                     + ("gating the batch again" if again else "it did so before on this commit, so bisecting"))
             return None
         self.say(f"every failed test passed alone {RERUNS} times and no commit of the batch changes its module or a file "
                  "it imports: landing the batch")
@@ -5133,6 +5164,9 @@ class Worker:
         if result:
             # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
             if not reran: flakes = runner.rerun(config, applied, base, head, log, round_name)
+            if not flakes and runner.regate:
+                queue.mark(applied, QUEUED)
+                return QUEUED
             if not flakes:
                 blamed = runner.blame(applied)
                 if blamed:
@@ -5673,6 +5707,7 @@ class Beside(Worker):
         self.checkout = checkout or worker.queue.home / f"{worker.queue.main_checkout.name}{BESIDE_SUFFIX}"
         self.code, self.environment = worker.code, worker.environment
         self.unlocked = worker.unlocked  # the worker's own, which a lock either half meets adds to (screen_locked)
+        self.regated = worker.regated  # the worker's own, so that each commit gates again at most once (rerun)
         self.unreachable = []  # the newer entries that apply to origin/main only after the older half (left_out)
         self.kept_for = []  # the entries whose changelog resolutions it recorded (noted)
         self.newer, self.tip = [], None  # the newer half on top of origin/main, and its commit (Worker.beside)
@@ -5790,6 +5825,10 @@ class Beside(Worker):
         flakes = None
         if result:
             flakes = self.rerun(config, self.newer, base, self.tip, log, self.round_name)
+            if not flakes and self.regate:
+                self.queue.mark(self.newer, QUEUED)
+                self.outcome = QUEUED
+                return
             if not flakes:
                 blamed = self.blame(self.newer)
                 if self.unblamed and self.repeats(log):

@@ -7,7 +7,7 @@
   "docs": {"citations": true},
   "lanes": {
     "gate": {
-      "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4", "--jobs", "8", "-v"],
+      "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "--split", "class", "--batch-size", "4", "--jobs", "8", "--fail-fast", "-v"],
       "resource": "heavy",
       "timeout": 2400,
       "budgetMinutes": 15
