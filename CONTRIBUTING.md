@@ -1,7 +1,6 @@
 # Contributing
 
-Queuekeeper is maintained by one person, mostly for their own projects, and is shared in case it is
-useful to you. Bug reports and questions are welcome; please open an
+Bug reports and questions are welcome. Please open an
 [issue](https://github.com/vocaro/queuekeeper/issues) first for anything larger than a small fix, so
 we can agree on the change before you spend time on it.
 
@@ -18,7 +17,7 @@ python3 scripts/qk run gate
 ## Pull requests
 
 This repository lands on `main` through its own merge queue, not by merging pull requests. Open a
-pull request as usual; once it is accepted, the maintainer lands its commits through the queue, with
+pull request as usual; once it is accepted, a maintainer lands its commits through the queue, with
 your authorship kept, and closes the pull request.
 
 By contributing you agree that your contribution is licensed under the [Apache License 2.0](LICENSE).

@@ -1918,9 +1918,9 @@ qk devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z
   hour by default), reserving nothing. Run it in the background when the wait may be long.
 - It refuses a device the record has never seen (its first `reserve --device` records it) and an
   orphaned or uncertain entry.
-- The record records no approval. Whether a session may use a device is between it and the owner: the
-  iPad carries the owner's standing approval, so take it whenever it is free; the iPhone is the owner's
-  personal phone, so ask first and set `--release-by` to the end of the time agreed.
+- The record records no approval. Whether a session may use a device is between it and the owner: take a
+  device the owner has approved standing use of whenever it is free; for any other, such as a personal
+  phone, ask first and set `--release-by` to the end of the time agreed.
 
 **The reservation is the window.** A device is held until `--release-by` and no longer for running
 work, but it is released only explicitly: a passed release time, an idle screen or a silent session
@@ -2076,8 +2076,8 @@ the command once on each device named, in turn:
 - **Devices in turn.** For each device, in order, the pass uses your own reservation if you hold one and
   leaves it held; otherwise it takes the device in turn, silencing notifications, and releases it
   afterward. A device whose turn does not come within `--wait` is not run. The pass checks no approval,
-  so run a lane that names the iPhone only once the owner has agreed. Name the iPhone first when its
-  window is shorter than the iPad's wait.
+  so run a lane that names a device without standing approval only once the owner has agreed. Name
+  first a device whose window is shorter than the others' wait.
 - **Each run is a bounded run**, as with `qk devices run`, watched for banners and rerun after one.
   `{udid}` and `{key}` become the device's UDID and entry key, which the command also finds in
   `QUEUEKEEPER_DEVICE_UDID` and `QUEUEKEEPER_DEVICE_KEY`. `--launched BUNDLE` and `--apps-quit` say what

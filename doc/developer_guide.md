@@ -1098,7 +1098,7 @@ conflict, the earlier wins:
 5. **A session's own run starts soon**, served by spare capacity, never by priority.
 
 Two rules stand beside them. **The owner is not the scheduler**: Queuekeeper chooses the Mac and
-the moment, and a queue holds for the owner only over a cause only he can fix. **No Mac is
+the moment, and a queue holds for the owner only over a cause only the owner can fix. **No Mac is
 special**: Macs differ only by their own settings (CPU limits, which kinds of work each takes and
 which labels each has). In one sentence: land as much as the Macs can verify truthfully, within
 each Mac's limits, in arrival order with bounded waits, and only then make a single run start
@@ -1349,8 +1349,7 @@ must be named by UDID.
   while a restore is pending; the CLI restores first.
 - **The watch.** `idevicesyslog` relays SpringBoard's lines over USB and the network into a temporary
   directory only this account can read. A network relay needs lockdown's
-  `com.apple.mobile.wireless_lockdown` `EnableWifiConnections` on the device, which the owner approved
-  setting on the iPhone; the iPad was never listed over the network, so its key was turned back off.
+  `com.apple.mobile.wireless_lockdown` `EnableWifiConnections` on the device; a device never listed over the network needs it off.
   CoreDevice's own Wi-Fi tunnel is of no use to libimobiledevice.
 - **What counts as watched.** A relay must have reached the device before the command started (its
   `[connected:UDID]` or a log line; each running relay gets up to 3 seconds), relayed its log, and still
@@ -1376,8 +1375,7 @@ must be named by UDID.
   set.
 - **CoreDeviceService check.** `core_device.py` runs `devicectl --timeout 30 device info details`,
   waiting 15 seconds beyond that for `devicectl` itself, so a stuck service fails a shortcut in about 30
-  seconds rather than the launch's 120. Whether Queuekeeper should restart the service itself, or restore
-  an overdue silencing itself, is left open for the owner (#227, #174).
+  seconds rather than the launch's 120.
 
 ### Device reach
 
@@ -1519,10 +1517,10 @@ Code: `queuekeeper_apple/simulators/pool.py` and `template.py`.
   `AXNotificationCenterAlert`, found again by subrole and frame, after rechecking `AXIsProcessTrusted`;
   then the window list is read every 0.5 seconds for up to 5, up to three rounds. The scripts walk UI
   elements (`entire contents` lists no banner) and name variables with a trailing `_`, since `kind` is a
-  System Events property. To test, run the owner's Vocaro Test Notification shortcut there (`osascript`
+  System Events property. To test, run a Shortcuts shortcut that shows a notification there (`osascript`
   notifications are never shown), hold the banner with a synthetic mouse-moved event and always move it
   away, and read `~/Library/DoNotDisturb/DB/Assertions.json` before touching Focus, which is shared with
-  the owner's devices.
+  the account's other devices.
 - **Opened apps** (`opened_apps.py`). The regular apps running (`NSWorkspace.runningApplications`) are
   read once the run holds the foreground, and again after its command and guards end, only while the
   lease is still the run's. Quitting waits up to `opened_apps.QUIT_WAIT` (30 seconds) and never forces.
@@ -1716,8 +1714,8 @@ A forwarder may only import what its own component may (see `test_queuekeeper_im
 
 ### Copies in each project
 
-Every project carries copies of two files: `scripts/qk`, from this repository, and, in the owner's
-projects, the toolkit's `scripts/_engineering.py`. A fix to either reaches a project only by a
+Every project carries copies of two files: `scripts/qk`, from this repository, and, in projects that
+use the vocaro-engineering toolkit, its `scripts/_engineering.py`. A fix to either reaches a project only by a
 landing there, a full gate each, so collect changes to them into one change and expect one landing
 per project.
 
