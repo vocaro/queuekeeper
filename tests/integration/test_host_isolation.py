@@ -406,11 +406,11 @@ class FarmReachTests(unittest.TestCase):
         with self.assertRaises(remote.Unreachable) as raised:
             remote.reachable("build-host")
         self.assertIn("Could not resolve hostname build-host", raised.exception.problem)
-        # A .local name is searched for over Bonjour, which lists no Mac.
-        self.addCleanup(remote.UNFOUND.clear)
+        # A .local name is searched for over Bonjour, which lists no Mac: a search that finds none adds nothing.
         with self.assertRaises(remote.Unreachable) as raised:
             remote.reachable("build-host.local")
-        self.assertIn("no other Mac offers ssh", raised.exception.problem)
+        self.assertIn("Could not resolve hostname build-host.local", raised.exception.problem)
+        self.assertNotIn("Bonjour", raised.exception.problem)
 
     def test_this_macs_own_names_and_addresses_still_resolve(self):
         for name in ("localhost", "127.0.0.1", "::1", None):

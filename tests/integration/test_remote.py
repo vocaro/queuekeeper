@@ -8634,8 +8634,6 @@ class RenamedFarmMacTests(unittest.TestCase):
     def setUp(self):
         remote.RENAMED.clear()
         self.addCleanup(remote.RENAMED.clear)
-        remote.UNFOUND.clear()
-        self.addCleanup(remote.UNFOUND.clear)
         self.settings = {"hostname": "mac-3.local", "port": "22"}
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
@@ -8744,23 +8742,42 @@ class RenamedFarmMacTests(unittest.TestCase):
                 self.assertEqual(checked.call_count, len(outcomes) if found != "unused" or kind is None else 1)
                 self.assertEqual(searched.called, outcomes[0] in (away, other_key))
 
-    def test_a_check_that_finds_no_rename_says_what_bonjour_offered(self):
+    def test_a_check_that_finds_no_rename_adds_nothing_to_the_verdict(self):
+        """vocaro/queuekeeper#25: the search's empty result, "of the Macs offering ssh over Bonjour, other.local, none
+        presents the key", was appended to the verdict, where it read as a diagnosis. The verdict is now ssh's alone."""
         away = remote.Unreachable("fake cannot be reached: ssh: Could not resolve hostname mac-3.local", "wake it")
-        for names, said in [([("other.local", "22")], "of the Macs offering ssh over Bonjour, other.local, none "
-                                                      "presents the key known_hosts holds for mac-3.local"),
-                            ([], "no other Mac offers ssh on port 22 over Bonjour")]:
+        for names in ([("other.local", "22")], []):
             with self.subTest(names=names), patch.object(remote, "check", side_effect=[away]), \
-                    patch.object(remote, "advertised", return_value=names), \
+                    patch.object(remote, "advertised", return_value=names) as browsed, \
                     patch.object(remote, "presents", return_value=False):
                 with self.assertRaises(remote.Unreachable) as raised:
                     remote.reachable("fake")
-                self.assertTrue(raised.exception.problem.startswith(away.problem), raised.exception.problem)
-                self.assertIn(said, raised.exception.problem)
-                self.assertEqual(raised.exception.fix, away.fix)
-        # The negative control: another Mac that was never searched for gets no such words.
-        remote.UNFOUND.clear()
-        self.assertEqual(remote.searched("fake"), "")
-        self.assertNotIn("Bonjour", remote.unreachable("fake", "ssh: Could not resolve hostname mac-3.local: x").problem)
+                browsed.assert_called_once()
+                self.assertIs(raised.exception, away)
+                self.assertEqual(raised.exception.problem, away.problem)
+                self.assertNotIn("Bonjour", self.error.getvalue())
+                self.assertNotIn("presents", self.error.getvalue())
+
+    def test_a_search_that_finds_macs_presenting_the_key_says_so_on_its_own_line(self):
+        # The negative control: a search that finds a Mac presenting the key is reported, apart from the verdict.
+        away = remote.Unreachable("fake cannot be reached: ssh: Could not resolve hostname mac-3.local", "wake it")
+        names = [("a.local", "22"), ("b.local", "22")]
+        with patch.object(remote, "check", side_effect=[away]), patch.object(remote, "advertised", return_value=names), \
+                patch.object(remote, "presents", return_value=True):
+            with self.assertRaises(remote.Unreachable) as raised:
+                remote.reachable("fake")
+        self.assertEqual(raised.exception.problem, away.problem)
+        said = self.error.getvalue().splitlines()
+        self.assertEqual(said, ["queuekeeper: mac-3.local does not reach fake, and a.local, b.local all present its key, "
+                                "so queuekeeper chose none"])
+        self.error.truncate(0)
+        self.error.seek(0)
+        with patch.object(remote, "check", side_effect=[away, None]), \
+                patch.object(remote, "advertised", return_value=names[:1]), patch.object(remote, "presents", return_value=True):
+            remote.reachable("fake")
+        said = self.error.getvalue().splitlines()
+        self.assertEqual(len(said), 1)
+        self.assertTrue(said[0].startswith("queuekeeper: fake was renamed: mac-3.local no longer reaches it, and a.local"))
 
     def test_a_probe_that_fails_after_an_address_answered_searches_for_no_rename(self):
         """vocaro/queuekeeper#25: a probe that timed out once said "of the Macs offering ssh over Bonjour, none-6.local,
@@ -8791,7 +8808,7 @@ class RenamedFarmMacTests(unittest.TestCase):
                 with self.assertRaises(kind) as raised:
                     remote.reachable("fake")
                 browsed.assert_called_once()
-                self.assertIn("none-6.local, none presents the key", raised.exception.problem)
+                self.assertNotIn("Bonjour", raised.exception.problem)
 
     def test_every_connection_finds_a_renamed_farm_mac_not_only_the_check_before_a_dispatch(self):
         # A foreground lane's preparing connection and `qk remote foreground` reach another Mac by ssh(),
@@ -8812,7 +8829,7 @@ class RenamedFarmMacTests(unittest.TestCase):
                 self.assertNotIn("HostName=mac-4.local", run.call_args_list[0].args[0])
         self.assertIn("fake was renamed", self.error.getvalue())
 
-    def test_a_connection_that_finds_no_rename_fails_at_once_saying_what_bonjour_offered(self):
+    def test_a_connection_that_finds_no_rename_fails_at_once_with_ssh_s_own_words(self):
         unresolved = subprocess.CompletedProcess([], 255, "", "ssh: Could not resolve hostname mac-3.local: x\n")
         with patch.object(remote.subprocess, "run", side_effect=[unresolved]) as run, \
                 patch.object(remote, "advertised", return_value=[("other.local", "22")]), \
@@ -8820,7 +8837,8 @@ class RenamedFarmMacTests(unittest.TestCase):
             with self.assertRaises(remote.Misconfigured) as raised:
                 remote.ask("fake", {"foreground": True})
         self.assertEqual(run.call_count, 1)
-        self.assertIn("other.local, none presents the key", raised.exception.problem)
+        self.assertNotIn("Bonjour", raised.exception.problem)
+        self.assertNotIn("presents", raised.exception.problem)
 
     def test_a_connection_searches_only_on_failures_a_rename_explains(self):
         failures = [subprocess.CompletedProcess([], 255, "", "fake: Permission denied (publickey).\n"),

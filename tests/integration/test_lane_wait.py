@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -379,6 +380,38 @@ class Waits(Named):
             self.assertEqual(offered.make(fallback=False), remote.BUSY)
         self.assertIsNone(offered.busy)
 
+    def test_a_first_offer_that_cannot_reach_the_farm_mac_is_logged_once(self):
+        """vocaro/queuekeeper#25: a first offer's miss was logged by Offer.make, "running gate on this Mac: ... is asked
+        again within 30s", and then again by overflow, which said the Mac was asked again every two minutes."""
+        slow = remote.Unreachable("fake cannot be reached: `ssh fake true` did not finish in 30s", "see")
+        busy = remote.Busy("every checkout is in use")
+        for first, logged in ((slow, 1), (busy, 2)):
+            lane_wait.running()
+            def send(host, sent, first=first):
+                if first is busy and not send.offered:
+                    send.offered = True
+                    raise busy
+                return 0
+            send.offered = False
+            offered = remote.Offer("gate", "`qk run --here gate`", send, hosts=("fake",))
+            with self.subTest(first=type(first).__name__), self.choosing(True), \
+                    patch.object(remote, "reachable", side_effect=[slow if first is slow else None, None]), \
+                    patch.object(remote, "capacity_there", return_value={"free": True}), \
+                    patch.object(remote.offload_host, "capacity", return_value={"free": False}), \
+                    patch("sys.stderr", new_callable=StringIO) as error:
+                offered.make()
+                self.assertEqual(remote.overflow(offered, lambda seconds: None, timeout=3600), 0)
+            lines = [line for line in error.getvalue().splitlines() if str(first.problem if first is slow else "every "
+                                                                                 "checkout is in use") in line]
+            if first is slow:
+                self.assertEqual(len(lines), logged, error.getvalue())
+                self.assertIn("is asked again within", lines[0])
+            else:
+                # The negative control: a first offer declined as busy is still followed by overflow's own line, which
+                # says how it waits, since make's line said only that the lane tries this Mac.
+                self.assertEqual(len(lines), logged, error.getvalue())
+                self.assertIn("waits for whichever Mac admits it first", lines[1])
+
     def test_a_farm_mac_of_several_missed_once_while_another_is_busy_is_asked_again_soon_and_once(self):
         """A Mac of several that one probe misses while the others decline the work as busy is asked again within
         REPROBE_WAIT, said with its name, its count and the probe's age; missed again, it waits for the next offer to
@@ -421,6 +454,45 @@ class Waits(Named):
                 self.assertEqual(waits[2], remote.OVERFLOW_WAIT_MAX)
                 self.assertIsNone(offered.soon())
                 self.assertRegex(said[2], r"\(mini: 2 probes failed, the last \d+ s ago\)")
+
+    def test_a_whole_host_lane_keeps_no_place_on_a_mac_a_probe_missed(self):
+        """vocaro/queuekeeper#25: a whole-host lane that waits here holds a place in each other Mac's queue (Places).
+        One that a probe missed is not offered the work until it is asked again, so a place there would keep its
+        guaranteed slots from other work meanwhile: none is kept there until a probe reaches it again."""
+        for missed, failed, expected in (({"mini": (1, time.time())}, 0, {"studio"}), ({}, 1, set()),
+                                         # The negative control: with no Mac missed, a place is kept on each.
+                                         ({}, 0, {"mini", "studio"})):
+            lane_wait.running()
+            offered = remote.Offer("gate", "`qk run --here gate`", lambda host, sent: 0, whole_host=True)
+            offered.hosts, offered.busy, offered.missed = ("mini", "studio"), "studio is busy", dict(missed)
+            offered.failed, offered.failed_at = failed, time.time() if failed else None
+            offered.place, offered.label = resources.Place(), "Example gate"
+            renewed, waits = set(), []
+            def admit(seconds):
+                waits.append(seconds)
+                # Long enough for the keeper to take each place it takes.
+                time.sleep(0.3)
+                return "admitted here" if len(waits) == 2 else None
+            with self.subTest(missed=missed, failed=failed), \
+                    patch.object(remote.Places, "_renew", lambda places, host: renewed.add(host)), \
+                    patch.dict(os.environ, {"HEAVY_PLACE_SECONDS": "0.15"}), \
+                    patch.object(offered, "again", return_value=None), contextlib.redirect_stderr(StringIO()):
+                self.assertEqual(remote.overflow(offered, admit, timeout=60), "admitted here")
+            self.assertEqual(renewed, expected)
+
+    def test_a_place_held_on_a_mac_a_probe_then_missed_is_given_up(self):
+        places = remote.Places("gate", "test", "Example gate", time.time(), ("mini", "studio"), every=0)
+        holders = {"mini": Mock(), "studio": Mock()}
+        places.holders = dict(holders)
+        with contextlib.redirect_stderr(StringIO()) as said:
+            # The negative control: with no Mac missed, every place is kept.
+            places.hold()
+            self.assertEqual(places.holders, holders)
+            places.hold({"mini"})
+        self.assertEqual(places.holders, {"studio": holders["studio"]})
+        holders["mini"].stdin.write.assert_called_with(b"leave\n")
+        holders["studio"].stdin.write.assert_not_called()
+        self.assertIn("queuekeeper: gate gives up its place in mini's queue", said.getvalue())
 
     def test_a_farm_mac_that_can_no_longer_take_it_leaves_this_mac_alone(self):
         offered = self.offer()

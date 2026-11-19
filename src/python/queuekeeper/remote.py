@@ -191,9 +191,6 @@ RESOLVED = re.compile(r"can be reached at (\S+?)\.?:(\d+)\b")
 # Another Mac found under a new .local name in this process, by destination: what it was renamed
 # from and to, and the name its key is known by (rediscover).
 RENAMED = {}
-# Another Mac searched for in this process and not found, by destination: the names Bonjour offered
-# ssh under that were asked for its key, none presenting it (rediscover).
-UNFOUND = {}
 # Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records. That it
 # is set is also the documented way a project's script asks whether it runs on another Mac
 # (vocaro/queuekeeper#93), so neither its name nor when it is set changes without the user guide.
@@ -301,8 +298,7 @@ def ssh_failure(host, said, *context, sent=False):
     line = last_line(said)
     banner = NO_BANNER in [entry.strip() for entry in (said or "").splitlines()]
     if line and LOGIN.search(line):
-        found = searched(host) if OTHER_KEY.search(line) else ""
-        return Misconfigured(f"ssh reached {host} but could not log in: {line}{found}",
+        return Misconfigured(f"ssh reached {host} but could not log in: {line}",
                              f"correct its entry in ~/.ssh/config, its host key in ~/.ssh/known_hosts or this Mac's key "
                              f"in its ~/.ssh/authorized_keys, until `ssh {host} true` succeeds without a prompt")
     stop = unreachable(host, said, *context)
@@ -322,9 +318,10 @@ def reachable(host, found=None):
     macOS renamed (rediscover): one found under a new name is checked there, and every connection of
     this process to host then goes to that name. A name an address of which answered on its ssh port
     reaches a Mac, so no rename explains a check that then failed, such as an `ssh HOST true` that did
-    not finish in time, and none is searched for: what Bonjour lists says nothing of why (vocaro/queuekeeper#25)."""
-    # An earlier search's finding says nothing of this check's failure, which is searched for afresh.
-    UNFOUND.pop(host, None)
+    not finish in time, and none is searched for: what Bonjour lists says nothing of why (vocaro/queuekeeper#25).
+    A search that finds no Mac presenting the key adds nothing to the failure: only a Mac found is reported, on a
+    line of its own (rediscover), apart from the verdict, which once read a search's empty result as a diagnosis
+    (vocaro/queuekeeper#25)."""
     try:
         check(host, found)
     except (Unreachable, Misconfigured) as stop:
@@ -334,9 +331,7 @@ def reachable(host, found=None):
         if lost: raise NoLocalNetwork(f"{stop.problem}; {lost}", LOST_FIX) from None
         if getattr(stop, "answered", False): raise
         RENAMED.pop(host, None)
-        if rediscover(host) is None:
-            if not searched(host): raise
-            raise type(stop)(stop.problem + searched(host), stop.fix) from None
+        if rediscover(host) is None: raise
         check(host)
 
 
@@ -456,8 +451,6 @@ def rediscover(host):
     here = offload_host.mac_name().lower()
     names = [name for name, offered in advertised() if offered == port and name not in {old, f"{here}.local"}]
     matches = [name for name in names[:CANDIDATES] if presents(host, name, alias)]
-    UNFOUND.pop(host, None)
-    if not matches: UNFOUND[host] = {"names": names[:CANDIDATES], "keyAlias": alias, "port": port}
     if len(matches) != 1:
         if len(matches) > 1:
             print(f"queuekeeper: {old} does not reach {host}, and {', '.join(matches)} all present its key, so queuekeeper chose none",
@@ -467,20 +460,6 @@ def rediscover(host):
     print(f"queuekeeper: {host} was renamed: {old} no longer reaches it, and {matches[0]}, which presents the key known_hosts "
           f"holds for {alias}, does, so this run uses {matches[0]}; {renamed_fix(host)}", file=sys.stderr, flush=True)
     return matches[0]
-
-
-def searched(host):
-    """What the search for host found when it found no Mac presenting its key, as words to add to the
-    problem; nothing when it was not searched for, or was found. Another Mac that Bonjour does not list
-    is away or asleep, not renamed, and one that Bonjour lists under another name but that presents
-    another key is another machine: either way no rename explains the failure."""
-    found = UNFOUND.get(host)
-    if found is None: return ""
-    if not found["names"]:
-        return (f"; no other Mac offers ssh on port {found['port']} over Bonjour (`dns-sd -B _ssh._tcp local.`), "
-                f"so {host} was not renamed: it is away or asleep")
-    return (f"; of the Macs offering ssh over Bonjour, {', '.join(found['names'])}, none presents the key known_hosts "
-            f"holds for {found['keyAlias']}, so {host} was not renamed among them")
 
 
 def renamed_fix(host):
@@ -556,7 +535,7 @@ def unreachable(host, detail, slept=None):
     name = unresolved.group(1) if unresolved else None
     now = asleep() if slept is not None else None
     sleep = now - slept if now is not None else 0
-    problem = f"{host} cannot be reached: {said or 'ssh exited 255'}{searched(host)}"
+    problem = f"{host} cannot be reached: {said or 'ssh exited 255'}"
     connected = bool(TIMED_OUT.match(said or ""))
     if NO_ANSWER.match(said or ""):
         problem += f"; nothing answered ssh's TCP connection in ConnectTimeout's {CONNECT_TIMEOUT} s"
@@ -3267,6 +3246,9 @@ class Offer:
         # and why each Mac that declines it does: such a Mac is passed over, and holds no place for the work.
         self.model, self.labels, self.foreground, self.unfit = model, tuple(labels), foreground, {}
         self.status, self.busy, self.away = None, None, None
+        # Why another Mac did not take the work, as an offer already logged it, so that overflow does not log it again:
+        # a first offer that could not reach another Mac said so, and overflow repeated it (vocaro/queuekeeper#25).
+        self.told = None
         # The farm's Macs to ask, in order, as SSH destinations: those given, else, read by make, every Mac that
         # takes work now but exclude. host is the one asked last, and sent what was sent to it; each Mac keeps what
         # was sent to it (sents), since each is pushed its own commits.
@@ -3479,7 +3461,7 @@ class Offer:
                 print(f"queuekeeper: running {self.name} on this Mac: {said}; {self.remote_macs} is asked again within "
                       f"{self.reprobe()}s while it waits here, as one offer that could not reach it does not make it "
                       "unreachable", file=sys.stderr, flush=True)
-                self.busy = self.status = said
+                self.busy = self.status = self.told = said
                 return self.status
             print(f"queuekeeper: {f'running {self.name} on this Mac' if fallback else f'{self.name} not run'}: {said}",
                   file=sys.stderr, flush=True)
@@ -3543,6 +3525,12 @@ class Offer:
             lane_wait.waiting(lane_wait.ALONE, said)
             self.busy, self.status = None, said
         return None
+
+    def unreached(self):
+        """The Macs the last probes missed, as SSH destinations: every Mac asked after offers that reached none,
+        else each Mac of several in missed."""
+        if self.failed: return set(self.hosts or ()) | set(filter(None, [self.host]))
+        return set(self.missed)
 
     def reprobe(self):
         """Seconds at most until another Mac is asked again after failed offers in a row that could not reach it:
@@ -3624,11 +3612,21 @@ class Places:
         self.every = every
         # Each Mac's holder, the Macs said to hold a place or to have none, and whether no Mac has taken the work.
         self.holders, self.said, self.unplaced = {}, {}, lambda: True
+        # The Macs a probe missed, which hold no place until one reaches them again (hold).
+        self.skipped = frozenset()
         self.lock, self.ended, self.keeper = threading.Lock(), threading.Event(), None
 
-    def hold(self):
+    def hold(self, skip=()):
         """Take a place on each Mac, or keep the ones held, from a keeper thread, so that a Mac that is slow to
-        answer never keeps this Mac's admission waiting. It changes nothing while the keeper runs."""
+        answer never keeps this Mac's admission waiting. It changes nothing while the keeper runs, but for skip: the
+        Macs a probe missed (Offer.unreached), whose places are given up at once and taken again once a probe
+        reaches them. Such a Mac is not offered the work until it is asked again, so a place there kept its
+        guaranteed slots from other work meanwhile (vocaro/queuekeeper#25)."""
+        skip = frozenset(skip) & frozenset(self.hosts)
+        if skip != self.skipped:
+            with self.lock:
+                self.skipped = skip
+                for host in skip: self._drop(host)
         if self.every <= 0 or (self.keeper is not None and self.keeper.is_alive()): return
         self.ended.clear()
         self.keeper = threading.Thread(target=self._keep, daemon=True)
@@ -3640,7 +3638,8 @@ class Places:
             while self.unplaced() is True:
                 with self.lock:
                     if self.ended.is_set(): return
-                    for host in self.hosts: self._renew(host)
+                    for host in self.hosts:
+                        if host not in self.skipped: self._renew(host)
                 if self.ended.wait(self.every): return
         self._release()
 
@@ -3668,6 +3667,25 @@ class Places:
             return
         self.holders[host] = holder
         threading.Thread(target=self._answered, args=(host, holder), daemon=True).start()
+
+    def _drop(self, host):
+        """Give up the place on host, a Mac a probe missed, if one is held. The caller holds the lock."""
+        holder = self.holders.pop(host, None)
+        if holder is None: return
+        self._close(holder)
+        self._say(host, f"gives up its place in {called(host)}'s queue while a probe cannot reach that Mac, and "
+                        "takes it again once one does")
+        threading.Thread(target=self._reap, args=(holder,), daemon=True).start()
+
+    @staticmethod
+    def _reap(holder):
+        with contextlib.suppress(Exception):
+            try:
+                holder.wait(timeout=PLACE_LEAVE)
+            except subprocess.TimeoutExpired:
+                holder.kill()
+                holder.wait(timeout=PLACE_LEAVE)
+            holder.stdout.close()
 
     def _answered(self, host, holder):
         """Say what host's holder answers, each answer once: that it holds the place, that it holds none while that
@@ -3783,7 +3801,7 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
     Macs are then read again every PLACED_WAIT seconds at most. With once, as
     for --if-free, each Mac is asked once. refused holds why each of this Mac's waits ended unadmitted,
     the last of which the give-up line says (vocaro-engineering#270)."""
-    deadline, window, said = time.monotonic() + timeout, FREE_WAIT, None
+    deadline, window, said = time.monotonic() + timeout, FREE_WAIT, getattr(offered, "told", None)
     # The work's places in the other Macs' queues, once its first wait here has ended unadmitted (Places).
     places = None
     try:
@@ -3795,8 +3813,9 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
             if soon is not None: bound = min(bound, soon)
             if places is not None:
                 if offered.busy is not None and offered.away is None:
-                    # The Macs are read again soon: one whose slots drained toward the work is offered it then.
-                    places.hold()
+                    # The Macs are read again soon: one whose slots drained toward the work is offered it then. A Mac
+                    # a probe missed keeps no place meanwhile (Offer.unreached).
+                    places.hold(offered.unreached())
                     bound = min(bound, PLACED_WAIT)
                 else:
                     # No other Mac can take the work now, so nothing is kept for it there.

@@ -836,7 +836,8 @@ each other Mac of the farm that may run the lane, and says it holds a place in t
 - **Renewal.** The sender writes to each holder every third of `HEAVY_PLACE_SECONDS`. When the
   sender ends, the connections close and holders remove their places at once; a silent sender's
   place lapses after `HEAVY_PLACE_SECONDS`, and its holder ends after twice that. An unreachable
-  Mac holds no place and is retried at each renewal.
+  Mac holds no place and is retried at each renewal. A Mac a probe missed gives up its place, and
+  takes it again once a probe reaches it, since it isn't offered the lane until then.
 - **Starting.** The sender reads the Macs every 30 seconds at most (`PLACED_WAIT`). A Mac doesn't
   count the lane's own place as ahead of it; the lane is offered there, carrying
   `QUEUEKEEPER_ADMISSION_PLACE` so its `provision` lane and the lane itself are admitted past it.

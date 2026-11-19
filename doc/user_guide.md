@@ -1537,10 +1537,11 @@ committed configuration.
 macOS renames a Mac whose `.local` name another machine claims, adding or raising a `-N` suffix,
 and the old name stops resolving. When a name does not resolve or answers with another host key,
 Queuekeeper searches the Macs Bonjour lists for the one presenting the host key `known_hosts`
-holds, uses it if exactly one does, and says so. `qk doctor` reports the rename until you fix it:
-put the new name in `HostName` and the old one in `HostKeyAlias`, so a later rename needs only a
-new `HostName`. `sudo scutil --set LocalHostName NAME` on that Mac, with a name nobody else will
-claim, makes renames rarer.
+holds, uses it if exactly one does, and says so on a line of its own. A search that finds no Mac
+presenting the key says nothing, and the failure is reported in ssh's words alone. `qk doctor`
+reports the rename until you fix it: put the new name in `HostName` and the old one in
+`HostKeyAlias`, so a later rename needs only a new `HostName`. `sudo scutil --set LocalHostName
+NAME` on that Mac, with a name nobody else will claim, makes renames rarer.
 
 ### Which Mac runs a lane
 
