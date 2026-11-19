@@ -9,8 +9,6 @@ for this repository, not in a public issue.
 
 Say what an attacker could do, on which version or commit, and how to reproduce it.
 
-Fixes land on `main`; there are no maintained release branches, so the fix is in the next version.
-
 ## Scope
 
 In scope: the `qk` command, the merge queue, admission, the build farm's SSH use, the dashboard and
