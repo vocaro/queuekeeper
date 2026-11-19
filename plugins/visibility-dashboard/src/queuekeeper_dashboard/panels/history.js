@@ -30,7 +30,8 @@ QK.panel("history", {
         "aria-label": QK.count(runs.length, "lane run") + " today on " + QK.count(macs.length, "Mac") },
         Array.from({ length: hours + 1 }, (_, index) => from + index * 3600).map((at, index) => [
           svg("line", { class: "grid", x1: x(at), x2: x(at), y1: 2, y2: H - 20 }),
-          index % step ? null : svg("text", { class: "axis", x: x(at), y: H - 5, "text-anchor": "middle" },
+          // The last hour's label ends at its line, since centered on it half would fall past the chart's edge.
+          index % step ? null : svg("text", { class: "axis", x: x(at), y: H - 5, "text-anchor": index === hours ? "end" : "middle" },
             new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }))]),
         macs.map((mac, row) => [svg("text", { class: "name", x: 0, y: row * lane + 21 }, mac.length > 22 ? mac.slice(0, 21) + "…" : mac, svg("title", null, mac)),
           runs.filter(run => (run.mac || "this Mac") === mac).map(run => {
