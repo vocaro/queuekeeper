@@ -8144,7 +8144,7 @@ class FlakyReruns(Fixture):
             watch.look()
             finish(watch)
 
-        with self.farm_mac(), patch.object(mq.GateWatch, "finish", final_poll), \
+        with self.unittest_on_the_farm_mac(), patch.object(mq.GateWatch, "finish", final_poll), \
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         log = said.getvalue()
@@ -8182,32 +8182,61 @@ class FlakyReruns(Fixture):
         self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
 
     @contextlib.contextmanager
-    def group_on_the_farm_mac(self, keep_lanes=True):
-        """A group gate another Mac ran: once each qk run of a group has ended, as remote.execute returns it, its
-        lanes' logs and receipts are only in a dispatch's lanes/, as queuekeeper files them, and none is left in the
-        worker's checkout. remote.dispatch only looks dispatches up, as the real one does. The gate's watch and
-        samplers look them up while the lane runs, which a busy host makes them do once a lane outlasts WATCH_POLL:
-        here they look all through every lane, so the verdict cannot depend on when they do. A lookup that moved the
-        lanes/ mid-run left qk run exit 2 on this Mac (vocaro/queuekeeper#110, vocaro/queuekeeper#111)."""
+    def dispatched_once_each_run_ends(self, file):
+        """A gate another Mac ran: once each qk run has ended, as remote.execute returns it, file(own, dispatches) moves
+        what the lane left in its directory own of the worker's checkout into a new fake dispatch it makes under
+        dispatches and returns, or returns None for a run that sent none. remote.dispatch only looks dispatches up, as
+        the real one does. The gate's watch and samplers look them up while the lane runs, which a busy host makes them
+        do once a lane outlasts WATCH_POLL: here they look all through every lane, so the verdict cannot depend on when
+        they do. A lookup that moved a lane's output mid-run made qk run fail on this Mac (vocaro/queuekeeper#17,
+        vocaro/queuekeeper#110, vocaro/queuekeeper#111, vocaro/queuekeeper#144)."""
         dispatches, made = self.base / "dispatches", {}
         real = mq.processes.run
         def returned(command, *arguments, cwd=None, **options):
             try: return real(command, *arguments, cwd=cwd, **options)
             finally:
-                own = Path(cwd or ".") / ".build/queuekeeper" / str(command[-1]) / "lanes"
-                if list(command[:3]) == ["python3", "scripts/qk", "run"] and cwd is not None and own.is_dir():
-                    ran = dispatches / f"{len(list(dispatches.glob('*'))) if dispatches.exists() else 0}"
-                    ran.mkdir(parents=True)
-                    (ran / "run.log").write_text("")
-                    if keep_lanes: own.rename(ran / "lanes")
-                    else: shutil.rmtree(own)
-                    made.setdefault((Path(cwd).resolve(), command[-1]), []).append((time.time(), ran))
+                if list(command[:3]) == ["python3", "scripts/qk", "run"] and cwd is not None:
+                    ran = file(Path(cwd) / ".build/queuekeeper" / str(command[-1]), dispatches)
+                    if ran is not None: made.setdefault((Path(cwd).resolve(), command[-1]), []).append((time.time(), ran))
         def dispatch(root, name, since):
             found = [ran for started, ran in made.get((Path(root).resolve(), name), []) if started >= since]
             return (found[-1], "fake-mac") if found else (None, None)
         with patch.object(mq.processes, "run", returned), patch.object(mq.remote, "dispatch", side_effect=dispatch), \
                 patch.object(mq, "WATCH_POLL", 0.01), patch.object(mq, "BUSY_SAMPLE", 0.01):
             yield
+
+    @staticmethod
+    def new_dispatch(dispatches):
+        ran = dispatches / f"{len(list(dispatches.glob('*'))) if dispatches.exists() else 0}"
+        ran.mkdir(parents=True)
+        return ran
+
+    def group_on_the_farm_mac(self, keep_lanes=True):
+        """A group gate another Mac ran: its lanes' logs and receipts are only in a dispatch's lanes/, as queuekeeper
+        files them, and none is left in the worker's checkout; its run.log is empty. Without keep_lanes the dispatch
+        brought none back."""
+        def file(own, dispatches):
+            if not (own / "lanes").is_dir(): return None
+            ran = self.new_dispatch(dispatches)
+            (ran / "run.log").write_text("")
+            if keep_lanes: (own / "lanes").rename(ran / "lanes")
+            else: shutil.rmtree(own / "lanes")
+            return ran
+        return self.dispatched_once_each_run_ends(file)
+
+    def unittest_on_the_farm_mac(self, keep_log=True):
+        """A qk unittest gate another Mac ran: what it printed, with qk unittest's summary, is only in its dispatch's
+        run.log, and none is left in the worker's checkout. Without keep_log the dispatch kept no run.log."""
+        def file(own, dispatches):
+            log = own / "run.log"
+            try:
+                if "queuekeeper unittest: " not in log.read_text(errors="replace"): return None
+            except OSError: return None
+            ran = self.new_dispatch(dispatches)
+            if keep_log: log.rename(ran / "run.log")
+            else: log.unlink()
+            return ran
+        return self.dispatched_once_each_run_ends(file)
 
     def test_a_flake_in_a_group_gate_the_farm_mac_ran_reruns_from_its_dispatchs_lane_log(self):
         # A dispatched group's run.log is empty and its output holds qk unittest's summary only indented, in a
@@ -8272,18 +8301,16 @@ class FlakyReruns(Fixture):
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")
-        def lost(root, name, since):
-            own = Path(root) / ".build/queuekeeper" / name / "run.log"
-            if not own.exists() or "queuekeeper unittest: " not in own.read_text(errors="replace"): return None, None
-            own.unlink()
-            return self.base, "fake-mac"
-        with patch.object(mq.remote, "dispatch", side_effect=lost), \
-                contextlib.redirect_stdout(io.StringIO()) as said:
+        # Its stand-in once removed the lane's run.log whenever it was looked up, and the gate's watch looks while the
+        # lane runs: a passing gate of the bisect that outlasted WATCH_POLL lost its log and failed (#144).
+        with self.unittest_on_the_farm_mac(keep_log=False), contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         log = said.getvalue()
+        self.assertIn("gate exited 1 on fake-mac", log)
         self.assertIn("gate failed with no failed test to rerun alone (its log has no qk unittest summary): bisecting",
                       log)
-        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+        self.assertNotIn("rerunning each alone", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"], log)
 
     def test_a_test_that_fails_again_alone_is_real_and_the_batch_bisects_with_nothing_recorded(self):
         # The gate fails, the first rerun passes and the second fails: real. Every run after passes.
