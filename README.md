@@ -88,10 +88,11 @@ project. It also shows phone and tablet connections and reservations.
 
 **Trends** sets the last 7 or 30 days against the ones before: landings per day, how often entries
 came back, gate times against each project's usual, and flaky tests. It also shows each project's
-day so far, today's lane runs on each Mac, and when work lands by day and hour.
+day so far, today's lane runs on each Mac, when work lands by day and hour, and each lane's timing
+baseline against its recent passing runs.
 
 <p align="center">
-  <img src="assets/dashboard-history.png" alt="The dashboard's Trends tab across four projects: landings per day, the share that came back, gate time against usual and flaky tests over the last 7 days against the 7 before; a row per project with today's landings, rounds and passing gate times; today's lane runs on two Macs; and a grid of when work landed by day and hour over the last week." width="100%">
+  <img src="assets/dashboard-history.png" alt="The dashboard's Trends tab across four projects: landings per day, the share that came back, gate time against usual and flaky tests over the last 7 days against the 7 before; a row per project with today's landings, rounds and passing gate times; today's lane runs on two Macs; a grid of when work landed by day and hour over the last week; and each lane's p90 baseline and fail threshold drawn over its recent passing runs, with where a lane's history was marked stale." width="100%">
 </p>
 
 **Activity** lists each round, newest first, with how each entry ended and a link to every lane's

@@ -1164,7 +1164,8 @@ Use `--all` in place of lane names to mark every lane. The baseline then waits f
 runs, the fail threshold for `minSamples`, and the gate's budget median leaves out gate runs that
 settled before the mark. A run sent to another Mac carries the mark there. The mark is kept on the
 Mac where you ran the command, which is also where the queue's worker runs. `qk timing show` (or
-`--json`) lists each lane's baseline, fail threshold and latest stale mark.
+`--json`) lists each lane's baseline, fail threshold and latest stale mark. The [dashboard](#the-dashboard)'s Trends tab
+draws them over each lane's recent passing runs.
 
 ### Every test has a lane
 
@@ -2755,7 +2756,7 @@ qk serve ../other-project # show another repository too
 |---|---|
 | Now | One health verdict across every queue, what needs attention, the day's numbers, a Flow map of entries moving from agents through the queues and Macs to `main`, and every round being tested and entry waiting |
 | Farm | Each Mac's slots, load, memory pressure and screen lock, with what runs and waits there; device reservations and connections |
-| Trends | The last 7 or 30 days: landings per day, how often entries came back, gate times and flaky tests |
+| Trends | The last 7 or 30 days: landings per day, how often entries came back, gate times and flaky tests; each lane's [timing baseline](#time-limits-and-the-gates-budget) on this Mac, its p90 and any fail threshold drawn over its recent passing runs, with where its history was marked stale, or how many more passing runs it needs |
 | Activity | Each round, newest first, with how each entry ended and links to every lane's log |
 | Logs | A log with its failures marked and its passing suites folded; reached from any lane, failure or entry |
 

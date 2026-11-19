@@ -59,7 +59,7 @@ CHECKOUT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CHECKOUT / "src/python"))
 from queuekeeper.checkout import activate
 activate(Path(__file__).resolve().parents[1])
-from queuekeeper import health, host_health  # noqa: E402
+from queuekeeper import health, host_health, lane_timing  # noqa: E402
 from queuekeeper.remote import DISPATCHER  # noqa: E402
 from queuekeeper_dashboard import panels, server  # noqa: E402
 
@@ -314,10 +314,29 @@ def lane_runs():
     return {name: sorted(found, key=lambda run: run["ended"]) for name, found in runs.items()}
 
 
+def lane_timing_rows(lanes):
+    """Each lane's timing baseline as the Trends tab's baselines give it, from (lane, median seconds, runs, the runs
+    after a stale mark or None, fail threshold or None): its runs spread around the median a day apart, those before
+    a stale mark faster, as before work was added to the lane on purpose."""
+    rows = []
+    for lane, median, count, after, fail in lanes:
+        times = [ago(86400 * (count - index) / 2) for index in range(count)]
+        stale = None if after is None else times[count - after] - 600
+        runs = [[at, round(RNG.lognormvariate(math.log(median * (0.7 if stale and at < stale else 1)), 0.12))] for at in times]
+        recent = [seconds for at, seconds in runs if stale is None or at > stale][-lane_timing.RECENT:]
+        found = None if len(recent) < lane_timing.FEWEST else {
+            "p90": lane_timing.percentile(recent), "median": sorted(recent)[len(recent) // 2], "samples": len(recent), "staleSince": stale}
+        limit = lane_timing.fail_seconds({"fail": fail}, found) if fail else None
+        rows.append({"lane": lane, "runs": runs, "baseline": found, "fail": fail, "failSeconds": round(limit, 1) if limit else None,
+                     "minSamples": lane_timing.MIN_SAMPLES if fail else None, "staleSince": stale})
+    return rows
+
+
 RUNS = lane_runs()
 PANELS["history"].update(
     yesterday={"landed": 9, "cameBack": 1, "failed": 1, "conflict": 0, "removed": 0, "flaky": 1, "rounds": 7, "medianGateSeconds": 281},
-    gates=RUNS["lumen-ios"], landings=landed_by_hour(14), gateSeconds=gate_times(260))
+    gates=RUNS["lumen-ios"], landings=landed_by_hour(14), gateSeconds=gate_times(260),
+    baselines=lane_timing_rows([("docs", 40, 30, None, None), ("gate", 265, 30, None, "+25%")]), fewest=lane_timing.FEWEST)
 PANELS["farm"]["deviceRecord"] = {"devices": [
     {"name": "iPhone", "kind": "iphone", "model": "iPhone 17 Pro", "state": "held", "owner": "release-tests",
      "purpose": "Release checks",
@@ -382,7 +401,9 @@ def others():
             "entries": [{"id": own["id"], "subject": own["subject"], "branch": own["branch"], "state": "landed", "landedAs": own["landedAs"]}],
             "lanes": [{"lane": "gate", "role": "batch", "status": 0, "seconds": 280, "log": None}]}]}
         found["history"].update(gateSeconds=gate_times({id(orbit): 440, id(notes): 92, id(harbor): 150}[id(found)]),
-                                landings=landed_by_hour({id(orbit): 6, id(notes): 9, id(harbor): 4}[id(found)]))
+                                landings=landed_by_hour({id(orbit): 6, id(notes): 9, id(harbor): 4}[id(found)]),
+                                baselines=lane_timing_rows({id(orbit): [("gate", 440, 30, 12, "+2m")], id(notes): [("gate", 92, 20, 3, None)],
+                                                            id(harbor): [("gate", 150, 24, None, None)]}[id(found)]))
         found["queue"]["health"]["signs"][4] = health.sign("cameBack", health.OK, "none of the last 8 came back")
         found["history"]["today"].update(landed=landed, rounds=landed, removed=0,
                                          medianGateSeconds=sorted(found["history"]["gateSeconds"])[len(found["history"]["gateSeconds"]) // 2])

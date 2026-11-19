@@ -1,14 +1,15 @@
 """The Trends tab, whose address is still `history`: each of the last PERIOD days, what landed, came back and was
 found flaky and how long passing gates took against their usual time, for the page to set the last 7 or 30 days
-against the ones before; today's lane runs on each Mac, when work has landed by day and hour, and how long passing
-gates take; and every repository's at once (everywhere), each repository's own answer combined (combine). What is
+against the ones before; today's lane runs on each Mac, when work has landed by day and hour, how long passing
+gates take, and each lane's timing baseline on this Mac beside its recent passing runs (baselines); and every repository's at once (everywhere), each repository's own answer combined (combine). What is
 happening now is the Now tab's (queue), and what happened, round by round, the Activity tab's (activity)."""
 import os
+from pathlib import Path
 import re
 import statistics
 import time
 
-from queuekeeper import farm
+from queuekeeper import config as configuration, farm, lane_timing
 from . import each
 
 TITLE, ORDER = "Trends", 40
@@ -112,12 +113,46 @@ def gate_seconds(journal):
             and event.get("status") == 0 and isinstance(event.get("seconds"), (int, float))][-RUNS:]
 
 
+LANE_RUNS = 40  # the passing runs of each lane the baselines' chart draws, newest, before a stale mark among them
+
+
+def baselines(root, entries=None):
+    """Each lane's timing baseline on this Mac (lane_timing), as `qk timing show` gives it, beside the seconds of
+    its newest LANE_RUNS passing runs, oldest first, as [epoch time, seconds], those before its last stale mark among
+    them, so that the page can draw the baseline's p90 and the lane's fail threshold against them and mark where the
+    history was marked stale. A lane with fewer than lane_timing.FEWEST passing runs since then has no baseline."""
+    try:
+        config = configuration.load(root)
+        from queuekeeper import cli
+        project = cli.project_name(Path(root), config)
+    except Exception:  # noqa: BLE001 - a configuration that cannot be read leaves the tab without baselines
+        return []
+    entries = lane_timing.read() if entries is None else entries
+    marks = lane_timing.stale_marks(project, entries)
+    rows = []
+    for name in lane_timing.lanes_of(config):
+        settings = config["lanes"][name].get("timing")
+        settings = settings if isinstance(settings, dict) else {}
+        found = lane_timing.baseline(project, name, entries)
+        try: limit = lane_timing.fail_seconds(settings, found)
+        except ValueError: limit = None
+        runs = [[entry["time"], entry["seconds"]] for entry in entries if entry.get("event") == "run"
+                and entry.get("project") == project and entry.get("lane") == name
+                and lane_timing.number(entry.get("seconds"))][-LANE_RUNS:]
+        rows.append({"lane": name, "runs": runs, "baseline": found, "fail": settings.get("fail"),
+                     "failSeconds": round(limit, 1) if limit else None,
+                     "minSamples": settings.get("minSamples", lane_timing.MIN_SAMPLES) if "fail" in settings else None,
+                     "staleSince": lane_timing.stale_since(marks, name)})
+    return rows
+
+
 def data(repository, query):
     journal, now = repository.events(), time.time()
     return {"today": totals(journal, now),
             # Yesterday from its midnight to this time of day, for the change beside each of today's totals.
             "yesterday": totals(journal, now - 86400), "gates": gate_runs(journal, now), "landings": landings(journal, now),
-            "gateSeconds": gate_seconds(journal), "daily": daily(journal, now)}
+            "gateSeconds": gate_seconds(journal), "daily": daily(journal, now), "baselines": baselines(repository.root),
+            "fewest": lane_timing.FEWEST}
 
 
 SUMMED = ("landed", "cameBack", "failed", "conflict", "removed", "flaky", "rounds")
@@ -140,7 +175,7 @@ def combine(parts):
     rows = [{"name": name, "error": why} if found is None else
             {"name": name, "today": found["today"], "yesterday": found["yesterday"], "gateSeconds": found["gateSeconds"]}
             for name, found, why in parts]
-    tagged = lambda key: [{**one, "repository": name} for name, found in read for one in found[key]]
+    tagged = lambda key: [{**one, "repository": name} for name, found in read for one in found.get(key) or []]
     days = {}
     for _, found in read:
         for one in found["daily"]:
@@ -151,7 +186,7 @@ def combine(parts):
     return {"today": day("today"), "yesterday": day("yesterday"), "repositories": rows,
             "gates": sorted(tagged("gates"), key=lambda run: run["began"]),
             "landings": [{"day": at, "hours": landings[at]} for at in sorted(landings)],
-            "daily": [days[at] for at in sorted(days)]}
+            "daily": [days[at] for at in sorted(days)], "baselines": tagged("baselines"), "fewest": lane_timing.FEWEST}
 
 
 def everywhere(repositories, query):

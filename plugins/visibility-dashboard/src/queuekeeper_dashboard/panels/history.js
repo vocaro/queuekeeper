@@ -77,6 +77,51 @@ QK.panel("history", {
         bins.filter((_, index) => index % Math.ceil(bins.length / 6) === 0).map(bin =>
           svg("text", { class: "axis", x: x(bin.from), y: H - 5 }, bin.from + "m")));
     }
+    // Each lane's timing baseline on this Mac beside its recent passing runs, oldest first: the p90 its live warning
+    // goes by as a solid line, its fail threshold, when it has one in force, as a dashed red one, and where its
+    // history was marked stale as a dashed upright, the runs before it faded, since the baseline leaves them out.
+    function baselines() {
+      const lanes = data.baselines || [], fewest = data.fewest || 5;
+      if (!lanes.length) return h("p", { class: "sub" }, "No lane has a timing history on this Mac yet.");
+      const W = 360, H = 64, pad = 5;
+      const since = one => one.staleSince ? one.runs.filter(run => run[0] > one.staleSince).length : one.runs.length;
+      function plot(one) {
+        const runs = one.runs || [], found = one.baseline;
+        if (!runs.length) return h("span", { class: "sub" }, "No passing run yet");
+        // The scale spans the runs and the lines, with room around them, so that a lane's spread shows.
+        const values = [...runs.map(run => run[1]), ...(found ? [found.p90] : []), ...(one.failSeconds ? [one.failSeconds] : [])];
+        const most = Math.max(...values), least = Math.min(...values), room = Math.max(0.1 * (most - least), 0.05 * most, 1);
+        const top = most + room, bottom = Math.max(0, least - room);
+        const step = (W - 2 * pad) / Math.max(1, runs.length - 1), x = index => runs.length > 1 ? pad + index * step : W / 2;
+        const y = seconds => H - pad - (seconds - bottom) / (top - bottom) * (H - 2 * pad);
+        const after = one.staleSince ? runs.findIndex(run => run[0] > one.staleSince) : -1;
+        const stale = !one.staleSince || runs[0][0] > one.staleSince ? null : after < 0 ? W - pad / 2 : x(after) - step / 2;
+        return svg("svg", { class: "lane-plot", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": one.lane + ": "
+          + QK.count(runs.length, "recent passing run") + (found ? ", p90 " + QK.span(found.p90) : ", no baseline yet") },
+          svg("line", { class: "base", x1: 0, x2: W, y1: H - pad, y2: H - pad }),
+          stale === null ? null : svg("line", { class: "stale", x1: stale, x2: stale, y1: 0, y2: H },
+            svg("title", null, "Marked stale " + QK.clock(one.staleSince))),
+          runs.map((run, index) => svg("circle", { class: "run" + (one.staleSince && run[0] <= one.staleSince ? " old" : ""), cx: x(index), cy: y(run[1]), r: 3 },
+            svg("title", null, QK.span(run[1]) + " · " + QK.clock(run[0])))),
+          found ? svg("line", { class: "p90", x1: 0, x2: W, y1: y(found.p90), y2: y(found.p90) }, svg("title", null, "p90 " + QK.span(found.p90))) : null,
+          one.failSeconds ? svg("line", { class: "fail", x1: 0, x2: W, y1: y(one.failSeconds), y2: y(one.failSeconds) },
+            svg("title", null, "Fails past " + QK.span(one.failSeconds))) : null);
+      }
+      return h("div", null, h("div", { class: "chart-scroll" }, h("table", { class: "repo-table lane-table" },
+        h("thead", null, h("tr", null, ["Lane", "Baseline", "Fails past"].map(name => h("th", null, name)), h("th", { class: "strip-head" }, "Recent passing runs"))),
+        h("tbody", null, lanes.map(one => h("tr", null,
+          h("td", null, all ? tag(one.repository) : null, all ? " " : null, h("b", null, one.lane)),
+          h("td", { class: "said" }, one.baseline ? ["p90 ", h("b", null, QK.span(one.baseline.p90)), h("span", { class: "muted" },
+              " · median " + QK.span(one.baseline.median) + " · " + QK.count(one.baseline.samples, "run"))]
+            : h("span", { class: "muted" }, "Too few passing runs for a baseline: " + since(one) + " of " + fewest + (one.staleSince ? " since it was marked stale" : "")),
+            one.staleSince ? h("div", { class: "sub" }, "Marked stale " + QK.clock(one.staleSince)) : null),
+          h("td", null, one.failSeconds ? [h("b", null, QK.span(one.failSeconds)), h("span", { class: "muted" }, " (" + one.fail + ")")]
+            : one.fail ? h("span", { class: "muted", title: "Applies once the baseline has " + one.minSamples + " runs" }, one.fail + " after " + one.minSamples + " runs") : "–"),
+          h("td", { class: "strip-cell" }, plot(one))))))),
+        h("div", { class: "legend sub" }, h("span", null, h("i", { class: "key p90-line" }), "p90"), h("span", null, h("i", { class: "key fail-line" }), "fail threshold"),
+          h("span", null, h("i", { class: "key stale-line" }), "marked stale"),
+          h("span", null, "On this Mac. The live warning comes past the p90 of a lane's newest passing runs since it was last marked stale; it needs " + fewest + " of them.")));
+    }
     // Each repository's day beside yesterday's to this time, and its passing gates' times as a strip of dots on one
     // scale of minutes, the median marked: a repository's gate is its own, so no median is taken across them. The
     // scale is logarithmic, so a one-minute gate and a hundred-minute one each keep room to show their spread.
@@ -187,6 +232,7 @@ QK.panel("history", {
       all ? h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "Every repository, by day and hour")), heatmap())
         : h("div", { class: "columns" },
           h("div", { class: "card" }, h("h2", null, "When work lands", h("span", { class: "muted" }, "By day and hour")), heatmap()),
-          h("div", { class: "card" }, h("h2", null, "Gate duration", h("span", { class: "muted" }, runs.length ? "Last " + QK.count(runs.length, "passing run") : "")), durations())));
+          h("div", { class: "card" }, h("h2", null, "Gate duration", h("span", { class: "muted" }, runs.length ? "Last " + QK.count(runs.length, "passing run") : "")), durations())),
+      h("div", { class: "card" }, h("h2", null, "Lane timing", h("span", { class: "muted" }, "Each lane's baseline on this Mac against its recent passing runs")), baselines()));
   },
 });

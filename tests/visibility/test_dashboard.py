@@ -20,7 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
 from test_support import farm as farm_fixture
-from queuekeeper import cli, events, plugins, merge_queue as mq, visibility
+from queuekeeper import cli, events, lane_timing, plugins, merge_queue as mq, visibility
 from queuekeeper import __version__ as queuekeeper_version
 from queuekeeper_dashboard import admission_ids, panels, registry, repository, server
 from queuekeeper_dashboard.panels import activity, farm, history, home, logs, queue
@@ -669,6 +669,35 @@ class Panels(Fixture):
         self.assertEqual((days[0]["medianGateSeconds"], days[0]["gateShares"]), (1800, [round(1800 / 1050, 2)]))
         self.assertEqual((days[-1]["medianGateSeconds"], days[-1]["gateShares"]), (900, [round(seconds / 1050, 2) for seconds in (600, 900, 1200)]))
         self.assertEqual(history.summary(self.one)["text"], "old")
+
+    def test_trends_give_each_lanes_timing_baseline_beside_its_recent_passing_runs(self):
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["lanes"]["lint"] = {"command": ["true"], "timing": {"fail": "+50%", "minSamples": 5}}
+        config["lanes"]["docs"] = {"command": ["true"], "timing": {"fail": "+2m"}}
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HEAVY_SLOT_DIR": tmp, lane_timing.STALE_VARIABLE: ""}):
+            self.assertEqual([one["baseline"] for one in history.baselines(self.repo)], [None, None, None])
+            for index, seconds in enumerate((100, 110, 120, 130, 900)): lane_timing.record("fixture", "gate", seconds, at=10 + index)
+            lane_timing.mark_stale("fixture", ["gate"], "split the suite", at=20)
+            for index, seconds in enumerate((60, 62, 58, 61, 70)): lane_timing.record("fixture", "gate", seconds, at=30 + index)
+            for index in range(5): lane_timing.record("fixture", "lint", 10, at=40 + index)
+            for index in range(5): lane_timing.record("fixture", "docs", 30, at=40 + index)
+            lane_timing.record("other", "gate", 999, at=50)
+            found = {one["lane"]: one for one in history.data(self.one, {})["baselines"]}
+        self.assertEqual(list(found), ["docs", "gate", "lint"])
+        gate, lint, docs = found["gate"], found["lint"], found["docs"]
+        # Every recent run is drawn, those before the stale mark among them; the baseline is only those after it.
+        self.assertEqual([seconds for _, seconds in gate["runs"]], [100, 110, 120, 130, 900, 60, 62, 58, 61, 70])
+        self.assertEqual((gate["baseline"]["p90"], gate["baseline"]["samples"], gate["staleSince"]), (70, 5, 20))
+        self.assertEqual((gate["fail"], gate["failSeconds"]), (None, None))
+        # A fail threshold is drawn once the baseline has the lane's minSamples runs, and said as waiting before then.
+        self.assertEqual((lint["fail"], lint["failSeconds"], lint["minSamples"]), ("+50%", 15.0, 5))
+        self.assertEqual((docs["fail"], docs["failSeconds"], docs["minSamples"]), ("+2m", None, lane_timing.MIN_SAMPLES))
+        combined = history.combine([("alpha", {**history.data(self.one, {}), "baselines": [gate]}, None)])
+        self.assertEqual([(one["repository"], one["lane"]) for one in combined["baselines"]], [("alpha", "gate")])
+        self.assertEqual(combined["fewest"], lane_timing.FEWEST)
+        (self.repo / "queuekeeper.json").write_text("{")
+        self.assertEqual(history.baselines(self.repo), [], "a configuration that cannot be read leaves no baselines")
 
     def test_activity_lists_each_round_with_how_its_entries_ended_and_its_lanes(self):
         directory, start = mq.Queue(self.repo).directory, time.time() - 600
