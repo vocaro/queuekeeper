@@ -36,6 +36,12 @@ from test_support.queue import (FLAGGED, LANE, GIT_ALONE, Fixture, Replaced, acc
 
 shard_by = "class"
 
+# Capacity readings (offload_host.capacity) of a Mac with room for a lane, and of one that admission declines: its CPU over
+# its limit while admitted work runs there (remote.spare).
+ROOMY = {"slots": 2, "slotsMax": 4, "busy": [], "cpuBusy": 10, "busyLimit": 90, "memory": 1}
+CROWDED = {**ROOMY, "busy": [0], "cpuBusy": 98}
+
+
 def BOTH_HERE(mac, hosts, waits):
     """mq.apart for a fixture with no other Mac: the second gate of a pair runs on this Mac beside the first, with no
     placement option, so that a test sees both run."""
@@ -10050,6 +10056,10 @@ class FailsTogetherWords(unittest.TestCase):
 
 
 class PooledStack(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.roomy.stop()  # these read room as a stack does, from the readings each test gives
+
     def test_a_stack_tries_build_macs_other_than_the_one_running_the_batch(self):
         worker = mq.Worker(mq.Queue(self.repo))
         worker.lane_now = ("gate", time.time(), ())
@@ -10064,7 +10074,7 @@ class PooledStack(Fixture):
             record = {"mac": mac, "kind": None, "pid": os.getpid(), "admitted": False}
             with self.subTest(mac=mac), farm_fixture.only("build-host", "gate-03", "gate-04"), patch.object(worker.queue, "waiting", return_value=waiting), \
                     patch.object(mq.lane_wait, "current", return_value=record), \
-                    patch.object(mq.remote, "pressure_there", return_value=(None, 1.0)), \
+                    patch.object(mq.remote, "capacity_there", return_value=ROOMY), \
                     patch.object(mq, "Stack") as stack:
                 worker.stack(worker, config, ["gate"], "head", [], threading.Event(), set())
                 stack.assert_not_called()
@@ -10086,13 +10096,12 @@ class PooledStack(Fixture):
         def there(host):
             read.append(host)
             if host == "gate-04" and "gate-04" in busy: raise mq.remote.Unavailable("gate-04 did not answer")
-            return (("cpu", "the CPU is 95% busy") if host in busy else None), 1.0
-        here = ("memory", "memory pressure is level 2 (warn), not 1 (normal)") if None in busy else None
+            return CROWDED if host in busy else ROOMY
         with farm_fixture.only("build-host", "gate-03", "gate-04"), \
                 patch.object(worker.queue, "waiting", return_value=[{"id": "new", "state": mq.QUEUED}]), \
                 patch.object(mq.lane_wait, "current", return_value=record), \
-                patch.object(mq.remote, "pressure_there", side_effect=there), \
-                patch.object(mq.resources, "pressure", return_value=here), \
+                patch.object(mq.remote, "capacity_there", side_effect=there), \
+                patch.object(mq.offload_host, "capacity", return_value=CROWDED if None in busy else ROOMY), \
                 patch.object(mq.time, "monotonic", return_value=clock), \
                 patch.object(mq, "Stack") as stack, contextlib.redirect_stdout(io.StringIO()) as log:
             worker.stack(worker, {"lanes": {"gate": {"resource": "heavy"}}}, ["gate"], "head", [], threading.Event(),
@@ -10109,9 +10118,11 @@ class PooledStack(Fixture):
         # The batch's Mac is never read; this Mac is, as the stack may go there.
         self.assertEqual(read, ["build-host", "gate-04"])
         self.assertIn("the entries behind the batch wait, since no Mac that may take them has spare capacity now", log)
-        self.assertIn("the CPU is 95% busy", log)
-        self.assertIn("gate-04 did not answer", log)
-        self.assertIn("on this Mac, memory pressure is level 2", log)
+        # Admitted work runs on each, over its CPU limit, which the old test of the CPU alone could miss.
+        self.assertIn("build-host is busy (CPU 98% busy, at or above its HEAVY_BUSY_LIMIT=90%) and admitted work runs "
+                      "there, so it takes no more", log)
+        self.assertIn("gate-04's capacity cannot be read: gate-04 did not answer", log)
+        self.assertIn("this Mac is busy (CPU 98% busy", log)
         # Said once while it lasts.
         _, again, _, _ = self.stacked(mq.lane_wait.farm_mac("gate-03"), {"build-host", "gate-04", None}, said)
         self.assertEqual(again, "")
@@ -10207,7 +10218,6 @@ class Stacked(Fixture):
         check = waits.path_of(worker.checkout, "check")
         gate = waits.path_of(worker.checkout, "gate")
         with (patch.object(mq, "apart", APART), farm_fixture.only("build-host"),
-              patch.object(mq.remote, "pressure_there", return_value=(None, 1.0)),
               patch.object(mq, "Stack") as stack,
               patch.dict(os.environ, {waits.VARIABLE: str(check)})):
             worker.stack(*args)

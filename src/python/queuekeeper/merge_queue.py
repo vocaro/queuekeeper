@@ -213,8 +213,8 @@ STACK_POLL = 30
 # A busy Mac can stay busy over many polls. Wait four polls before reintegrating a declined stack (#348).
 STACK_ADMISSION_BACKOFF = 4 * STACK_POLL
 STACK_ADMISSION_DECLINED = "queue: no Mac admitted the last lane of this stacked gate"
-# Most stacks used to wait to be declined (exit 75) on a busy farm. A stack starts only when a Mac it may go to is
-# under its heavy busy limit with normal memory pressure (Worker.stack_room), and else backs off as a declined one.
+# Most stacks used to wait to be declined (exit 75) on a busy farm. A stack starts only when a Mac it may go to has
+# spare capacity for its final lane by placement's test (Worker.stack_room), and else backs off as a declined one.
 STACK_ROOMLESS = "no room for a stack"
 NO_ROOM = "no Mac but the batch's"
 # A docs-only entry never rides a code gate (owner's rule of 2026-11-11, vocaro-engineering#394). Queued beside code
@@ -5752,7 +5752,7 @@ class Worker:
             said.add(why)
             return
         # No Mac that could take it has room: an attempt would only wait to be declined (STACK_ROOMLESS).
-        busy = self.stack_room(hosts, excluded, where)
+        busy = self.stack_room(hosts, excluded, where, config.get("lanes", {}), lanes[-1])
         if busy:
             if STACK_ROOMLESS not in said: self.say(f"the entries behind the batch wait, since {busy}")
             said.add(STACK_ROOMLESS)
@@ -5766,18 +5766,28 @@ class Worker:
         stacked = Stack(self, other, fresh, head, lanes, where, below=applied, paths=paths, said_where=said_where)
         if not stop.is_set() and stacked.begin(): self.pending = stacked
 
-    def stack_room(self, hosts, excluded, where):
+    def stack_room(self, hosts, excluded, where, lanes, lane):
         """None when a Mac a stacked gate may go to (apart: hosts but excluded, and this Mac unless where keeps it
-        off) has spare capacity by admission's test, its CPU under its heavy busy limit with normal memory pressure,
-        as settle reads it (resources.pressure, remote.pressure_there); else why none has. A Mac that cannot be
-        read has none."""
-        macs = [host for host in hosts if host != excluded] + ([] if "--offload-only" in where else [None])
+        off) has spare capacity for lane, the stack's final lane among lanes, a configuration's lanes, by the test
+        placement reads before it offers a lane (remote.spare, as remote.retry_macs reads it): a slot free, its CPU
+        under its heavy busy limit while admitted work runs there, settled since its last admission, and normal memory
+        pressure; else why none has. A Mac that cannot be read has none. A single reading of the CPU alone let stacks
+        through to a Mac already running other work, which admission then declined (exit 75)."""
+        if lane not in lanes: return None
+        settings = lanes[lane]
+        needs = bool(settings.get("wholeHost")), settings.get("resource") == "exclusive", unlocked_screen(lanes, lane)
+        fits = remote.lane_needs(lanes, lane)
         said = []
-        for host in macs:
-            try: busy = resources.pressure() if host is None else remote.pressure_there(host)[0]
-            except remote.Unavailable as error: busy = "unknown", str(error)
-            if busy is None: return None
-            said.append(f"on this Mac, {busy[1]}" if host is None else f"on {remote.called(host)}, {busy[1]}")
+        for host in [host for host in hosts if host != excluded] + ([] if "--offload-only" in where else [None]):
+            if host is None:
+                reading = offload_host.capacity()
+                reason = (f"this Mac's capacity cannot be read: {reading['error']}" if reading.get("error")
+                          else remote.spare(reading, HERE_MAC, *needs, **fits))
+            else:
+                try: reason = remote.spare(remote.capacity_there(host), remote.called(host), *needs, **fits)
+                except remote.Unavailable as error: reason = f"{remote.called(host)}'s capacity cannot be read: {error}"
+            if reason is None: return None
+            said.append(str(reason))
         return f"no Mac that may take them has spare capacity now ({'; '.join(said) or NO_ROOM})"
 
     def admitted_mac(self, runner, final_lane):

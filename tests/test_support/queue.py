@@ -144,6 +144,10 @@ class Fixture(unittest.TestCase):
         settled = patch.object(mq.resources, "pressure", return_value=None)
         self.pressure = settled.start()
         self.addCleanup(settled.stop)
+        # Room for a stacked gate unless a test says otherwise, so that no stack waits on this Mac's real capacity.
+        self.roomy = patch.object(mq.Worker, "stack_room", return_value=None)
+        self.roomy.start()
+        self.addCleanup(self.roomy.stop)
         # No test reaches GitHub's tracker: a flake the queue records goes here (mq.hardening, #231).
         self.tracked = []
         tracker = patch.object(mq, "hardening", side_effect=lambda checkout, flake: (
