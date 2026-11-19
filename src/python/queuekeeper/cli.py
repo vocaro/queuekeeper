@@ -1820,6 +1820,10 @@ def perform(argv, report):
                 receipt.update(parallel=group, jobs=jobs)
                 # Each lane's receipt shows the command it ran, as its own keys make it.
                 members = [(name, {**config["lanes"][name], "command": lane_command(config["lanes"][name])}) for name in group]
+                # A group that says failFast ends at its first failed lane, except as the serial reference, which
+                # runs each lane to its end to compare with a failure seen side by side (vocaro/queuekeeper#256).
+                fail_fast = bool(lane.get("failFast")) and not args.serial
+                if fail_fast: receipt["failFast"] = True
                 def execute(on_stop=None):
                     def work():
                         # Each lane's own sandbox, made for the tree the group reads, its profile in the group's directory.
@@ -1831,7 +1835,7 @@ def perform(argv, report):
                             wrapped.append((name, {**member, "command": [*wrap, *member["command"]]}))
                         return parallel.lanes(tree, wrapped, directory / "lanes", jobs,
                                               lambda member, status, log: judge(member, status, log)[0], receipt, on_stop,
-                                              results_directory=directory / "results")
+                                              results_directory=directory / "results", fail_fast=fail_fast)
                     return record(directory, receipt, lambda: prepared(work))
             try:
                 with processes.forwarding_signals():

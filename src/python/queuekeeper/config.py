@@ -131,7 +131,7 @@ EXTENSION_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeep
 EXTENSION_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple",
                          "android": "queuekeeper_android", "emulatorPool": "queuekeeper_android"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen",
-                        "labels"})
+                        "labels", "failFast"})
 
 
 
@@ -937,7 +937,7 @@ def group(name, lane, lanes):
     time when several do."""
     if set(lane) - GROUP_KEYS:
         raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model, wholeHost, "
-                         "unlockedScreen and budgetMinutes")
+                         "unlockedScreen, labels, failFast and budgetMinutes")
     members = lane["parallel"]
     if not isinstance(members, list) or not members or len(set(members)) != len(members) \
             or any(not isinstance(member, str) for member in members):
@@ -973,7 +973,7 @@ def group(name, lane, lanes):
     if len(models) > 1 and lane.get("jobs", len(members)) != 1:
         raise ValueError(f"{name} runs the model lanes {', '.join(models)}, which would drive the model at once, "
                          "so it needs \"jobs\": 1")
-    for key in ["model", "wholeHost", "unlockedScreen"]:
+    for key in ["model", "wholeHost", "unlockedScreen", "failFast"]:
         if key in lane and type(lane[key]) is not bool:
             raise ValueError(f"{name}.{key} must be true or false")
     place(name, lane)

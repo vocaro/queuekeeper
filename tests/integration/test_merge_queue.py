@@ -8776,6 +8776,39 @@ class FlakyReruns(Fixture):
         self.assertEqual([entry["state"] for entry in entries], ["landed", "landed"])
         self.assert_gate_failure(entries[0]["flakes"][0]["gateLog"])
 
+    def test_a_fail_fast_group_cut_short_by_a_failure_that_then_passes_alone_gates_again_rather_than_land(self):
+        """A group with failFast ends at its first failed lane, so its other lanes never finish. When the worker's
+        reruns of that lane's failed test then pass, nothing ran the rest, so the batch gates again rather than land as
+        flaky (vocaro/queuekeeper#256)."""
+        self.make_gate_a_group(0)
+        declared = json.loads((self.repo / "queuekeeper.json").read_text())
+        # The other lane hangs in the first gate, until the group stops it, and passes at once in any later one.
+        seen = self.base / "other-ran"
+        declared["lanes"]["other"]["command"] = [
+            "python3", "-c", f"import pathlib, time\nseen = pathlib.Path({str(seen)!r})\nfirst = not seen.exists()\n"
+            "seen.touch()\nif first: time.sleep(600)"]
+        declared["lanes"]["gate"]["failFast"] = True
+        (self.repo / "queuekeeper.json").write_text(json.dumps(declared))
+        run(self.repo, "git", "commit", "-qam", "End the gate at its first failed lane")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.plan.write_text("F")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        started = time.monotonic()
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertLess(time.monotonic() - started, 300, log)
+        self.assertEqual(self.state(identifier)["state"], "landed", log)
+        # The gate, the worker's reruns, and the second gate, which runs whole and passes.
+        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS + 1, log)
+        self.assertIn(f"rerunning each alone up to {mq.RERUNS} times", log)
+        self.assertIn("gate stopped at its first failed lane, suite, before other finished: gating the batch again", log)
+        self.assertNotIn("it imports: landing the batch", log)
+        [tracked] = self.tracked
+        self.assertIn("before the rest of its group, other, ran, so the batch gated again", tracked["outcome"])
+        self.assertNotIn(f"{mq.FLAKY}:", self.tip_message())
+
     @contextlib.contextmanager
     def dispatched_once_each_run_ends(self, file):
         """A gate another Mac ran: once each qk run has ended, as remote.execute returns it, file(own, dispatches) moves

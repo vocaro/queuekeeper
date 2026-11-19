@@ -57,6 +57,12 @@ REASON_WIDTH = 300
 # its suite never ran (merge_queue.failed_tests, Worker.rerun).
 STOPPED = "STOPPED: "
 HALTED = "stopped after a failed test failed again alone"
+# The outcome a lane group with "failFast" gives a lane that its first failed lane stopped or kept from starting, which
+# has no status of its own and no verdict on the commits; and the line the group's output then ends with before its
+# verdict, naming that failed lane. The merge queue reads the receipts: a batch whose failure passes alone gates again
+# rather than land, as the stopped lanes never finished (Worker.read_group, Worker.rerun; vocaro/queuekeeper#256).
+CUT_SHORT = "cut short"
+GROUP_STOPPED = "STOPPED: the group stopped at "
 # Seconds the git command that finds a --fail-fast run's failure history may take (history_place).
 GIT_SECONDS = 30
 # The file in a repository's common git directory that keeps when each test a --fail-fast run saw fail last failed,
@@ -120,7 +126,7 @@ def hand_up(results, lane, environment=None):
     return target
 
 
-def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None):
+def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None, fail_fast=False):
     """Run members, (name, lane) pairs, jobs at a time, each with its log at directory/NAME.log and
     its receipt at directory/NAME.json, and return the combined status. judge(lane, status, log) is
     a lane's status from its command's and its log, raising ValueError for a run that executed too
@@ -131,9 +137,19 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
     starts none of the rest; once all have ended the stop is raised, or the uncertainty of a lane
     whose processes were not seen to end, which keeps the admission's guard. A lane that a stop or
     that uncertainty ended has its receipt too, with no status.
+
+    With fail_fast, the first lane that fails ends the rest instead: each lane still running is stopped as its
+    timeout would stop it, SIGTERM and then SIGKILL, and none of the rest starts. Each has a receipt whose outcome is
+    CUT_SHORT, with no status, which the group's verdict leaves out, and the group's receipt names the failed lane in
+    stoppedAt and the others in cutShort (vocaro/queuekeeper#256).
     """
     directory.mkdir(parents=True, exist_ok=True)
     results, lock, started = {}, threading.Lock(), time.monotonic()
+    # Set once a lane fails, under fail_fast, with that lane's name first in failed.
+    cut, failed = (threading.Event() if fail_fast else None), []
+
+    def because():
+        return f"not run or not finished: {failed[0]} failed first, and the group stops at its first failed lane"
 
     def say(*lines):
         with lock: print(*lines, sep="\n", flush=True)
@@ -152,20 +168,32 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             {"lane": name, "command": lane["command"], **result, "log": log.name}, indent=2) + "\n")
         return seconds
 
+    def cut_short(name, lane, log, began):
+        """Record a lane that the group's first failure stopped or kept from starting."""
+        seconds = conclude(name, lane, log, began, None, CUT_SHORT, because())
+        say(f"CUT SHORT {name} ({seconds}s): {log}", f"    {because()}")
+
     def one(name, lane):
         log = directory / f"{name}.log"
-        say(f"RUN {name}")
         began = time.monotonic()
+        if cut is not None and cut.is_set():
+            # Its log says so, rather than an earlier run's staying beside this run's receipt.
+            log.write_text(f"queuekeeper: {name} {because()}\n")
+            return cut_short(name, lane, log, began)
+        say(f"RUN {name}")
         try:
             status = processes.run(lane["command"], cwd=root, log_path=log,
                                    timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
-                                   on_stop=on_stop,
+                                   on_stop=on_stop, cancel=cut,
                                    **({"stall": lane["stall"], "progress_path": results_directory / name / "progress.json"
                                       if results_directory is not None else directory / f"{name}.progress.json"}
                                       if "stall" in lane else {}),
                                    env=shims.environment(results_environment(results_directory / name)
                                        if results_directory is not None else os.environ, root))
             status = judge(lane, status, log.read_text(errors="replace"))
+        except processes.Canceled:
+            # Only the group's first failure cancels a lane.
+            return cut_short(name, lane, log, began)
         except processes.TimedOut as error:
             # A lane's timeout is its backstop, so a run a busy host slowed past it is unmeasured.
             status, detail = lane_results.UNMEASURED, str(error)
@@ -183,6 +211,10 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
         else:
             detail = None
         seconds = conclude(name, lane, log, began, status, verdict_of(status), detail)
+        if cut is not None and outcome(status) == "FAIL":
+            with lock:
+                if not cut.is_set(): failed.append(name)
+                cut.set()
         lines = [f"{outcome(status)} {name} ({seconds}s, status {status}): {log}"]
         if detail: lines.append(f"    {detail}")
         if outcome(status) != "PASS":
@@ -196,11 +228,15 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
     if failures:
         uncertain = [error for error in failures if not isinstance(error, processes.Interrupted)]
         raise uncertain[0] if uncertain else failures[0]
-    status = combined([results[name]["status"] for name, _lane in members])
+    stopped = [name for name, _lane in members if results[name]["outcome"] == CUT_SHORT]
+    if stopped: receipt.update(stoppedAt=failed[0], cutShort=stopped)
+    status = combined([results[name]["status"] for name, _lane in members if name not in stopped])
     width = max(len(name) for name, _lane in members)
     say(f"Lane times (wall-clock {round(time.monotonic() - started)}s, {jobs} at a time):",
-        *(f"  {name:<{width}}  {results[name]['seconds']:>6}s  {outcome(results[name]['status'])}"
-          for name, _lane in members), outcome(status))
+        *(f"  {name:<{width}}  {results[name]['seconds']:>6}s  "
+          f"{'CUT SHORT' if name in stopped else outcome(results[name]['status'])}" for name, _lane in members),
+        *([f"{GROUP_STOPPED}{failed[0]}'s failure; not run or not finished: {', '.join(stopped)}"] if stopped else []),
+        outcome(status))
     return status
 
 

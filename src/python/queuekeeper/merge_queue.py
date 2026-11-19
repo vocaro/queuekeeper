@@ -3230,6 +3230,7 @@ class Worker:
         self.tooling = None  # why Queuekeeper itself could not start for that lane, or None (tool_unstarted)
         self.probed = ""  # what starting Queuekeeper with and without the batch found (batch_stops_start)
         self.group_failed = []  # the lanes of the last group lane that did not pass (read_group)
+        self.group_cut = []  # the lanes its first failed lane cut short, under the group's failFast (read_group)
         self.confirmed = None  # the failed tests the last rerun confirmed, which blame reads (rerun)
         self.added = None  # (entry, why) of the entry that adds the tests the last rerun passed alone, for blame (rerun)
         self.refused = None  # (lane, line, config) of the last gate qk unittest refused before running, for blame (rerun)
@@ -4103,10 +4104,12 @@ class Worker:
     def read_group(self, lane, folder, log, *, include_swift=False):
         """For a lane that is a group, whose own output gives only the end of a failed lane's log: add its qk unittest
         lane's whole log to log, which rerun and `qk queue doctor` read as any qk unittest gate's, and note in
-        self.group_failed the lanes in folder, its lanes' logs and receipts, that did not pass (#289).
+        self.group_failed the lanes in folder, its lanes' logs and receipts, that did not pass (#289), and in
+        self.group_cut those that the group's first failed lane cut short under its failFast, which are no failures
+        of their own but leave the gate unfinished (parallel.CUT_SHORT, vocaro/queuekeeper#256).
         Return the unittest member's log (empty if unavailable, None for a single lane) and the distinct Swift
         Testing assertions from failed members when requested."""
-        self.group_failed = []
+        self.group_failed, self.group_cut = [], []
         try: lanes = load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return None, []
         members = lanes.get(lane, {}).get("parallel") if isinstance(lanes.get(lane), dict) else None
@@ -4119,9 +4122,12 @@ class Worker:
                 kept.write(member_log)
         assertions = []
         for name in members:
-            try: status_ = json.loads((folder / f"{name}.json").read_text()).get("status")
-            except (OSError, ValueError, AttributeError): status_ = None
-            if status_ != 0: self.group_failed.append(name)
+            try: own = json.loads((folder / f"{name}.json").read_text())
+            except (OSError, ValueError): own = None
+            status_ = own.get("status") if isinstance(own, dict) else None
+            if isinstance(own, dict) and status_ is None and own.get("outcome") == parallel.CUT_SHORT:
+                self.group_cut.append(name)
+            elif status_ != 0: self.group_failed.append(name)
             if include_swift and name != member and isinstance(status_, int) and status_ and status_ not in NO_VERDICT:
                 with contextlib.suppress(OSError):
                     assertions.extend(swift_test_assertions((folder / f"{name}.log").read_text(errors="replace")))
@@ -4716,9 +4722,10 @@ class Worker:
         changed = {path for path in text(self.checkout, "log", "--format=", "--name-only", "--no-renames",
                                          f"{base}..{head}").splitlines() if path}
         touching = {}
-        # A gate --fail-fast stopped at a failure that repeated alone there ran only part of the suite, so failures
-        # that all pass alone here cannot land the batch: it gates again, once for its commit, and then bisects.
-        short = cut_short(said)
+        # A gate --fail-fast stopped at a failure that repeated alone there ran only part of the suite, as did a group
+        # its first failed lane ended under failFast, so failures that all pass alone here cannot land the batch: it
+        # gates again, once for its commit, and then bisects.
+        short = cut_short(said) or bool(self.group_cut)
         again = short and head not in self.regated
         # Old tests that passed alone beside a test the batch adds are flakes, recorded as any; but no one entry
         # explains every failed test, so none is blamed and the batch bisects (owner's decision of 2026-11-07;
@@ -4734,25 +4741,36 @@ class Worker:
                          if added else
                          "The batch was bisected, as one of its commits changes the module of a failed test, or a file "
                          "it imports." if touching else
-                         "The gate had stopped at this failure before the rest of the suite ran, so the batch gated "
-                         "again." if again else
-                         "The gate had stopped at this failure before the rest of the suite ran, again, so the batch "
-                         "was bisected." if short else
+                         f"The gate had stopped at this failure before the rest of {self.unfinished()} ran, so the "
+                         "batch gated again." if again else
+                         f"The gate had stopped at this failure before the rest of {self.unfinished()} ran, again, so "
+                         "the batch was bisected." if short else
                          f"No commit of the batch's {len(applied)} changes its module or a file it imports, so the "
                          "batch landed.")
         if touching:
             self.say(f"every failed test passed alone, but the batch reaches {'; '.join(f'{test}, {why}' for test, why in touching.items())}: bisecting")
             return None
         if short:
-            self.regated.add(head)
-            self.regate = again
-            self.say(f"every failed test passed alone {RERUNS} times, but {lane} stopped at the first that failed again "
-                     "alone there, before the rest of the suite ran: "
-                     + ("gating the batch again" if again else "it did so before on this commit, so bisecting"))
+            self.cut_short_again(lane, head, again)
             return None
         self.say(f"every failed test passed alone {RERUNS} times and no commit of the batch changes its module or a file "
                  "it imports: landing the batch")
         return flakes
+
+    def unfinished(self):
+        """What a gate cut short left unfinished, as rerun's verdict names it: its group's lanes, or its suite."""
+        return f"its group, {', '.join(self.group_cut)}," if self.group_cut else "the suite"
+
+    def cut_short_again(self, lane, head, again):
+        """Gate again a batch whose gate was cut short, once for head, its commit, or else bisect it: its failed tests
+        all passed alone, but what the gate left unfinished never ran (rerun, rerun_declared)."""
+        self.regated.add(head)
+        self.regate = again
+        stopped = (f"{lane} stopped at its first failed lane, {', '.join(self.group_failed)}, before "
+                   f"{', '.join(self.group_cut)} finished" if self.group_cut else
+                   f"{lane} stopped at the first that failed again alone there, before the rest of the suite ran")
+        self.say(f"every failed test passed alone {RERUNS} times, but {stopped}: "
+                 + ("gating the batch again" if again else "it did so before on this commit, so bisecting"))
 
     def rerun_each(self, tests, command_of, applied, head, log, round_name):
         """(the flakes of tests, {test: the log of the rerun that failed, or None}) once each is rerun alone on head,
@@ -4848,12 +4866,21 @@ class Worker:
         why = (None if paths and not reached else
                f"{lane}'s failedTests list no paths its tests depend on, so any change may reach them" if not paths else
                f"the batch changes {', '.join(reached[:5])}, which {lane}'s tests depend on")
+        # A group its first failed lane ended under failFast never finished its other lanes (vocaro/queuekeeper#256).
+        again = bool(self.group_cut) and head not in self.regated
         self.keep_flakes(flakes, applied, {flake["test"]: why for flake in flakes} if why else {},
                          f"The batch was bisected, as {why}." if why else
+                         f"The gate had stopped at this failure before the rest of {self.unfinished()} ran, so the "
+                         "batch gated again." if again else
+                         f"The gate had stopped at this failure before the rest of {self.unfinished()} ran, again, so "
+                         "the batch was bisected." if self.group_cut else
                          f"No commit of the batch's {len(applied)} changes a path {lane}'s tests depend on, so the batch "
                          "landed.")
         if why:
             self.say(f"every failed test passed alone, but {why}: bisecting")
+            return None
+        if self.group_cut:
+            self.cut_short_again(self.failed_lane, head, again)
             return None
         self.say(f"every failed test passed alone {RERUNS} times and no commit of the batch changes a path {lane}'s tests "
                  "depend on: landing the batch")

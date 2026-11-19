@@ -403,6 +403,11 @@ failed tests are rerun and blamed as any run's. If they then all pass alone, the
 land, because the rest of its suite never ran: it gates again, once for that commit, and bisects
 if the gate stops that way again.
 
+A gate group with `failFast` that stopped at its first failed member is treated the same way: when
+that member's failed tests all pass alone, the batch gates again, once for that commit, and bisects
+if the group stops that way again, since its other members never finished
+([Lane groups](#lane-groups)).
+
 A gate that `qk unittest` refused with `nothing ran` is not rerun: the worker sends back the one
 entry that brings the refusal, or bisects. When the same refusal comes back with no entry to blame,
 the queue holds for a session.
@@ -735,6 +740,7 @@ The most useful settings:
 | `timeout` | Seconds before the lane ends as unmeasured; 2 hours when unset ([Time limits](#time-limits-and-the-gates-budget)) |
 | `parallel` | Makes the lane a *group* that runs its members side by side under one admission ([Lane groups](#lane-groups)) |
 | `jobs` | How many of a group's members run at once; all of them by default |
+| `failFast` | Ends a group at its first failed member ([Lane groups](#lane-groups)) |
 | `resource` | `"exclusive"` for timing measurements that need the Mac to themselves; `"self"` for a script that admits its own parts |
 | `wholeHost` | The lane starts its own parallel jobs and needs the whole Mac |
 | `here` | Why the lane runs only on this Mac, such as a physical device |
@@ -898,7 +904,13 @@ A lane whose `parallel` names other lanes runs them at once under one admission:
 
 - Each member is judged as `qk run MEMBER` would judge it, and writes its log and receipt to
   `.build/queuekeeper/GROUP/lanes/`. A failed member's last 40 lines print under its result; the
-  others still run to their end.
+  others still run to their end, unless the group says `failFast`.
+- **`"failFast": true`** ends the group at its first failed member. The members still running are
+  stopped as their timeout would stop them, with SIGTERM and then SIGKILL, and the rest never start.
+  Each is reported `CUT SHORT`, with the outcome `cut short` and no status in its receipt; the group
+  fails, and its receipt names the failed member in `stoppedAt` and the others in `cutShort`. A gate
+  cut short this way never lands as flaky ([When a batch fails](#when-a-batch-fails)). Leave it off
+  for a group whose members need more than SIGTERM to stop cleanly, such as one holding a device.
 - A member that fails fails the group. A member that did not run, or ended unmeasured, leaves the
   group without a verdict rather than failed.
 - The group needs a `resource` at least as heavy as its heaviest member. A lane that takes the
@@ -908,8 +920,8 @@ A lane whose `parallel` names other lanes runs them at once under one admission:
   also needs `"jobs": 1`.
 - A heavy group goes to another Mac whole unless it or a member says `here`. A gate script that runs
   a group as one of its steps uses `qk run --here GROUP`, so the results stay with the gate.
-- `qk run --serial GROUP` runs the members one after another on this Mac, as a reference for a
-  failure seen only side by side; `qk remote run --serial GROUP` does so on another Mac. Neither
+- `qk run --serial GROUP` runs the members one after another on this Mac, each to its end even
+  under `failFast`, as a reference for a failure seen only side by side; `qk remote run --serial GROUP` does so on another Mac. Neither
   counts as a pass of the group.
 
 Members that share a build folder cannot run side by side: two `swift test` runs in one `.build`

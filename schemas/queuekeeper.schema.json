@@ -155,7 +155,8 @@
                 "budgetMinutes",
                 "wholeHost",
                 "unlockedScreen",
-                "labels"
+                "labels",
+                "failFast"
               ]
             }
           }
@@ -174,6 +175,10 @@
             "description": "How many of a lane group's lanes run at once, from 1 to their number; without it, all of them",
             "type": "integer",
             "minimum": 1
+          },
+          "failFast": {
+            "description": "Whether a lane group ends at its first failed lane: the lanes still running are stopped as their timeout would stop them, the rest never start, and each is reported cut short, with no verdict of its own. The group fails. A merge queue gate cut short this way never lands as flaky: a batch whose failed tests then pass alone gates again, once for its commit, and bisects if it stops so again. Left out or false, every lane runs to its own end",
+            "type": "boolean"
           },
           "command": {
             "type": "array",

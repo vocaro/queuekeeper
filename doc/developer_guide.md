@@ -306,7 +306,10 @@ with `failedTests`.
   rerun's test, count, log and admission wait; the record goes once the verdict is in.
 - **A gate cut short.** A `--fail-fast` gate whose failed tests all pass alone does not land, since
   the rest of its suite never ran: it gates again, once for that commit, and bisects if it stops
-  that way again.
+  that way again. So does a `failFast` group that its first failed member ended: `parallel.lanes`
+  cancels the other members' runs and gives each a receipt whose outcome is `parallel.CUT_SHORT`,
+  which `Worker.read_group` puts in `group_cut` rather than among the failed members, so that the
+  failed member's tests are still rerun and blamed.
 - **A flake lands only if untouched.** When every rerun passes, the batch lands only if no commit
   changes the test's module or a project file it imports, followed through the module's own import
   statements at any depth. The flake is recorded in the entry's `flakes`, the worker log, a

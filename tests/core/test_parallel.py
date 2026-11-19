@@ -1155,6 +1155,53 @@ class LaneGroupTests(unittest.TestCase):
         self.assertEqual((slow["status"], slow["executedTests"]), (3, None))
         self.assertIn("timed out after 1s", slow["error"])
 
+    def test_a_fail_fast_group_ends_at_its_first_failed_lane_and_reports_the_rest_cut_short(self):
+        # vocaro/queuekeeper#256: a docs lane failing in 1 s waited out a 20-minute gate.
+        began = self.root / "began"
+        hangs = {"command": [sys.executable, "-c", f"import pathlib, time; pathlib.Path({str(began)!r}).touch(); "
+                             "time.sleep(600)"]}
+        fails = {"command": [sys.executable, "-c", f"import pathlib, time\nwhile not pathlib.Path({str(began)!r}).exists(): "
+                             "time.sleep(0.05)\nprint('planted failure'); raise SystemExit(1)"]}
+        never = {"command": [sys.executable, "-c", f"import pathlib; pathlib.Path({str(self.root / 'later')!r}).touch()"]}
+        lanes = {"hangs": hangs, "fails": fails, "later": never}
+        self.configure({**lanes, "group": {"parallel": ["hangs", "fails", "later"], "jobs": 2, "failFast": True}})
+        started = time.monotonic()
+        status, output = self.run_lane("group")
+        self.assertEqual(status, 1, output)
+        # Stopped at once, not at the hanging lane's end, and the lane after them never started.
+        self.assertLess(time.monotonic() - started, stretched(120), output)
+        self.assertFalse((self.root / "later").exists(), output)
+        receipt = json.loads((self.root / ".build/queuekeeper/group/source.json").read_text())
+        self.assertEqual((receipt["outcome"], receipt["failFast"], receipt["stoppedAt"], receipt["cutShort"]),
+                         ("failed", True, "fails", ["hangs", "later"]))
+        for member, outcome in [("fails", "failed"), ("hangs", parallel.CUT_SHORT), ("later", parallel.CUT_SHORT)]:
+            own = json.loads((self.root / f".build/queuekeeper/group/lanes/{member}.json").read_text())
+            self.assertEqual(own["outcome"], outcome, member)
+            self.assertEqual(own["status"] is None, outcome == parallel.CUT_SHORT, member)
+        self.assertIn("FAIL fails", output)
+        self.assertIn("CUT SHORT hangs", output)
+        self.assertIn("CUT SHORT later", output)
+        self.assertIn(f"{parallel.GROUP_STOPPED}fails's failure; not run or not finished: hangs, later", output)
+        self.assertIn("fails failed first", (self.root / ".build/queuekeeper/group/lanes/later.log").read_text())
+        # The negative controls: the serial reference, and a group without failFast, run every lane to its end.
+        lanes["hangs"] = {"command": [sys.executable, "-c", "print('done')"]}
+        lanes["fails"] = {"command": [sys.executable, "-c", "raise SystemExit(1)"]}
+        for arguments, group in [(["--serial"], {"failFast": True}), ([], {})]:
+            with self.subTest(arguments=arguments, group=group):
+                (self.root / "later").unlink(missing_ok=True)
+                self.configure({**lanes, "group": {"parallel": ["fails", "hangs", "later"], "jobs": 1, **group}})
+                status, output = self.run_lane(*arguments, "group")
+                self.assertEqual(status, 1, output)
+                self.assertTrue((self.root / "later").exists(), output)
+                receipt = json.loads((self.root / ".build/queuekeeper/group/source.json").read_text())
+                self.assertNotIn("cutShort", receipt)
+                self.assertNotIn("CUT SHORT", output)
+        # failFast is true or false.
+        self.configure({**lanes, "group": {"parallel": ["fails"], "failFast": "yes"}})
+        status, output = self.run_lane("group")
+        self.assertEqual(status, 2, output)
+        self.assertIn("group.failFast must be true or false", output)
+
     def test_lanes_start_under_an_admission_token_whose_descriptor_this_process_does_not_hold(self):
         # A process can hold the admission's token without its descriptor, as each module's process
         # qk unittest started under qk admit did. Passed on, that closed descriptor stopped a lane
