@@ -57,7 +57,7 @@ from queuekeeper_mobile import device_pass, devices
 from . import apple_platform  # noqa: F401 -- switches the Apple platform on
 from queuekeeper import processes
 from .settings import APP_PLATFORMS
-from queuekeeper.checkout import import_paths
+from queuekeeper.checkout import python_path
 from queuekeeper.config import TOOLKIT_ROOT, load
 
 # Names an isolated store for tests; sessions use the default.
@@ -470,7 +470,7 @@ def open_on_mac(kept, *, replace=False, run=subprocess.run, sleep=time.sleep):
 
 def device_command(kept):
     """The command a device pass runs to install the kept build on {udid} and launch it."""
-    return ["env", "PYTHONPATH=" + os.pathsep.join(map(str, import_paths("queuekeeper", "queuekeeper_apple", "queuekeeper_mac_desktop", "queuekeeper_mobile"))), sys.executable, "-m", "queuekeeper_apple.app_builds",
+    return ["env", "PYTHONPATH=" + python_path("queuekeeper_apple.app_builds"), sys.executable, "-m", "queuekeeper_apple.app_builds",
             "device", "--udid", "{udid}", "--bundle", kept["bundle"], kept["app"]]
 
 

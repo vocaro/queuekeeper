@@ -1072,6 +1072,21 @@ def main(argv=None):
     return status
 
 
+def python_path(args):
+    """`qk python-path MODULE...`: the PYTHONPATH a child process needs to run each module, for a caller that is not
+    Python, such as a Swift helper, so that it never builds the path by hand from the packages it knows of
+    (checkout.python_roots, vocaro/queuekeeper#252)."""
+    try: roots = checkout.python_roots(*args.modules)
+    except ModuleNotFoundError as error:
+        print(f"queuekeeper: {error}: name a module of this Queuekeeper ({TOOLKIT_ROOT}), its core's or a plugin's",
+              file=sys.stderr)
+        return USAGE
+    joined = os.pathsep.join(map(str, roots))
+    print(json.dumps({"modules": args.modules, "pythonPath": joined, "roots": list(map(str, roots))}, indent=2)
+          if args.json else joined)
+    return 0
+
+
 def could_not_start(error):
     """Say that Queuekeeper could not start, after error's traceback, and return TOOL_NOT_STARTED, which the command
     then exits with. Composing this checkout's plugins or loading one of the project's extensions raised error, before
@@ -1429,6 +1444,11 @@ def perform(argv, report):
         "run")
     preflights.add_argument("lanes", nargs="*", help="only these of the preflight lanes, in the order given")
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
+    importing = commands.add_parser("python-path", help="print the PYTHONPATH a child process needs to run each "
+        "Queuekeeper module named, such as `python3 -m queuekeeper_apple.devices`: this Queuekeeper's folders for the "
+        "core, each module's package and every plugin it requires; exit 2 when a package is not found")
+    importing.add_argument("modules", nargs="+", metavar="MODULE")
+    importing.add_argument("--json", action="store_true", help="print the path and its folders as JSON")
     commands.add_parser("farm", help="the Macs beside this one that take work: list, add DESTINATION [--name NAME], "
                         "rename NAME NEW, pause NAME, resume NAME, remove NAME")
     commands.add_parser("visibility", help="turn the features that show the queue to its owner on and off: "
@@ -1488,6 +1508,8 @@ def perform(argv, report):
         # The inventory, the skill links and the admission log cover the whole host, so they need no project
         # configuration.
         if args.action == "disk": return disk.execute(args)
+        # The import path is this Queuekeeper's, whichever project's launcher asks.
+        if args.action == "python-path": return python_path(args)
         # Such a command of an extension's too, as a keychain's Mac and its session are the host's.
         if args.action in extensions.PARSED_COMMANDS and not extensions.PARSED_COMMANDS[args.action][3]:
             return extensions.PARSED_COMMANDS[args.action][2](root, args, None)

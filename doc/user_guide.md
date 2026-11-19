@@ -1730,6 +1730,25 @@ Pinned checkouts live in `~/Development/queuekeeper-pins/` on each Mac; `qk disk
 `qk disk --prune-pins` removes those unused for a week. A folder that is not a Git checkout loads
 as it stands.
 
+### Running a Queuekeeper module in a child process
+
+A project's script or helper that runs a Queuekeeper module as a process of its own, such as
+`python3 -m queuekeeper_apple.devices check --owner OWNER`, asks Queuekeeper for the child's
+`PYTHONPATH` rather than building it. Queuekeeper's packages sit in several folders, and a module needs
+the plugins its own plugin requires too, which change as plugins split: `queuekeeper_apple` has needed
+`queuekeeper_mobile` since the mobile plugin moved out. A path built from the packages a caller knows
+of breaks with `ModuleNotFoundError` when that happens.
+
+```sh
+PYTHONPATH="$(qk python-path queuekeeper_apple.devices)" python3 -m queuekeeper_apple.devices check --owner OWNER
+qk python-path --json queuekeeper_apple.devices queuekeeper.processes   # the path and its folders
+```
+
+`qk python-path MODULE...` prints this Queuekeeper's folders for the core, each module's package and
+every plugin it requires, joined as `PYTHONPATH` takes them, and exits 2 for a package it cannot find.
+Python code that has imported Queuekeeper calls `queuekeeper.checkout.python_path(*modules)` for the
+same value, or `python_roots(*modules)` for the folders.
+
 ## Apps, devices and simulators
 
 The platform plugins add what an app project needs beyond lanes: reservations of physical devices and

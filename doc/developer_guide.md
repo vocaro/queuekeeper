@@ -115,6 +115,13 @@ plugin registers commands, lane behavior and checks through the hooks in `extens
 core never imports a plugin, and platform behavior stays in its plugin. A plugin that fails to
 load stops the run with exit 70 rather than running without it.
 
+`queuekeeper-workspace.json` names each plugin's source folder and the plugins it `requires`; the
+architecture tests hold each plugin's imports to that list. `checkout.activate` puts every folder on
+the import path of a checkout's `qk` and its children. A process that runs a single module, such as a
+consumer's helper, takes `checkout.python_roots(*modules)` instead (`qk python-path` for one not in
+Python): the core, each module's plugin and everything that plugin requires, transitively. Keep
+`requires` complete when a plugin starts importing another, or the children of such callers lose it.
+
 Each plugin has a README of its own: [Apple](../plugins/apple/src/queuekeeper_apple/README.md),
 [Android](../plugins/android/src/queuekeeper_android/README.md),
 [Mobile](../plugins/mobile/src/queuekeeper_mobile/README.md), which the Apple and Android plugins
