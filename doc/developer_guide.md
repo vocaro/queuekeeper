@@ -234,9 +234,18 @@ make it follow. Nothing here holds the queue.
 **A bisect's two halves gate at once.** The older half is offered as any gate is; once a Mac has
 admitted its last lane, the newer half runs in the `-beside` checkout on any other Mac that can
 start it now (`qk run --offload-only` when the older half is on this Mac, otherwise
-`qk run --if-free` with that Mac left out). Whichever half passes lands; when both pass, the older
-lands first and the newer lands on top only if its result carries over. When both fail, the older
-is bisected first. The newer half waits behind the older instead when no other Mac can start it, a
+`qk run --if-free` with that Mac left out). Whichever half passes lands. When both fail, the older
+is bisected first.
+
+**When both halves pass,** no entry fails alone: the entries fail together. `Worker.together` gates
+the whole set again in the `-beside` checkout, since `main` may have moved, then subsets of it one
+at a time, keeping each subset's verdict. `fewest` drops runs of entries while the rest still fail,
+halves first (whose verdicts the bisect already has) and single entries last, so every entry left
+is needed; each one left is then gated alone. One that fails alone comes back alone. Otherwise each
+comes back with `conflictWith`, the other entries' IDs and commits, and the rest gate again. A
+subset that does not apply to `main` by itself counts as no proof, so its entries stay. A probe
+with no verdict ends the search as any such gate ends a round, and the next round gates the halves
+again. The search follows mergetrain's `minimize_joint_failure` (MIT; see `NOTICE`). The newer half waits behind the older instead when no other Mac can start it, a
 lane must run on this Mac, the round is docs-only, ungated or `--front`, or a newer entry applies
 only on top of an older one.
 
@@ -1089,7 +1098,9 @@ each uses.
 
 24. One worker per repository takes everything waiting, oldest first, as one batch with one gate.
 25. A failed batch tries failed tests alone, then one suspect entry, then a bisect. *A bisect costs
-    about a gate per halving.*
+    about a gate per halving.* When both halves pass, a search gates subsets for the fewest entries
+    that fail together and sends each back naming the others. *An agent told its partner can rebase
+    onto it; one blamed alone cannot tell why it failed.*
 26. A bisect's halves gate at once on two different Macs, and entries arriving during a gate are
     gated on its tip on any Mac but the one that admitted it. *The next gate is under way before this
     one lands.*

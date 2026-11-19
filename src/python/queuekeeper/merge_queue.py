@@ -77,7 +77,8 @@ QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
 WAITING = {QUEUED, TESTING, PASSED}
 # What an entry's record gives the event of its final state (Queue.settle), where it has them. The tip lets a reader,
 # such as health.came_back, count one commit added again as one (vocaro/queuekeeper#219).
-EVENT_FIELDS = ("tip", "why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated")
+EVENT_FIELDS = ("tip", "why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated",
+                "conflictWith")
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
@@ -193,6 +194,13 @@ UNGATED = "Landed-without-gate"
 # this suffix (Beside), and the newer half looks this often for the Mac that admitted the older.
 BESIDE_SUFFIX = "-beside"
 BESIDE_POLL = 2
+# When both halves of a bisect pass outright, though together they failed, no entry fails alone: the worker gates
+# subsets of them, one at a time in the newer half's checkout, each subset's verdict kept, and drops entries greedily
+# while the rest still fail, down to the fewest that fail together; it sends each of those back naming the others,
+# by ID and commit (conflictWith), and the rest gate again (Worker.together). Until then the older half landed and the
+# newer gated again on top of it, to come back alone with no word of the entry it fails with. The search follows
+# mergetrain's minimize_joint_failure (yongjip/mergetrain, src/mergetrain/git_runner.py, MIT License; see NOTICE).
+TOGETHER = "fails together"
 # While a batch gates, the entries that arrive behind it gate stacked on its tip, on another Mac, in the checkout
 # its gate does not use; the batch's push makes that tip origin/main, so the stacked gate's pass lands, and its
 # failure or no landing throws the stacked gate away (owner's decision of 2026-11-07, vocaro-engineering#241). The
@@ -4888,11 +4896,11 @@ class Worker:
             main = f" Whether origin/main fails {self.failed_lane} too could not be determined: {error}."
         return f" {load}. {touched}" + (f".{main}" if main else "")
 
-    def settle_failure(self, entry, log, why, runner=None):
-        """Keep only the dispatch of the gate that actually rejected this entry."""
+    def settle_failure(self, entry, log, why, runner=None, **fields):
+        """Keep only the dispatch of the gate that actually rejected this entry, with fields such as conflictWith."""
         dispatch = (self if runner is None else runner).failed_dispatch
         details = {"failedDispatch": dispatch[1]} if dispatch is not None and dispatch[0] == log else {}
-        self.queue.settle(entry, FAILED, why=why, log=str(log), **details)
+        self.queue.settle(entry, FAILED, why=why, log=str(log), **details, **fields)
 
     def send_back(self, applied, log, entry, why, facts="", *, runner=None):
         """Settle entry, the one of applied that blame found, as failed, and queue the rest to gate again at once."""
@@ -5027,6 +5035,9 @@ class Worker:
             result, log = self.watched(self, config, lanes, base, head, applied,
                                        lambda: self.gate(lanes, round_name))
         self.prune()
+        if beside and not result and beside.result[0] == 0 and self.together(config, base, applied, beside, lanes,
+                                                                             round_name):
+            return True
         if not beside:
             if self.back_in_line(applied, result): return True
             outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name)
@@ -5507,7 +5518,8 @@ class Worker:
         """The bisect's next step once both halves are weighed, outcome the older half's (Worker.older) and
         beside.outcome the newer's (Beside.weigh): the newer half alone, halved, when only it fails; the older half,
         halved, when the newer landed beside it and the older gave no verdict; no bisect once the half that failed
-        has been sent back, alone or by blame, or both passed. Otherwise, as the older half's outcome left it."""
+        has been sent back, alone or by blame, or both passed (when both passed outright, Worker.together settled
+        the bisect instead). Otherwise, as the older half's outcome left it."""
         older, newer = len(applied), len(beside.newer)
         if beside.outcome == FAILED and outcome != FAILED:
             # The one newer entry was sent back, which explains the failure: the older half goes on unsuspected.
@@ -5518,6 +5530,96 @@ class Worker:
             self.suspects, self.limit = older, max(1, older // 2)
         elif beside.outcome == PASSED and outcome == LANDED:
             self.limit, self.suspects = None, 0
+
+    def together(self, config, base, older, beside, lanes, round_name):
+        """Whether the search for the fewest entries that fail together settled the bisect whose two halves, older
+        here and beside.newer, both passed outright though all of them failed together (TOGETHER): False, to go on as
+        before, when an entry left the queue meanwhile. The search gates the whole again, since main may have moved
+        since its failure; when it passes now, every entry gates again. Otherwise it drops entries greedily while the
+        rest still fail (fewest), and gates each one left alone: one that fails alone comes back alone, as a bisect
+        sends one back; else each comes back naming the others, by ID and commit, and the rest gate again. A probe
+        with no verdict, or stopped, ends the search as such a gate ends any round (Worker.older), and the bisect
+        starts again from its halves."""
+        entries = [*older, *beside.newer]
+        current = [self.queue.read(entry["id"]) for entry in entries]
+        if any(entry is None or entry["state"] not in WAITING for entry in current): return False
+        runner = Beside(self, label=TOGETHER, settles=False)
+        runner.checks = self.checks
+        runner.prepare()
+        order = {entry["id"]: index for index, entry in enumerate(entries)}
+        # Each subset's verdict, by its entries' IDs: (True when it failed, False when it passed, None when its entries
+        # do not apply to origin/main by themselves; its log; what rejection_facts reads of its gate).
+        known = {frozenset(entry["id"] for entry in older): (False, None, {}),
+                 frozenset(entry["id"] for entry in beside.newer): (False, beside.result[1], {})}
+        probes = 0
+        def fails(subset):
+            nonlocal probes
+            members = sorted(subset, key=lambda entry: order[entry["id"]])
+            key = frozenset(entry["id"] for entry in members)
+            if key not in known:
+                runner.unreachable = []
+                applied = runner.integrate(members, base)
+                ids = ", ".join(entry["id"] for entry in members)
+                if runner.unreachable or len(applied) != len(members):
+                    runner.say(f"{ids} do not apply to origin/main by themselves, so none of them is dropped")
+                    known[key] = (None, None, {})
+                else:
+                    probes += 1
+                    head = runner.head()
+                    runner.say(f"probe {probes}: gating {ids} at {head[:12]} on {base[:12]}")
+                    result, log = runner.gate(lanes, f"{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}")
+                    if result and (result in NO_VERDICT or result == WITHDRAWN or (
+                            runner.unstarted(result)
+                            and not (runner.tooling and runner.batch_stops_start(base, head, log)))):
+                        raise Unsettled(members, result, log, head)
+                    known[key] = (bool(result), log, {"failed_load": runner.failed_load, "failed_lane": runner.failed_lane,
+                                                      "failed_dispatch": runner.failed_dispatch})
+                    runner.say(f"probe {probes}: {ids} {'fail' if result else 'pass'}")
+            return known[key][0] is True
+        def failure(subset):
+            """The log of the probe of subset, which failed, with runner's account of its gate put back."""
+            failed, log, account = known[frozenset(entry["id"] for entry in subset)]
+            for name, value in account.items(): setattr(runner, name, value)
+            return log
+        self.say(f"each half passed, though the {len(entries)} failed together: gating subsets of them for the fewest "
+                 "that fail together")
+        try:
+            if not fails(entries):
+                self.say(f"the {len(entries)} pass together on {base[:12]}: gating them again")
+                self.queue.mark(entries, QUEUED)
+                self.limit, self.suspects = None, 0
+                return True
+            fewest_ = fewest(entries, fails)
+            alone = [entry for entry in fewest_ if len(fewest_) == 1 or fails([entry])]
+        except Unsettled as unsettled:
+            self.queue.mark(entries, QUEUED)
+            self.say(f"the search for the entries that fail together ended without a verdict on "
+                     f"{', '.join(entry['id'] for entry in unsettled.entries)}: the bisect starts again from its halves")
+            self.older(config, unsettled.entries, base, unsettled.head, None, None, unsettled.result, unsettled.log,
+                       round_name, reran=True, runner=runner)
+            self.suspects, self.limit = len(entries), len(older)
+            return True
+        sent = alone or fewest_
+        for entry in alone:
+            log = failure([entry])
+            why = (f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again."
+                   + runner.rejection_facts(entry, log, config, base))
+            self.say(f"{entry['id']}: {why}")
+            self.settle_failure(entry, log, why, runner)
+        if not alone:
+            log = failure(fewest_)
+            for entry in fewest_:
+                partners = [other for other in fewest_ if other["id"] != entry["id"]]
+                why = together_words(partners) + runner.rejection_facts(entry, log, config, base)
+                self.say(f"{entry['id']}: {why}")
+                self.settle_failure(entry, log, why, runner,
+                                    conflictWith=[{"id": other["id"], "sha": other["tip"]} for other in partners])
+        rest = [entry for entry in entries if entry not in sent]
+        self.queue.mark(rest, QUEUED)
+        self.say(f"{len(sent)} of the {len(entries)} sent back after {probes} probe{'' if probes == 1 else 's'}"
+                 + (f"; the other {len(rest)} gate again" if rest else ""))
+        self.limit, self.suspects = None, 0
+        return True
 
     def first_ungated(self):
         """The entry qk land --front --no-gate put first that goes ahead of this gate now, or None: one while the
@@ -5790,11 +5892,50 @@ class Worker:
 BISECT = "bisect"
 
 
+class Unsettled(Exception):
+    """A probe of Worker.together whose gate gave no verdict, was stopped or could not start: entries at head, and
+    the gate's (result, log)."""
+    def __init__(self, entries, result, log, head):
+        super().__init__(f"exit {result}")
+        self.entries, self.result, self.log, self.head = entries, result, log, head
+
+
+def fewest(entries, fails):
+    """The fewest of entries, oldest first, that still fail together, by fails, which says whether a subset does
+    (Worker.together): greedy, dropping each run of entries the rest still fail without, the longest runs first and
+    then shorter ones, down to single entries, so that every entry left is needed. One run of halves is each half of a
+    bisect, whose verdicts are known, so a pair costs no probe here. Follows mergetrain's minimize_joint_failure
+    (NOTICE), which drops one entry at a time."""
+    kept = list(entries)
+    size = len(kept) // 2
+    while size:
+        index = 0
+        while index < len(kept) and len(kept) > 1:
+            rest = kept[:index] + kept[index + size:]
+            if rest and fails(rest): kept = rest
+            else: index += size
+        size //= 2
+    return kept
+
+
+def together_words(partners):
+    """Why an entry that fails only with partners comes back (Worker.together), naming each by ID and commit."""
+    named = ", ".join(f"{partner['id']} at {partner['tip']}" for partner in partners)
+    one = len(partners) == 1
+    return (f"the queue's lanes fail on this commit together with {named}, though each passes alone on top of "
+            f"origin/main: the changes break each other, and {'that entry' if one else 'those entries'} came back too. "
+            f"Rebase onto {'its commit' if one else 'their commits'} (refs/queuekeeper/queue/ID keeps each until its "
+            f"entry is removed), fix how the changes combine, and add the result again; or wait for "
+            f"{'it' if one else 'them'} to land and rebase onto origin/main.")
+
+
 class Beside(Worker):
     """A bisect's newer half, gated in a checkout beside the worker's, on a Mac other than the older half's when one
     can start it now (owner's decision of 2026-11-07, vocaro-engineering#241; any two Macs since
-    vocaro/queuekeeper#211). Both halves run on the same origin/main. What passes beside lands while the older half bisects on; when both pass, the older lands
-    first and the newer gates again on the main that made, unless its result carries over (Worker.carry)."""
+    vocaro/queuekeeper#211). Both halves run on the same origin/main. What passes beside lands while the older half bisects on; when both pass outright, the
+    worker searches for the entries that fail together (Worker.together), and otherwise, as when one passed only by
+    its flakes, the older lands first and the newer gates again on the main that made, unless its result carries
+    over (Worker.carry)."""
     def __init__(self, worker, checkout=None, label="newer half", settles=True):
         super().__init__(worker.queue)
         self.worker, self.label, self.settles = worker, label, settles

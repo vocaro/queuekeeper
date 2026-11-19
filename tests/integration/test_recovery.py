@@ -51,6 +51,21 @@ class EntryRecovery(unittest.TestCase):
                 self.assertFalse(result["retryable"])
 
 
+class FailsTogetherRecovery(unittest.TestCase):
+    def test_an_entry_that_fails_only_with_others_names_them_and_how_to_read_each(self):
+        partners = [{"id": "p", "sha": "1" * 40}, {"id": "q", "sha": "2" * 40}]
+        result = recovery.for_entry({"id": "one", "state": "failed", "why": "fails together", "conflictWith": partners})
+        self.assertEqual((result["reasonCode"], result["action"], result["responsibleParty"], result["retryable"]),
+                         ("entry-fails-together", "fix-interaction", "session", False))
+        self.assertEqual(result["conflictWith"], partners)
+        self.assertEqual(result["message"], "fails together")
+        self.assertEqual(result["suggestedCommands"], [["qk", "queue", "result", "p", "--json"],
+                                                       ["qk", "queue", "result", "q", "--json"]])
+        # A failure with nobody named is any failure, as before.
+        self.assertEqual(recovery.for_entry({"id": "one", "state": "failed", "conflictWith": []})["reasonCode"],
+                         "entry-failed")
+
+
 class HoldRecovery(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()

@@ -9357,15 +9357,67 @@ class BothHalves(Fixture):
         self.assertIn("Which tests failed could not be determined (gate's summary names no failed test; its tests: no "
                       "test counts in its log), so whether this entry changes their files is unknown", why)
 
-    def test_two_that_pass_alone_land_the_older_and_the_newer_gates_again(self):
-        """Each passes alone, and together they fail: the older lands, and the newer, whose result was of the main
-        before it, gates again on top of it and comes back, as one half at a time does."""
+    def test_two_that_pass_alone_come_back_naming_each_other(self):
+        """Each passes alone, and together they fail: both come back, each naming the other by ID and commit
+        (conflictWith), rather than the older landing and the newer coming back alone with no word of why. The pair,
+        its halves at once, and the pair again on the main the search runs on: 3 rounds' gates, 4 in all."""
         self.commit("left", "left"); self.commit("right", "right")
         ids = self.add("left", "right")
         log = self.worked()
-        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed"])
-        self.assertIn("passed beside the older half, which landed first", log)
+        left, right = (self.state(i) for i in ids)
+        self.assertEqual([left["state"], right["state"]], ["failed", "failed"])
+        self.assertEqual(left["conflictWith"], [{"id": ids[1], "sha": right["tip"]}])
+        self.assertEqual(right["conflictWith"], [{"id": ids[0], "sha": left["tip"]}])
+        self.assertIn(f"the queue's lanes fail on this commit together with {ids[1]} at {right['tip']}, though each "
+                      "passes alone on top of origin/main", left["why"])
+        self.assertIn(f"together with {ids[0]} at {left['tip']}", right["why"])
+        self.assertIn("each half passed, though the 2 failed together", log)
+        self.assertIn("2 of the 2 sent back after 1 probe", log)
+        self.assertEqual(self.gates(), 4)
+        self.assertNotIn("left", self.main_files())
         self.assertNotIn("right", self.main_files())
+        for entry, other in ((left, right), (right, left)):
+            result = agent_results.lookup(mq.Queue(self.repo), entry["id"])
+            self.assertEqual(result["failure"]["category"], "fails-together")
+            self.assertEqual(result["conflictWith"], [{"id": other["id"], "sha": other["tip"]}])
+            self.assertEqual(result["recovery"]["reasonCode"], "entry-fails-together")
+            self.assertEqual(result["recovery"]["conflictWith"], result["conflictWith"])
+            self.assertIn(["qk", "--project", str(self.repo.resolve()), "queue", "result", other["id"], "--json"],
+                          result["recovery"]["suggestedCommands"])
+
+    def test_the_fewest_that_fail_together_come_back_and_the_rest_land(self):
+        """[a left right d] fail, and both halves, [a left] and [right d], pass: the search drops a and d, keeping
+        left and right, which come back naming each other, and a and d gate again and land."""
+        for name in ("a", "left", "right", "d"): self.commit(name, name)
+        ids = self.add("a", "left", "right", "d")
+        log = self.worked()
+        states = [self.state(i) for i in ids]
+        self.assertEqual([state["state"] for state in states], ["landed", "failed", "failed", "landed"])
+        self.assertEqual(states[1]["conflictWith"], [{"id": ids[2], "sha": states[2]["tip"]}])
+        self.assertEqual(states[2]["conflictWith"], [{"id": ids[1], "sha": states[1]["tip"]}])
+        self.assertIn("2 of the 4 sent back after", log)
+        self.assertIn("the other 2 gate again", log)
+        self.assertLessEqual({"a", "d"}, self.main_files())
+
+    def test_a_probe_with_no_verdict_starts_the_bisect_again_from_its_halves(self):
+        """A probe that gives no verdict blames nobody: every entry waits again, and the next round gates the halves
+        again, whose search then ends as any does."""
+        self.commit("left", "left"); self.commit("right", "right")
+        ids = self.add("left", "right")
+        real, declined = mq.Beside.gate, []
+        def gate(worker, lanes, round_name, where=(), cancel=None, quick=None):
+            if worker.label == mq.TOGETHER and not declined:
+                declined.append(round_name)
+                worker.ran_where = ""
+                return mq.resources.BUSY, None
+            return real(worker, lanes, round_name, where, cancel, quick)
+        with patch.object(mq.Beside, "gate", gate):
+            log = self.worked()
+        self.assertEqual(len(declined), 1)
+        self.assertIn(f"the search for the entries that fail together ended without a verdict on {ids[0]}, {ids[1]}: "
+                      "the bisect starts again from its halves", log)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["failed", "failed"])
+        self.assertEqual(log.count("each half passed, though the 2 failed together"), 2, log)
 
     def test_a_farm_mac_that_declines_leaves_the_bisect_as_before(self):
         """Negative control: when another Mac cannot start the newer half now, it waits behind the older half,
@@ -9449,6 +9501,52 @@ class BothHalves(Fixture):
             settle.assert_called_once()
         self.assertEqual(beside.unreachable, [entry])
         self.assertEqual(beside.checkout.name, f"{self.repo.name}{mq.BESIDE_SUFFIX}")
+
+
+class Fewest(unittest.TestCase):
+    """mq.fewest, the greedy search for the fewest entries that still fail together (Worker.together)."""
+    @staticmethod
+    def search(names, failing, unknown=()):
+        """fewest over names, a subset failing when it holds every name of one of failing, a set of sets; a subset
+        named in unknown has no verdict (None). Returns the result and the subsets probed, each once."""
+        probed = []
+        def fails(subset):
+            key = frozenset(entry["id"] for entry in subset)
+            probed.append(key)
+            if key in unknown: return False
+            return any(group <= key for group in failing)
+        entries = [{"id": name} for name in names]
+        return [entry["id"] for entry in mq.fewest(entries, fails)], probed
+
+    def test_a_pair_needs_only_the_halves_known(self):
+        found, probed = self.search("ab", [{"a", "b"}])
+        self.assertEqual(found, ["a", "b"])
+        self.assertEqual(probed, [frozenset("b"), frozenset("a")])
+
+    def test_the_pair_inside_a_larger_set_is_found_and_each_left_is_needed(self):
+        for failing in ({"b", "g"}, {"a", "h"}, {"d", "e"}, {"c", "e", "f"}):
+            with self.subTest(failing=failing):
+                found, _ = self.search("abcdefgh", [failing])
+                self.assertEqual(set(found), failing)
+                self.assertEqual(found, sorted(found))
+
+    def test_of_two_groups_that_fail_one_is_kept_whole(self):
+        found, _ = self.search("abcdef", [{"a", "d"}, {"c", "f"}])
+        self.assertIn(set(found), ({"a", "d"}, {"c", "f"}))
+
+    def test_an_entry_whose_removal_cannot_be_probed_is_kept(self):
+        found, _ = self.search("abc", [{"a", "c"}], unknown={frozenset("ac")})
+        self.assertEqual(found, ["a", "b", "c"])
+
+
+class FailsTogetherWords(unittest.TestCase):
+    def test_one_partner_and_several(self):
+        one = mq.together_words([{"id": "p", "tip": "1" * 40}])
+        self.assertIn(f"together with p at {'1' * 40}, though each passes alone", one)
+        self.assertIn("that entry came back too. Rebase onto its commit", one)
+        several = mq.together_words([{"id": "p", "tip": "1" * 40}, {"id": "q", "tip": "2" * 40}])
+        self.assertIn(f"together with p at {'1' * 40}, q at {'2' * 40}", several)
+        self.assertIn("those entries came back too. Rebase onto their commits", several)
 
 
 class PooledStack(Fixture):

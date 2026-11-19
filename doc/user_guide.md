@@ -339,6 +339,12 @@ The worker tries the cheap explanations before the expensive one:
    and the rest gate again at once.
 3. **Bisect.** Otherwise the batch is halved until one entry fails alone. Both halves gate at the
    same time on different Macs, and every entry that passes along the way lands.
+4. **Entries that fail together.** When both halves pass, no entry fails alone: some of them break
+   each other. The worker gates the whole set again, then smaller subsets of it one at a time,
+   dropping entries while the rest still fail, until it has the fewest that fail together, and
+   gates each of those alone. Each comes back naming the others by entry ID and commit, and the
+   rest gate again. An entry that fails alone after all comes back alone, as from a bisect. Two
+   entries that fail together cost one extra gate; a larger set at most about two per entry.
 
 Steps 1 and 2 read test names from `qk unittest`, the bundled Python test runner, and are skipped
 when more than five tests failed. Any other lane, including Xcode and Unity lanes for now, gets
@@ -373,7 +379,11 @@ entry that brings the refusal, or bisects. When the same refusal comes back with
 the queue holds for a session.
 
 An entry that is sent back is told the failed tests, whether its commits touch their files, and
-the Mac's load during the run. When a preflight or docs lane failed, it is also told whether
+the Mac's load during the run. One that fails together with others is told their entry IDs and
+commits in its reason and, in `--json`, in `conflictWith` (`[{"id": ..., "sha": ...}]`), with
+`failure.category` `fails-together` and `recovery.reasonCode` `entry-fails-together`. Rebase onto
+their commits (each entry's `refs/queuekeeper/queue/ID` stays until it is removed), fix how the
+changes combine, and land the result once; or wait for them to land and rebase onto `origin/main`. When a preflight or docs lane failed, it is also told whether
 `origin/main` fails that lane on its own, so the fix may belong on `main`. The entry keeps its ref
 until `qk queue remove ID`; fix it, rebase and land it again.
 
@@ -2280,8 +2290,8 @@ an existing one. Exit statuses are the same as in text mode.
 exits 0 whenever the lookup succeeds, so check `state` and `terminal` for the outcome (an unknown
 ID exits 2). Use `queue wait` when the exit status must reflect the verdict.
 
-An entry's result names its `commit`, `landedAs`, failure details, test counts, flaky tests
-(`flakes`) and the run's artifacts. A missing or pruned artifact is listed with
+An entry's result names its `commit`, `landedAs`, failure details, the entries it fails together
+with (`conflictWith`, empty for others), test counts, flaky tests (`flakes`) and the run's artifacts. A missing or pruned artifact is listed with
 `available: false`. Results carry `schemaVersion: 1`; tolerate added keys and unknown states.
 
 Every result has a `recovery` object that says what to do next:

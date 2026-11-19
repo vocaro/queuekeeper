@@ -120,18 +120,21 @@ def entry_result(queue, entry):
         for name, place in lane_report.failing(text):
             if name not in failures or place: failures[name] = place
     failure = None
+    # The entries this one fails together with, though each passes alone (merge_queue.Worker.together).
+    partners = [dict(partner) for partner in entry.get("conflictWith") or []]
     if state in ("failed", "conflict"):
-        failure = {"category": "conflict" if state == "conflict" else "gate-failed",
+        failure = {"category": "conflict" if state == "conflict" else "fails-together" if partners else "gate-failed",
                    "message": entry.get("why"), "tests": [
                        {"name": name, "location": place} for name, place in list(failures.items())[:SHOWN]],
                    "moreTests": max(0, len(failures) - SHOWN) + unnamed, "testsTruncated": truncated,
-                   "excerpt": ((entry.get("failedDispatch") or {}).get("excerpt") or [])[:SHOWN]}
+                   "excerpt": ((entry.get("failedDispatch") or {}).get("excerpt") or [])[:SHOWN],
+                   "conflictWith": partners}
     return {"schemaVersion": VERSION, "project": str(queue.root),
             "id": entry["id"], "commit": entry.get("tip"),
             "state": state, "terminal": not pending, "landedAs": entry.get("landedAs"),
             "subject": entry.get("subject"), "branch": entry.get("branch"),
             "submitted": entry.get("submitted"), "settled": entry.get("settled"),
-            "failure": failure, "tests": counts, "logTruncated": truncated,
+            "failure": failure, "conflictWith": partners, "tests": counts, "logTruncated": truncated,
             "flakes": [{**flake, "reruns": {"status": "passed", "count": len(flake["rerunLogs"])
                                            if "rerunLogs" in flake else None}}
                        for flake in entry.get("flakes", [])],
