@@ -187,8 +187,11 @@ the queue, and the next landing tries again. A checkout left only for such a run
 failed, the worker also tries again once nothing waits, every 30 seconds until it moves, so it moves as
 soon as the last such run ends (owner's decision, 2026-11-11, vocaro-engineering#384); an entry that
 arrives or a hold ends the tries, and the next landing's follow starts them again. While it tries,
-`qk queue status` shows the worker running and waiting for the shared checkout, and its log names what
-holds it when that begins or changes; one left for any other reason is a person's to settle. A worker whose code came from that checkout, the
+`qk queue status` shows the worker running and waiting for the shared checkout, with a `held by` line for
+each of up to five processes that hold it, in words, its PID and how long it has run, such as `the queue worker
+for mpm`, `a lane's xcodebuild through the Apple plugin's wrapper` or `` a `qk unittest` command ``, and
+`qk queue doctor` gives the same as a note; its log names what holds it when that begins or changes
+([vocaro/queuekeeper#159](https://github.com/vocaro/queuekeeper/issues/159)); one left for any other reason is a person's to settle. A worker whose code came from that checkout, the
 toolkit's own among them, is such a process until its first round after a toolkit landing, when it
 starts itself again from its copy, above. A process that loaded the toolkit from it without keeping a path there,
 as a project's launcher does, cannot be seen, and a process that starts between the check and the

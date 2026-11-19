@@ -159,6 +159,11 @@ FOLLOW_LIMIT = None
 IN_USE = "a process started from it may still run its toolkit"
 UNKNOWN_USE = "whether a process started from it still runs is unknown"
 SHOWN_USERS = 5
+# What a process that holds the shared checkout is, by its arguments, for checkout_holder: a queue worker started from it
+# (Queue.command) and the project it serves, the Apple plugin's build-tool wrapper and the tool, and a qk command.
+WORKER_OF = re.compile(r"'queue', 'run'.*?/src/python (\S+)")
+SHIMMED = re.compile(r"/_shims/([\w.-]+)(?:\s|$)")
+QK_COMMAND = re.compile(r"/(?:bin|scripts)/qk\s+([a-z][\w-]*)")
 # What a project's launcher reads first to find the toolkit.
 TOOLKIT_VARIABLE = "QUEUEKEEPER_ROOT"
 # What carries a worker's bisect progress to the worker that replaces it on a newer toolkit (Worker.move_to).
@@ -2158,7 +2163,57 @@ def round_lines(state, at=None):
     if state.get("waiting"):
         lines.append(f"  waiting for {state['waiting']}"
                      + (f", for {ago(state['waitingSince'], at)}" if state.get("waitingSince") else ""))
+        lines += [f"    held by {holder_line(holder, at)}" for holder in state.get("holders") or [] if isinstance(holder, dict)]
     return lines
+
+
+def holder_line(holder, at=None):
+    """One holder of the shared checkout as described_holders recorded it, in words: what it is, its PID and how long
+    it has run."""
+    if holder.get("more"): return f"{holder['more']} more"
+    since = holder.get("since")
+    return f"{holder.get('what')}, PID {holder.get('pid')}" + \
+        (f", running {ago(since, at)}" if isinstance(since, (int, float)) else "")
+
+
+def checkout_holder(process, how, path):
+    """What process, which runs from the shared checkout by how and path (disk.runners), is, in words: the queue worker
+    of the project it serves, a build through the Apple plugin's wrapper, a `qk` command, or else its program and what
+    ties it there. On 2026-11-15 and 2026-11-17 the worker's log named such holders only by PID and an argument, and
+    `qk queue status` not at all (vocaro/queuekeeper#159)."""
+    worker = WORKER_OF.search(process.args)
+    if worker: return f"the queue worker for {Path(worker.group(1)).name}"
+    shimmed = SHIMMED.search(process.args)
+    if shimmed: return f"a lane's {shimmed.group(1)} through the Apple plugin's wrapper"
+    command = QK_COMMAND.search(process.args)
+    if command and command.group(1) == "serve": return "a dashboard (`qk serve`) that does not restart itself"
+    if command: return f"a `qk {command.group(1)}` command"
+    return f"{process.command or process.args.split(' ')[0] or 'a process'} ({how} {path})"
+
+
+def started_at(pids, now=None):
+    """{pid: when it started, as an epoch time} for each of pids that still runs, by ps's elapsed time."""
+    if not pids: return {}
+    try:
+        listed = subprocess.run(["ps", "-o", "pid=,etime=", "-p", ",".join(str(pid) for pid in pids)],
+                                capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError): return {}
+    now, found = now or time.time(), {}
+    for line in listed.splitlines():
+        pid, _, etime = line.strip().partition(" ")
+        seconds = offload_host.elapsed(etime.strip())
+        if pid.isdigit() and seconds != float("inf"): found[int(pid)] = now - seconds
+    return found
+
+
+def described_holders(users):
+    """What the round's account records of the processes that hold the shared checkout (Worker.stays), the first
+    SHOWN_USERS of them: [{"pid", "what", "since"}], and {"more": N} for the rest."""
+    shown = users[:SHOWN_USERS]
+    since = started_at([process.pid for process, _, _ in shown])
+    found = [{"pid": process.pid, "what": checkout_holder(process, how, path), "since": since.get(process.pid)}
+             for process, how, path in shown]
+    return found + ([{"more": len(users) - SHOWN_USERS}] if len(users) > SHOWN_USERS else [])
 
 
 def snapshot(root, recent=5):
@@ -2365,7 +2420,7 @@ def doctor(root, as_json=False):
     """`qk queue doctor`: print diagnose's findings, and idle_waits', or that the queue is healthy. 0 when it finds the
     queue healthy, 1 when it finds anything."""
     findings, waiting, working = diagnose(root)
-    hints = admission_hints(root) if working else []
+    hints = admission_hints(root) + checkout_hints(root) if working else []
     if working:
         held_back, unknown = idle_waits(root)
         findings, hints = findings + held_back, hints + unknown
@@ -2431,6 +2486,19 @@ def admission_hints(root, at=None):
         hints.append(f"the {role} gate's {gate.get('lane') or 'lane'} has waited{waited} for {gate.get('waiting')}; "
                      "`python3 scripts/qk admissions now` shows who holds and who waits for admission on each Mac")
     return hints
+
+
+def checkout_hints(root, at=None):
+    """A note, from the round's account, while the worker waits for the shared checkout to follow origin/main (catch_up):
+    how long, and what holds it, in words (holder_line). Not a finding: the checkout follows by itself once they end."""
+    try: state = Queue(root).round_state() or {}
+    except Exception: return []  # noqa: BLE001 - a note never fails the doctor
+    holders = [holder for holder in state.get("holders") or [] if isinstance(holder, dict)]
+    if not holders or not state.get("waiting"): return []
+    since = state.get("waitingSince")
+    waited = f" {ago(since, at)}" if isinstance(since, (int, float)) else ""
+    return [f"the worker has waited{waited} for {state['waiting']}; held by "
+            + "; ".join(holder_line(holder, at) for holder in holders)]
 
 
 def idle_waits(root, at=None, busy=None, read=None):
@@ -2955,6 +3023,7 @@ class Worker:
         self.code = running()  # the commit this worker's code came from, which toolkit compares with the copy's
         self.rounds = 0  # the rounds this worker has finished, which run reads to count its tries
         self.deferred = None  # why follow last left the shared checkout behind for a run from it, or None
+        self.holders = []  # the (process, how, path) that stays last found running from the shared checkout
         self.left = None  # why follow last left the shared checkout as it is, for any reason, or None
         self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
         self.failed_dispatch = None  # the last failed gate log and its dispatch evidence (gate)
@@ -3313,6 +3382,7 @@ class Worker:
         catch_up tries again; quiet, for those tries, says only a fast-forward."""
         shared = self.queue.main_checkout
         self.deferred = self.left = None
+        self.holders = []
         try:
             why = self.stays(shared)
             if why is None:
@@ -3366,6 +3436,7 @@ class Worker:
         # (restartable, vocaro/queuekeeper#159).
         moving = restartable.passed(shared)
         users = [use for use in users if not (use[0].pid in launchers and use[1] == "argument") and use[0].pid not in moving]
+        self.holders = users
         if users:
             named = "; ".join(f"PID {process.pid} ({process.command or process.args.split(' ')[0] or '?'}), "
                               f"{how} {path}" for process, how, path in users[:SHOWN_USERS])
@@ -3417,8 +3488,10 @@ class Worker:
                     self.say(f"left {shared} behind for now, trying again every {FOLLOW_POLL}s until it moves: "
                              f"{self.deferred}")
                     told = self.deferred
+                    holders = described_holders(self.holders)
                     self.queue.note(lambda state: state.update(
-                        waiting="the shared checkout to follow origin/main once nothing runs from it", waitingSince=since))
+                        waiting="the shared checkout to follow origin/main once nothing runs from it", waitingSince=since,
+                        holders=holders))
                 pause(FOLLOW_POLL)
                 if self.queue.held() or self.queue.waiting():
                     if told: self.say(f"stops trying to move {shared}: "
@@ -3430,7 +3503,7 @@ class Worker:
             elif told and self.left:
                 self.say(f"left {shared} as it is: {self.left}")
         finally:
-            if told: self.queue.note(lambda state: state.update(waiting=None, waitingSince=None))
+            if told: self.queue.note(lambda state: state.update(waiting=None, waitingSince=None, holders=None))
 
     def reset(self, commit):
         """Exactly commit's tracked files. Ignored inputs a lane provisioned stay for the next round."""

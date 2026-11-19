@@ -6842,6 +6842,41 @@ class SharedCheckout(Fixture):
         self.assertIsNone(mq.Queue(self.repo).round_state().get("waiting"))
         self.assertNotIn("behind after", said)
 
+    def test_what_holds_it_is_named_in_words_by_status_and_doctor(self):
+        """vocaro/queuekeeper#159: while the worker waits for the checkout to follow, `qk queue status` and `qk queue
+        doctor` say what holds it, a project's queue worker, a lane's build through the Apple wrapper or a `qk`
+        command, with its PID and how long it has run, where the worker's log named only a PID and an argument."""
+        worker = self.held([sys.executable, "-c", "import time; time.sleep(300)  # 'queue', 'run'",
+                            str(self.repo / "src/python"), "/Users/someone/Development/mpm"], self.repo)
+        shim = self.held(["sh", "-c", "sleep 300; exit 0",
+                          str(self.repo / "plugins/apple/src/queuekeeper_apple/_shims/xcodebuild")], self.repo)
+        command = self.held(["sh", "-c", "sleep 300; exit 0", str(self.repo / "bin/qk"), "unittest"], self.repo)
+        seen = []
+        def paused(seconds):
+            state = mq.Queue(self.repo).round_state()
+            seen.append((state, mq.round_lines(state), mq.checkout_hints(self.repo)))
+            for process in (worker, shim, command):
+                process.kill()
+                process.wait()
+        with patch.object(mq, "FOLLOW_LIMIT", None), patch.object(mq, "pause", paused):
+            before, after, main, said = self.land()
+        self.assertEqual(after, main)
+        state, lines, hints = seen[0]
+        self.assertEqual({holder["pid"]: holder["what"] for holder in state["holders"]},
+                         {worker.pid: "the queue worker for mpm",
+                          shim.pid: "a lane's xcodebuild through the Apple plugin's wrapper",
+                          command.pid: "a `qk unittest` command"})
+        self.assertTrue(all(isinstance(holder["since"], float) for holder in state["holders"]))
+        self.assertIn(f"    held by the queue worker for mpm, PID {worker.pid}, running ", "\n".join(lines))
+        self.assertEqual(len(hints), 1)
+        self.assertRegex(hints[0], rf"^the worker has waited \d+s for the shared checkout to follow origin/main once "
+                                   rf"nothing runs from it; held by .*a `qk unittest` command, PID {command.pid}, running")
+        # Once it has followed, neither says anything of it.
+        self.assertIsNone(mq.Queue(self.repo).round_state().get("holders"))
+        self.assertEqual(mq.checkout_hints(self.repo), [])
+        # A process that is gone has no start.
+        self.assertEqual(mq.started_at([worker.pid]), {})
+
     def test_a_hold_during_the_tries_ends_them(self):
         def during(tried, holders):
             if tried == 2: mq.Queue(self.repo).hold("for a test")
