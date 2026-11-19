@@ -16,7 +16,7 @@ import uuid
 from xml.parsers.expat import ExpatError
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import lane_results, offload_host, resources
-from queuekeeper_apple import devices
+from queuekeeper_mobile import devices
 import host_isolation
 from queuekeeper_apple.simulators import pool as simulator_pool
 

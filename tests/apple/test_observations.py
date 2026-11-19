@@ -1,13 +1,15 @@
-"""Apple contributes bounded device observations without a dashboard dependency."""
+"""Apple contributes bounded device observations, which the mobile extension joins to the record, without a
+dashboard dependency."""
 import json
 import subprocess
 import unittest
 from unittest.mock import patch
 import host_isolation
 from queuekeeper_apple import observations as farm
+from queuekeeper_mobile import observations as shared
 
 READ_CONNECTIONS = farm.read_connections
-READ_DEVICES = farm.read_devices
+READ_DEVICES = shared.read_devices
 
 class DeviceConnections(unittest.TestCase):
     PHONE = "00000000-0000000000000001"
@@ -54,7 +56,7 @@ class DeviceConnections(unittest.TestCase):
         for error in (FileNotFoundError("xcrun unavailable"), subprocess.TimeoutExpired("devicectl", 15),
                       ValueError("invalid inventory")):
             with self.subTest(error=error), patch.object(farm.offload_host, "device_record_whole", return_value=record), \
-                    patch.object(farm, "read_connections", side_effect=error):
+                    patch.object(shared, "read_connections", side_effect=error):
                 found = READ_DEVICES()
             self.assertIsNone(found["error"])
             self.assertTrue(found["connectionError"])
@@ -66,7 +68,7 @@ class DeviceConnections(unittest.TestCase):
         record = {"devices": {"iPhone": {"device": self.PHONE, "state": "held"},
                               "iPad": {"device": self.PAD, "state": "released"}}}
         with patch.object(farm.offload_host, "device_record_whole", return_value=record), \
-                patch.object(farm, "read_connections", return_value={self.PHONE: {"connection": "connected", "transport": "localNetwork"}}):
+                patch.object(shared, "read_connections", return_value={self.PHONE: {"connection": "connected", "transport": "localNetwork"}}):
             found = READ_DEVICES()
         self.assertEqual([(device["name"], device["connection"]) for device in found["devices"]],
                          [("iPad", "notDetected"), ("iPhone", "connected")])
@@ -75,7 +77,7 @@ class DeviceConnections(unittest.TestCase):
         self.assertIsNone(found["connectionError"])
         record[farm.offload_host.DEFERRED] = "other-mac"
         with patch.object(farm.offload_host, "device_record_whole", return_value=record), \
-                patch.object(farm, "read_connections") as read:
+                patch.object(shared, "read_connections") as read:
             found = READ_DEVICES()
         read.assert_not_called()
         self.assertEqual(found["devices"][0]["connection"], "unknown")

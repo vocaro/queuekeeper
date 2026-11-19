@@ -19,7 +19,8 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[2] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from queuekeeper import cli, resources
-from queuekeeper_apple import device_notifications, devices
+from queuekeeper_apple import device_notifications
+from queuekeeper_mobile import devices
 from queuekeeper_mac_desktop import reservations
 import host_isolation
 from test_support import farm as farm_fixture
@@ -1422,7 +1423,7 @@ class NotificationTests(unittest.TestCase):
 
     def test_a_held_device_past_its_release_with_its_silencing_pending_is_said_and_changed_by_nothing(self):
         """vocaro/queuekeeper#174: the iPhone stayed silenced 21 hours past its release, and nothing said so."""
-        from queuekeeper_apple import doctor
+        from queuekeeper_mobile import doctor
         self.first()
         self.setup()
         entry, _error = self.take()

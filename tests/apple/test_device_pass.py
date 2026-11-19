@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 import host_isolation  # noqa: F401  (first: keeps every test out of the host's admission)
 from queuekeeper import budgets, cli
-from queuekeeper_apple import core_device, device_notifications, device_pass, devices
+from queuekeeper_apple import core_device, device_notifications
+from queuekeeper_mobile import device_pass, devices
 from test_support.devices import BANNER, Devicectl, PHONE, TABLET, Watches, approval, later, scratch
 
 SOURCE = Path(__file__).resolve().parents[2] / "src/python"

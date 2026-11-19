@@ -43,7 +43,8 @@ import time
 import uuid
 from xml.parsers.expat import ExpatError
 
-from .. import devices as device_record
+from queuekeeper_mobile import devices as device_record
+from .. import apple_platform  # noqa: F401 -- switches the Apple platform on
 from queuekeeper import lane_results, offload_host
 from queuekeeper.resources import process_start
 from . import lifecycle, speech, template as warmed

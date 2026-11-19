@@ -377,7 +377,7 @@ def recover_restoration(owner=None, *, record=None, by=None, read_state=None, to
         if isinstance(error, devices.Refused): raise
         raise TransitionFailed(f"VoiceOver's original {'on' if original else 'off'} was not restored and verified; "
                                f"the foreground stays uncertain for attended recovery: {error}") from error
-    record.restoration_recovered(devices.FOREGROUND, owner=owner, revision=entry["revision"], by=by)
+    devices.restoration_recovered(record, devices.FOREGROUND, owner=owner, revision=entry["revision"], by=by)
     return original
 
 

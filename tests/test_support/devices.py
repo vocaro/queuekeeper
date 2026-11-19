@@ -55,7 +55,8 @@ SOURCE = Path(__file__).resolve().parents[2] / "src/python"
 from queuekeeper import cli, resources
 
 
-from queuekeeper_apple import device_notifications, devices
+from queuekeeper_apple import device_notifications
+from queuekeeper_mobile import devices
 
 
 from queuekeeper_mac_desktop import reservations
@@ -93,7 +94,7 @@ WRITER = r"""
 import contextlib, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from queuekeeper_apple import devices
+from queuekeeper_mobile import devices
 path, key, ready, count, mode, release_by, window, wait = sys.argv[2:10]
 record = devices.Record(path, timeout=float(wait))
 if mode == "unlocked":

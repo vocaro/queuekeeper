@@ -15,7 +15,8 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import cli, disk
-from queuekeeper_apple import devices, disk as apple_disk
+from queuekeeper_apple import disk as apple_disk
+from queuekeeper_mobile import devices
 from queuekeeper_mac_desktop import reservations
 import host_isolation
 

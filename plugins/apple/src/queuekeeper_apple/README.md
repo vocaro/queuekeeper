@@ -5,7 +5,9 @@ simulator pools, physical-device reservations, Xcode test runners, and guards ag
 and permissions that stop a test run on a Mac nobody is watching.
 
 It is optional, and the core runs without it. It builds on the
-[Mac desktop plugin](../mac_desktop/README.md), which a project that lists the Apple plugin gets too. It was
+[mobile plugin](../../../mobile/src/queuekeeper_mobile/README.md), which holds the device record, bounded runs and
+the device pass it shares with the [Android plugin](../../../android/src/queuekeeper_android/README.md), and on the
+[Mac desktop plugin](../mac_desktop/README.md). A project that lists the Apple plugin gets both. It was
 developed against Xcode 27.2, iOS 27 simulators
 and macOS 27, and parts of it depend on behavior Apple does not document, which a new release can
 break.

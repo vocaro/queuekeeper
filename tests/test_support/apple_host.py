@@ -1,9 +1,12 @@
-"""Apple protections layered on its declared desktop dependency."""
+"""Apple protections layered on its declared desktop and mobile dependencies."""
 from test_support import desktop_host
 import host_isolation
 from host_isolation import os
 import queuekeeper_apple as apple
-from queuekeeper_apple import app_registrations, device_notifications, device_pass, devices
+import queuekeeper_mobile as mobile
+from queuekeeper_apple import app_registrations, device_notifications
+from queuekeeper_mobile import device_pass, devices
+mobile.register()
 apple.register()
 
 # Nor does any reach a paired device's Focus (#144): a reservation a test makes that would run the owner's

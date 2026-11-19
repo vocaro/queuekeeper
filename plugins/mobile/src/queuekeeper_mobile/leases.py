@@ -1,12 +1,11 @@
-"""The physical devices a run on another Mac uses, and what else a dispatch asks of the Apple extension's devices:
+"""The physical devices a run on another Mac uses, and what else a dispatch asks of the mobile extensions' devices:
 the hardware a command names and the project's simulator pool. The core's remote calls these through
 queuekeeper.extensions.DEVICES, which lane.py's Devices, built on the one here, fills."""
 from pathlib import Path
 import sys
 
 from queuekeeper import extensions
-from . import devices
-from .simulators import pool as simulator_pool
+from . import devices, platforms
 
 
 class Lease(devices.BoundedRun):
@@ -76,12 +75,12 @@ FOREIGN_COMMIT = (" If it is instead a commit of another repository, which this 
 
 
 def named_devices(words, record=None):
-    """{KEY: UDID} of the physical devices in this Mac's record that words name."""
+    """{KEY: identifier} of the physical devices in this Mac's record that words name, whatever its case."""
     named = " ".join(words).upper()
-    if not devices.PHYSICAL.search(named): return {}
     entries = (record or devices.Record()).load()["devices"]
-    return {key: udid for key, entry in entries.items() for udid in [str(entry.get("device") or "").upper()]
-            if devices.physical(udid) and udid in named}
+    return {key: identifier for key, entry in entries.items()
+            for identifier in [devices.canonical(str(entry.get("device") or ""))]
+            if devices.physical(identifier) and identifier.upper() in named}
 
 
 def lease(keys, owner, words, record=None, root=None, *, budget=None, commits=()):
@@ -143,4 +142,9 @@ class Devices(extensions.Devices):
         return devices.named(command, root=root)
 
     def pool(self, root):
-        return simulator_pool.configured(root)
+        """The first pool a platform switched on keeps for the project: the core's census of leftovers on another Mac
+        reads a simulator pool's members (offload_host.leftovers)."""
+        for platform in platforms.PLATFORMS:
+            found = platform.pool(root)
+            if found is not None: return found
+        return None

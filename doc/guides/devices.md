@@ -6,6 +6,12 @@ each device with what each Mac reads of it. Reservations themselves are
 in [shared host](shared-host.md#device-reservations); how devices behave under test is in the toolkit's
 [device testing](https://github.com/vocaro/apple-engineering/blob/main/guides/device-testing.md) guide.
 
+The record, the device pass and declarations belong to the [mobile plugin](../../plugins/mobile/src/queuekeeper_mobile/README.md),
+which the Apple and Android plugins share, so all of this applies to an Android phone too. The differences are in
+the [Android plugin's notes](../../plugins/android/src/queuekeeper_android/README.md#physical-devices). An Android
+device is named by its adb serial rather than a UDID, and its notifications are silenced with Do Not Disturb over
+adb and read back, with no shortcuts to set up.
+
 ## Notifications during a run
 
 On 2026-11-04, in an approved iPhone window, VoiceOver read one of the owner's notifications in

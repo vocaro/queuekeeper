@@ -186,6 +186,10 @@ os.environ[offload_host.SCROLL_BARS_RECORDING] = str(ROOT / "scroll-bars.json")
 # lists none, in a record of its own that holds nothing. A test of the reading or the record names its own.
 (ROOT / "device-listing.json").write_text(json.dumps({"result": {"devices": []}}))
 os.environ["QUEUEKEEPER_DEVICE_LISTING"] = str(ROOT / "device-listing.json")
+# Nor does any list this Mac's Android devices with adb: it reads that adb lists none. A test of the reading names
+# its own listing.
+(ROOT / "adb-listing.txt").write_text("List of devices attached\n\n")
+os.environ["QUEUEKEEPER_ADB_LISTING"] = str(ROOT / "adb-listing.txt")
 # Nor does any device pass or notification shortcut a test runs ask this Mac's CoreDeviceService whether it answers for
 # a device (core_device, vocaro/queuekeeper#227): it reads that it does. A test of the probe clears it.
 os.environ["QUEUEKEEPER_DEVICE_PROBE"] = "off"
@@ -299,7 +303,8 @@ ISOLATION = {name: os.environ[name] for name in (
     "QUEUEKEEPER_RUN_FREE_GB",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
     "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD,
-    remote.RESPONSIBLE, "QUEUEKEEPER_DEVICE_LISTING", "QUEUEKEEPER_DEVICE_PROBE", "QUEUEKEEPER_DEVICE_RECORD")}
+    remote.RESPONSIBLE, "QUEUEKEEPER_DEVICE_LISTING", "QUEUEKEEPER_ADB_LISTING", "QUEUEKEEPER_DEVICE_PROBE",
+    "QUEUEKEEPER_DEVICE_RECORD")}
 
 
 # The prefixes of the toolkit's variables, and those of them this module lets a test inherit, each with why that is

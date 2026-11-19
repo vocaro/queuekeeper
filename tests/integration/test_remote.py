@@ -32,7 +32,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper.checkout import source_paths
 from queuekeeper import budgets, cli, config, farm, lane_report, lane_results, merge_queue, offload_host, processes, remote, resources
-from queuekeeper_apple import device_notifications, devices, disk as apple_disk, doctor as apple_doctor, leases
+from queuekeeper_apple import device_notifications, disk as apple_disk, doctor as apple_doctor
+from queuekeeper_mobile import devices, leases
 from queuekeeper import disk as disk_module, extensions
 from queuekeeper import waiting
 import host_isolation
@@ -1289,7 +1290,7 @@ class RemoteTests(unittest.TestCase):
         # vocaro/queuekeeper#155: a sender from before the plugins left the core ran this module in a toolkit that
         # holds queuekeeper_apple.devices, and the refusal blamed a device record that nothing had read.
         old = lambda _self, mac: ["-m", "queuekeeper.apple.devices", "defer", mac]
-        with patch("queuekeeper_apple.lane.Devices.remote_setup", old):
+        with patch("queuekeeper_mobile.lane.Devices.remote_setup", old):
             status, _output, error = self.qk("remote", "run", "check")
             said = " ".join(error.split())
             self.assertEqual(status, 2)
@@ -1317,7 +1318,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_a_device_setup_that_fails_otherwise_than_by_its_records_refusal_does_not_blame_the_record(self):
         crash = "import sys; print('RuntimeError: no such table', file=sys.stderr); raise SystemExit(1)"
-        with patch("queuekeeper_apple.lane.Devices.remote_setup", lambda _self, _mac: ["-c", crash]):
+        with patch("queuekeeper_mobile.lane.Devices.remote_setup", lambda _self, _mac: ["-c", crash]):
             status, _output, error = self.qk("remote", "run", "check")
         said = " ".join(error.split())
         self.assertEqual(status, 2)

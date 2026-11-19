@@ -10,7 +10,8 @@ import unittest
 from unittest.mock import patch
 
 import host_isolation  # noqa: F401
-from queuekeeper_apple import devices, reach
+from queuekeeper_apple import device_listing
+from queuekeeper_mobile import devices, reach
 from test_support.devices import PHONE, TABLET, DUO, later, scratch
 
 LISTINGS = Path(__file__).resolve().parent / "fixtures/Devicectl"
@@ -27,7 +28,7 @@ def without(listing, udid):
 
 class Listings(unittest.TestCase):
     def test_a_cable_and_the_network_are_read_from_the_transport_and_simulators_are_left_out(self):
-        here = reach.listed(CABLE)
+        here = device_listing.listed(CABLE)
         self.assertEqual(set(here), {TABLET, PHONE})
         self.assertEqual({udid: device["way"] for udid, device in here.items()}, {TABLET: "cable", PHONE: "cable"})
         self.assertEqual(here[PHONE]["transport"], "wired")
@@ -35,11 +36,11 @@ class Listings(unittest.TestCase):
         # The iPhone's tunnel reads disconnected though it is attached: reach is the transport alone.
         self.assertEqual(next(device["connectionProperties"]["tunnelState"] for device in CABLE["result"]["devices"]
                               if device["hardwareProperties"]["udid"] == PHONE), "disconnected")
-        there = reach.listed(NETWORK)
+        there = device_listing.listed(NETWORK)
         self.assertEqual({udid: device["way"] for udid, device in there.items()}, {TABLET: "network", PHONE: "network"})
 
     def test_older_json_a_transport_no_declaration_names_and_a_listing_without_devices(self):
-        found = reach.listed({"result": {"devices": [
+        found = device_listing.listed({"result": {"devices": [
             {"properties": {"hardware": {"udid": PHONE.lower(), "reality": "physical", "deviceType": "iPhone"},
                             "connection": {"transportType": "localNetwork"}}},
             {"hardwareProperties": {"udid": TABLET}, "connectionProperties": {"pairingState": "paired"}},
@@ -49,7 +50,7 @@ class Listings(unittest.TestCase):
         self.assertEqual((found[TABLET]["way"], found[TABLET]["transport"]), (None, None))
         self.assertNotIn(DUO, found)
         for answer in ({}, {"result": {"devices": None}}, []):
-            with self.subTest(answer=answer), self.assertRaises(ValueError): reach.listed(answer)
+            with self.subTest(answer=answer), self.assertRaises(ValueError): device_listing.listed(answer)
 
 
 class Readings(unittest.TestCase):
@@ -58,35 +59,35 @@ class Readings(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         path = Path(temp.name) / "listing.json"
         path.write_text(json.dumps(CABLE))
-        with patch.dict(os.environ, {reach.LISTING: str(path)}):
-            self.assertEqual(set(reach.read_here()[0]), {TABLET, PHONE})
+        with patch.dict(os.environ, {device_listing.LISTING: str(path)}):
+            self.assertEqual(set(device_listing.read_here()[0]), {TABLET, PHONE})
         calls = []
 
         def run(command, **options):
             calls.append((command, options))
             return subprocess.CompletedProcess(command, 0, json.dumps(NETWORK), "")
-        with patch.dict(os.environ, {reach.LISTING: ""}):
-            found, _seconds = reach.read_here(run)
+        with patch.dict(os.environ, {device_listing.LISTING: ""}):
+            found, _seconds = device_listing.read_here(run)
             self.assertEqual(found[PHONE]["way"], "network")
             self.assertEqual(calls[0][0][:4], ["xcrun", "devicectl", "list", "devices"])
             self.assertEqual(calls[0][1]["timeout"], reach.TIMEOUT)
             with self.assertRaisesRegex(RuntimeError, "exited 1: CoreDevice"):
-                reach.read_here(lambda command, **options: subprocess.CompletedProcess(command, 1, "", "CoreDevice gone"))
+                device_listing.read_here(lambda command, **options: subprocess.CompletedProcess(command, 1, "", "CoreDevice gone"))
 
     def test_another_mac_is_read_over_ssh_and_one_not_read_is_kept_with_its_error(self):
         answered = subprocess.CompletedProcess([], 0, json.dumps(NETWORK), "")
         with patch("queuekeeper.remote.ssh", return_value=answered) as ssh:
-            self.assertEqual(set(reach.read_there("studio.local")[0]), {TABLET, PHONE})
+            self.assertEqual(set(device_listing.read_there("studio.local")[0]), {TABLET, PHONE})
         self.assertEqual(ssh.call_args.args[0], "studio.local")
         self.assertIn("devicectl list devices", ssh.call_args.args[1])
         with patch("queuekeeper.remote.ssh", return_value=subprocess.CompletedProcess([], 255, "", "no route\n")), \
                 self.assertRaisesRegex(RuntimeError, "exited 255: no route"):
-            reach.read_there("studio.local")
+            device_listing.read_there("studio.local")
 
         def there(host):
             if host == "away.local": raise subprocess.TimeoutExpired("ssh", reach.TIMEOUT)
-            return reach.listed(NETWORK), 0.5
-        found = reach.readings(here=lambda: (reach.listed(CABLE), 0.2), there=there,
+            return device_listing.listed(NETWORK), 0.5
+        found = reach.readings(here=lambda: (device_listing.listed(CABLE), 0.2), there=there,
                                macs=[OTHER, ("away", "away.local")])
         self.assertEqual([item["mac"] for item in found], [reach.mac_here(), "studio", "away"])
         self.assertEqual([item["host"] for item in found], [None, "studio.local", "away.local"])
@@ -145,9 +146,9 @@ class Recorded(unittest.TestCase):
 
         def read_there(host):
             if isinstance(there, Exception): raise there
-            return reach.listed(there), 0.5
+            return device_listing.listed(there), 0.5
         with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error, \
-                patch.dict(os.environ, {reach.LISTING: str(listing)}), patch.object(reach, "read_there", read_there):
+                patch.dict(os.environ, {device_listing.LISTING: str(listing)}), patch.object(device_listing, "read_there", read_there):
             code = devices.main(list(arguments))
         return code, output.getvalue(), error.getvalue()
 
@@ -267,7 +268,7 @@ class Absence(Recorded):
         """This Mac's and the other's readings, either one an error to stand for a Mac not read."""
         def one(name, host, listing):
             if isinstance(listing, Exception): return {"mac": name, "host": host, "readAt": 0, "error": str(listing)}
-            return {"mac": name, "host": host, "readAt": 0, "devices": reach.listed(listing), "seconds": 0.1}
+            return {"mac": name, "host": host, "readAt": 0, "devices": device_listing.listed(listing), "seconds": 0.1}
         return [one("owner-mac", None, here), one(*OTHER, there)]
 
     def judge(self, value, here, there, at):

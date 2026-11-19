@@ -3,7 +3,16 @@
     "source": "plugins/apple/src",
     "tests": "tests/apple",
     "requires": [
-      "queuekeeper_mac_desktop"
+      "queuekeeper_mac_desktop",
+      "queuekeeper_mobile"
+    ]
+  },
+  "queuekeeper_android": {
+    "source": "plugins/android/src",
+    "tests": "tests/android",
+    "requires": [
+      "queuekeeper_mac_desktop",
+      "queuekeeper_mobile"
     ]
   },
   "queuekeeper_mac_desktop": {
@@ -15,6 +24,13 @@
     "source": "plugins/mac-hardware/src",
     "tests": "tests/mac_hardware",
     "requires": []
+  },
+  "queuekeeper_mobile": {
+    "source": "plugins/mobile/src",
+    "tests": "tests/mobile",
+    "requires": [
+      "queuekeeper_mac_desktop"
+    ]
   },
   "queuekeeper_unity": {
     "source": "plugins/unity/src",

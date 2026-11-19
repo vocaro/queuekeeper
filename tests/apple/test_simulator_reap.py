@@ -17,7 +17,7 @@ import unittest.mock
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import cli, offload_host, remote, resources
-from queuekeeper_apple import devices
+from queuekeeper_mobile import devices
 import host_isolation
 from test_support import farm as farm_fixture
 from test_support.devices import run_printed

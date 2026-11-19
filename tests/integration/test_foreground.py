@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import cli, config, offload_host, processes, remote, resources
-from queuekeeper_apple import devices
+from queuekeeper_mobile import devices
 from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import foreground, opened_apps
 import host_isolation

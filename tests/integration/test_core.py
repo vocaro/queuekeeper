@@ -20,7 +20,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import cli, config, lane_results, place_holder, processes, resources
-from queuekeeper_apple import devices
+from queuekeeper_mobile import devices
 from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import display, foreground
 from queuekeeper_apple.simulators import pool as simulator_pool

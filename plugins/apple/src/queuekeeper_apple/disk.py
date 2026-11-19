@@ -25,7 +25,8 @@ from queuekeeper.disk import (
     last_activity,
     project_workspace,
 )
-from . import app_builds as kept_apps, devices as device_record
+from queuekeeper_mobile import devices as device_record
+from . import app_builds as kept_apps, apple_platform  # noqa: F401 -- switches the Apple platform on
 from .simulators import pool as simulator_pool
 
 CATEGORIES = {"simulator": "Simulators", "runtime": "Simulator runtimes", "derived-data": "Xcode DerivedData",

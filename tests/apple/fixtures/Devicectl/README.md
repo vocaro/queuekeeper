@@ -1,7 +1,7 @@
 # devicectl listings for the reach reader
 
 What `xcrun devicectl list devices --quiet --json-output FILE` (devicectl 651.32, Xcode 27.1) printed on the
-owner's two Macs on 2026-11-17, for `queuekeeper_apple.reach` (vocaro/queuekeeper#211). They keep the shape of
+owner's two Macs on 2026-11-17, for `queuekeeper_apple.device_listing` and `queuekeeper_mobile.reach` (vocaro/queuekeeper#211). They keep the shape of
 each listing and none of its identifiers: every UDID, CoreDevice identifier and name is invented, serial numbers,
 ECIDs, host names and tunnel addresses are left out, and of the 67 or more simulators each Mac listed, two are kept.
 

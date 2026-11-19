@@ -60,6 +60,23 @@
       "type": "string",
       "minLength": 1
     },
+    "emulatorPool": {
+      "description": "The Android extension's key, which a project gets with queuekeeper_android: the name every member of the project's emulator pool starts with, as in 'NAME_Pixel_8_API_36_1'",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/]+$"
+    },
+    "android": {
+      "description": "The Android extension's key, which a project gets with queuekeeper_android: the Gradle build whose app and instrumented tests qk emulator-tests builds and runs",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "directory": {"description": "The Gradle project's folder, the one with gradlew, relative to the checkout; the checkout itself when left out", "type": "string", "minLength": 1},
+        "module": {"description": "The application module, as a Gradle project path without its leading colon, such as 'app' or 'feature:reader'; app when left out", "type": "string", "pattern": "^[\\w.-]+(:[\\w.-]+)*$"},
+        "variant": {"description": "The build variant, such as 'debug' or 'freeDebug'; debug when left out", "type": "string", "pattern": "^[a-z][A-Za-z0-9]*$"},
+        "gradleArguments": {"description": "Words added to every Gradle command, never shell source", "type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
     "unity": {
       "description": "The Unity extension's key, which a project gets with queuekeeper_unity: where its Unity project is, and the window layout a new worktree's editor starts with",
       "type": "object",

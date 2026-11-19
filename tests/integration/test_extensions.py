@@ -101,11 +101,15 @@ class SlotTests(unittest.TestCase):
     def test_a_slot_refuses_what_is_not_its_kind(self):
         with self.assertRaises(TypeError): extensions.provide("FOREGROUND", extensions.Devices())
 
-    def test_the_desktop_extension_fills_the_foreground_and_the_apple_extension_the_devices(self):
-        from queuekeeper_apple import lane
+    def test_the_desktop_extension_fills_the_foreground_and_the_mobile_extension_the_devices(self):
+        from queuekeeper_apple import lane as apple_lane
+        from queuekeeper_mobile import lane, platforms
         from queuekeeper_mac_desktop import lane as desktop_lane
         desktop_lane.register()
         lane.register()
+        apple_lane.register()
+        # The Apple extension fills no slot of its own: it registers its platform with the mobile one.
+        self.assertIn("apple", [platform.name for platform in platforms.PLATFORMS])
         self.assertIsInstance(extensions.FOREGROUND, desktop_lane.Foreground)
         self.assertIsInstance(extensions.DEVICES, lane.Devices)
         # What the dispatch asks of the devices is on the same provider as what a lane's run does.
@@ -147,9 +151,13 @@ class SharedHookTests(unittest.TestCase):
             extensions.report_results("results")
         self.assertEqual(calls, ["a", "b", "results"])
 
-    def test_the_apple_extension_requires_the_desktop_extension(self):
+    def test_the_apple_and_android_extensions_require_the_desktop_and_mobile_extensions(self):
+        import queuekeeper_android
         import queuekeeper_apple
-        self.assertEqual(queuekeeper_apple.REQUIRES, ("queuekeeper_mac_desktop",))
+        import queuekeeper_mobile
+        self.assertEqual(queuekeeper_apple.REQUIRES, ("queuekeeper_mac_desktop", "queuekeeper_mobile"))
+        self.assertEqual(queuekeeper_android.REQUIRES, ("queuekeeper_mac_desktop", "queuekeeper_mobile"))
+        self.assertEqual(queuekeeper_mobile.REQUIRES, ("queuekeeper_mac_desktop",))
 
     def test_the_desktop_and_apple_extensions_register_their_shared_hooks_once(self):
         from queuekeeper_apple import lane

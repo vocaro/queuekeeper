@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "queuekeeper-android"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = ["queuekeeper==0.1.0", "queuekeeper-mac-desktop==0.1.0", "queuekeeper-mobile==0.1.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["queuekeeper_android*"]

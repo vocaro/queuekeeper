@@ -35,6 +35,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
+from queuekeeper_mobile import platforms
 from . import core_device
 
 # The app that runs a shortcut by URL, and the owner's two shortcuts, by the names he gives them.
@@ -251,24 +252,8 @@ class Watch:
 watch = Watch
 
 
-class Together:
-    """The watches of several devices' logs, {KEY: watch}, stopped as one for a run that uses them all, as a run
-    sent to another Mac may (remote.Lease). Its stop says what Watch.stop does, over all of them: every
-    device's banners counted, the earliest device clock among their first banners, watched only when each log
-    was read, and what each saw under devices."""
-
-    def __init__(self, watches):
-        self.watches = dict(watches)
-
-    def stop(self):
-        each = {key: watch.stop() for key, watch in self.watches.items()}
-        firsts = sorted(seen["first"] for seen in each.values() if seen.get("first"))
-        seen = {"watched": all(seen["watched"] for seen in each.values()),
-                "presented": sum(seen["presented"] for seen in each.values())}
-        if firsts: seen["first"] = firsts[0]
-        unread = [f"{key}: {seen.get('detail')}" for key, seen in each.items() if not seen["watched"]]
-        if unread: seen["detail"] = "; ".join(unread)
-        return {**seen, "devices": each}
+# The watches of several devices' logs, stopped as one, are the shared code's (queuekeeper_mobile.platforms).
+Together = platforms.Together
 
 
 def presented(seen):

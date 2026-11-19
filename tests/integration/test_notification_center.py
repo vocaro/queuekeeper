@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation
 from test_support import farm as farm_fixture
 from queuekeeper import cli, lane_results, offload_host
-from queuekeeper_apple import devices
+from queuekeeper_mobile import devices
 from queuekeeper_mac_desktop import reservations
 from queuekeeper_mac_desktop import foreground, notification_center
 from queuekeeper_apple.voiceover import state as voiceover_state

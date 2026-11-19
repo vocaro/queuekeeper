@@ -2847,8 +2847,8 @@ goes. A problem here is printed on stderr and never changes the run's result.
 Physical devices, and the members of a project's simulator pool, are
 used only under a real reservation in the host's one device record, a human-readable JSON file
 outside every repository: `~/Library/Application Support/queuekeeper/device-handoff.json`
-of the account the sessions run as. `plugins/apple/src/queuekeeper_apple/devices.py` is its only
-writer. It finds the record from the account's home directory, not `HOME` or `TMPDIR`, so a
+of the account the sessions run as. `plugins/mobile/src/queuekeeper_mobile/devices.py`, which the Apple and Android
+extensions share, is its only writer. It finds the record from the account's home directory, not `HOME` or `TMPDIR`, so a
 session with a private environment joins the same record; `QUEUEKEEPER_DEVICE_RECORD` names an
 isolated record for tests only. Committed documentation keeps no device identifiers or live
 session details. An entry records:
@@ -2860,11 +2860,11 @@ session details. An entry records:
 - the original accessibility settings, and the apps, outputs and owner data to preserve;
 - at handoff, the terminal outcome, the restoration checks and the explicit release time.
 
-Read and change the record through the helper's CLI, `qk devices`, which the Apple extension adds in a
-project that uses it, or from a script through `devices.Record()` and its `reserve`, `update`, `release`
+Read and change the record through the helper's CLI, `qk devices`, which the mobile extension adds in a
+project that uses the Apple or Android extension, or from a script through `devices.Record()` and its `reserve`, `update`, `release`
 and `recover` methods. Outside such a project, run it through Queuekeeper's own checkout, as the recovery
 commands Queuekeeper prints do: `python3 ~/Development/queuekeeper/bin/qk --project
-~/Development/queuekeeper devices …`. `python3 -m queuekeeper_apple.devices` finds its module only in a
+~/Development/queuekeeper devices …`. `python3 -m queuekeeper_mobile.devices` finds its module only in a
 process `qk` started (vocaro/queuekeeper#167):
 
 ```sh

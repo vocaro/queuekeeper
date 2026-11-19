@@ -14,7 +14,7 @@ from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper import lane_report, lane_results
-from queuekeeper_apple import devices
+from queuekeeper_mobile import devices
 from queuekeeper_apple.simulators import matrix
 import host_isolation
 from host_isolation import stretched

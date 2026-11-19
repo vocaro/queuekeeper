@@ -1,15 +1,15 @@
-"""Which Macs reach each physical device, and how, as each Mac's `devicectl` lists it; and the owner's declaration of
-each device: the ways a Mac may reach it, in his order, and what it means when no Mac does (vocaro/queuekeeper#211,
-doc/guides/devices.md, Declared devices).
+"""Which Macs reach each physical device, and how, as each Mac's platform tools list it (Platform.listing_here: an
+iPhone's by `devicectl`, an Android phone's by `adb devices`); and the owner's declaration of each device: the ways
+a Mac may reach it, in his order, and what it means when no Mac does (vocaro/queuekeeper#211, doc/guides/devices.md,
+Declared devices).
 
 The owner declares; Queuekeeper reads. What a Mac reads never adds a device to the farm or takes one out: a device
 that nobody declared is listed as seen and never used, and a declared one that no Mac reaches stays in the record
 with its reservation. A declaration is kept beside the record's entries, under the entry's key, as the owner's
 notification setup is, so declaring changes no entry and no holder's revision.
 
-Reach is `connectionProperties.transportType`: `wired` is a cable and `localNetwork` the network. A simulator lists
-as `sameMachine` and is left out. `tunnelState` is not reach: on 2026-11-17 it read `disconnected` for a device
-plainly attached by cable."""
+Reach is how the platform's tool says the device is attached: a cable or the network. A simulator or an emulator is
+left out. Each platform's listing says how it reads that (the Apple plugin's device_listing, the Android plugin's android_platform)."""
 import concurrent.futures
 import contextlib
 from datetime import datetime, timezone
@@ -17,17 +17,14 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import time
 
 from queuekeeper import offload_host
+from . import platforms
 
-# The ways a declaration may name, in no order of their own, and devicectl's transport for each.
+# The ways a declaration may name, in no order of their own.
 WAYS = ("cable", "network")
-TRANSPORTS = {"wired": "cable", "localNetwork": "network"}
-# devicectl's transport for a simulator, which runs on the Mac that lists it.
-SAME_MACHINE = "sameMachine"
 # What a declared device's absence means: an error, for one that should always be reachable, or offline, for one
 # that may be away.
 ABSENT = ("error", "offline")
@@ -35,11 +32,6 @@ ABSENT = ("error", "offline")
 DECLARATIONS = "declarations"
 # The keys of a declaration: the owner's three, and who declared it and when.
 KEYS = ("reach", "cableOn", "absent", "declaredBy", "declaredAt")
-# A file holding a devicectl listing that this Mac's reading takes in place of devicectl's, for tests only: every
-# test module sets it to an empty listing (tests/host_isolation.py), so no test reads this Mac's devices.
-LISTING = "QUEUEKEEPER_DEVICE_LISTING"
-# The listing, read-only. devicectl's own --timeout bounds its wait for devices to answer.
-COMMAND = ("xcrun", "devicectl", "list", "devices", "--quiet", "--timeout", "10", "--json-output", "-")
 # Seconds a device may go unreached before it counts as unreachable: by one way on one Mac, or by every declared way on
 # every Mac, after which its absence counts, as an error or as offline. One drop is not a decision: a momentary loss
 # of Wi-Fi, a device's sleep or a cable moved from one port to another neither raises the error nor, once placement
@@ -48,35 +40,9 @@ SETTLE = 300
 # The file beside the record where each Mac's readings of the declared devices are remembered, so that a device's
 # absence is measured from the first reading that missed it.
 HISTORY = "device-reach.json"
-# Seconds one Mac's listing may take, over SSH included. On 2026-11-17 it took 0.17 to 0.42 s here and 0.56 s from
-# another Mac over SSH.
+# Seconds one Mac's listing may take, over SSH included. On 2026-11-17 devicectl's took 0.17 to 0.42 s here and
+# 0.56 s from another Mac over SSH.
 TIMEOUT = 30
-
-
-def listed(answer):
-    """Each physical device a devicectl listing names, by hardware UDID: the way it reaches the Mac that listed it
-    now (cable, network, or None when it is listed by no way a declaration may name), devicectl's own transport,
-    and the device's kind, model and name. Simulators are left out. Current and older devicectl JSON alike."""
-    result = answer.get("result") if isinstance(answer, dict) else None
-    devices = result.get("devices") if isinstance(result, dict) else None
-    if not isinstance(devices, list): raise ValueError("devicectl's listing holds no devices")
-    found = {}
-    for device in devices:
-        if not isinstance(device, dict): continue
-        properties = device.get("properties") if isinstance(device.get("properties"), dict) else {}
-        hardware = properties.get("hardware") or device.get("hardwareProperties") or {}
-        connection = properties.get("connection") or device.get("connectionProperties") or {}
-        about = properties.get("device") or device.get("deviceProperties") or {}
-        udid = str(hardware.get("udid") or "").upper()
-        transport = connection.get("transportType")
-        if hardware.get("reality") == "simulated" or transport == SAME_MACHINE or \
-                not offload_host.PHYSICAL.fullmatch(udid):
-            continue
-        text = lambda value: value if isinstance(value, str) else None
-        found[udid] = {"way": TRANSPORTS.get(transport), "transport": text(transport),
-                       "kind": text(hardware.get("deviceType")), "model": text(hardware.get("marketingName")),
-                       "name": text(about.get("name"))}
-    return found
 
 
 def mac_here():
@@ -84,29 +50,25 @@ def mac_here():
     return offload_host.mac_name()
 
 
-def read_here(run=subprocess.run):
-    """This Mac's devices, as listed: (listed's answer, seconds the listing took)."""
+def merged(read):
+    """The devices every platform switched on lists, by read(platform), one listing. A platform whose listing
+    fails fails the whole reading: what it would have listed is unknown, not absent."""
+    found = {}
+    for platform in platforms.PLATFORMS:
+        found.update(read(platform))
+    return found
+
+
+def read_here():
+    """This Mac's devices, as its platforms list them: (one listing, seconds the listing took)."""
     started = time.monotonic()
-    if os.environ.get(LISTING):
-        text = Path(os.environ[LISTING]).read_text()
-    else:
-        done = run(list(COMMAND), capture_output=True, text=True, timeout=TIMEOUT, stdin=subprocess.DEVNULL)
-        if done.returncode:
-            raise RuntimeError(f"devicectl exited {done.returncode}: {(done.stderr or '').strip()[-300:]}")
-        text = done.stdout
-    return listed(json.loads(text)), time.monotonic() - started
+    return merged(lambda platform: platform.listing_here()), time.monotonic() - started
 
 
 def read_there(host):
-    """The devices another Mac lists, read over SSH in its login shell: (listed's answer, seconds)."""
-    from queuekeeper import remote
+    """The devices another Mac lists, read over SSH in its login shell: (one listing, seconds)."""
     started = time.monotonic()
-    done = remote.ssh(host, shlex.join(COMMAND), stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                      timeout=TIMEOUT)
-    if done.returncode:
-        said = (done.stderr or "").strip().splitlines()
-        raise RuntimeError(f"its devicectl listing exited {done.returncode}" + (f": {said[-1][-300:]}" if said else ""))
-    return listed(json.loads(done.stdout)), time.monotonic() - started
+    return merged(lambda platform: platform.listing_there(host)), time.monotonic() - started
 
 
 def farm_macs():
@@ -203,11 +165,11 @@ def survey(value, found, macs=None):
     entries = value.get("devices") or {}
     declarations = value.get(DECLARATIONS) if isinstance(value.get(DECLARATIONS), dict) else {}
     keys = [key for key, entry in entries.items()
-            if isinstance(entry, dict) and offload_host.PHYSICAL.fullmatch(str(entry.get("device") or "").upper())]
+            if isinstance(entry, dict) and platforms.physical(str(entry.get("device") or ""))]
     keys += [key for key in declarations if key not in keys]
     items, recorded = [], set()
     for key in keys:
-        udid = str((entries.get(key) or {}).get("device") or "").upper() or None
+        udid = platforms.canonical(str((entries.get(key) or {}).get("device") or "")) or None
         declaration = declarations.get(key)
         wrong = problems(declaration, macs) if declaration is not None else []
         if declaration is not None and udid is None:

@@ -16,7 +16,8 @@ from unittest.mock import patch
 import host_isolation  # noqa: F401  (first: keeps every test out of the host's admission)
 from queuekeeper import cli, config, disk, merge_queue
 from queuekeeper_apple import disk as apple_disk
-from queuekeeper_apple import app_builds, device_pass
+from queuekeeper_apple import app_builds
+from queuekeeper_mobile import device_pass
 
 BUNDLE = "com.example.demo"
 # A stand-in for `qk admit -- xcodebuild ...`: it makes the product xcodebuild would, Demo.app with its Info.plist,

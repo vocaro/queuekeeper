@@ -211,7 +211,7 @@ SIMULATORS = ("xcrun", "simctl", "list", "devices", "-j")
 # The toolkit's own checkout on each Mac, relative to its home, which update_toolkit keeps at origin/main
 # there (vocaro-engineering#203); and the shell words that run the Apple extension's `qk devices` from any folder
 # on any Mac: that checkout's own launcher, which puts its plugins on the import path, with that checkout as the
-# project, which declares the extension. `python3 -m queuekeeper_apple.devices` finds no such module outside a
+# project, which declares the extension. `python3 -m queuekeeper_mobile.devices` finds no such module outside a
 # process qk started, since the plugins left src/python (vocaro/queuekeeper#167).
 TOOLKIT_CHECKOUT = "Development/queuekeeper"
 QK_DEVICES = f"python3 ~/{TOOLKIT_CHECKOUT}/bin/qk --project ~/{TOOLKIT_CHECKOUT} devices"

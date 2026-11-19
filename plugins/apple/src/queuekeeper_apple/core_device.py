@@ -16,7 +16,7 @@ import os
 import subprocess
 import time
 
-from . import reach
+from . import device_listing
 
 # Seconds devicectl has to answer for the device, and the wait for devicectl itself beyond that.
 TIMEOUT = 30
@@ -52,7 +52,7 @@ def execute(arguments, clock=time.monotonic):
 
 # What reaches the device, and what lists this Mac's devices, alone, so that tests replace them.
 run = execute
-listing = lambda: reach.read_here()[0]
+listing = lambda: device_listing.read_here()[0]
 
 
 def check(udid, key=None):

@@ -1,9 +1,10 @@
-"""Physical device observations contributed by the Apple plugin to host visibility."""
+"""The Apple plugin's part of the dashboard's device observations: what devicectl says of each paired device's
+connection (queuekeeper_mobile.observations reads the record and asks each platform)."""
 import json
 import subprocess
-import time
+
 from queuekeeper import offload_host
-from . import reach
+
 
 def connections_of(answer):
     """Physical devices by hardware UDID, from current or older Xcode devicectl JSON.
@@ -39,41 +40,10 @@ def read_connections():
     return connections_of(json.loads(result.stdout))
 
 
-def read_devices():
-    """Physical-device reservations alongside Xcode's observed connection status, without changing either."""
-    try:
-        record = offload_host.device_record_whole()
-        connections, connection_error, checked = {}, None, None
-        # A deferring Mac's inventory says nothing about connections on the Mac managing its devices.
-        if not record.get(offload_host.DEFERRED):
-            try:
-                connections = read_connections()
-                checked = time.time()
-            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-                connection_error = str(error)
-        found = []
-        for key, entry in record["devices"].items():
-            if not isinstance(entry, dict) or not offload_host.PHYSICAL.fullmatch(str(entry.get("device") or "").upper()):
-                continue
-            state = entry.get("state") or "held"
-            if entry.get("uncertain") or state == "restoration-unverified": state = "needs recovery"
-            elif entry.get("activeRun"): state = "run recorded"
-            found.append({"name": key, "state": state, "owner": entry.get("ownerChatID") if state != "released" else None,
-                          "purpose": entry.get("purpose") if state != "released" else None,
-                          "releaseBy": entry.get("expectedReleaseBy") if state != "released" else None,
-                          "waiting": len(record.get("queues", {}).get(key, [])),
-                          **connections.get(str(entry["device"]).upper(), {
-                              "connection": "notDetected" if checked is not None else "unknown", "transport": None,
-                              "kind": "other", "model": None})})
-        # Each declared device's absence, judged from every Mac's reading after the settle time (reach.py).
-        declared, declared_error = [], None
-        try:
-            declared = reach.health(offload_host.record_path())
-        except (OSError, ValueError, RuntimeError) as error:
-            declared_error = str(error)
-        return {"devices": sorted(found, key=lambda item: item["name"]),
-                "deferredTo": record.get(offload_host.DEFERRED), "error": None,
-                "connectionError": connection_error, "checkedAt": checked,
-                "declared": declared, "declaredError": declared_error}
-    except Exception as error:  # noqa: BLE001
-        return {"devices": [], "deferredTo": None, "error": str(error), "connectionError": None, "checkedAt": None}
+def read_connections():
+    """A bounded, read-only Xcode query; runs in the farm's background refresh, never on a page request."""
+    result = subprocess.run(["xcrun", "devicectl", "list", "devices", "--timeout", "10", "--quiet", "--json-output", "-"],
+                            capture_output=True, text=True, timeout=15)
+    if result.returncode:
+        raise RuntimeError(f"Xcode device query exited {result.returncode}: {result.stderr.strip()[-400:]}")
+    return connections_of(json.loads(result.stdout))

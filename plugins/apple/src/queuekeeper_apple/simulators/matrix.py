@@ -75,6 +75,7 @@ import uuid
 
 from queuekeeper import lane_report, lane_results, processes, resources
 from queuekeeper.parallel import RESULTS_VARIABLE, TAIL, combined, outcome
+from queuekeeper_mobile import shards
 from .. import stale_modules
 from . import pool as simulator_pool, speech
 from .pool import DEVICE_TYPE, RUNTIME, qualified
@@ -290,17 +291,12 @@ def unit(identifier):
 def packed(tests, partial, seconds, count):
     """count lists of -only-testing arguments, longest first into the one with least: each unit whole, unless
     the run left some of its tests out, when its tests one by one. A unit with no recorded seconds counts
-    the median of those that have one."""
+    the median of those that have one (queuekeeper_mobile.shards)."""
     units = {}
     for test in tests: units.setdefault(unit(test), []).append(test)
-    known = sorted(seconds[name] for name in units if name in seconds)
-    guess = known[len(known) // 2] if known else 1.0
-    bins = [[0.0, []] for _ in range(count)]
-    for name in sorted(units, key=lambda name: (-seconds.get(name, guess), name)):
-        bin = min(bins, key=lambda entry: entry[0])
-        bin[0] += seconds.get(name, guess)
-        bin[1] += [f"-only-testing:{test}" for test in units[name]] if name in partial else [f"-only-testing:{name}"]
-    return [names for _, names in bins]
+    return [[argument for name in names for argument in (
+        [f"-only-testing:{test}" for test in units[name]] if name in partial else [f"-only-testing:{name}"])]
+        for names in shards.packed(units, seconds, count)]
 
 
 def suite_seconds(bundle, record=None):

@@ -150,12 +150,19 @@ key loads the core alone.
   apps without getting in each other's way. Each run gets its own simulator, reset from a warmed
   template in a fraction of a second; one build is tested on several device types at once; and agents
   take an iPhone or iPad in turn, with a run stopped before its reservation ends.
+- **[Android](plugins/android/src/queuekeeper_android/README.md)** does the same for Android apps.
+  Each run gets its own emulator, cloned from a warmed template, and one Gradle build's instrumented
+  tests run on several emulators at once. Agents take an Android phone in turn, with Do Not Disturb
+  set and confirmed over adb.
+- **[Mobile](plugins/mobile/src/queuekeeper_mobile/README.md)** is what the Apple and Android plugins
+  share: the record that reserves phones and tablets, bounded runs on them, the device pass, and which
+  Mac reaches each device. Listing either platform brings it.
 - **[Unity](plugins/unity/src/queuekeeper_unity/README.md)** runs a Unity project's editor unattended.
   It picks the editor the project pins, clears a project lock nothing holds, ends a batch run that has
   gone silent, and runs the project's tests.
 - **[Mac desktop](plugins/mac-desktop/src/queuekeeper_mac_desktop/README.md)** handles a Mac's
   logged-in session when nobody is at it. Crash dialogs, notification banners, locked keychains and
-  lapsed permissions are cleared, or the run is reported as unmeasured instead of failed. The Apple
+  lapsed permissions are cleared, or the run is reported as unmeasured instead of failed. The mobile
   and Unity plugins build on it.
 - **[Mac hardware](plugins/mac-hardware/src/queuekeeper_mac_hardware/README.md)** keeps a lane on the
   chip its results are valid on. A lane whose output differs by GPU lists its chips, such as

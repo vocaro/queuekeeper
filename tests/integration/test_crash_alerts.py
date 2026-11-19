@@ -16,7 +16,7 @@ import host_isolation
 from test_support import farm as farm_fixture
 from host_isolation import stretched
 from queuekeeper import cli, lane_results, offload_host, remote, window_placement
-from queuekeeper_apple import devices
+from queuekeeper_mobile import devices
 from queuekeeper_mac_desktop import crash_alerts, foreground
 from queuekeeper_apple.voiceover import state as voiceover_state
 
