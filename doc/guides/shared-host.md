@@ -22,7 +22,7 @@ as in `qk run test -- --filter SUITE`, are appended to the lane's command. `--ex
 exactly N executed tests, skipped and canceled ones excluded: a run that selected those N and left
 some skipped or canceled exits 3, unmeasured, and any other count fails. Either says the counts
 executed and skipped and the N that counts the tests that ran
-([the agent interface](../agent_interface.md#verifying), vocaro/queuekeeper#181). A session's environment does not travel to another Mac,
+([the agent interface](../user_guide.md#verifying), vocaro/queuekeeper#181). A session's environment does not travel to another Mac,
 so a test that needs a variable, such as a corpus path, runs there only in a lane whose command
 sets it, as a gate's script does
 ([vocaro-engineering#285](https://github.com/vocaro/vocaro-engineering/issues/285)). Run any other
@@ -49,7 +49,7 @@ python3 scripts/qk unittest --unadmitted -s tests test_core.ConfigurationTests
 A command that is not Queuekeeper's, such as a bare `python3 -m unittest` or `swift test`, still takes
 no slot unless it is run with `qk admit`. The toolkit's own tests, run that way outside any admission,
 say so once on standard error from `tests/host_isolation.py`, and run on
-([Verifying](../agent_interface.md#verifying), vocaro/queuekeeper#36).
+([Verifying](../user_guide.md#verifying), vocaro/queuekeeper#36).
 
 Add `--model` for a generative-model run: on-device generation on this Mac or in a simulator,
 which uses the host Mac's model, and other local generative models such as MLX on the GPU. Core
@@ -1594,7 +1594,7 @@ project, checks the commit out detached with the toolkit beside it, and runs `qk
 the one it was sent from. The work it runs knows it runs there for this Mac, whose name
 `QUEUEKEEPER_DISPATCHED_FROM` gives, and its receipts say so. A script or test that must know whether
 it runs on another Mac asks only whether that variable is set
-([asking whether a command runs on another Mac](../build_farm.md#asking-whether-a-command-runs-on-another-mac)),
+([asking whether a command runs on another Mac](../user_guide.md#asking-whether-a-command-runs-on-another-mac)),
 never for a host name or a user ID, which macOS and setup can change, nor for a field of the device
 record: a project's script that compared another Mac's `.local` name refused on every Mac once
 macOS renamed it, and nobody noticed (vocaro/queuekeeper#93). A checkout keeps its ignored inputs and

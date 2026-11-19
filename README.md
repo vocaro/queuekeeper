@@ -43,29 +43,29 @@ Suppose you use Claude Code or Codex to work on two projects already checked out
 finished work through Queuekeeper and share your Mac's build capacity. Set up Queuekeeper once on
 the Mac, then configure each repository. You can ask an agent to do the setup with the prompts below;
 replace the example paths with yours. Using agents is optional: you can also set up and use
-Queuekeeper directly from the command line. The [setup guide](doc/getting_started.md) has the
+Queuekeeper directly from the command line. The [user guide](doc/user_guide.md#set-up) has the
 commands and configuration details.
 
 **1. Check that the projects fit.** You need macOS, Python 3.14 or newer, Git, and the tools that
 already build and test each project. Each repository needs a remote named `origin` that can be
 pushed to without a prompt, and must allow changes to land directly on `main`. Queuekeeper does
-not integrate through pull requests. Start with one Mac; you can [add more](doc/getting_started.md#add-another-mac)
+not integrate through pull requests. Start with one Mac; you can [add more](doc/user_guide.md#add-another-mac)
 if needed to speed up builds and tests.
 
 **2. Install Queuekeeper once.** In an agent session with access to your development folder, ask:
 
 > Clone https://github.com/vocaro/queuekeeper.git into ~/Development/queuekeeper. Read
-> doc/getting_started.md, check the requirements, and install it with
+> doc/user_guide.md, check the requirements, and install it with
 > `python3 tools/install-checkout.py` using Python 3.14 or newer. Make sure `qk --help` works
 > in the shell my agents use. Report any missing tools or setup I need to handle.
 
 Keep that checkout: the installed `qk` command runs it. Both projects use the same installation.
-The [installation guide](doc/getting_started.md#install) explains the PATH setup and how to update
+The [installation steps](doc/user_guide.md#install) explains the PATH setup and how to update
 or remove it.
 
 **3. Configure each project.** Open an agent session in each repository and give it this task:
 
-> Set up this repository for Queuekeeper using ~/Development/queuekeeper/doc/getting_started.md.
+> Set up this repository for Queuekeeper using ~/Development/queuekeeper/doc/user_guide.md.
 > Inspect the existing build and test scripts, then add queuekeeper.json with a gate that runs
 > this project's checks and has an explicit timeout. Enable the plugins this project needs;
 > read their setup docs first. Ask me which cheap checks to list as preflight lanes, and check the
@@ -79,7 +79,7 @@ cover unattended desktop sessions and tests that depend on a particular chip.
 
 **4. Teach future agent sessions the workflow.** In both repositories, have the agent update the
 project instructions that your coding tools read, such as `CLAUDE.md` or `AGENTS.md`. Ask it to
-include the [agent instructions from the setup guide](doc/getting_started.md#tell-your-agents),
+include the [agent instructions from the user guide](doc/user_guide.md#tell-your-agents),
 adapting the lane names to the project. Those instructions tell agents to:
 
 - Submit committed work with `qk land --wait` instead of pushing to `main`, and follow it to a result.
@@ -102,7 +102,7 @@ If a gate fails, have it fix the cause and submit the correction. Once both setu
 new agent sessions in either project can use the same workflow for their changes.
 
 **6. Choose how to follow the work.** Ask an agent to enable the [dashboard](#dashboard) for a view
-across projects, or [notifications](doc/visibility.md) when the queue needs your attention. Agents
+across projects, or [notifications](doc/user_guide.md#the-notify-feature) when the queue needs your attention. Agents
 can check their own project's queue with `qk queue status`.
 
 Run `qk disk` for a read-only inventory of Queuekeeper-managed build caches, test results and
@@ -138,7 +138,7 @@ project. It also shows iOS device connections and reservations.
 </p>
 
 **History** holds recent changes and events; **Logs** holds debug output. See
-[Visibility](doc/visibility.md#the-dashboard-feature) for details.
+[the user guide](doc/user_guide.md#the-dashboard) for details.
 
 ## Plugins
 
@@ -163,31 +163,11 @@ key loads the core alone.
 
 ## Documentation
 
-- [Getting started](doc/getting_started.md)
-- [The merge queue](doc/merge_queue.md): landing, batching, flakes, bisecting, holds
-- [Lanes and admission](doc/lanes_and_admission.md): what a lane is, and how a machine decides it
-  has room
-- [The build farm](doc/build_farm.md): running lanes on other Macs
-- [The agent interface](doc/agent_interface.md): exit codes and output that agents act on
-- [Visibility](doc/visibility.md): the terminal view, notifications, the web dashboard and the
-  event journal under them
-- [Related tools](doc/related_tools.md)
-
-The guides hold the detail, with the measurements and decisions behind each rule:
-
-- [Scheduling](doc/guides/scheduling.md): the goals the schedule serves, the rules in force with the
-  decision behind each, and the decisions still open
-- [Maintenance](doc/guides/maintenance.md): operating the merge queue, and the legacy spelling check
-- [Shared host](doc/guides/shared-host.md): admission, another Mac, disk cleanup, device reservations
-  and process supervision
-- [Lanes](doc/guides/lanes.md): receipts, how tests are counted, compiling first, tests no lane runs,
-  the gate's time budget
-- [Parallel tests](doc/guides/parallel-tests.md): lane groups, `qk unittest`, `qk simulator-tests` and
-  `qk xctest`
-- [Simulator pool](doc/guides/simulator-pool.md), [physical devices](doc/guides/devices.md) and
-  [kept app builds](doc/guides/app-builds.md), for the Apple plugin
-- [Foreground runs](doc/guides/foreground.md): taking a Mac's screen for a lane
-- [Cloud gate runners](doc/guides/cloud-gate-runners.md): renting a Mac for the queue
+- **[User guide](doc/user_guide.md)**: setting up, landing changes, lanes and admission, the build
+  farm, the agent interface, notifications and the dashboard, and troubleshooting.
+- **[Developer guide](doc/developer_guide.md)**: how Queuekeeper works inside, the goals behind its
+  scheduling, writing a visibility feature, and an index of the detailed reference guides.
+- **[Related tools](doc/related_tools.md)**: how Queuekeeper compares with other merge queues.
 
 ## License
 

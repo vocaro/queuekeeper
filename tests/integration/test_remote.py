@@ -1191,7 +1191,7 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("ran in", (self.project / ".build/queuekeeper/remote/admit/output.log").read_text())
 
     def test_a_command_asks_whether_it_was_sent_to_the_farm_mac_whatever_either_mac_is_called(self):
-        # The documented check (doc/build_farm.md): the variable is set, whatever it holds (vocaro/queuekeeper#93).
+        # The documented check (doc/user_guide.md): the variable is set, whatever it holds (vocaro/queuekeeper#93).
         asks = [sys.executable, "-c", f"import os; sender = os.environ.get({remote.DISPATCHER!r}); "
                                       "print('sent by', sender); raise SystemExit(4 if sender else 0)"]
         # As macOS renames a Mac: this Mac's name, and the name another Mac is reached by.

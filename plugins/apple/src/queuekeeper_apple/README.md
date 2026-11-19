@@ -104,4 +104,4 @@ the launch host that every simulator shares.
 - Full Xcode, not only the Command Line Tools, and the same build on every Mac.
 - For watching a device's notifications during a run: libimobiledevice.
 
-See [The build farm](../../../../doc/build_farm.md) for how work reaches another Mac.
+See [The build farm](../../../../doc/user_guide.md#the-build-farm) for how work reaches another Mac.

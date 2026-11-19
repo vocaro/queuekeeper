@@ -102,13 +102,13 @@ def default_signals():
 
 
 # A run of these tests goes through `qk unittest`, a lane or `qk admit`, never a bare `python3 -m unittest`, which takes
-# no slot and which `qk admissions now` does not show (doc/agent_interface.md, Verifying; vocaro/queuekeeper#36). A run
+# no slot and which `qk admissions now` does not show (doc/user_guide.md, Verifying; vocaro/queuekeeper#36). A run
 # with neither an admission's token, as bare_runner reads it, nor qk unittest's mark on its process is told so once on
 # standard error, and runs on: TOLD, set here, keeps the processes its tests start from saying it again.
 TOLD = "QUEUEKEEPER_UNADMITTED_TESTS_TOLD"
 UNADMITTED = ("host_isolation: these tests run outside any admission and outside qk unittest, so they take no slot and "
               "`qk admissions now` does not show them; run them with `python3 scripts/qk unittest -s tests NAME...` "
-              "(doc/agent_interface.md, Verifying)")
+              "(doc/user_guide.md, Verifying)")
 if not any(os.environ.get(name) for name in (resources.TOKEN, cli.parallel.SHARD_VARIABLE, TOLD)):
     print(UNADMITTED, file=sys.stderr, flush=True)
 os.environ[TOLD] = "1"

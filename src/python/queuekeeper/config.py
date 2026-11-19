@@ -563,10 +563,10 @@ def legacy_spelling_warning(config):
     if implicit_spelling(config):
         return ("the queue runs Queuekeeper's built-in spelling check for this project, which a later release removes: "
                 "define a spelling lane of the project's own and list it in queue.preflight, or give "
-                "\"queue\": {\"preflight\": []} for none (doc/merge_queue.md, Preflight lanes)")
+                "\"queue\": {\"preflight\": []} for none (doc/user_guide.md, Preflight lanes)")
     if SPELLING in config.get("lanes", {}):
         return ("the queue runs the spelling lane first only because of its name, which a later release stops: list it "
-                "in queue.preflight, as \"queue\": {\"preflight\": [\"spelling\"]} (doc/merge_queue.md, Preflight lanes)")
+                "in queue.preflight, as \"queue\": {\"preflight\": [\"spelling\"]} (doc/user_guide.md, Preflight lanes)")
     return None
 
 

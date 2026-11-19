@@ -26,7 +26,7 @@
   },
   "queue": {
     "preflight": ["spelling"],
-    "unread": {"paths": {"doc/getting_started.md": {
+    "unread": {"paths": {"doc/user_guide.md": {
       "why": "only test_setup_examples reads it, for the JSON setup example agents copy (vocaro/queuekeeper#147)",
       "lanes": ["setup-examples"]}}}
   },

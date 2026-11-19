@@ -2,7 +2,7 @@
 
 What `qk run` and `qk admit` record of a run, how a lane's tests are counted, and two things a lane can
 ask for: a compile step before its tests, and a report of tests no lane selects. A lane's keys are listed
-in [lanes and admission](../lanes_and_admission.md).
+in [lanes and admission](../user_guide.md#lanes-and-admission).
 
 ## Receipts and test counts
 

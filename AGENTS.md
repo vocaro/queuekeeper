@@ -1,6 +1,7 @@
 # Working on Queuekeeper
 
-Read [the agent interface](doc/agent_interface.md) for exit codes, verification, landing and recovery.
+Read [the user guide's agent section](doc/user_guide.md#for-agents) for exit codes, verification, landing and recovery,
+and [the developer guide](doc/developer_guide.md) for how Queuekeeper works inside.
 Queuekeeper requires macOS and Python 3.14 or newer; its Python package has no runtime dependencies.
 Use this checkout's launcher, `python3 scripts/qk`, to operate on this repository.
 Edit Queuekeeper only in a linked worktree; never switch branches or leave edits in the shared checkout,
@@ -29,7 +30,7 @@ background, following it to its result. Never push directly to `main`. Exit 0 me
 1 means refused or sent back, and 75 means held or still waiting at the limit.
 Pieces that build on each other ride one gate: give each a branch holding the ones before it, land
 them all in order without waiting, and follow them with `python3 scripts/qk queue wait ID ID --json`
-([Landing](doc/agent_interface.md#landing)).
+([Changes that build on each other](doc/user_guide.md#changes-that-build-on-each-other)).
 
 Interrupting the wait does not withdraw the entry. After interruption or settlement, retrieve its
 record with `python3 scripts/qk queue result ID --json`; use this record for the verdict, failures
@@ -67,6 +68,6 @@ are evidence, not caches.
 - `src/python/queuekeeper/visibility/`: optional visibility features.
 - `plugins/`: separately packaged platform and visibility plugins; `queuekeeper-workspace.json` declares checkout composition.
 - `tests/`: component suites, `integration/`, architecture checks, and `test_support/` fixtures. Follow neighboring tests' `host_isolation` setup.
-- `doc/`: user documentation; `doc/guides/`: operational detail and design decisions.
+- `doc/user_guide.md` and `doc/developer_guide.md`: the two main documents; `doc/guides/`: reference detail and design decisions.
 
 See [maintenance](doc/guides/maintenance.md) for queue operation and spelling rules.

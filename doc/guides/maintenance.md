@@ -48,7 +48,7 @@ commit of its own, and land that in the dependent's queue.
 
 **A round.** The worker fetches, takes everything waiting, oldest first, cherry-picks each entry
 onto `origin/main` in its own checkout, `~/Development/queuekeeper-workers/NAME/NAME`, and runs the project's queue lanes through
-`qk run`: its preflight lanes, `queue.preflight` ([Preflight lanes](../merge_queue.md#preflight-lanes)), and its
+`qk run`: its preflight lanes, `queue.preflight` ([Preflight lanes](../user_guide.md#preflight-lanes)), and its
 `provision` lane when it has one, and then its `gate` lane, or
 `queue.lanes` in queuekeeper.json for a project that needs others, read from `main`, or from the
 batch until `main` has any, so that the commit naming them can land
@@ -1022,7 +1022,7 @@ gates a passed batch again.
 The worker runs the preflight lanes, followed by the project's `docs` lane or the toolkit's
 implicit `docs` lane (`python3 scripts/qk docs check`, or `qk docs check` by the toolkit's own
 `bin/qk` in a project with no launcher). Queuekeeper's own guides are under `doc/guides/`, so
-the default takes them. Its `queuekeeper.json` names one path, `doc/getting_started.md`, with the
+the default takes them. Its `queuekeeper.json` names one path, `doc/user_guide.md`, with the
 `setup-examples` lane that runs `test_setup_examples`, the one code test that reads it, so a
 docs-only batch changing that guide runs the test beside the docs lanes. On 2026-11-14 a docs-only
 landing removed the README's setup example, which that test then read; every later code entry's
@@ -1374,7 +1374,7 @@ no longer has the fields the script makes up, which is when to change the script
 
 This check is Queuekeeper's legacy spelling lane, which a later release removes: a project lists a
 spelling check of its own as a preflight lane instead
-([Preflight lanes](../merge_queue.md#preflight-lanes),
+([Preflight lanes](../user_guide.md#preflight-lanes),
 [#69](https://github.com/vocaro/queuekeeper/issues/69)).
 
 Queuekeeper's own repository already does: its `spelling` lane, the one entry of its

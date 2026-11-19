@@ -195,7 +195,7 @@ RENAMED = {}
 # ssh under that were asked for its key, none presenting it (rediscover).
 UNFOUND = {}
 # Set by offload_host.py for the work it runs: the name of the Mac that sent it, which a receipt records. That it
-# is set is also the documented way a project's script asks whether it runs on another Mac (doc/build_farm.md,
+# is set is also the documented way a project's script asks whether it runs on another Mac (doc/user_guide.md,
 # vocaro/queuekeeper#93), so neither its name nor when it is set changes without that page.
 DISPATCHER = "QUEUEKEEPER_DISPATCHED_FROM"
 # Seconds `qk doctor` waits for another Mac to report its Xcodes and runtimes.

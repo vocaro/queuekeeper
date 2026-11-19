@@ -436,7 +436,7 @@ date, and the mechanism's guide says how it works.
 [devices]: shared-host.md#device-reservations
 [foreground]: foreground.md#waiting-for-the-foreground
 [queue]: maintenance.md#the-merge-queue
-[fails]: ../merge_queue.md#when-a-batch-fails
+[fails]: ../user_guide.md#when-a-batch-fails
 [171-split]: https://github.com/vocaro/queuekeeper/issues/171#issuecomment-6954024828
 [#12]: https://github.com/vocaro/queuekeeper/issues/12
 [#23]: https://github.com/vocaro/queuekeeper/issues/23

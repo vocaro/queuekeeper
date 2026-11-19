@@ -4117,11 +4117,11 @@ class DefaultDocsOnly(Fixture):
         self.assertEqual(configuration.DOCS_FOLDERS, ("doc/", "docs/"))
         self.assertFalse(set(configuration.UNREAD_LEGACY) & set(own.get("queue", {})))
         self.assertEqual(set(own["queue"]["unread"]), {"paths"})
-        self.assertEqual(set(own["queue"]["unread"]["paths"]), {"doc/getting_started.md"})
-        self.assertEqual(mq.docs_lanes(own, ["doc/getting_started.md"]), ["spelling", "docs", "setup-examples"])
-        self.assertFalse(mq.carried_over("doc/getting_started.md", own, set()))
+        self.assertEqual(set(own["queue"]["unread"]["paths"]), {"doc/user_guide.md"})
+        self.assertEqual(mq.docs_lanes(own, ["doc/user_guide.md"]), ["spelling", "docs", "setup-examples"])
+        self.assertFalse(mq.carried_over("doc/user_guide.md", own, set()))
         self.assertEqual(run(ROOT, "git", "ls-files", "--", "guides"), "")
-        for path in ("doc/guides/maintenance.md", "doc/guides/shared-host.md", "doc/merge_queue.md", "README.md"):
+        for path in ("doc/guides/maintenance.md", "doc/guides/shared-host.md", "doc/developer_guide.md", "README.md"):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
                 self.assertEqual(mq.docs_lanes(own, [path]), ["spelling", "docs"])

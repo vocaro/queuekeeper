@@ -192,7 +192,7 @@
             "minimum": 1
           },
           "failedTests": {
-            "description": "Where a lane that is not qk unittest names its failed tests, so that the merge queue reruns each alone before a bisect (doc/merge_queue.md#when-a-batch-fails).",
+            "description": "Where a lane that is not qk unittest names its failed tests, so that the merge queue reruns each alone before a bisect (doc/user_guide.md#when-a-batch-fails).",
             "type": "object",
             "additionalProperties": false,
             "required": [
@@ -626,11 +626,11 @@
           "const": true
         },
         "spelling": {
-          "description": "Deprecated: give preflight instead, which it cannot stand beside. false stops the queue running the toolkit's spelling check, qk spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane and no preflight; a project's own spelling lane runs either way. Read from main (doc/merge_queue.md, Preflight lanes)",
+          "description": "Deprecated: give preflight instead, which it cannot stand beside. false stops the queue running the toolkit's spelling check, qk spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane and no preflight; a project's own spelling lane runs either way. Read from main (doc/user_guide.md, Preflight lanes)",
           "const": false
         },
         "preflight": {
-          "description": "The project's preflight lanes, in order: cheap checks, each one command, that qk land runs on an entry replayed onto origin/main before it queues it, refusing it on a finding (exit 1), and that the queue runs first in every round, ungated landing and docs-only batch. [] for none. Until it is given, the queue runs the project's lane named spelling, or Queuekeeper's built-in spelling check, which a later release removes. Read from main (doc/merge_queue.md, Preflight lanes)",
+          "description": "The project's preflight lanes, in order: cheap checks, each one command, that qk land runs on an entry replayed onto origin/main before it queues it, refusing it on a finding (exit 1), and that the queue runs first in every round, ungated landing and docs-only batch. [] for none. Until it is given, the queue runs the project's lane named spelling, or Queuekeeper's built-in spelling check, which a later release removes. Read from main (doc/user_guide.md, Preflight lanes)",
           "type": "array",
           "uniqueItems": true,
           "items": {

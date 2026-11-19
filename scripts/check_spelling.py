@@ -1,4 +1,4 @@
-"""Queuekeeper's own spelling check, its preflight lane (doc/merge_queue.md, Preflight lanes; vocaro/queuekeeper#69).
+"""Queuekeeper's own spelling check, its preflight lane (doc/user_guide.md, Preflight lanes; vocaro/queuekeeper#69).
 
 python3 scripts/check_spelling.py [PATHS] checks this checkout. It is a standalone copy of the built-in
 check in src/python/queuekeeper/spelling.py, which a later release removes, so it imports nothing from

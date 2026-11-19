@@ -69,7 +69,7 @@ one check command are enough, start with one of them.
 
 - **Teams.** Reviews, approvals, branch protection, single sign-on, audit trails and dashboards a
   whole team shares. Queuekeeper has none of these and assumes everyone who can queue a commit is
-  trusted. Its [dashboard](visibility.md) is one owner's, read-only and served to their own Mac.
+  trusted. Its [dashboard](user_guide.md#the-dashboard) is one owner's, read-only and served to their own Mac.
 - **Throughput.** The hosted queues test many speculative batches at once across as many CI
   machines as you pay for. Queuekeeper runs one gate, one gate stacked on it, and the two halves of
   a bisect, on a handful of Macs.

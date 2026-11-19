@@ -1347,7 +1347,7 @@ def perform(argv, report):
     documentation.add_argument("paths", nargs="*")
     preflights = commands.add_parser("preflight", help="run the project's preflight lanes (queue.preflight) here, "
         "without admission, as qk land runs them before it queues an entry; exit 1 on a finding, 3 when one could not "
-        "run (doc/merge_queue.md, Preflight lanes)")
+        "run (doc/user_guide.md, Preflight lanes)")
     preflights.add_argument("lanes", nargs="*", help="only these of the preflight lanes, in the order given")
     spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "
         "included, and file names, and text that calls this command by its old name; exit 1 on any, 2 when nothing "

@@ -11,10 +11,13 @@ from queuekeeper import config
 
 class SetupExamples(unittest.TestCase):
     def test_setup_configurations_are_accepted_without_implicit_platform_plugins(self):
-        # The setup guide holds the configuration agents copy; the README sends them there and has none of its own.
-        name = "doc/getting_started.md"
+        # The user guide holds the configuration agents copy; the README sends them there and has none of its own.
+        # Its whole configurations, the blocks that give schemaVersion, are checked; the fragments that show one
+        # setting are not configurations of their own.
+        name = "doc/user_guide.md"
         root = Path(__file__).resolve().parents[2]
-        examples = re.findall(r"^```json\s*\n(.*?)^```", (root / name).read_text(), re.M | re.S)
+        blocks = re.findall(r"^```json\s*\n(.*?)^```", (root / name).read_text(), re.M | re.S)
+        examples = [block for block in blocks if block.lstrip().startswith("{") and '"schemaVersion"' in block]
         self.assertTrue(examples, f"{name} has no JSON setup example")
         for example in examples:
             project = config.parse(example)
@@ -25,8 +28,8 @@ class SetupExamples(unittest.TestCase):
         # A docs-only landing skips the gate, which runs this module; a change to the guide it reads must run it
         # anyway, or the next code entry's gate fails on a document it did not touch (vocaro/queuekeeper#147).
         project = config.load(Path(__file__).resolve().parents[2])
-        named = config.unread_named(project, ["doc/getting_started.md"])
-        self.assertTrue(named, "queue.unread names no lane for doc/getting_started.md")
+        named = config.unread_named(project, ["doc/user_guide.md"])
+        self.assertTrue(named, "queue.unread names no lane for doc/user_guide.md")
         self.assertTrue(any(__name__.rpartition(".")[2] in " ".join(project["lanes"][lane]["command"]) for lane in named),
                         f"none of {sorted(named)} runs {__name__}")
 

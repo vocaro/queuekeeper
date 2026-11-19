@@ -2218,7 +2218,7 @@ def described_holders(users):
 
 def snapshot(root, recent=5):
     """The queue's state as `qk queue status --json` prints it, which the visibility features read too
-    (doc/visibility.md): the worker, any hold, the round's account, the entries waiting, the last recent settled, the
+    (doc/developer_guide.md): the worker, any hold, the round's account, the entries waiting, the last recent settled, the
     IDs of those landed ungated, whether the queue is idle (status's --idle), and who closed it to new entries and
     why, or None while it is open (Queue.closed)."""
     return reading(root, recent)[0]
