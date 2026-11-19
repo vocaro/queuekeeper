@@ -1115,35 +1115,35 @@ each uses.
 
 **On one Mac.**
 
-1. All heavy work asks one queue per Mac; a private pool is not allowed. *Ten unbounded builds
-   panicked a Mac, and a private pool ran the load to 764.*
+1. All heavy work asks one queue per Mac; a private pool is not allowed. *Work that skips the queue
+   can overload a Mac and starves the work that asks.*
 2. First come, first served, with no class by size or by who asks. *A class that goes first starves
    what it passes, and admission can't tell how long work will run.*
-3. `busyLimit` bounds every admission but a Mac's first job. *A fixed three slots left a Mac idle;
-   guaranteed slots that admitted at any reading let wide lanes hold a Mac over its limit. The first
-   job is kept so load that never asks can't stop all work.*
+3. `busyLimit` bounds every admission but a Mac's first job. *A fixed number of slots leaves a
+   Mac idle or overloaded, so the load reading decides whether there is room. The first job is kept
+   so load that never asks can't stop all work.*
 4. Each Mac sets its own limits; raise `slotsMax` and `busyLimit` to load a Mac more, not `slots`.
    Setup writes 70% for its Mac; the default, which an added Mac keeps, is 90%. *Each guaranteed
    slot added makes a Mac worse for gates.*
 5. One whole-host lane per Mac, with nothing admitted beside it. *A gate's load dips between
-   phases, and work admitted on a dip left a gate unmeasured.*
+   phases, and work admitted on a dip would leave the gate unmeasured.*
 6. A waiting whole-host lane keeps the guaranteed slots from later arrivals, on every Mac where it
-   holds a place (rule 19). *Sessions took each slot as it freed, and a gate could wait out its
-   5,400 s.*
+   holds a place (rule 19). *Otherwise later work takes each slot as it frees, and the gate can wait
+   until it times out.*
 7. An older one-slot request holds back a later whole-host or exclusive one. *Arrival order holds
    across kinds* (D2).
 8. Exclusive work takes every slot and the model, one request at a time, and starts once the CPU
    reads quiet or after 300 s. *A timing is void beside other work or its trailing reading.*
 9. Only a timed part is exclusive; a gate suite never is, and a self-voiding check doesn't belong in
-   a shared gate. *An exclusive gate held another Mac for 33 minutes.*
+   a shared gate. *An exclusive gate would hold a whole Mac for the length of a suite.*
 10. One model or GPU run per Mac, with one slot. *The hardware runs one; holding the host would
     stall builds for nothing.*
 11. A request keeps its arrival and place while offered to other Macs; a place not renewed for 180 s
-    holds nothing back. *A gate away on an offer lost its turn twice in 45 minutes.*
+    holds nothing back. *Otherwise a request offered elsewhere loses its turn here.*
 12. Nothing is preempted, and a wait ends at 5,400 s with nothing run. *Stopping admitted work loses
     it; the cost is that later work can void a run (#28).*
-13. An owner that has ended, or can't be confirmed running, holds nothing. *One stranded entry
-    refused every session's work.*
+13. An owner that has ended, or can't be confirmed running, holds nothing. *Otherwise one stranded
+    entry would hold back everyone's work.*
 
 **Across the Macs.**
 
@@ -1161,15 +1161,15 @@ each uses.
     *A different Xcode gives results that can't be compared.*
 19. A waiting whole-host lane takes a place in the queue of every Mac that can run it, runs on the
     first to admit it and gives up the others. A lane that needs an unlocked screen holds a place
-    only where the screen reads unlocked. *Gates queued for one Mac while another ran none for 89%
-    of a day* (D6).
+    only where the screen reads unlocked. *Otherwise gates queue for one Mac while another sits
+    idle* (D6).
 20. A lane that needs an unlocked screen goes only to a Mac whose screen reads unlocked, holding no
-    slot while it waits; a locked screen holds back only that work on its own Mac. *A gate sent to a
-    locked Mac ran unmeasured three times.*
+    slot while it waits; a locked screen holds back only that work on its own Mac. *A run on a locked
+    screen can't be measured.*
 21. One foreground holder per Mac, only on Macs whose settings take foreground work. *The screen is
-    the owner's until he says otherwise.*
+    the owner's until the owner says otherwise.*
 22. Devices and pool simulators have one holder each, under a reservation; the owner's phone needs
-    his word first.
+    the owner's word first.
 23. A Mac takes only the kinds of work its `mac-settings.json` allows, and a lane runs only on a Mac
     with every label it needs. When no Mac takes a lane, it stops for whoever sets what Macs take.
     *Preferences and licenses are facts about a Mac, not rules naming one* (D7).
@@ -1187,7 +1187,7 @@ each uses.
 27. A docs-only entry never rides a code gate, and passes an older entry only when they share no
     path.
 28. The worker runs preflight lanes and the docs check without admission; one that runs past a
-    minute runs again admitted. *Two checks of seconds each once waited 43 minutes for slots.*
+    minute runs again admitted. *Checks that take seconds should not wait behind gates for slots.*
 29. A run with no verdict blames nobody and reruns once the Mac settles; three in a row hold the
     queue, not counting up to five voided by a locked screen.
 30. `--front` and `--no-gate` are for emergencies, with the reason recorded.
