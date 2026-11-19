@@ -518,7 +518,7 @@ class Summary(unittest.TestCase):
 
     def test_a_lane_that_could_not_start_says_so_and_not_that_it_failed(self):
         # vocaro/queuekeeper#108: python3 with no file to run exits 2, as a failure does.
-        self.configure(lane={"command": ["python3", "scripts/qk", "spelling"]})
+        self.configure(lane={"command": ["python3", "scripts/qk", "docs", "check"]})
         status, lines = self.qk("lane")
         self.assertEqual(status, lane_results.NOT_STARTED)
         self.assertEqual(lines[-3:], ["qk run lane: could not start (exit 127), on this Mac",

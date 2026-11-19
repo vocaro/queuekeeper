@@ -58,8 +58,8 @@ from . import budgets, disk, extensions, farm, host_health, lane_results, landin
     resources
 from . import events, pre_push, recovery, restartable
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
-    PROJECT_CHECKOUT_VARIABLE, PROVISION, SPELLING, TOOLKIT_ROOT, admission, implicit_command, implicit_spelling, \
-    lane_to_run, legacy_carried, legacy_spelling_warning, legacy_unread_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
+    PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
+    lane_to_run, legacy_carried, legacy_unread_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
     siblings_in, stays, toolkit_command, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
@@ -476,14 +476,14 @@ def text(directory, *arguments):
     return git(directory, *arguments, check=True).stdout.strip()
 
 
-def spelled(config, name):
-    """Whether name is a lane the queue can run for this project: one it configures, or the implicit spelling lane."""
-    return name in config.get("lanes", {}) or (name == SPELLING and implicit_spelling(config))
+def configured(config, name):
+    """Whether name is a lane the queue can run for this project: one its configuration gives."""
+    return name in config.get("lanes", {})
 
 
 def preflighted(config):
-    """The preflight lanes the queue runs for this project, in order (config.preflight), that it can run (spelled)."""
-    return [name for name in preflight(config) if spelled(config, name)]
+    """The preflight lanes the queue runs for this project, in order (config.preflight), that it can run (configured)."""
+    return [name for name in preflight(config) if configured(config, name)]
 
 
 def lanes_of(config, changed=()):
@@ -495,7 +495,7 @@ def lanes_of(config, changed=()):
     if not named:
         raise ValueError(f"{config.get('name')} has no gate lane, so the queue has nothing to run: name the lane "
                          "holding what a commit must pass before it lands gate")
-    first = [name for name in [*preflighted(config), PROVISION] if spelled(config, name) and name not in named]
+    first = [name for name in [*preflighted(config), PROVISION] if configured(config, name) and name not in named]
     return first + [lane for lane in docs_also(config, changed, named) if lane not in first] + named
 
 
@@ -534,10 +534,9 @@ def has_config(root, commit):
 
 
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
-# paths that skip the gate, the toolkit's spelling check turned off, and the preflight lanes, which can be none. A batch
-# whose lanes the queue runs, because main names none yet, gives none of them (#10); spelling joined them by the owner's
-# decision of 2026-11-13, and preflight replaces it (vocaro/queuekeeper#69).
-MAIN_ONLY = ("hookCoveredBy", "unread", "docsOnly", "carryOver", "spelling", "preflight")
+# paths that skip the gate, and the preflight lanes, which can be none. A batch whose lanes the queue runs, because main
+# names none yet, gives none of them (#10, vocaro/queuekeeper#69).
+MAIN_ONLY = ("hookCoveredBy", "unread", "docsOnly", "carryOver", "preflight")
 
 
 def as_batch(config):
@@ -688,8 +687,6 @@ def offerable(config, lanes):
     """Why one of lanes runs only on this Mac, as its configuration says (config.stays), so that a bisect's newer half
     cannot gate on another Mac beside the older half (Beside); None when every one can go there."""
     for lane in lanes:
-        # qk run places the toolkit's spelling lane as it does any lane that says no `here`, so it holds no half back.
-        if lane == SPELLING and implicit_spelling(config): continue
         if lane == DOCS and DOCS not in config.get("lanes", {}): continue
         why = stays(config.get("lanes", {}), lane) if lane in config.get("lanes", {}) else "it is no configured lane"
         if why: return f"{lane} runs only on this Mac: {why}"
@@ -879,9 +876,7 @@ def claims_before_queued(root, base, tip):
 def preflight_run(queue, root, commit, name):
     """(exit status, the lines it printed, the command) of the preflight lane name on commit, in a scratch worktree
     outside every checkout, as the worker picks it (Worker.gate): the lane commit's queuekeeper.json configures, run as
-    its command, here and with no admission, or for the legacy spelling lane of a project with none, the toolkit's
-    check, IMPLICIT_SPELLING, or with no launcher the same check run by this toolkit (implicit_command). The command
-    finds the project's main checkout in PROJECT_CHECKOUT_VARIABLE, as a lane qk run runs does. A status of None says
+    its command, here and with no admission. The command finds the project's main checkout in PROJECT_CHECKOUT_VARIABLE, as a lane qk run runs does. A status of None says
     why it was not run: a lane that is no one command, or a run that reached its limit, its timeout up to
     PREFLIGHT_LIMIT."""
     with scratch(queue, commit, name) as path:
@@ -896,8 +891,7 @@ def preflight_run(queue, root, commit, name):
         try: lanes = load(path).get("lanes", {})
         except (OSError, ValueError): lanes = {}
         lane = lanes.get(name)
-        command = implicit_command(path, SPELLING, env.get(TOOLKIT_VARIABLE)) if name == SPELLING and name not in lanes \
-            else lane.get("command") if isinstance(lane, dict) else None
+        command = lane.get("command") if isinstance(lane, dict) else None
         if not (isinstance(command, list) and command) or (isinstance(lane, dict) and any(
                 lane.get(key) for key in (*NOT_PREFLIGHT, *extensions.LANE_KEYS))):
             return None, [f"the project's {name} lane is not one command that qk land can run here"], None
@@ -921,8 +915,6 @@ def preflight_before_queued(root, queue, tip, config):
     if unread_warned: print(f"queue: {unread_warned}", file=sys.stderr)
     names = preflighted(config)
     if not names: return
-    warned = legacy_spelling_warning(config)
-    if warned: print(f"queue: {warned}", file=sys.stderr)
     base = text(root, "rev-parse", MAIN)
     try: replayed = tip if git(root, "merge-base", "--is-ancestor", MAIN, tip).returncode == 0 \
         else linear(queue, root, tip)
@@ -2003,7 +1995,7 @@ def rides(config, changed):
 
 
 def spoken(lanes):
-    """lanes as a line says them, such as the spelling and docs lanes."""
+    """lanes as a line says them, such as the preflight and docs lanes."""
     named = lanes[0] if len(lanes) == 1 else ", ".join(lanes[:-1]) + " and " + lanes[-1]
     return f"the {named} lane{'s' if len(lanes) > 1 else ''}"
 
@@ -2412,7 +2404,8 @@ class Follow:
         return f"heartbeat: {self.identifier} {words}" + (f"; {facts}" if facts else "")
 
 
-# A line of a check's output that names what it found by PATH:LINE:, as qk spelling's do (Worker.main_fails).
+# A line of a check's output that names what it found by PATH:LINE:, as qk docs check's and a preflight lane's do
+# (Worker.main_fails).
 FINDING = re.compile(r"^\S+:\d+:")
 
 
@@ -3764,7 +3757,7 @@ class Worker:
                                 "last run without a verdict")
             # The project's launcher, or the toolkit's own qk where it has none (vocaro/queuekeeper#108).
             command = toolkit_command(self.checkout, ["run", *placed, *screen, lane], self.toolkit_root())
-            if lane in (SPELLING, DOCS) and not self.has_lane(lane):
+            if lane == DOCS and not self.has_lane(lane):
                 self.say(f"{lane}: the project has no {lane} lane, so qk run runs the toolkit's: "
                          f"{shlex.join(self.implicit(lane))}")
             watch = GateWatch(self, lane, began, log).start()
@@ -3892,7 +3885,7 @@ class Worker:
         if lane != DOCS and lane not in preflighted(checkout): return None
         configured = checkout.get("lanes", {}).get(lane)
         if configured is None:
-            if lane != DOCS and lane != SPELLING: return None
+            if lane != DOCS: return None
             command = self.implicit(lane)
         elif lane == DOCS and configured.get("command") != IMPLICIT_DOCS: return None
         elif not isinstance(configured, dict) or any(configured.get(key) for key in (*NOT_PREFLIGHT, *extensions.LANE_KEYS)):
@@ -3923,7 +3916,7 @@ class Worker:
         finally: self.reset(head)
         self.say(f"{lane} exited {status_} on origin/main at {base[:12]}, without the entry sent back")
         if not status_: return f" origin/main at {base[:12]} passes {lane} without this entry."
-        # A finding is a line that starts PATH:LINE:, as qk spelling's and qk docs check's do.
+        # A finding is a line that starts PATH:LINE:, as qk docs check's and a preflight lane's do.
         try:
             printed = set(log.read_text(errors="replace").splitlines())
             found = [line for line in output.read_text(errors="replace").splitlines() if FINDING.match(line)]
@@ -3964,7 +3957,7 @@ class Worker:
 
     def has_lane(self, lane):
         """Whether the checkout's own queuekeeper.json, which qk run reads, configures lane: where it does not, qk run
-        runs the toolkit's spelling or docs check as that lane (lane_to_run)."""
+        runs the toolkit's docs check as that lane (lane_to_run)."""
         try: return lane in load(self.checkout).get("lanes", {})
         except (OSError, ValueError): return False
 
@@ -3980,7 +3973,7 @@ class Worker:
         return self.environment.get(TOOLKIT_VARIABLE) or str(TOOLKIT_ROOT)
 
     def implicit(self, lane):
-        """The command of the toolkit's spelling or docs check in this checkout, as the qk run this worker starts runs
+        """The command of the toolkit's docs check in this checkout, as the qk run this worker starts runs
         it where the project has no such lane (implicit_command): by the project's launcher, else by the toolkit."""
         return implicit_command(self.checkout, lane, self.toolkit_root())
 
@@ -4621,7 +4614,7 @@ class Worker:
     def blame(self, applied):
         """(the one entry of applied that every failed test the last rerun confirmed reaches, why), to send back while
         the rest gate again at once, sparing the bisect's gates; or None to bisect. A test reaches an entry whose
-        commits change a path its failing rerun's output names, as `qk spelling`'s `PATH:LINE:` lines do, or a file
+        commits change a path its failing rerun's output names, as a preflight lane's `PATH:LINE:` lines do, or a file
         its module is or imports (imported_files); the blame stands only once the tests pass without it
         (passes_without). Any doubt bisects: no confirmed failure, a module the worker cannot find, a test that reaches
         no entry or several, tests that reach different entries, or tests that fail without the entry too. A gate qk
@@ -5490,7 +5483,7 @@ class Worker:
     def first_ungated(self):
         """The entry qk land --front --no-gate put first that goes ahead of this gate now, or None: one while the
         gate's lane waits to start, by its wait record (lane_wait), for admission, a screen or a Mac, so that a landing
-        that needs only the spelling lane and a push does not wait behind a gate that has not begun
+        that needs only the preflight lanes and a push does not wait behind a gate that has not begun
         (vocaro/queuekeeper#26). The entry may be one this gate tests, given both options again since its round began
         (promote): the gate stops all the same, and the entry lands alone on the round after. An entry another gate
         tests is that gate's to stop. A lane that runs, or whose record says nothing yet, runs on, and the entry lands
@@ -6359,7 +6352,7 @@ def options(parser):
                         "queued changes: test it next, ahead of everything waiting, as a batch of its own, once a gate "
                         "already running finishes. Again with a commit already queued, it moves that entry")
     parser.add_argument("--no-gate", action="store_true", help="for an emergency, such as an important fix held up by "
-                        "an unrelated flaky test: land it alone on the spelling lane, the project's or the toolkit's, and "
+                        "an unrelated flaky test: land it alone on the project's preflight lanes and "
                         "the pre-push hook, without the gate, and record it as ungated, which the next gate on main "
                         "covers. Needs --why; tell the owner you used it and why. With --front it lands next: ahead "
                         "of a round whose gate waits to start, or once a gate already running finishes")

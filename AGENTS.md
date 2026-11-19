@@ -70,4 +70,4 @@ are evidence, not caches.
 - `tests/`: component suites, `integration/`, architecture checks, and `test_support/` fixtures. Follow neighboring tests' `host_isolation` setup.
 - `doc/user_guide.md` and `doc/developer_guide.md`: the documentation, for users and for people changing Queuekeeper.
 
-See [the merge queue](doc/developer_guide.md#the-merge-queue) for queue operation and [the spelling check](doc/developer_guide.md#spelling-check) for spelling rules.
+See [the merge queue](doc/developer_guide.md#the-merge-queue) for queue operation and [spelling](doc/developer_guide.md#spelling) for spelling.

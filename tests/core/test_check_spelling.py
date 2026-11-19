@@ -1,7 +1,6 @@
 """scripts/check_spelling.py: Queuekeeper's own spelling check, the preflight lane its queuekeeper.json lists in place of
 the built-in check a later release removes (vocaro/queuekeeper#69)."""
 import importlib.util
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -70,16 +69,8 @@ class Repository(unittest.TestCase):
         self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
         self.assertIn("the command's old name precedes none of", ran.stdout)
 
-    def test_the_spelling_lane_is_this_project_s_preflight_lane(self):
-        value = json.loads((ROOT / "queuekeeper.json").read_text())
-        self.assertEqual(value["queue"]["preflight"], ["spelling"])
-        self.assertEqual(value["lanes"]["spelling"]["command"], ["python3", "scripts/check_spelling.py"])
-        self.assertNotIn("spelling", value, "the built-in check's exemptions now live in the script's PROJECT")
-        self.assertIsNone(config.legacy_spelling_warning(config.load(ROOT)))
-
     def test_qk_s_subcommands_are_read_from_its_parser(self):
         names = check_spelling.subcommands(ROOT)
-        self.assertIn("spelling", names)
         self.assertIn("preflight", names)
 
 

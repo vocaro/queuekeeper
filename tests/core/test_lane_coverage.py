@@ -228,7 +228,7 @@ class Reading(Project):
     def test_commands_that_run_no_test_select_none_and_are_read(self):
         self.write("App/AUITests/Flow.swift", XCTEST.format(name="Flow"))
         for command in (["xcodebuild", "build", "-scheme", "A"], ["swift", "build"], ["swift", "run", "Tool"],
-                        ["python3", "scripts/qk", "spelling"], ["python3", "scripts/qk", "run", "--serial", "group"]):
+                        ["python3", "scripts/qk", "docs", "check"], ["python3", "scripts/qk", "run", "--serial", "group"]):
             with self.subTest(command):
                 self.assertEqual(self.selected(*command)["result"], TESTS_WITHOUT_A_LANE)
 

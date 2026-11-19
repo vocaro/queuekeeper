@@ -17,7 +17,7 @@ from queuekeeper import cli, merge_queue, pre_push
 from queuekeeper.lane_results import UNMEASURED
 
 CONFIG = {"name": "Project", "lanes": {"gate": {"command": ["./check.sh"]}, "docs": {"command": ["./docs.sh"]}},
-          "queue": {"spelling": False}}
+          "queue": {}}
 
 
 class PrePushTests(unittest.TestCase):
@@ -80,7 +80,7 @@ class PrePushTests(unittest.TestCase):
 
     def test_the_project_s_own_docs_paths_and_queue_lanes_choose(self):
         config = {**CONFIG, "lanes": {**CONFIG["lanes"], "fast": {"command": ["x"]}, "notes": {"command": ["y"]}},
-                  "queue": {"spelling": False, "lanes": ["fast", "gate"],
+                  "queue": {"lanes": ["fast", "gate"],
                             "docsOnly": {"paths": {"notes/": "prose"}, "lanes": ["notes"]}}}
         self.assertEqual(pre_push.lanes_for(config, ["notes/a.txt"])[0], ["notes"])
         # A push of documents and code runs the docs lanes too, first, as the queue does (vocaro/queuekeeper#122).
@@ -91,7 +91,7 @@ class PrePushTests(unittest.TestCase):
 
     def test_a_lane_that_fails_or_is_unmeasured_refuses_the_push_and_later_lanes_do_not_run(self):
         code = self.commit({"src/a.py": "b\n"})
-        config = {**CONFIG, "queue": {"spelling": False, "lanes": ["docs", "gate"]}}
+        config = {**CONFIG, "queue": {"lanes": ["docs", "gate"]}}
         self.statuses = {"docs": 7}
         status, said = self.push([self.line(code)], config)
         self.assertEqual((status, self.ran), (1, ["docs"]))
@@ -113,7 +113,7 @@ class PrePushTests(unittest.TestCase):
 
     def test_a_project_with_no_gate_says_nothing_was_verified_and_a_checkout_elsewhere_is_said(self):
         code = self.commit({"src/a.py": "b\n"})
-        status, said = self.push([self.line(code)], {"name": "Project", "lanes": {}, "queue": {"spelling": False}})
+        status, said = self.push([self.line(code)], {"name": "Project", "lanes": {}, "queue": {}})
         self.assertEqual(status, 0)
         self.assertIn("no gate lane and no queue.lanes", said)
         self.commit({"src/a.py": "c\n"})

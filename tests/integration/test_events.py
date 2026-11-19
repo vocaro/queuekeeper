@@ -156,7 +156,7 @@ class QueueEvents(test_merge_queue.Fixture):
         with patch("builtins.print"): self.assertEqual(self.work(), 0)
         self.assertEqual(self.state(identifier)["state"], mq.LANDED)
         gates = self.events(kinds=["gate."])
-        # Each lane the round runs, the spelling lane before the gate among them, begins and ends in turn.
+        # Each lane the round runs, a preflight lane before the gate among them, begins and ends in turn.
         self.assertEqual([event["kind"] for event in gates], ["gate.began", "gate.ended"] * (len(gates) // 2))
         self.assertEqual([event["lane"] for event in gates[-2:]], ["gate", "gate"])
         self.assertEqual({event["status"] for event in gates if event["kind"] == "gate.ended"}, {0})

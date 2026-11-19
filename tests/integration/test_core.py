@@ -370,7 +370,7 @@ class ConfigurationTests(unittest.TestCase):
         heavy = {"command": ["true"], "timeout": 60, "resource": "heavy"}
         # Each a release lane that a landing would run too, and what the error says runs it.
         landing = [
-            ({"lanes": {"gate": lane, "spelling": lane}}, {}, "spelling", "before the gate"),
+            ({"lanes": {"gate": lane, "lint": lane}}, {"preflight": ["lint"]}, "lint", "before the gate"),
             ({"lanes": {"gate": lane, "provision": lane}}, {}, "provision", "before the gate"),
             ({"lanes": {"gate": lane, "app-gate": lane}}, {"lanes": ["gate", "app-gate"]}, "app-gate",
              "one of queue.lanes"),

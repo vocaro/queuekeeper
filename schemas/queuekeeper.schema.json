@@ -424,57 +424,6 @@
         }
       }
     },
-    "spelling": {
-      "description": "Exemptions from qk spelling, each mapped to the reason it is kept",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "skip": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          },
-          "propertyNames": {
-            "minLength": 1
-          },
-          "description": "Tracked paths neither read nor judged by name; a key ending in / is a directory"
-        },
-        "exemptPhrases": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          },
-          "propertyNames": {
-            "minLength": 1
-          },
-          "description": "Case-sensitive text removed before a line is read, such as a standard's term"
-        },
-        "exemptRuns": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          },
-          "propertyNames": {
-            "minLength": 1
-          },
-          "description": "Whole identifiers another project named, such as MonoBehaviour"
-        },
-        "exemptTokens": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          },
-          "propertyNames": {
-            "minLength": 1
-          },
-          "description": "Case-sensitive subwords, such as a proper name or a foreign word"
-        }
-      }
-    },
     "queue": {
       "description": "The merge queue",
       "type": "object",
@@ -509,7 +458,7 @@
           }
         },
         "docsOnly": {
-          "description": "Conventional Markdown docs use spelling and docs checks by default. False disables this path; an object replaces default paths and lanes. Docs landings skip code hooks and are no full gate. Deprecated: read as queue.unread, which replaces it",
+          "description": "Conventional Markdown docs use the preflight lanes and the docs check by default. False disables this path; an object replaces default paths and lanes. Docs landings skip code hooks and are no full gate. Deprecated: read as queue.unread, which replaces it",
           "deprecated": true,
           "type": [
             "object",
@@ -642,12 +591,8 @@
           "description": "true has the queue fast-forward the project's main checkout to origin/main after each landing, when it is on main, clean and nothing runs from it: for a checkout other projects read, such as the folder an extension loads from. Read from main",
           "const": true
         },
-        "spelling": {
-          "description": "Deprecated: give preflight instead, which it cannot stand beside. false stops the queue running the toolkit's spelling check, qk spelling, before the gate, on an ungated landing and before a docs-only batch's lanes in a project with no spelling lane and no preflight; a project's own spelling lane runs either way. Read from main",
-          "const": false
-        },
         "preflight": {
-          "description": "The project's preflight lanes, in order: cheap checks, each one command, that qk land runs on an entry replayed onto origin/main before it queues it, refusing it on a finding (exit 1), and that the queue runs first in every round, ungated landing and docs-only batch. [] for none. Until it is given, the queue runs the project's lane named spelling, or Queuekeeper's built-in spelling check, which a later release removes. Read from main",
+          "description": "The project's preflight lanes, in order: cheap checks, each one command, that qk land runs on an entry replayed onto origin/main before it queues it, refusing it on a finding (exit 1), and that the queue runs first in every round, ungated landing and docs-only batch. [] or leaving it out for none. Read from main",
           "type": "array",
           "uniqueItems": true,
           "items": {
@@ -838,7 +783,7 @@
       "additionalProperties": false,
       "properties": {
         "lanes": {
-          "description": "The release checks, each a lane of its own, which run after gate on the release commit; qk release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which qk release checks first, nor any lane a landing runs: spelling, provision, queue.lanes or gate, queue.docsOnly.lanes, or a member of a group among them",
+          "description": "The release checks, each a lane of its own, which run after gate on the release commit; qk release requires a pass of each at the commit, or the owner's waiver of its failure. Never gate, which qk release checks first, nor any lane a landing runs: the preflight lanes, provision, queue.lanes or gate, queue.docsOnly.lanes, or a member of a group among them",
           "type": "array",
           "uniqueItems": true,
           "items": {

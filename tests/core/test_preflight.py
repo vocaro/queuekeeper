@@ -1,5 +1,5 @@
 """Preflight lanes: the project's own cheap checks, which queue.preflight names and the queue runs before it queues an
-entry and first in every round, in place of Queuekeeper's built-in spelling lane (vocaro/queuekeeper#69)."""
+entry and first in every round. Queuekeeper has no spelling check of its own (vocaro/queuekeeper#69)."""
 import contextlib
 from io import StringIO
 import json
@@ -32,30 +32,22 @@ class Configuration(unittest.TestCase):
         given = project({"lint": check(["true"]), "format": check(["true"])}, {"preflight": ["format", "lint"]})
         self.assertEqual(config.preflight(given), ["format", "lint"])
 
-    def test_an_empty_preflight_runs_none_and_turns_the_built_in_spelling_off(self):
-        given = project({}, {"preflight": []})
-        self.assertEqual(config.preflight(given), [])
-        self.assertFalse(config.implicit_spelling(given))
-        self.assertIsNone(config.legacy_spelling_warning(given))
+    def test_an_empty_or_absent_preflight_runs_none(self):
+        self.assertEqual(config.preflight(project({}, {"preflight": []})), [])
+        self.assertEqual(config.preflight(project({})), [])
 
-    def test_a_listed_lane_named_spelling_is_no_special_case(self):
-        # The control for the legacy rule below: listed, it runs as any preflight lane, and nothing is said.
-        given = project({"spelling": check(["true"])}, {"preflight": ["spelling"]})
-        self.assertEqual(config.preflight(given), ["spelling"])
-        self.assertIsNone(config.legacy_spelling_warning(given))
+    def test_a_lane_named_spelling_is_no_special_case(self):
+        # Listed, it runs as any preflight lane; not listed, it is an ordinary lane the queue does not run first.
+        self.assertEqual(config.preflight(project({"spelling": check(["true"])}, {"preflight": ["spelling"]})),
+                         ["spelling"])
+        self.assertEqual(config.preflight(project({"spelling": check(["true"])})), [])
+        self.assertEqual(mq.lanes_of(project({"spelling": check(["true"])})), ["gate"])
 
-    def test_without_preflight_the_legacy_spelling_lane_runs_and_is_warned_of(self):
-        built_in = project({})
-        self.assertEqual(config.preflight(built_in), ["spelling"])
-        self.assertTrue(config.implicit_spelling(built_in))
-        self.assertIn("built-in spelling check", config.legacy_spelling_warning(built_in))
-        own = project({"spelling": check(["true"])})
-        self.assertEqual(config.preflight(own), ["spelling"])
-        self.assertFalse(config.implicit_spelling(own))
-        self.assertIn("only because of its name", config.legacy_spelling_warning(own))
-        off = project({}, {"spelling": False})
-        self.assertEqual(config.preflight(off), [])
-        self.assertIsNone(config.legacy_spelling_warning(off))
+    def test_the_old_spelling_settings_are_refused_with_where_the_check_went(self):
+        for what, given in {"spelling": {"spelling": {"skip": {"vendor/": "third-party code"}}},
+                            "queue.spelling": {"queue": {"spelling": False}}}.items():
+            with self.subTest(what), self.assertRaisesRegex(ValueError, f"^{what} is no longer a Queuekeeper setting"):
+                config.parse(json.dumps({"schemaVersion": 1, "name": "p", "lanes": {}, **given}))
 
     def test_what_preflight_refuses(self):
         lanes = {"lint": check(["true"]), "provision": check(["true"]), "shown": {**check(["true"]), "foreground": True},
@@ -72,7 +64,6 @@ class Configuration(unittest.TestCase):
             "a self lane": ({"preflight": ["self"]}, "it is a self lane"),
             "a name twice": ({"preflight": ["lint", "lint"]}, "distinct lane names"),
             "not a list": ({"preflight": "lint"}, "distinct lane names"),
-            "queue.spelling beside it": ({"preflight": ["lint"], "spelling": False}, "cannot both be given"),
         }
         for what, (queue, words) in refused.items():
             with self.subTest(what), self.assertRaisesRegex(ValueError, words): project(lanes, queue)
@@ -114,7 +105,7 @@ class QueueLanes(unittest.TestCase):
         self.assertEqual(mq.lanes_of(given, ["README.md", "src/a.py"]), ["lint", "provision", "docs", "gate"])
 
     def test_only_main_gives_the_preflight_lanes(self):
-        # A batch read while main has no configuration cannot name fewer checks than the built-in.
+        # A batch read while main has no configuration gives no preflight lanes of its own: only main says which run.
         batch = mq.as_batch(json.loads(json.dumps(project(self.lanes, {"preflight": []}))))
         self.assertNotIn("preflight", batch["queue"])
 

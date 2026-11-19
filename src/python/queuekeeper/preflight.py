@@ -9,13 +9,11 @@ every finding. Exit 0 when every lane passed, 1 when one found something, 3 when
 2 for a lane name the project's preflight does not list."""
 import os
 import shlex
-import sys
 import time
 from pathlib import Path
 
 from . import processes
-from .config import PREFLIGHT_LIMIT, PROJECT_CHECKOUT_VARIABLE, SPELLING, implicit_command, implicit_spelling, \
-    legacy_spelling_warning, preflight, project_checkout
+from .config import PREFLIGHT_LIMIT, PROJECT_CHECKOUT_VARIABLE, preflight, project_checkout
 
 # The last lines of a failed lane's output that the summary repeats.
 SHOWN = 40
@@ -25,8 +23,6 @@ UNMEASURED = 3
 def command_of(root, config, name):
     """The command and limit of the preflight lane name, or (None, why) when it is no one command."""
     lane = config.get("lanes", {}).get(name)
-    if lane is None and name == SPELLING and implicit_spelling(config):
-        return implicit_command(Path(root), SPELLING), PREFLIGHT_LIMIT
     command = lane.get("command") if isinstance(lane, dict) else None
     if not (isinstance(command, list) and command): return None, f"{name} is no lane with one command"
     return command, min(lane.get("timeout", PREFLIGHT_LIMIT), PREFLIGHT_LIMIT)
@@ -40,8 +36,6 @@ def run(root, config, names=(), out=print):
         out(f"qk preflight: {', '.join(unknown)} {'is' if len(unknown) == 1 else 'are'} not among the project's "
             f"preflight lanes ({', '.join(listed) or 'none'})")
         return 2
-    warned = legacy_spelling_warning(config)
-    if warned: print(f"qk preflight: {warned}", file=sys.stderr)
     chosen = list(names) or listed
     if not chosen:
         out("qk preflight: the project has no preflight lanes (queue.preflight)")

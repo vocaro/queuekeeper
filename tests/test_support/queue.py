@@ -25,8 +25,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
 from queuekeeper import cli, config as configuration, landing_proofs, merge_queue as mq, offload_host
-# What qk land runs before it queues, which Fixture leaves out but SpelledBeforeQueued puts back.
-SPELLED_BEFORE_QUEUED = mq.preflight_before_queued
+# What qk land runs before it queues, which Fixture leaves out but PreflightBeforeQueued puts back.
+PREFLIGHT_BEFORE_QUEUED = mq.preflight_before_queued
 import host_isolation
 from host_isolation import stretched
 
@@ -35,9 +35,19 @@ from host_isolation import stretched
 shard_by = "class"
 
 
+# What CHECK finds, built so that no file holds it whole, as a project's own spelling check or linter finds a slip.
+FLAGGED = "a flag" + "ged point\n"
+# A project's own preflight lane (Fixture.preflight_check): prints PATH:LINE: for each line of a tracked file that holds
+# FLAGGED's word and exits 1, else exits 0, as a check whose findings the queue quotes does (vocaro/queuekeeper#69).
+CHECK = """import subprocess, sys
+word = "flag" + "ged"
+tracked = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True, check=True).stdout.split("\\0")
+found = [f"{path}:{number}: {word}" for path in tracked if path
+         for number, line in enumerate(open(path, errors="replace").read().splitlines(), 1) if word in line]
+print("\\n".join(found) or "nothing found")
+sys.exit(1 if found else 0)
+"""
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
-# A British spelling, built so this file holds none, that qk spelling fails on.
-BRITISH = "a label" + "led point\n"
 LANE = """import os, pathlib, shutil, sys, time
 # Appended, so that two gates at once, a bisect's halves (mq.Beside), count as two.
 with open(sys.argv[1], "a") as counter:
@@ -152,10 +162,10 @@ class Fixture(unittest.TestCase):
         memory = patch.object(mq, "memory_findings", return_value=([], []))
         self.memory_findings = memory.start()
         self.addCleanup(memory.stop)
-        # qk land runs no preflight lane before it queues unless a test says so (SpelledBeforeQueued, #283).
-        unspelled = patch.object(mq, "preflight_before_queued")
-        unspelled.start()
-        self.addCleanup(unspelled.stop)
+        # qk land runs no preflight lane before it queues unless a test says so (PreflightBeforeQueued, #283).
+        unchecked = patch.object(mq, "preflight_before_queued")
+        unchecked.start()
+        self.addCleanup(unchecked.stop)
         self.counter, self.status = self.base / "gates", self.base / "status"
         self.origin = self.base / "origin.git"
         run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.origin))
@@ -169,8 +179,6 @@ class Fixture(unittest.TestCase):
         (self.repo / "CLAUDE.md").write_text("@AGENTS.md\n")
         (self.repo / "queuekeeper.json").write_text(json.dumps({
             "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
-            # Generated paths are opaque identities, including when embedded in fixture source.
-            "spelling": {"exemptPhrases": {str(self.base): "the generated root is an opaque fixture identity"}},
             "queue": {"carryOver": {"records/": "no lane reads it"}},
             "lanes": {"gate": {"command": ["python3", "lane.py", str(self.counter), str(self.status)]}}}))
         run(self.repo, "git", "add", ".")
@@ -179,6 +187,17 @@ class Fixture(unittest.TestCase):
 
     def config(self):
         return configuration.load(self.repo)
+
+    def preflight_check(self, name="check"):
+        """Give main CHECK, as check.py, and a lane name that runs it, listed in queue.preflight: a project's own
+        preflight lane, which the queue runs first. Return main's configuration."""
+        (self.repo / "check.py").write_text(CHECK)
+        run(self.repo, "git", "add", "check.py")
+        config = self.config()
+        config["lanes"][name] = {"command": ["python3", "check.py"]}
+        config.setdefault("queue", {})["preflight"] = [name]
+        self.publish(config, f"Add the {name} preflight lane")
+        return config
 
     def publish(self, config, message="Change the configuration"):
         """Commit this configuration in the clone's checkout and push it to main."""

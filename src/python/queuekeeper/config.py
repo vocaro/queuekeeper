@@ -145,8 +145,9 @@ def parse(source):
     value = json.loads(source)
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
-    allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository", "spelling",
+    allowed = {"schemaVersion", "name", "extensions", "lanes", "integration", "repository",
                "queue", "release", "testLanes", "gitHooks", "docs", "siblings"}
+    if "spelling" in value: raise ValueError(f"spelling {SPELLING_GONE}")
     if set(value) - allowed - set(EXTENSION_CONFIG_KEYS):
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(EXTENSION_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:
@@ -205,13 +206,6 @@ def parse(source):
             raise ValueError(f"{name}.exactTests needs the lane's minimumTests, the count it makes exact")
     merge_queue(value.get("queue", {}), lanes)
     release(value.get("release", {}), lanes, value.get("queue", {}))
-    spelling = value.get("spelling", {})
-    if not isinstance(spelling, dict) or set(spelling) - {"skip", "exemptPhrases", "exemptRuns", "exemptTokens"}:
-        raise ValueError("spelling supports only skip, exemptPhrases, exemptRuns and exemptTokens")
-    for key, entries in spelling.items():
-        if not isinstance(entries, dict) or any(not isinstance(k, str) or not k.strip() or not isinstance(r, str)
-                                                or not r.strip() for k, r in entries.items()):
-            raise ValueError(f"spelling.{key} maps each entry to the reason it is kept")
     test_lanes(value.get("testLanes", {}))
     documentation(value.get("docs", {}))
     return value
@@ -411,22 +405,19 @@ def exclusive_refusal(config, command):
 # The lane the merge queue runs after the preflight lanes and before its gate where a project has one: the setup a gate
 # assumes.
 PROVISION = "provision"
-# The legacy name of a preflight lane: until a project lists its preflight lanes in queue.preflight, the queue runs its
-# lane of this name, or the toolkit's spelling check when it has none, as its one preflight lane (preflight). Spelling is
-# no concern of Queuekeeper's, and this goes in the release after projects have moved (vocaro/queuekeeper#69).
-SPELLING = "spelling"
+# Why queuekeeper.json's spelling and queue.spelling are refused. Spelling is no concern of Queuekeeper's: a project
+# that wants a spelling check, a linter or a formatter check makes it a lane of its own and lists it in
+# queue.preflight (vocaro/queuekeeper#69).
+SPELLING_GONE = ("is no longer a Queuekeeper setting, and Queuekeeper has no spelling check: make the project's check "
+                 "a lane of its own, list it in queue.preflight, and keep its exemptions where that check reads them; "
+                 "the user guide's Preflight lanes says how")
 # A project's launcher: its copy of this repository's scripts/qk, which runs Queuekeeper on the project it is in.
 LAUNCHER = "scripts/qk"
-# The toolkit's spelling check, the spelling lane of a project that has none: the queue runs it before the gate, on an
-# ungated landing and before a docs-only batch's lanes, unless main's queue.spelling is false, so that a British spelling
-# fails in a minute, not after a full gate and a bisect (vocaro-engineering, 2026-11-07). qk run admits and places it
-# as any lane (lane_to_run). This is its command in a project with a launcher; a project with none runs it with the
-# toolkit that runs qk run (implicit_command, vocaro/queuekeeper#108).
-IMPLICIT_SPELLING = ["python3", LAUNCHER, SPELLING]
+# The toolkit's docs check, the docs lane of a project that has none (implicit_command, lane_to_run).
 DOCS = "docs"
 IMPLICIT_DOCS = ["python3", LAUNCHER, "docs", "check"]
-# What the toolkit's two checks ask of Queuekeeper, by whichever command runs it (implicit_command).
-IMPLICIT_WORDS = {SPELLING: [SPELLING], DOCS: ["docs", "check"]}
+# What the toolkit's docs check asks of Queuekeeper, by whichever command runs it (implicit_command).
+IMPLICIT_WORDS = {DOCS: ["docs", "check"]}
 # Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates. guides/ and
 # knowledge/ are no standard documentation folders, so a project that keeps documents there names them in
 # queue.unread.paths (vocaro/queuekeeper#106).
@@ -439,7 +430,6 @@ UNREAD_LEGACY = ("docsOnly", "carryOver")
 # Seconds a preflight lane may run before qk land queues an entry, and its timeout when its lane gives none
 # (vocaro-engineering#283, vocaro/queuekeeper#69). A preflight lane is a cheap check, never a build.
 PREFLIGHT_LIMIT = 300
-SPELLING_LIMIT = PREFLIGHT_LIMIT
 # What a lane's command reads for the project's main checkout on the Mac that runs it, from which a launcher finds the
 # tools beside it: a preflight lane runs in a scratch worktree, and a queue's lanes in its worker's checkout, neither of
 # which has the project's neighbors beside it (vocaro/queuekeeper#69).
@@ -539,35 +529,9 @@ def legacy_unread_warning(config):
 
 def preflight(config):
     """The project's preflight lanes, in order: the cheap checks the queue runs on an entry before it queues it, and
-    first in every round, ungated landing and docs-only batch. queue.preflight names them. Until a project gives it,
-    the legacy spelling lane: the project's lane named spelling, or the toolkit's spelling check where it has none and
-    queue.spelling is not false (implicit_spelling, vocaro/queuekeeper#69)."""
-    queue, lanes = config.get("queue", {}), config.get("lanes", {})
-    if "preflight" in queue: return list(queue["preflight"])
-    return [SPELLING] if SPELLING in lanes or queue.get("spelling", True) is not False else []
-
-
-def implicit_spelling(config):
-    """Whether the queue runs the toolkit's spelling check, IMPLICIT_SPELLING, as the project's spelling lane: when
-    it gives no queue.preflight, has no spelling lane of its own, and main's queue.spelling does not opt out with
-    false. A project that lists its preflight lanes never gets it (vocaro/queuekeeper#69)."""
-    queue = config.get("queue", {})
-    return "preflight" not in queue and SPELLING not in config.get("lanes", {}) \
-        and queue.get("spelling", True) is not False
-
-
-def legacy_spelling_warning(config):
-    """qk doctor's and qk land's warning for a project whose spelling check rests on Queuekeeper's legacy spelling
-    lane, which goes in a later release, or None (vocaro/queuekeeper#69)."""
-    if "preflight" in config.get("queue", {}): return None
-    if implicit_spelling(config):
-        return ("the queue runs Queuekeeper's built-in spelling check for this project, which a later release removes: "
-                "define a spelling lane of the project's own and list it in queue.preflight, or give "
-                "\"queue\": {\"preflight\": []} for none")
-    if SPELLING in config.get("lanes", {}):
-        return ("the queue runs the spelling lane first only because of its name, which a later release stops: list it "
-                "in queue.preflight, as \"queue\": {\"preflight\": [\"spelling\"]}")
-    return None
+    first in every round, ungated landing and docs-only batch. queue.preflight names them; a project that gives none has
+    none (vocaro/queuekeeper#69)."""
+    return list(config.get("queue", {}).get("preflight", []))
 
 
 def project_checkout(root):
@@ -638,13 +602,12 @@ def merge_queue(queue, lanes):
     each path with why no such lane reads it, the commands that main's change must pass first, and
     which of the lanes cover the pre-push hook, each with what of the hook it runs, the paths a
     docs-only batch changes, each with why no code lane reads it, with the lanes it runs instead, and how
-    many runs in a row may give no verdict before the queue holds, and spelling, false for a project whose queue
-    runs no spelling check of the toolkit's in place of a spelling lane.
+    many runs in a row may give no verdict before the queue holds.
     unread, the paths no code lane reads, replaces docsOnly and carryOver, which it cannot stand beside."""
+    if isinstance(queue, dict) and "spelling" in queue: raise ValueError(f"queue.spelling {SPELLING_GONE}")
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOver", "carryOverChecks", "hookCoveredBy", "docsOnly",
-                                                    "unread", "noVerdictRuns", "spelling", "followLandings",
-                                                    "preflight"}:
-        raise ValueError("queue supports only lanes, unread, carryOverChecks, hookCoveredBy, noVerdictRuns, spelling, "
+                                                    "unread", "noVerdictRuns", "followLandings", "preflight"}:
+        raise ValueError("queue supports only lanes, unread, carryOverChecks, hookCoveredBy, noVerdictRuns, "
                          "followLandings and preflight, and the older docsOnly and carryOver")
     if "unread" in queue:
         given = [key for key in UNREAD_LEGACY if key in queue]
@@ -664,9 +627,6 @@ def merge_queue(queue, lanes):
     if "followLandings" in queue and queue["followLandings"] is not True:
         raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
                          "checkout after each landing, for a checkout other projects read, such as an extension's")
-    if "spelling" in queue and queue["spelling"] is not False:
-        raise ValueError("queue.spelling can only be false, which stops the queue running the toolkit's spelling check "
-                         "for a project with no spelling lane; true is the default")
     if "noVerdictRuns" in queue and (type(queue["noVerdictRuns"]) is not int or queue["noVerdictRuns"] < 1):
         raise ValueError("queue.noVerdictRuns is how many runs in a row may give no verdict before the queue holds, "
                          "a positive integer")
@@ -698,15 +658,12 @@ def merge_queue(queue, lanes):
 def preflight_lanes(queue, lanes):
     """queue.preflight, checked: distinct configured lanes, in the order they run, each one command that qk land can run
     in a scratch worktree with no admission (NOT_PREFLIGHT), and none of them the gate, provision or one of
-    queue.lanes. It replaces queue.spelling, which it cannot stand beside (vocaro/queuekeeper#69)."""
+    queue.lanes (vocaro/queuekeeper#69)."""
     named = queue["preflight"]
     if not isinstance(named, list) or any(not isinstance(name, str) or not name.strip() for name in named) \
             or len(set(named)) != len(named):
         raise ValueError("queue.preflight lists distinct lane names, the cheap checks the queue runs on an entry before "
                          "it queues it and first in every round, in order; [] for none")
-    if "spelling" in queue:
-        raise ValueError("queue.spelling and queue.preflight cannot both be given: queue.preflight says which lanes run "
-                         "first, so drop queue.spelling")
     for name in named:
         if name not in lanes: raise ValueError(f"queue.preflight names {name}, which is no configured lane")
         if name in ("gate", PROVISION) or name in queue.get("lanes", []):
@@ -856,23 +813,22 @@ def toolkit_command(root, words, toolkit=None):
 
 
 def implicit_command(root, name, toolkit=None):
-    """The command of the toolkit's spelling or docs check, name in IMPLICIT_WORDS, in the project at root: its
-    launcher's IMPLICIT_SPELLING or IMPLICIT_DOCS, else the same words run by the toolkit (toolkit_command). qk run
-    makes it on the Mac that runs the lane, so that on another Mac it names the toolkit sent there."""
+    """The command of the toolkit's docs check, name in IMPLICIT_WORDS, in the project at root: its launcher's
+    IMPLICIT_DOCS, else the same words run by the toolkit (toolkit_command). qk run makes it on the Mac that runs the
+    lane, so that on another Mac it names the toolkit sent there."""
     return toolkit_command(root, IMPLICIT_WORDS[name], toolkit)
 
 
 def lane_to_run(config, name, root):
     """The lane qk run runs as name in the project at root, or None when there is no such lane: the one config has,
-    or, for spelling and docs in a project with no such lane, the toolkit's check (implicit_command), added to config's
-    lanes so that the run treats it as any other, which is how the merge queue's gate runs it (owner's decision,
-    2026-11-09, vocaro-engineering#305). queue.spelling says only whether the queue asks for it, and main's says that,
-    so a batch's own setting cannot leave a lane unknown."""
+    or, for docs in a project with no such lane, the toolkit's check (implicit_command), added to config's lanes so
+    that the run treats it as any other, which is how the merge queue's gate runs it (owner's decision, 2026-11-09,
+    vocaro-engineering#305)."""
     lanes = config.setdefault("lanes", {})
     if name in IMPLICIT_WORDS and name not in lanes:
         lanes[name] = {"command": implicit_command(root, name), "timeout": PREFLIGHT_LIMIT}
     # A lane queue.preflight lists that gives no timeout is a cheap check, stopped at PREFLIGHT_LIMIT, not
-    # processes.DEFAULT_LIMIT. The legacy spelling lane keeps what it had.
+    # processes.DEFAULT_LIMIT.
     if name in config.get("queue", {}).get("preflight", []) and isinstance(lanes.get(name), dict) \
             and "command" in lanes[name]:
         lanes[name].setdefault("timeout", PREFLIGHT_LIMIT)

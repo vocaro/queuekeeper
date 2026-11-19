@@ -15,9 +15,9 @@ import time
 import traceback
 
 from . import pins, __version__, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
-    parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling, trial, wait_history
+    parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
-    source_identity, lane_devices, legacy_spelling_warning, legacy_unread_warning, project_checkout, \
+    source_identity, lane_devices, legacy_unread_warning, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
@@ -1399,10 +1399,6 @@ def perform(argv, report):
         "without admission, as qk land runs them before it queues an entry; exit 1 on a finding, 3 when one could not "
         "run")
     preflights.add_argument("lanes", nargs="*", help="only these of the preflight lanes, in the order given")
-    spell = commands.add_parser("spelling", help="find British spellings in the project's text, identifiers "
-        "included, and file names, and text that calls this command by its old name; exit 1 on any, 2 when nothing "
-        "was checked")
-    spell.add_argument("paths", nargs="*", help="files or directories; untracked files under them are read too")
     disk.add_arguments(commands.add_parser("disk", help="inventory reclaimable disk space; changes nothing without --delete"))
     commands.add_parser("farm", help="the Macs beside this one that take work: list, add DESTINATION [--name NAME], "
                         "rename NAME NEW, pause NAME, resume NAME, remove NAME")
@@ -1500,8 +1496,6 @@ def perform(argv, report):
                     and config.get("integration", "direct-main") == "direct-main":
                 warnings.append("no lane is named gate, which qk land runs: name the lane holding "
                                 "what a commit must pass before it lands gate")
-            # A project whose spelling check rests on the legacy spelling lane, which a later release removes (#69).
-            if legacy_spelling_warning(config): warnings.append(legacy_spelling_warning(config))
             # A project still on queue.docsOnly or queue.carryOver, which queue.unread replaces.
             if legacy_unread_warning(config): warnings.append(legacy_unread_warning(config))
             warnings += budgets.doctor_warnings(config)
@@ -1547,8 +1541,6 @@ def perform(argv, report):
                                   commands=set(commands.choices) | every_feature_command())
             print("\n".join(failures) if failures else "Documentation checks passed")
             return int(bool(failures))
-        # The subcommand names are this parser's, so a new one is covered as it is added (vocaro/queuekeeper#35).
-        elif args.action == "spelling": return spelling.check(root, config, args.paths, commands=tuple(commands.choices))
         elif args.action == "preflight": return preflight.run(root, config, args.lanes)
         elif args.action == "run":
             report.begin(root, args.lane)

@@ -18,7 +18,7 @@ QK.panel("logs", {
     const hues = all ? QK.repositoryHues((data.logs || []).map(log => log.repository)) : {};
     const tag = name => all && name ? h("span", { class: "tag" }, h("i", { class: "dot " + (hues[name] || "other") }), name) : null;
     const same = log => log.name === state.name && (!all || log.repository === state.repository);
-    const LANES = ["gate", "docs", "spelling"], ROUND = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/;
+    const LANES = ["gate", "docs"], ROUND = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/;
     if (!state.built) {
       state.built = true;
       Object.assign(state, { ask: 0, want: { mode: "tail" }, text: "", follow: true, fold: true, only: false, wrap: true,
@@ -167,7 +167,7 @@ QK.panel("logs", {
         h("span", { class: "meta" }, typeof log.seconds === "number" ? QK.span(log.seconds) : QK.size(log.size)));
     }
     // What the queue's own lanes are for; any other lane is a project's own command, by the name it gave it.
-    const MEANING = { gate: "the tests every entry must pass", docs: "documentation checks", spelling: "spelling checks",
+    const MEANING = { gate: "the tests every entry must pass", docs: "documentation checks",
       "pre-push": "the check before a push", carry: "a check after carrying a change over" };
     function browse(logs) {
       const signature = JSON.stringify([state.name, state.repository, state.failedOnly, state.lane, state.search, [...state.rounds], state.workers, state.every,

@@ -14,7 +14,7 @@ this guide assumes you know what a lane, a gate, admission and the farm are.
 - [Device, simulator and foreground internals](#device-simulator-and-foreground-internals): the
   platform plugins' records and rules
 - [Visibility features](#visibility-features): the event journal, and writing a feature
-- [Checks this repository runs](#checks-this-repository-runs): spelling and docs checks
+- [Checks this repository runs](#checks-this-repository-runs): spelling and the docs check
 - [Maintenance](#maintenance): changing Queuekeeper while work runs, the README's screenshots
 
 ## Working on Queuekeeper
@@ -52,7 +52,7 @@ Changing Queuekeeper while other projects' work runs on it has its own rules:
 | `src/python/queuekeeper/extensions.py` | Extension hooks. The core never imports a plugin directly |
 | `src/python/queuekeeper/events.py` | The event journal |
 | `src/python/queuekeeper/visibility/` | The visibility switch and features |
-| `src/python/queuekeeper/docs.py`, `spelling.py` | The docs and spelling checks |
+| `src/python/queuekeeper/docs.py` | The docs check |
 | `plugins/` | Separately packaged platform and visibility plugins |
 | `queuekeeper-workspace.json` | Which plugins a checkout is composed of |
 | `tests/` | Component suites, `integration/`, architecture checks and `test_support/` fixtures |
@@ -138,8 +138,8 @@ The worker fetches, takes everything waiting, oldest first, cherry-picks each en
 4. `gate`, or the lanes `queue.lanes` names.
 
 Settings are read from `origin/main` in the worker's own checkout, never from a working tree; the
-lanes' own definitions come from the batch. Until a project gives `queue.preflight`, its preflight
-is its `spelling` lane or `qk spelling` (`"queue": {"spelling": false}` turns that off). Where the
+lanes' own definitions come from the batch. A project without `queue.preflight` has no preflight
+lanes, and no lane runs first because of its name. Where the
 checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
 
 - **Short checks skip admission.** The preflight lanes and `qk docs check` run in the worker's
@@ -178,7 +178,7 @@ or a finding `origin/main` gives too.
 
 **A project's first landing** reads the entry's `queuekeeper.json`, and the batch's in a round,
 only while `origin/main` has none that names lanes. The settings that loosen checking
-(`hookCoveredBy`, `unread`, `docsOnly`, `carryOver`, `spelling: false`, `preflight`) count only
+(`hookCoveredBy`, `unread`, `docsOnly`, `carryOver`, `preflight`) count only
 from `main` even then.
 
 ### The Queuekeeper a worker runs
@@ -1546,8 +1546,8 @@ schema only grows, so readers ignore what they do not know.
 
 ## Checks this repository runs
 
-- **Preflight: spelling.** The `spelling` lane runs before every gate. See
-  [Spelling check](#spelling-check), below.
+- **No preflight lanes.** Queuekeeper has no spelling check of its own, and this repository runs
+  none before the gate. See [Spelling](#spelling), below.
 - **Docs check.** `python3 scripts/qk docs check` checks links, anchors and the `qk` commands a
   document tells a reader to type. See [Docs check](#docs-check), below.
 - **The setup example.** `tests/core/test_setup_examples.py` parses each complete
@@ -1557,60 +1557,16 @@ schema only grows, so readers ignore what they do not know.
 - **The README's screenshots.** Retake them after changing how the dashboard looks; see
   [The README's screenshots](#the-readmes-screenshots).
 
-### Spelling check
+### Spelling
 
-`python3 scripts/qk spelling [PATHS]` finds British spellings in a project's text, identifiers
-included, and in its file and directory names, and exits 1 on any. It runs on pushes because such
-words arrive one at a time and are invisible in review.
+Write American English. Queuekeeper itself has no spelling check: a project that wants one lists a
+check of its own as a preflight lane ([preflight lanes](user_guide.md#preflight-lanes),
+[#69](https://github.com/vocaro/queuekeeper/issues/69)). The American English check and its rules
+belong to vocaro-engineering, as `eng spelling`.
 
-It is a **legacy lane** that a later release removes: a project lists a spelling check of its own
-as a preflight lane instead ([preflight lanes](user_guide.md#preflight-lanes)). Queuekeeper already
-does. Its `spelling` lane, the one entry of its `queue.preflight`, runs
-`python3 scripts/check_spelling.py [PATHS]`, a standalone copy that imports nothing from the
-package. Its exemptions are that script's `PROJECT` rather than queuekeeper.json's `spelling`, and
-it reads subcommand names from `python3 scripts/qk -h`. **Until the built-in check is removed,
-change the rules in both.** The rules, and what each exemption was learned from, are in
-`src/python/queuekeeper/spelling.py`.
-
-#### What it finds
-
-- **Files.** With no paths, every tracked file; named paths also read untracked files Git does not
-  ignore.
-- **Words.** Each run of letters is split at camelCase, snake_case and SCREAMING_CASE boundaries,
-  and each part is judged whole: by pattern (-ise, -yse, -our, -tre, -bre, doubled-l inflections),
-  by a list of irregular words, and against a list of American words that only look British. A
-  pattern hit counts only when its fix would be a word, so names and foreign words such as Louise
-  or bonjour pass. A string escape such as `\n` ends a word.
-- **File names.** Judged the same way, split also at `/`, `.`, `-` and `_`, since references must
-  move when a file is renamed: `PATH: British spelling in file name 'WORD' -> AMERICAN`.
-- **The command's old name.** The package's name, lowercase, followed by a subcommand, is a hit
-  (`the command's old name ... -> qk COMMAND`), even across a wrapped line or adjacent string
-  literals; fix it by writing `qk`. The subcommands come from the parser as that run built it,
-  so new ones are covered. The capitalized product, a path such as `queuekeeper.json`, an error's
-  `queuekeeper:` prefix, and a subcommand's own output prefix (its name and a colon) are not hits.
-- **Controls.** Positive controls for words and file names run before any file is read, so a
-  detector that stopped detecting fails. Exit 2 means nothing was checked.
-
-#### Exemptions
-
-Built in: other projects' API names (Apple's `isCanceled`, Unity's `MonoBehaviour`), URLs, a list
-item's first `<em>` (a cited title), and any line marked `spelling: keep` with a reason, as in
-`case .canceled:  // spelling: keep, URLError.Code`.
-
-A project lists the rest in queuekeeper.json's `spelling`, each mapped to its reason. File names
-use the same exemptions as text.
-
-| Key | For |
-|---|---|
-| `skip` | Paths of recorded observations or retained upstream text; a key ending in `/` is a folder. A skipped path's own name, and the key's text wherever it appears, are exempt too |
-| `exemptPhrases` | A standard's terms |
-| `exemptRuns` | Whole identifiers another project named |
-| `exemptTokens` | Proper names and foreign words |
-
-**Fix a hit by spelling the word the American way; never widen a pattern to make one go away.** An
-American word a pattern mistakes for British, such as valise, joins the checker's American words,
-with a sample in its controls. Proper names and foreign words stay in each project's
-`exemptTokens`.
+This repository's old copy, `scripts/check_spelling.py`, no longer runs before the gate and goes
+in the next change. Its `spelling` lane stays until then, because the queue judges a landing by
+`main`'s `queue.preflight`, which still names it.
 
 ### Docs check
 

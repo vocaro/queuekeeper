@@ -96,8 +96,8 @@ Two defaults to know about:
 
 - **Preflight lanes.** List the project's cheap checks, such as a linter, in `queue.preflight`.
   The queue runs them before it accepts an entry and first in every round
-  ([Preflight lanes](#preflight-lanes)). Give `"queue": {"preflight": []}` for none. Until you
-  set it, the queue runs a built-in spelling check, which a later release removes.
+  ([Preflight lanes](#preflight-lanes)). Without it, or with `"queue": {"preflight": []}`, there
+  are none. Queuekeeper has no spelling check of its own.
 - **Documentation-only changes** skip the gate and run the documentation lanes instead
   ([Documentation changes](#documentation-changes)). Set `"queue": {"unread": false}` to gate
   every change.
@@ -296,7 +296,7 @@ mode. The project names them, in order, in `queue.preflight` on `main`:
 
 ```json
 "lanes": {
-  "spelling": {"command": ["python3", "scripts/check_spelling.py"], "timeout": 120},
+  "spelling": {"command": ["python3", "scripts/eng", "spelling"], "timeout": 120},
   "pyflakes": {"command": ["python3", "-m", "pyflakes", "src/python"]},
   "gate": {"command": ["..."]}
 },
@@ -314,13 +314,13 @@ mode. The project names them, in order, in `queue.preflight` on `main`:
 - **`qk preflight` runs them now** on your working tree, uncommitted changes included.
   `qk preflight LANE` runs one. It exits 0 when all pass, 1 on a finding, and 3 when one could
   not run.
-- **`"queue": {"preflight": []}` runs none.**
+- **`"queue": {"preflight": []}`, or no `queue.preflight`, runs none.**
 
 A lane's command finds the project's main checkout in `QUEUEKEEPER_PROJECT_CHECKOUT` wherever it
 runs, so a launcher can find tools that sit beside the project.
 
-Until a project sets `queue.preflight`, the queue runs its lane named `spelling`, or else
-Queuekeeper's built-in spelling check. A later release removes that fallback
+Queuekeeper has no spelling check of its own, and runs no lane first because of its name. A
+project that wants one brings its own, such as vocaro-engineering's `eng spelling` above
 ([vocaro/queuekeeper#69](https://github.com/vocaro/queuekeeper/issues/69)).
 
 ### When a batch fails
@@ -595,7 +595,7 @@ settings.
 
 Settings that loosen what the queue checks count only from `main`, even on the first landing:
 `queue.hookCoveredBy`, `queue.unread` (and the older `docsOnly` and `carryOver`),
-`queue.spelling: false` and `queue.preflight`. A project that wants one of them lands its
+and `queue.preflight`. A project that wants one of them lands its
 configuration through the full checks once.
 
 ## Lanes and admission
