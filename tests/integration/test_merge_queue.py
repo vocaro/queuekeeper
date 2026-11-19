@@ -10458,8 +10458,9 @@ class RoundAccount(Fixture):
         mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
         path = Path(os.environ[mq.lane_wait.VARIABLE])
         record = json.loads(path.read_text())
+        # kindSince, when a wait of its kind began, is a time for the wait history and no outcome (#233).
         self.assertEqual(set(record), {"schemaVersion", "kind", "reason", "mac", "offer", "stranded", "pid", "since",
-                                       "written", "admitted", "probes"})
+                                       "kindSince", "written", "admitted", "probes"})
         self.assertIs(record["admitted"], False)
         gate = self.gate_after_look(queue, watch)
         self.assertNotIn("status", gate)

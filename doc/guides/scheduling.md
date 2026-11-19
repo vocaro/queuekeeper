@@ -415,14 +415,22 @@ among the declared ways, with a fallback reported, and which Mac keeps the recor
 - **What the log can say.** The admission log records the same refusal kind for a gate behind
   one-slot work and a gate short of free slots, which is why the table above took a replay
   ([#171]). A kind for each would let `qk admissions` report this split every day.
+- **A gate group waits for its screen members** (rule 19, [#233]). A gate that runs a lane needing
+  an unlocked screen waits, holding no slot, until a Mac's screen reads unlocked, while its other
+  members could run. The owner's decision of 2026-11-18 is to measure first: each Mac's
+  [wait history][waits] keeps every wait that ended, and `qk admissions waits --kind screen`
+  reports how often and how long each project's gate waited for a screen. A split of the gate into
+  a headless and a screen lane follows only if that cost is real.
 
 ## Weighing a change
 
 A proposal to change a rule says which goal it serves, which it costs, and what bounds the cost. It
-then shows the reading that would prove it wrong. Two readings exist today: `qk admissions usage`
-for each Mac's capacity, limits and share of time at each count of admitted jobs, and each Mac's
-admission log for every wait, with its reason and the load and busy share it saw
-([admission log][log]). Once the owner decides, the decision goes into the table above with its
+then shows the reading that would prove it wrong. Three readings exist today: `qk admissions usage`
+for each Mac's capacity, limits and share of time at each count of admitted jobs; each Mac's
+admission log for every wait for admission, with its reason and the load and busy share it saw
+([admission log][log]); and `qk admissions waits` over each Mac's wait history, for every wait of a
+lane's run by kind, waits for an unlocked screen, the foreground and disk space among them, which
+take no admission ([wait history][waits]). Once the owner decides, the decision goes into the table above with its
 date, and the mechanism's guide says how it works.
 
 [admission]: admission.md#heavy-work-admission
@@ -433,6 +441,7 @@ date, and the mechanism's guide says how it works.
 [screen]: screen-state.md#screen-state
 [unseen]: admission.md#load-the-queue-cannot-see
 [log]: admission.md#admission-log
+[waits]: admission.md#wait-history
 [devices]: devices.md#device-reservations
 [foreground]: foreground.md#waiting-for-the-foreground
 [queue]: merge-queue.md#the-merge-queue
@@ -452,6 +461,7 @@ date, and the mechanism's guide says how it works.
 [#207]: https://github.com/vocaro/queuekeeper/issues/207
 [#211]: https://github.com/vocaro/queuekeeper/issues/211
 [#214]: https://github.com/vocaro/queuekeeper/issues/214
+[#233]: https://github.com/vocaro/queuekeeper/issues/233
 [ve#163]: https://github.com/vocaro/vocaro-engineering/issues/163
 [ve#168]: https://github.com/vocaro/vocaro-engineering/issues/168
 [ve#174]: https://github.com/vocaro/vocaro-engineering/issues/174

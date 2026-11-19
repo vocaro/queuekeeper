@@ -36,7 +36,8 @@ SSH and who holds its mac-foreground, for `qk remote foreground`; given `{"press
 CPU's busy share, the limit admission sets on it and its memory pressure, for the merge queue's settle wait;
 given `{"capacity": true}`, its spare capacity for heavy work, which `qk run` reads on the Macs
 before it chooses one (remote.spare); given `{"admissionLog": SINCE}`, its admission log's lines from
-SINCE, an epoch time, for `qk admissions usage`; given `{"admissionsNow": 1}`, who holds and who waits for its
+SINCE, an epoch time, for `qk admissions usage`; given `{"waitLog": SINCE}`, the lines of its history of lanes' waits
+that ended from SINCE, for `qk admissions waits` (wait_log); given `{"admissionsNow": 1}`, who holds and who waits for its
 admission now, for `qk admissions now` (admissions_now); given `{"screen": true}`, whether its console screen is locked, for
 `qk host screen --remote` (screen).
 """
@@ -84,6 +85,8 @@ PLATFORMS = {"com.apple.platform.iphonesimulator": "iOS", "com.apple.platform.ap
 GATE_LOCK = "/tmp/queuekeeper-gate-suite.lock"
 ADMISSION_STATE = "Library/Application Support/queuekeeper"
 ADMISSION_LOGS = ("admissions.1.jsonl", "admissions.jsonl")
+# Its history of lanes' waits beside it, previous generation first, as wait_history names them (vocaro/queuekeeper#233).
+WAIT_LOGS = ("waits.1.jsonl", "waits.jsonl")
 # The host's admission limits file, beside its log, and its slot files' directory: the legacy user-temp
 # namespace unless HEAVY_SLOT_DIR names one, as resources.py names them (#49).
 ADMISSION_LIMITS = "admission-limits.json"
@@ -1949,6 +1952,21 @@ def admission_log(since):
     return {"lines": found}
 
 
+def wait_log(since):
+    """The lines of this Mac's history of lanes' waits, both generations, oldest first, for waits that ended at or
+    after since, an epoch time, for `qk admissions waits` on the sending Mac (wait_history.read_entry reads them
+    there). A line whose time cannot be read is passed on for that Mac to count as unreadable."""
+    directory, found = admission_directory(), []
+    for name in WAIT_LOGS:
+        try: lines = (directory / name).read_text(errors="replace").splitlines()
+        except OSError: continue
+        for line in lines:
+            try: moment = datetime.fromisoformat(json.loads(line)["time"]).timestamp()
+            except (ValueError, KeyError, TypeError): moment = None
+            if moment is None or moment >= since: found.append(line)
+    return {"lines": found}
+
+
 # `qk admissions now` (vocaro-engineering#342): the folder beside the slot files where each waiting request keeps its
 # observation record, as resources.WAITS has it; the schema both write and read; how many records and how many bytes a
 # snapshot reads and sends at most; and how old a live waiter's sample may be before it is shown as stale.
@@ -3610,6 +3628,7 @@ def answer(request):
         if isinstance(request.get("own"), str): options["own"] = request["own"]
         return capacity(diagnostic=request["capacity"] == "diagnostic", **options)
     if "admissionLog" in request: return admission_log(request["admissionLog"])
+    if "waitLog" in request: return wait_log(request["waitLog"])
     if "admissionsNow" in request:
         return admissions_now() if request["admissionsNow"] == NOW_SCHEMA else \
             {"error": f"this Mac's toolkit reads admissionsNow version {NOW_SCHEMA}, not {request['admissionsNow']!r}"}
@@ -4671,7 +4690,7 @@ if __name__ == "__main__":
     if "keepUnlocked" in request: sys.exit(keep_unlocked(request["keepUnlocked"]))
     if "reattach" in request: sys.exit(reattach(request["reattach"]))
     if {"toolchain", "join", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
-            "pressure", "capacity", "admissionLog", "admissionsNow", "screen", "toolkitCheckout",
+            "pressure", "capacity", "admissionLog", "waitLog", "admissionsNow", "screen", "toolkitCheckout",
             "markForeground"} & request.keys():
         print(json.dumps(answer(request)))
     else:

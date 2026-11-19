@@ -9,6 +9,10 @@ The record says what the lane waits for, since when and on which Mac, and whethe
 lane's receipt (source.json) gives its verdict. A wait stops counting once the process that reported it is gone
 (current).
 
+As each wait of one kind ends on this Mac, its span is appended to this Mac's wait history (wait_history, ended), which
+outlives the record: the record keeps when its kind began (kindSince) for it. A run's lane, project and whether it is
+whole-host are named once, by the outermost run on each Mac (LANE), which also ends a wait the run leaves.
+
 Nothing here may stop a lane: a record that cannot be written or read is left as it is."""
 import contextlib
 import json
@@ -19,6 +23,9 @@ import uuid
 
 # Set by the outermost `qk run` for itself and all it starts, and by offload_host for the run it starts.
 VARIABLE = "QUEUEKEEPER_LANE_WAIT"
+# Set by the outermost `qk run` on each Mac: the lane whose run it is, its project and whether it is whole-host, which
+# each line of the wait history names (wait_history).
+LANE = "QUEUEKEEPER_LANE_WAIT_LANE"
 WAITS = ".waits"
 HERE = "this Mac"
 SCHEMA = 1
@@ -40,6 +47,7 @@ STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted", "probe
 
 _owned = None  # the record this process named, and so removes (begin, finish)
 _offer = None  # why this run waits for this Mac instead of another Mac, until it is admitted
+_closes = None  # whether this process named the run's lane (LANE), and so ends a wait the run leaves (finish)
 
 
 def relative(lane):
@@ -51,10 +59,15 @@ def path_of(root, lane):
     return Path(root) / relative(lane)
 
 
-def begin(root, lane):
+def begin(root, lane, project=None, whole_host=False):
     """Name LANE's record for this run and what it starts, with nothing an earlier run left in it. A run nested in
-    another lane, or sent here by a dispatch, reports into the record already named: that lane's wait is this one."""
-    global _owned, _offer
+    another lane, or sent here by a dispatch, reports into the record already named: that lane's wait is this one.
+    The outermost run on this Mac, one sent here included, names its lane, project and whether it is whole-host for
+    the wait history (LANE)."""
+    global _owned, _offer, _closes
+    if not os.environ.get(LANE):
+        os.environ[LANE] = json.dumps({"lane": lane, "project": project, "wholeHost": bool(whole_host)})
+        _closes = True
     if os.environ.get(VARIABLE): return
     _owned, _offer = path_of(root, lane), None
     remove(_owned)
@@ -63,8 +76,13 @@ def begin(root, lane):
 
 
 def finish():
-    """The run named by begin has ended, however it ended: no wait of it remains."""
-    global _owned
+    """The run named by begin has ended, however it ended: no wait of it remains. A wait it leaves, as one that
+    outlasts its limit does, ends now in the wait history."""
+    global _owned, _closes
+    if _closes:
+        if os.environ.get(VARIABLE): ended(read(os.environ[VARIABLE]), "the run ended")
+        os.environ.pop(LANE, None)
+        _closes = None
     if _owned is None: return
     remove(_owned)
     os.environ.pop(VARIABLE, None)
@@ -99,6 +117,24 @@ def write(record):
     except OSError: remove(staged)
 
 
+def ended(found, how, at=None):
+    """Append the wait found, a record, to this Mac's wait history as ended at at (now), how saying how: none for a
+    record that waits for nothing, or that waits on another Mac, whose own history has it."""
+    if not found or found.get("kind") not in WORDS or found.get("mac") != HERE: return
+    start = found.get("kindSince", found.get("since"))
+    if not isinstance(start, (int, float)): return
+    try: named = json.loads(os.environ.get(LANE) or "{}")
+    except ValueError: named = {}
+    if not isinstance(named, dict): named = {}
+    from . import wait_history
+    wait_history.append(wait_history.line(
+        project=named.get("project") if isinstance(named.get("project"), str) else None,
+        lane=named.get("lane") if isinstance(named.get("lane"), str) else Path(os.environ.get(VARIABLE, "lane")).stem,
+        kind=found["kind"], start=start, end=time.time() if at is None else at,
+        whole_host=named.get("wholeHost") if isinstance(named.get("wholeHost"), bool) else None,
+        reason=found.get("reason"), ended=how, dispatched_from=os.environ.get("QUEUEKEEPER_DISPATCHED_FROM")))
+
+
 def same(found, record):
     return (found is not None and all(found.get(key) == record[key] for key in STATE)
             and found.get("progressRun") == os.environ.get("QUEUEKEEPER_LANE_PROGRESS_RUN"))
@@ -117,8 +153,14 @@ def waiting(kind, reason, mac=HERE, stranded=False, probes=None):
               "stranded": stranded, "pid": os.getpid(), "admitted": False, "probes": probes}
     found = read(os.environ[VARIABLE])
     if same(found, record): return
+    now = time.time()
     since = found.get("since") if found and found.get("kind") else None
-    write({**record, "since": since if isinstance(since, (int, float)) else time.time()})
+    # A wait of the same kind on the same Mac goes on under other words; any other ends the one before it.
+    going = found is not None and found.get("kind") == kind and found.get("mac") == mac
+    kind_since = found.get("kindSince", found.get("since")) if going else None
+    if found and found.get("kind") and not going: ended(found, f"became a wait for {kind}", now)
+    write({**record, "since": since if isinstance(since, (int, float)) else now,
+           "kindSince": kind_since if isinstance(kind_since, (int, float)) else now})
 
 
 def running(mac=HERE, *, admitted=True):
@@ -128,7 +170,10 @@ def running(mac=HERE, *, admitted=True):
     _offer = None
     record = {"kind": None, "reason": None, "mac": mac, "offer": None, "stranded": False,
               "pid": os.getpid(), "admitted": admitted, "probes": None}
-    if not same(read(os.environ[VARIABLE]), record): write({**record, "since": None})
+    found = read(os.environ[VARIABLE])
+    if same(found, record): return
+    ended(found, "cleared")
+    write({**record, "since": None})
 
 
 def farm_mac(host):

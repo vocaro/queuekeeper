@@ -1,6 +1,7 @@
 """What a lane waits for, as qk run records it: each kind of wait, its clearing, and its coming back from the second
 Mac (lane_wait, offload_host.relay_wait). tests/test_merge_queue.py's RoundAccount reads it as `qk queue status` does."""
 import contextlib
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 import json
 import os
@@ -14,7 +15,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
-from queuekeeper import cli, lane_wait, offload_host, remote, resources
+from queuekeeper import cli, lane_wait, offload_host, remote, resources, wait_history
 from queuekeeper_mac_desktop import foreground
 import host_isolation
 
@@ -366,6 +367,171 @@ class Waits(Named):
             with foreground.slot("gate", timeout=0, record=record, ready=lambda: [], said=lambda text: None):
                 self.fail("ran while another run held the foreground")
         self.assertEqual(self.said(), "another Mac's foreground, held by s-2 for voiceover, expected release soon")
+
+
+class History(Named):
+    """Each wait that ends, kept in this Mac's wait history beside its admission log (wait_history, #233)."""
+
+    def setUp(self):
+        super().setUp()
+        # The history is in this test's own namespace, as the admission log is: host_isolation's is shared by the module.
+        patcher = patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(self.folder / "slots")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for owner, name, value in ((wait_history, "_mac", "Here"), (lane_wait, "_closes", None),
+                                   (lane_wait, "_owned", None)):
+            patcher = patch.object(owner, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def at(self, moment, call, *arguments, **options):
+        with patch.object(lane_wait.time, "time", return_value=moment):
+            return call(*arguments, **options)
+
+    def kept(self):
+        entries, unreadable = wait_history.read()
+        self.assertEqual(unreadable, 0)
+        return entries
+
+    def test_the_log_is_beside_the_admission_log_in_the_namespace(self):
+        self.assertEqual(wait_history.path(), resources.log_path().with_name("waits.jsonl"))
+        self.assertEqual(wait_history.path().parent, self.folder / "slots")
+
+    def test_each_kind_of_wait_is_kept_as_it_ends_with_its_lane_and_mac(self):
+        os.environ.pop(lane_wait.VARIABLE)
+        lane_wait.begin(self.folder, "gate", "EPUBLib", True)
+        self.at(1000.0, lane_wait.waiting, lane_wait.SCREEN, "this Mac's screen is locked")
+        # New words for the same wait keep its start.
+        self.at(1300.0, lane_wait.waiting, lane_wait.SCREEN, "this Mac's screen shows the login window")
+        self.at(1600.0, lane_wait.waiting, lane_wait.ADMISSION, "all 3 guaranteed slots are busy")
+        self.assertEqual(len(self.kept()), 1)
+        self.at(1690.0, lane_wait.running)
+        # A nested run's admission reports into the outer lane's record, and is kept as that lane's.
+        lane_wait.begin(self.folder, "swift-tests", "EPUBLib", False)
+        self.at(1700.0, lane_wait.waiting, lane_wait.ADMISSION, "busy")
+        self.at(1710.0, lane_wait.running)
+        lane_wait.finish()
+        screen, admission, nested = self.kept()
+        self.assertEqual({key: screen[key] for key in ("project", "lane", "kind", "mac", "seconds", "wholeHost",
+                                                        "reason", "ended")},
+                         {"project": "EPUBLib", "lane": "gate", "kind": "screen", "mac": "Here", "seconds": 600.0,
+                          "wholeHost": True, "reason": "this Mac's screen shows the login window",
+                          "ended": "became a wait for admission"})
+        self.assertEqual((screen["start"].timestamp(), screen["end"].timestamp()), (1000.0, 1600.0))
+        self.assertEqual((admission["kind"], admission["seconds"], admission["ended"]), ("admission", 90.0, "cleared"))
+        self.assertEqual((nested["lane"], nested["seconds"]), ("gate", 10.0))
+        self.assertNotIn(lane_wait.LANE, os.environ)
+
+    def test_a_wait_the_run_leaves_ends_with_the_run(self):
+        # As a lane that waited out its limit for an unlocked screen does, exiting 75.
+        lane_wait.begin(self.folder, "gate", "Pagepour", True)
+        self.at(2000.0, lane_wait.waiting, lane_wait.SCREEN, "locked")
+        self.at(2500.0, lane_wait.finish)
+        [entry] = self.kept()
+        self.assertEqual((entry["kind"], entry["seconds"], entry["ended"]), ("screen", 500.0, "the run ended"))
+        # The record is not this process's to remove: a dispatch named it (offload_host), and it says the wait.
+        self.assertEqual(lane_wait.current(self.path)["kind"], "screen")
+
+    def test_a_wait_on_another_mac_is_left_to_that_macs_history(self):
+        self.at(3000.0, lane_wait.waiting, lane_wait.OVERFLOW, "another Mac is busy")
+        self.at(3030.0, lane_wait.relayed, json.dumps({"kind": "screen", "reason": "locked"}).encode(), "build-host")
+        self.at(3500.0, lane_wait.relayed, b"null", "build-host")
+        [entry] = self.kept()
+        self.assertEqual((entry["kind"], entry["seconds"], entry["lane"], entry["project"], entry["wholeHost"]),
+                         ("overflow", 30.0, "gate", None, None))
+
+    def test_no_wait_keeps_nothing(self):
+        lane_wait.running()
+        os.environ.pop(lane_wait.VARIABLE)
+        lane_wait.waiting(lane_wait.ADMISSION, "busy")
+        lane_wait.running()
+        self.assertEqual(self.kept(), [])
+
+    def test_the_history_is_bounded_by_one_previous_generation(self):
+        with patch.object(wait_history, "LIMIT", 600):
+            for index in range(6):
+                self.at(4000.0 + 10 * index, lane_wait.waiting, lane_wait.ADMISSION, "busy")
+                self.at(4005.0 + 10 * index, lane_wait.running)
+        log = wait_history.path()
+        self.assertLessEqual(log.stat().st_size, 600)
+        self.assertLessEqual(log.with_name("waits.1.jsonl").stat().st_size, 600)
+        entries = self.kept()
+        self.assertLess(len(entries), 6)
+        self.assertEqual(entries[-1]["end"].timestamp(), 4055.0)
+
+    def test_a_history_that_cannot_be_written_stops_nothing(self):
+        (self.folder / "slots").write_text("not a folder")
+        with contextlib.redirect_stderr(StringIO()) as said:
+            lane_wait.waiting(lane_wait.ADMISSION, "busy")
+            lane_wait.running()
+        self.assertIn("the wait history was not written", said.getvalue())
+        self.assertIsNone(lane_wait.current(self.path)["kind"])
+
+    def test_another_mac_sends_the_lines_since_a_time(self):
+        self.at(5000.0, lane_wait.waiting, lane_wait.SCREEN, "locked")
+        self.at(5100.0, lane_wait.running)
+        self.at(6000.0, lane_wait.waiting, lane_wait.SCREEN, "locked")
+        self.at(6100.0, lane_wait.running)
+        sent = offload_host.wait_log(6050.0)["lines"]
+        self.assertEqual([wait_history.read_entry(line)["end"].timestamp() for line in sent], [6100.0])
+
+
+class WaitReport(unittest.TestCase):
+    """qk admissions waits: each Mac's waits by kind, an unlocked screen first, and by project and lane."""
+    SINCE = datetime(2026, 11, 18, 8, tzinfo=timezone.utc)
+    UNTIL = SINCE + timedelta(hours=8)
+
+    def entry(self, lane, kind, start, minutes, whole=True, project="EPUBLib"):
+        begun = self.SINCE + timedelta(minutes=start)
+        line = {"time": (begun + timedelta(minutes=minutes)).isoformat(), "event": "wait", "project": project,
+                "lane": lane, "kind": kind, "mac": "Here", "start": begun.isoformat(),
+                "end": (begun + timedelta(minutes=minutes)).isoformat(), "seconds": minutes * 60.0,
+                "wholeHost": whole, "reason": "why", "ended": "cleared"}
+        return json.dumps(line)
+
+    def lines(self, sources, kinds=None):
+        found = []
+        self.assertEqual(wait_history.report(sources, self.SINCE, self.UNTIL, kinds, found.append), 0)
+        return found
+
+    def test_screen_waits_come_first_and_each_lane_is_counted_within_the_period(self):
+        here = [wait_history.read_entry(text) for text in [
+            self.entry("gate", "admission", 10, 20),
+            self.entry("gate", "screen", 30, 40),
+            # Begun before the period: only its minutes inside it count.
+            self.entry("gate", "screen", -30, 40),
+            self.entry("mac-tests", "screen", 100, 5, whole=False, project="Pagepour"),
+            # Wholly outside the period.
+            self.entry("gate", "screen", 600, 10)]]
+        self.assertNotIn(None, here)
+        found = self.lines([("this Mac (Here)", here), ("build-host", "it did not answer in 30s"), ("other", [])])
+        self.assertEqual(found[1:], [
+            "  this Mac (Here):",
+            "    an unlocked screen (screen): 3 waits, 55m00s in all, longest 40m00s",
+            "      EPUBLib gate (whole-host): 2, 50m00s, longest 40m00s",
+            "      Pagepour mac-tests: 1, 5m00s, longest 5m00s",
+            "    admission (admission): 1 wait, 20m00s in all, longest 20m00s",
+            "      EPUBLib gate (whole-host): 1, 20m00s, longest 20m00s",
+            "  build-host: history unavailable: it did not answer in 30s",
+            "  other: no wait ended in the period",
+            "  A wait still going on is not counted until it ends; qk queue status shows it. A wait counts once for "
+            "each kind it went through."])
+        self.assertEqual(self.lines([("this Mac (Here)", here)], {"admission"})[1:3],
+                         ["  this Mac (Here):", "    admission (admission): 1 wait, 20m00s in all, longest 20m00s"])
+
+    def test_the_command_reads_a_copy_of_another_macs_history(self):
+        folder = Path(tempfile.mkdtemp(dir=host_isolation.ROOT))
+        copy = folder / "copy.jsonl"
+        copy.write_text(self.entry("gate", "screen", 30, 40) + "\n{garbled\n")
+        found = []
+        with patch.dict(os.environ, {"HEAVY_SLOT_DIR": str(folder / "slots")}), \
+                patch.object(cli.farm, "active", return_value=[{"name": "build-host", "ssh": "build-host"}]), \
+                patch.object(offload_host, "mac_name", return_value="Here"), \
+                patch.object(remote, "wait_log_there", side_effect=AssertionError("asked over ssh")):
+            self.assertEqual(wait_history.main(["--since", self.SINCE.isoformat(), "--until", self.UNTIL.isoformat(),
+                                                "--kind", "screen", "--there", str(copy)], found.append), 0)
+        self.assertEqual(found[1:4], ["  this Mac (Here): no wait ended in the period", "  build-host:",
+                                      "    an unlocked screen (screen): 1 wait, 40m00s in all, longest 40m00s"])
 
 
 class Relay(unittest.TestCase):

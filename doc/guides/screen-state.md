@@ -41,7 +41,9 @@ unlocked (owner's decision, 2026-11-17, [#205](https://github.com/vocaro/queueke
   slots are granted: if the screen locked while it waited, it gives them back unstarted and waits again
   with its place's age, saying `queuekeeper: gate gave back its admission, unstarted, and waits: ...`.
   Without that second reading, a gate held a Mac whole for 10 minutes for no verdict
-  ([#217](https://github.com/vocaro/queuekeeper/issues/217)).
+  ([#217](https://github.com/vocaro/queuekeeper/issues/217)). Each such wait is kept in that Mac's
+  [wait history](admission.md#wait-history), and `qk admissions waits --kind screen` shows how often
+  and how long each lane waited for a screen.
 - **Bisects.** A bisect's older half is offered to the farm like any gate, so it too goes to an unlocked
   Mac ([the merge queue](merge-queue.md), *A bisect's two halves gate at once*).
 - **`"display": true` is no substitute.** It wakes the display and keeps it on, behind a lock too, but

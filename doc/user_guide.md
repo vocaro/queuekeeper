@@ -426,7 +426,9 @@ So every lane, and every command run through `qk admit -- COMMAND`, first asks t
   for the CPU to read quiet before it starts. One lane at a time may use an on-device model or
   the GPU.
 - **Waiting says why.** A waiting lane says what it is waiting for and behind whom, every five
-  minutes. `qk admissions now` shows who holds and who waits on every Mac.
+  minutes. `qk admissions now` shows who holds and who waits on every Mac, and
+  `qk admissions waits` how often and how long lanes waited, for an unlocked screen as well as a
+  slot, from each Mac's [wait history](guides/admission.md#wait-history).
 - **Limits.** Admission never stops running work, and it cannot see load that never asks, such
   as an editor indexing in the background.
 

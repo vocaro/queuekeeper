@@ -561,6 +561,38 @@ python3 scripts/qk admissions <(ssh build-host \
   'cd "Library/Application Support/queuekeeper" && cat admissions.1.jsonl admissions.jsonl 2>/dev/null')
 ```
 
+## Wait history
+
+The admission log has a request's wait for admission, but not a lane's waits that hold no slot: for
+an unlocked screen, another Mac's foreground or free disk space. A lane's wait record, which
+`qk queue status` reads, is removed when the run ends. So each Mac keeps the waits that ended on it
+([#233](https://github.com/vocaro/queuekeeper/issues/233)): as a wait of one kind is cleared, turns
+into another kind or a wait on another Mac, or is left as the run ends (as when a lane waits out its
+limit for a screen), one JSON line is appended to `waits.jsonl` beside the admission log, so a
+HEAVY_SLOT_DIR namespace keeps its own. A line that would take it past 4 MiB first moves it to
+`waits.1.jsonl`, replacing the previous generation. Only the Mac a wait is on writes it; a wait still
+going on is in neither file. A history that cannot be written prints
+`queuekeeper: the wait history was not written: ERROR` and stops nothing.
+
+A line holds `time` (the wait's end, UTC) and `event` `wait`; `project` and `lane`, the outermost run
+on that Mac (`provision` for the step another Mac runs before a lane sent there); `kind`: `screen`,
+`admission`, `foreground`, `space`, or `overflow`, `unreachable` or `alone` while it waits on an
+offer; `mac`; `start`, `end` and `seconds`; `wholeHost`; `reason`, the last words given, up to 300
+characters; `ended`: `cleared`, `became a wait for KIND` or `the run ended`; and `dispatchedFrom`
+for a run another Mac sent. A wait that goes on under other words is one wait.
+
+`qk admissions waits` reports this Mac's history and those of the farm's Macs that take work now,
+asked over ssh:
+
+```sh
+python3 scripts/qk admissions waits --since 2026-11-18T08:00 --kind screen
+```
+
+For each Mac and kind, screen waits first, it gives the count, the time within the period and the
+longest, then each project's lane, `(whole-host)` marking a whole-host one. The period defaults to the
+last 24 hours; `--kind` may repeat; `--there LOG`, previous generation first, reads a copy of the
+first farm Mac's history instead of asking it.
+
 ## Who holds and who waits
 
 `python3 scripts/qk admissions now` shows admission as it stands on this Mac and on each of the

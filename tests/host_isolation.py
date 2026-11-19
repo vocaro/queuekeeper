@@ -127,6 +127,8 @@ os.environ.pop(offload_host.HARDWARE_VARIABLE, None)
 # The gate is a lane, so its suite inherits the name of the gate's own wait record: a lane a test runs would report its
 # waits there, into what `qk queue status` says of the gate, and never into its project's record (vocaro-engineering#335).
 os.environ.pop(remote.lane_wait.VARIABLE, None)
+# Nor does a lane a test runs write its waits into the wait history as the gate's (vocaro/queuekeeper#233).
+os.environ.pop(remote.lane_wait.LANE, None)
 os.environ.pop("QUEUEKEEPER_LANE_PROGRESS_RUN", None)
 # Nor does a lane a test runs write into what the enclosing lane set up for its own command: its results/, whose fixture
 # files then read as the gate's own failures and per-test results (vocaro-engineering#289), the checkout whose module

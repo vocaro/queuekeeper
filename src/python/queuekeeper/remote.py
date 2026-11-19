@@ -3868,6 +3868,17 @@ def admission_log_there(host, since):
     return [entry for entry in map(resources.read_entry, answered["lines"]) if entry is not None]
 
 
+def wait_log_there(host, since):
+    """Another Mac's history of lanes' waits that ended at or after since, a datetime, as wait_history.read reads
+    this Mac's, for `qk admissions waits` (vocaro/queuekeeper#233). Another Mac that cannot be reached or does not
+    answer with its lines raises Unavailable, as admission_log_there does."""
+    from queuekeeper import wait_history
+    answered = ask(host, {"waitLog": since.timestamp()}, timeout=CENSUS_TIMEOUT, unsent=True)
+    if not isinstance(answered, dict) or not isinstance(answered.get("lines"), list):
+        raise Unavailable(f"{host} did not send its wait history: it answered {str(answered)[:200]!r}")
+    return [entry for entry in map(wait_history.read_entry, answered["lines"]) if entry is not None]
+
+
 # Seconds `qk admissions now` gives another Mac in all, connection included, and the most bytes it reads back.
 ADMISSIONS_BUDGET, ADMISSIONS_BYTES = 10, 1 << 20
 

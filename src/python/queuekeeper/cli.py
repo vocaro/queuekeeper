@@ -15,7 +15,7 @@ import time
 import traceback
 
 from . import pins, __version__, budgets, checkout, count_history, disk, docs, extensions, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_wait, merge_queue, offload_host, \
-    parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling, trial
+    parallel, pre_push, preflight, processes, remote, resources, run_progress, shims, spelling, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, extensions_of, lane_to_run, load, \
     source_identity, lane_devices, legacy_spelling_warning, legacy_unread_warning, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
@@ -315,8 +315,12 @@ def lane_label(root, config, lane):
     command line; no configured project name or lane has one, and a colon would read as one more field
     after the `: ` that waiting messages put before a label. The name is queuekeeper.json's, else the
     checkout's; a linked worktree's directory is named for its session, so it takes its main checkout's."""
-    name = config.get("name") or (git_state.main_checkout(root) or root).name
-    return f"{name} {lane}"
+    return f"{project_name(root, config)} {lane}"
+
+
+def project_name(root, config):
+    """The project's name as a lane's label gives it (lane_label): queuekeeper.json's, else its main checkout's."""
+    return config.get("name") or (git_state.main_checkout(root) or root).name
 
 
 def placement(reason):
@@ -1288,7 +1292,9 @@ def perform(argv, report):
         "it runs in the current directory")
     logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
         "       %(prog)s recover [--host HOST] [OWNER]\n       %(prog)s remove OWNER --why TEXT\n       %(prog)s limits\n"
-        "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]\n       %(prog)s now [--json] [--here]",
+        "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]\n"
+        "       %(prog)s waits [--since WHEN] [--until WHEN] [--kind KIND ...] [--there LOG ...]\n"
+        "       %(prog)s now [--json] [--here]",
         help="summarize this host's heavy-work admission "
         "log: for each kind and label, the requests admitted and withdrawn, how long they waited and held, and how "
         "admissions ended; qk admissions recover lists the guard's dead or uncertain entries, and qk admissions "
@@ -1297,6 +1303,8 @@ def perform(argv, report):
         "nothing its owner may have started is found running; qk admissions limits prints the admission limits in force and where each comes from; qk "
         "admissions usage shows each Mac's capacity now, the share of the last 3 hours each spent at each count of "
         "heavy jobs, and why this Mac's work ran here, never offered to another Mac or declined by it; qk admissions "
+        "waits shows how often and how long each project's lanes waited, for an unlocked screen, admission, another "
+        "Mac's foreground or disk space, on each Mac, from each Mac's wait history; qk admissions "
         "now shows who holds and who waits for admission on each Mac now, how long and why",
         description="Summarize the admission log, or, with recover, list the guard's dead or uncertain entries and "
         "recover one: its owner, named by PID or identity, has ended, and nothing of the commands its process "
@@ -1437,6 +1445,7 @@ def perform(argv, report):
     if argv[first:first + 2] == ["admissions", "remove"]: return resources.remove_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "limits"]: return resources.limits_main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "usage"]: return resources.usage_main(argv[first + 2:])
+    if argv[first:first + 2] == ["admissions", "waits"]: return wait_history.main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "now"]: return resources.now_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
@@ -1581,7 +1590,7 @@ def perform(argv, report):
                                  f"given {shlex.join(extra)}; nothing ran. Run it without them: qk run {args.lane}")
             # A series' lane runs N times inside its one admission, within N times its limit (doc/guides/simulator-pool.md).
             limit = parallel.lane_timeout(lane, extra)
-            lane_wait.begin(root, args.lane)
+            lane_wait.begin(root, args.lane, project_name(root, config), bool(lane.get("wholeHost")))
             # A foreground lane takes a Mac's screen. A Mac whose own settings say it takes foreground work has its
             # foreground taken for the run, below, on whichever Mac that is (vocaro/queuekeeper#211). On any other, a
             # workstation, only the session holding mac-foreground within the owner's window runs it, with --here;
