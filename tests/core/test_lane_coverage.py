@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- isolates this module's host state as every test module's
-from queuekeeper import cli, config, lane_coverage
+from queuekeeper import cli, config, lane_coverage, parallel
 from queuekeeper.lane_coverage import COULD_NOT_TELL, EVERY_TEST_HAS_A_LANE, NO_TESTS_FOUND, TESTS_WITHOUT_A_LANE
 
 MANIFEST = 'let package = Package(name: "P", targets: [.testTarget(name: "PTests")])\n'
@@ -268,6 +268,27 @@ class Reading(Project):
     def test_a_name_pattern_cannot_be_read(self):
         self.python()
         self.assertEqual(self.selected("python3", "scripts/qk", "unittest", "-s", "tests", "-k", "x")["result"], COULD_NOT_TELL)
+
+    def test_every_option_of_qk_unittest_that_selects_nothing_reads_as_a_plain_run(self):
+        """The runner's own parser defines what is read, so a new option of a shape or a pace needs nothing here (#259)."""
+        self.python()
+        self.write("tools/test_b.py", "def test_y(): pass\n")
+        for action in parallel.unittest_options():
+            if parallel.UNITTEST_ROLES[action.dest] not in ("shape", "pace"): continue
+            for option in action.option_strings:
+                given = [option] if action.nargs == 0 else [option, str((action.choices or ["4"])[0])]
+                with self.subTest(option=option):
+                    result = self.selected("python3", "scripts/qk", "unittest", "-s", "tests", *given)
+                    self.assertEqual(result["noLane"], ["tools/test_b.py: tools.test_b"])
+
+    def test_an_option_of_qk_unittest_with_no_role_or_another_selection_cannot_be_read(self):
+        self.python()
+        command = ("python3", "scripts/qk", "unittest", "-s", "tests", "--split", "test")
+        self.assertEqual(self.selected(*command)["result"], EVERY_TEST_HAS_A_LANE)
+        for change in ({"split": "selection"}, {"split": None}):
+            with self.subTest(change), patch.dict(parallel.UNITTEST_ROLES, change):
+                if change["split"] is None: del parallel.UNITTEST_ROLES["split"]
+                self.assertEqual(self.selected(*command)["result"], COULD_NOT_TELL)
 
     def test_a_python_file_named_for_tests_that_holds_none_is_no_test(self):
         self.write("tests/testing_support.py", "def helper(): pass\n")

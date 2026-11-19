@@ -261,13 +261,13 @@ DOCTOR_NO_VERDICTS = 2
 FAILED_SHARD = re.compile(r"(\S+) \(((?:[^()]|\([^()]*\))*)\)")
 SHARD_HEADER = re.compile(r"^== (\S+): .* \(\d+ tests, [\d.]+s\)$", re.M)
 FAILED_TEST = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)", re.M)
-# The options of qk unittest a rerun keeps, and those it drops, each with its value: it names its own test and
-# runs one process at a time.
-RERUN_KEPT = {"-s", "--start-directory", "-p", "--pattern", "-t", "--top-level-directory", "--split", "--batch-size",
-              "--timeout"}
-RERUN_DROPPED = {"-j", "--jobs", "-k"}
-# The options of qk unittest that take no value and that a rerun drops: one test alone has nothing to stop early.
-RERUN_DROPPED_FLAGS = {"-v", "--verbose", "--fail-fast"}
+# {option: (whether a rerun keeps it, whether it takes a value)} of qk unittest's options, read from its own parser
+# by their roles (parallel.UNITTEST_ROLES, vocaro/queuekeeper#259): a rerun keeps the suite and its shape, and drops
+# its pace and selection, as it names its own test and runs one process at a time, verbose. An option with no role
+# is left out, so a command with it is not rerun, and the worker says so.
+RERUN_OPTIONS = {option: (parallel.UNITTEST_ROLES[action.dest] in ("suite", "shape"), action.nargs != 0)
+                 for action in parallel.unittest_options() if action.dest in parallel.UNITTEST_ROLES
+                 for option in action.option_strings}
 GH_TIMEOUT = 60
 # Seconds between readings of the CPU busy share of the Mac a gate lane runs on, which the gate's record keeps
 # beside its wall time, so that the budget's median can leave out runs made on a loaded host (vocaro-engineering#235).
@@ -775,27 +775,39 @@ def rerun_command(command):
     """The command, without its test, that reruns one test of a lane whose command is qk unittest
     (vocaro-engineering#231): the lane's command through `unittest`, its selection and shard options, one
     process at a time and verbose. None for a lane that is not qk unittest, as a project's own lane, or one with an
-    option the rerun cannot carry, which then bisects as before; a group's qk unittest lane is unittest_member's."""
-    if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
+    option the rerun cannot carry, which then bisects as before (rerun_unread says why); a group's qk unittest lane is
+    unittest_member's."""
+    return rerun_reading(command)[0]
+
+
+def rerun_unread(command):
+    """Why rerun_command gives None for a command that is qk unittest, as an option it does not know; None for a
+    command it reads, or one that is no qk unittest."""
+    return rerun_reading(command)[1]
+
+
+def rerun_reading(command):
+    """(rerun_command, rerun_unread) of command."""
+    if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None, None
     at = next((index for index, word in enumerate(command[:-1])
                if Path(word).name == "qk" and command[index + 1] == "unittest"), None)
-    if at is None: return None
+    if at is None: return None, None
     kept, words, index = command[:at + 2], command[at + 2:], 0
     while index < len(words):
         word = words[index]
         name, equals, _ = word.partition("=")
-        if word in RERUN_DROPPED_FLAGS:
-            index += 1
-        elif name in RERUN_KEPT | RERUN_DROPPED:
-            taken = words[index:index + 1] if equals else words[index:index + 2]
-            if len(taken) < (1 if equals else 2): return None
-            if name in RERUN_KEPT: kept += taken
+        if name in RERUN_OPTIONS:
+            keeps, valued = RERUN_OPTIONS[name]
+            if equals and not valued: return None, f"it gives {name}, which takes no value, a value"
+            taken = words[index:index + (2 if valued and not equals else 1)]
+            if valued and not equals and len(taken) < 2: return None, f"its {name} has no value"
+            if keeps: kept += taken
             index += len(taken)
         elif word.startswith("-"):
-            return None
+            return None, f"it has {name}, an option of qk unittest that a rerun of one test does not know"
         else:
             index += 1  # a name the lane selects: the rerun names its own test
-    return kept + ["-j", "1", "-v"]
+    return kept + ["-j", "1", "-v"], None
 
 
 def suite_of(command):
@@ -807,7 +819,7 @@ def suite_of(command):
     start, patterns, index = ".", [], 0
     while index < len(words):
         name, equals, value = words[index].partition("=")
-        if not equals and name in RERUN_KEPT and index + 1 < len(words):
+        if not equals and RERUN_OPTIONS.get(name, (False, False))[1] and index + 1 < len(words):
             index += 1
             value = words[index]
         if name in ("-s", "--start-directory"): start = value
@@ -4633,6 +4645,14 @@ class Worker:
         lanes = config.get("lanes", {})
         member = unittest_member(lanes, lane) if lane else None
         command = rerun_command(lanes[member].get("command")) if member else None
+        if command is None and lane:
+            # A qk unittest lane whose command has an option a rerun does not know bisects, but not without a word
+            # (vocaro/queuekeeper#259).
+            settings = lanes.get(lane) if isinstance(lanes.get(lane), dict) else {}
+            for name in [member] if member else settings.get("parallel", []):
+                unread = rerun_unread(lanes.get(name, {}).get("command")) if isinstance(lanes.get(name), dict) else None
+                if unread: self.say(f"{name}'s qk unittest command cannot be rerun one test at a time, as {unread}: "
+                                    "its failed tests are not rerun alone")
         if command is None:
             declared = declared_failures(lanes, lane, self.group_failed) if lane else None
             return self.rerun_declared(declared, applied, base, head, log, round_name) if declared else None

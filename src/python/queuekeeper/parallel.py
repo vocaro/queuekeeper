@@ -476,9 +476,31 @@ def reason_lines(reasons, saved):
     return lines
 
 
-def unittest_main(argv):
-    parser = argparse.ArgumentParser(prog="qk unittest", description="Discover a unittest suite as `python3 -m "
-        "unittest discover` does, and run its modules in processes of their own, JOBS at a time.",
+# What each option of qk unittest is to the code that reads a lane's command besides the runner, by its dest, so that
+# none of that code keeps a list of options of its own that a new one could miss (vocaro/queuekeeper#259):
+#   "suite": which modules make the suite. Lane coverage reads it, and a rerun of one failed test keeps it.
+#   "shape": how the tests are split into processes and stopped. A rerun keeps it, and lane coverage passes over it.
+#   "pace": how fast, how loudly or in what order the run goes. A rerun drops it, and lane coverage passes over it.
+#   "selection": which of the suite's tests run. A rerun names its own test instead, and lane coverage reads it.
+# An option with no role here makes merge_queue.rerun_command and lane_coverage.unittest_discovery give up on the
+# command, saying which option it was, and core.test_parallel.Options fails.
+UNITTEST_ROLES = {"start_directory": "suite", "pattern": "suite", "top_level_directory": "suite",
+                  "split": "shape", "batch_size": "shape", "timeout": "shape",
+                  "jobs": "pace", "verbose": "pace", "fail_fast": "pace",
+                  "selectors": "selection", "names": "selection"}
+
+
+def unittest_options():
+    """The options of qk unittest's parser, the actions of unittest_parser with its help left out."""
+    return [action for action in unittest_parser(add_help=False)._actions
+            if not isinstance(action, argparse._HelpAction)]
+
+
+def unittest_parser(add_help=True):
+    """qk unittest's parser: the one place its options are defined, which merge_queue.rerun_command and
+    lane_coverage.unittest_discovery read too, each option by its role in UNITTEST_ROLES."""
+    parser = argparse.ArgumentParser(prog="qk unittest", add_help=add_help, description="Discover a unittest suite as "
+        "`python3 -m unittest discover` does, and run its modules in processes of their own, JOBS at a time.",
         epilog="Started outside an admission, the run is admitted and placed first, as `qk admit -- COMMAND` "
         "would run it. --unadmitted, after `unittest`, runs it with no admission, on this Mac.")
     parser.add_argument("-s", "--start-directory", default=".")
@@ -507,6 +529,11 @@ def unittest_main(argv):
     parser.add_argument("names", nargs="*", metavar="NAME",
                         help="run only this module, class or test and what it holds, such as "
                         "test_merge_queue.Landing; each must name a discovered test")
+    return parser
+
+
+def unittest_main(argv):
+    parser = unittest_parser()
     args = parser.parse_args(argv)
     if args.jobs < 1: parser.error("--jobs needs at least 1")
     if args.batch_size is not None and (args.batch_size < 1 or args.split != "class"):

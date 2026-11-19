@@ -9311,6 +9311,21 @@ class FlakyReruns(Fixture):
         self.assertEqual(self.runs_of_the_test(), 3)
         self.assertEqual(self.pressure.call_count, 0)
 
+    def test_a_gate_with_an_option_a_rerun_does_not_know_bisects_and_says_why(self):
+        """A qk unittest option with no role keeps its gate from flake reruns, but never silently (#259)."""
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        with patch.dict(mq.RERUN_OPTIONS), contextlib.redirect_stdout(io.StringIO()) as said:
+            del mq.RERUN_OPTIONS["-v"]
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn("gate's qk unittest command cannot be rerun one test at a time, as it has -v, an option of qk "
+                      "unittest that a rerun of one test does not know: its failed tests are not rerun alone", log)
+        self.assertIn("2 commits fail together", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+        self.assertEqual(self.tracked, [])
+
     def test_a_gate_that_is_not_eng_unittest_bisects_at_once_as_before(self):
         config = self.config()
         config["lanes"]["gate"] = {"command": ["python3", "lane.py", str(self.counter), str(self.status)]}
@@ -9392,6 +9407,26 @@ class FlakyParts(unittest.TestCase):
                         None, "python3 scripts/qk unittest"):
             with self.subTest(command=command):
                 self.assertIsNone(mq.rerun_command(command))
+        self.assertEqual([mq.rerun_unread(command) for command in (["python3", "lane.py"], None, ["qk", "unittest", "-v"])],
+                         [None, None, None])
+        self.assertEqual(mq.rerun_unread(["qk", "unittest", "--failfast"]),
+                         "it has --failfast, an option of qk unittest that a rerun of one test does not know")
+        self.assertEqual(mq.rerun_unread(["qk", "unittest", "-s"]), "its -s has no value")
+        self.assertEqual(mq.rerun_unread(["qk", "unittest", "--verbose=1"]),
+                         "it gives --verbose, which takes no value, a value")
+
+    def test_the_rerun_reads_every_option_of_qk_unittest_by_its_role(self):
+        """Each option the runner's own parser defines, a new one too, is kept or dropped by its role, so none can
+        turn flake reruns off unseen (#259)."""
+        base = ["qk", "unittest"]
+        for action in mq.parallel.unittest_options():
+            if not action.option_strings: continue
+            role = mq.parallel.UNITTEST_ROLES[action.dest]
+            for option in action.option_strings:
+                given = [option] if action.nargs == 0 else [option, str((action.choices or ["4"])[0])]
+                with self.subTest(option=option, role=role):
+                    kept = given if role in ("suite", "shape") else []
+                    self.assertEqual(mq.rerun_command(base + given + ["test_a.A"]), base + kept + ["-j", "1", "-v"])
 
     def test_a_group_counts_as_its_one_eng_unittest_lane(self):
         suite = {"command": ["python3", "scripts/qk", "unittest", "-s", "tests", "-p", "test_a*.py"]}

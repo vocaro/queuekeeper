@@ -290,7 +290,10 @@ with `failedTests`.
 
 - **Rerun alone.** The worker reads the failed test IDs from unittest's `FAIL:` and `ERROR:` lines,
   waits for the Mac to settle, and reruns each alone with the lane's `-s`, `-p`, `-t`, `--split`,
-  `--batch-size` and `--timeout`, without `--fail-fast`, up to `RERUNS` (3) times. Any failing or
+  `--batch-size` and `--timeout`, without `--fail-fast`, up to `RERUNS` (3) times. Which options a
+  rerun keeps comes from `qk unittest`'s own parser, `parallel.unittest_parser`, by each option's
+  role in `parallel.UNITTEST_ROLES`, which `qk doctor`'s lane coverage reads too; a new option needs
+  a role there, and `core.test_parallel.Options` fails until it has one. Any failing or
   unmeasured rerun makes the failure real. While reruns wait and run, the worker writes
   `.build/queuekeeper/.waits/rerun.json` in its checkout, which `qk queue status` reads for each
   rerun's test, count, log and admission wait; the record goes once the verdict is in.
@@ -317,7 +320,8 @@ with `failedTests`.
   the next gate, or in both halves, with nobody to blame, holds the queue for a session.
 - **Bisect at once** when the lane is not `qk unittest` and has no `failedTests`, its log names no
   test to rerun, more than `RERUN_MOST` (5) tests failed, or the Mac does not settle within
-  `SETTLE_LIMIT`.
+  `SETTLE_LIMIT`. A `qk unittest` lane with an option a rerun cannot carry bisects too, and the
+  worker's log names the option.
 
 A send-back's reason ends with the Mac's load, split into readings while the lane ran and while it
 waited, and for each failed test whether the entry's commits change its file, saying when a test's

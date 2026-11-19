@@ -23,6 +23,8 @@ import posixpath
 import re
 import subprocess
 
+from . import parallel
+
 EVERY_TEST_HAS_A_LANE = "every-test-has-a-lane"
 TESTS_WITHOUT_A_LANE = "tests-without-a-lane"
 COULD_NOT_TELL = "could-not-tell"
@@ -53,8 +55,8 @@ class Unread(Exception):
 
 class Words(argparse.ArgumentParser):
     """A parser of a lane's words, which reports them as unread where argparse would exit."""
-    def __init__(self):
-        super().__init__(add_help=False, allow_abbrev=False)
+    def __init__(self, parents=()):
+        super().__init__(add_help=False, allow_abbrev=False, parents=list(parents))
 
     def error(self, message):
         raise Unread(f"its arguments do not parse: {message}")
@@ -224,21 +226,18 @@ def only_testing(words):
 
 def unittest_discovery(root, words, discover_form):
     """The modules qk unittest or python3 -m unittest discover reaches."""
-    parser = Words()
-    parser.add_argument("-s", "--start-directory", default=".")
-    parser.add_argument("-p", "--pattern", action="append")
-    parser.add_argument("-t", "--top-level-directory")
-    parser.add_argument("-k", dest="selectors", action="append", default=[])
-    parser.add_argument("-v", "--verbose", action="store_true")
-    # Only the order and an early stop: it selects what it would without.
-    parser.add_argument("--fail-fast", action="store_true")
-    parser.add_argument("-j", "--jobs")
-    parser.add_argument("--split")
-    parser.add_argument("--batch-size")
-    parser.add_argument("--timeout")
-    parser.add_argument("names", nargs="*")
+    # qk unittest's own options, each read by its role: the suite's and the names' are read here, a shape's or a pace's
+    # changes nothing of what runs, and any other selection, or an option with no role, cannot be read
+    # (parallel.UNITTEST_ROLES, vocaro/queuekeeper#259).
+    parser = Words(parents=[parallel.unittest_parser(add_help=False)])
     known = parser.parse_args(words)
-    if known.selectors: raise Unread("it selects by -k, a pattern over test names")
+    for action in parser._actions:
+        role = parallel.UNITTEST_ROLES.get(action.dest)
+        if role not in (None, "selection") or action.dest == "names" or getattr(known, action.dest) == action.default:
+            continue
+        option = "/".join(action.option_strings) or action.dest
+        if role is None: raise Unread(f"it gives {option}, an option of qk unittest whose role this does not know")
+        raise Unread(f"it selects by {option}, which this does not read")
     if discover_form and known.names: raise Unread("it gives discover positional arguments")
     start, patterns = posixpath.normpath(known.start_directory), known.pattern or ["test*.py"]
     def selects(test):

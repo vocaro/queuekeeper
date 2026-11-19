@@ -1251,6 +1251,21 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class Options(unittest.TestCase):
+    """qk unittest's options are defined once, in its parser, and each has a role that tells the worker's flake rerun
+    and lane coverage what to make of it (vocaro/queuekeeper#259)."""
+    def test_every_option_of_the_parser_has_a_role_and_every_role_an_option(self):
+        dests = [action.dest for action in parallel.unittest_options()]
+        self.assertEqual(sorted(dests), sorted(parallel.UNITTEST_ROLES),
+                         "give each new option of qk unittest its role in parallel.UNITTEST_ROLES")
+        self.assertLessEqual(set(parallel.UNITTEST_ROLES.values()), {"suite", "shape", "pace", "selection"})
+
+    def test_the_runner_parses_with_the_parser_the_readers_read(self):
+        args = parallel.unittest_parser().parse_args(["-s", "tests", "--fail-fast", "-k", "x", "test_a"])
+        self.assertEqual((args.start_directory, args.fail_fast, args.selectors, args.names), ("tests", True, ["x"], ["test_a"]))
+        self.assertNotIn("-h", [option for action in parallel.unittest_options() for option in action.option_strings])
+
+
 class RecursivePreflightTests(unittest.TestCase):
     def test_nested_modules_are_checked_before_import_with_distinct_relative_names(self):
         with tempfile.TemporaryDirectory() as directory:
