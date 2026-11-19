@@ -9,8 +9,7 @@ for this repository, not in a public issue.
 
 Say what an attacker could do, on which version or commit, and how to reproduce it.
 
-You should hear back within a week. Fixes land on `main`; there are no maintained release branches,
-so the fix is in the next version.
+Fixes land on `main`; there are no maintained release branches, so the fix is in the next version.
 
 ## Scope
 
