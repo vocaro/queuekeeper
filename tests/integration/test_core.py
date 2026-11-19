@@ -680,8 +680,9 @@ class ConfigurationTests(unittest.TestCase):
             landed(4, "Remove a test\n\nTests-Removed: test")
             status, said, recorded = run("test")
             self.assertEqual((status, recorded["outcome"]), (0, "passed"), said)
-            self.assertIn(f"{words} (", said)
-            self.assertIn(f"/{first}/test.json), which a commit since says with Tests-Removed: test", said)
+            # Against the pass of 9 when this toolkit's tree is clean, which keeps it; else against the first's 5.
+            self.assertRegex(said, r"test executed 4 tests, \d+ fewer than the (9|5) its last passing whole run on .*"
+                                   r"/test\.json\), which a commit since says with Tests-Removed: test")
 
     def test_a_lane_that_takes_no_arguments_refuses_them_before_anything_runs_or_is_sent(self):
         """BreezEPUB's ways-in on 2026-11-13 refused two -only-testing arguments in its own script, after the run had

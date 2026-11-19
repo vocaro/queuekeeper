@@ -1849,7 +1849,8 @@ def perform(argv, report):
             # The command has a confirmed terminal result. Coverage validation cannot turn
             # that completed process into an orphan reservation.
             log = (directory / "run.log").read_text(errors="replace")
-            tests = count_history.counts(lane_results.counted(log))
+            # A build that failed ran no test, whatever its output counts.
+            tests = None if compile_failed(receipt) else count_history.counts(lane_results.counted(log))
             if tests is not None: receipt["tests"] = tests
             try:
                 status, unmeasured = judge(lane, result, log, extra, args.expect)
