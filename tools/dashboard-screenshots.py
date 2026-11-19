@@ -546,12 +546,16 @@ class DevTools:
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         os.close(theirs_in); os.close(theirs_out)
         self.timeout, self.sent, self.unread, self.session = timeout, 0, b"", None
-        target = self.call("Target.createTarget", url=address)["targetId"]
-        self.session = self.call("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
-        deadline = time.monotonic() + timeout
-        while self.evaluate("document.readyState") != "complete":
-            if time.monotonic() > deadline: raise TimeoutError(f"Chrome did not finish loading {address}")
-            time.sleep(0.1)
+        try:
+            target = self.call("Target.createTarget", url=address)["targetId"]
+            self.session = self.call("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
+            deadline = time.monotonic() + timeout
+            while self.evaluate("document.readyState") != "complete":
+                if time.monotonic() > deadline: raise TimeoutError(f"Chrome did not finish loading {address}")
+                time.sleep(0.1)
+        except BaseException:
+            self.close()
+            raise
 
     def call(self, method, **params):
         self.sent += 1
