@@ -1651,8 +1651,10 @@ python3 tools/dashboard-screenshots.py
 ```
 
 It needs Google Chrome and writes, in the dark theme, `assets/dashboard-home.svg` (the Queue home
-view, with its Flow map animated by SVG and still where the viewer asks for reduced motion) and
-`dashboard-farm.png`.
+view, with its Flow map animated by SVG and still where the viewer asks for reduced motion),
+`dashboard-farm.png`, `dashboard-history.png` and `dashboard-activity.png`. The Trends tab's
+samples are drawn at random from a fixed seed, so that they look as uneven as real work and every
+retake draws the same.
 
 **Check that the Flow map moves with `--check-motion FOLDER`**, not with two headless screenshots:
 headless Chrome's `--virtual-time-budget` does not advance SVG animation, so such pictures show the

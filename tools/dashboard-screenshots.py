@@ -2,7 +2,7 @@
 """Retake the README's screenshots of the dashboard: assets/dashboard-TAB.png for each tab shown there, but for the
 Now tab (`queue`) assets/dashboard-home.svg, its picture with the Flow map's dots moving in it as they do on the page.
 
-    python3 tools/dashboard-screenshots.py                    Now (queue), Farm and Trends (history), in the dark theme
+    python3 tools/dashboard-screenshots.py                    Now (queue), Farm, Trends (history) and Activity, in the dark theme
     python3 tools/dashboard-screenshots.py --tabs logs activity
     python3 tools/dashboard-screenshots.py --theme light --out /tmp/shots
 
@@ -43,8 +43,10 @@ import base64
 import copy
 import html
 import json
+import math
 import os
 from pathlib import Path
+import random
 import re
 import select
 import subprocess
@@ -219,25 +221,33 @@ gate: 212 of 340 tests passed, 0 failed
 """
 PANELS["queue"]["overview"] = PANELS.pop("home")
 PANELS["about"] = panels.load("about").answer()
-# What lumen-ios's queue did: the round being tested, a hold and its resume, and a round whose entry came back
-# and was queued again, its gate failing a test that a flaky rerun did not explain.
-PANELS["activity"] = {"total": 9, "feed": [
+# What lumen-ios's queue did: the round being tested, a hold and its resume, a round whose entry came back, its gate
+# failing a test it broke while another test's failure was a flake a rerun passed, and earlier a batch of two that landed.
+PANELS["activity"] = {"total": 11, "feed": [
     {"kind": "round", "time": ago(252), "round": ROUND, "head": None, "flaky": [],
-     "entries": [{"id": E["0412"], "subject": "Show the sync status in the toolbar", "branch": "agent/sync-status", "state": "testing"}],
-     "lanes": [{"lane": "spelling", "role": "batch", "status": 0, "seconds": 2, "log": ROUND + "-spelling.log"},
+     "entries": [{"id": E["0412"], "subject": "Show the sync status in the toolbar", "branch": "claude/sync-status", "state": "testing"}],
+     "lanes": [{"lane": "lint", "role": "batch", "status": 0, "seconds": 38, "log": ROUND + "-lint.log"},
                {"lane": "gate", "role": "batch", "status": None, "seconds": 252, "log": ROUND + "-gate.log"}]},
     {"kind": "notice", "time": ago(900), "text": "The queue resumed after it was held for a session: the gate gave no verdict twice", "level": "plain"},
     {"kind": "notice", "time": ago(1500), "text": "The queue was held for a session: the gate gave no verdict twice", "level": "warning"},
     {"kind": "round", "time": ago(1900), "round": BEFORE, "head": None,
-     "flaky": [{"test": "lumen.test_sync.Tests.test_a_note_edited_offline_merges", "issue": "https://github.com/example/lumen/issues/41"}],
-     "entries": [{"id": "qk0398-offline-merge", "subject": "Merge a note edited offline", "branch": "agent/offline-merge", "state": "back",
+     "flaky": [{"test": "lumen.test_search.Tests.test_results_update_while_typing", "issue": "https://github.com/example/lumen/issues/41"}],
+     "entries": [{"id": "qk0398-offline-merge", "subject": "Merge a note edited offline", "branch": "codex/offline-merge", "state": "back",
                   "why": "The gate failed lumen.test_sync.Tests.test_a_note_edited_offline_merges on this commit on top of origin/main."}],
-     "lanes": [{"lane": "spelling", "role": "batch", "status": 0, "seconds": 2, "log": BEFORE + "-spelling.log"},
+     "lanes": [{"lane": "lint", "role": "batch", "status": 0, "seconds": 41, "log": BEFORE + "-lint.log"},
                {"lane": "gate", "role": "batch", "status": 1, "seconds": 288, "log": BEFORE + "-gate.log"}]},
     {"kind": "round", "time": ago(2600), "round": "20261116-090000-4c9a1e7b", "head": None, "flaky": [],
-     "entries": [{"id": E["0411"], "subject": "Keep the scroll position when a note is edited", "branch": "agent/scroll-position",
+     "entries": [{"id": E["0411"], "subject": "Keep the scroll position when a note is edited", "branch": "claude/scroll-position",
                   "state": "landed", "landedAs": "4c9a1e7b02d3f8"}],
-     "lanes": [{"lane": "gate", "role": "batch", "status": 0, "seconds": 251, "log": None}]}]}
+     "lanes": [{"lane": "lint", "role": "batch", "status": 0, "seconds": 36, "log": None},
+               {"lane": "gate", "role": "batch", "status": 0, "seconds": 251, "log": None}]},
+    {"kind": "round", "time": ago(3400), "round": "20261116-084500-18f6b2d0", "head": None, "flaky": [],
+     "entries": [{"id": E["0409"], "subject": "Queue exports while another is running", "branch": "claude/export-queue",
+                  "state": "landed", "landedAs": "18f6b2d07c4e19"},
+                 {"id": E["0410"], "subject": "Pick tags from a list as you type", "branch": "codex/tag-picker",
+                  "state": "landed", "landedAs": "a7c03e59b81d26"}],
+     "lanes": [{"lane": "lint", "role": "batch", "status": 0, "seconds": 40, "log": None},
+               {"lane": "gate", "role": "batch", "status": 0, "seconds": 274, "log": None}]}]}
 # Each of the last two weeks, oldest first, so that the last 7 days have 7 before them to be set against.
 PANELS["history"]["daily"] = [
     {"day": time.mktime(time.localtime(NOW - 86400 * back)[:3] + (0, 0, 0, 0, 0, -1)), "landed": 9 + (back * 5) % 7 + (0 if back > 6 else 3),
@@ -251,14 +261,63 @@ PANELS["farm"]["samples"] = [
      "projects": {"orbit-game": 3 if step > 320 else 1 + (step // 90) % 2, "lumen-ios": 4 if step > 335 else 2 if step > 120 else (step // 40) % 3,
                   "fieldnotes": 1 if 150 < step < 260 else 0}}
     for step in range(361)]
-# Today's lane runs on each Mac, landings over the last week, and the last passing gates' seconds.
+# The Trends tab's samples are drawn at random, as real work is uneven, from a seed, so that every run draws the same.
+RNG = random.Random(2026)
+
+
+def midnight(back):
+    """The local midnight that began the day `back` days before today."""
+    return time.mktime(time.localtime(NOW - 86400 * back)[:3] + (0, 0, 0, 0, 0, -1))
+
+
+def counted(mean):
+    """A count of landings in an hour whose mean is `mean`, as a Poisson draw."""
+    count, left = 0, RNG.random()
+    while left > math.exp(-mean):
+        count, left = count + 1, left * RNG.random()
+    return count
+
+
+def landed_by_hour(per_day):
+    """One repository's landings in each hour of the last 7 days. Agents land work at any hour, a little more while
+    their people are awake, and in bursts, so most hours have one or none and a few have several; today stops now."""
+    hour_now = time.localtime(NOW).tm_hour
+    return [{"day": midnight(back), "hours": [0 if back == 0 and hour > hour_now else
+                                              counted(per_day / 24 * (1.4 if 8 <= hour <= 23 else 0.5) * RNG.choice((0.3, 0.8, 1, 1, 1.5, 2.8)))
+                                              for hour in range(24)]} for back in range(6, -1, -1)]
+
+
+def gate_times(median, count=40):
+    """The seconds of a repository's last passing gates: spread around its median, with now and then a slow one."""
+    return [round(RNG.lognormvariate(math.log(median), 0.3) * (RNG.uniform(1.8, 3) if RNG.random() < 0.08 else 1)) for _ in range(count)]
+
+
+def lane_runs():
+    """Today's lane runs on each Mac, at most the last 7 hours: bursts of rounds back to back, quiet spells between,
+    gates of uneven length, now and then one that fails or goes unmeasured, and a short docs lane ahead of some.
+    studio.local runs lumen-ios's; This Mac runs lumen-ios's and orbit-game's. Returns each repository's runs."""
+    start, runs = max(midnight(0) + 300, NOW - 7 * 3600), {"lumen-ios": [], "orbit-game": []}
+    for mac in ("studio.local", None):
+        at = start + RNG.uniform(0, 1800)
+        while True:
+            name = "lumen-ios" if mac or RNG.random() < 0.55 else "orbit-game"
+            if RNG.random() < 0.3:
+                runs[name].append({"began": at, "ended": at + RNG.uniform(25, 60), "lane": "docs", "status": 0, "mac": mac,
+                                   "round": None, "log": None})
+                at = runs[name][-1]["ended"] + RNG.uniform(5, 20)
+            seconds = RNG.lognormvariate(math.log(270 if name == "lumen-ios" else 440), 0.3)
+            ended = at + seconds
+            if ended > NOW - 400: break
+            status = RNG.choices((0, 1, 3), (86, 10, 4))[0]
+            runs[name].append({"began": at, "ended": ended, "lane": "gate", "status": status, "mac": mac, "round": None, "log": None})
+            at = ended + (RNG.uniform(15, 90) if RNG.random() < 0.65 else RNG.uniform(900, 3600))
+    return {name: sorted(found, key=lambda run: run["ended"]) for name, found in runs.items()}
+
+
+RUNS = lane_runs()
 PANELS["history"].update(
     yesterday={"landed": 9, "cameBack": 1, "failed": 1, "conflict": 0, "removed": 0, "flaky": 1, "rounds": 7, "medianGateSeconds": 281},
-    gates=[{"began": ago(3600 * back + 260), "ended": ago(3600 * back), "lane": "gate", "status": 3 if back == 5 else 0,
-            "mac": None if back % 2 else "studio.local", "round": None, "log": None} for back in (7, 6, 5, 4, 3, 2, 1)],
-    landings=[{"day": time.mktime(time.localtime(NOW - 86400 * back)[:3] + (0, 0, 0, 0, 0, -1)),
-               "hours": [((hour * 7 + back * 3) % 5 if 8 <= hour <= 19 else 0) // 2 for hour in range(24)]} for back in range(6, -1, -1)],
-    gateSeconds=[230 + (step * 37) % 90 for step in range(40)])
+    gates=RUNS["lumen-ios"], landings=landed_by_hour(14), gateSeconds=gate_times(260))
 PANELS["farm"]["deviceRecord"] = {"devices": [
     {"name": "iPhone", "kind": "iphone", "model": "iPhone 17 Pro", "state": "held", "owner": "release-tests",
      "purpose": "Release checks",
@@ -322,7 +381,8 @@ def others():
         found["activity"] = {"total": 1, "feed": [{"kind": "round", "time": own["settled"] - 300, "round": ROUND, "head": None, "flaky": [],
             "entries": [{"id": own["id"], "subject": own["subject"], "branch": own["branch"], "state": "landed", "landedAs": own["landedAs"]}],
             "lanes": [{"lane": "gate", "role": "batch", "status": 0, "seconds": 280, "log": None}]}]}
-        found["history"]["gateSeconds"] = [seconds * 7 // 4 if found is orbit else seconds // 3 for seconds in found["history"]["gateSeconds"]]
+        found["history"].update(gateSeconds=gate_times({id(orbit): 440, id(notes): 92, id(harbor): 150}[id(found)]),
+                                landings=landed_by_hour({id(orbit): 6, id(notes): 9, id(harbor): 4}[id(found)]))
         found["queue"]["health"]["signs"][4] = health.sign("cameBack", health.OK, "none of the last 8 came back")
         found["history"]["today"].update(landed=landed, rounds=landed, removed=0,
                                          medianGateSeconds=sorted(found["history"]["gateSeconds"])[len(found["history"]["gateSeconds"]) // 2])
@@ -352,8 +412,7 @@ def others():
     orbit["activity"]["feed"].insert(0, {"kind": "round", "time": ago(431), "round": ORBIT, "head": None, "flaky": [],
         "entries": [{"id": LEVEL["id"], "subject": LEVEL["subject"], "branch": LEVEL["branch"], "state": "testing"}],
         "lanes": [{"lane": "gate", "role": "batch", "status": None, "seconds": 431, "log": ORBIT + "-gate.log"}]})
-    orbit["history"]["gates"] = [{"began": ago(3600 * back + 130), "ended": ago(3600 * back), "lane": "gate", "status": 0, "mac": None,
-                                  "round": None, "log": None} for back in (6.5, 4.5, 2.5)]
+    orbit["history"]["gates"] = RUNS["orbit-game"]
     harbor["queue"]["overview"].update(level="idle", headline="Idle", detail="Nothing is waiting.", began=None)
     harbor["queue"]["health"].update(verdict="quiet", level=health.IDLE, label="All quiet", forecast=None,
                                      sentence="Nothing is waiting. The last entry landed 1h 53m ago.")
@@ -626,7 +685,7 @@ def check_motion(binary, image, folder):
 def main(argv):
     parser = argparse.ArgumentParser(prog="dashboard-screenshots.py", description="Retake the README's screenshots "
                                      "of the dashboard, from made-up data.")
-    parser.add_argument("--tabs", nargs="+", default=["queue", "farm", "history"], choices=TABS, metavar="TAB",
+    parser.add_argument("--tabs", nargs="+", default=["queue", "farm", "history", "activity"], choices=TABS, metavar="TAB",
                         help="the tabs to take (default: queue farm history; also activity, logs and about)")
     parser.add_argument("--theme", choices=("dark", "light"), default="dark", help="the page's theme (default dark)")
     parser.add_argument("--out", type=Path, default=CHECKOUT / "assets", metavar="FOLDER",

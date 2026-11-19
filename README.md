@@ -94,8 +94,13 @@ day so far, today's lane runs on each Mac, and when work lands by day and hour.
 </p>
 
 **Activity** lists each round, newest first, with how each entry ended and a link to every lane's
-log, which opens in **Logs** with its failures marked. See [the user guide](doc/user_guide.md#the-dashboard)
-for details.
+log, which opens in **Logs** with its failures marked.
+
+<p align="center">
+  <img src="assets/dashboard-activity.png" alt="The dashboard's Activity tab across four projects: three rounds being tested with their lanes' time so far, a hold and its resume, an entry that came back with the test that failed it and a flaky test a rerun passed, and rounds that landed, one of them a batch of two entries, each with its lanes and the commit it landed as." width="100%">
+</p>
+
+See [the user guide](doc/user_guide.md#the-dashboard) for details.
 
 ## Plugins
 
