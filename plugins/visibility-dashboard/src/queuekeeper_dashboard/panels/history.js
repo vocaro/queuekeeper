@@ -79,7 +79,9 @@ QK.panel("history", {
     }
     // Each lane's timing baseline on this Mac beside its recent passing runs, oldest first: the p90 its live warning
     // goes by as a solid line, its fail threshold, when it has one in force, as a dashed red one, and where its
-    // history was marked stale as a dashed upright, the runs before it faded, since the baseline leaves them out.
+    // history was marked stale as a dashed upright. Every run the baseline leaves out is faded: those before the mark,
+    // and those older than the newest it counts since then (countedFrom).
+    const counted = (one, run) => !(one.staleSince && run[0] <= one.staleSince) && !(one.countedFrom && run[0] < one.countedFrom);
     function baselines() {
       const lanes = data.baselines || [], fewest = data.fewest || 5;
       if (!lanes.length) return h("p", { class: "sub" }, "No lane has a timing history on this Mac yet.");
@@ -101,7 +103,7 @@ QK.panel("history", {
           svg("line", { class: "base", x1: 0, x2: W, y1: H - pad, y2: H - pad }),
           stale === null ? null : svg("line", { class: "stale", x1: stale, x2: stale, y1: 0, y2: H },
             svg("title", null, "Marked stale " + QK.clock(one.staleSince))),
-          runs.map((run, index) => svg("circle", { class: "run" + (one.staleSince && run[0] <= one.staleSince ? " old" : ""), cx: x(index), cy: y(run[1]), r: 3 },
+          runs.map((run, index) => svg("circle", { class: "run" + (counted(one, run) ? "" : " old"), cx: x(index), cy: y(run[1]), r: 3 },
             svg("title", null, QK.span(run[1]) + " · " + QK.clock(run[0])))),
           found ? svg("line", { class: "p90", x1: 0, x2: W, y1: y(found.p90), y2: y(found.p90) }, svg("title", null, "p90 " + QK.span(found.p90))) : null,
           one.failSeconds ? svg("line", { class: "fail", x1: 0, x2: W, y1: y(one.failSeconds), y2: y(one.failSeconds) },
@@ -119,7 +121,7 @@ QK.panel("history", {
             : one.fail ? h("span", { class: "muted", title: "Applies once the baseline has " + one.minSamples + " runs" }, one.fail + " after " + one.minSamples + " runs") : "–"),
           h("td", { class: "strip-cell" }, plot(one))))))),
         h("div", { class: "legend sub" }, h("span", null, h("i", { class: "key p90-line" }), "p90"), h("span", null, h("i", { class: "key fail-line" }), "fail threshold"),
-          h("span", null, h("i", { class: "key stale-line" }), "marked stale"),
+          h("span", null, h("i", { class: "key stale-line" }), "marked stale"), h("span", null, h("i", { class: "key old-run" }), "faded: not in the baseline"),
           h("span", null, "On this Mac. The live warning comes past the p90 of a lane's newest passing runs since it was last marked stale; it needs " + fewest + " of them.")));
     }
     // Each repository's day beside yesterday's to this time, and its passing gates' times as a strip of dots on one

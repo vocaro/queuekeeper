@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -148,6 +149,22 @@ class PaceTests(unittest.TestCase):
             self.assertIn(lane_timing.PREFIX + "failed: slow ran past", log.read_text())
             self.assertIn(lane_timing.PREFIX + "warning:", error.getvalue())
 
+    def test_a_sample_stalled_past_the_timeout_still_stops_the_run_as_too_slow(self):
+        # vocaro/queuekeeper#283: under a load of about 100, a run past its 1.1 s threshold reached its 30 s timeout
+        # instead. A ps that a loaded host stalls past both bounds, as here, once judged the run by its timeout first.
+        # The 2 s timeout and the 3 s stall are the behavior under test, and stay fixed.
+        real, calls = processes.snapshot, []
+        def stalled():
+            calls.append(None)
+            if len(calls) == 2: time.sleep(3)
+            return real()
+        with tempfile.TemporaryDirectory() as tmp, history(tmp), patch.object(processes, "snapshot", stalled):
+            for index in range(10): lane_timing.record("P", "slow", 0.1, at=index)
+            pace = lane_timing.Pace("slow", {"timing": {"fail": "+1s"}}, "P", live=None)
+            with contextlib.redirect_stderr(StringIO()), self.assertRaises(processes.TooSlow):
+                processes.run([sys.executable, "-c", "import time; time.sleep(60)"], cwd=tmp,
+                              log_path=Path(tmp) / "run.log", timeout=2, pace=pace)
+
 
 class LaneRunTests(unittest.TestCase):
     def project(self, directory, lanes):
@@ -194,6 +211,56 @@ class LaneRunTests(unittest.TestCase):
             status, said = self.run_lane(directory, "hang")
             self.assertNotEqual(status, 0, said)
             self.assertIn(lane_timing.NOTICE_PREFIX + "hang reached its timeout: do not raise the limit", said)
+
+    def test_a_groups_members_are_each_timed_against_their_own_baselines(self):
+        # vocaro/queuekeeper#284: a group's members ran with no warning, threshold or history.
+        with tempfile.TemporaryDirectory() as tmp, history(tmp), tempfile.TemporaryDirectory() as directory:
+            wait = Path(tmp) / "both.json"
+            self.project(directory, {
+                "quick": {"command": [sys.executable, "-c", "print('Ran 1 test')"]},
+                "slow": {"command": [sys.executable, "-c", "import time; time.sleep(60)"],
+                         "timeout": round(stretched(60)), "timing": {"fail": "+1s", "minSamples": 5},
+                         "notice": "split the lane instead"},
+                "both": {"parallel": ["quick", "slow"]}})
+            for index in range(lane_timing.FEWEST): lane_timing.record("timed", "slow", 0.1, at=index)
+            with patch.object(cli, "source_identity", return_value={"revision": "abc"}), \
+                    patch.dict(os.environ, {"QUEUEKEEPER_LANE_WAIT": str(wait)}), \
+                    contextlib.redirect_stdout(StringIO()) as out, contextlib.redirect_stderr(StringIO()) as error:
+                status = cli.main(["--project", directory, "run", "--here", "both"])
+            said = out.getvalue() + error.getvalue()
+            self.assertEqual(status, 1, said)
+            self.assertIn(lane_timing.PREFIX + "warning: slow has run", said)
+            notice = lane_timing.NOTICE_PREFIX + "slow reached its timing fail threshold: split the lane instead"
+            self.assertIn(notice, said, "a member's limit shows the member's own notice")
+            lanes = Path(directory) / ".build/queuekeeper/both/lanes"
+            self.assertEqual(lane_timing.found_in((lanes / "slow.log").read_text())[-1], notice)
+            member = json.loads((lanes / "slow.json").read_text())
+            self.assertEqual((member["status"], member["timing"]["samples"]), (1, lane_timing.FEWEST))
+            runs = [entry for entry in lane_timing.read() if entry.get("event") == "run" and entry["lane"] == "quick"]
+            self.assertEqual([(entry["project"], entry["commit"]) for entry in runs], [("timed", "abc")],
+                             "a passing member joins its own history")
+            self.assertEqual(lane_timing.baseline("timed", "slow")["samples"], lane_timing.FEWEST)
+            live = lane_timing.live(wait)
+            self.assertEqual((live["lane"], live["state"], set(live["lanes"])), ("both", "failed", {"slow"}))
+
+    def test_a_groups_live_record_holds_each_members_own(self):
+        with tempfile.TemporaryDirectory() as tmp, history(tmp):
+            for name in ("a", "b"):
+                for index in range(10): lane_timing.record("P", name, 100, at=index)
+            live, clocks = Path(tmp) / "group.json.timing", {"a": Clock(), "b": Clock()}
+            live.write_text(json.dumps({"words": "an earlier run's", "written": 0}))
+            lane_timing.clear_live(live)
+            paces = {name: lane_timing.Pace(name, {"timing": {"fail": "+50%"}}, "P", live=live, clock=clocks[name],
+                                            group="group") for name in ("a", "b")}
+            clocks["a"].now = 101
+            paces["a"].observe()
+            clocks["b"].now = 151
+            paces["b"].observe()
+            found = lane_timing.live(Path(tmp) / "group.json")
+            self.assertEqual((found["lane"], found["state"]), ("group", "failed"))
+            self.assertEqual(set(found["lanes"]), {"a", "b"})
+            self.assertTrue(found["words"].startswith("b ran past"), "a failure's words come first")
+            self.assertIn("a has run 1m41s", found["words"])
 
 
 class StaleCommandTests(unittest.TestCase):

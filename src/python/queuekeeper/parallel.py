@@ -27,7 +27,7 @@ import threading
 import time
 import unittest
 
-from . import plugins, lane_results, processes, resources, run_progress, shims
+from . import plugins, lane_results, lane_timing, processes, resources, run_progress, shims
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
@@ -126,7 +126,8 @@ def hand_up(results, lane, environment=None):
     return target
 
 
-def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None, fail_fast=False):
+def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None, fail_fast=False,
+          pace=None):
     """Run members, (name, lane) pairs, jobs at a time, each with its log at directory/NAME.log and
     its receipt at directory/NAME.json, and return the combined status. judge(lane, status, log) is
     a lane's status from its command's and its log, raising ValueError for a run that executed too
@@ -142,6 +143,11 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
     timeout would stop it, SIGTERM and then SIGKILL, and none of the rest starts. Each has a receipt whose outcome is
     CUT_SHORT, with no status, which the group's verdict leaves out, and the group's receipt names the failed lane in
     stoppedAt and the others in cutShort (vocaro/queuekeeper#256).
+
+    With pace, pace(name, lane) is a lane's lane_timing.Pace as it starts, or None, which supervise asks as it runs
+    (vocaro/queuekeeper#284): past its fail threshold the lane fails, and a pass adds its time to its history. A lane
+    that its own timeout, stall bound or fail threshold stops shows its own notice (lane_timing.notice) in its log
+    and the group's output.
     """
     directory.mkdir(parents=True, exist_ok=True)
     results, lock, started = {}, threading.Lock(), time.monotonic()
@@ -154,14 +160,15 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
     def say(*lines):
         with lock: print(*lines, sep="\n", flush=True)
 
-    def conclude(name, lane, log, began, status, verdict, detail):
+    def conclude(name, lane, log, began, status, verdict, detail, timing=None):
         """Record a lane's end in the group's receipt and in its own, beside its log, with the tests
         its log counts, so that its counts read from its files wherever they are copied."""
         seconds = round(time.monotonic() - began)
         found = lane_results.counted(log.read_text(errors="replace")) if log.exists() else None
         result = {"status": status, "outcome": verdict, "seconds": seconds, "log": str(log),
                   "executedTests": None if found is None else found[0] - found[1],
-                  "skippedTests": None if found is None else found[1], **({"error": detail} if detail else {})}
+                  "skippedTests": None if found is None else found[1], **({"error": detail} if detail else {}),
+                  **({"timing": timing} if timing else {})}
         results[name] = result
         # The log's name, not its path: the receipt is read beside it, on another Mac too.
         (directory / f"{name}.json").write_text(json.dumps(
@@ -181,10 +188,11 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             log.write_text(f"queuekeeper: {name} {because()}\n")
             return cut_short(name, lane, log, began)
         say(f"RUN {name}")
+        timed, notice = pace(name, lane) if pace is not None else None, None
         try:
             status = processes.run(lane["command"], cwd=root, log_path=log,
                                    timeout=lane.get("timeout", processes.DEFAULT_LIMIT),
-                                   on_stop=on_stop, cancel=cut,
+                                   on_stop=on_stop, cancel=cut, pace=timed if timed is not None and timed.active() else None,
                                    **({"stall": lane["stall"], "progress_path": results_directory / name / "progress.json"
                                       if results_directory is not None else directory / f"{name}.progress.json"}
                                       if "stall" in lane else {}),
@@ -194,9 +202,16 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
         except processes.Canceled:
             # Only the group's first failure cancels a lane.
             return cut_short(name, lane, log, began)
+        except processes.TooSlow as error:
+            # Past its own fail threshold over its timing baseline it fails: it became that much slower.
+            status, detail = 1, str(error)
+            notice = lane_timing.notice_line(name, lane, "timing fail threshold")
         except processes.TimedOut as error:
             # A lane's timeout is its backstop, so a run a busy host slowed past it is unmeasured.
             status, detail = lane_results.UNMEASURED, str(error)
+            if not isinstance(error, processes.OutOfSpace):
+                stalled = isinstance(error, processes.Stalled)
+                notice = lane_timing.notice_line(name, lane, "stall bound" if stalled else "timeout", stalled)
         except processes.NotStarted as error:
             status, detail = 2, str(error)
         except ValueError as error:
@@ -210,7 +225,14 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             raise
         else:
             detail = None
-        seconds = conclude(name, lane, log, began, status, verdict_of(status), detail)
+        # At the end of its log, which the tail below shows.
+        if notice is not None:
+            with contextlib.suppress(OSError), log.open("a") as written: written.write(notice + "\n")
+        timing = {**timed.summary(), "seconds": round(time.monotonic() - timed.began, 1)} \
+            if timed is not None and timed.base is not None else None
+        # A passing member is one more in its own timing history on this Mac (lane_timing).
+        if timed is not None and status == 0: timed.passed()
+        seconds = conclude(name, lane, log, began, status, verdict_of(status), detail, timing)
         if cut is not None and outcome(status) == "FAIL":
             with lock:
                 if not cut.is_set(): failed.append(name)

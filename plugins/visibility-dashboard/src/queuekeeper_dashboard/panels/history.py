@@ -120,7 +120,10 @@ def baselines(root, entries=None):
     """Each lane's timing baseline on this Mac (lane_timing), as `qk timing show` gives it, beside the seconds of
     its newest LANE_RUNS passing runs, oldest first, as [epoch time, seconds], those before its last stale mark among
     them, so that the page can draw the baseline's p90 and the lane's fail threshold against them and mark where the
-    history was marked stale. A lane with fewer than lane_timing.FEWEST passing runs since then has no baseline."""
+    history was marked stale. A lane with fewer than lane_timing.FEWEST passing runs since then has no baseline.
+    countedFrom is the time of the oldest run the baseline counts, its newest lane_timing.RECENT since the mark, or
+    None with none since it, so that the page fades every run the baseline leaves out, for age as well as for the
+    mark (vocaro/queuekeeper#280)."""
     try:
         config = configuration.load(root)
         from queuekeeper import cli
@@ -136,13 +139,16 @@ def baselines(root, entries=None):
         found = lane_timing.baseline(project, name, entries)
         try: limit = lane_timing.fail_seconds(settings, found)
         except ValueError: limit = None
-        runs = [[entry["time"], entry["seconds"]] for entry in entries if entry.get("event") == "run"
-                and entry.get("project") == project and entry.get("lane") == name
-                and lane_timing.number(entry.get("seconds"))][-LANE_RUNS:]
+        every = [[entry["time"], entry["seconds"]] for entry in entries if entry.get("event") == "run"
+                 and entry.get("project") == project and entry.get("lane") == name
+                 and lane_timing.number(entry.get("seconds"))]
+        since = lane_timing.stale_since(marks, name)
+        counted = [run for run in every if since is None or run[0] > since][-lane_timing.RECENT:]
+        runs = every[-LANE_RUNS:]
         rows.append({"lane": name, "runs": runs, "baseline": found, "fail": settings.get("fail"),
                      "failSeconds": round(limit, 1) if limit else None,
                      "minSamples": settings.get("minSamples", lane_timing.MIN_SAMPLES) if "fail" in settings else None,
-                     "staleSince": lane_timing.stale_since(marks, name)})
+                     "staleSince": since, "countedFrom": counted[0][0] if counted else None})
     return rows
 
 

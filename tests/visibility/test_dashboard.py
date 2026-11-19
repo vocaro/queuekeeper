@@ -684,7 +684,8 @@ class Panels(Fixture):
             for index, seconds in enumerate((100, 110, 120, 130, 900)): lane_timing.record("fixture", "gate", seconds, at=10 + index)
             lane_timing.mark_stale("fixture", ["gate"], "split the suite", at=20)
             for index, seconds in enumerate((60, 62, 58, 61, 70)): lane_timing.record("fixture", "gate", seconds, at=30 + index)
-            for index in range(5): lane_timing.record("fixture", "lint", 10, at=40 + index)
+            # More runs than the baseline counts: the oldest are drawn but left out of it for age (#280).
+            for index in range(lane_timing.RECENT + 3): lane_timing.record("fixture", "lint", 10, at=40 + index)
             for index in range(5): lane_timing.record("fixture", "docs", 30, at=40 + index)
             lane_timing.record("other", "gate", 999, at=50)
             found = {one["lane"]: one for one in history.data(self.one, {})["baselines"]}
@@ -694,6 +695,10 @@ class Panels(Fixture):
         self.assertEqual([seconds for _, seconds in gate["runs"]], [100, 110, 120, 130, 900, 60, 62, 58, 61, 70])
         self.assertEqual((gate["baseline"]["p90"], gate["baseline"]["samples"], gate["staleSince"]), (70, 5, 20))
         self.assertEqual((gate["fail"], gate["failSeconds"]), (None, None))
+        # The page fades each run the baseline leaves out: before the stale mark, or older than the newest RECENT.
+        self.assertEqual(gate["countedFrom"], 30)
+        self.assertEqual((len(lint["runs"]), lint["baseline"]["samples"], lint["countedFrom"]),
+                         (lane_timing.RECENT + 3, lane_timing.RECENT, 43))
         # A fail threshold is drawn once the baseline has the lane's minSamples runs, and said as waiting before then.
         self.assertEqual((lint["fail"], lint["failSeconds"], lint["minSamples"]), ("+50%", 15.0, 5))
         self.assertEqual((docs["fail"], docs["failSeconds"], docs["minSamples"]), ("+2m", None, lane_timing.MIN_SAMPLES))

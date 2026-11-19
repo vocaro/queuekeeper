@@ -12,7 +12,10 @@ history was last marked stale, once it has FEWEST of them.
 
 While a lane runs, past its baseline it says so once: a line in its log and on qk run's standard error, which the
 queue's gate log keeps, and a record beside the lane's wait record (live_path) that `qk queue status`, `qk queue wait`
-and their JSON read, which a run on another Mac sends back with its wait record. A lane may also give a fail threshold
+and their JSON read, which a run on another Mac sends back with its wait record. A lane group has no timing of its
+own: each of its members is timed against its own baseline as it runs in the group, records its own passing runs and
+says its own warnings, which the group's live record holds together, one entry per member (vocaro/queuekeeper#284).
+A lane may also give a fail threshold
 relative to its baseline ("timing": {"fail": "+25%"} or "+2m"), which applies once the baseline has the lane's
 minSamples runs (MIN_SAMPLES by default): past it the lane is stopped, as a stall is, and fails, as a lane that got
 slower is a change's to explain. A run on a loaded host can go past it too, which is why it is opt-in.
@@ -35,6 +38,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import threading
 import time
 
 HISTORY, PREVIOUS, LOCK, LIMIT = "timings.jsonl", "timings.1.jsonl", "timings.lock", 2 << 20
@@ -61,6 +65,8 @@ THRESHOLD = re.compile(r"^\+(\d+(?:\.\d+)?)(%|s|m|h)$")
 UNITS = {"s": 1, "m": 60, "h": 3600}
 # The suffix of the live record beside a lane's wait record (lane_wait.VARIABLE).
 LIVE = ".timing"
+# Held while a lane group's member updates the group's live record, which its other members write too.
+SHARED = threading.Lock()
 
 
 def path():
@@ -223,8 +229,10 @@ def words(seconds):
 class Pace:
     """A running lane's place against its baseline, which supervise asks every second or so (observe)."""
 
-    def __init__(self, name, lane, project, entries=None, live=None, clock=time.monotonic):
-        self.name, self.lane, self.clock = name, lane, clock
+    def __init__(self, name, lane, project, entries=None, live=None, clock=time.monotonic, commit=None, group=None):
+        """group, the name of the lane group name runs in, makes this one entry of the group's live record, which the
+        group clears once as it starts (clear_live) rather than each member as it starts."""
+        self.name, self.lane, self.clock, self.project, self.commit, self.group = name, lane, clock, project, commit, group
         settings = lane.get("timing") if isinstance(lane.get("timing"), dict) else {}
         self.warns = settings.get("warn", True)
         try: self.base = baseline(project, name, entries)
@@ -235,8 +243,7 @@ class Pace:
         self.setting = settings.get("fail")
         self.live = live if live is not None else live_path()
         self.began, self.started, self.warned, self.failed = clock(), time.time(), None, None
-        if self.live is not None:
-            with contextlib.suppress(OSError): Path(self.live).unlink()
+        if self.live is not None and group is None: clear_live(self.live)
 
     def active(self):
         """Whether there is anything to watch: a baseline to warn against, or a threshold to fail past."""
@@ -268,12 +275,36 @@ class Pace:
             return "\n".join(filter(None, (said, PREFIX + "failed: " + self.failed))), self.failed
         return said, None
 
+    def passed(self):
+        """The run passed: one more in the lane's history, timed from its start (record)."""
+        return record(self.project, self.name, self.clock() - self.began, self.commit)
+
     def publish(self, state, said):
         if self.live is None: return
         live = {"lane": self.name, "state": state, "words": said, "startedAt": self.started, "written": time.time(),
                 "p90Seconds": round(self.base["p90"], 1), "samples": self.base["samples"],
                 **({"failSeconds": round(self.limit, 1)} if self.limit else {})}
-        write_live(self.live, live)
+        if self.group is None: return write_live(self.live, live)
+        with SHARED:
+            try: found = json.loads(Path(self.live).read_text())
+            except (OSError, ValueError): found = None
+            lanes = found.get("lanes") if isinstance(found, dict) and isinstance(found.get("lanes"), dict) else {}
+            lanes[self.name] = live
+            write_live(self.live, grouped(self.group, lanes))
+
+
+def grouped(group, lanes):
+    """A lane group's live record from its members' own, {NAME: record}: failed if any member failed, its words each
+    member's, a failure's first, and the members' own under "lanes"."""
+    members = sorted(lanes.values(), key=lambda member: (member.get("state") != "failed", member.get("startedAt", 0)))
+    return {"lane": group, "state": "failed" if any(member.get("state") == "failed" for member in members) else "slow",
+            "words": "; ".join(member["words"] for member in members),
+            "startedAt": min(member.get("startedAt", 0) for member in members), "written": time.time(), "lanes": lanes}
+
+
+def clear_live(where):
+    """Remove an earlier run's live record at where, as a run starts."""
+    with contextlib.suppress(OSError): Path(where).unlink()
 
 
 def live_path():

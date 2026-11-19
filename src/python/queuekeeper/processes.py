@@ -524,6 +524,19 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                         expired, stalled = time.monotonic(), detail
                         logged(stdout, f"supervise: stalled: {detail}; sending SIGTERM to the command (PID {child.pid}) "
                                f"and its observed descendants, then SIGKILL after {kill_after:g}s")
+            # Before the timeout, which is the backstop past it: a sample that a loaded host stalls for longer than
+            # the timeout, as ps can, still stops a run past its fail threshold as too slow (vocaro/queuekeeper#283).
+            if pace is not None and root_active and expired is None and stopped is None \
+                    and time.monotonic() - paced >= PACE_POLL:
+                paced = time.monotonic()
+                said, failed = pace.observe()
+                if said:
+                    logged(stdout, said)
+                    print(said, file=sys.stderr, flush=True)
+                if failed and child.poll() is None:
+                    expired, slow = time.monotonic(), failed
+                    logged(stdout, f"supervise: past its timing threshold: {failed}; sending SIGTERM to the command "
+                           f"(PID {child.pid}) and its observed descendants, then SIGKILL after {kill_after:g}s")
             if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
                 expired = time.monotonic()
                 logged(stdout, f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
@@ -536,17 +549,6 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     expired, exhausted = time.monotonic(), short
                     logged(stdout, f"supervise: out of disk space: {short}; sending SIGTERM to the command (PID "
                            f"{child.pid}) and its observed descendants, then SIGKILL after {kill_after:g}s")
-            if pace is not None and root_active and expired is None and stopped is None \
-                    and time.monotonic() - paced >= PACE_POLL:
-                paced = time.monotonic()
-                said, failed = pace.observe()
-                if said:
-                    logged(stdout, said)
-                    print(said, file=sys.stderr, flush=True)
-                if failed and child.poll() is None:
-                    expired, slow = time.monotonic(), failed
-                    logged(stdout, f"supervise: past its timing threshold: {failed}; sending SIGTERM to the command "
-                           f"(PID {child.pid}) and its observed descendants, then SIGKILL after {kill_after:g}s")
             if cancel is not None and exited is None and expired is None and cancel.is_set():
                 # Carried out as a timeout is, and reported as the caller's cancel.
                 expired, canceled = time.monotonic(), True

@@ -1056,7 +1056,12 @@ While the lane's command runs, `processes.supervise` asks a `lane_timing.Pace` o
 beside the lane's wait record. `offload_host.relay_wait` sends that file back with the wait record,
 `lane_wait.relayed` writes it here, and `GateWatch` copies it into the round's account as the gate's
 `timing`. Past a fail threshold the run raises `processes.TooSlow`, a `TimedOut` whose stop and
-cleanup are a timeout's but which `qk run` concludes as a failure. A dispatch carries this Mac's
+cleanup are a timeout's but which `qk run` concludes as a failure. `supervise` asks the pace before it checks the timeout, so
+a sample that a loaded host stalls past both, as `ps` can, still ends the run as too slow. In a lane group,
+`parallel.lanes` gives each member its own `Pace` (`group` set), concludes a `TooSlow` member as a failure
+and records each passing member under its own name. The members share one `LANE.json.timing`, which `qk run`
+clears as the group starts: `lane_timing.grouped` keeps each member's record under `lanes` and puts a
+failure's words first. A dispatch carries this Mac's
 stale marks in its plan (`timingStale`), which the other Mac reads from `QUEUEKEEPER_TIMING_STALE`.
 `budgets.gate_warnings` drops entries settled before the gate's mark.
 

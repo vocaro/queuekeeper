@@ -1164,6 +1164,10 @@ stopped as a stall is, and fails (exit 1) rather than going unmeasured: a lane t
 much slower is the change's to explain. A busy Mac can push a run past it too, so leave room.
 `"warn": false` turns the warning off and keeps a `fail` threshold.
 
+A lane group has no `timing` of its own. Each lane in it is timed against its own baseline as it
+runs in the group, with its own `timing`, and a passing lane adds to its own history. A lane past
+its threshold fails the group. The group's live record holds each lane's warning.
+
 **What a stopped lane tells an agent.** When a lane's `timeout`, stall bound or timing threshold
 stops it, it prints a notice to its log and its output:
 
@@ -1173,7 +1177,7 @@ queuekeeper notice: gate reached its timeout: do not raise the limit just to mak
 
 By default the notice says not to raise the limit just to make the gate pass, but to find what made
 the lane slower. A lane's `notice` replaces it, and a stall's own `"notice"` replaces it for
-a stall. Raising a limit is the owner's call.
+a stall. A lane in a group that its own limit stops shows its own notice. Raising a limit is the owner's call.
 
 **After a deliberate change to a lane's work.** When a change makes a lane do more on purpose, mark
 its timing history stale so that earlier, shorter runs stop setting off warnings, thresholds and the

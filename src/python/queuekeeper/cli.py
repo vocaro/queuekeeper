@@ -1853,9 +1853,18 @@ def perform(argv, report):
                             except sandbox.Unusable as error: return not_started(directory, receipt, name, str(error))
                             if sandboxed: receipt.setdefault("sandbox", {})[name] = sandboxed
                             wrapped.append((name, {**member, "command": [*wrap, *member["command"]]}))
+                        # Each member against its own timing baseline, as it would be alone, under one live record
+                        # that holds each member's warnings (lane_timing, vocaro/queuekeeper#284): a group has no
+                        # timing of its own, and the serial reference is no run a baseline measures.
+                        live = lane_timing.live_path()
+                        if live is not None: lane_timing.clear_live(live)
+                        project, commit = project_name(root, config), receipt["project"].get("revision")
+                        def pace(name, member):
+                            return lane_timing.Pace(name, member, project, live=live, commit=commit, group=args.lane) \
+                                if whole else None
                         return parallel.lanes(tree, wrapped, directory / "lanes", jobs,
                                               lambda member, status, log: judge(member, status, log)[0], receipt, on_stop,
-                                              results_directory=directory / "results", fail_fast=fail_fast)
+                                              results_directory=directory / "results", fail_fast=fail_fast, pace=pace)
                     return record(directory, receipt, lambda: prepared(work))
             try:
                 with processes.forwarding_signals():

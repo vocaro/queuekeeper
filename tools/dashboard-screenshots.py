@@ -323,12 +323,14 @@ def lane_timing_rows(lanes):
         times = [ago(86400 * (count - index) / 2) for index in range(count)]
         stale = None if after is None else times[count - after] - 600
         runs = [[at, round(RNG.lognormvariate(math.log(median * (0.7 if stale and at < stale else 1)), 0.12))] for at in times]
-        recent = [seconds for at, seconds in runs if stale is None or at > stale][-lane_timing.RECENT:]
+        counted = [run for run in runs if stale is None or run[0] > stale][-lane_timing.RECENT:]
+        recent = [seconds for _, seconds in counted]
         found = None if len(recent) < lane_timing.FEWEST else {
             "p90": lane_timing.percentile(recent), "median": sorted(recent)[len(recent) // 2], "samples": len(recent), "staleSince": stale}
         limit = lane_timing.fail_seconds({"fail": fail}, found) if fail else None
         rows.append({"lane": lane, "runs": runs, "baseline": found, "fail": fail, "failSeconds": round(limit, 1) if limit else None,
-                     "minSamples": lane_timing.MIN_SAMPLES if fail else None, "staleSince": stale})
+                     "minSamples": lane_timing.MIN_SAMPLES if fail else None, "staleSince": stale,
+                     "countedFrom": counted[0][0] if counted else None})
     return rows
 
 
