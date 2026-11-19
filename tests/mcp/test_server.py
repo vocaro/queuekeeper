@@ -3,10 +3,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
@@ -28,6 +30,12 @@ FAKE = textwrap.dedent("""\
     sys.stdout.write(os.environ.get("FAKE_RESULT", '{"schemaVersion": 1, "state": "landed"}'))
     sys.exit(int(os.environ.get("FAKE_STATUS", "0")))
 """)
+
+
+def structured(case, result):
+    """A tool result's JSON, failing with the tool's whole text when it has none, so a failure says why."""
+    case.assertIn("structuredContent", result, result["content"][0]["text"])
+    return result["structuredContent"]
 
 
 class Commands(unittest.TestCase):
@@ -52,6 +60,13 @@ class Commands(unittest.TestCase):
                                 ("queue_wait", {"ids": ["a", "-b"]}), ("queue_logs", {"id": "-a"})):
             with self.subTest(name=name, arguments=arguments), self.assertRaises(server.Invalid):
                 server.command(name, arguments)
+
+    def test_the_result_is_the_last_json_object_on_standard_output(self):
+        self.assertEqual(server.last_object('{"a": 1}'), {"a": 1})
+        self.assertEqual(server.last_object('put back a simulator\n{\n  "a": {"b": 2}\n}\n'), {"a": {"b": 2}})
+        self.assertEqual(server.last_object('{"a": 1}\n{"a": 2}\n'), {"a": 2})
+        for text in ("", "Traceback", '{"a": 1}\ntrailing', "[1]", '{"a": '):
+            with self.subTest(text=text): self.assertIsNone(server.last_object(text))
 
     def test_every_listed_tool_has_a_command(self):
         self.assertEqual([tool["name"] for tool in server.TOOLS],
@@ -124,7 +139,7 @@ class Stdio(unittest.TestCase):
                                     {"progressToken": "t", "progress": 2, "message": "heartbeat: still waiting"}])
         result = replies[-1]["result"]
         self.assertEqual(replies[-1]["id"], 7)
-        self.assertEqual(result["structuredContent"], {"schemaVersion": 1, "id": "e1", "state": "held",
+        self.assertEqual(structured(self, result), {"schemaVersion": 1, "id": "e1", "state": "held",
                                                        "exitStatus": 75})
         self.assertFalse(result["isError"], "a held entry is a result, not a failure of the tool")
         self.assertIn("exited 75", result["content"][0]["text"])
@@ -137,7 +152,7 @@ class Stdio(unittest.TestCase):
 
     def test_land_runs_in_the_directory_it_names(self):
         replies = self.converse(self.call(1, "land", {"directory": "worktree", "note": "n"}))
-        self.assertEqual(replies[-1]["result"]["structuredContent"]["state"], "landed")
+        self.assertEqual(structured(self, replies[-1]["result"])["state"], "landed")
         recorded = json.loads(self.record.read_text())
         self.assertEqual(recorded["argv"], ["land", "--json", "--note=n"])
         self.assertEqual(Path(recorded["cwd"]).resolve(), self.base / "worktree")
@@ -156,6 +171,37 @@ class Stdio(unittest.TestCase):
         self.assertEqual(by_id[2]["error"]["code"], -32602)
         self.assertIn("no directory", by_id[3]["result"]["content"][0]["text"])
         self.assertFalse(self.record.exists(), "no command ran")
+
+    def test_calls_in_flight_when_standard_input_closes_still_finish(self):
+        replies = self.converse(*(self.call(number, "queue_status", {}) for number in range(1, 6)))
+        self.assertEqual(sorted(reply["id"] for reply in replies), [1, 2, 3, 4, 5])
+        for reply in replies:
+            self.assertEqual(structured(self, reply["result"])["exitStatus"], 0)
+
+    def test_sigterm_stops_the_command_a_call_runs(self):
+        (self.base / "scripts/qk").write_text("import pathlib, sys, time\n"
+                                              "pathlib.Path(sys.argv[0]).with_name('started').touch()\n"
+                                              "time.sleep(600)\n")
+        environment = {**os.environ, "PYTHONPATH": os.pathsep.join(map(str, checkout.source_paths()))}
+        serving = subprocess.Popen([sys.executable, str(SERVER), "--project", str(self.base)], stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, text=True, env=environment)
+        self.addCleanup(serving.kill)
+        serving.stdin.write(json.dumps(self.call(1, "queue_status", {})) + "\n")
+        serving.stdin.flush()
+        started = self.base / "scripts/started"
+        deadline = time.monotonic() + stretched(60)
+        while not started.exists() and time.monotonic() < deadline: time.sleep(0.05)
+        self.assertTrue(started.exists(), "the command never started")
+        commands = subprocess.run(["pgrep", "-f", str(self.base / "scripts/qk")], capture_output=True, text=True)
+        self.assertTrue(commands.stdout.split())
+        serving.terminate()
+        self.assertEqual(serving.wait(timeout=stretched(60)), 128 + signal.SIGTERM)
+        deadline = time.monotonic() + stretched(60)
+        while time.monotonic() < deadline:
+            if subprocess.run(["pgrep", "-f", str(self.base / "scripts/qk")], capture_output=True).returncode: break
+            time.sleep(0.05)
+        else:
+            self.fail("the command outlived the server")
 
     def test_a_line_that_is_not_json_is_a_parse_error(self):
         environment = {**os.environ, "PYTHONPATH": os.pathsep.join(map(str, checkout.source_paths()))}
@@ -182,9 +228,9 @@ class AgainstAQueue(test_merge_queue.Fixture):
         identifier, = self.add("one")
         replies = self.converse(("queue_status", {}), ("queue_result", {"id": identifier}),
                                 ("queue_result", {"id": "no-such-entry"}))
-        self.assertEqual(replies[1]["structuredContent"]["exitStatus"], 0, replies[1]["content"][0]["text"])
+        self.assertEqual(structured(self, replies[1])["exitStatus"], 0, replies[1]["content"][0]["text"])
         self.assertIn(identifier, replies[1]["content"][0]["text"])
-        result = replies[2]["structuredContent"]
+        result = structured(self, replies[2])
         self.assertEqual((result["id"], result["state"], result["exitStatus"]), (identifier, "queued", 0))
         self.assertTrue(replies[3]["isError"], "an unknown ID exits 2")
 

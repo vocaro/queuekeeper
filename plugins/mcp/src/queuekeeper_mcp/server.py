@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ VERSION = "0.1.0"
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 WAIT_LIMIT = 600
 KEPT_ERROR_LINES = 40
+READER_GRACE = 60
 
 DIRECTORY = {"type": "string", "description": "the checkout or worktree to run in: the commit's worktree for `land` "
                                                "(default: the server's project directory)"}
@@ -112,6 +114,20 @@ def command(name, arguments):
     return ["queue", "logs", arguments["id"], "--json", *options]
 
 
+def last_object(text):
+    """The last JSON object in a command's standard output, which ends with its one result, or None. A line printed
+    ahead of it, such as one a hook or a recovery prints before the command routes its output, does not hide it."""
+    decoder = json.JSONDecoder()
+    for start in reversed([0, *(i + 1 for i, c in enumerate(text) if c == "\n")]):
+        if not text.startswith("{", start): continue
+        try:
+            found, end = decoder.raw_decode(text, start)
+        except ValueError:
+            continue
+        if isinstance(found, dict) and not text[end:].strip(): return found
+    return None
+
+
 def launcher_for(directory, configured=None):
     """The configured launcher, else the nearest `scripts/qk` at or above directory."""
     if configured: return Path(configured)
@@ -133,6 +149,7 @@ class Server:
         self.cancelled = set()
         self.guard = threading.Lock()
         self.threads = []
+        self.stopping = False
 
     def send(self, message):
         line = json.dumps(message, separators=(",", ":"))
@@ -221,7 +238,9 @@ class Server:
                                        stderr=subprocess.PIPE, text=True, errors="replace")
         except OSError as error:
             return {"content": [{"type": "text", "text": f"could not run {argv[1]}: {error}"}], "isError": True}
-        with self.guard: self.running[identifier] = process
+        with self.guard:
+            self.running[identifier] = process
+            if self.stopping: process.terminate()
         out, err = [], []
 
         def progress():
@@ -237,13 +256,12 @@ class Server:
                    threading.Thread(target=progress, daemon=True)]
         for reader in readers: reader.start()
         status = process.wait()
-        for reader in readers: reader.join(timeout=5)
+        # Both end with the command's output unless something it started holds them open; on a loaded Mac a reader
+        # can take a while to be scheduled, so the bound is generous.
+        for reader in readers: reader.join(timeout=READER_GRACE)
         with self.guard: self.running.pop(identifier, None)
         text = "".join(out)
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            payload = None
+        payload = last_object(text)
         summary = f"qk {' '.join(argv[2:])} exited {status}"
         if not isinstance(payload, dict):
             detail = "\n".join([summary, text.strip(), *err]).strip()
@@ -255,10 +273,16 @@ class Server:
     def serve(self, lines):
         for line in lines:
             self.handle_line(line)
-        # The client has gone, so nobody reads what a running command returns. Ending a wait withdraws nothing.
-        with self.guard: processes = list(self.running.values())
-        for process in processes: process.terminate()
+        # Closing standard input is how a client starts to shut the server down, and it may still read the replies
+        # to calls it already sent, so they finish; a client that will not wait stops the server with SIGTERM.
         for thread in self.threads: thread.join()
+
+    def stop(self):
+        """End every command running and any that starts from now on. Ending a wait withdraws nothing."""
+        with self.guard:
+            self.stopping = True
+            processes = list(self.running.values())
+        for process in processes: process.terminate()
 
 
 def main(argv=None):
@@ -268,7 +292,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     stdin = open(sys.stdin.fileno(), encoding="utf-8", errors="replace", closefd=False)
     stdout = open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False)
-    Server(stdout, project=args.project, launcher=args.launcher).serve(stdin)
+    serving = Server(stdout, project=args.project, launcher=args.launcher)
+
+    def stopped(number, frame):
+        serving.stop()
+        os._exit(128 + number)
+    signal.signal(signal.SIGTERM, stopped)
+    serving.serve(stdin)
     return 0
 
 
