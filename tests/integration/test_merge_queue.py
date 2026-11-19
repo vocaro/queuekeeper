@@ -8240,6 +8240,35 @@ class FlakyReruns(Fixture):
         # Landed by a gate that ran whole, so with no flaky trailer.
         self.assertNotIn(f"{mq.FLAKY}:", self.tip_message())
 
+    def test_the_rounds_account_names_the_failure_and_each_rerun_until_the_verdict(self):
+        # A wait read the round's empty gates during reruns as a gate that had not started (vocaro/queuekeeper#41).
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        self.add("a", "b")
+        queue, seen, settled = mq.Queue(self.repo), [], []
+        real = mq.processes.run
+        def recorded(command, **options):
+            failure = (queue.round_state() or {}).get("failure")
+            if failure: seen.append((dict(failure), (options.get("env") or {}).get(mq.lane_wait.VARIABLE)))
+            return real(command, **options)
+        with patch.object(mq.processes, "run", recorded), \
+                self.host([self.BUSY, None], then=lambda: settled.append(queue.round_state())):
+            self.assertEqual(self.work(), 0)
+        # While the host settles: the failed gate, its log and its failed test, and what the round waits for.
+        failure = settled[0]["failure"]
+        self.assertEqual((failure["lane"], len(failure["entries"]), failure["tests"], failure["reruns"]),
+                         ("gate", 2, [self.TEST], mq.RERUNS))
+        self.assertTrue(failure["log"].endswith("-gate.log"), failure)
+        self.assertNotIn("test", failure)
+        self.assertIn("the failed tests run alone", settled[0]["waiting"])
+        # Each rerun, with its log and the wait record its admission writes to.
+        self.assertEqual([(each["test"], each["attempt"]) for each, _ in seen],
+                         [(self.TEST, attempt) for attempt in range(1, mq.RERUNS + 1)])
+        for each, variable in seen:
+            self.assertEqual(variable, each["waitRecord"])
+            self.assertTrue(each["rerunLog"].endswith(f"-rerun-1-{each['attempt']}.log"), each)
+        self.assertFalse(queue.round_file.exists())
+
     @contextlib.contextmanager
     def farm_mac(self):
         """On collection, move the lane's unittest log into a fake second-Mac dispatch. The live observers
@@ -10716,6 +10745,56 @@ class WaitFollows(Fixture):
         self.round(queue, "R3", [b], {}, bisect={"suspects": 4, "older": 1, "newer": 3})
         self.assertEqual(look(1), f"{b} had its batch halved after a failure: the older half of round R3, 1 entry of "
                                   "4, whose gate has not started")
+
+    def test_a_gate_that_failed_is_said_as_its_failed_tests_rerun_and_never_as_not_started(self):
+        # On 2026-11-13 a round's flaky test was rerun alone for minutes, rerun 2 waiting for admission, while the
+        # wait said its gate had not started (vocaro/queuekeeper#41).
+        self.commit("a", "a")
+        [a] = self.add("a")
+        queue = mq.Queue(self.repo)
+        test, record = "test_x.X.test_y", self.base / "rerun-wait.json"
+        # A wait record counts from when the rerun began, by the clock it was written by.
+        at = time.time()
+        failure = {"lane": "gate", "entries": [a], "log": "/logs/R1-gate.log", "since": at - 30}
+        self.round(queue, "R1", [a], {})
+        queue.note(lambda state: state.update(failure=dict(failure)))
+        now = [1000.0]
+        follow = mq.Follow(a, clock=lambda: now[0])
+        def look(seconds=1):
+            now[0] += seconds
+            return follow.look(queue, self.state(a), mq.rerun_waits(queue.round_state()), at)
+        def failed(**fields):
+            queue.note(lambda state: state["failure"].update(fields))
+        self.assertEqual(look(), f"{a} is in round R1, 1 entry, whose gate failed in its gate lane: the worker reads its failure to "
+                                 "tell a flake from a real one; see /logs/R1-gate.log")
+        failed(tests=[test, "test_x.X.test_z"], reruns=mq.RERUNS)
+        self.assertEqual(look(), f"{a} is in round R1, 1 entry, whose gate failed in its gate lane: 2 failed tests, {test}, "
+                                 f"test_x.X.test_z, to rerun alone up to {mq.RERUNS} times, which wait to start; see "
+                                 "/logs/R1-gate.log")
+        self.assertIsNone(look())
+        failed(test=test, number=1, attempt=2, rerunLog="/logs/R1-rerun-1-2.log", began=at - 50,
+               waitRecord=str(record))
+        self.assertEqual(look(), f"{a} is in round R1, 1 entry, whose gate failed in its gate lane: rerunning {test} alone, rerun "
+                                 f"2 of {mq.RERUNS}, test 1 of 2; see /logs/R1-rerun-1-2.log")
+        # The rerun's admission writes what it waits for to the record the failure names: said once, as a change.
+        with patch.dict(os.environ, {mq.lane_wait.VARIABLE: str(record)}):
+            mq.lane_wait.waiting(mq.lane_wait.ADMISSION, "a whole-host gate of another project holds this Mac")
+        self.assertEqual(look(), f"{a} is in round R1, 1 entry, whose gate failed in its gate lane: rerunning {test} alone, rerun "
+                                 f"2 of {mq.RERUNS}, test 1 of 2; waiting: admission on this Mac: a whole-host gate of "
+                                 "another project holds this Mac; see /logs/R1-rerun-1-2.log")
+        self.assertIsNone(look())
+        beat = look(mq.HEARTBEAT)
+        self.assertTrue(beat.startswith(f"heartbeat: {a} is in round R1"), beat)
+        self.assertIn(f"failed gate ({a}): gate lane failed; rerunning {test} alone, rerun 2 of {mq.RERUNS}, test 1 of "
+                      "2, running 50s; waiting: admission on this Mac", beat)
+        self.assertNotIn("has not started", beat)
+        # Status shows it too, with both logs, and --json has the record, with what the rerun waits for.
+        lines = mq.round_lines(mq.rerun_waits(queue.round_state()), at)
+        self.assertIn("    log: /logs/R1-gate.log\n    rerun log: /logs/R1-rerun-1-2.log", lines[-1])
+        with patch.object(mq.Queue, "working", return_value=True):
+            state = mq.snapshot(self.repo)
+        self.assertEqual(state["round"]["failure"]["test"], test)
+        self.assertIn("a whole-host gate of another project", state["round"]["failure"]["waiting"])
 
 
 class GateResultsNamed(Fixture):

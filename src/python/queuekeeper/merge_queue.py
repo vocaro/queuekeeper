@@ -2172,11 +2172,44 @@ def round_lines(state, at=None):
         if stuck(gate, at): line += f"\n    {stuck(gate, at)}"
         if gate.get("log"): line += f"\n    log: {gate['log']}"
         lines.append(line)
+    failure = state.get("failure")
+    if isinstance(failure, dict):
+        line = (f"  failed gate ({', '.join(failure.get('entries', [])) or 'no entry'}): {failure.get('lane')} lane "
+                f"failed; {failure_words(failure, at, timed=True)}")
+        if failure.get("log"): line += f"\n    log: {failure['log']}"
+        if failure.get("rerunLog"): line += f"\n    rerun log: {failure['rerunLog']}"
+        lines.append(line)
     if state.get("waiting"):
         lines.append(f"  waiting for {state['waiting']}"
                      + (f", for {ago(state['waitingSince'], at)}" if state.get("waitingSince") else ""))
         lines += [f"    held by {holder_line(holder, at)}" for holder in state.get("holders") or [] if isinstance(holder, dict)]
     return lines
+
+
+def failure_words(failure, at=None, timed=False):
+    """What the worker does with a gate that failed (Worker.rerun), by the round's account: reading its failure, its
+    failed tests waiting to rerun alone, or the rerun that runs, which of how many, and what it waits for; with timed,
+    how long it has run. A gate that failed is never said to have not started (vocaro/queuekeeper#41)."""
+    tests = failure.get("tests")
+    if not isinstance(tests, list): return "the worker reads its failure to tell a flake from a real one"
+    if not failure.get("test"):
+        return (f"{len(tests)} failed test{'' if len(tests) == 1 else 's'}, {', '.join(tests)}, to rerun alone up to "
+                f"{failure.get('reruns')} times, which wait to start")
+    said = f"rerunning {failure['test']} alone, rerun {failure.get('attempt')} of {failure.get('reruns')}"
+    if len(tests) > 1: said += f", test {failure.get('number')} of {len(tests)}"
+    if timed and isinstance(failure.get("began"), (int, float)): said += f", running {ago(failure['began'], at)}"
+    if failure.get("waiting"): said += f"; waiting: {failure['waiting']}"
+    return said
+
+
+def rerun_waits(state):
+    """state, the round's account, with what a running rerun of a failed test waits for (failure_words), as its
+    admission writes it to the wait record the worker named for it (Worker.rerun_each, lane_wait)."""
+    failure = (state or {}).get("failure")
+    if isinstance(failure, dict) and failure.get("waitRecord"):
+        try: failure["waiting"] = lane_wait.words(lane_wait.current(failure["waitRecord"], failure.get("began")))
+        except Exception: failure["waiting"] = None  # noqa: BLE001
+    return state
 
 
 def holder_line(holder, at=None):
@@ -2248,7 +2281,7 @@ def reading(root, recent=5):
     ungated = [entry for entry in entries if entry["state"] == LANDED and entry.get("ungated")
                and not covered(root, entry, entries)]
     # A worker that stopped leaves no round: what it wrote is not the queue's state.
-    current = queue.round_state() if working else None
+    current = rerun_waits(queue.round_state()) if working else None
     for gate in (current or {}).get("gates", {}).values():
         if "progress" in gate:
             gate["progress"] = [record for record in gate["progress"] if lane_progress.valid(record, gate.get("began"))]
@@ -2327,6 +2360,15 @@ def situation(queue, entry, state, at=None):
             return key, (f"had its batch halved after a failure: the {role} of round {name}, {count}"
                          + (f" of {suspects}" if suspects else "") + f": {where}")
         return key, f"is in round {name}, {count}, whose gate runs: {where}"
+    failure = state.get("failure") if isinstance(state.get("failure"), dict) else {}
+    if identifier in failure.get("entries", []):
+        # A gate that failed is being weighed, which no line may call a gate that has not started (#41).
+        waits = f"; the round waits for {state['waiting']}" if state.get("waiting") else ""
+        log = failure.get("rerunLog") or failure.get("log")
+        key = ("failure", name, failure.get("test"), failure.get("attempt"), isinstance(failure.get("tests"), list),
+               bool(failure.get("waiting")), bool(waits))
+        return key, (f"is in round {name}, {entries_word(len(failure['entries']))}, whose gate failed in its "
+                     f"{failure.get('lane')} lane: {failure_words(failure)}{waits}" + (f"; see {log}" if log else ""))
     if identifier in state.get("entries", []):
         count, suspects = entries_word(len(state["entries"])), (state.get("bisect") or {}).get("suspects")
         waits = f"; the round waits for {state['waiting']}" if state.get("waiting") else ""
@@ -2349,7 +2391,8 @@ def round_facts(state, identifier, at=None):
     gates = (state or {}).get("gates") or {}
     own = {role: gate for role, gate in gates.items() if identifier in gate.get("entries", [])}
     lines = round_lines({**(state or {}), "gates": own or gates}, at)
-    parts = [part.strip() for line in lines for part in line.splitlines() if not part.strip().startswith("log: ")]
+    parts = [part.strip() for line in lines for part in line.splitlines()
+             if not part.strip().startswith(("log: ", "rerun log: "))]
     return "; ".join(parts)
 
 
@@ -2838,7 +2881,7 @@ def followed(queue, looks):
     """Print what each (Follow, entry) of looks has to say now, by the round's account while a worker runs. Nothing
     here may end the wait: a line that cannot be made is left out."""
     try:
-        state = (queue.round_state() or {}) if queue.working() else None
+        state = rerun_waits(queue.round_state() or {}) if queue.working() else None
         for follow, entry in looks:
             line = follow.look(queue, entry, state)
             if line: print(line, flush=True)
@@ -4313,7 +4356,25 @@ class Worker:
         that passes alone but that origin/main at base lacks, as the batch adds it (added_test), has no history to be
         a flake by: it is recorded nowhere, and when every test that passed alone is such a test, the one entry that
         adds them is sent back by blame (adder, vocaro/queuekeeper#129). Beside an old test that passed alone, which
-        is recorded as a flake, no entry explains them all, and the batch bisects (vocaro/queuekeeper#88)."""
+        is recorded as a flake, no entry explains them all, and the batch bisects (vocaro/queuekeeper#88).
+
+        Meanwhile the round's account has a failure record (failure_note), which `qk queue status` and `qk land
+        --wait` read: the failed lane, its entries and log, then the failed tests, and each rerun's test, count, log
+        and wait record (vocaro/queuekeeper#41). It goes once the verdict is in."""
+        entries = [entry["id"] for entry in applied]
+        self.queue.note(lambda state: state.update(failure={"lane": self.failed_lane, "entries": entries,
+                                                            "log": str(log), "since": time.time()}))
+        try: return self.weigh_failure(config, applied, base, head, log, round_name)
+        finally: self.queue.note(lambda state: state.pop("failure", None))
+
+    def failure_note(self, **fields):
+        """Set fields of the round's failure record (rerun), while it has one."""
+        def change(state):
+            if isinstance(state.get("failure"), dict): state["failure"].update(fields)
+        self.queue.note(change)
+
+    def weigh_failure(self, config, applied, base, head, log, round_name):
+        """rerun's verdict."""
         self.confirmed = self.refused = self.added = None
         self.regate = False
         lane = self.failed_lane
@@ -4348,6 +4409,7 @@ class Worker:
             return None
         self.say(f"{lane} failed {len(tests)} test{'' if len(tests) == 1 else 's'} at {head[:12]}: {', '.join(tests)}; "
                  f"rerunning each alone up to {RERUNS} times on that commit before a bisect")
+        self.failure_note(tests=list(tests), reruns=RERUNS)
         busy = self.settle("the failed tests run alone")
         if busy:
             self.say(f"the failed tests are not rerun, as {busy}: bisecting")
@@ -4422,16 +4484,21 @@ class Worker:
     def rerun_each(self, tests, command_of, applied, head, log, round_name):
         """(the flakes of tests, {test: the log of the rerun that failed, or None}) once each is rerun alone on head,
         by command_of(test), up to RERUNS times, stopping at its first failure; or None once a lone entry's test failed
-        again, which leaves nothing to weigh."""
+        again, which leaves nothing to weigh. Each rerun's admission writes what it waits for to a wait record of its
+        own, which the round's failure record names (rerun_waits)."""
         if self.head() != head: self.reset(head)
         flakes, real = [], {}
+        record = lane_wait.path_of(self.checkout, "rerun")
         for number, test in enumerate(tests, 1):
             logs = []
             for attempt in range(1, RERUNS + 1):
                 path = self.queue.logs / f"{round_name}-rerun-{number}-{attempt}.log"
                 logs.append(str(path))
+                lane_wait.remove(record)
+                self.failure_note(tests=list(tests), reruns=RERUNS, test=test, number=number, attempt=attempt,
+                                  rerunLog=str(path), began=time.time(), waitRecord=str(record))
                 try: status_ = processes.run(command_of(test), cwd=self.checkout, log_path=path, timeout=LANE_LIMIT,
-                                             env=self.environment)
+                                             env={**self.environment, lane_wait.VARIABLE: str(record)})
                 except processes.TimedOut as error: status_ = f"unmeasured, {error}"
                 except OSError as error: status_ = f"not started, {error}"
                 if status_:
@@ -4486,6 +4553,7 @@ class Worker:
             return None
         self.say(f"{lane} failed {len(tests)} test{'' if len(tests) == 1 else 's'} at {head[:12]}: {', '.join(tests)}; "
                  f"rerunning each alone up to {RERUNS} times on that commit before a bisect")
+        self.failure_note(tests=list(tests), reruns=RERUNS)
         busy = self.settle("the failed tests run alone")
         if busy:
             self.say(f"the failed tests are not rerun, as {busy}: bisecting")
@@ -5062,6 +5130,7 @@ class Worker:
             state.update(round=round_name, started=time.time(), head=head, base=base, pid=os.getpid(),
                          entries=[entry["id"] for entry in applied], bisect=bisect, adopted=adopted, waiting=None,
                          waitingSince=None)
+            state.pop("failure", None)
             state.setdefault("gates", {})
         self.queue.note(change)
         self.queue.emit("round.began", round=round_name, head=head, base=base, adopted=adopted or None,

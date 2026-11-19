@@ -330,7 +330,9 @@ A session therefore lands with `qk land --wait` run as a background command, who
 within seconds of a send-back ([#130](https://github.com/vocaro/vocaro-engineering/issues/130)). While
 it waits, `qk land --wait`, like `qk queue wait`, prints a line each time its entry's situation
 changes, and a `heartbeat:` line at most every 5 minutes otherwise, with what `qk queue status` shows
-of that round ([#41](https://github.com/vocaro/queuekeeper/issues/41)). An entry that comes back keeps
+of that round ([#41](https://github.com/vocaro/queuekeeper/issues/41)). After a gate fails, the
+lines follow the failure: the worker reads it, then its failed tests wait to rerun alone, then each
+rerun runs, with its log and what its admission waits for. An entry that comes back keeps
 its ref until `qk queue remove ID`; fix it, rebase and land it again.
 
 **A send-back says the load and whether the entry changes the failed tests' files.** The reason ends
@@ -989,7 +991,14 @@ to settle.
   `stuck:`, with `python3 scripts/qk admissions recover` to list the entries, and the log says so once
   (vocaro-engineering#315; doc/guides/process-supervision.md, Lock reclamation). The queue's doctor
   acting on it is vocaro-engineering#290.
-- `--json` has the same under `round`, with each gate's `waitingSince` and any `stuck`.
+- A gate that failed while the worker weighs it is a `failed gate` line, never a gate that has not
+  started. It names the lane, its entries and log, and the failed tests. While a rerun runs, it also
+  names the test, which rerun of how many, how long it has run, its log and what its admission waits
+  for. That wait comes from `.build/queuekeeper/.waits/rerun.json` in the worker's checkout. The
+  record goes once the verdict is in
+  ([#41](https://github.com/vocaro/queuekeeper/issues/41)).
+- `--json` has the same under `round`, with each gate's `waitingSince` and any `stuck`, and the
+  failed gate under `failure`.
 
 For more, read `queuekeeper-queue/worker.log`, the worker's log; each gate's log in
 `queuekeeper-queue/logs/`, named `ROUND-LANE.log`, which `qk queue status` names; and, for a gate

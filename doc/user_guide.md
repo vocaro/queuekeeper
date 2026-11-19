@@ -561,8 +561,9 @@ to their result.
 wake you.
 
 - **While it waits**, it prints a line each time the entry's situation changes: waiting behind a
-  round, gating on a Mac, halved in a bisect, passed and waiting for the push. When nothing
-  changes, a `heartbeat:` line comes at most every five minutes.
+  round, gating on a Mac, a failed gate's tests rerunning alone (each rerun, its log and what it
+  waits for), halved in a bisect, passed and waiting for the push. When nothing changes, a
+  `heartbeat:` line comes at most every five minutes. With `--json`, these lines go to stderr.
 - **A send-back ends the wait within seconds**, naming the conflicting files and entries, or the
   failed tests and the log.
 - **An interrupted wait withdraws nothing.** The worker lands the entry whether or not anyone is
