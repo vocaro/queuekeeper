@@ -8465,6 +8465,59 @@ class FlakyReruns(Fixture):
         self.assertEqual(self.tracked, [])
         self.assertNotIn("flakes", entry)
 
+    ADDED_METHOD = ("    def test_added(self):\n        runs = pathlib.Path({runs!r})\n"
+                    "        done = len(runs.read_text()) if runs.exists() else 0\n"
+                    "        runs.write_text(\"x\" * (done + 1))\n"
+                    "        self.assertTrue(done, \"the first run fails\")\n\n")
+
+    def main_module(self):
+        """tests/test_flaky.py as origin/main has it, whatever branch the clone has checked out."""
+        return run(self.repo, "git", "show", "origin/main:tests/test_flaky.py") + "\n"
+
+    def adding(self, runs):
+        """tests/test_flaky.py with a test_added method, which fails its first run only, before test_steady."""
+        return self.main_module().replace(
+            "    def test_steady(self):", self.ADDED_METHOD.format(runs=str(runs)) + "    def test_steady(self):")
+
+    def test_an_added_test_is_blamed_on_the_entry_that_defines_it_not_another_that_changes_its_module(self):
+        # Both entries change the test's module, but only a's tip defines the new test: b, which only adds a comment
+        # there, is not the test's author and lands (vocaro/queuekeeper#129).
+        added_runs = self.base / "added-runs"
+        self.commit("tests/test_flaky.py", "b", "# A note b adds.\n" + self.main_module())
+        self.commit("tests/test_flaky.py", "a", self.adding(added_runs))
+        ids = self.add("b", "a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        test = "test_flaky.Flaky.test_added"
+        self.assertIn(f"{test} passed alone, but origin/main has no such test", log)
+        self.assertIn(f"blaming {ids[1]} (Add tests/test_flaky.py), which adds {test}; sending it back and gating the "
+                      "other 1 at once instead of bisecting", log)
+        self.assertNotIn("fail together", log)
+        entries = [self.state(identifier) for identifier in ids]
+        self.assertEqual([entry["state"] for entry in entries], ["landed", "failed"])
+        self.assertIn(f"{test}, a test this entry adds, failed the gate", entries[1]["why"])
+        self.assertEqual(self.tracked, [])
+        self.assertTrue(all("flakes" not in entry for entry in entries))
+
+    def test_an_added_test_that_two_entries_define_blames_neither_and_bisects(self):
+        # b builds on a and changes the module again, so both tips define the new test: the worker cannot tell which
+        # entry adds it, and it bisects rather than send back either.
+        added_runs = self.base / "added-runs"
+        self.commit("tests/test_flaky.py", "a", self.adding(added_runs))
+        self.commit("tests/test_flaky.py", "b", (self.repo / "tests/test_flaky.py").read_text() + "# b's note\n",
+                    start="a")
+        ids = self.add("a", "b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        test = "test_flaky.Flaky.test_added"
+        self.assertIn(f"{test} passed alone, but origin/main has no such test", log)
+        self.assertIn(f"{test}, which the batch adds, is added by 2 entries of the batch's 2 that the worker can tell, so "
+                      "no commit is blamed: bisecting", log)
+        self.assertNotIn("blaming", log)
+        self.assertNotIn("flaky:", log)
+        self.assertEqual(self.tracked, [])
+        self.assertTrue(all("flakes" not in self.state(identifier) for identifier in ids))
+
     def test_an_old_flake_beside_a_test_the_batch_adds_is_filed_and_the_batch_bisects_blaming_no_commit(self):
         # Both tests fail the gate and pass alone. The old one is a flake, filed as ever; the added one is none. No
         # one entry explains both, so none is blamed and the batch bisects (owner's decision of 2026-11-07,
