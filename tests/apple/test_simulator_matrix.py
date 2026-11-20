@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
-from queuekeeper import lane_report, lane_results
+from queuekeeper import lane_report, lane_results, waiting
 from queuekeeper_mobile import devices
 from queuekeeper_apple.simulators import matrix
 import host_isolation
@@ -209,6 +209,7 @@ XCODEBUILD = textwrap.dedent("""\
     deadline = time.monotonic() + float(os.environ.get("FAKE_MEET_LIMIT", "60"))
     while len(list(state.glob("testing-*"))) < int(os.environ.get("FAKE_MEET", "1")):
         if time.monotonic() > deadline: sys.exit(f"{kind} never met the other devices")
+        if os.getppid() == 1: sys.exit(f"{kind} was left behind by its run")
         time.sleep(0.05)
     if kind in os.environ.get("FAKE_NO_TESTS", ""): sys.exit(0)
     # FAKE_FAIL_RUN and FAKE_UNMEASURED_RUN name one test run of a kind, KIND:N, the Nth to reach here.
@@ -990,16 +991,24 @@ class SimulatorMatrixTests(unittest.TestCase):
     def test_a_stop_ends_every_device_run_and_returns_every_device_to_the_pool(self):
         command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project"]
-        # Three devices never meet, so both runs wait until the stop.
+        # Three devices never meet, so both runs wait until the stop, however long the other device takes to start.
         process = subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                   env={**self.environment, "FAKE_MEET": "3"}, preexec_fn=host_isolation.default_signals)
+                                   env={**self.environment, "FAKE_MEET": "3", "FAKE_MEET_LIMIT": str(stretched(600))},
+                                   preexec_fn=host_isolation.default_signals)
         self.addCleanup(lambda: process.poll() is None and process.kill())
-        deadline = time.monotonic() + stretched(60)
-        while len(list(self.state.glob("testing-*"))) < 2:
-            self.assertLess(time.monotonic(), deadline, "the devices never started testing")
-            time.sleep(0.05)
+        followed = Followed(process)
+        # Both devices start testing while the run still moves, not within a fixed time: a minute stretched by the
+        # load read when the test began ran out at a load of up to 858 while the devices were still booting
+        # (vocaro/queuekeeper#304). A run that ends, or reports a device's outcome, before both start stops the wait.
+        testing = lambda: len(list(self.state.glob("testing-*")))
+        reported = lambda: any(line is not None and line.startswith(("PASS ", "FAIL ", "UNMEASURED ", "NOT RUN "))
+                               for line in list(followed.lines))
+        waiting.wait_until(lambda: testing() >= 2 or process.poll() is not None or reported(),
+                           progress=waiting.combined(waiting.files(self.state), lambda: len(followed.lines),
+                                                     waiting.cpu(self.root / "bin", exclude=["test-without-building"])))
+        self.assertEqual(testing(), 2, f"the devices never started testing: {followed.text()}")
         process.send_signal(signal.SIGTERM)
-        output = process.communicate(timeout=stretched(60))[0]
+        output = followed.communicate(timeout=stretched(60))
         self.assertEqual(process.returncode, -signal.SIGTERM, output)
         self.assertIn("SIGTERM received; forwarding it", output)
         self.assert_every_device_returned()
