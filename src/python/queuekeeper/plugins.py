@@ -24,6 +24,10 @@ SANDBOX_REFUSALS = []
 # Each (log text) -> the program that applied a sandbox of its own inside a lane's, which macOS refused, or None: what
 # a sandboxed lane's failed run says of it (sandbox.observed). The Apple plugin names xcodebuild and SwiftPM.
 SANDBOX_NESTED = []
+# Each (results) -> why a lane's failed run was its Mac's fault and not the commits', or None, from what its commands
+# left in its results folder: the run ends unmeasured, saying so (host_fault). The Apple plugin names a build plan
+# that kept a Metal Toolchain mount macOS has since replaced (vocaro/queuekeeper#281).
+HOST_FAULTS = []
 # Each (root, config): called before a lane or an admitted command is placed; a ValueError refuses the run.
 BEFORE_LANE = []
 # Each (root, config): called on the Mac that runs an admitted lane or command, before its command starts.
@@ -198,6 +202,16 @@ def around_run(commands, root):
 
 def report_results(results):
     for report in REPORT_RESULTS: report(results)
+
+
+def host_fault(results):
+    """The first reason a plugin gives that the failed run whose results folder is results was its Mac's fault, or
+    None. A reader that cannot read raises nothing here: the run keeps its own verdict."""
+    for fault in HOST_FAULTS:
+        try: words = fault(results)
+        except Exception: continue
+        if words: return words
+    return None
 
 
 def test_allowance(words):

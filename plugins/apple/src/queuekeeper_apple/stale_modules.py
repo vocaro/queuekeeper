@@ -6,6 +6,8 @@ header added (vocaro-engineering#85, #267). qk run puts SHIMS first on every lan
 lane's own `xcodebuild` or `swift`, however its script calls it by name and wherever it sends the
 output, runs through main: a failed run whose output has that message removes the module-cache folder
 the message names, inside the checkout the lane runs in, and runs once more. It never runs a third time.
+A failed run that could not spawn a tool from a Metal Toolchain mount macOS has since replaced is handled
+the same way, by stale_toolchain (vocaro/queuekeeper#281).
 
 Standard library only: it starts with every build a lane runs.
 """
@@ -20,6 +22,7 @@ import sys
 import threading
 import time
 
+from . import stale_toolchain
 from .shims import ROOT_VARIABLE, SHIMS, environment  # noqa: F401 -- environment is read here too
 
 STALE_MODULE = "has been modified since the module file"
@@ -32,6 +35,8 @@ RECORD = "stale-modules.log"
 # What a wrapped run says when it rebuilds, which qk simulator-tests reads as handled already.
 NOTICE = "queuekeeper: STALE MODULES"
 MARKER = b"queuekeeper_apple import stale_modules"
+# The words of the output lines a failed run is judged by: a stale module's and a failed spawn's.
+WATCHED = (STALE_MODULE.encode(), stale_toolchain.SPAWN.encode())
 
 
 def shim(path):
@@ -63,7 +68,7 @@ def folders(text, root, cwd="."):
 
 def attempt(command):
     """Run command with its output passed through as it comes, and return its status, 128 + N for signal N, and
-    the lines of its output that have STALE_MODULE."""
+    the lines of its output that have one of WATCHED."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # The tool shares this process group, so a stop sent to the group reaches it once, by itself. SIGTERM and
     # SIGHUP sent to this process alone are passed on, a second one being harmless; SIGINT is not, since a build
@@ -84,10 +89,10 @@ def attempt(command):
                     open_ = False
             lines = (tail + chunk).split(b"\n")
             tail = lines.pop()
-            matched = [line.decode(errors="replace") for line in lines if STALE_MODULE.encode() in line]
+            matched = [line.decode(errors="replace") for line in lines if watched(line)]
             if matched:
                 with lock: errors.extend(matched)
-        if STALE_MODULE.encode() in tail:
+        if watched(tail):
             with lock: errors.append(tail.decode(errors="replace"))
 
     readers = [threading.Thread(target=copy, args=(process.stdout, 1)),
@@ -101,6 +106,10 @@ def attempt(command):
     return (128 - status if status < 0 else status), "\n".join(errors)
 
 
+def watched(line):
+    return any(words in line for words in WATCHED)
+
+
 def say(line):
     try:
         os.write(2, (line + "\n").encode())
@@ -108,12 +117,12 @@ def say(line):
         pass
 
 
-def record(tool, removed, status):
+def record(tool, removed, status, name=RECORD):
     results = os.environ.get(RESULTS_VARIABLE)
     if not results: return
     try:
         Path(results).mkdir(parents=True, exist_ok=True)
-        with (Path(results) / RECORD).open("a") as file:
+        with (Path(results) / name).open("a") as file:
             file.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {tool}: removed "
                        f"{', '.join(map(str, removed))}; the rebuild ended with status {status}\n")
     except OSError:
@@ -128,7 +137,10 @@ def main(tool, arguments):
     command = [found, *arguments]
     status, errors = attempt(command)
     root = os.environ.get(ROOT_VARIABLE)
-    if status == 0 or not errors or not root: return status
+    if status == 0 or not errors: return status
+    gone = stale_toolchain.mounts(errors)
+    if gone: return toolchain(tool, command, gone, root, status)
+    if STALE_MODULE not in errors or not root: return status
     removed = folders(errors, root, os.getcwd())
     if not removed:
         say(f"{NOTICE}: {tool} failed with \"{STALE_MODULE}\", and the module file it names is in no module cache "
@@ -141,4 +153,30 @@ def main(tool, arguments):
     say(f"{NOTICE}: the rerun of {tool} ended with status {status}" +
         (", the same error again, so it is not run a third time" if status != 0 and again else ""))
     record(tool, removed, status)
+    return status
+
+
+def toolchain(tool, command, gone, root, status):
+    """The status of tool's build, command, which failed with status for want of a tool in the Metal Toolchain mounts
+    gone: once more after removing the build plans inside root that name them, or as it is when none does. A build
+    that ends failed so is recorded as the Mac's fault (stale_toolchain.record_fault)."""
+    removed = stale_toolchain.plans(root, gone) if root else []
+    if not removed:
+        words = stale_toolchain.fault(tool, gone, root)
+        say(f"{stale_toolchain.NOTICE}: {words}")
+        stale_toolchain.record_fault(words)
+        return status
+    for plan in removed: shutil.rmtree(plan, ignore_errors=True)
+    say(f"{stale_toolchain.NOTICE}: {tool} could not start a tool from the Metal Toolchain mount {', '.join(gone)}, "
+        f"which is gone from this Mac; removed the build plans that name it, {', '.join(map(str, removed))}; running "
+        f"it once more ({stale_toolchain.ISSUE})")
+    status, again = attempt(command)
+    still = status != 0 and stale_toolchain.mounts(again)
+    say(f"{stale_toolchain.NOTICE}: the rerun of {tool} ended with status {status}" +
+        (", the same error again, so it is not run a third time" if still else ""))
+    record(tool, removed, status, stale_toolchain.RECORD)
+    if still:
+        words = stale_toolchain.fault(tool, still, root, removed)
+        say(f"{stale_toolchain.NOTICE}: {words}")
+        stale_toolchain.record_fault(words)
     return status

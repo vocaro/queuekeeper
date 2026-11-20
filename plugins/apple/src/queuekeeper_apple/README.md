@@ -60,6 +60,22 @@ different number of tests than it was given counts as failed.
 For lanes that call `xcodebuild` themselves, `qk results keep` reads a result bundle and
 records each test's outcome and duration in the same form.
 
+## Reused build folders
+
+A worker checkout keeps its build folders between gates, so a lane's `xcodebuild` or `swift` called by
+name runs through a wrapper that recovers from two faults of a reused build folder, once each:
+
+- **Stale explicit modules.** A build that fails with `has been modified since the module file` has the
+  module cache it names removed and runs once more, saying `STALE MODULES`.
+- **A replaced Metal Toolchain mount.** macOS mounts the Metal Toolchain from a cryptex under
+  `/var/run/com.apple.security.cryptexd/mnt/`, and can mount it again at a new path. A build plan made
+  before keeps the old one, and every `.metal` file then fails with `unable to spawn process
+  '.../com.apple.MobileAsset.MetalToolchain-.../metal' (No such file or directory)`, although the
+  toolchain is installed. The wrapper removes each `Intermediates.noindex/XCBuildData` inside the
+  checkout that names the old mount, and runs once more, saying `STALE TOOLCHAIN`. If no plan inside the
+  checkout names it, or the rerun fails the same way, the lane ends unmeasured, not failed: the fault is
+  the Mac's, not the change's, and the message says what to check.
+
 ## Physical devices
 
 An iPhone can run one test session at a time, and nothing in Xcode stops two agents from installing

@@ -6,10 +6,12 @@ REQUIRES = ("queuekeeper_mac_desktop", "queuekeeper_mobile")
 
 def register():
     """Add the plugin to the core (queuekeeper.plugins.load)."""
-    from . import disk, doctor, lane, settings, shims
+    from . import disk, doctor, lane, settings, shims, stale_toolchain
     from queuekeeper import plugins
     if shims.environment not in plugins.COMMAND_WRAPPERS:
         plugins.COMMAND_WRAPPERS.append(shims.environment)
+    if stale_toolchain.host_fault not in plugins.HOST_FAULTS:
+        plugins.HOST_FAULTS.append(stale_toolchain.host_fault)
     settings.register()
     disk.register()
     doctor.register()

@@ -467,7 +467,8 @@ that test's issue before you land again, so the flake becomes somebody's to fix.
 ### No verdict is not a failure
 
 A lane ends as **passed**, **failed** or **unmeasured**. A timeout, a lost connection, a Mac too
-busy to admit the lane, a misconfigured Mac or a screen that locked during a UI test are all
+busy to admit the lane, a misconfigured Mac, a screen that locked during a UI test or a build plan
+that names a Metal Toolchain mount macOS has since replaced (see [The simulator pool](#the-simulator-pool)) are all
 unmeasured: they say nothing about the commits, so nobody's entry is sent back. The worker waits
 for the Mac to settle (CPU under its busy limit and memory pressure normal, for up to an hour) and
 runs the lane again.
@@ -2339,6 +2340,16 @@ modified since the module file`. `qk simulator-tests`, and any Apple lane's `xco
 called by name, removes the stale module cache inside the checkout and runs once more, saying `STALE
 MODULES`. It never runs a third time. A script that calls `/usr/bin/xcodebuild` by path, through `xcrun`,
 or with PATH cleared bypasses this.
+
+**A replaced Metal Toolchain mount.** macOS mounts the Metal Toolchain at a path with a random suffix,
+`/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-VERSION.SUFFIX/`, and can
+mount it again at a new one. A build folder reused from before keeps the old path in its build plan, and
+compiling a `.metal` file fails with `unable to spawn process '.../metal' (No such file or directory)`
+though `xcrun -f metal` finds it. The same wrapper removes each `Intermediates.noindex/XCBuildData` inside
+the checkout that names the old mount and runs once more, saying `STALE TOOLCHAIN`, and records it in the
+lane's `results/stale-toolchain.log`. A build that fails so again, or whose plan is outside the checkout,
+such as in `~/Library/Developer/Xcode/DerivedData`, leaves the lane unmeasured, not failed: nobody's entry
+is sent back, and the hold quotes what to remove ([No verdict is not a failure](#no-verdict-is-not-a-failure)).
 
 ### Foreground runs
 

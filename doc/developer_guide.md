@@ -1566,6 +1566,14 @@ Code: `queuekeeper_apple/simulators/pool.py` and `template.py`.
   SwiftPM's `ModuleCache`) inside the checkout, reruns once, and records it in
   `results/stale-modules.log`. Both this and `qk simulator-tests`' own recovery are tested only with
   stand-ins so far.
+- **A replaced Metal Toolchain mount.** The same wrapper watches for `unable to spawn process '…' (No
+  such file or directory)` naming a tool under cryptexd's mounts (`stale_toolchain`). It removes each
+  `Intermediates.noindex/XCBuildData` inside the checkout whose files name the mount's folder, the part
+  with the random suffix, reruns once and records it in `results/stale-toolchain.log`. When no plan inside
+  the checkout names it, or the rerun fails the same way, it writes the reason to
+  `results/toolchain-fault.txt`; the plugin's `plugins.HOST_FAULTS` reader returns it, and `cli.host_faulted`
+  turns the lane's failure, a failed `compileFirst` build included, into unmeasured with that reason. It is
+  tested only with stand-ins (vocaro/queuekeeper#281).
 
 ### Foreground internals
 

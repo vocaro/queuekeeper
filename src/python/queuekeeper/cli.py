@@ -162,6 +162,20 @@ def slept_through(lane, slept):
     return words
 
 
+def host_faulted(lane, status, receipt, results):
+    """Why a run of lane that ended with status failed for its Mac's fault, as a plugin read it from results, or None,
+    after saying so: a failure, including a build that failed, but not a refused usage or a command that never started
+    (plugins.HOST_FAULTS). On 2026-11-19 a StoreUILib gate sent back a one-line change to its configuration on a Metal
+    Toolchain mount macOS had replaced, which a worker's cached build plan still named (vocaro/queuekeeper#281)."""
+    if status in (0, lane_results.UNMEASURED, USAGE) or status in merge_queue.NO_VERDICT or receipt.get("notStarted"):
+        return None
+    words = plugins.host_fault(results)
+    if words is None: return None
+    print(f"queuekeeper: unmeasured: {lane} failed on {this_mac()} for the Mac's fault, which says nothing of the "
+          f"commits it ran: {words}", file=sys.stderr, flush=True)
+    return words
+
+
 def failed_short(status, admission, tree):
     """Why a run that ended with status, a failure, failed for want of disk space, or None: a write of its admission
     found the disk full, or the disk is short of QUEUEKEEPER_RUN_FREE_GB now that it has ended. A command that fails
@@ -2074,6 +2088,10 @@ def perform(argv, report):
             if slept and slept_failure(status, receipt):
                 words = slept_through(args.lane, slept)
                 concluded(lane_results.UNMEASURED, unmeasured=[words], error=words)
+                return lane_results.UNMEASURED
+            faulted = host_faulted(args.lane, status, receipt, directory / "results")
+            if faulted is not None:
+                concluded(lane_results.UNMEASURED, unmeasured=[faulted], error=faulted)
                 return lane_results.UNMEASURED
             if status == lane_results.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)
