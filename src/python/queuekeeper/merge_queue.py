@@ -60,7 +60,7 @@ from xml.etree import ElementTree
 
 from . import budgets, disk, plugins, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
-from . import events, pre_push, recovery, restartable, worktree_ownership
+from . import events, landed_cleanup, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
@@ -2226,8 +2226,34 @@ def _land(root, args, directory=None, details=None):
         details.pop("recovery", None)
     left = max(0.0, deadline - time.monotonic())
     status_ = wait(target, identifier, left) if args.wait and identifier is not None else 0
+    # Its own branch goes once proven landed; another repository's branches are that repository's sessions' to tidy.
+    if status_ == 0 and args.wait and identifier is not None and not args.repo:
+        tidied = tidy_branch(target, identifier)
+        if details is not None and tidied is not None: details["branchCleanup"] = tidied
     warn(target)
     return status_
+
+
+def tidy_branch(root, identifier, say=print):
+    """After qk land --wait saw identifier land: delete the local branch it came from when landed_cleanup proves
+    it landed, and say so, or why it stays. The result dict, or None when there is no branch to look at. A failure
+    says so and changes nothing else: the landing stands."""
+    try:
+        queue = Queue(root)
+        entry = queue.read(identifier)
+        if not entry or not entry.get("branch") or entry["branch"] in ("HEAD", "main"): return None
+        # The worker's fetch may be in another checkout's refs: origin/main as this repository last fetched it may
+        # lack the landing, which keeps the branch.
+        try: fetch_main(root, say=lambda words: None)
+        except Exception as error:  # noqa: BLE001 -- a stale origin/main only keeps more
+            say(f"queue: could not fetch origin/main before tidying {entry['branch']}: {error}")
+        results = landed_cleanup.branches(root, queue.all(), only=entry["branch"], emit=queue.emit)
+    except Exception as error:  # noqa: BLE001 -- what only tidies up never changes a landing's result
+        say(f"queue: could not tidy the branch {identifier} came from: {error}")
+        return None
+    if not results: return None
+    say(f"queue: {landed_cleanup.branch_words(results[0])}")
+    return results[0]
 
 
 def other_repository(root, directory):
@@ -7864,17 +7890,29 @@ def reclaim_scratch(queue, say):
 
 def reclaim(root, dry_run=False, as_json=False, out=print):
     """`qk queue reclaim`: recover the scratch worktrees whose makers have ended, and list those made before records
-    were kept, which nothing removes. 0 when nothing is kept but for a maker that still runs, 1 otherwise."""
+    were kept, which nothing removes; delete each local branch the queue proves landed, and list the linked
+    worktrees that hold only landed work, removing none (landed_cleanup). 0 when no scratch worktree is kept but for
+    a maker that still runs, 1 otherwise: a branch or worktree kept is a report, not a failure."""
     results = worktree_ownership.reclaim(root, dry_run=dry_run)
     older = worktree_ownership.legacy(root)
+    queue = Queue(root)
+    try: fetch_main(root, say=lambda words: print(f"queue: {words}", file=sys.stderr))
+    except Exception as error:  # noqa: BLE001 -- a stale origin/main only keeps more
+        print(f"queue: could not fetch origin/main, so what it lacks as last fetched is kept: {error}", file=sys.stderr)
+    entries = queue.all()
+    branches = landed_cleanup.branches(root, entries, dry_run=dry_run, emit=queue.emit)
+    trees = landed_cleanup.worktrees(root, entries)
     if as_json:
-        out(json.dumps({"schemaVersion": 1, "dryRun": dry_run, "records": results, "legacy": older}, default=str))
+        out(json.dumps({"schemaVersion": 1, "dryRun": dry_run, "records": results, "legacy": older,
+                        "branches": branches, "worktrees": trees}, default=str))
     else:
         for result in results:
             out(("would be " if dry_run and result["outcome"] != worktree_ownership.KEPT else "")
                 + worktree_ownership.words(result))
         for each in older: out(f"legacy {each['path']}: {each['why']}")
         if not results and not older: out("no scratch worktree is left behind")
+        for result in branches: out(landed_cleanup.branch_words(result, dry_run))
+        for row in trees: out(landed_cleanup.worktree_words(row))
     needs = [result for result in results
              if result["outcome"] == worktree_ownership.KEPT and result.get("maker") != "running"]
     return 1 if needs or older else 0
@@ -8260,9 +8298,10 @@ def add_arguments(parser):
     asking.add_argument("--json", action="store_true", help="one versioned JSON result")
     reclaiming = operations.add_parser("reclaim", help="remove each scratch worktree qk land left when its process "
                                        "was killed, once its record proves that process gone and nothing uses or "
-                                       "needs it, and list older ones no record proves: 0 nothing left to look at, "
-                                       "1 otherwise")
-    reclaiming.add_argument("--dry-run", action="store_true", help="say what it would remove, removing nothing")
+                                       "needs it, and list older ones no record proves; delete each local branch "
+                                       "the queue proves landed, and list the worktrees holding only landed work, "
+                                       "removing none: 0 no scratch worktree left to look at, 1 otherwise")
+    reclaiming.add_argument("--dry-run", action="store_true", help="say what it would remove or delete, changing nothing")
     reclaiming.add_argument("--json", action="store_true")
     running = operations.add_parser("run", help="be the worker in the foreground; `add` starts one by itself")
     running.add_argument("--if-waiting", action="store_true", help="do nothing when the queue is empty or held")

@@ -334,6 +334,9 @@ made queues the entry anyway and says so; the round checks again. A branch refre
   another hash. A branch that goes on after a landing still holds the old commits; rebase it onto
   `origin/main`, using `git rebase --skip` for a commit whose change `main` already has. Never
   merge `main` in.
+- **A landed branch is deleted for you** when the queue can prove it landed. `qk land --wait`
+  does it for its own branch once the entry lands, and `qk queue reclaim` does it for every branch
+  the queue holds a landed entry from ([Cleaning up after a landing](#cleaning-up-after-a-landing)).
 
 ### Preflight lanes
 
@@ -2658,6 +2661,11 @@ wake you.
   `retryable: true` and the suggested `git rebase --onto origin/main COPY BRANCH`. Run it,
   cherry-pick any of your commits the refusal lists, then land again
   ([Checks before queuing](#checks-before-queuing)).
+- **A landing deletes its branch** when it can prove the branch landed, and says
+  `queue: deleted branch NAME at TIP: ...; restore with git branch NAME TIP`, or
+  `queue: kept branch NAME: WHY`. The usual reason to keep it is that your worktree has it
+  checked out. `--json` gives the same as `branchCleanup` ([Cleaning up after a
+  landing](#cleaning-up-after-a-landing)).
 - **Each project lands in its own repository.** To land a commit in another project's queue, use
   `qk land --repo NAME BRANCH --wait`.
 - **`qk queue status` shows the whole picture.** For a gate on another Mac, read the lane's own
@@ -3188,6 +3196,57 @@ python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper dev
 
 For another Mac's entry the command adds `--host HOST`, which runs the recovery through that Mac's
 `qk` (a plain `ssh HOST` finds a Python too old to start it).
+
+### Cleaning up after a landing
+
+Once an entry lands, its local branch and the worktree that held it are left behind. Queuekeeper
+deletes the branch when it can prove it landed, and reports the worktree without removing it.
+
+**The branch is deleted only when all of these hold:**
+
+- The queue's newest entry from that branch has landed, and `origin/main`, freshly fetched, holds
+  the commit it landed as.
+- The branch's tip is exactly the tip that entry queued (or, for a branch refreshed by merging
+  `main`, the tip the queue replayed). Otherwise the branch has no merge of its own, and every
+  commit of it that `origin/main` lacks has an equal patch there (`git cherry`, which compares
+  patch IDs), since the queue may rebase what it lands.
+- It is not `main`, `master` or origin's default branch, and no worktree has it checked out or is
+  rebasing or bisecting it.
+
+It is deleted with `git update-ref -d` naming the tip that was checked, so a branch that moved
+meanwhile stays. Each deletion is written to the queue's journal as `branch.deleted` and printed
+with the command that restores it. Anything else is kept with the reason.
+
+`qk land --wait` does this for its own branch once the entry lands. With `--json`, the result's
+`branchCleanup` holds `branch`, `tip`, `entry`, `outcome` (`deleted` or `kept`), `why`, and for a
+deletion `how` (`exact`, `contained` or `patch-equivalent`) and `restore`. A failure here never
+changes the landing's exit status. A branch checked out in your own worktree is kept; it goes
+with the next `qk queue reclaim` after the worktree is gone. `qk land --repo` leaves the other
+repository's branches alone.
+
+**Repository-wide**, `qk queue reclaim` deletes every branch that meets the rules above and
+reports each linked worktree that holds only landed work: its branch passes the same checks, or it
+is detached at a commit `origin/main` holds. A reported worktree is **disposable** when it has no
+change, untracked file or operation under way, no process has its working directory, an open file
+or an argument inside it, and it holds no ignored files except caches (`__pycache__`,
+`.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.hypothesis`, `.DS_Store`, `*.pyc`). Any other
+ignored file, such as results, receipts, logs or captures under a build folder, may be evidence,
+and keeps it.
+
+**No worktree is removed**, disposable or not: `git worktree remove` deletes ignored files without
+warning. Remove one through the project's documented disposal path. A locked worktree is never
+listed: the queue worker's checkout, a retired one `qk disk` lists, and qk land's own scratch
+worktrees, which `reclaim` handles as the next section says.
+
+```sh
+python3 scripts/qk queue reclaim --dry-run
+python3 scripts/qk queue reclaim --json
+```
+
+`--dry-run` deletes nothing and says what it would. `--json` adds `branches` (as `branchCleanup`
+above) and `worktrees` (`path`, `branch`, `head`, `entry`, `disposable`, `why`, and the first few
+`evidence` paths with `evidenceCount`) to the scratch-worktree result. Kept branches and worktrees
+are a report, not a failure, and do not change the exit status.
 
 ### Scratch worktrees an interrupted landing left
 

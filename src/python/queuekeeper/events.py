@@ -36,6 +36,7 @@ KINDS = {
     "entry.failed": "{entry} came back: {why}",
     "entry.conflict": "{entry} came back with a conflict: {why}",
     "entry.removed": "{entry} removed",
+    "branch.deleted": "deleted branch {branch}, which {entry} landed",
     "entries.testing": "testing {entries}",
     "entries.requeued": "back in the queue: {entries}",
     "round.began": "round {round} began: {entries} at {head} on {base}",

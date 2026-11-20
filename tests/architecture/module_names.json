@@ -19,6 +19,7 @@
     "queuekeeper.health",
     "queuekeeper.host_context",
     "queuekeeper.host_health",
+    "queuekeeper.landed_cleanup",
     "queuekeeper.landing_proofs",
     "queuekeeper.lane_coverage",
     "queuekeeper.lane_progress",

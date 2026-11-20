@@ -516,6 +516,10 @@ gate's log when the lane ends.
   A maker counts as gone only when its PID is gone or runs another start; one that cannot be read
   counts as running. The record is written before `git worktree add` and removed only once the
   worktree is no longer registered, so a kill at any point leaves a record for anything it left.
+- `qk land --wait` and `qk queue reclaim` delete a landed entry's local branch only by
+  `landed_cleanup`'s rule: the queue's newest entry from it landed and `origin/main` holds that
+  landing, its tip is the one queued or every commit of it has an equal patch on `origin/main`,
+  and no worktree holds it. They report worktrees that hold only landed work and never remove one.
 - What a dead worker was testing was never pushed, so the next worker tests it again.
 - A batch whose lanes passed is recorded `passed`, with its commit and base, before its push. After
   a hold and `qk queue resume`, the next worker pushes it without gating again while the batch is
@@ -1741,6 +1745,7 @@ schema only grows, so readers ignore what they do not know.
 | `entry.failed` | An entry came back from its gate | `entry`, `subject`, `tip`, `why`, `log` |
 | `entry.conflict` | An entry came back with a conflict | `entry`, `subject`, `tip`, `why` |
 | `entry.removed` | An entry was taken out | `entry`, `subject`, `tip` |
+| `branch.deleted` | A landed entry's local branch was deleted (`landed_cleanup`) | `branch`, `tip`, `entry`, `how` |
 | `entries.testing` | Entries went under test | `entries` |
 | `entries.requeued` | Entries went back to waiting | `entries` |
 | `round.began` | The worker started a round | `round`, `head`, `base`, `entries`, `bisect`, `adopted` |

@@ -79,6 +79,7 @@ def execute(root, operation, command, *, reference=None, identifiers=(), details
         payload["recovery"] = recovery.in_project(payload["recovery"], target)
     for row in payload.get("entries", []):
         if row.get("recovery"): row["recovery"] = recovery.in_project(row["recovery"], target)
+    if details.get("branchCleanup"): payload["branchCleanup"] = details["branchCleanup"]
     payload.update(schemaVersion=1, operation=operation, exitStatus=status)
     if requested:
         payload["requestedIds"] = requested
