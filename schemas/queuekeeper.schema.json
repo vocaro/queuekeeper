@@ -250,13 +250,17 @@
             ]
           },
           "failedTests": {
-            "description": "Where a lane that is not qk unittest names its failed tests, so that the merge queue reruns each alone before a bisect.",
+            "description": "Where a lane that is not qk unittest names its failed tests, so that the merge queue reruns each alone before a bisect. A lane whose plugin names them, as a qk unity test lane's, gives paths alone; any other needs results and rerun.",
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "results",
-              "rerun"
-            ],
+            "dependentRequired": {
+              "results": [
+                "rerun"
+              ],
+              "rerun": [
+                "results"
+              ]
+            },
             "properties": {
               "results": {
                 "description": "The JUnit XML file the lane writes, as a path relative to its results folder, QUEUEKEEPER_RESULTS_DIR.",

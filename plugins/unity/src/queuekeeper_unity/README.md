@@ -53,6 +53,36 @@ A lane whose results differ by GPU, such as one that compares rendered images, a
 naming the chip, such as `"labels": ["apple-m5-max"]`, which keeps it on a Mac whose settings give
 that label (the user guide's What a Mac takes).
 
+## Flaky tests
+
+When a gate lane whose command is `qk unity test` fails, the merge queue reruns its failed tests
+alone before a bisect, as it does a `qk unittest` lane's (the user guide's
+[When a batch fails](../../../../doc/user_guide.md#when-a-batch-fails)):
+
+1. The plugin names each test case that failed or erred in the `results.xml` the run kept, by its
+   full name. More than five failed tests, or none named, bisect at once.
+2. Each is rerun alone, up to three times, with the lane's own command and `--filter TEST`, which
+   passes Unity's `-testFilter` the name escaped and anchored. A filtered run whose results do not
+   hold that test exits 3 and counts as a failed rerun.
+3. A test that fails again alone is a real failure, and the batch is bisected. A test that passes
+   every rerun is a flake, recorded as a Python one is: on the entries, in a `Flaky-test:`
+   trailer and on the tracker.
+4. The batch lands on its flakes only if it changes none of the paths the lane's tests depend on,
+   which the lane lists in `failedTests`:
+
+```json
+"gate": {
+  "command": ["python3", "scripts/qk", "unity", "test", "--platform", "PlayMode"],
+  "unity": true,
+  "failedTests": {"paths": ["lab/Assets/", "lab/Packages/", "lab/ProjectSettings/"]}
+}
+```
+
+A lane that lists no paths still has its flakes recorded, and is then bisected. The rerun keeps
+the lane's `--platform` and `--unadmitted`. A lane that gives `--results`, or runs Unity through a
+script of its own, gets no reruns from the plugin; such a script can declare its own `failedTests`
+with a JUnit XML file and a rerun command.
+
 ## Doctor, disk and host
 
 - `qk doctor` warns when the pinned editor is missing on this Mac or another Mac, when
@@ -88,6 +118,9 @@ unity: passed 0.012s Lab.Grid.Wraps
 unity: failed 1.500s Lab.Grid.Clamps (Expected: 4)
 unity: 1 passed, 1 failed
 ```
+
+`--filter TEST` runs only the test whose full name is TEST, as the merge queue reruns a failed
+test alone ([Flaky tests](#flaky-tests)), and exits 3 when no such test ran.
 
 Started outside a lane, it is admitted and placed first, as `qk admit` would run it.
 `--unadmitted` after `test` runs it with no admission, on this Mac.
@@ -135,7 +168,7 @@ status, or 124 for a run it ended. Such a script checks first that a run may sta
 | 1 | A test failed, the project did not compile, or the run wrote no results |
 | 2 | The command was misused, or the project has no Unity project where it says |
 | 124 | `run` ended a batch run whose log went silent |
-| 3 | Unmeasured: nothing ran. No editor on this Mac, an editor holding the project, a held lock, a licensing helper that would not stop, an editor in Play mode during exclusive work, or a run that hung |
+| 3 | Unmeasured: nothing ran. No editor on this Mac, an editor holding the project, a held lock, a licensing helper that would not stop, an editor in Play mode during exclusive work, a run that hung, or a `--filter` that ran no such test |
 
 The merge queue tries an unmeasured run again and then holds it. It does not send the commit back as
 failed. `closed` and `run` otherwise exit with their command's own status.

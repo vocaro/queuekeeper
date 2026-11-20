@@ -396,8 +396,10 @@ The worker tries the cheap explanations before the expensive one:
    entries that fail together cost one extra gate; a larger set at most about two per entry.
 
 Steps 1 and 2 read test names from `qk unittest`, the bundled Python test runner, and are skipped
-when more than five tests failed. Any other lane, including Xcode and Unity lanes for now, gets
-step 1 only if it declares `failedTests`, and never step 2:
+when more than five tests failed. A lane whose command is `qk unity test` gets step 1 from the
+[Unity plugin](../plugins/unity/src/queuekeeper_unity/README.md#flaky-tests), and never step 2.
+Any other lane, including Xcode lanes for now, gets step 1 only if it declares `failedTests`, and
+never step 2:
 
 ```json
 "gate": {
@@ -414,7 +416,13 @@ step 1 only if it declares `failedTests`, and never step 2:
   Each failed `testcase` is a failed test, named `classname.name`.
 - `rerun` runs one test alone, with `{test}` replaced by its name.
 - `paths` lists the files the tests depend on (a directory ends in `/`). A batch lands on passing
-  reruns only if it changes none of them.
+  reruns only if it changes none of them. With none listed, the flakes are recorded and the batch
+  is bisected.
+
+A `qk unity test` lane's failed tests are named by the plugin from Unity's `results.xml` and rerun
+with `qk unity test --filter TEST`, so its `failedTests` gives `paths` alone, such as
+`"failedTests": {"paths": ["lab/Assets/", "lab/Packages/"]}`. Without it, the lane's flakes are
+still recorded, and the batch is bisected.
 
 A `qk unittest` gate run with `--fail-fast` stops once a failed test fails again alone, and runs
 the recently failed test classes first, so a failing batch usually reaches these steps well before

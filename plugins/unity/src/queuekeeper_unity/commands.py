@@ -1,6 +1,6 @@
 """`qk unity`: a Unity project's tests, a command run while its editor is closed, and a worktree's editor.
 
-    qk unity test [--platform EditMode|PlayMode] [--results DIR]
+    qk unity test [--platform EditMode|PlayMode] [--results DIR] [--filter TEST]
     qk unity closed -- COMMAND
     qk unity ready [--exclusive] -- COMMAND
     qk unity open [--ensure | --status]
@@ -111,8 +111,10 @@ def test(project, args):
     folder = results_folder(args.results)
     results, log = folder / "results.xml", folder / "tests.log"
     results.unlink(missing_ok=True)
+    # Unity's -testFilter is a regular expression over a test's full name: anchored and escaped, it names one test.
+    alone = ["-testFilter", f"^{re.escape(args.filter)}$"] if args.filter else []
     ended = batch.run([str(binary), "-batchmode", "-projectPath", str(project), "-runTests", "-testPlatform",
-                       args.platform, "-testResults", str(results), "-logFile", str(log)],
+                       args.platform, *alone, "-testResults", str(results), "-logFile", str(log)],
                       log, project, quiet=batch.quiet(), say=warn)
     if ended == batch.HUNG: return unmeasured(f"the {args.platform} run hung and was ended ({log})")
     text = log.read_text(errors="replace") if log.exists() else ""
@@ -128,7 +130,16 @@ def test(project, args):
         warn(f"FAIL: no test results were written (editor exit {ended}, {log})")
         for line in text.splitlines()[-20:]: print(f"  {line}", file=sys.stderr)
         return FAILED
+    if args.filter and not ran(results, args.filter):
+        # A filter that matched nothing passes no test, which is no verdict on it.
+        return unmeasured(f"the {args.platform} run's results name no test {args.filter} ({results})")
     return 0 if report(results) else FAILED
+
+
+def ran(results, name):
+    """Whether results.xml holds the test case whose full name is name."""
+    try: return any(case.get("fullname") == name for case in ET.parse(results).getroot().iter("test-case"))
+    except (OSError, ET.ParseError): return False
 
 
 def closed(project, command):
@@ -311,6 +322,8 @@ def main(arguments, project=None):
     tests.add_argument("--platform", choices=["EditMode", "PlayMode"], default="EditMode")
     tests.add_argument("--results", metavar="DIR", help="where results.xml and tests.log go (default: the lane's "
                        "results folder, or a temporary one)")
+    tests.add_argument("--filter", metavar="TEST", help="run only the test whose full name is TEST, as the merge queue "
+                       "reruns a failed test alone; exit 3 when no such test ran")
     actions.add_parser("closed", help="close the project's editor, run COMMAND, and open the editor again: "
                        "qk unity closed -- COMMAND")
     readiness = actions.add_parser("ready", help="run COMMAND once a batch run may start on the project, and exit 3 "

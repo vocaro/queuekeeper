@@ -16,7 +16,9 @@ from unittest.mock import patch
 import host_isolation  # first, as every test module
 
 from queuekeeper import config; from queuekeeper import disk; from queuekeeper import plugins; import queuekeeper_unity as unity
+from queuekeeper import merge_queue as mq
 from queuekeeper.lane_results import UNMEASURED, executed_tests
+from test_support.queue import Fixture, run
 from queuekeeper_unity import batch, commands, disk as unity_disk, doctor, editor, host, lane, licensing, project, \
     results, settings, unity_cli
 
@@ -350,6 +352,29 @@ class CommandTests(Folder):
         status, _, error = self.unity("test", "--results", str(self.folder / "out"))
         self.assertEqual(status, UNMEASURED)
         self.assertIn("hung", error)
+
+    def test_a_filter_runs_one_test_by_its_anchored_full_name_and_no_such_test_is_unmeasured(self):
+        # The merge queue's rerun of one failed test alone (vocaro/queuekeeper#109).
+        filters = []
+        def ran(command, log_path, found, **options):
+            filters.append(command[command.index("-testFilter") + 1])
+            Path(log_path).write_text("")
+            Path(command[command.index("-testResults") + 1]).write_text(self.written)
+            return 0
+        self.enterContext(patch.object(batch, "run", ran))
+        name = "Lab.Grid.Clamps(1,2)"
+        case = f'<test-case fullname="{name}" result="{{}}"/>'
+        for result, status in (("Passed", 0), ("Failed", 1)):
+            self.written = f'<test-run total="1" passed="{int(result == "Passed")}" ' \
+                           f'failed="{int(result == "Failed")}">{case.format(result)}</test-run>'
+            with self.subTest(result):
+                self.assertEqual(self.unity("test", "--filter", name, "--results", str(self.folder / "out"))[0], status)
+        self.assertEqual(filters[0], r"^Lab\.Grid\.Clamps\(1,2\)$")
+        # A filter Unity matched no test with passes nothing, which is no verdict on the test.
+        self.written = '<test-run total="0" passed="0" failed="0"></test-run>'
+        status, _, error = self.unity("test", "--filter", name, "--results", str(self.folder / "out"))
+        self.assertEqual(status, UNMEASURED)
+        self.assertIn(f"name no test {name}", error)
 
     def test_test_starts_nothing_while_an_editor_has_the_project_or_this_mac_has_no_editor(self):
         self.enterContext(patch.object(batch, "run", lambda *a, **k: self.fail("a batch run started")))
@@ -853,6 +878,153 @@ class ResultsTests(Folder):
         self.assertEqual(commands.results_folder(str(self.folder / "named")), self.folder / "named")
         with patch.dict(os.environ, {commands.RESULTS_VARIABLE: str(self.folder / "lane")}):
             self.assertEqual(commands.results_folder(None), self.folder / "lane" / results.FOLDER)
+
+
+# A run's results.xml with a failed test twice, a test that erred, one that passed and one skipped.
+FAILED_RESULTS = """<?xml version="1.0"?>
+<test-run total="5" passed="1" failed="3" skipped="1">
+  <test-suite type="TestFixture" fullname="Lab.Grid" result="Failed">
+    <test-case fullname="Lab.Grid.Clamps" result="Failed"><failure><message>Expected: 4</message></failure></test-case>
+    <test-case fullname="Lab.Grid.Wraps" result="Passed"/>
+    <test-case fullname="Lab.Grid.Throws(2)" result="Failed" label="Error"><failure><message>boom</message></failure></test-case>
+    <test-case fullname="Lab.Grid.Skips" result="Skipped"/>
+    <test-case fullname="Lab.Grid.Clamps" result="Failed"/>
+  </test-suite>
+</test-run>
+"""
+
+
+class RerunTests(Folder):
+    """What the Unity plugin gives the merge queue for a qk unity test lane (plugins.RERUNS): the tests a failed run
+    failed, from the results.xml it kept, and the command that reruns one alone (vocaro/queuekeeper#109)."""
+    LANE = {"command": ["python3", "scripts/qk", "unity", "test", "--platform", "PlayMode"], "unity": True}
+
+    def kept(self, text):
+        (self.folder / results.FOLDER).mkdir(exist_ok=True)
+        (self.folder / results.FOLDER / results.FILE).write_text(text)
+
+    def test_the_failed_and_erred_cases_are_named_by_full_name_once_each_in_order(self):
+        self.kept(FAILED_RESULTS)
+        self.assertEqual(results.failed(self.folder), (["Lab.Grid.Clamps", "Lab.Grid.Throws(2)"], None))
+
+    def test_a_run_with_no_failed_case_or_no_readable_results_names_none(self):
+        self.assertEqual(results.failed(self.folder), (None, "the lane kept no unity/results.xml in its results folder"))
+        path = self.folder / results.FOLDER / results.FILE
+        self.kept(RESULTS.format(passed=2, failed=0, result="Passed"))
+        self.assertEqual(results.failed(self.folder), (None, f"{path} names no failed test"))
+        self.kept("<test-run>")
+        self.assertTrue(results.failed(self.folder)[1].startswith(f"{path} cannot be read: "))
+        # -testFilter splits its value at ;, so such a test is not rerun alone.
+        self.kept('<test-run><test-case fullname="Lab.A(&quot;x;y&quot;)" result="Failed"/></test-run>')
+        self.assertIn("that -testFilter cannot run alone", results.failed(self.folder)[1])
+
+    def test_a_qk_unity_test_lane_reruns_one_test_with_its_own_command_and_a_filter(self):
+        found = plugins.lane_reruns(self.LANE)
+        self.assertIsInstance(found, plugins.Reruns)
+        self.assertEqual(found.rerun, [*self.LANE["command"], "--filter", "{test}"])
+        self.assertIs(found.failed, results.failed)
+        self.assertIsNotNone(results.reruns({"command": ["qk", "unity", "test", "--platform=EditMode", "--unadmitted"]}))
+
+    def test_another_lane_or_an_option_a_rerun_does_not_know_gives_none(self):
+        for command in (["./tools/verification/check.sh"], ["qk", "unittest", "-s", "tests"], ["qk", "unity", "open"],
+                        ["qk", "unity", "test", "--results", "out"], ["qk", "unity", "test", "--platform"], "qk unity test"):
+            with self.subTest(command): self.assertIsNone(plugins.lane_reruns({"command": command}))
+
+    def parse(self, failed):
+        lanes = {"gate": {**self.LANE, "failedTests": failed}, "docs": {"command": ["./docs.sh"], "failedTests": failed}}
+        return config.parse(json.dumps({**LaneKeyTests.BASE, "plugins": ["queuekeeper_unity"], "lanes": lanes}))
+
+    def test_a_qk_unity_test_lane_gives_its_paths_alone_and_another_lane_may_not(self):
+        with self.assertRaisesRegex(ValueError, "docs.failedTests needs results and rerun.*paths alone"):
+            self.parse({"paths": ["lab/Assets/"]})
+        lanes = {"gate": {**self.LANE, "failedTests": {"paths": ["lab/Assets/"]}}}
+        parsed = config.parse(json.dumps({**LaneKeyTests.BASE, "plugins": ["queuekeeper_unity"], "lanes": lanes}))
+        lane_name, settings = mq.declared_failures(parsed["lanes"], "gate", [])
+        self.assertEqual((lane_name, settings["paths"]), ("gate", ["lab/Assets/"]))
+        self.assertEqual(settings["plugin"].rerun[-2:], ["--filter", "{test}"])
+        # A lane with no failedTests is still rerun, with no paths, so its flakes are recorded before it bisects.
+        self.assertEqual(mq.declared_failures({"gate": self.LANE}, "gate", [])[1].keys(), {"plugin"})
+
+
+# A stand-in for `qk unity test` in a project's lane: it runs two tests, one that fails when the plan says so at its
+# turn, and keeps Unity's results.xml under the lane's results folder; with --filter it runs that test alone.
+UNITY_LANE = """import os, pathlib, sys
+
+RUNS, PLAN = pathlib.Path({runs!r}), pathlib.Path({plan!r})
+assert sys.argv[1:3] == ["unity", "test"], sys.argv
+
+
+def sometimes():
+    done = len(RUNS.read_text()) if RUNS.exists() else 0
+    RUNS.write_text("x" * (done + 1))
+    return (PLAN.read_text() if PLAN.exists() else "")[done:done + 1] != "F"
+
+
+TESTS = {{"Lab.Grid.Sometimes": sometimes, "Lab.Grid.Steady": lambda: True}}
+chosen = [sys.argv[sys.argv.index("--filter") + 1]] if "--filter" in sys.argv else list(TESTS)
+passed = {{name: TESTS[name]() for name in chosen}}
+for name, ok in passed.items(): print(("Passed: " if ok else "Failed: ") + name)
+folder = os.environ.get("QUEUEKEEPER_RESULTS_DIR")
+if folder and "--filter" not in sys.argv:
+    cases = "".join(f'<test-case fullname="{{name}}" result="{{"Passed" if ok else "Failed"}}"/>' for name, ok in passed.items())
+    (pathlib.Path(folder) / "unity").mkdir(parents=True, exist_ok=True)
+    (pathlib.Path(folder) / "unity/results.xml").write_text(f"<test-run>{{cases}}</test-run>")
+sys.exit(0 if all(passed.values()) else 1)
+"""
+
+
+class UnityFlakyReruns(Fixture):
+    """A failed qk unity test lane's failed tests are rerun alone before a bisect, by the names the plugin reads from
+    its results.xml and with its --filter, and one that passes alone is a flake, as a qk unittest lane's is
+    (vocaro/queuekeeper#109). The lane's command is a stand-in for qk unity test: no Unity editor starts."""
+    TEST = "Lab.Grid.Sometimes"
+
+    def setUp(self):
+        super().setUp()
+        self.runs, self.plan = self.base / "runs", self.base / "plan"
+        (self.repo / "tools").mkdir()
+        (self.repo / "tools/qk").write_text(UNITY_LANE.format(runs=str(self.runs), plan=str(self.plan)))
+        config = self.config()
+        config["plugins"] = ["queuekeeper_unity"]
+        config["lanes"]["gate"] = {"command": ["python3", "tools/qk", "unity", "test"], "timeout": 600,
+                                   "failedTests": {"paths": ["tools/"]}}
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", ".")
+        run(self.repo, "git", "commit", "-qm", "Gate on qk unity test")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def worked(self):
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        return said.getvalue()
+
+    def test_a_failed_test_that_passes_alone_is_a_flake_and_the_batch_lands(self):
+        self.plan.write_text("F")
+        self.commit("a", "a"); self.commit("b", "b")
+        ids = self.add("a", "b")
+        log = self.worked()
+        self.assertIn(f": {self.TEST}; rerunning each alone up to {mq.RERUNS} times on that commit before a bisect", log)
+        self.assertIn("no commit of the batch changes a path gate's tests depend on: landing the batch", log)
+        self.assertEqual(len(self.runs.read_text()), 1 + mq.RERUNS)
+        for identifier in ids:
+            entry = self.state(identifier)
+            self.assertEqual(entry["state"], "landed")
+            [flake] = entry["flakes"]
+            self.assertEqual(flake["test"], self.TEST)
+            self.assertTrue(all(f"Passed: {self.TEST}" in Path(path).read_text() for path in flake["rerunLogs"]))
+        [tracked] = self.tracked
+        self.assertEqual(tracked["test"], self.TEST)
+
+    def test_a_failed_test_that_fails_again_alone_is_no_flake(self):
+        self.plan.write_text("FF")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        log = self.worked()
+        self.assertIn(f"{self.TEST} failed again alone, on rerun 1 (exit 1), so the failure is real", log)
+        self.assertEqual(len(self.runs.read_text()), 2)
+        entry = self.state(identifier)
+        self.assertNotEqual(entry["state"], "landed")
+        self.assertNotIn("flakes", entry)
+        self.assertEqual(self.tracked, [])
 
 
 if __name__ == "__main__":

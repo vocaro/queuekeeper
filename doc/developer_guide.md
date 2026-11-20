@@ -367,7 +367,12 @@ and the queue holds for a session instead of bisecting every entry back (vocaro/
 ### Flakes, blame and bisecting
 
 These apply to a failing `qk unittest` lane, or a group whose only failure is one, and to a lane
-with `failedTests`.
+with `failedTests`. A plugin can stand in for a lane's `results` and `rerun`: a reader in
+`plugins.RERUNS` gives a `plugins.Reruns` for a lane whose command it knows, with the argv that
+reruns one test and a function that names the failed tests from the lane's results folder.
+`merge_queue.declared_failures` takes it when the lane's `failedTests` has no `results`, and
+`config.failed_tests_setting` then takes `paths` alone. The Unity plugin gives one for a
+`qk unity test` lane (vocaro/queuekeeper#109).
 
 - **Rerun alone.** The worker reads the failed test IDs from unittest's `FAIL:` and `ERROR:` lines,
   waits for the Mac to settle, and reruns each alone with the lane's `-s`, `-p`, `-t`, `--split`,
@@ -1700,6 +1705,10 @@ list of them, as `settings.app` and the schema's `oneOf` for `app.prepare` do; a
 - **Stop an orphaned licensing helper** before starting an editor, since a helper left unanswering makes
   the next editor wait 60 seconds and fail.
 - **Never pass `-nographics`.** Without a graphics device Unity loads no compute shaders.
+- **Rerun one test by an anchored filter, and trust no empty run.** `-testFilter` is a regular
+  expression over a test's full name, so `qk unity test --filter` escapes the name and anchors it.
+  A filtered run whose results do not hold that test exits 3, never 0, so a filter that matched
+  nothing is never a passing rerun.
 
 ## Visibility features
 

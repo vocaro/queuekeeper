@@ -263,12 +263,18 @@ def failed_tests_setting(name, lane):
     """A lane's failedTests: where the lane writes its results in JUnit XML, under its results folder
     (QUEUEKEEPER_RESULTS_DIR), the command that reruns one of its tests alone, with {test} for the test's name, and the
     paths its tests depend on, each a file or a directory ending in /, which the merge queue reads to rerun a failed
-    test alone before a bisect, as it does a qk unittest lane's (vocaro/queuekeeper#109)."""
+    test alone before a bisect, as it does a qk unittest lane's (vocaro/queuekeeper#109). A lane whose plugin names its
+    failed tests and reruns one (hooks.Reruns), as a qk unity test lane's, gives its paths alone."""
     if "failedTests" not in lane: return
     settings = lane["failedTests"]
-    if not isinstance(settings, dict) or set(settings) - {"results", "rerun", "paths"} \
-            or not {"results", "rerun"} <= set(settings):
+    if not isinstance(settings, dict) or set(settings) - {"results", "rerun", "paths"}:
         raise ValueError(f"{name}.failedTests needs results and rerun, and supports paths")
+    if not {"results", "rerun"} & set(settings) and hooks.lane_reruns(lane) is not None:
+        failed_tests_paths(name, settings)
+        return
+    if not {"results", "rerun"} <= set(settings):
+        raise ValueError(f"{name}.failedTests needs results and rerun, and supports paths; a lane whose plugin names "
+                         "its failed tests, as a qk unity test lane's, gives paths alone")
     results = settings["results"]
     if not isinstance(results, str) or not results.strip() or Path(results).is_absolute() or ".." in Path(results).parts:
         raise ValueError(f"{name}.failedTests.results is the JUnit XML file's path in the lane's results folder "
@@ -278,6 +284,11 @@ def failed_tests_setting(name, lane):
             or not any("{test}" in word for word in rerun):
         raise ValueError(f"{name}.failedTests.rerun is an argv list, never shell source, that names {{test}}, the "
                          "failed test it reruns alone")
+    failed_tests_paths(name, settings)
+
+
+def failed_tests_paths(name, settings):
+    """Refuse a lane's failedTests.paths unless it lists files, each a file or a directory ending in /."""
     paths = settings.get("paths", [])
     if not isinstance(paths, list) or any(not isinstance(path, str) or not path.strip() for path in paths):
         raise ValueError(f"{name}.failedTests.paths lists the files its tests depend on, each a file or a directory "

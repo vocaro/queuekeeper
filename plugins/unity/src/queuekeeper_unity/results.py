@@ -2,7 +2,8 @@
 
 `qk unity test` keeps Unity's results.xml, NUnit's form, in the lane's results folder under unity/. A lane's output
 goes to its log, so `qk run` prints a line per test from that file when the lane ends, here or, for a run on another
-Mac, once its results have come back, as it does for the Apple plugin's kept runs."""
+Mac, once its results have come back, as it does for the Apple plugin's kept runs. The merge queue reads the same file
+to rerun alone each test a failed qk unity test lane failed (reruns)."""
 from collections import Counter
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -54,7 +55,47 @@ def report(results, out=print):
         for line in said: out(line)
 
 
+def failed(results):
+    """([test], None), the full names, in order, of the test cases that failed in the run `qk unity test` kept under
+    a lane's results folder, results; or (None, why it names none to rerun), as the merge queue reads a lane's failed
+    tests (vocaro/queuekeeper#109)."""
+    path = Path(results) / FOLDER / FILE
+    try: found = cases(path)
+    except FileNotFoundError: return None, f"the lane kept no {FOLDER}/{FILE} in its results folder"
+    except (OSError, ET.ParseError) as error: return None, f"{path} cannot be read: {error}"
+    names = list(dict.fromkeys(case["test"] for case in found if case["outcome"] == "failed"))
+    if not names: return None, f"{path} names no failed test"
+    # -testFilter separates names with ;, so such a name cannot be run alone.
+    alone = [name for name in names if name == "?" or ";" in name]
+    if alone: return None, f"{path} names a failed test that -testFilter cannot run alone: {alone[0]}"
+    return names, None
+
+
+# The options of `qk unity test` that its rerun of one test keeps, each with whether it takes a value. --results is
+# not one: a lane that names its own folder keeps its results where the merge queue does not read them.
+RERUN_OPTIONS = {"--platform": True, "--unadmitted": False}
+
+
+def reruns(lane):
+    """A plugins.Reruns for a lane whose command is `qk unity test`, which reruns one failed test alone with the same
+    command and --filter, or None for any other lane, or one with an option a rerun does not know."""
+    from queuekeeper import plugins
+    command = lane.get("command") if isinstance(lane, dict) else None
+    if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
+    at = next((index for index in range(len(command) - 2) if Path(command[index]).name == "qk"
+               and command[index + 1:index + 3] == ["unity", "test"]), None)
+    if at is None: return None
+    words, index = command[at + 3:], 0
+    while index < len(words):
+        name, equals, _ = words[index].partition("=")
+        if name not in RERUN_OPTIONS: return None
+        index += 2 if RERUN_OPTIONS[name] and not equals else 1
+    if index != len(words): return None
+    return plugins.Reruns([*command, "--filter", "{test}"], failed)
+
+
 def register():
-    """Have `qk run` print them when a lane ends."""
+    """Have `qk run` print them when a lane ends, and the merge queue rerun a qk unity test lane's failed tests."""
     from queuekeeper import plugins
     if report not in plugins.REPORT_RESULTS: plugins.REPORT_RESULTS.append(report)
+    if reruns not in plugins.RERUNS: plugins.RERUNS.append(reruns)

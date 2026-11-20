@@ -247,6 +247,33 @@ class LaneKey:
 LANE_KEYS = {}
 
 
+class Reruns:
+    """How a plugin names the tests a failed run of a lane failed and reruns one alone (RERUNS): what a lane's
+    failedTests says with a JUnit XML file and a rerun command, for a runner whose results only the plugin reads.
+
+    rerun is the argv, run in the checkout, that reruns one test alone, with {test} for its name. failed(results) is
+    ([test], None), the names, in order, of the tests failed by the run whose results folder is results; or (None, why
+    it names none). It raises nothing."""
+
+    def __init__(self, rerun, failed):
+        self.rerun, self.failed = list(rerun), failed
+
+
+# Each (lane) -> a Reruns for a lane, a lane's settings in queuekeeper.json, whose command runs tests the plugin reads,
+# or None. The merge queue then reruns a failed run's tests alone before a bisect, as it does a qk unittest lane's, and
+# records one that passes alone as a flake (vocaro/queuekeeper#109). The Unity plugin reads a qk unity test lane's. The
+# lane may not have been checked yet: one it cannot read gives None.
+RERUNS = []
+
+
+def lane_reruns(lane):
+    """The first Reruns a plugin gives for lane, in the order registered, or None."""
+    for reruns in RERUNS:
+        found = reruns(lane)
+        if found is not None: return found
+    return None
+
+
 def lane_command(lane, command):
     """The command a lane runs once each key a plugin added to it has had its say, in the order registered."""
     for key, added in LANE_KEYS.items():

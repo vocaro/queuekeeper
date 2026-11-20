@@ -1366,15 +1366,18 @@ def junit_failures(path):
 def declared_failures(lanes, lane, failed):
     """(the lane, of lane itself or of the group it names, whose failedTests say how to rerun its failed tests, those
     settings), when that lane is the only one of failed, the lanes of a group that did not pass; or None. A lane of the
-    toolkit's qk unittest reruns by rerun_command instead (vocaro/queuekeeper#109)."""
+    toolkit's qk unittest reruns by rerun_command instead (vocaro/queuekeeper#109). A lane whose plugin names its failed
+    tests (plugins.Reruns), as a qk unity test lane's, is one too, with its failedTests, or none, giving its paths."""
     settings = lanes.get(lane)
     if not isinstance(settings, dict): return None
-    if "parallel" not in settings:
-        return (lane, settings["failedTests"]) if isinstance(settings.get("failedTests"), dict) else None
-    if len(failed) != 1 or failed[0] not in settings["parallel"]: return None
-    member = lanes.get(failed[0])
-    return (failed[0], member["failedTests"]) if isinstance(member, dict) and isinstance(member.get("failedTests"), dict) \
-        else None
+    if "parallel" in settings:
+        if len(failed) != 1 or failed[0] not in settings["parallel"]: return None
+        lane, settings = failed[0], lanes.get(failed[0])
+        if not isinstance(settings, dict): return None
+    declared = settings.get("failedTests") if isinstance(settings.get("failedTests"), dict) else {}
+    if "results" in declared: return lane, declared
+    reruns = plugins.lane_reruns(settings)
+    return (lane, {**declared, "plugin": reruns}) if reruns is not None else None
 
 
 def module_files(base, parts):
@@ -5470,7 +5473,9 @@ class Worker:
         its results folder, the tests that failed, and how to rerun one alone (vocaro/queuekeeper#109). Each is rerun
         as a qk unittest lane's is, and when every rerun passes, each is a flake, recorded as any, and the batch lands
         only when none of its commits changes one of the lane's paths, the files its tests depend on; a lane that lists
-        none bisects. A failure that a rerun confirms bisects, as no output names an entry to blame."""
+        none bisects. A failure that a rerun confirms bisects, as no output names an entry to blame. A lane whose plugin
+        names its failed tests (plugins.Reruns), as a qk unity test lane's, has them named and rerun by the plugin, and
+        is weighed the same way."""
         lane, settings = declared
         folder = self.failed_results
         # A group's lanes each write under results/LANE/.
@@ -5478,7 +5483,8 @@ class Worker:
         if folder is None:
             self.say(f"{lane}'s results folder is not known, so no failed test is rerun: bisecting")
             return None
-        tests, why = junit_failures(folder / settings["results"])
+        reruns = settings.get("plugin")
+        tests, why = reruns.failed(folder) if reruns else junit_failures(folder / settings["results"])
         if tests is None:
             self.say(f"{lane} failed with no failed test to rerun alone ({why}): bisecting")
             return None
@@ -5492,7 +5498,7 @@ class Worker:
         if busy:
             self.say(f"the failed tests are not rerun, as {busy}: bisecting")
             return None
-        template = settings["rerun"]
+        template = reruns.rerun if reruns else settings["rerun"]
         ran = self.rerun_each(tests, lambda test: [word.replace("{test}", test) for word in template], applied, head,
                               log, round_name)
         if ran is None: return None
