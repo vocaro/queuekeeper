@@ -906,17 +906,42 @@ The command and its `compileFirst` may write only to:
 - the folders in `write`: absolute, `~/...`, or relative to the checkout
 
 Reading is not limited. The network is off unless `network` says otherwise. Unix sockets inside the
-lane's own writable folders still work, so a test's server and client can talk. Seatbelt can tell only
-localhost from other hosts, so `network` takes `localhost`, `localhost:PORT`, `*:PORT` (any host on
-that port, with name lookups), `*` (no limit), or a unix socket's absolute path. A host name such as
-`github.com:443` is refused.
+lane's own writable folders still work, so a test's server and client can talk. `network` takes
+`localhost`, `localhost:PORT`, `HOST:PORT`, `*.DOMAIN:PORT`, `*:PORT` (any host on that port, with name
+lookups), `*` (no limit), or a unix socket's absolute path.
+
+Seatbelt can tell only localhost from other hosts, so a lane that names hosts, such as
+`"network": ["github.com:443", "*.githubusercontent.com:443"]`, reaches them through a filtering proxy.
+`qk run` runs the proxy on localhost, in its own process and outside the sandbox, for the length of the
+run. The proxy admits a `CONNECT` (HTTPS) or plain HTTP request only to a host and port the lane names.
+`*.DOMAIN` means any name under the domain, not the domain itself. The profile lets the command reach
+only the proxy's port, so a host the lane does not name cannot be reached, by name or by address. The
+command is given the proxy in `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY`, in both cases, with
+`NO_PROXY` set to localhost. curl, git, Python's urllib and requests, pip and npm read these
+variables. A client that ignores them, such as Node's built-in `fetch`, Gradle without its
+`-Dhttps.proxyHost` settings, or SwiftPM, reaches nothing. A lane cannot name hosts and also `*` or
+`*:PORT`, which would let a connection past the proxy. The receipt's `sandbox.proxy` gives the proxy's
+address. A connection the proxy refused is listed with the run's refusals, as `proxy-connect HOST:PORT`.
 
 The profile is made when the lane starts on the Mac that runs it, after admission has placed it, so a
 lane sent to another Mac gets that Mac's paths. It is kept as `sandbox.sb` in the run's directory
 (`sandbox-NAME.sb` for each member of a group), and the receipt's `sandbox` lists what it allows.
 Before the command starts, Queuekeeper checks that the profile applies on that Mac. If it does not,
 the lane ends `not-started`, not failed. A refused write fails the command's own call with
-`Operation not permitted`.
+`Operation not permitted`, which says neither path nor address. So while a sandboxed lane runs,
+Queuekeeper reads the kernel's refusals of it from macOS's log, and the summary of a run that did not
+pass lists them, for example:
+
+```text
+  sandbox refused: file-write-create /Users/me/.npmrc (node)
+  sandbox refused: network-outbound remote:*:80 (curl)
+```
+
+Add the path to `write` or the endpoint to `network` and run it again. The receipt's `sandbox.refused`
+holds up to 50. The kernel does not report every refusal: a write a process makes as it starts can go
+unreported. A failed run whose log says `Operation not permitted`, with no refusal reported, says that
+one may have been refused. `qk doctor` warns of each Mac, this one and the farm's, where `sandbox-exec`
+is missing or applies no profile, when a lane has a sandbox.
 
 Admission and [process supervision](#process-supervision) work as for any lane. `qk run` holds the
 admission outside the sandbox, and `sandbox-exec` replaces itself with the command, so its time limit
@@ -931,8 +956,16 @@ sandbox, and its receipt says `{"inside": "OUTER"}`. For the same reason:
   and plugins), and they write to `~/Library/Developer`. With the Apple plugin, a lane with `idioms`, or
   whose command or `compileFirst` runs `xcodebuild`, `xcrun`, `swift`, `simctl`, `devicectl`,
   `simulator-tests` or `xctest`, is refused a sandbox when the configuration is read. Run these lanes
-  unsandboxed. A script that runs one of them inside a sandboxed lane fails when it starts it.
-- **Device lanes** reach phones over the network and usbmuxd's socket. Run them unsandboxed too.
+  unsandboxed. A script that runs one of them inside a sandboxed lane fails when it starts it
+  (`sandbox_apply: Operation not permitted`), and the run's summary says which tool applied its own
+  sandbox.
+- **Device lanes** reach phones over the network and usbmuxd's or adb's sockets, and write device
+  reservations outside the checkout. With the mobile plugin, a lane with `devices` or a `device-pass`
+  command is refused a sandbox. With the Android plugin, so is one whose command or `compileFirst` runs
+  `adb`, `emulator`, `avdmanager`, `emulator-tests` or `emulator-pool`. Run them unsandboxed.
+- **Gradle** is not refused. It runs given `"write": ["~/.gradle"]` and `"network": ["localhost"]` for
+  its daemon, plus the ports it downloads from unless it runs `--offline`. Pass `--no-daemon`, so that
+  no daemon started under the lane's sandbox serves another build.
 
 ### Lane groups
 

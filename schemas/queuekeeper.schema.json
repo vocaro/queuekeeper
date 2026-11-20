@@ -234,12 +234,12 @@
                     }
                   },
                   "network": {
-                    "description": "What the command may reach; none when empty or absent. localhost, localhost:PORT, *:PORT for any host on a port (Seatbelt tells only localhost from other hosts), * for any, or a unix socket's absolute path",
+                    "description": "What the command may reach; none when empty or absent. localhost, localhost:PORT, HOST:PORT or *.DOMAIN:PORT for a host reached through the lane's filtering proxy, *:PORT for any host on a port, * for any, or a unix socket's absolute path",
                     "type": "array",
                     "uniqueItems": true,
                     "items": {
                       "type": "string",
-                      "pattern": "^(\\*|localhost|(localhost|\\*):[1-9][0-9]{0,4}|/.+)$"
+                      "pattern": "^(\\*|localhost|(localhost|\\*):[1-9][0-9]{0,4}|(\\*\\.)?[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+:[1-9][0-9]{0,4}|/.+)$"
                     }
                   }
                 }

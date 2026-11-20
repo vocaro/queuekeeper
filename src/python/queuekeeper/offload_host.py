@@ -488,6 +488,21 @@ def xcode(developer_dir):
     return None
 
 
+def sandbox_check():
+    """{"mac", "problem"}: why /usr/bin/sandbox-exec cannot apply a trivial profile on this Mac, or None, for `qk
+    doctor` (queuekeeper.sandbox.doctor_warnings). A Mac where it cannot ends every sandboxed lane not started."""
+    executable = "/usr/bin/sandbox-exec"
+    if not os.path.exists(executable): return {"mac": mac_name(), "problem": f"it has no {executable}"}
+    try:
+        tried = subprocess.run([executable, "-p", "(version 1)(allow default)", "/usr/bin/true"], capture_output=True,
+                               text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"mac": mac_name(), "problem": f"{executable} could not start: {error}"}
+    if tried.returncode == 0: return {"mac": mac_name(), "problem": None}
+    why = (tried.stderr or tried.stdout).strip() or f"exit {tried.returncode}"
+    return {"mac": mac_name(), "problem": f"{executable} applies no profile: {why}"}
+
+
 def mac_name():
     return output(["scutil", "--get", "LocalHostName"]) or os.uname().nodename
 
@@ -3643,6 +3658,7 @@ def answer(request):
         return admissions_now() if request["admissionsNow"] == NOW_SCHEMA else \
             {"error": f"this Mac's toolkit reads admissionsNow version {NOW_SCHEMA}, not {request['admissionsNow']!r}"}
     if "screen" in request: return screen()
+    if "sandbox" in request: return sandbox_check()
     if "leftovers" in request or "device" in request:
         reaped = reap(request["leftovers"], **request["reap"]) if "reap" in request else None
         # The routine cleanup there also stops what it proves an ended run left (stop_leftovers), before the census;
@@ -4724,7 +4740,7 @@ if __name__ == "__main__":
     if "reattach" in request: sys.exit(reattach(request["reattach"]))
     if {"toolchain", "join", "images", "deleteRuntime", "receive", "leftovers", "device", "keychain", "foreground",
             "pressure", "capacity", "admissionLog", "waitLog", "admissionsNow", "screen", "toolkitCheckout",
-            "markForeground"} & request.keys():
+            "markForeground", "sandbox"} & request.keys():
         print(json.dumps(answer(request)))
     else:
         main(request)

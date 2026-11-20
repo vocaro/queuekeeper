@@ -1620,6 +1620,8 @@ def perform(argv, report):
             if trial.active(): warnings.append(f"{trial.refusal('the fixes')}; its state is under {trial.folder()}")
             # Each lane no Mac of the farm takes by its own settings: its labels or its kind (vocaro/queuekeeper#224).
             warnings += remote.unplaceable_lanes(config)
+            # Each Mac where sandbox-exec applies no profile, when a lane has a sandbox (vocaro/queuekeeper#268).
+            warnings += sandbox.doctor_warnings(config)
             for check in plugins.DOCTOR: warnings += check(root, config)
             errors = []
             for check in plugins.DOCTOR_CHECKS:
@@ -1830,8 +1832,15 @@ def perform(argv, report):
                     for prepare in plugins.PREPARE_LANE: prepare(tree, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else \
                     [lane["command"], *([lane["compileFirst"]] if "compileFirst" in lane else [])]
+                # A group's lanes' refusals, each tagged by its own lane, read from one stream that sandbox.prepared
+                # finds as the run's (sandbox.watching); a lane's own are read around its commands (execute).
+                watch = sandbox.Refusals(directory, limit) if group is not None and any(
+                    sandbox.settings(name, config["lanes"][name]) for name in group) else None
                 try:
-                    with resources.child_requests(), plugins.around_run(commands, tree): return work()
+                    with resources.child_requests(), plugins.around_run(commands, tree), sandbox.watching(watch):
+                        try: return work()
+                        finally:
+                            if watch is not None: sandbox.observed_group(receipt, watch, directory / "lanes")
                 finally:
                     # Nested in another lane, its results go into that lane's too, however it ended (#218).
                     parallel.hand_up(directory / "results", args.lane)
@@ -1847,22 +1856,37 @@ def perform(argv, report):
                             if whole and not extra else None
                         pace = timed["pace"] if timed["pace"] is not None and timed["pace"].active() else None
                         kill_after = processes.FOREGROUND_KILL_AFTER if lane.get("foreground") else processes.KILL_AFTER
-                        # Made here, on the Mac that runs it, for the tree it reads (sandbox.py).
-                        try: wrap, sandboxed = sandbox.prepared(args.lane, lane, tree, directory)
+                        # Made here, on the Mac that runs it, for the tree it reads (sandbox.py), its refusals read
+                        # from the kernel's log as they happen.
+                        refusals = sandbox.Refusals(directory, limit) if sandbox.settings(args.lane, lane) else None
+                        try: wrap, sandboxed = sandbox.prepared(args.lane, lane, tree, directory,
+                                                                mark=refusals and refusals.mark(args.lane),
+                                                                refusals=refusals)
                         except sandbox.Unusable as error: return not_started(directory, receipt, args.lane, str(error))
                         if sandboxed: receipt["sandbox"] = sandboxed
-                        failed, left = compile_first(lane, tree, directory, receipt, limit,
-                                                     env, on_stop, kill_after, wrap)
-                        if failed is not None: return failed
-                        why = unstartable(lane["command"], tree)
-                        if why: return not_started(directory, receipt, args.lane, why)
+                        if not wrap: refusals = None
+                        def commands():
+                            failed, left = compile_first(lane, tree, directory, receipt, limit,
+                                                         env, on_stop, kill_after, wrap)
+                            if failed is not None: return failed
+                            why = unstartable(lane["command"], tree)
+                            if why: return not_started(directory, receipt, args.lane, why)
+                            try:
+                                return processes.run([*wrap, *command], cwd=tree, log_path=directory / "run.log",
+                                                     timeout=left, on_stop=on_stop, env=env, kill_after=kill_after,
+                                                     pace=pace, **({"stall": lane["stall"],
+                                                                    "progress_path": directory / "results/progress.json"}
+                                                                   if "stall" in lane else {}))
+                            except processes.NotStarted as error:
+                                return not_started(directory, receipt, args.lane, str(error))
+                        status = None
                         try:
-                            return processes.run([*wrap, *command], cwd=tree, log_path=directory / "run.log", timeout=left,
-                                                 on_stop=on_stop, env=env, kill_after=kill_after, pace=pace,
-                                                 **({"stall": lane["stall"], "progress_path": directory / "results/progress.json"}
-                                                    if "stall" in lane else {}))
-                        except processes.NotStarted as error:
-                            return not_started(directory, receipt, args.lane, str(error))
+                            with refusals or contextlib.nullcontext():
+                                status = commands()
+                            return status
+                        finally:
+                            # What the sandbox refused, said by the summary of a run that did not pass (lane_report).
+                            sandbox.observed(sandboxed, refusals, args.lane, directory / "run.log", status)
                     return record(directory, receipt, lambda: prepared(work))
             else:
                 jobs = 1 if args.serial else lane.get("jobs", len(group))

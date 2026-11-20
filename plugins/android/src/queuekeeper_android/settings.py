@@ -46,5 +46,26 @@ def configured(config):
     return {**DEFAULTS, **((config or {}).get("android") or {})}
 
 
+# The words of a command that reach an emulator or a device: adb, whose server listens on localhost:5037 and starts
+# outside any sandbox, the emulator and the commands that run the project's emulator pool. Gradle alone is not one: on
+# 2026-11-19, on macOS 27.2, a Gradle build ran in a sandbox given write ["~/.gradle"] and network ["localhost"].
+ANDROID_WORDS = frozenset({"adb", "emulator", "emulator-tests", "emulator-pool", "avdmanager"})
+
+
+def sandbox_refusal(lane):
+    """Why the lane cannot run in a sandbox (queuekeeper.sandbox), or None: a lane whose command or compileFirst runs
+    adb, the emulator or the emulator pool's commands reaches emulators and devices through adb's server and writes
+    ~/.android and the emulators' disks. Such a lane runs unsandboxed. A command is read word by word, so a script
+    that runs adb is not caught here."""
+    words = {Path(word).name for word in [*lane.get("command", []), *lane.get("compileFirst", [])]
+             if isinstance(word, str)}
+    found = sorted(words & ANDROID_WORDS)
+    if found:
+        return (f"its command runs {', '.join(found)}, which reaches emulators and devices through adb's server and "
+                "writes ~/.android")
+    return None
+
+
 def register():
     plugins.CONFIG_KEYS.update(android=android, emulatorPool=emulator_pool)
+    if sandbox_refusal not in plugins.SANDBOX_REFUSALS: plugins.SANDBOX_REFUSALS.append(sandbox_refusal)

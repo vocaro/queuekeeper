@@ -42,5 +42,16 @@ class DeviceMinutes(plugins.LaneKey):
             raise ValueError(f"{name}.deviceRunMinutes needs an admitted device lane")
 
 
+def sandbox_refusal(lane):
+    """Why the lane cannot run in a sandbox (queuekeeper.sandbox), or None: a lane that uses physical devices
+    (lane_devices) reaches them over the network and through usbmuxd's or adb's sockets, and writes the device record
+    and its reservations outside the checkout, which no sandbox's allowances describe. Such a lane runs unsandboxed."""
+    if lane_devices(lane):
+        return ("it uses physical devices, which it reaches over the network and through usbmuxd's or adb's sockets, "
+                "and whose reservations it writes outside the checkout")
+    return None
+
+
 def register():
     plugins.LANE_KEYS.update(devices=DeviceKeys(), deviceRunMinutes=DeviceMinutes())
+    if sandbox_refusal not in plugins.SANDBOX_REFUSALS: plugins.SANDBOX_REFUSALS.append(sandbox_refusal)

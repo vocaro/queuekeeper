@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 
-from . import lane_results, remote, resources
+from . import lane_results, remote, resources, sandbox
 
 # The failing tests a summary names; the rest are in its failures.txt or log.
 SHOWN = 20
@@ -553,6 +553,8 @@ class Report:
             said = own_output(joined, verdict == "unmeasured")
             if said: lines += [OUTPUT_HEAD, *(f"    {line}" for line in said)]
         if verdict != "passed": lines += unreached_lines(directory, self.lane, self.group)
+        # What the lane's sandbox refused, from the kernel's log, so that a write or connection it needs can be added.
+        if verdict != "passed": lines += sandbox.summary_lines(lane_receipt(directory).get("sandbox"))
         if kept:
             more = f" (and {len(kept) - 1} more under {directory / 'results'})" if len(kept) > 1 else ""
             lines.append(f"{SUMMARY_ENDS[0]}{kept[0][0].with_name('failures.txt')}{more}")

@@ -71,8 +71,8 @@ def sandbox_refusal(lane):
     a target's script phases (ENABLE_USER_SCRIPT_SANDBOXING) and SwiftPM to its manifests and plugins, and macOS refuses
     one inside another (sandbox_apply: Operation not permitted, measured on macOS 27.2); Xcode, its simulators and
     CoreDevice also write to ~/Library/Developer and reach devices over the network. Such a lane runs unsandboxed.
-    A lane's command is read word by word, so a script that runs xcodebuild is not caught here and fails as it starts
-    it."""
+    A lane's command is read word by word, so a script that runs xcodebuild is not caught here: it fails as it starts
+    it, and its run's summary names the tool (nested_sandbox)."""
     if lane.get("idioms") is not None: return "a lane with idioms runs on simulators, which Xcode runs"
     words = {Path(word).name for word in [*lane.get("command", []), *lane.get("compileFirst", [])] if isinstance(word, str)}
     found = sorted(words & XCODE_WORDS)
@@ -82,7 +82,24 @@ def sandbox_refusal(lane):
     return None
 
 
+# What a log says of the Apple tool whose own sandbox was refused inside a lane's (nested_sandbox): SwiftPM's manifest
+# and plugin steps, measured on macOS 27.2 as "Invalid manifest" before "sandbox_apply", and xcodebuild's script phases.
+NESTED_TOOLS = (
+    ("SwiftPM, for a package's manifest or plugins",
+     re.compile(r"Invalid manifest|PackageDescription|swift-(?:build|test|package)|swiftpm", re.I)),
+    ("xcodebuild, for a script phase (ENABLE_USER_SCRIPT_SANDBOXING)",
+     re.compile(r"PhaseScriptExecution|xcodebuild")))
+
+
+def nested_sandbox(text):
+    """The Apple tool a sandboxed lane's log, text, shows applied a sandbox of its own, which macOS refused inside the
+    lane's (queuekeeper.sandbox.observed), or None: how a script that runs xcodebuild or SwiftPM, which sandbox_refusal
+    cannot read, is told once it fails."""
+    return next((tool for tool, said in NESTED_TOOLS if said.search(text)), None)
+
+
 def register():
     plugins.CONFIG_KEYS.update(app=app, simulatorPool=simulator_pool)
     plugins.LANE_KEYS.update(idioms=Idioms())
     if sandbox_refusal not in plugins.SANDBOX_REFUSALS: plugins.SANDBOX_REFUSALS.append(sandbox_refusal)
+    if nested_sandbox not in plugins.SANDBOX_NESTED: plugins.SANDBOX_NESTED.append(nested_sandbox)

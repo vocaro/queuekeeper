@@ -21,6 +21,9 @@ HOST_COMMAND = []
 # Each (lane) -> why the lane cannot run in a sandbox, or None: a lane whose "sandbox" one refuses is refused when the
 # configuration is read (sandbox.check). The Apple plugin refuses lanes that run Xcode or SwiftPM.
 SANDBOX_REFUSALS = []
+# Each (log text) -> the program that applied a sandbox of its own inside a lane's, which macOS refused, or None: what
+# a sandboxed lane's failed run says of it (sandbox.observed). The Apple plugin names xcodebuild and SwiftPM.
+SANDBOX_NESTED = []
 # Each (root, config): called before a lane or an admitted command is placed; a ValueError refuses the run.
 BEFORE_LANE = []
 # Each (root, config): called on the Mac that runs an admitted lane or command, before its command starts.

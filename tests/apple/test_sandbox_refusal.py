@@ -18,12 +18,18 @@ class Refusal(unittest.TestCase):
     def test_other_commands_are_not(self):
         self.assertIsNone(settings.sandbox_refusal({"command": ["python3", "-m", "pytest"]}))
 
+    def test_a_failed_runs_log_names_swiftpm_or_xcodebuild_as_the_nested_sandbox(self):
+        self.assertIn("SwiftPM", settings.nested_sandbox("error: 'pkg': Invalid manifest\nsandbox_apply: Operation not permitted"))
+        self.assertIn("xcodebuild", settings.nested_sandbox("PhaseScriptExecution Run\\ Script\nsandbox_apply: Operation not permitted"))
+        self.assertIsNone(settings.nested_sandbox("sandbox-exec: sandbox_apply: Operation not permitted"))
+
     def test_a_project_with_the_plugin_has_its_xcode_lane_refused_when_its_configuration_is_read(self):
         source = json.dumps({"schemaVersion": 1, "name": "App", "plugins": ["queuekeeper_apple"],
                              "lanes": {"ui": {"command": ["xcodebuild", "test"], "sandbox": True}}})
         with self.assertRaisesRegex(ValueError, "ui.sandbox cannot be: its command runs xcodebuild"):
             config.parse(source)
         self.assertIn(settings.sandbox_refusal, plugins.SANDBOX_REFUSALS)
+        self.assertIn(settings.nested_sandbox, plugins.SANDBOX_NESTED)
 
 
 if __name__ == "__main__":
