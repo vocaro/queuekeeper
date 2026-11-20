@@ -1691,10 +1691,17 @@ To see where a gate would go without running one:
 
 ```sh
 qk queue placement [LANE] [--json]   # each Mac's capacity now, and why it would or would not start the gate
+qk queue placement LANE --worktree   # the same, by this checkout's uncommitted queuekeeper.json
+qk queue placement LANE --ref REF    # the same, by the queuekeeper.json at REF, such as a branch
 qk admissions usage                  # how busy each Mac has been, and why work ran here
 ```
 
-A reading is a snapshot; the Mac checks admission again when the lane starts.
+A reading is a snapshot; the Mac checks admission again when the lane starts. By default
+`qk queue placement` reads the lane from `origin/main`, as the queue does, and says so when the
+working tree changes the lane's placement (its `labels`, `resource`, `wholeHost`,
+`unlockedScreen`, `foreground`, `model` or `here`). To check such a change before it lands, run
+it with `--worktree` or `--ref`. The first line names the file it read and the labels the lane
+needs; `--json` gives them as `source` (`main`, `worktree` or `ref`), `config` and `labels`.
 
 ### What a Mac takes
 
@@ -1728,7 +1735,9 @@ labels it needs. No lane names a Mac, and no Mac names a lane. The settings are
 
 `qk admissions limits` prints what a Mac takes, its labels and the file's path. `qk admissions usage`
 prints the same of every Mac beside its capacity, with the keys it passes over and where foreground
-lanes go, and `qk doctor` warns of a lane no Mac takes, naming what it needs and each Mac's reason. A
+lanes go, and `qk doctor` warns of a lane no Mac takes, naming what it needs and each Mac's reason.
+Doctor reads the lanes from the working tree's `queuekeeper.json`, so it checks a lane change
+before it lands, as `qk queue placement LANE --worktree` does. A
 Mac that cannot be read is unknown in both, never one that lacks. Doctor reads the Macs at once,
 and only when some lane needs something a Mac may decline; one that does not answer within 10
 seconds, such as one asleep, is unknown. Edit the file by hand. An unknown key is reported as `ignored:`; a file that is not JSON, or a known key of the

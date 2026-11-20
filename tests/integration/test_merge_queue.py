@@ -1127,6 +1127,76 @@ class Placement(Fixture):
         self.assertTrue(all(call.kwargs == {"diagnostic": True} for call in probe.call_args_list))
         here.assert_called_once_with(diagnostic=True)
 
+    def probe(self, *words):
+        """(exit status, output) of `qk queue placement` with words, on a farm of one other Mac, studio, which has the label
+        apple-m5-max, and this Mac, which has none."""
+        free = {"slots": 3, "slotsMax": 7, "busy": [], "busyLimit": 90}
+        with farm_fixture.only("studio"), \
+                patch.object(mq.remote, "capacity_there", return_value={**free, "labels": ["apple-m5-max"]}), \
+                patch.object(offload_host, "capacity", return_value={**free, "labels": []}), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            status_ = cli.main(["--project", str(self.repo), "queue", "placement", *words])
+        return status_, output.getvalue()
+
+    def test_a_working_trees_label_change_is_checked_before_it_lands(self):
+        # vocaro/queuekeeper#278: origin/main's gate needs no label; the working tree's, not yet committed, needs one.
+        self.publish(self.config())
+        main = mq.main_commit(self.repo)
+        config = self.config()
+        config["lanes"]["gate"]["labels"] = ["apple-m5-max"]
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        status_, said = self.probe("gate", "--json")
+        self.assertEqual(status_, 0)
+        report = json.loads(said)
+        self.assertEqual((report["source"], report["commit"], report["labels"]), ("main", main, []))
+        self.assertEqual(report["config"], f"origin/main ({main[:12]})")
+        self.assertIn("working tree changes gate's labels", report["workingTreeDiffers"])
+        self.assertIn("--worktree", report["workingTreeDiffers"])
+        self.assertEqual([row["status"] for row in report["hosts"]], ["eligible", "eligible"])
+        # Read from the working tree, the new label is the lane's, and this Mac, which lacks it, declines.
+        status_, said = self.probe("gate", "--worktree", "--json")
+        self.assertEqual(status_, 0)
+        report = json.loads(said)
+        self.assertEqual((report["source"], report["commit"], report["labels"]), ("worktree", None, ["apple-m5-max"]))
+        self.assertIn(str(self.repo / "queuekeeper.json"), report["config"])
+        self.assertNotIn("workingTreeDiffers", report)
+        self.assertEqual([row["status"] for row in report["hosts"]], ["eligible", "waiting"])
+        self.assertIn("lacks the label apple-m5-max that the work needs", report["hosts"][1]["reason"])
+        # The text names the file it read and the lane's labels.
+        status_, said = self.probe("gate", "--worktree")
+        self.assertEqual(status_, 0)
+        self.assertIn("gate from this checkout's working tree (", said)
+        self.assertIn("labels: apple-m5-max)", said)
+        status_, said = self.probe("gate")
+        self.assertIn(f"gate from origin/main ({main[:12]})", said)
+        self.assertIn("labels: none)", said)
+        self.assertIn("note: this checkout's working tree changes gate's labels", said)
+
+    def test_a_ref_is_read_as_committed(self):
+        self.publish(self.config())
+        config = self.config()
+        config["lanes"]["gate"]["labels"] = ["apple-m5-max"]
+        self.commit("queuekeeper.json", "labelled", json.dumps(config))
+        tip = run(self.repo, "git", "rev-parse", "HEAD")
+        # The working tree is put back to origin/main's, so that only the ref holds the label.
+        run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
+        status_, said = self.probe("gate", "--ref", "labelled", "--json")
+        self.assertEqual(status_, 0)
+        report = json.loads(said)
+        self.assertEqual((report["source"], report["commit"], report["labels"]), ("ref", tip, ["apple-m5-max"]))
+        self.assertEqual(report["config"], f"labelled ({tip[:12]})")
+        self.assertEqual([row["status"] for row in report["hosts"]], ["eligible", "waiting"])
+        # A working tree that agrees with origin/main is not noted.
+        status_, said = self.probe("gate", "--json")
+        self.assertNotIn("workingTreeDiffers", json.loads(said))
+        # A ref that names nothing is refused, and --ref and --worktree are not both taken.
+        with contextlib.redirect_stderr(io.StringIO()) as error:
+            status_, said = self.probe("gate", "--ref", "no-such-branch")
+        self.assertNotEqual(status_, 0)
+        self.assertIn("no-such-branch names no commit", error.getvalue() + said)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.probe("gate", "--ref", "labelled", "--worktree")
+
 
 class Doctor(UnittestGate):
     """`qk queue doctor` reads the queue for the signs that it is stuck rather than testing, says what each means and

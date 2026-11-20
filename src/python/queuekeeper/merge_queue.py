@@ -3084,21 +3084,62 @@ def reclaimed_words(item):
             + f": {condition}" + (f", {item['why']}" if item.get("why") else "") + ")")
 
 
-def placement(root, name=None, as_json=False):
-    """Inspect current capacity for a configured gate lane without dispatching or taking admission: by origin/main's
-    configuration, or this checkout's while origin/main has none, as before a project's first landing (#10)."""
-    base = main_commit(root)
-    if base and has_config(root, base): config, where = config_at(root, base), base[:12]
-    else: config, where, base = load(root), "this checkout's queuekeeper.json, as origin/main has none yet", None
-    name = name or (config.get("queue", {}).get("lanes") or ["gate"])[0]
+def placement_settings(config, name, root):
+    """What decides where the lane name of config may go, as placement reads it, or None when config has no such lane:
+    whether it stays here, takes the foreground, is a model run, takes the whole Mac or every slot, needs an unlocked
+    screen, and the labels its Mac must have."""
     lane = lane_to_run(config, name, root)
-    if lane is None:
-        raise ValueError(f"{name} is not a lane on {MAIN if base else 'this checkout'}; give the lane to inspect")
+    if lane is None: return None
     lanes = config["lanes"]
-    local = stays(lanes, name)
-    foreground = bool(lane.get("foreground"))
-    model = bool(lane.get("model"))
-    whole_host, exclusive, screen = bool(lane.get("wholeHost")), lane.get("resource") == "exclusive", unlocked_screen(lanes, name)
+    return {"localOnly": stays(lanes, name), "foreground": bool(lane.get("foreground")),
+            "model": bool(lane.get("model")), "wholeHost": bool(lane.get("wholeHost")),
+            "exclusive": lane.get("resource") == "exclusive", "unlockedScreen": unlocked_screen(lanes, name),
+            "labels": list(needed_labels(lanes, name))}
+
+
+def placement_config(root, worktree=False, ref=None):
+    """(configuration, source, commit, words) that placement reads: by default origin/main's, or this checkout's while
+    origin/main has none, as before a project's first landing (#10); with worktree, the working tree's
+    queuekeeper.json, and with ref, the one at that commit, so that a change to a lane's placement is checked before
+    it lands (vocaro/queuekeeper#278). source is main or worktree or ref, and words name the file read."""
+    if worktree:
+        return load(root), "worktree", None, f"this checkout's working tree ({root / 'queuekeeper.json'})"
+    if ref is not None:
+        found = git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        if found.returncode: raise ValueError(f"{ref} names no commit in {root}")
+        commit = found.stdout.strip()
+        if not has_config(root, commit): raise ValueError(f"{ref} ({commit[:12]}) has no queuekeeper.json")
+        return config_at(root, commit), "ref", commit, f"{ref} ({commit[:12]})"
+    base = main_commit(root)
+    if base and has_config(root, base): return config_at(root, base), "main", base, f"origin/main ({base[:12]})"
+    return load(root), "worktree", None, "this checkout's queuekeeper.json, as origin/main has none yet"
+
+
+def placement_differs(root, name, settings):
+    """What placement says when the working tree's queuekeeper.json would place the lane name otherwise than
+    settings, read from origin/main: the keys that differ, which --worktree checks before the change lands, or None
+    when they agree or the working tree's file cannot be read (vocaro/queuekeeper#278)."""
+    try: working = placement_settings(load(root), name, root)
+    except (OSError, ValueError): return None
+    if working is None: return f"this checkout's working tree has no lane {name}"
+    changed = [key for key in settings if settings[key] != working[key]]
+    return (f"this checkout's working tree changes {name}'s {', '.join(changed)}, which origin/main's reading does "
+            f"not show; `qk queue placement {name} --worktree` checks the change before it lands") if changed else None
+
+
+def placement(root, name=None, as_json=False, worktree=False, ref=None):
+    """Inspect current capacity for a configured gate lane without dispatching or taking admission: by origin/main's
+    configuration, or this checkout's while origin/main has none, as before a project's first landing (#10), or by
+    the working tree's or a ref's (placement_config, vocaro/queuekeeper#278). It says which file it read."""
+    config, source, base, where = placement_config(root, worktree, ref)
+    name = name or (config.get("queue", {}).get("lanes") or ["gate"])[0]
+    settings = placement_settings(config, name, root)
+    if settings is None:
+        raise ValueError(f"{name} is not a lane in {where}; give the lane to inspect")
+    # A placement change not yet landed is said, so that origin/main's reading is not taken for the change's.
+    differs = placement_differs(root, name, settings) if source == "main" else None
+    local, foreground, model = settings["localOnly"], settings["foreground"], settings["model"]
+    whole_host, exclusive, screen = settings["wholeHost"], settings["exclusive"], settings["unlockedScreen"]
     # The Macs the lane may go to: none for one that stays here, those that take foreground work for a foreground
     # lane, this Mac among them when its own settings say so, else all.
     hosts = () if local else remote.foreground_hosts() if foreground else farm.destinations()
@@ -3120,19 +3161,22 @@ def placement(root, name=None, as_json=False):
             continue
         slots = reading["slots"]
         # By each Mac's own settings too: the kinds of work it takes and the labels the lane needs (remote.unfit).
-        reason = remote.spare(reading, mac, whole_host, exclusive, screen, model, needed_labels(lanes, name))
+        reason = remote.spare(reading, mac, whole_host, exclusive, screen, model, tuple(settings["labels"]))
         row.update(guaranteedSlots=slots, maximumSlots=reading["slotsMax"], busySlots=reading["busy"],
                    blockers=reading.get("blockers", []), status="waiting" if reason else "eligible", reason=reason)
         if (foreground or model) and reason is None:
             kind = "foreground" if foreground else "model"
             row.update(status="unmeasured", reason=f"{kind} admission is separate from heavy-work capacity")
-    report = {"lane": name, "commit": base, "wholeHost": whole_host, "exclusive": exclusive,
-              "unlockedScreen": screen, "foreground": foreground, "model": model, "localOnly": local,
-              "remoteHosts": list(hosts), "hosts": checked}
+    report = {"lane": name, "commit": base, "source": source, "config": where, "wholeHost": whole_host,
+              "exclusive": exclusive, "unlockedScreen": screen, "foreground": foreground, "model": model,
+              "localOnly": local, "labels": settings["labels"],
+              **({"workingTreeDiffers": differs} if differs else {}), "remoteHosts": list(hosts), "hosts": checked}
     if as_json:
         print(json.dumps(report, indent=2))
     else:
-        print(f"{name} at {where} (whole host: {whole_host}, exclusive: {exclusive}, unlocked screen: {screen})")
+        print(f"{name} from {where} (whole host: {whole_host}, exclusive: {exclusive}, unlocked screen: {screen}, "
+              f"labels: {', '.join(settings['labels']) or 'none'})")
+        if differs: print(f"note: {differs}")
         print(f"the farm's Macs: {', '.join(map(lane_wait.farm_mac, hosts)) or 'none'}"
               + (f"; local only: {local}" if local else ""))
         for row in checked:
@@ -8037,7 +8081,12 @@ def add_arguments(parser):
                                     "1 needs attention, 3 cannot tell")
     healthy.add_argument("--json", action="store_true")
     placing =operations.add_parser("placement", help="probe current host capacity for a gate lane without queuing it")
-    placing.add_argument("lane", nargs="?", help="lane on origin/main (default: the first configured gate lane)")
+    placing.add_argument("lane", nargs="?", help="lane to inspect, on origin/main unless --worktree or --ref says "
+                         "otherwise (default: the first configured gate lane)")
+    reading = placing.add_mutually_exclusive_group()
+    reading.add_argument("--worktree", action="store_true", help="read the lane from this checkout's working tree's "
+                         "queuekeeper.json, to check a placement change before it lands")
+    reading.add_argument("--ref", metavar="REF", help="read the lane from the queuekeeper.json at REF, such as a branch")
     placing.add_argument("--json", action="store_true")
     following = operations.add_parser("wait", help="follow an entry to its result, or several, such as the entries an "
                                        "qk land conflict names, until none waits: 0 landed, or each did, 1 came back, "
@@ -8140,7 +8189,7 @@ def main(root, args):
     if args.operation == "health":
         from . import health
         return health.main(root, args.json)
-    if args.operation == "placement": return placement(root, args.lane, args.json)
+    if args.operation == "placement": return placement(root, args.lane, args.json, args.worktree, args.ref)
     if args.operation == "wait":
         return wait(root, args.id[0], args.limit) if len(args.id) == 1 else wait_for(root, args.id, args.limit)
     if args.operation == "events": return journal(root, args.json, args.since, args.kind, args.follow)
