@@ -21,9 +21,7 @@ def unity_project(checkout):
     try: found = json.loads((Path(checkout) / configuration.FILE).read_text())
     except (OSError, ValueError): return None
     if not isinstance(found, dict): return None
-    try: declared = configuration.listed_plugins(found) or []
-    except ValueError: return None
-    listed = [entry.get("module") if isinstance(entry, dict) else entry for entry in declared]
+    listed = [entry.get("module") if isinstance(entry, dict) else entry for entry in found.get("plugins") or []]
     if MODULE not in listed: return None
     try: settings.check(found.get(settings.KEY, {}))
     except ValueError: return None

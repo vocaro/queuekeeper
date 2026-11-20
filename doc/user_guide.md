@@ -75,7 +75,7 @@ one lane, `gate`, the command every change must pass:
 |---|---|
 | `schemaVersion` | Always `1` |
 | `name` | The project's name |
-| `plugins` | The [plugins](../README.md#plugins) to load. `[]`, or leaving it out, loads the core alone. Its earlier name, `extensions`, is read while `plugins` is absent, and `qk doctor` and `qk land` warn of it; a later release refuses it |
+| `plugins` | The [plugins](../README.md#plugins) to load. `[]`, or leaving it out, loads the core alone |
 | `command` | An argument list, not a shell string |
 | `timeout` | Seconds. A lane that reaches it ends as *unmeasured*, not failed |
 

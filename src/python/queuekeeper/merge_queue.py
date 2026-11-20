@@ -63,7 +63,7 @@ from . import budgets, disk, plugins, farm, host_health, lane_results, landing_p
 from . import events, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
-    lane_to_run, old_plugins_warning, load, names_path, needed_labels, parse, preflight, project_checkout, \
+    lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
     siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
@@ -1073,7 +1073,6 @@ def preflight_before_queued(root, queue, tip, config):
     round, about 40 minutes on EPUBLib on 2026-11-07 (vocaro-engineering#283). It is a hint, as check is: the worker
     still runs the lanes on the batch. A lane that cannot be run, or that fails otherwise, queues the entry for the
     round to judge, and so does a failure origin/main gives too, which is not the entry's to fix."""
-    if old_plugins_warning(config): print(f"queue: {old_plugins_warning(config)}", file=sys.stderr)
     names = preflighted(config)
     if not names: return
     base = text(root, "rev-parse", MAIN)

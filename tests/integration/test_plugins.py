@@ -186,17 +186,8 @@ class LaneKeyTests(unittest.TestCase):
         from queuekeeper import config
         return config.parse(json.dumps({**self.CONFIG, **changes}))
 
-    def test_the_old_extensions_key_is_read_until_plugins_replaces_it_and_warned_of(self):
-        # A project's main, which its merge queue reads, still says extensions until the rename lands there.
-        import json
-        from queuekeeper import config
-        old = {key: value for key, value in self.CONFIG.items() if key != "plugins"}
-        found = config.parse(json.dumps({**old, "extensions": ["queuekeeper_mac_desktop"]}))
-        self.assertEqual(found["plugins"], ["queuekeeper_mac_desktop"])
-        self.assertRegex(config.old_plugins_warning(found), "^extensions is now plugins, and a later release refuses it")
-        # The negative control: a project that says plugins is not warned.
-        self.assertIsNone(config.old_plugins_warning(self.parse(plugins=["queuekeeper_mac_desktop"])))
-        with self.assertRaisesRegex(ValueError, "gives both plugins and extensions"):
+    def test_the_old_extensions_key_is_refused_naming_plugins(self):
+        with self.assertRaisesRegex(ValueError, "^extensions is now plugins .*: rename the key in queuekeeper.json"):
             self.parse(extensions=[])
 
     def test_a_key_wraps_the_lane_s_command_only_for_a_lane_that_says_it(self):

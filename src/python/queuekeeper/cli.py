@@ -17,7 +17,7 @@ import traceback
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
-    source_identity, lane_devices, unrun_carry_checks, old_plugins_warning, project_checkout, \
+    source_identity, lane_devices, unrun_carry_checks, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
@@ -1605,7 +1605,6 @@ def perform(argv, report):
                                 "what a commit must pass before it lands gate")
             # A queue.carryOverChecks entry limited to paths that never carry over (vocaro/queuekeeper#189).
             warnings += unrun_carry_checks(config)
-            if old_plugins_warning(config): warnings.append(old_plugins_warning(config))
             warnings += budgets.doctor_warnings(config)
             warnings += self_lane_warnings(root, config)
             warnings += split_warnings(root, config)

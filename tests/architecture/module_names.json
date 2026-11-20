@@ -152,11 +152,6 @@
     "queuekeeper_watch"
   ],
   "forwarded": {
-    "queuekeeper.extensions": {
-      "to": "queuekeeper.plugins",
-      "moved": "2026-11-19",
-      "until": "2027-02-19"
-    },
     "queuekeeper_apple.leases": {
       "to": "queuekeeper_mobile.leases",
       "moved": "2026-11-18",

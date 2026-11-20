@@ -41,33 +41,6 @@
         ]
       }
     },
-    "extensions": {
-      "description": "The key plugins had until vocaro/queuekeeper#48, read only when plugins is not given; a later release refuses it",
-      "deprecated": true,
-      "type": "array",
-      "items": {
-        "oneOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "module"
-            ],
-            "properties": {
-              "module": {
-                "type": "string"
-              },
-              "path": {
-                "type": "string"
-              }
-            }
-          }
-        ]
-      }
-    },
     "repository": {
       "type": "string"
     },

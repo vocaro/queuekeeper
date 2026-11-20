@@ -13,26 +13,6 @@ TOOLKIT_ROOT = Path(__file__).resolve().parents[3]
 # The plugins a project gets when its queuekeeper.json names none, and that a command with no project loads.
 PLUGINS = ()
 FILE = "queuekeeper.json"
-# The key plugins had until vocaro/queuekeeper#48. It is read only while no "plugins" is given, so that a project's
-# main, which its merge queue reads, can land the commit that renames it; a later release refuses it.
-OLD_PLUGINS = "extensions"
-
-
-def listed_plugins(value, default=()):
-    """What a queuekeeper.json's value lists under "plugins", or under OLD_PLUGINS when it gives no "plugins";
-    default when it gives neither. Both is refused."""
-    if "plugins" in value and OLD_PLUGINS in value:
-        raise ValueError(f"queuekeeper.json gives both plugins and {OLD_PLUGINS}: keep plugins alone")
-    return value.get("plugins", value.get(OLD_PLUGINS, list(default)))
-
-
-def old_plugins_warning(config):
-    """qk doctor's and qk land's warning for a project that still lists its plugins under OLD_PLUGINS, or None."""
-    if OLD_PLUGINS not in config: return None
-    return (f"{OLD_PLUGINS} is now plugins, and a later release refuses it: rename the key in queuekeeper.json, "
-            "which lists the same modules (vocaro/queuekeeper#48)")
-
-
 def plugins(declared):
     """A project's plugins, checked: each a module's dotted name, or {"module": NAME, "path": FOLDER} for one
     whose package is in FOLDER, a path relative to the project's main checkout."""
@@ -71,7 +51,7 @@ def plugins_of(root, base=None):
     that the run this process belongs to pinned (pins.held) is that run's checkout of it, so that every command of
     a run loads what the run started with (vocaro-engineering#497). A pin set that is not what it says is
     pins.Unpinned."""
-    try: declared = plugins(listed_plugins(json.loads((Path(root) / FILE).read_text()), PLUGINS))
+    try: declared = plugins(json.loads((Path(root) / FILE).read_text()).get("plugins", list(PLUGINS)))
     except (OSError, ValueError, AttributeError): declared = list(PLUGINS)
     pinned = pins.held()
     pins.verify({name: pinned[name] for name in sibling_folders(root) if name in pinned} if pinned else None)
@@ -107,7 +87,7 @@ def siblings_in(configuration):
     the project's own code loads from, found by the environment variable VARIABLE, which a run that pins the folder
     sets to its checkout of it (pins.exported). A ValueError says what is wrong with either."""
     found = {}
-    for entry in plugins(listed_plugins(configuration)):
+    for entry in plugins(configuration.get("plugins", [])):
         parts = Path(entry.get("path") or "").parts if isinstance(entry, dict) else ()
         if len(parts) > 1 and parts[0] == ".." and parts[1] not in ("..", "."): found.setdefault(parts[1], None)
     found.update(siblings(configuration.get("siblings", {})))
@@ -164,15 +144,17 @@ def parse(source):
     value = json.loads(source)
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
-    allowed = {"schemaVersion", "name", "plugins", OLD_PLUGINS, "lanes", "integration", "repository",
+    allowed = {"schemaVersion", "name", "plugins", "lanes", "integration", "repository",
                "queue", "release", "testLanes", "gitHooks", "docs", "siblings"}
     if "spelling" in value: raise ValueError(f"spelling {SPELLING_GONE}")
+    if "extensions" in value: raise ValueError("extensions is now plugins (vocaro/queuekeeper#48): rename the "
+                                             "key in queuekeeper.json, which lists the same modules")
     if set(value) - allowed - set(PLUGIN_CONFIG_KEYS):
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(PLUGIN_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:
         raise ValueError("Project name must be a nonempty string")
-    declared = plugins(listed_plugins(value, PLUGINS))
-    if "plugins" in value or OLD_PLUGINS in value: value["plugins"] = declared
+    declared = plugins(value.get("plugins", list(PLUGINS)))
+    if "plugins" in value: value["plugins"] = declared
     siblings(value.get("siblings", {}))
     # The plugins shipped here that the project switches on add keys to its lanes, so they are loaded before the
     # lanes are checked, whichever command reads the configuration. One in a folder of the project's is the
