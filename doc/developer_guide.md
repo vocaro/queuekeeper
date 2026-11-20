@@ -178,9 +178,16 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   goes ahead of an older entry only when they share no path. One that fails its docs lanes ahead of
   older entries may need one of them, so it records them as `waitsFor` and goes back in line
   behind them.
-- **Gate lanes by path.** `lanes_of` runs only the gate lanes `config.affected_lanes` selects: the
-  union of the rules matching each changed path, every gate lane when one path is covered by no
-  rule nor `queue.unread`, and every one when nothing is selected. The push recomputes this to
+- **Gate lanes by path.** `lanes_of` runs only the gate lanes `config.affected_lanes` selects. By
+  `queue.affected`: the union of the rules matching each changed path, every gate lane when one
+  path is covered by no rule nor `queue.unread`, and every one when nothing is selected. By the
+  lanes' `inputs` (`config.lane_inputs`, #289): the lanes whose globs match a changed path and the
+  lanes that give none. A path no lane's `inputs` name, once every gate lane gives them, is unread
+  (`config.unselected`, which `config.unread` includes), so a batch of such paths takes the
+  docs-only route in every kind of round, and `main` moving by one carries a pass over, with no
+  second mechanism. `skips_by_inputs` tells such a path from a declared document, which alone
+  runs the docs lanes beside code (`docs_also`). `as_batch` drops `inputs` from a batch's own
+  settings. The push recomputes this to
   decide whether `queue.hookCoveredBy`'s lanes ran, and records it as the lanes a carry-over by path
   must avoid.
 - **Changelog conflicts.** A conflict made only of whole lines both sides added directly below one
@@ -212,7 +219,7 @@ second is short for any branch cut from a recent `main`.
 
 **A project's first landing** reads the entry's `queuekeeper.json`, and the batch's in a round,
 only while `origin/main` has none that names lanes. The settings that loosen checking
-(`hookCoveredBy`, `unread`, `preflight`, `affected`) count only
+(`hookCoveredBy`, `unread`, `preflight`, `affected`, and each lane's `inputs`) count only
 from `main` even then.
 
 **A `main` whose configuration does not parse.** `add` reads `origin/main`'s file through
@@ -488,7 +495,7 @@ again. `queue.hookCoveredBy` skips the hook, and a docs-only batch always does.
 **Main moving under a passed batch.** If `main` moved only by unread paths the batch does not touch,
 the worker checks that the batch's patch is unchanged on the new `main`, runs `qk docs check` when a
 document moved and then `queue.carryOverChecks` (supervised, with `LANE_LIMIT`), and pushes. Any
-other move, or a failing check, gates again with no blame. A moved path that `queue.affected` covers
+other move, or a failing check, gates again with no blame. A moved path that `queue.affected` or the lanes' `inputs` cover
 and whose lanes are none the batch's own paths selected (`carried_by_rules`) carries over too, after
 `qk preflight` passes on the rebased tree; a batch that ran a `provision` lane, a docs-only batch
 and an ungated landing carry over this way never.

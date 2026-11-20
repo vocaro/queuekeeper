@@ -121,7 +121,7 @@ def load(root):
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall", "unity", "arguments", "idioms", "dimensions", "exactTests",
-                       "failedTests", "labels", "sandbox", "timing", "notice", "disk"})
+                       "failedTests", "labels", "sandbox", "timing", "notice", "disk", "inputs"})
 # The lane keys above that a plugin shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the plugin is told which to switch on.
 PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity", "devices": "queuekeeper_mobile",
@@ -131,7 +131,7 @@ PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_
 PLUGIN_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple",
                          "android": "queuekeeper_android", "emulatorPool": "queuekeeper_android"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen",
-                        "labels", "failFast", "disk"})
+                        "labels", "failFast", "disk", "inputs"})
 
 
 
@@ -212,6 +212,7 @@ def parse(source):
         if lane.get("exactTests") and "minimumTests" not in lane:
             raise ValueError(f"{name}.exactTests needs the lane's minimumTests, the count it makes exact")
     merge_queue(value.get("queue", {}), lanes)
+    lane_inputs_checked(value.get("queue", {}), lanes)
     release(value.get("release", {}), lanes, value.get("queue", {}))
     test_lanes(value.get("testLanes", {}))
     documentation(value.get("docs", {}))
@@ -479,12 +480,25 @@ def unread_declared(queue):
 def unread(config, path):
     """Whether no code lane reads path, by main's queue.unread (unread_declared): a batch that changes only such paths
     runs the docs lanes in place of the gate, and main changing one the batch does not leaves a passed result standing.
-    exclude wins over the Markdown defaults and paths."""
+    exclude wins over the Markdown defaults and paths. A path that no gate lane's inputs name is one too (unselected),
+    unless queue.unread is false or excludes it."""
+    return unread_taken(config, path) or unread_taken(config, path, inputs=True)
+
+
+def unread_taken(config, path, inputs=False):
+    """Whether queue.unread itself takes path, by its Markdown defaults and paths; or, with inputs, whether the gate
+    lanes' inputs leave it to skip the gate (unselected), which queue.unread being false or excluding it forbids."""
     declared = unread_declared(config.get("queue", {}))
     if declared is False: return False
     if any(names_path(path, key) for key in declared.get("exclude", {})): return False
+    if inputs: return unselected(config, path)
     if declared.get("defaults", True) and conventional_doc(path): return True
     return any(names_path(path, key) for key in declared.get("paths", {}))
+
+
+def skips_by_inputs(config, path):
+    """Whether path skips the gate by the lanes' inputs alone, and not as a path queue.unread takes."""
+    return unread_taken(config, path, inputs=True) and not unread_taken(config, path)
 
 
 def unread_named(config, changed):
@@ -522,10 +536,48 @@ def matches(path, pattern):
     return PurePosixPath(path).full_match(pattern)
 
 
+# The files every gate lane reads, whatever its inputs say: they hold the lanes' own commands and the checkout's
+# composition (vocaro/queuekeeper#289).
+EVERY_LANE = ("queuekeeper.json", "queuekeeper-workspace.json")
+
+
+def lane_inputs(config):
+    """{gate lane: its inputs} for the gate lanes (gate_lanes) of main that give inputs, the globs of the paths that
+    affect each: a batch runs such a lane only when one of its changed paths matches one (vocaro/queuekeeper#289)."""
+    lanes = config.get("lanes", {})
+    return {name: lanes[name]["inputs"] for name in gate_lanes(config)
+            if isinstance(lanes.get(name), dict) and "inputs" in lanes[name]}
+
+
+def unselected(config, path):
+    """Whether path affects no gate lane, by the lanes' inputs (lane_inputs): every gate lane gives inputs, none of
+    them matches path, and path is not one every lane reads (EVERY_LANE). A batch of such paths skips the gate."""
+    inputs, named = lane_inputs(config), gate_lanes(config)
+    return bool(named) and len(inputs) == len(named) and path not in EVERY_LANE \
+        and not any(matches(path, pattern) for patterns in inputs.values() for pattern in patterns)
+
+
+def selects_by(config):
+    """What of main's settings narrows a batch's gate lanes by its paths, as a line says it after "main's": "queue.affected", "lane
+    inputs", or None when every batch runs every gate lane."""
+    return "queue.affected" if config.get("queue", {}).get("affected") else \
+        "lane inputs" if lane_inputs(config) else None
+
+
 def affected_by(config, path):
-    """The gate lanes main's queue.affected selects for path, a changed path: those of every rule that matches it,
-    none for a path queue.unread takes, which no gate lane reads, and None for a path no rule covers, which selects
-    every gate lane (fail closed). None too where main gives no queue.affected."""
+    """The gate lanes main selects for path, a changed path, or None for every one. By queue.affected: those of every
+    rule that matches it, none for a path queue.unread takes, which no gate lane reads, and None for a path no rule
+    covers (fail closed). By the lanes' inputs (lane_inputs): the lanes whose inputs match it and those that give
+    none, which every change runs; none for a path queue.unread takes or no lane's inputs name (unselected); and None
+    for one every lane reads (EVERY_LANE), or that queue.unread excludes or is false for while no lane's inputs name
+    it, since that says code reads it. None too where main gives neither."""
+    inputs = lane_inputs(config)
+    if inputs:
+        if path in EVERY_LANE: return None
+        if unread(config, path): return set()
+        named = gate_lanes(config)
+        found = {name for name, patterns in inputs.items() if any(matches(path, pattern) for pattern in patterns)}
+        return (found | set(named) - set(inputs)) or None
     rules = config.get("queue", {}).get("affected")
     if not rules: return None
     if unread(config, path): return set()
@@ -535,8 +587,9 @@ def affected_by(config, path):
 
 def affected_lanes(config, changed):
     """The gate lanes (gate_lanes) a batch changing the paths changed runs, in their order: those its paths select by
-    main's queue.affected (affected_by), every one when a path no rule covers changed, when queue.affected is not
-    given, or when no path selects any, as a batch of unread paths alone, which runs the docs lanes instead."""
+    main's queue.affected or its gate lanes' inputs (affected_by), every one when a path that selects every lane
+    changed, when main gives neither, or when no path selects any, as a batch of unread paths alone, which runs the
+    docs lanes instead."""
     named = gate_lanes(config)
     selected = set()
     for path in changed:
@@ -750,6 +803,31 @@ def affected_rules(queue, lanes):
         for pattern in rule["paths"]:
             if pattern.startswith("/") or not PurePosixPath(pattern).parts:
                 raise ValueError(f"queue.affected's glob {pattern} is no path relative to the repository")
+
+
+def lane_inputs_checked(queue, lanes):
+    """Each lane's inputs, checked: distinct globs of the paths that affect a gate lane (gate_lanes), which no other
+    lane takes yet, and never beside queue.affected, the same map written from the paths."""
+    given = [name for name, lane in lanes.items() if isinstance(lane, dict) and "inputs" in lane]
+    if not given: return
+    queue = queue if isinstance(queue, dict) else {}
+    named = gate_lanes({"lanes": lanes, "queue": queue})
+    for name in given:
+        patterns = lanes[name]["inputs"]
+        if not isinstance(patterns, list) or not patterns or len(set(map(str, patterns))) != len(patterns) \
+                or any(not isinstance(pattern, str) or not pattern.strip() for pattern in patterns):
+            raise ValueError(f"{name}.inputs lists distinct globs of the paths that affect the lane (* within one "
+                             "directory, ** across them): a batch runs the lane only when it changes one")
+        for pattern in patterns:
+            if pattern.startswith("/") or not PurePosixPath(pattern).parts:
+                raise ValueError(f"{name}.inputs' glob {pattern} is no path relative to the repository")
+        if name not in named:
+            raise ValueError(f"{name}.inputs is given for a lane that is not one of the gate lanes "
+                             f"({', '.join(named) or 'none'}), queue.lanes or else gate: only a gate lane is chosen "
+                             "by a batch's paths")
+    if "affected" in queue:
+        raise ValueError(f"queuekeeper.json gives queue.affected and {given[0]}.inputs, two ways to write which paths "
+                         "select which gate lanes: give one of them")
 
 
 def unread_object(declared, lanes):

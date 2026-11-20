@@ -102,6 +102,19 @@ class PrePushTests(unittest.TestCase):
                 if changed and not merge_queue.docs_lanes(config, changed):
                     self.assertEqual(expected, [lane for lane in merge_queue.lanes_of(config, changed)])
 
+    def test_lane_inputs_select_the_gate_lanes_as_the_queue_does(self):
+        config = {**CONFIG, "lanes": {**CONFIG["lanes"], "gate": {**CONFIG["lanes"]["gate"], "inputs": ["src/**"]},
+                                      "app": {"command": ["x"], "inputs": ["app/**"]}},
+                  "queue": {"lanes": ["gate", "app"]}}
+        cases = [(["app/a.swift"], ["app"]), (["src/a.py"], ["gate"]), (["src/a.py", "app/b.swift"], ["gate", "app"]),
+                 (["src/a.py", "Makefile"], ["gate"]), (["queuekeeper.json"], ["gate", "app"])]
+        for changed, expected in cases:
+            with self.subTest(changed=changed):
+                self.assertEqual(pre_push.lanes_for(config, changed)[0], expected)
+                self.assertEqual(expected, merge_queue.lanes_of(config, changed))
+        # A push of paths no lane's inputs name runs what a docs-only one does, as the queue's batch would.
+        self.assertEqual(pre_push.lanes_for(config, ["Makefile"])[0], merge_queue.docs_lanes(config, ["Makefile"]))
+
     def test_a_lane_that_fails_or_is_unmeasured_refuses_the_push_and_later_lanes_do_not_run(self):
         code = self.commit({"src/a.py": "b\n"})
         config = {**CONFIG, "queue": {"lanes": ["docs", "gate"]}}

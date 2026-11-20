@@ -102,7 +102,8 @@ Two defaults to know about:
 - **Documentation-only changes** skip the gate and run the documentation lanes instead
   ([Documentation changes](#documentation-changes)). Set `"queue": {"unread": false}` to gate
   every change.
-- **Every gate lane runs for every code change** unless `queue.affected` maps paths to lanes
+- **Every gate lane runs for every code change** unless the gate lanes list their `inputs`, or
+  `queue.affected` maps paths to lanes
   ([Gate lanes chosen by changed paths](#gate-lanes-chosen-by-changed-paths)).
 
 [Lanes and admission](#lanes-and-admission) describes the other lane settings.
@@ -579,9 +580,47 @@ changes the path runs it.
 
 ### Gate lanes chosen by changed paths
 
-A project whose gate is several lanes, such as a Python suite and an app build, can run only the
-ones a batch needs. `queue.affected`, read only from `main`, lists rules that map globs to gate
-lanes, the lanes of `queue.lanes`:
+A project can run only the gate lanes a batch needs, and none when it needs none. Each gate lane,
+one of `queue.lanes` or else `gate`, lists `inputs`: the globs of the paths that affect it.
+
+```json
+"lanes": {
+  "unit": {"command": ["python3", "scripts/qk", "unittest", "-s", "tests"],
+           "inputs": ["src/python/**", "tests/**", "schemas/*.json"]},
+  "app":  {"command": ["xcodebuild", "test", "-scheme", "App"],
+           "inputs": ["apple/**", "*.xcconfig", "schemas/*.json"]}
+},
+"queue": {"lanes": ["unit", "app"]}
+```
+
+- **A glob matches the whole path** from the repository root. `*` and `?` stay within one
+  directory, and `**` spans any number of them. A moved file counts by both its old and new path.
+- **A lane runs when a changed path matches one of its `inputs`.** A batch runs its preflight,
+  provision and documentation lanes as usual, then the gate lanes its paths select, in
+  `queue.lanes` order. `qk land` and the round's log say which lanes were selected.
+- **A gate lane without `inputs` runs for every change.** A project can narrow one lane at a time,
+  and nothing skips the gate until every gate lane lists its inputs.
+- **A batch that selects no gate lane skips the gate.** It lands as a batch of unread paths does
+  ([Documentation changes](#documentation-changes)): on its preflight lanes and `qk docs check`,
+  or the lanes `queue.unread.lanes` names. `qk land` says
+  `skips the code gate: no gate lane's inputs name PATH`.
+- **`queuekeeper.json` and `queuekeeper-workspace.json` affect every lane**, whatever the globs
+  say, since they hold the lanes' own commands.
+- **`queue.unread` still says what code reads.** A path its `exclude` names, or any path when it is
+  `false`, runs every gate lane unless a lane's `inputs` name it.
+- **Only `main`'s `inputs` count**, so a change cannot excuse itself from a lane.
+- **`qk doctor` lists what skips.** Its `notes` count the tracked files that no gate lane's
+  `inputs` and no `queue.unread` path names, and `affectedPaths.skipping` lists them all. A glob
+  that matches no tracked file is a warning, listed in `affectedPaths.unmatched`.
+
+List every path a lane reads: a file left off a lane's `inputs` lands untested by that lane, and
+the next batch that runs the lane takes the blame. Read `qk doctor`'s list after each change to
+the globs. A lane group takes `inputs` for the group as a whole; its members do not yet.
+
+`queue.affected` is the older way to write the same map, from the paths to the lanes. It differs in
+one rule: a path no rule covers runs every gate lane, not none. A project gives one or the other,
+and both together are refused. `queue.affected`, read only from `main`, lists rules that map globs
+to gate lanes, the lanes of `queue.lanes`:
 
 ```json
 "queue": {
@@ -609,9 +648,9 @@ lanes, the lanes of `queue.lanes`:
 List a lane for a path only after checking that no other gate lane reads that path: a path wrongly
 mapped lands untested by the lanes that read it.
 
-Path rules also extend carry-over. When `main` moved only by paths that the batch does not touch,
-that rules cover, and that select none of the gate lanes the batch's own paths selected, its pass
-still stands: the lanes it ran do not read what `main` gained, and `main` gated those paths with
+Lane `inputs` and path rules also extend carry-over. When `main` moved only by paths that the batch
+does not touch, that `inputs` or rules cover, and that select none of the gate lanes the batch's own
+paths selected, its pass still stands: the lanes it ran do not read what `main` gained, and `main` gated those paths with
 their own lanes. The batch is pushed without gating again, after the project's preflight lanes,
 `qk docs check` and any `queue.carryOverChecks` pass on the rebased tree. A project with a
 `provision` lane carries over only unread paths, since provisioning sets up every gate lane.
@@ -625,9 +664,9 @@ status it got rather than 1.
 
 **A hook that only repeats the lanes** can be one line, which runs the right lanes for the paths a
 push changes: the docs lanes for documents, `queue.lanes` or `gate` for anything else, narrowed by
-`queue.affected` as the queue narrows them, nothing for a push that changes no path. It reads the
-checkout's own `queuekeeper.json`, not `main`'s. It exits 0 on a pass, 1 on a failure and 3 when a lane was unmeasured,
-which refuses the push. Under the queue's worker it runs nothing, since the lanes just ran.
+the lanes' `inputs` or `queue.affected` as the queue narrows them, nothing for a push that changes
+no path. It reads the checkout's own `queuekeeper.json`, not `main`'s. It exits 0 on a pass, 1 on a
+failure and 3 when a lane was unmeasured, which refuses the push. Under the queue's worker it runs nothing, since the lanes just ran.
 `QUEUEKEEPER_PREPUSH=skip git push` skips it and says nothing was verified.
 
 ```sh
@@ -853,6 +892,7 @@ The most useful settings:
 | `exactTests` | With `minimumTests`, a whole run must execute exactly that many, for a lane that picks its tests by name |
 | `arguments` | `false` refuses `qk run LANE -- ARGUMENTS` for a lane that selects its own tests |
 | `budgetMinutes` | Warns when the gate's median time drifts past this target, naming the slowest parts |
+| `inputs` | For a gate lane, the globs of the paths that affect it; a change to none of them skips it ([Gate lanes chosen by changed paths](#gate-lanes-chosen-by-changed-paths)) |
 | `failedTests` | Lets the queue rerun a non-Python lane's failed tests ([When a batch fails](#when-a-batch-fails)) |
 | `stall` | Reports, and optionally stops, a lane that has gone quiet ([Time limits](#time-limits-and-the-gates-budget)) |
 | `timing` | Warns while a lane runs past its usual time, and optionally fails it past a threshold ([Time limits](#time-limits-and-the-gates-budget)) |

@@ -1739,7 +1739,8 @@ def perform(argv, report):
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "plugins": list(plugins.LOADED),
                 "missingCommands": missing, "errors": errors, "warnings": warnings,
-                "notes": list(dict.fromkeys(note for hosts in compared for note in remote.python_crash_notes(hosts))),
+                "notes": list(dict.fromkeys([*(note for hosts in compared for note in remote.python_crash_notes(hosts)),
+                                             *lane_coverage.skipping_notes(affected)])),
                 "testLanes": test_lanes, **({"affectedPaths": affected} if affected else {}),
                 "startFree": start_floors(config), "farm": compared},
                 indent=2))
