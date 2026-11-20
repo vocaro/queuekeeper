@@ -243,8 +243,10 @@ python3 scripts/qk queue close --why "removing the queue's LaunchAgent" --for 2h
 ```
 
 - **Wait on `--idle`, not plain status.** The bootout ends a running worker and its gate.
-  `qk queue status --idle` exits 0 only when no worker runs and nothing is queued, testing or
-  passed, and 75 otherwise; plain `qk queue status` exits 0 mid-gate.
+  `qk queue status --idle` exits 0 only when nothing is queued, testing or passed and no worker
+  runs, or the one that runs only waits to move the shared checkout, and 75 otherwise; plain
+  `qk queue status` exits 0 mid-gate. Ending a worker that only waits ends no gate: the next
+  worker moves the checkout.
 - **Close first**, so no entry arrives between the idle reading and the bootout
   ([Closing a queue for maintenance](#closing-a-queue-for-maintenance)). Reopen afterward whether
   or not the removal worked, if this `close` was the one that closed the queue.
@@ -698,6 +700,24 @@ qk queue close --why "moving the queue's state" --for 2h && {  # refuse new entr
   qk queue reopen
 }
 ```
+
+- **Idle means nothing left to land.** `qk queue status --idle` exits 0 once no entry is queued,
+  testing or passed, so no push is pending. A worker may still run then: after its last landing it
+  waits to move the shared checkout, `~/Development/queuekeeper`, to `origin/main` until no process
+  runs from it, which can be another project's queue worker for as long as its gates take. That
+  waiting does not block maintenance, and `qk queue status` says so under it:
+
+  ```text
+  worker: running
+    waiting for the shared checkout to follow origin/main once nothing runs from it, for 40m41s
+      held by the queue worker for mpm, PID 26815, running 84m49s
+      this waiting does not block maintenance: no entry waits or tests and no push is pending, so `qk queue status --idle` exits 0
+  ```
+
+  Maintenance that itself moves, replaces or edits the shared checkout is the exception: wait
+  until `qk queue status` no longer shows that waiting, or the worker's next try may meet the
+  maintenance half done. Maintenance on the queue's state or a Mac does not
+  touch the checkout and need not wait.
 
 - **A closure has a deadline.** It lasts an hour unless `--for DURATION` says otherwise, for
   example `--for 30m` or `--for 2h`. The longest allowed is 24 hours. When the deadline passes,
@@ -2561,8 +2581,9 @@ to their result.
 - **JSON** is available from `land`, `queue add`, `queue wait`, `queue result`, `queue status`,
   `queue inbox`, `queue confirm`, `queue logs`, `queue doctor`, `queue health`, `queue placement`, `queue events`,
   `admissions now` and `doctor`.
-- **`qk queue status --idle`** answers by exit status: 0 only when no worker runs and nothing is
-  queued, testing or passed, and 75 otherwise.
+- **`qk queue status --idle`** answers by exit status: 0 only when nothing is queued, testing or
+  passed and no worker runs, or the one that runs only waits to move the shared checkout, and 75
+  otherwise.
 
 An agent that cannot keep a command running in the background can use the
 [MCP server](../plugins/mcp/src/queuekeeper_mcp/README.md) instead, which offers `land`,

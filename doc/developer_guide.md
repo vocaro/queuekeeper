@@ -267,7 +267,10 @@ registered in `queuekeeper-restartable/PID.json` (such as `qk serve`, which exec
 HEAD moves) do not count. A checkout left only for running processes is retried every 30 seconds
 while nothing waits, and `qk queue status` and `qk queue doctor` name up to five holders. A checkout
 left for any other reason is a person's to settle; a session never stashes, resets or edits it to
-make it follow. Nothing here holds the queue.
+make it follow. Nothing here holds the queue, and none of it keeps the queue from reading idle: while
+`Worker.catch_up` retries, the round's account marks `catchingUp`, and `reading` counts a live worker
+so marked as idle when no entry waits, since nothing is left to test or push and the holder can be
+another project's worker for as long as its gates take (vocaro/queuekeeper#285).
 
 ### Gates beside each other
 

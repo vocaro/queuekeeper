@@ -168,6 +168,11 @@ POLL = 5
 # (owner's decision, 2026-11-11, vocaro-engineering#384): a test sets FOLLOW_LIMIT, in seconds, to end them.
 FOLLOW_POLL = 30
 FOLLOW_LIMIT = None
+# What `qk queue status` says under the worker's wait to move the shared checkout (Worker.catch_up), which leaves
+# the queue idle (reading, vocaro/queuekeeper#285).
+CATCHING_UP_WORDS = ("this waiting does not block maintenance: no entry waits or tests and no push is pending, so "
+                     "`qk queue status --idle` exits 0")
+
 # How Worker.stays begins the reasons catch_up tries again, and how many of the processes it names.
 IN_USE = "a process started from it may still run its toolkit"
 UNKNOWN_USE = "whether a process started from it still runs is unknown"
@@ -2585,6 +2590,7 @@ def round_lines(state, at=None):
         lines.append(f"  waiting for {state['waiting']}"
                      + (f", for {ago(state['waitingSince'], at)}" if state.get("waitingSince") else ""))
         lines += [f"    held by {holder_line(holder, at)}" for holder in state.get("holders") or [] if isinstance(holder, dict)]
+        if state.get("catchingUp"): lines.append(f"    {CATCHING_UP_WORDS}")
     return lines
 
 
@@ -2693,11 +2699,15 @@ def reading(root, recent=5):
     # Idle is no live worker and nothing queued, testing or passed (vocaro/queuekeeper#21). A worker between rounds
     # with nothing waiting is not idle: what ends it ends whatever it starts next. A held queue with entries waiting is
     # not idle either. The worker's lock is a flock, so a dead worker's lock file holds nothing and counts as none.
+    # A worker that has settled every entry and only waits to move the shared checkout (Worker.catch_up, which its
+    # round's account marks catchingUp) is idle too: no entry waits or tests and no push is pending, and the waiting
+    # can last as long as another project's run from that checkout (vocaro/queuekeeper#285).
     state = {"schemaVersion": 1, "worker": working, "held": why,
              "recovery": recovery.in_project(
                  recovery.for_queue(recovery.read_hold(queue.hold_file, why), working=working, waiting=waiting), root),
              "round": current, "waiting": waiting, "recent": done,
-             "ungated": [entry["id"] for entry in ungated], "idle": not working and not waiting,
+             "ungated": [entry["id"] for entry in ungated],
+             "idle": not waiting and (not working or bool((current or {}).get("catchingUp"))),
              # Apart from a hold: a closed queue works on what it has, and is idle once that is done (#32).
              "closed": queue.closed()}
     # The one command the session at root runs next (agent_results.queue_next_action).
@@ -2709,7 +2719,7 @@ def reading(root, recent=5):
 def status(root, as_json=False, recent=5, idle=False):
     """Print the queue's state, in words or as JSON. Its exit status is 0, or with idle, 0 only when the queue is
     idle (reading) and BUSY otherwise, so that a script can ask whether ending the worker would end a gate
-    (vocaro/queuekeeper#21)."""
+    (vocaro/queuekeeper#21) or maintenance can begin (vocaro/queuekeeper#285)."""
     state, ungated = reading(root, recent)
     result = 0 if not idle or state["idle"] else resources.BUSY
     if as_json:
@@ -4017,7 +4027,7 @@ class Worker:
                     holders = described_holders(self.holders)
                     self.queue.note(lambda state: state.update(
                         waiting="the shared checkout to follow origin/main once nothing runs from it", waitingSince=since,
-                        holders=holders))
+                        holders=holders, catchingUp=True))
                 pause(FOLLOW_POLL)
                 if self.queue.held() or self.queue.waiting():
                     if told: self.say(f"stops trying to move {shared}: "
@@ -4029,7 +4039,8 @@ class Worker:
             elif told and self.left:
                 self.say(f"left {shared} as it is: {self.left}")
         finally:
-            if told: self.queue.note(lambda state: state.update(waiting=None, waitingSince=None, holders=None))
+            if told: self.queue.note(lambda state: state.update(waiting=None, waitingSince=None, holders=None,
+                                                                catchingUp=None))
 
     def reset(self, commit):
         """Exactly commit's tracked files. Ignored inputs a lane provisioned stay for the next round."""
@@ -7818,7 +7829,7 @@ def close(root, why, by=None, lasting=None, extend=False):
         return 1
     waiting, closure = len(queue.waiting()), queue.closed()
     print(f"{closed_words(closure)}\n{waiting} waiting, which the worker finishes; `qk queue status --idle` exits 0 "
-          f"once none is left and no worker runs, and `qk queue reopen` takes new entries again. Until then "
+          f"once none is left and no worker runs, or one only waits to move the shared checkout, and `qk queue reopen` takes new entries again. Until then "
           f"{lapse_words(closure)}")
     return 0
 
@@ -7895,8 +7906,9 @@ def add_arguments(parser):
                                   "queue is held, why and for whom")
     state.add_argument("--json", action="store_true")
     state.add_argument("--idle", action="store_true",
-                       help=f"exit 0 only when no worker runs and no entry is queued, testing or passed, and "
-                       f"{resources.BUSY} otherwise; the lines printed are the same")
+                       help=f"exit 0 only when no entry is queued, testing or passed and no worker runs, or one "
+                       f"only waits to move the shared checkout, and {resources.BUSY} otherwise; the lines printed "
+                       "are the same")
     doctoring = operations.add_parser("doctor", help="read the queue for the signs that it is stuck rather than testing, "
                                       "such as gates that ran nothing, and say what each means and what heals it; it "
                                       "changes nothing: 0 healthy, 1 with findings")

@@ -7221,7 +7221,9 @@ class SharedCheckout(Fixture):
         hour = 3600 // mq.FOLLOW_POLL
         waits = []
         def during(tried, holders):
-            if tried == 1: waits.append(mq.Queue(self.repo).round_state().get("waiting"))
+            if tried == 1:
+                state = mq.Queue(self.repo).round_state()
+                waits.append((state.get("waiting"), state.get("catchingUp"), mq.snapshot(self.repo)["idle"]))
             if tried == hour: holders[:] = [mq.disk.Process(pid=43, command="Python", cwd=str(self.repo / "scripts"))]
             if tried == hour + 2: holders.clear()
         before, after, main, said, tries = self.held_back(during)
@@ -7233,8 +7235,10 @@ class SharedCheckout(Fixture):
         self.assertEqual(said.count(told), 2)
         self.assertIn(told + "PID 42 (Python)", said)
         self.assertIn(told + "PID 43 (Python)", said)
-        self.assertEqual(waits, ["the shared checkout to follow origin/main once nothing runs from it"])
+        # A worker only waiting to move the checkout leaves the queue idle (vocaro/queuekeeper#285).
+        self.assertEqual(waits, [("the shared checkout to follow origin/main once nothing runs from it", True, True)])
         self.assertIsNone(mq.Queue(self.repo).round_state().get("waiting"))
+        self.assertIsNone(mq.Queue(self.repo).round_state().get("catchingUp"))
         self.assertNotIn("behind after", said)
 
     def test_what_holds_it_is_named_in_words_by_status_and_doctor(self):
@@ -11512,6 +11516,32 @@ class IdleStatus(Fixture):
         self.add("one")
         self.assertEqual(self.asked(), mq.resources.BUSY)
         self.assertIn("held for a session: a test holds it", self.said("--idle")[1])
+
+    def test_a_worker_that_only_waits_to_move_the_shared_checkout_is_idle_and_status_says_so(self):
+        """vocaro/queuekeeper#285: a worker that has settled every entry and only waits for the shared checkout to
+        follow origin/main (Worker.catch_up) blocks no maintenance, though another project's run can hold it for
+        hours, so --idle exits 0 and status says that this waiting does not block maintenance."""
+        queue = mq.Queue(self.repo)
+        with self.live_worker():
+            queue.note(lambda state: state.update(
+                waiting="the shared checkout to follow origin/main once nothing runs from it",
+                waitingSince=time.time() - 60, catchingUp=True,
+                holders=[{"pid": 26815, "what": "the queue worker for mpm", "since": time.time() - 120}]))
+            self.assertEqual(self.asked(), 0)
+            lines = self.said("--idle")[1].splitlines()
+            self.assertEqual(lines[0], "worker: running")
+            self.assertIn("    held by the queue worker for mpm, PID 26815, running 2m00s", lines)
+            self.assertIn(f"    {mq.CATCHING_UP_WORDS}", lines)
+            # The negative controls: an entry that arrives meanwhile is not idle, whatever the account says...
+            self.commit("a.txt", "one")
+            identifier, = self.add("one")
+            self.assertEqual(self.asked(), mq.resources.BUSY)
+            queue.save({**self.state(identifier), "state": mq.LANDED, "settled": time.time()})
+            self.assertEqual(self.asked(), 0)
+            # ...and a live worker whose account says no such wait, as when catch_up has ended, is not idle either.
+            queue.note(lambda state: state.update(waiting=None, waitingSince=None, holders=None, catchingUp=None))
+            self.assertEqual(self.asked(), mq.resources.BUSY)
+            self.assertNotIn(mq.CATCHING_UP_WORDS, self.said()[1])
 
 
 class ClosedQueue(Fixture):
