@@ -7,6 +7,19 @@ Use this checkout's launcher, `python3 scripts/qk`, to operate on this repositor
 Edit Queuekeeper only in a linked worktree; never switch branches or leave edits in the shared checkout,
 `~/Development/queuekeeper`, which every project's launcher runs from. `qk` and `qk doctor` say when it is off `main`.
 
+## Claim before you take work
+
+Before taking an issue, read its comments for an active claim, then claim it with a short comment naming your
+session by title and id and its branch; update that comment when you release or finish the work. Read the claims
+on every issue it links to as well, and look in `python3 scripts/qk queue status` and `git worktree list` for an
+entry or branch naming the same issue: a claim on one issue is not seen by a session working a related one.
+A coordinator that sends several subagents at once gives each a distinct file prefix or folder in the session
+scratchpad, which isolated subagents still share, and names it in the brief.
+
+These rules repeat the owner's shared rules in vocaro-engineering's `doc/agents/core.md`, which a session
+here does not load; change them there first. Rules about how sessions work across every project,
+such as when a session may land without asking, belong there and are not repeated here.
+
 ## Verify through admission
 
 Run focused tests with:
