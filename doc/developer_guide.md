@@ -194,7 +194,11 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   `parallel.lanes` writes a `not selected` receipt and log for each lane left out, in place of an
   earlier run's, so that `Worker.read_group` and `remote.group_files` find one for every lane.
   Only the batch's own gate passes them: a caller of `Worker.gate` that does not, such as a
-  bisect's halves or a stacked gate, runs the whole group. The push recomputes this to
+  bisect's halves or a stacked gate, runs the whole group. The push records what the batch's
+  paths selected as the landing's `partialGate` (`partial_gate`), worked out from the paths so
+  that a push that is reconciled or follows a kept verdict records the same, and
+  `carried_by_rules` reads a group's chosen lanes, so a move of `main` by a path of a lane left
+  out carries the pass over. The push recomputes this to
   decide whether `queue.hookCoveredBy`'s lanes ran, and records it as the lanes a carry-over by path
   must avoid.
 - **Changelog conflicts.** A conflict made only of whole lines both sides added directly below one
@@ -1801,7 +1805,7 @@ schema only grows, so readers ignore what they do not know.
 | Kind | When | Its own keys |
 |---|---|---|
 | `entry.queued` | A commit range joined the queue | `entry`, `subject`, `commits`, `branch`, `note`, `front`, `noGate`, `aheadWhy` |
-| `entry.landed` | An entry is on `main` | `entry`, `subject`, `tip`, `landedAs`, `landedTip`, `landedCommits`, `docsOnly`, `ungated` |
+| `entry.landed` | An entry is on `main` | `entry`, `subject`, `tip`, `landedAs`, `landedTip`, `landedCommits`, `docsOnly`, `ungated`, `partialGate` |
 | `entry.failed` | An entry came back from its gate | `entry`, `subject`, `tip`, `why`, `log` |
 | `entry.conflict` | An entry came back with a conflict | `entry`, `subject`, `tip`, `why` |
 | `entry.removed` | An entry was taken out | `entry`, `subject`, `tip` |

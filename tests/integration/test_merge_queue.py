@@ -3491,6 +3491,17 @@ class Inputs(Affected):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual((self.gates(), self.app_gates()), (1, 1))
 
+    def test_a_landing_records_the_gate_lanes_that_ran_as_a_partial_gate(self):
+        self.commit("src/a.py", "a")
+        [identifier] = self.add("a")
+        self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["partialGate"], {"lanes": ["gate"], "skipped": ["app"]})
+        self.commit("shared/b.py", "b")
+        [whole] = self.add("b")
+        self.work()
+        self.assertNotIn("partialGate", self.state(whole))
+
     def test_a_lane_without_inputs_runs_for_every_change(self):
         config = self.config()
         del config["lanes"]["gate"]["inputs"]
@@ -3553,8 +3564,22 @@ class MemberInputs(Affected):
         self.assertEqual((self.gates(), self.app_gates()), (1, 1))
 
     def test_main_moving_by_paths_of_other_lanes_carries_the_pass_over(self):
-        """A move by a path of the group's other lane gates again: the group is one gate lane, and it ran."""
-        self.gates_again_after("app/view.py")
+        """A move by a path of a lane of the group that the batch's paths did not choose carries the pass over."""
+        self.commit("src/a.py", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("app/view.py"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.app_gates()), (1, 0))
+
+    def test_a_landing_records_the_lanes_of_the_group_that_ran_as_a_partial_gate(self):
+        self.commit("src/a.py", "a")
+        [identifier] = self.add("a")
+        self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["partialGate"], {"lanes": ["gate"], "skipped": [],
+                                                "members": {"gate": {"ran": ["unit"], "skipped": ["app"]}}})
+        self.assertIn("partial gate: of gate's lanes, unit ran and app did not: no path it changes is among the "
+                      "inputs of what did not run", mq.describe(entry))
 
     def test_main_moving_by_a_path_no_rule_covers_gates_again(self):
         """With inputs, no lane reads such a path, so the pass stands."""
@@ -3684,6 +3709,27 @@ class InputRules(unittest.TestCase):
             self.parsed({**self.GROUP, "gate": {"parallel": ["unit", "app"], "inputs": ["src/**"]}}, named=["gate"])
         with self.assertRaisesRegex(ValueError, "unit.inputs is given for a lane that is not one of the gate lanes"):
             self.parsed({**self.GROUP, "other": {"command": ["true"]}}, named=["other"])
+
+    def test_a_partial_gate_names_what_ran_and_carry_over_reads_a_groups_chosen_lanes(self):
+        config = self.group()
+        self.assertIsNone(mq.partial_gate(config, ["shared/a.py"]))
+        partial = mq.partial_gate(config, ["src/a.py"])
+        self.assertEqual(partial, {"lanes": ["gate"], "skipped": [],
+                                   "members": {"gate": {"ran": ["unit"], "skipped": ["app"]}}})
+        self.assertEqual(mq.partial_gate(self.config(), ["app/x.swift"]), {"lanes": ["app"], "skipped": ["gate"]})
+        self.assertEqual(mq.partial_said(mq.partial_gate(self.config(), ["app/x.swift"])),
+                         "of the gate lanes, the app lane ran and the gate lane did not: no path it changes is among "
+                         "the inputs of what did not run")
+        members = mq.group_members(config, ["gate"], ["src/a.py"])
+        # main moving by a path of the lane left out carries; by one of the lane that ran, or of both, does not.
+        self.assertTrue(mq.carried_by_rules("app/x.swift", config, set(), ["gate"], members))
+        self.assertFalse(mq.carried_by_rules("src/b.py", config, set(), ["gate"], members))
+        self.assertFalse(mq.carried_by_rules("shared/b.py", config, set(), ["gate"], members))
+        self.assertFalse(mq.carried_by_rules("app/x.swift", config, set(), ["gate"]))
+        self.assertFalse(mq.carried_by_rules("queuekeeper.json", config, set(), ["gate"], members))
+        # A lane of the group that gives no inputs reads every path.
+        loose = self.group({**self.GROUP, "unit": {"command": ["true"]}})
+        self.assertFalse(mq.carried_by_rules("app/x.swift", loose, set(), ["gate"], {"gate": ["unit"]}))
 
     def test_only_main_may_give_inputs(self):
         own = mq.as_batch(json.loads(json.dumps(self.config())))

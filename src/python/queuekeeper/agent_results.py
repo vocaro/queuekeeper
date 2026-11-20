@@ -148,6 +148,7 @@ def entry_result(queue, entry):
             "artifacts": artifacts, "gates": gates,
             "resultsSummary": (entry.get("gate") or {}).get("results"),
             "docsOnly": entry.get("docsOnly"), "docsNamed": entry.get("docsNamed"), "ungated": entry.get("ungated"),
+            "partialGate": entry.get("partialGate"),
             "publication": publication(queue, entry) if pending else None,
             "removedWhy": entry.get("removedWhy"), "confirmed": entry.get("confirmed"),
             "recovery": recovery.in_project(

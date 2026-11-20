@@ -609,6 +609,12 @@ one of `queue.lanes` or else `gate`, lists `inputs`: the globs of the paths that
 - **`queue.unread` still says what code reads.** A path its `exclude` names, or any path when it is
   `false`, runs every gate lane unless a lane's `inputs` name it.
 - **Only `main`'s `inputs` count**, so a change cannot excuse itself from a lane.
+- **A landing says what its gate left out.** `qk queue status` shows
+  `partial gate: of the gate lanes, the unit lane ran and the app lane did not`, and the entry's
+  record and `qk queue result --json` carry `partialGate`: `lanes`, the gate lanes its paths
+  selected, `skipped`, the others, and for a lane group `members`, with the group's lanes that
+  `ran` and were `skipped`. It is what the paths called for: a bisect's half or a stacked gate may
+  have run more. The `entry.landed` event carries it too.
 - **`qk doctor` lists what skips.** Its `notes` count the tracked files that no gate lane's
   `inputs` and no `queue.unread` path names, and `affectedPaths.skipping` lists them all. A glob
   that matches no tracked file is a warning, listed in `affectedPaths.unmatched`.
@@ -636,6 +642,8 @@ the globs.
 - **A group of which only some lanes ran** does not cover the pre-push hook for
   `queue.hookCoveredBy`, and a bisect's halves, a stacked gate and the pre-push hook run the
   whole group.
+- **Carry-over reads the group's lanes.** When `main` moved only by paths of the group's lanes
+  that the batch's paths did not choose, the batch's pass still stands.
 - **By hand**, `qk run gate -- unit` runs only the lanes named after `--`, as the queue does.
 
 `queue.affected` is the older way to write the same map, from the paths to the lanes. It differs in

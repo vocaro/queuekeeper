@@ -64,7 +64,7 @@ from . import events, landed_cleanup, pre_push, recovery, restartable, worktree_
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
-    siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, lane_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
+    siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -85,7 +85,7 @@ PUBLICATION_UNVERIFIED = "publication-unverified"
 # What an entry's record gives the event of its final state (Queue.settle), where it has them. The tip lets a reader,
 # such as health.came_back, count one commit added again as one (vocaro/queuekeeper#219).
 EVENT_FIELDS = ("tip", "why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated",
-                "conflictWith")
+                "partialGate", "conflictWith")
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
@@ -917,7 +917,30 @@ def carried_over(path, config, batch_files):
     return path not in batch_files and unread(config, path) and not unread_named(config, [path])
 
 
-def carried_by_rules(path, config, batch_files, ran):
+def partial_gate(config, changed):
+    """What a landing's record says of a gate that main's queue.affected or lane inputs narrowed for the paths
+    changed, or None for a whole one: {"lanes": the gate lanes its paths select, "skipped": the others, "members":
+    {lane group: {"ran": its lanes they select, "skipped": the others}}}. It is what the paths call for: a bisect's
+    half or a stacked gate may have run more (vocaro/queuekeeper#289)."""
+    named, ran = gate_lanes(config), affected_lanes(config, changed)
+    members = {name: {"ran": chosen, "skipped": [member for member in config["lanes"][name]["parallel"]
+                                                 if member not in chosen]}
+               for name, chosen in group_members(config, ran, changed).items()}
+    skipped = [name for name in named if name not in ran]
+    if not skipped and not members: return None
+    return {"lanes": ran, "skipped": skipped, **({"members": members} if members else {})}
+
+
+def partial_said(partial):
+    """A landing's partial gate (partial_gate) as a line says it."""
+    parts = [f"of the gate lanes, {spoken(partial['lanes'])} ran and {spoken(partial['skipped'])} did not"] \
+        if partial.get("skipped") else []
+    parts += [f"of {name}'s lanes, {', '.join(found['ran'])} ran and {', '.join(found['skipped'])} did not"
+              for name, found in partial.get("members", {}).items()]
+    return "; ".join(parts) + ": no path it changes is among the inputs of what did not run"
+
+
+def carried_by_rules(path, config, batch_files, ran, members=None):
     """Whether main changing path leaves standing the pass of a batch whose own paths select the gate lanes ran
     (lanes_of): path, which queue.unread does not take (carried_over decides those) and the batch does not touch, is
     covered by main's queue.affected or its gate lanes' inputs, and selects none of ran. Only those lanes read path, and the batch changed nothing
@@ -926,7 +949,12 @@ def carried_by_rules(path, config, batch_files, ran):
     ungated landing, carries nothing over this way."""
     if ran is None or path in batch_files or PROVISION in ran or unread(config, path): return False
     selected = affected_by(config, path)
-    return selected is not None and not selected & set(ran)
+    if selected is None: return False
+    # A lane group the batch's paths chose only some lanes of, members (group_members), read path only by those.
+    return all(name in (members or {}) and not any(
+        member not in member_inputs(config, name) or any(matches(path, pattern)
+                                                         for pattern in member_inputs(config, name)[member])
+        for member in members[name]) for name in selected & set(ran))
 
 
 def carry_checks(config, moved, base, docs_check=IMPLICIT_DOCS):
@@ -2660,6 +2688,7 @@ def describe(entry):
     if entry.get("docsOnly"):
         line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
         if entry.get("docsNamed"): line += f"; queue.unread.paths named {named_said(entry['docsNamed'])}"
+    if entry.get("partialGate"): line += f"\n         partial gate: {partial_said(entry['partialGate'])}"
     if entry.get("ungated"):
         line += (f"\n         landed without the gate, on {', '.join(entry['ungated']['lanes']) or 'no lane'}, because "
                  f"{entry['ungated']['why']}; the next gate on main covers it")
@@ -4897,7 +4926,7 @@ class Worker:
                 return False
         return True
 
-    def carry(self, config, batch, base, head, ran=None):
+    def carry(self, config, batch, base, head, ran=None, members=None):
         """(new base, new head) with the batch on origin/main, when main moved past base only by files the
         lanes do not read and the batch does not touch, else None: unread files (carried_over), or, for a batch whose
         own paths selected the gate lanes ran, files whose lanes, by queue.affected or the lanes' inputs, are none of
@@ -4909,7 +4938,7 @@ class Worker:
         batch_files = set(self.changed(base, head))
         moved = [path for path in self.changed(base, new_base) if path]
         ruled = [path for path in moved if not carried_over(path, config, batch_files)
-                 and carried_by_rules(path, config, batch_files, ran)]
+                 and carried_by_rules(path, config, batch_files, ran, members)]
         refused = [path for path in moved if not carried_over(path, config, batch_files) and path not in ruled]
         if refused:
             self.say(f"main moved by {refused[0]}, which the result does not cover: gating again")
@@ -4968,6 +4997,8 @@ class Worker:
         named = unread_named(config, changed) if docs else {}
         # The lanes the batch's own paths select, by which main moving under it may carry over (carried_by_rules).
         ran = None if docs or ungated or not selects_by(config) else lanes_of(config, changed)
+        # What the landing's record says of a gate its paths narrowed (partial_gate).
+        partial = None if docs or ungated else partial_gate(config, changed)
         unsure = False
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
@@ -4985,7 +5016,8 @@ class Worker:
             landed = self.landed_attempt(attempts)
             if landed:
                 self.say(f"origin/main holds {landed['head'][:12]}, pushed before its answer came: it landed")
-                self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated, self.measured)
+                self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated, self.measured,
+                                   partial=partial)
                 return True
             # An earlier push of some of the batch, whose answer never came, may have landed since (reconcile).
             kept = [current for entry in batch if (current := self.queue.read(entry["id"])) and current.get("pushedBefore")]
@@ -4993,7 +5025,7 @@ class Worker:
                 self.say("an earlier push of part of the batch landed before this one: the rest gate again")
                 return False
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
-                carried = self.carry(config, batch, base, head, ran)
+                carried = self.carry(config, batch, base, head, ran, group_members(config, ran, changed))
                 if carried is None: return False
                 base, head = carried
                 if ungated: head = self.mark_ungated(ungated, base)
@@ -5022,7 +5054,8 @@ class Worker:
             marker = {
                 "batch": [entry["id"] for entry in batch], "attempts": attempts, "gatedOn": gated_on,
                 **({"docsOnly": docs} if docs else {}), **({"docsNamed": named} if named else {}),
-                **({"ungated": ungated} if ungated else {}), **({"gate": self.measured} if self.measured else {})}
+                **({"ungated": ungated} if ungated else {}), **({"gate": self.measured} if self.measured else {}),
+                **({"partialGate": partial} if partial else {})}
             self.queue.mark_publishing(batch, marker)
             def started(pid, attempt=attempts[-1], marker=marker):
                 # The push's own process, which outlives a worker killed alone (vocaro/queuekeeper#265): reconcile
@@ -5042,7 +5075,7 @@ class Worker:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}" + (", landed without the gate, which the next gate on main covers"
                                                   if ungated else ""))
-                self.settle_pushed(batch, base, head, gated_on, docs, named, ungated, self.measured)
+                self.settle_pushed(batch, base, head, gated_on, docs, named, ungated, self.measured, partial=partial)
                 return True
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
@@ -5052,7 +5085,7 @@ class Worker:
             raise Hold(OWNER, f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
         return False
 
-    def settle_pushed(self, batch, base, head, gated_on, docs, named, ungated, gate, reconciled=False):
+    def settle_pushed(self, batch, base, head, gated_on, docs, named, ungated, gate, reconciled=False, partial=None):
         """Settle batch as landed by head, pushed on base: each entry its own commit (landed), the push's event,
         the app kept and the shared checkout followed, as after any landing. reconciled says the push's answer
         never came, and a later fetch found head on origin/main (reconcile)."""
@@ -5066,6 +5099,7 @@ class Worker:
                               **({"docsOnly": docs} if docs else {}),
                               **({"docsNamed": named} if named else {}),
                               **({"ungated": ungated} if ungated else {}),
+                              **({"partialGate": partial} if partial else {}),
                               **({"gate": gate} if gate and not docs else {}),
                               **({} if docs or ungated else {"gatedOn": gated_on}))
         if not docs and not ungated: self.keep_app(head)
@@ -5135,7 +5169,8 @@ class Worker:
             self.say(f"origin/main at {main[:12]} holds {attempt['head'][:12]}, pushed before its answer came: "
                      f"{ids} landed")
             self.settle_pushed(group, attempt["base"], attempt["head"], marker.get("gatedOn"), marker.get("docsOnly"),
-                      marker.get("docsNamed"), marker.get("ungated"), marker.get("gate"), reconciled=True)
+                      marker.get("docsNamed"), marker.get("ungated"), marker.get("gate"), reconciled=True,
+                      partial=marker.get("partialGate"))
             landed = True
         return landed
 
