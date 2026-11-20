@@ -49,6 +49,13 @@ Pieces that build on each other ride one gate: give each a branch holding the on
 them all in order without waiting, and follow them with `python3 scripts/qk queue wait ID ID --json`
 ([Changes that build on each other](doc/user_guide.md#changes-that-build-on-each-other)).
 
+Name the issue a commit works on in its message so that GitHub acts on it when the commit lands.
+Write `Closes #N` on a line of its own when the commit meets everything the issue's "done when" asks,
+so that GitHub closes the issue as the queue pushes to `main`. Write `Refs #N` when work is left,
+and say on the issue what remains. A reference such as `(vocaro/queuekeeper#N)` in the subject
+closes nothing, and the queue refuses a negated claim such as "does not fix #N", which GitHub would
+still act on.
+
 Interrupting the wait does not withdraw the entry. After interruption or settlement, retrieve its
 record with `python3 scripts/qk queue result ID --json`; use this record for the verdict, failures
 and artifact locations, since a terminal's last lines may omit them. To keep waiting, use
