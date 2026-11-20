@@ -1,0 +1,25 @@
+◇ Test run started.
+↳ Swift Standard Library Version: 6.4
+↳ Swift Compiler Version: 6.4.2
+↳ Testing Library Version: 2403
+↳ Target Platform: arm64e-apple-macos14.0
+↳ OS Version: 27.2 (26B123)
+◇ Test fine() started.
+◇ Test skipping(n:) started.
+◇ Test cases(n:) started.
+◇ Test case passing 1 argument n → 1 (Swift.Int) to skipping(n:) started.
+◇ Test case passing 1 argument n → 2 (Swift.Int) to skipping(n:) started.
+◇ Test case passing 1 argument n → 1 (Swift.Int) to cases(n:) started.
+✔ Test case passing 1 argument n → 1 (Swift.Int) to skipping(n:) passed after 0.001 seconds.
+◇ Test case passing 1 argument n → 2 (Swift.Int) to cases(n:) started.
+◇ Test case passing 1 argument n → 3 (Swift.Int) to cases(n:) started.
+◇ Test case passing 1 argument n → 4 (Swift.Int) to cases(n:) started.
+✔ Test case passing 1 argument n → 2 (Swift.Int) to skipping(n:) passed after 0.001 seconds.
+✔ Test fine() passed after 0.001 seconds.
+✔ Test case passing 1 argument n → 2 (Swift.Int) to cases(n:) passed after 0.001 seconds.
+✔ Test skipping(n:) with 2 test cases passed after 0.001 seconds.
+✔ Test case passing 1 argument n → 4 (Swift.Int) to cases(n:) passed after 0.001 seconds.
+✔ Test case passing 1 argument n → 3 (Swift.Int) to cases(n:) passed after 0.001 seconds.
+✔ Test case passing 1 argument n → 1 (Swift.Int) to cases(n:) passed after 0.001 seconds.
+✔ Test cases(n:) with 4 test cases passed after 0.001 seconds.
+✔ Test run with 3 tests in 0 suites passed after 0.001 seconds.

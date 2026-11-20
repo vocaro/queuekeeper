@@ -7,7 +7,9 @@ own lines whole: every skip, failure and suite total, which lane_results.counted
 tests run once beside them, in `swift test --skip-build --disable-xctest`, which runs them
 concurrently itself; with --split-swift-testing their suites are packed into the shards as the
 classes are, each shard's in a `swift test --no-parallel` process of its own that runs one test at a
-time, as xctest does. Several packages build one after another and share one pool of processes.
+time, as xctest does. A Swift Testing test with a case that canceled itself, which Swift Testing
+prints as passed, gets a line from its process's event stream that counts it skipped (canceled_cases).
+Several packages build one after another and share one pool of processes.
 A project passes what its run needs as options: a scratch path, a configuration, other swift
 options.
 """
@@ -109,11 +111,13 @@ def wall_clock(instant):
 def test_times(events, shard, timed_out=False):
     """[{test, shard, verdict, seconds, started, finished}] for each Swift Testing test function in one
     process's event stream (JSON lines, `swift test --event-stream-output-path`, version 0): its id as
-    `swift test list` prints it, the process's name, passed, failed, skipped, canceled or unmeasured, and
+    `swift test list` prints it, the process's name, passed, failed, skipped, canceled (whole, or in any of
+    its cases) or unmeasured, and
     its seconds and wall-clock start and finish. A test that started and never finished, as in a process
     stopped at its timeout, keeps its start, is unmeasured and has no finish or seconds. A line cut short by
     the stop is passed over."""
     functions, started, ended, failed, skipped, canceled, order = set(), {}, {}, set(), {}, {}, []
+    cases_canceled = set()
     for line in events.splitlines():
         try: record = json.loads(line)
         except ValueError: continue
@@ -130,6 +134,8 @@ def test_times(events, shard, timed_out=False):
         elif kind == "testEnded": ended[test] = instant
         elif kind == "testSkipped": skipped[test] = instant
         elif kind == "testCancelled": canceled[test] = instant
+        # A canceled case cancels that case alone; its test ends as the others do (canceled_cases).
+        elif kind == "testCaseCancelled": cases_canceled.add(test)
         elif kind == "issueRecorded":
             issue = payload.get("issue") or {}
             # A known issue (withKnownIssue) or a warning does not fail its test.
@@ -145,7 +151,7 @@ def test_times(events, shard, timed_out=False):
         if test in skipped and test not in started: verdict = "skipped"
         elif finished is None: verdict = "unmeasured"
         elif test in failed: verdict = "failed"
-        elif test in canceled: verdict = "canceled"
+        elif test in canceled or test in cases_canceled: verdict = "canceled"
         else: verdict = "passed"
         seconds = None
         if began and finished:
@@ -158,6 +164,74 @@ def test_times(events, shard, timed_out=False):
                       **({"reason": "timed out" if timed_out else "its process ended first"}
                          if verdict == "unmeasured" else {})})
     return found
+
+
+def stream_records(events):
+    """(kind, payload) for each whole record of an event stream, passing over a line cut short."""
+    for line in events.splitlines():
+        try: record = json.loads(line)
+        except ValueError: continue
+        payload = record.get("payload") if isinstance(record, dict) else None
+        if isinstance(payload, dict): yield record.get("kind"), payload
+
+
+def canceled_cases(events):
+    """Lines that report each test with canceled test cases, from one process's event stream.
+
+    `Test.cancel` from a case of a parameterized test cancels that case alone, and Swift Testing prints
+    the case, with or without --verbose, and its test as passed: only the stream's testCaseCancelled
+    event, whose _comments hold its reason, records it (Swift 6.4.2, testing library 2403, 2026-11-20;
+    vocaro/queuekeeper#312). Each such test gets one line in the form Swift Testing gives a whole test
+    that canceled itself, which lane_results.SWIFT_TESTING_SKIP counts as one skip and, when a case's
+    reason begins "Unmeasured:", UNMEASURED_TEST reads as unmeasured, so a test counts once however
+    many of its cases were canceled. Under it, indented so that neither counts it, a line for each
+    canceled case. A test that failed, or that canceled or skipped itself whole, has a line of its
+    own already."""
+    names, cases, started, ended, case_names, canceled, whole, failed = {}, {}, {}, {}, {}, {}, set(), set()
+    for kind, payload in stream_records(events):
+        if kind == "test":
+            if payload.get("id"):
+                shown = payload.get("displayName")
+                names[payload["id"]] = f'"{shown}"' if shown else payload.get("name") or payload["id"]
+                if isinstance(payload.get("_testCases"), list): cases[payload["id"]] = len(payload["_testCases"])
+            continue
+        if kind != "event": continue
+        event, test, instant = payload.get("kind"), payload.get("testID"), payload.get("instant") or {}
+        if not test: continue
+        case = (payload.get("_testCase") or {}).get("id")
+        if event == "testStarted": started[test] = instant
+        elif event == "testEnded": ended[test] = instant
+        elif event in ("testCancelled", "testSkipped"): whole.add(test)
+        elif event == "testCaseStarted" and case:
+            texts = [message.get("text", "") for message in payload.get("messages") or [] if isinstance(message, dict)]
+            case_names.setdefault(test, {})[case] = next((text[:-len(" started.")] for text in texts
+                                                          if text.endswith(" started.")), None)
+        elif event == "testCaseCancelled":
+            comments = [str(comment) for comment in payload.get("_comments") or []]
+            shown = (payload.get("_testCase") or {}).get("displayName")
+            canceled.setdefault(test, []).append((case, shown, comments[0] if comments else None, instant))
+        elif event == "issueRecorded":
+            issue = payload.get("issue") or {}
+            if not issue.get("isKnown") and issue.get("severity", "error") == "error": failed.add(test)
+    lines = []
+    for test, found in canceled.items():
+        if test in whole or test in failed: continue
+        name = names.get(test) or SOURCE_LOCATION.sub("", test).rsplit(".", 1)[-1]
+        reasons = [reason for _, _, reason, _ in found if reason]
+        reason = next((reason for reason in reasons if reason.startswith("Unmeasured:")), reasons[0] if reasons else None)
+        finish = ended.get(test) or found[-1][3]
+        began = started.get(test, {}).get("absolute")
+        seconds = finish.get("absolute") - began \
+            if isinstance(began, (int, float)) and isinstance(finish.get("absolute"), (int, float)) else None
+        total = cases.get(test) or len(case_names.get(test, {})) or len(found)
+        after = f"{seconds:.3f} seconds" if seconds is not None else "an unknown time"
+        quoted = lambda why: f': "{why}"' if why else "."
+        lines.append(f"➜ Test {name} was cancelled after {after} in {len(found)} of its {total} test cases"
+                     + quoted(reason))
+        for case, shown, why, _ in found:
+            what = case_names.get(test, {}).get(case) or f"Test case {shown or case} of {name}"
+            lines.append(f"    ➜ {what} was cancelled{quoted(why)}")
+    return lines
 
 
 def keep_test_times(found, directory, configuration):
@@ -225,11 +299,15 @@ def run(name, command, directory, expected, timeout=parallel.PROCESS_LIMIT, even
                           EVENT_STREAM_VERSION]
     began = time.monotonic()
     status, output = processes.bounded(command, cwd=directory, timeout=timeout)
-    found = lane_results.counted(output)
     times = []
     if events:
-        try: times = test_times(Path(events).read_text(errors="replace"), name, timed_out=status is None)
-        except OSError: pass
+        try: stream = Path(events).read_text(errors="replace")
+        except OSError: stream = ""
+        times = test_times(stream, name, timed_out=status is None)
+        # Swift Testing prints a canceled case as passed; its line counts it and says why.
+        cases = canceled_cases(stream)
+        if cases: output = output.rstrip("\n") + "\n" + "\n".join(cases) + "\n"
+    found = lane_results.counted(output)
     return {"name": name, "status": status, "output": output, "expected": expected, "directory": directory,
             "ran": found[0] if found else 0, "skipped": found[1] if found else 0,
             "seconds": time.monotonic() - began, "times": times}
@@ -384,5 +462,6 @@ def main(argv):
     # Not XCTest's or Swift Testing's own total: the processes' lines already count every test once.
     print(f"queuekeeper xctest: {total} tests ({skipped} skipped) in {len(results)} processes, {args.jobs} at a time, "
           f"{time.monotonic() - began:.1f}s: " + parallel.verdict(failed, unmeasured), flush=True)
-    if decided and not failed: print("\n".join(decided), flush=True)
+    # Indented, as each is in its process's output already: Swift Testing's line, unindented, counts a skip.
+    if decided and not failed: print("\n".join(f"  {line}" for line in decided), flush=True)
     return 1 if failed else lane_results.UNMEASURED if unmeasured else 0

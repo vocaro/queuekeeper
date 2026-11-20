@@ -615,7 +615,9 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   total, since `swift test` and `xcodebuild` run each bundle under its own top suite. A wrapper's
   own `Executed N tests` line counts only when the log holds no XCTest totals it would repeat.
   Inside a `qk unittest` process's output, only unittest's own total counts, since Queuekeeper's
-  tests print lines that imitate other runners. Swift Testing's per-test skip lines are subtracted.
+  tests print lines that imitate other runners. Swift Testing's per-test skip lines are subtracted. Swift Testing prints a canceled case of a
+  parameterized test as passed, so `qk xctest` adds a skip line for each test with one, from the
+  process's event stream (`xctest_shards.canceled_cases`, vocaro/queuekeeper#312).
   A run short of its floor because a test was left unmeasured is unmeasured, not failed.
 - **Lane groups.** A group writes no `LANE/source.json` for its lanes, and its own receipt has no
   `tests`. Each lane's `executedTests` and `skippedTests` (`null` when its log reports none) are

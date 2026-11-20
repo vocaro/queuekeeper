@@ -52,13 +52,13 @@ SWIFT = textwrap.dedent("""
             since1970 = time.time() - time.monotonic()
             def event(kind, test, **more):
                 now = time.monotonic()
-                record("event", kind=kind, testID=test + "/x.swift:1:2", messages=[],
-                       instant={"absolute": now, "since1970": since1970 + now}, **more)
+                record("event", **{"kind": kind, "testID": test + "/x.swift:1:2", "messages": [],
+                                   "instant": {"absolute": now, "since1970": since1970 + now}, **more})
                 if kind == "testEnded":
                     with open(here / "ended.jsonl", "a") as ended: ended.write(json.dumps(test) + "\\n")
             for suite in sorted({test.split("/")[0] for test in chosen if "/" in test}):
                 record("test", kind="suite", id=suite + "/x.swift:1:2", name=suite)
-            for test in chosen: record("test", kind="function", id=test + "/x.swift:1:2", name=test)
+            for test in chosen: record("test", kind="function", id=test + "/x.swift:1:2", name=test.split("/")[-1].split(".")[-1])
             delayed = os.environ.get("FAKE_EVENTS_DELAY")
             if delayed and any(re.search(delayed, test) for test in chosen):
                 # Not a fixed sleep alone, which a slow start of the other processes, queued behind the xctest
@@ -79,6 +79,14 @@ SWIFT = textwrap.dedent("""
                 time.sleep(0.05)
                 if os.environ.get("FAKE_EVENTS_FAIL") and re.search(os.environ["FAKE_EVENTS_FAIL"], test):
                     event("issueRecorded", test, issue={"isKnown": False})
+                if os.environ.get("FAKE_CANCEL_CASE") and re.search(os.environ["FAKE_CANCEL_CASE"], test):
+                    # Its second of two cases cancels itself, which the console prints as passed (vocaro/queuekeeper#312).
+                    for number in (1, 2):
+                        event("testCaseStarted", test, _testCase={"displayName": str(number), "id": f"case {number}"},
+                              messages=[{"symbol": "default",
+                                         "text": f"Test case passing 1 argument n → {number} to x started."}])
+                    event("testCaseCancelled", test, _testCase={"displayName": "2", "id": "case 2"},
+                          _comments=[os.environ.get("FAKE_CANCEL_REASON", "a planted skip")])
                 event("testEnded", test)
                 if "/" in test: event("testEnded", test.split("/")[0])
         for test in chosen: print(f"✔ Test {test.split('/')[-1].split('.')[-1]} passed after 0.001 seconds.")
@@ -423,6 +431,75 @@ class SwiftTestingTimesTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertNotIn("start and finish times", output)
         self.assertFalse((self.package / xctest_shards.LOCAL_TEST_TIMES.format(configuration="debug")).exists())
+
+
+class CanceledCaseTests(unittest.TestCase):
+    """A case of a parameterized test that canceled itself, which Swift Testing prints as passed and only its event
+    stream records (vocaro/queuekeeper#312), counts its test as skipped, or as unmeasured for an Unmeasured: reason."""
+    FIXTURE = Path(__file__).resolve().parent / "fixtures/SwiftTestingCases"
+    run_eng, calls = RunnerTests.run_eng, RunnerTests.calls
+    setUp = SplitSwiftTestingTests.setUp
+    SUITES = SplitSwiftTestingTests.SUITES
+
+    def test_the_console_alone_counts_every_case_passed(self):
+        # The control: what a lane read before, every test executed and none skipped.
+        self.assertEqual(lane_results.counted((self.FIXTURE / "console.log").read_text()), (3, 0))
+
+    def test_the_captured_stream_counts_each_test_with_a_canceled_case_once_and_names_each_case(self):
+        console = (self.FIXTURE / "console.log").read_text()
+        lines = xctest_shards.canceled_cases((self.FIXTURE / "events.jsonl").read_text())
+        self.assertEqual(sorted(line for line in lines if not line.startswith(" ")), [
+            '➜ Test cases(n:) was cancelled after 0.001 seconds in 1 of its 4 test cases: '
+            '"Unmeasured: the planted wait"',
+            '➜ Test skipping(n:) was cancelled after 0.001 seconds in 1 of its 2 test cases: "a planted skip"'])
+        self.assertIn('    ➜ Test case passing 1 argument n → 1 to cases(n:) was cancelled: '
+                      '"Unmeasured: the planted wait"', lines)
+        self.assertIn('    ➜ Test case passing 1 argument n → 2 to skipping(n:) was cancelled: '
+                      '"a planted skip"', lines)
+        log = console + "\n".join(lines) + "\n"
+        # Three tests, two of them skipped: fine() alone executed whole.
+        self.assertEqual(lane_results.counted(log), (3, 2))
+        self.assertEqual(lane_results.executed_tests(log), 1)
+        [unmeasured] = lane_results.unmeasured_tests(log)
+        self.assertIn("cases(n:)", unmeasured)
+        self.assertEqual(len(lane_results.canceled_tests(log)), 2)
+        found = {entry["test"]: entry["verdict"] for entry in
+                 xctest_shards.test_times((self.FIXTURE / "events.jsonl").read_text(), "Swift Testing")}
+        self.assertEqual(found, {"CasesTests.cases(n:)": "canceled", "CasesTests.skipping(n:)": "canceled",
+                                 "CasesTests.fine()": "passed"})
+
+    def test_a_test_that_canceled_itself_whole_or_failed_gets_no_second_line(self):
+        def event(kind, **more):
+            return json.dumps({"version": 0, "kind": "event",
+                               "payload": {"kind": kind, "testID": "M.t(n:)/T.swift:1:2", "messages": [],
+                                           "instant": {"absolute": 1.0, "since1970": 2.0}, **more}})
+        cancel = event("testCaseCancelled", _testCase={"displayName": "1", "id": "c1"}, _comments=["Unmeasured: x"])
+        self.assertEqual(len(xctest_shards.canceled_cases(cancel)), 2)
+        self.assertEqual(xctest_shards.canceled_cases("\n".join([cancel, event("testCancelled")])), [])
+        self.assertEqual(xctest_shards.canceled_cases("\n".join([cancel, event("issueRecorded", issue={})])), [])
+        # With no reason, no started case and no record, it still counts, named by its id.
+        [line, case] = xctest_shards.canceled_cases(event("testCaseCancelled", _testCase={"displayName": "1"}))
+        self.assertEqual(line, "➜ Test t(n:) was cancelled after an unknown time in 1 of its 1 test cases.")
+        self.assertEqual(lane_results.counted("✔ Test run with 1 test passed after 0.1 seconds.\n" + line), (1, 1))
+
+    def test_an_unmeasured_case_leaves_the_run_unmeasured(self):
+        status, output = self.run_eng("--skip-build", "--split-swift-testing", "--filter", "SuiteB",
+                                      FAKE_CANCEL_CASE="three", FAKE_CANCEL_REASON="Unmeasured: the planted wait")
+        self.assertEqual(status, lane_results.UNMEASURED, output)
+        self.assertEqual(lane_results.counted(output), (1, 1))
+        self.assertIn("UNMEASURED: 1 tests the host decided", output)
+        self.assertRegex(output, r"== shard 1 of 1, Swift Testing .*: PASS \(1 tests, 1 skipped, ")
+        self.assertIn('➜ Test three() was cancelled after ', output)
+        self.assertIn('    ➜ Test case passing 1 argument n → 2 to x was cancelled: "Unmeasured: the planted wait"',
+                      output)
+
+    def test_a_skipped_case_counts_its_test_skipped_and_the_run_passes(self):
+        status, output = self.run_eng("--skip-build", "--filter", "SuiteA", FAKE_CANCEL_CASE="one")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(lane_results.counted(output), (2, 1))
+        self.assertIn("queuekeeper xctest: 2 tests (1 skipped)", output)
+        self.assertEqual({entry["test"]: entry["verdict"] for entry in SwiftTestingTimesTests.kept(self)},
+                         {"Alpha.SuiteA/one()": "canceled", "Alpha.SuiteA/two()": "passed"})
 
 
 class EventStreamTests(unittest.TestCase):

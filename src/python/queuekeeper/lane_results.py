@@ -20,7 +20,9 @@ SERIES_RUN_RECAP = re.compile(r"^[ \t]*SERIES \S+ run \d+ of \d+:[^\n]*$", re.M)
 # them failed` (vocaro/queuekeeper#81).
 QUOTED_TAIL = re.compile(r"^(FAIL [^\n]*; log: [^\n]*\n)((?:    [^\n]*(?:\n|$))+)", re.M)
 # Swift Testing's total counts a test it skipped or that canceled itself, and names neither: each
-# has a line of its own instead (Swift 6.4, October 2026).
+# has a line of its own instead (Swift 6.4, October 2026). A case of a parameterized test that canceled
+# itself has none, and is printed as passed: qk xctest's Apple plugin writes its test such a line from the
+# event stream (xctest_shards.canceled_cases, vocaro/queuekeeper#312).
 SWIFT_TESTING_RUN = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? (?:passed|failed)")
 SWIFT_TESTING_SKIP = re.compile(r'^\S+ Test \S.*? (?:skipped(?:\.|: ".*")?|was cancelled after [^\n]*)$', re.M)
 # unittest's total, then its result line, which names its skips: OK (skipped=2).

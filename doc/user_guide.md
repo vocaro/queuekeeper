@@ -1129,6 +1129,14 @@ reports its skips; the Swift Testing tests run once beside them.
 A process that fails, or runs other than the tests it was given, fails the run. A skip whose reason
 begins `Unmeasured:` leaves a passing run unmeasured (exit 3). A filter that selects nothing exits 5.
 
+Swift Testing prints a case of a parameterized test that `Test.cancel` canceled as passed, and its
+test too; only its event stream records the cancellation. `qk xctest` reads each Swift Testing
+process's event stream and prints, after its output, a line for each test with a canceled case,
+`➜ Test NAME was cancelled after S seconds in K of its N test cases: "REASON"`, with a line for each
+case under it. The test counts once as skipped, however many of its cases were canceled, and as
+unmeasured when a case's reason begins `Unmeasured:`. A bare `swift test` lane has no such line,
+so it counts a canceled case as passed.
+
 #### `qk simulator-tests`
 
 `qk simulator-tests` builds a scheme's tests once and runs them on every named device at once:
