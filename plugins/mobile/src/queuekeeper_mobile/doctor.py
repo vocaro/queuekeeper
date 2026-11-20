@@ -13,13 +13,17 @@ def declared_devices(root, config):
 
 
 def overdue_silences(root, config, record=None):
-    """A warning for each held physical device past its expected release whose silencing of the owner's
-    notifications is not yet put back (devices.overdue_silences; vocaro/queuekeeper#174). It changes nothing."""
-    from . import devices
-    try: value = (record or devices.Record()).load()
+    """What Queuekeeper put right in the device record by itself just now (upkeep: a run proven gone, the owner's
+    notifications past the grace), then a warning for each held physical device past its expected release whose
+    silencing of the owner's notifications is still not put back (devices.overdue_silences; vocaro/queuekeeper#174)."""
+    from . import devices, upkeep
+    record = record or devices.Record()
+    try:
+        done = [f"put right by itself: {line.removeprefix('devices: ')}" for line in upkeep.upkeep(record)]
+        value = record.load()
     except (OSError, ValueError, RuntimeError) as error:
         return [f"the device record could not be read to look for an overdue silencing: {error}"]
-    return devices.overdue_silences(value["devices"])
+    return done + devices.overdue_silences(value["devices"])
 
 
 def register():

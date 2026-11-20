@@ -2124,16 +2124,18 @@ qk devices take iPad --purpose "…" --release-by 2026-10-31T09:00:00Z
 
 - It says who holds the device and until when while it waits, and gives up after `--wait` seconds (an
   hour by default), reserving nothing. Run it in the background when the wait may be long.
-- It refuses a device the record has never seen (its first `reserve --device` records it) and an
-  orphaned or uncertain entry.
+- It refuses a device the record has never seen (its first `reserve --device` records it), an
+  uncertain entry, and an orphaned one Queuekeeper cannot recover by itself (see
+  [Restoring, releasing and recovering](#restoring-releasing-and-recovering)).
 - The record records no approval. Whether a session may use a device is between it and the owner: take a
   device the owner has approved standing use of whenever it is free; for any other, such as a personal
   phone, ask first and set `--release-by` to the end of the time agreed.
 
 **The reservation is the window.** A device is held until `--release-by` and no longer for running
 work, but it is released only explicitly: a passed release time, an idle screen or a silent session
-proves nothing. `status` reports an overdue entry and changes nothing. Release yours rather than holding
-it through offline analysis.
+proves nothing. `status` reports an overdue entry and never releases it; only the owner's notifications
+are put back once it is well overdue ([An overdue silencing](#notifications-during-a-run)). Release yours
+rather than holding it through offline analysis.
 
 #### Bounded runs on a device
 
@@ -2166,10 +2168,20 @@ A project's own launcher can do the same from Python with `devices.BoundedRun`.
   its own restoration, so query the settings yourself. If you cannot, record the restoration as
   unverified and leave the entry for recovery.
 - **`release` refuses while a run is active.** Record the run's end first.
-- **Orphaned and uncertain entries.** A run whose process is gone is an orphan; an entry marked
-  `uncertain` or `restoration-unverified` is uncertain. Neither can be reserved again until its owner
-  releases it or someone the owner agreed records an attended recovery, once the work has stopped and
-  the device is verified:
+- **A run whose process is gone is recovered by itself.** A run whose recorded process has ended, or
+  whose PID now names a process with another start, is an orphan. Queuekeeper ends it without being
+  asked: it stops the command the run recorded if it still runs, puts the owner's notifications back if
+  a restore is pending, ends the run, and records each step in the entry's `runRecoveries`. The
+  reservation stays with its holder. The next pass or `devices run` on the device, `devices take`,
+  `devices release` by its holder, `devices status` and `qk doctor` do this first, and so does an
+  upkeep that the commands reaching the hosts (`qk run`, `admit`, `queue` and the like) start apart from
+  themselves when one is due. Apps the run launched are left for the holder's release to quit, and a
+  pass on a held device silences the notifications again before it runs.
+- **Orphaned and uncertain entries.** An entry marked `uncertain` or `restoration-unverified` is
+  uncertain. It, and an orphan whose end cannot be proven (no process or start recorded, a run sent to
+  another Mac) or whose automatic recovery failed at a step, which `status` names with its command,
+  cannot be reserved again until its owner releases it or someone the owner agreed records an attended
+  recovery, once the work has stopped and the device is verified:
 
   ```sh
   qk devices recover iPhone --by SESSION --revision N --verified "WHAT WAS CHECKED"
@@ -2262,8 +2274,15 @@ qk devices notifications setup iPad --by owner --at 2026-11-04T09:00:00Z --words
 
 **An overdue silencing.** A held device past its release time that still has a restore pending may keep
 Do Not Disturb on the owner's devices. `qk doctor` warns of it and `qk devices status` prints an
-`Overdue silencing:` line naming the holder and the restore command. The holder runs it or releases the
-device; otherwise tell the owner. Nothing restores it automatically.
+`Overdue silencing:` line naming the holder, the restore command and when Queuekeeper will restore it.
+Fifteen minutes past the release time, Queuekeeper runs Vocaro Restore Notifications itself, records it
+in the entry (`silence: put back`, with `putBack` saying when, why and how the owner was told) and tells
+the owner with a banner on this Mac. The reservation stays held, so nothing is taken from the session;
+a run on it afterward says the notifications are not silenced, and `qk devices notifications silence
+KEY` silences them again. A restore that fails stays pending, is tried again every ten minutes, and the
+owner is told of the first failure. `doctor`, `status`, a waiting `take` and the upkeep that the commands
+reaching the hosts start each do this when it is due. `QUEUEKEEPER_DEVICE_RESTORE_GRACE` sets the grace
+in seconds for a check that cannot wait fifteen minutes.
 
 #### The device pass
 

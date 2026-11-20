@@ -1446,6 +1446,29 @@ entry uncertain. It updates only its own entry; a change the holder makes mid-ru
 window, does not stop the run's end being recorded, since it rereads the entry while the same owner holds
 it with this run active.
 
+**Automatic recovery** (`queuekeeper_mobile/upkeep.py`, vocaro/queuekeeper#230). A run killed outright
+records no end. A physical device's orphan is recovered without a session asking once its end is proven:
+`hostProcessIdentifier` no longer runs, or runs with a start other than `hostProcessStart` (or, with no
+start recorded, one after `run.startedAt`). Recovery stops each of `run.processes` (the command's PIDs,
+which `BoundedRun.own` records) still running with its recorded start, by its process group, runs the
+platform's restore when `restore: pending`, and clears `activeRun`, appending to `runRecoveries`; the
+reservation stays held. An entry without `run.processes` but with a live owned process, a run with
+`run.host`, an uncertain entry, or a failed stop records `runRecoveryFailed` with the step and the
+`devices recover` command, and is not tried again for the same run. A failed restore leaves `restore:
+pending` and does not stop the recovery. The same module puts back notifications left pending 15 minutes
+(`QUEUEKEEPER_DEVICE_RESTORE_GRACE`) past a held entry's expected release, recording `silence: put back`
+and `putBack`, and tells the owner by a banner (`queuekeeper_mac_desktop/owner_notice.py`); a failure is
+retried after ten minutes.
+
+**Where upkeep runs.** There is no timer of its own. `plugins.HOST_COMMAND` calls `upkeep.spawn` before
+every command that reaches the hosts: it reads the record, and only when something is due, at most once a
+minute, starts `python -m queuekeeper_mobile.upkeep` apart from itself. The queue's signed launcher runs
+such a command every two minutes, which is what bounds how late an overdue restore runs on a Mac with a
+launcher. `devices status`, `doctor`, a waiting `take`, `BoundedRun`, `devices release` and the device
+pass call it inline for the entries they touch, so the next pass never meets an orphan its run left. An
+flock beside the record (`device-upkeep.lock`) lets one upkeep act at a time. Tests switch the spawn and
+the banner off (`QUEUEKEEPER_DEVICE_UPKEEP`, `QUEUEKEEPER_OWNER_NOTICE`).
+
 The bound's 105 seconds cover supervision's grace, SIGTERM, settling and SIGKILL waits. An empty test
 run is unmeasured because `xcodebuild` has reported `** TEST EXECUTE SUCCEEDED **` after `Executed 0
 tests`.

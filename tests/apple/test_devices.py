@@ -161,7 +161,9 @@ class DeviceRecordTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "future"):
             self.reserve("iPad", release_by=past)
 
-    def test_a_vanished_run_is_an_orphan_kept_for_attended_recovery(self):
+    def test_a_vanished_run_is_an_orphan_that_an_attended_recovery_releases(self):
+        # Status and take would end such a run by themselves, keeping the reservation (test_device_upkeep); the
+        # record's own recover releases it.
         child = live()
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
@@ -180,8 +182,6 @@ class DeviceRecordTests(unittest.TestCase):
         self.assertEqual(devices.condition(entry), "orphan")
         with self.assertRaisesRegex(devices.Refused, "orphan"):
             self.reserve(owner="session-b", revision=entry["revision"])
-        code, output, _error = self.cli("status")
-        self.assertIn("kept for attended recovery", output)
         released = self.record.recover("iPhone", by="session-b", revision=entry["revision"],
                                        verified="no owned processes on the device; VoiceOver as recorded")
         self.assertEqual((released["state"], released["lastOwnerChatID"]), ("released", "session-a"))
@@ -903,16 +903,19 @@ class DeviceRecordTests(unittest.TestCase):
             self.assertEqual(self.record.entry(key), held)
             self.assertEqual(devices.waiting(self.record.load(), key), [])
 
-    def test_an_orphaned_device_is_not_taken(self):
+    def test_an_orphaned_device_is_not_taken_from_its_holder_once_its_run_is_ended(self):
+        # vocaro/queuekeeper#230: the run proven gone is ended while waiting, and the reservation stays its holder's.
         held = self.reserve("iPad", device=TABLET)
         gone = self.waiter()
         self.record.update("iPad", owner="session-a", revision=held["revision"], activeRun=True,
                            hostProcessIdentifier=gone.pid)
         gone.kill()
         gone.wait()
-        with self.assertRaisesRegex(devices.Refused, "orphan.*attended recovery"):
-            self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=stretched(5), poll=0.01,
+        with self.assertRaisesRegex(TimeoutError, "held or claimed by session-a"):
+            self.record.take("iPad", owner="session-b", purpose="p", release_by=later(), timeout=stretched(2), poll=0.01,
                              said=lambda _text: None)
+        entry = self.record.entry("iPad")
+        self.assertEqual((devices.condition(entry), entry["ownerChatID"]), ("held", "session-a"))
         self.assertEqual(devices.waiting(self.record.load(), "iPad"), [])
 
     def test_a_release_says_how_the_apps_the_session_launched_were_quit(self):
@@ -1147,6 +1150,12 @@ class BoundedRunTests(unittest.TestCase):
         refused("shows it active by session-a")
         child.kill()
         child.wait()
+        # A run proven gone is ended by itself, and the next run goes ahead (test_device_upkeep). One whose end cannot
+        # be proven, a live PID with no start recorded to tell it from the run's, stays an orphan.
+        value = json.loads(self.path.read_text())
+        value["devices"]["iPad"].pop("hostProcessStart")
+        value["devices"]["iPad"]["hostProcessIdentifier"] = os.getpid()
+        self.path.write_text(json.dumps(value))
         refused("shows it orphan by session-a")
         self.record.recover("iPad", by="session-a", revision=active["revision"], verified="the run ended")
         self.hold("Example Duo 1", device=DUO)
@@ -1421,8 +1430,9 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual([url for _device, url, _app in self.device.shortcuts()],
                          [self.silence_url(), self.restore_url()])
 
-    def test_a_held_device_past_its_release_with_its_silencing_pending_is_said_and_changed_by_nothing(self):
-        """vocaro/queuekeeper#174: the iPhone stayed silenced 21 hours past its release, and nothing said so."""
+    def test_a_held_device_past_its_release_with_its_silencing_pending_is_said_and_within_the_grace_changed_by_nothing(self):
+        """vocaro/queuekeeper#174: the iPhone stayed silenced 21 hours past its release, and nothing said so. Past the
+        grace Queuekeeper puts them back itself (test_device_upkeep)."""
         from queuekeeper_mobile import doctor
         self.first()
         self.setup()
@@ -1439,8 +1449,9 @@ class NotificationTests(unittest.TestCase):
         self.assertIn("Do Not Disturb may still be on his device", warned[0])
         self.assertIn(f"`qk devices notifications restore iPad --owner session-a --revision {entry['revision']}`",
                       warned[0])
+        self.assertIn("Queuekeeper puts them back by itself at", warned[0])
         self.assertIn(f"Overdue silencing: {warned[0]}", self.cli("status")[1])
-        # Saying so runs no shortcut and changes no entry: an overdue entry restores and releases nothing.
+        # Within the grace, saying so runs no shortcut and changes no entry.
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual([url for _device, url, _app in self.device.shortcuts()], [self.silence_url()])
         # Once its holder puts them back, it is held and overdue but no longer said.

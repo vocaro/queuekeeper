@@ -194,6 +194,14 @@ os.environ["QUEUEKEEPER_START_FREE_GB"] = os.environ["QUEUEKEEPER_RUN_FREE_GB"] 
 os.environ["QUEUEKEEPER_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
 os.environ['QUEUEKEEPER_DEVICE_LOG_WATCH'] = "off"
 os.environ['QUEUEKEEPER_QUIT_OPENED_APPS'] = "off"
+# Nor does any command a test runs start an upkeep of the device record apart from itself (queuekeeper_mobile.upkeep,
+# vocaro/queuekeeper#230), nor does an upkeep a test runs post a banner on this Mac for the owner
+# (queuekeeper_mac_desktop.owner_notice, vocaro/queuekeeper#174). A test of either clears it.
+os.environ['QUEUEKEEPER_DEVICE_UPKEEP'] = "off"
+os.environ['QUEUEKEEPER_OWNER_NOTICE'] = "off"
+# Nor does an owner's shortened grace before that upkeep puts his notifications back, set for a check on a real device,
+# reach a test, which sets its own.
+os.environ.pop('QUEUEKEEPER_DEVICE_RESTORE_GRACE', None)
 # Nor does any host identity or lane receipt a test makes read this Mac's scroll-bar setting and HID devices, a second
 # of ioreg each time (#229): it reads the setting unset and no pointing device. A test of the reading sets its own.
 (ROOT / "scroll-bars.json").write_text(json.dumps({
@@ -326,7 +334,8 @@ ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS", "HEAVY_BUSY_LIMIT", "QUEUEKEEPER_START_FREE_GB",
     "QUEUEKEEPER_RUN_FREE_GB",
     "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
-    offload_host.HEALTH_RECORDING, "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', TOLD,
+    offload_host.HEALTH_RECORDING, "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', 'QUEUEKEEPER_DEVICE_UPKEEP',
+    'QUEUEKEEPER_OWNER_NOTICE', TOLD,
     remote.RESPONSIBLE, "QUEUEKEEPER_DEVICE_LISTING", "QUEUEKEEPER_ADB_LISTING", "QUEUEKEEPER_DEVICE_PROBE",
     "QUEUEKEEPER_DEVICE_RECORD")}
 

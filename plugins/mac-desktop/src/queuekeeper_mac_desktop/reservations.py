@@ -13,7 +13,9 @@ and TMPDIR so that every session finds the same one. A change takes an exclusive
 record fresh, refuses unless the entry is still at the revision the caller read, and replaces the
 file whole. The lock covers one change, never a reservation, and the kernel drops it with its
 process. Like a heavy-work guard, an entry is never released by a deadline or a vanished process:
-an active run whose recorded process is gone is an orphan, kept for attended recovery.
+an active run whose recorded process is gone is an orphan, kept for attended recovery here. A plugin may end such a
+run by itself where it can prove the run gone, keeping the reservation held, as the mobile plugin does for a physical
+device's (queuekeeper_mobile.upkeep).
 
 The mac-foreground entry names no device and records no approval (owner's decision, 2026-11-06,
 vocaro-engineering#207): the record schedules it, one holder at a time, and its expected release
@@ -53,7 +55,7 @@ DEFERRED = "physicalDevicesRecordedOn"
 # Written only by the record's own operations, which say who changed ownership and why.
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
            "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost",
-           "launchedApps", "appsQuit", "notifications"}
+           "launchedApps", "appsQuit", "notifications", "runRecoveries", "runRecoveryFailed"}
 # Sessions waiting in line for an entry, by its key, kept beside the entries.
 QUEUES = "queues"
 # Seconds between looks at an entry while `take` waits for it.

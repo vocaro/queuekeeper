@@ -9,7 +9,10 @@ REQUIRES = ("queuekeeper_mac_desktop",)
 
 def register():
     """Add the plugin to the core (queuekeeper.plugins.load)."""
-    from . import doctor, lane, settings
+    from . import doctor, lane, settings, upkeep
+    from queuekeeper import plugins
     settings.register()
     doctor.register()
     lane.register()
+    # What the device record has due by itself, looked at before each command that reaches the hosts (upkeep).
+    if upkeep.spawn not in plugins.HOST_COMMAND: plugins.HOST_COMMAND.append(upkeep.spawn)

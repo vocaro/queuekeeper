@@ -9,7 +9,8 @@ of it at the commit as it finds any other lane's (release.lane_passed). The lane
 For each device named, in the order named, the pass:
 
 1. uses the device's entry when the session already holds it, with no run active, and leaves it held
-   afterward; or else takes it in turn, first come first served (`devices take`), with the owner's
+   afterward, first ending an earlier run whose process is proven gone (upkeep) and silencing the owner's
+   notifications again when Queuekeeper put them back meanwhile; or else takes it in turn, first come first served (`devices take`), with the owner's
    notifications silenced, and releases it afterward, putting them back. A device whose turn did not come
    within --wait is not run. The pass checks no approval: a session runs it on the owner's iPhone only
    when the owner has agreed, which is between the session and the owner (owner's decision, 2026-11-06).
@@ -36,7 +37,7 @@ import os
 from pathlib import Path
 import sys
 
-from . import devices, platforms
+from . import devices, platforms, upkeep
 from queuekeeper import processes
 from queuekeeper.lane_results import UNMEASURED
 from queuekeeper.parallel import RESULTS_VARIABLE
@@ -90,10 +91,19 @@ def acquire(record, key, owner, *, purpose, minutes, wait, said):
                         "runs there: give the lane \"here\" with the reason, a physical device, so that qk run keeps "
                         "it on the Mac whose record holds them")
     entry = value["devices"].get(key)
+    # An earlier run on it whose process is proven gone ends first, so that the session's own reservation is not
+    # refused as an orphan (vocaro/queuekeeper#230).
+    if entry is not None and devices.condition(entry) == "orphan":
+        upkeep.upkeep(record, keys=[key], said=said)
+        entry = record.entry(key)
     if entry is not None and devices.condition(entry) == "held" and entry.get("ownerChatID") == owner:
         said(f"device-pass: {key}: {owner} holds it already, so the pass uses that reservation and leaves it held")
         stuck = platforms.of(entry["device"]).health(entry["device"], key)
-        return (Part(key, UNMEASURED_PART, f"not run: {stuck}") if stuck else entry), False
+        if stuck: return Part(key, UNMEASURED_PART, f"not run: {stuck}"), False
+        # Notifications Queuekeeper put back while the session held it are silenced again for this run.
+        if (entry.get("notifications") or {}).get("silence") == upkeep.PUT_BACK:
+            entry = devices.silence_notifications(record, key, owner=owner, revision=entry["revision"], said=said)
+        return entry, False
     release_by = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
     try:
         entry = record.take(key, owner=owner, purpose=purpose, release_by=release_by, timeout=wait, said=said)

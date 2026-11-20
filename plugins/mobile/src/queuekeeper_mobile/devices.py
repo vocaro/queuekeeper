@@ -13,8 +13,10 @@ and TMPDIR so that every session finds the same one. A change takes an exclusive
 record fresh, refuses unless the entry is still at the revision the caller read, and replaces the
 file whole. The lock covers one change, never a reservation, and the kernel drops it with its
 process. Like a heavy-work guard, an entry is never released by a deadline or a vanished process:
-an active run whose recorded process is gone is an orphan, kept for attended recovery. The one
-exception is a simulator pool's reservation that `qk simulator-pool reap` proves dead, every process
+an active run whose recorded process is gone is an orphan. Queuekeeper recovers a physical device's orphaned run by
+itself once its end is proven, ending the run and putting back what its record says it changed while the reservation
+stays with its holder, and keeps attended recovery for what it cannot prove (upkeep.py; owner's decision,
+2026-11-19, vocaro/queuekeeper#230). The one exception to keeping a reservation is a simulator pool's reservation that `qk simulator-pool reap` proves dead, every process
 it records gone and its simulator shut down, which reap releases as a recovery by reap: once its
 expected release has passed, or before then when only its holder held it (ALONE) and nothing accounts
 for its owner, no live admission or other process naming the owner or the device (offload_host.release_dead;
@@ -59,6 +61,9 @@ A physical device's run keeps the owner's notifications out (vocaro-engineering#
 silences them, as its platform can (Platform.silence: on an iPhone the owner's shortcut, once he has recorded making
 it there with `devices notifications setup`; on an Android phone Do Not Disturb over adb), and releasing or recovering
 the entry puts them back. The entry's `notifications` records each step, and a run without them silenced says so.
+A held device left silenced more than a grace period past its expected release has them put back by Queuekeeper,
+which tells the owner and keeps the reservation held (upkeep.py; owner's decision, 2026-11-19,
+vocaro/queuekeeper#174).
 `devices run` watches the device's log while its command runs (Platform.watch), and a run a notification reached is
 unmeasured and run once more; so does `qk remote --device`, from the sending Mac (#192).
 """
@@ -308,9 +313,16 @@ class Record(reservations.Record):
                                             release_by=release_by, title=title, details=details)
                     except Stale:
                         continue
+                # What is due by itself is put right while waiting: a run proven gone, and the owner's notifications
+                # left silenced past the holder's window (upkeep).
+                from . import upkeep
+                if any(due == key for due, _kind in upkeep.due(value)):
+                    upkeep.upkeep(self, keys=[key], said=said)
+                    if (self.entry(key) or {}).get("revision") != entry.get("revision"): continue
                 if state in ("orphan", "uncertain"):
-                    raise Refused(f"{key} is {state}, held by {entry.get('ownerChatID')} for {entry.get('purpose')}; "
-                                  "it needs attended recovery (`devices recover`) first")
+                    why = upkeep.unproven(key, entry) if state == "orphan" else entry.get("uncertainReason")
+                    raise Refused(f"{key} is {state}, held by {entry.get('ownerChatID')} for {entry.get('purpose')}"
+                                  f"{f' ({why})' if why else ''}; it needs attended recovery (`devices recover`) first")
                 ahead = entry.get("ownerChatID") if state != "released" else line[0]["owner"] if line else None
                 if ahead != announced:
                     said(f"devices: waiting for {key}, " + (
@@ -569,6 +581,17 @@ class BoundedRun:
         else:
             if not owner:
                 raise ValueError(f"name the session that holds {', '.join(keys)}: --owner, or {OWNER}")
+            # A run before this one whose process is proven gone ends here, rather than refusing this one as an
+            # orphan for attended recovery (vocaro/queuekeeper#230).
+            # The revision the session read names the entry as it was before that recovery.
+            if any(condition(entries[key]) == "orphan" for key in keys if key in entries):
+                from . import upkeep
+                before = entries[keys[0]].get("revision", 0) if keys[0] in entries else None
+                upkeep.upkeep(self.record, keys=keys, said=lambda text: print(text, file=sys.stderr, flush=True))
+                value = self.record.load()
+                entries = value["devices"]
+                if revision is not None and revision == before and keys[0] in entries:
+                    revision = entries[keys[0]].get("revision", 0)
             self.revisions = {}
             self.devices, self.deadline = self._held(keys, entries, revision)
         held = set(self.devices.values())
@@ -660,7 +683,7 @@ class BoundedRun:
         """Start the bound and mark each entry's run active, with this process as the run's; the bound's seconds."""
         bound = int(self.seconds())
         self.until = datetime.now(timezone.utc) + timedelta(seconds=bound)
-        self.run = {**run, "boundSeconds": bound, "stopsAt": self.until.isoformat()}
+        self.run = {**run, "boundSeconds": bound, "stopsAt": self.until.isoformat(), "processes": []}
         marked = []
         try:
             for key in self.revisions or ():
@@ -672,9 +695,12 @@ class BoundedRun:
         return bound
 
     def own(self, pid):
-        """Record pid, which the run started, as each entry's own process: release and recovery wait for it."""
+        """Record pid, which the run started, as each entry's own process: release and recovery wait for it. The
+        run names it among its processes too, which an automatic recovery stops once this process is gone
+        (upkeep.recover_run)."""
+        self.run = {**self.run, "processes": [*self.run.get("processes", []), pid]}
         for key in self.revisions or ():
-            self._record(key, own=[pid])
+            self._record(key, own=[pid], run=self.run)
 
     def expired(self):
         """Whether the bound begin started has passed, by the wall clock, which counts a sleep."""
@@ -885,7 +911,9 @@ def _notification_state(key, entry):
         return (f"notifications: not put back after the last run ({value.get('restoreDetail')}); Do Not Disturb may "
                 "still be on, tell the owner") if value.get("restore") in ("failed", "pending") else None
     silence = value.get("silence")
-    if silence == "requested": return f"notifications: {platform.silenced_words(value)}"
+    failed = (f"; the last automatic restore failed ({value['lastRestoreFailure']})"
+              if value.get("restore") == "pending" and value.get("lastRestoreFailure") else "")
+    if silence == "requested": return f"notifications: {platform.silenced_words(value)}{failed}"
     if silence == "owner": return f"notifications: Do Not Disturb turned on by {value.get('by')} at {value.get('at')}"
     return (f"notifications: not silenced ({value.get('detail') or 'nothing was done'}); "
             f"`devices notifications silence {key}`, or {platform.ask(key)}")
@@ -898,6 +926,12 @@ def _describe(key, entry, line=(), window=True):
     held = ["the approval an earlier reservation recorded has ended; work on the device is refused"] \
         if device and key != FOREGROUND and approval_ended(entry) else []
     notified = _notification_state(key, entry) if device else None
+    if device and condition(entry) == "orphan":
+        from .upkeep import unproven
+        held.append(f"not recovered by itself: {unproven(key, entry) or 'its recovery is due'}")
+    recovered = (entry.get("runRecoveries") or [None])[-1] if device and condition(entry) != "released" else None
+    if isinstance(recovered, dict):
+        held.append(f"Queuekeeper recovered its last run at {recovered.get('at')}, since {recovered.get('proof')}")
     return reservations.describe(key, entry, line, window, held=held, notes=[notified] if notified else [],
                                  hints=[f"take it in turn with `devices take {key}`"] if key in paired() else [])
 
@@ -905,20 +939,28 @@ def _describe(key, entry, line=(), window=True):
 def overdue_silences(entries, at=None):
     """What to say of each held physical device past its expected release whose silencing of the owner's
     notifications is not yet put back (vocaro/queuekeeper#174): Do Not Disturb may still be on his device after the
-    time he agreed. Saying so changes nothing, since an overdue entry releases and restores nothing by itself."""
+    time he agreed. Saying so changes nothing; Queuekeeper puts them back by itself once the grace past the expected
+    release has passed (upkeep.restore_overdue), keeping the reservation held."""
+    from .upkeep import grace
     at = at or datetime.now(timezone.utc)
     found = []
     for key, entry in entries.items():
         if not physical(entry.get("device")) or condition(entry) == "released": continue
-        if (entry.get("notifications") or {}).get("restore") != "pending": continue
+        notifications = entry.get("notifications") or {}
+        if notifications.get("restore") != "pending": continue
         deadline = moment(entry.get("expectedReleaseBy"))
         if deadline is None or deadline >= at: continue
         owner = entry.get("ownerChatID")
+        restore = (f"`qk devices notifications restore {key} --owner {owner} --revision {entry.get('revision', 0)}`")
+        if notifications.get("lastRestoreFailure"):
+            then = (f"Queuekeeper could not put them back by itself ({notifications['lastRestoreFailure']}) and tries "
+                    "again every ten minutes; tell the owner")
+        else:
+            then = (f"Queuekeeper puts them back by itself at {(deadline + timedelta(seconds=grace())).isoformat()}, "
+                    "keeping the reservation held, and tells the owner")
         found.append(f"{key} is held by {owner} past its expected release, {entry.get('expectedReleaseBy')}, with "
                      "the owner's notifications not yet put back: Do Not Disturb may still be on his device after the "
-                     f"time he agreed. Its holder restores them with `qk devices notifications restore {key} --owner "
-                     f"{owner} --revision {entry.get('revision', 0)}` or releases it; otherwise tell the owner. "
-                     "Nothing restores or releases it by itself")
+                     f"time he agreed. Its holder restores them with {restore} or releases it; otherwise {then}")
     return found
 
 
@@ -926,6 +968,9 @@ def status(record, macs=None):
     """Print every entry's condition (reservations.status), then each device's declaration and what each Mac reads of
     it now: this Mac's and macs', (name, SSH destination) pairs, by default the farm's."""
     macs = reach.farm_macs() if macs is None else macs
+    # What is due by itself first, so that the entries below show what it did (upkeep).
+    from . import upkeep
+    for line in upkeep.upkeep(record): print(f"Put right: {line.removeprefix('devices: ')}")
     value = reservations.status(record, _describe)
     for line in overdue_silences(value["devices"]): print(f"Overdue silencing: {line}")
     # Which Macs reach each device, and how, as each lists it now, beside what the owner declared (reach.py).
@@ -1055,8 +1100,17 @@ def main(argv=None):
             reservations.report(args.key, silence_notifications(record, args.key, owner=args.owner,
                                                                 revision=entry["revision"], said=said))
         elif args.action == "release":
-            # The owner's notifications first, when the entry is still the caller's at the revision named.
+            # A run whose process is proven gone ends first, so that its holder releases it rather than an attended
+            # recovery (vocaro/queuekeeper#230); the revision read before names the entry that recovery ended.
             entry = record.entry(args.key) or {}
+            if entry.get("ownerChatID") == args.owner and entry.get("revision") == args.revision and \
+                    condition(entry) == "orphan":
+                from . import upkeep
+                upkeep.upkeep(record, keys=[args.key], said=said)
+                after = record.entry(args.key) or {}
+                if condition(after) == "held" and after.get("ownerChatID") == args.owner:
+                    entry, args.revision = after, after.get("revision")
+            # The owner's notifications first, when the entry is still the caller's at the revision named.
             if entry.get("ownerChatID") == args.owner and entry.get("revision") == args.revision and \
                     not entry.get("activeRun"):
                 args.revision = restore_notifications(record, args.key, owner=args.owner, revision=args.revision,
