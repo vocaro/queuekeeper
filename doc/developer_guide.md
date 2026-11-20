@@ -196,6 +196,19 @@ runs on the replayed entry, on this Mac, unadmitted, and queues the entry anyway
 make the check: a lane that is not one plain command, a run past 300 s, an exit other than 0 or 1,
 or a finding `origin/main` gives too.
 
+**A branch on a rewritten `main`.** Before any other check, and before a merge refresh is replayed,
+`add` calls `rewritten_before_queued` (vocaro/queuekeeper#287). `old_copies` reads the tip's
+non-merge commits in `origin/main..TIP` and `origin/main`'s in `TIP..origin/main`. A copy is a tip commit
+that matches a commit of `main` on author date, committer date and whole message under another ID.
+A history rewrite such as `git filter-repo` keeps all three. A rebase, a cherry-pick or the
+queue's own replay gives a new committer date, so a branch that still holds commits it landed
+earlier is not counted. Patch identity can't tell those cases apart. `REWRITTEN_COPIES` (3) or more
+copies raise `Refused` with a `recovery` of `reasonCode` `rewritten-main`, `action` `rebase`, retryable,
+and `git rebase --onto origin/main NEWEST [REF]`. NEWEST is the newest copy in topological order,
+so the rebase moves only the commits after it. Non-copies before it, which `main` has in no form,
+are listed, up to `REWRITTEN_LISTED`. The two `log` reads are metadata only, with no diffs, and the
+second is short for any branch cut from a recent `main`.
+
 **A project's first landing** reads the entry's `queuekeeper.json`, and the batch's in a round,
 only while `origin/main` has none that names lanes. The settings that loosen checking
 (`hookCoveredBy`, `unread`, `preflight`, `affected`) count only

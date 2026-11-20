@@ -1101,6 +1101,63 @@ def claims_before_queued(root, base, tip):
                     f'"Closes {issue}." on its own line. Reword the commit and land it again')
 
 
+# How many of a ref's commits must be old copies of origin/main's before qk land refuses it as built on main's
+# rewritten history, and how many of the commits among the old history that are on origin/main in no form its refusal
+# names (vocaro/queuekeeper#287). A rewrite that renames more than a couple of commits leaves every branch cut before it
+# carrying that many, where a single copy can be a cherry-pick made within the second its original was.
+REWRITTEN_COPIES, REWRITTEN_LISTED = 3, 10
+
+
+def old_copies(root, tip):
+    """(the ref's commits origin/main lacks, oldest first, as (commit, subject), and the set of those that are old
+    copies of commits origin/main has): a copy is a commit whose author date, committer date and whole message a commit
+    of origin/main's since the fork also has, under another ID. A rewrite of history, as git filter-repo's, keeps all
+    three; a replay, as a rebase, a cherry-pick or the queue's own landing of a stale branch makes, gives the commit a new
+    committer date, so a branch carrying commits it already landed is not taken for one. Merges are left out."""
+    def read(span):
+        found = git(root, "log", "--no-merges", "--reverse", "--topo-order",
+                    "--format=%H%x1f%at%x1f%ct%x1f%B%x1e", span)
+        if found.returncode != 0: return []
+        return [record.strip("\n").split("\x1f", 3) for record in found.stdout.split("\x1e") if record.strip()]
+    mine = read(f"{MAIN}..{tip}")
+    if not mine: return [], set()
+    theirs = {(at, ct, message.rstrip()) for _, at, ct, message in read(f"{tip}..{MAIN}")}
+    return ([(commit, message.split("\n", 1)[0]) for commit, _, _, message in mine],
+            {commit for commit, at, ct, message in mine if (at, ct, message.rstrip()) in theirs})
+
+
+def rewritten_before_queued(root, tip, reference):
+    """Refuse tip, queuing nothing, when it is built on origin/main's history as it was before a rewrite, as git
+    filter-repo makes (vocaro/queuekeeper#287): at least REWRITTEN_COPIES of its commits that origin/main lacks by ID
+    are old copies of commits origin/main has (old_copies). Replayed, they mostly come
+    out empty, but one whose change the rewrite removed does not, and would put back on main what the rewrite took out,
+    with nobody told. The branch's own work is what follows the newest copy, which the suggested rebase moves alone onto
+    origin/main; a commit among the old history that origin/main has in no form is named, since the rewrite changed or
+    dropped it, or it is the branch's own."""
+    commits, copies = old_copies(root, tip)
+    if len(copies) < REWRITTEN_COPIES: return
+    last = max(index for index, (commit, _) in enumerate(commits) if commit in copies)
+    newest = commits[last][0]
+    among = [(commit, subject) for commit, subject in commits[:last] if commit not in copies]
+    own = len(commits) - last - 1
+    named = [] if reference == "HEAD" else [reference]
+    command = ["git", "rebase", "--onto", "origin/main", newest, *named]
+    words = (f"{tip[:12]} is not queued: it is built on origin/main's history as it was before a rewrite. {len(copies)} "
+             f"of its {len(commits)} commits that origin/main lacks are old copies of commits origin/main has under new "
+             "IDs, with the same dates and messages; replaying them would put back anything the rewrite removed. "
+             + (f"Its own work is the {own} commit{'s' if own != 1 else ''} after {newest[:12]}, the newest copy: move "
+                "them alone onto origin/main with `" + shlex.join(command) + "` and land it again"
+                if own else f"It holds nothing after {newest[:12]}, the newest copy, so it has nothing of its own to "
+                            "land; `" + shlex.join(command) + "` leaves it at origin/main"))
+    if among:
+        words += (f". {len(among)} commit{'s' if len(among) != 1 else ''} among the old history "
+                  f"{'are' if len(among) != 1 else 'is'} on origin/main in no form, which that rebase leaves out: the "
+                  "rewrite changed or removed them, or they are the branch's own, to cherry-pick onto the result:\n  "
+                  + "\n  ".join(f"{commit[:12]} {subject}" for commit, subject in among[:REWRITTEN_LISTED])
+                  + (f"\n  and {len(among) - REWRITTEN_LISTED} more" if len(among) > REWRITTEN_LISTED else ""))
+    raise Refused(words, recovery=recovery.advice("rewritten-main", "session", True, "rebase", words, [command]))
+
+
 def preflight_run(queue, root, commit, name):
     """(exit status, the lines it printed, the command) of the preflight lane name on commit, in a scratch worktree
     outside every checkout, as the worker picks it (Worker.gate): the lane commit's queuekeeper.json configures, run as
@@ -2264,6 +2321,9 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     if present and git(root, "merge-base", "--is-ancestor", tip, MAIN).returncode == 0:
         print(f"origin/main already holds {tip[:12]}: nothing to queue")
         return None
+    # A branch built on main's history from before a rewrite would put back what the rewrite removed, and carries a
+    # replay of that whole history: refused before its merges are replayed or anything is checked (#287).
+    if present: rewritten_before_queued(root, tip, reference)
     # A landing that creates main has no base: every commit to its tip lands, as it is, merges and all.
     base = text(root, "merge-base", tip, MAIN) if present else None
     commits = text(root, "rev-list", "--reverse", f"{base}..{tip}" if present else tip).split()

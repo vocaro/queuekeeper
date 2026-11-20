@@ -294,6 +294,14 @@ again, or gated again when it is no longer the batch that passed. Don't queue su
 `qk land` refuses an entry within seconds, with nothing queued, when a round would only send it
 back later. `--front` and `--no-gate` skip none of these checks.
 
+- **A branch built on `main`'s history from before a rewrite**, such as one `git filter-repo`
+  makes. Such a branch carries old copies of commits `main` has under new IDs, with the same
+  dates and messages. Replaying them would put back anything the rewrite removed, so three or
+  more such copies refuse it. The refusal gives `git rebase --onto origin/main COPY BRANCH`, where
+  COPY is the newest old copy, to move the branch's own commits alone. It also lists any commit
+  among the old history that `main` has in no form: one the rewrite changed or dropped, or one of
+  yours to cherry-pick onto the result. A branch that still holds commits `main` landed as a
+  replay or a cherry-pick is not refused, since a replay gives each commit a new committer date.
 - **Conflicts** with `origin/main` or any entry ahead. `qk land` replays the entry the way a round
   would, after every entry ahead, in a scratch worktree. The refusal names the files and your own
   lines in conflict (`PATH:FIRST-LAST`) and the entries ahead that change those files.
@@ -2645,6 +2653,11 @@ wake you.
   `reasonCode: "behind-main"`, `action: "rebase"`, `retryable: true` and the suggested command
   `git rebase origin/main`. Rebase, then land again
   ([When main's configuration can't be read](#when-mains-configuration-cant-be-read)).
+- **A branch built on a rewritten `main`'s old history** is refused with exit 1. `--json` gives
+  `reasonCode: "rewritten-main"`, `responsibleParty: "session"`, `action: "rebase"`,
+  `retryable: true` and the suggested `git rebase --onto origin/main COPY BRANCH`. Run it,
+  cherry-pick any of your commits the refusal lists, then land again
+  ([Checks before queuing](#checks-before-queuing)).
 - **Each project lands in its own repository.** To land a commit in another project's queue, use
   `qk land --repo NAME BRANCH --wait`.
 - **`qk queue status` shows the whole picture.** For a gate on another Mac, read the lane's own

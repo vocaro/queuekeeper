@@ -5044,6 +5044,162 @@ class ClaimsBeforeQueued(Fixture):
         self.assertIn("commit messages could not be read", error)
 
 
+class RewrittenMain(Fixture):
+    """qk land and `qk queue add` refuse a branch built on origin/main's history as it was before a rewrite, as git
+    filter-repo makes, which would carry that whole history and put back what the rewrite removed
+    (vocaro/queuekeeper#287)."""
+    def grow_main(self, *names):
+        """One commit on origin/main adding each file named, in order."""
+        for name in names:
+            self.commit(name, "grow")
+            run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "fetch", "-q", "origin")
+
+    def rewrite_main(self, since=0, drop=".mailmap"):
+        """Rewrite origin/main as git filter-repo does: every commit from the since-th, oldest first, made again with
+        its dates and message, the first with another author address, and drop left out of every tree, a commit that
+        only added it pruned. Returns the old main."""
+        run(self.repo, "git", "fetch", "-q", "origin")
+        old = run(self.repo, "git", "rev-parse", "origin/main")
+        commits = run(self.repo, "git", "rev-list", "--reverse", "origin/main").split()
+        index = self.base / "rewrite-index"
+        parent = run(self.repo, "git", "rev-parse", f"{commits[since]}^") if since else None
+        for number, commit in enumerate(commits[since:]):
+            fields = run(self.repo, "git", "log", "-1", "--date=raw",
+                         "--format=%an%x1f%ae%x1f%ad%x1f%cn%x1f%ce%x1f%cd", commit).split("\x1f")
+            message = subprocess.run(["git", "log", "-1", "--format=%B", commit], cwd=self.repo, check=True,
+                                     capture_output=True, text=True).stdout
+            alone = {**os.environ, "GIT_INDEX_FILE": str(index)}
+            subprocess.run(["git", "read-tree", commit], cwd=self.repo, check=True, env=alone)
+            subprocess.run(["git", "rm", "-q", "--cached", "--ignore-unmatch", drop], cwd=self.repo, check=True,
+                           env=alone)
+            tree = subprocess.run(["git", "write-tree"], cwd=self.repo, check=True, env=alone, capture_output=True,
+                                  text=True).stdout.strip()
+            if parent and tree == run(self.repo, "git", "rev-parse", f"{parent}^{{tree}}"): continue
+            dated = {**os.environ, "GIT_AUTHOR_NAME": fields[0],
+                     "GIT_AUTHOR_EMAIL": "rewritten@example.com" if number == 0 else fields[1],
+                     "GIT_AUTHOR_DATE": fields[2], "GIT_COMMITTER_NAME": fields[3], "GIT_COMMITTER_EMAIL": fields[4],
+                     "GIT_COMMITTER_DATE": fields[5]}
+            parent = subprocess.run(["git", "commit-tree", tree, *(["-p", parent] if parent else [])],
+                                    cwd=self.repo, check=True, env=dated, input=message, capture_output=True,
+                                    text=True).stdout.strip()
+        run(self.repo, "git", "push", "-q", "--force", "origin", f"{parent}:refs/heads/main")
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return old
+
+    def land(self, branch):
+        """(the new entry's ID or None, the Refused it raised or None), no worker started."""
+        identifier, error = None, None
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            try: identifier = mq.add(self.repo, branch)
+            except mq.Refused as refused: error = refused
+        return identifier, error
+
+    def test_a_branch_on_the_old_history_is_refused_with_the_rebase_that_moves_its_own_commits(self):
+        self.grow_main("one", ".mailmap", "two", "three")
+        self.commit("mine-1", "stale")
+        own = self.commit("mine-2", "stale", start="stale")
+        old = self.rewrite_main()
+        newest = run(self.repo, "git", "rev-parse", old)
+        mailmap = run(self.repo, "git", "log", "--format=%H", "-1", old, "--", ".mailmap")
+        with patch.object(mq, "check") as trial, patch.object(mq, "linear") as replay:
+            identifier, error = self.land("stale")
+        trial.assert_not_called()
+        replay.assert_not_called()
+        self.assertIsNone(identifier)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        words = str(error)
+        self.assertIn(f"{own[:12]} is not queued: it is built on origin/main's history as it was before a rewrite", words)
+        # start, one, two and three are copies; the .mailmap commit, pruned by the rewrite, is on main in no form.
+        self.assertIn("4 of its 7 commits that origin/main lacks are old copies", words)
+        self.assertIn(f"Its own work is the 2 commits after {newest[:12]}, the newest copy", words)
+        command = ["git", "rebase", "--onto", "origin/main", newest, "stale"]
+        self.assertIn(f"`{shlex.join(command)}`", words)
+        self.assertIn(f"1 commit among the old history is on origin/main in no form", words)
+        self.assertIn(f"{mailmap[:12]} Add .mailmap", words)
+        advice = error.recovery
+        self.assertEqual((advice["reasonCode"], advice["responsibleParty"], advice["action"], advice["retryable"]),
+                         ("rewritten-main", "session", "rebase", True))
+        self.assertEqual(advice["suggestedCommands"], [command])
+        # The suggested rebase moves the branch's own commits alone, which then queue, without .mailmap.
+        run(self.repo, *command)
+        self.assertNotIn(".mailmap", run(self.repo, "git", "ls-tree", "--name-only", "stale").split())
+        self.assertEqual(run(self.repo, "git", "rev-list", "--count", "origin/main..stale"), "2")
+        identifier, error = self.land("stale")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+
+    def test_a_rewrite_partway_down_main_is_found_from_the_fork(self):
+        self.grow_main("one", "two", "three", "four", "five")
+        self.commit("mine", "stale")
+        self.rewrite_main(since=2)
+        _, error = self.land("stale")
+        self.assertIsInstance(error, mq.Refused)
+        self.assertIn("4 of its 5 commits that origin/main lacks are old copies", str(error))
+        self.assertNotIn("in no form", str(error))
+
+    def test_a_branch_of_old_history_alone_is_told_it_has_nothing_to_land(self):
+        self.grow_main("one", "two", "three")
+        run(self.repo, "git", "checkout", "-q", "-B", "old", "origin/main")
+        newest = run(self.repo, "git", "rev-parse", "old")
+        self.rewrite_main()
+        _, error = self.land("old")
+        self.assertIn(f"It holds nothing after {newest[:12]}, the newest copy, so it has nothing of its own", str(error))
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_an_ordinary_branch_is_queued(self):
+        # Negative control.
+        self.grow_main("one", "two")
+        self.commit("mine", "fresh")
+        identifier, error = self.land("fresh")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+
+    def test_a_long_lived_branch_far_behind_main_is_queued(self):
+        # Negative control: many commits of its own, and a fork far down main.
+        self.commit("mine-0", "long")
+        for number in range(1, 12): self.commit(f"mine-{number}", "long", start="long")
+        self.grow_main(*(f"main-{number}" for number in range(8)))
+        identifier, error = self.land("long")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+
+    def test_a_branch_whose_commits_main_already_has_replayed_is_queued(self):
+        # Negative control: commits main has as cherry-picks, or as the queue's own replay of an earlier landing of
+        # this branch, carry new committer dates, so they are no rewrite's copies.
+        self.grow_main("one")
+        picked = [self.commit("mine-0", "picked")]
+        for number in range(1, 5): picked.append(self.commit(f"mine-{number}", "picked", start="picked"))
+        run(self.repo, "git", "checkout", "-q", "-B", "landing", "origin/main")
+        self.commit("other", "landing", start="landing")
+        later = {**os.environ, "GIT_COMMITTER_DATE": "2000000000 +0000"}
+        subprocess.run(["git", "cherry-pick", *picked[:4]], cwd=self.repo, check=True, env=later, capture_output=True)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        identifier, error = self.land("picked")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+
+    def test_fewer_copies_than_the_floor_are_queued(self):
+        # Negative control: a couple of commits picked onto main within the second keep their dates, but are too few.
+        self.grow_main("one")
+        picked = [self.commit("mine-0", "few")]
+        for number in range(1, 4): picked.append(self.commit(f"mine-{number}", "few", start="few"))
+        # On another commit of main's, so that a pick with every date kept is a new commit, not the same one.
+        run(self.repo, "git", "checkout", "-q", "-B", "landing", "origin/main")
+        self.commit("other", "landing", start="landing")
+        for commit in picked[:mq.REWRITTEN_COPIES - 1]:
+            subprocess.run(["git", "cherry-pick", commit], cwd=self.repo, check=True, env={
+                **os.environ, "GIT_COMMITTER_DATE": run(self.repo, "git", "log", "-1", "--format=%cd", "--date=raw",
+                                                        commit)}, capture_output=True)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        _, copies = mq.old_copies(self.repo, run(self.repo, "git", "rev-parse", "few"))
+        self.assertEqual(len(copies), mq.REWRITTEN_COPIES - 1)
+        identifier, error = self.land("few")
+        self.assertIsNone(error)
+        self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+
+
 class ImplicitDocsLane(Fixture):
     """`qk run docs` in a project with no docs lane runs the toolkit's docs check as a lane: offered to the second Mac
     and admitted like any other (owner's decision, 2026-11-09, vocaro-engineering#305). Queuekeeper has no spelling
