@@ -8,6 +8,7 @@ import fcntl
 import gc
 import hashlib
 import importlib.util
+import itertools
 from io import StringIO
 import json
 import os
@@ -7124,20 +7125,27 @@ RUNTIMES = [("iOS 27.1", "24B5070a"), ("macOS 27.1", "26B5091g")]
 OFFLOAD_HOST = Path(offload_host.__file__)
 
 
-def stretched_host(path, stretch=stretched):
-    """Write offload_host.py to path, and return path's name, with stretch applied to the limits that only catch a
-    hang in what the fake second Mac runs of it for `qk doctor`: its commands' 60 s, ps and lsof among them, and the
-    toolkit update's deadline and fetch. The real file's are another Mac's own, for work on a Mac the gate does not
-    load; the fake does that work here, and it gets the text, so nothing patched in this process reaches it. A limit
-    no longer found fails the test here, rather than leaving it fixed unnoticed."""
+def stretched_host(path, clock="", limit=None):
+    """Write offload_host.py to path, and return path's name, with its clocks, time.monotonic and subprocess's own,
+    made waiting.stretched_clock's: then every limit that only catches a hang in what the fake second Mac runs of it
+    for `qk doctor`, its commands' 60 s, ps and lsof among them, and the toolkit update's deadline and fetch,
+    lengthens while the load during it lasts. The real file's limits are another Mac's own, for work on a Mac the
+    gate does not load; the fake does that work here, and it gets the text, so nothing patched in this process
+    reaches it. Those limits stretched once, as the test began, kept the factor of a moment before the load rose
+    (#306 to #309). The clock is set on the file's first line, ahead of its docstring, so that its functions' default
+    clocks are that one too and a traceback from it still names the file's own lines.
+
+    clock, the text of stretched_clock's further arguments, such as a factor in place of stretch_reading's, and limit,
+    which replaces the fake Mac's commands' 60 s, are for a test of that clock; a 60 s no longer found fails it."""
     source = OFFLOAD_HOST.read_text()
-    update, fetch = offload_host.UPDATE_SECONDS, offload_host.UPDATE_FETCH_SECONDS
-    for fixed, longer in [("timeout=60", f"timeout={stretch(60)}"),
-                          (f"UPDATE_SECONDS, UPDATE_FETCH_SECONDS = {update}, {fetch}",
-                           f"UPDATE_SECONDS, UPDATE_FETCH_SECONDS = {stretch(update)}, {stretch(fetch)}")]:
-        source, count = re.subn(re.escape(fixed) + r"\b", lambda _match: longer, source)
-        if not count: raise AssertionError(f"offload_host.py no longer holds {fixed}")
-    path.write_text(source)
+    if limit is not None:
+        source, count = re.subn(r"timeout=60\b", f"timeout={limit}", source)
+        if not count: raise AssertionError("offload_host.py no longer holds timeout=60")
+    package = str(Path(waiting.__file__).parents[1])
+    clock = f"_waiting.stretched_clock(time.monotonic{f', {clock}' if clock else ''})"
+    path.write_text(f"import sys; sys.path.insert(0, {package!r}); from queuekeeper import waiting as _waiting; "
+                    f"sys.path.remove({package!r}); import subprocess, time; time.monotonic = subprocess._time = {clock}; "
+                    + source)
     return str(path)
 
 
@@ -7189,12 +7197,9 @@ class FarmMacDoctorTests(unittest.TestCase):
         # 2026-11-07 (#251, #265), so they stretch with load as the tests' other bounds do. Every limit doctor sets in
         # this process is a subprocess.run's timeout, among them a literal 60 and ask's default, which no patch of
         # SURVEY_TIMEOUT reaches; REACH_TIMEOUT is none, since connection is faked and the fake ssh skips ConnectTimeout.
-        real_run = subprocess.run
-
-        def run(*arguments, timeout=None, **options):
-            return real_run(*arguments, timeout=None if timeout is None else stretched(timeout), **options)
-
-        for stretching in [patch.object(subprocess, "run", run),
+        # They are measured on subprocess's clock, which runs slower by the load read as they wait: stretched once as
+        # they began, at a load of 15 to 25 on 18 cores, they ran out when it read 547 a minute later (#306 to #309).
+        for stretching in [patch.object(subprocess, "_time", waiting.stretched_clock()),
                            patch.object(offload_host, "__file__", stretched_host(base / "offload_host.py"))]:
             stretching.start()
             self.addCleanup(stretching.stop)
@@ -7414,25 +7419,27 @@ class FarmMacDoctorTests(unittest.TestCase):
         ps = temp / "bin/ps"
         ps.write_text('#!/bin/sh\nsleep 1\nexec /bin/ps "$@"\n')
         host_isolation.executable(ps)
-        loaded = patch.object(os, "getloadavg", return_value=(1000.0 * (os.cpu_count() or 1),) * 3)
-        idle = patch.object(os, "getloadavg", return_value=(0.0,) * 3)
         self.assertEqual(Path(offload_host.__file__).parent, temp)
-        with loaded:
-            sent = Path(stretched_host(temp / "loaded.py")).read_text()
+        # #306 to #309: each limit was set at a factor of 1 and the load rose while it ran. A stretch read once at
+        # the start, 1, and at every later look, 1000, as such a load gives, lets a limit shorter than the work last.
+        rising = lambda: itertools.chain([1], itertools.repeat(1000)).__next__
+        with patch.object(subprocess, "_time", waiting.stretched_clock(factor=rising(), every=0)):
             self.assertEqual(subprocess.run(["sleep", "1"], timeout=0.2).returncode, 0)
-        self.assertIn("def listing(command, timeout=60000.0,", sent)
-        self.assertIn("UPDATE_SECONDS, UPDATE_FETCH_SECONDS = 40000.0, 25000.0", sent)
-        self.assertNotRegex(sent, r"timeout=60\b")
-        # The stretch is finite and only load makes it: an idle host keeps each limit as it is, and it still ends. No
-        # busy share is read, so that a busy Mac running this test does not doubt the idle load (vocaro/queuekeeper#43).
-        with idle, patch.object(waiting, "busy_now", return_value=None):
-            self.assertEqual(Path(stretched_host(temp / "idle.py")).read_text(), OFFLOAD_HOST.read_text())
-            with self.assertRaises(subprocess.TimeoutExpired):
-                subprocess.run(["sleep", "1"], timeout=0.2)
-        # What the fake runs is that text: a limit shorter than ps loses the census, and a stretched one keeps it.
-        with patch.object(offload_host, "__file__", stretched_host(temp / "short.py", lambda _seconds: 0.2)):
+        # The stretch is finite and only load makes it: a limit on an idle host stays as it is, and it still ends.
+        with patch.object(subprocess, "_time", waiting.stretched_clock(factor=lambda: 1, every=0)), \
+                self.assertRaises(subprocess.TimeoutExpired):
+            subprocess.run(["sleep", "1"], timeout=0.2)
+        # What the fake runs is the file on that clock, line for line: a limit shorter than ps loses the census at a
+        # factor of 1, and the same limit keeps it when the load rises as ps runs.
+        sent = Path(stretched_host(temp / "sent.py")).read_text().splitlines()
+        original = OFFLOAD_HOST.read_text().splitlines()
+        self.assertEqual((sent[0].endswith(original[0]), sent[1:]), (True, original[1:]))
+        self.assertIn("time.monotonic = subprocess._time = _waiting.stretched_clock(time.monotonic); ", sent[0])
+        with patch.object(offload_host, "__file__", stretched_host(temp / "idle.py", "lambda: 1, every=0", limit=0.2)):
             self.assertEqual(remote.leftover_census("fake"), (None, "ps listed no processes"))
-        census, missing = remote.leftover_census("fake")
+        risen = "__import__('itertools').chain([1], __import__('itertools').repeat(1000)).__next__, every=0"
+        with patch.object(offload_host, "__file__", stretched_host(temp / "risen.py", risen, limit=0.2)):
+            census, missing = remote.leftover_census("fake")
         self.assertIsNone(missing)
         self.assertIsInstance(census["leftovers"], list)
 

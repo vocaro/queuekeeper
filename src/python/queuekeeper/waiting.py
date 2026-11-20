@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import threading
 import time
 
 from .resources import cpu_busy, slot_directory
@@ -97,6 +98,37 @@ def stretched(seconds):
     take or slot refused before it waits; and a timeout a fake receives or a test reads back, which no clock
     enforces. The stretch is finite, so a test that really hangs still fails at it (test_host_isolation)."""
     return seconds * stretch_reading()["factor"]
+
+
+def stretched_clock(clock=time.monotonic, factor=None, every=0.25):
+    """A clock like clock that runs slower by the stretch (stretched), read again once every seconds of clock have
+    passed since the last reading, so that a bound measured on it lengthens while a load that rises during the wait
+    lasts, as wait_until's does. A bound stretched once, when it is set, keeps the factor of that moment: on
+    2026-11-19 four `qk doctor` tests set their 60 s census and their toolkit update's limits at a load of 15 to 25
+    on 18 cores, a factor of at most 1.4, and the load read 547 a minute later, so those ran out (vocaro/queuekeeper#306
+    to #309).
+
+    factor, a callable, gives the stretch, stretch_reading's factor by default; it is read under a lock and never
+    below 1, so the clock never runs fast and its readings never go back. Each interval since the last reading
+    counts at the factor read last, which is the newest. A reading that itself asks the time, as when the clock is
+    subprocess's own and the reading runs a command, gets it at the factor before. The stretch is finite, so a bound
+    on it still ends."""
+    factor = factor or (lambda: stretch_reading()["factor"])
+    lock = threading.RLock()
+    began = clock()
+    state = {"real": began, "value": began, "read": began, "factor": max(1, factor())}
+
+    def now():
+        with lock:
+            real = clock()
+            if real - state["read"] >= every:
+                state["read"] = real
+                state["factor"] = max(1, factor())
+            real = max(real, state["real"])
+            state["value"] += (real - state["real"]) / state["factor"]
+            state["real"] = real
+            return state["value"]
+    return now
 
 
 def wait_until(done, progress=None, stall=None, interval=0.1, pause=None):

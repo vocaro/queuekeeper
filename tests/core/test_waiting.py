@@ -1,4 +1,5 @@
 """waiting: a wait that a busy host slows but does not fail, and that a hang still ends (#284)."""
+import itertools
 import os
 from pathlib import Path
 import subprocess
@@ -196,6 +197,39 @@ class StretchReadingTests(unittest.TestCase):
             finally:
                 os.chdir(before)
                 waiting._slots.cache_clear()
+
+
+class StretchedClockTests(unittest.TestCase):
+    """A bound on stretched_clock lengthens as a load that rises while it waits is read (vocaro/queuekeeper#306)."""
+
+    def test_the_clock_runs_slower_by_each_factor_read_and_never_fast_or_back(self):
+        real, factors = [100.0], iter([1, 4, 0.5, 2, 2])
+        clock = waiting.stretched_clock(lambda: real[0], factor=lambda: next(factors), every=10)
+        readings = []
+        for advance in (5, 8, 20, 10, 10, -3):
+            real[0] += advance
+            readings.append(clock())
+        # 1 when made at 100 and at 105, before 10 s passed; then 4 for the 8 s to 113, 0.5 read as 1 for the 20 s to
+        # 133, and 2 for each 10 s after; real time that goes back adds nothing and reads no factor.
+        self.assertEqual(readings, [105, 107, 127, 132, 137, 137])
+
+    def test_a_reading_that_asks_the_clock_gets_it_at_the_factor_before(self):
+        real, asked, clock = [0.0], [], None
+
+        def factor():
+            asked.append(clock() if clock else None)
+            return 3
+        clock = waiting.stretched_clock(lambda: real[0], factor=factor, every=1)
+        real[0] = 6
+        self.assertEqual((clock(), asked), (2, [None, 2]))
+
+    def test_a_subprocess_limit_on_it_lasts_while_the_load_rises_and_ends_when_it_does_not(self):
+        rising = itertools.chain([1], itertools.repeat(1000)).__next__
+        with patch.object(subprocess, "_time", waiting.stretched_clock(factor=rising, every=0)):
+            self.assertEqual(subprocess.run(["sleep", "1"], timeout=0.2).returncode, 0)
+        with patch.object(subprocess, "_time", waiting.stretched_clock(factor=lambda: 1, every=0)), \
+                self.assertRaises(subprocess.TimeoutExpired):
+            subprocess.run(["sleep", "1"], timeout=0.2)
 
 
 class ProbeTests(unittest.TestCase):
