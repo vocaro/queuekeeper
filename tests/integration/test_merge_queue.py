@@ -8107,6 +8107,40 @@ class PublicationUnverified(Fixture):
         self.assertIsNone(stranger.poll())
         self.assertEqual(self.state(identifier)["state"], "landed")
 
+    def test_a_push_that_lands_after_reconcile_found_it_missing_still_lands_once(self):
+        """vocaro/queuekeeper#265: a push ended mid-flight can land once the remote applies it, after the next
+        worker's fetch said it had not, and main can move on past it. The entry keeps that push (pushedBefore), so
+        the next worker's push finds it in main's history rather than carrying commits main already holds."""
+        self.commit("a", "a")
+        [identifier] = self.die("before", "a")
+        head = self.state(identifier)["passed"]["head"]
+        real, late = mq.Worker.reconcile, []
+        def reconcile(worker):
+            done = real(worker)
+            if not late:
+                late.append(self.state(identifier))
+                run(self.repo, "git", "push", "-q", "origin", f"{head}:refs/heads/main")
+                self.move_main()
+            return done
+        counting, seen = self.pushes()
+        said = io.StringIO()
+        with patch.object(mq.Worker, "reconcile", reconcile), counting, contextlib.redirect_stdout(said):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(seen, [])
+        entry = self.state(identifier)
+        self.assertEqual((entry["state"], entry["landedAs"]), ("landed", head))
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(run(self.repo, "git", "rev-list", "--count", f"{head}..origin/main"), "1")
+        [event] = self.reconciled()
+        self.assertEqual(event["head"], head)
+        # The push's own fetch found it, before any carry over commits main then held.
+        self.assertIn("an earlier push of part of the batch landed", said.getvalue())
+        self.assertNotIn("carried the result over", said.getvalue())
+        [kept] = late[0]["pushedBefore"]
+        self.assertEqual([attempt["head"] for attempt in kept["attempts"]], [head])
+        self.assertNotIn("publishing", late[0])
+        self.assertNotIn("pushedBefore", entry)
+
 class PushRefusedInAnIncident(Fixture):
     """A push refused for its credentials, seconds after a fetch from the same URL went through, is tried again:
     after each of BACKOFF, then, on GitHub, while its status says Git Operations is not operational, for up to

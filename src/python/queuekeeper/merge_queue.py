@@ -566,6 +566,12 @@ def push_runs(attempt):
     return bool(attempt.get("pid") and attempt.get("start")) and pushing_start(attempt["pid"]) == attempt["start"]
 
 
+def pushes_of(entry):
+    """The pushes an entry's record keeps whose answer never came: the one under way (publishing), then those an
+    earlier fetch did not find on origin/main (pushedBefore), which may land yet (Worker.reconcile)."""
+    return ([entry["publishing"]] if entry.get("publishing") else []) + list(entry.get("pushedBefore") or [])
+
+
 def fetch_main(directory, say=print):
     """Fetch origin's main into MAIN: True, or False when origin has no main, as a repository created empty has until
     its first landing creates it (#10), with any MAIN an earlier fetch left deleted. Any other failure holds, as
@@ -1826,6 +1832,7 @@ class Queue:
             current = self.read(entry["id"]) or entry
             if current["state"] not in WAITING: return current
             current.pop("publishing", None)  # a settled entry's push is answered
+            current.pop("pushedBefore", None)  # and so is each it kept (Worker.reconcile)
             current.update(state=state, settled=time.time(), **fields)
             self.save(current)
         self.emit(f"entry.{state}", entry=current["id"], subject=current.get("subject"),
@@ -4788,6 +4795,11 @@ class Worker:
                 self.say(f"origin/main holds {landed['head'][:12]}, pushed before its answer came: it landed")
                 self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated, self.measured)
                 return True
+            # An earlier push of some of the batch, whose answer never came, may have landed since (reconcile).
+            kept = [current for entry in batch if (current := self.queue.read(entry["id"])) and current.get("pushedBefore")]
+            if kept and self.settle_kept(kept):
+                self.say("an earlier push of part of the batch landed before this one: the rest gate again")
+                return False
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
                 carried = self.carry(config, batch, base, head, ran)
                 if carried is None: return False
@@ -4883,31 +4895,50 @@ class Worker:
     def reconcile(self):
         """Settle what a push whose answer never came left publishing, as a timeout, a dropped connection or a worker
         that died mid-push leaves it, by a fetch of origin/main: entries whose push it holds land as that push would
-        have landed them, without a push or a gate of commits main already has; the others forget it, and are pushed
-        or gated as before. Whether it landed anything, a remote out of reach holding as for any fetch."""
-        marked = [entry for entry in self.queue.waiting() if entry.get("publishing")]
+        have landed them, without a push or a gate of commits main already has; the others are pushed or gated as
+        before. Whether it landed anything, a remote out of reach holding as for any fetch.
+        A push the fetch does not find is not forgotten: the entries keep it (pushedBefore) until they settle, and each
+        round's start and each push's try ask again, since a push ended mid-flight may still land once the remote
+        applies what it had taken (vocaro/queuekeeper#265)."""
+        marked = [entry for entry in self.queue.waiting() if entry.get("publishing") or entry.get("pushedBefore")]
         if not marked: return False
-        self.outlive([attempt for entry in marked for attempt in entry["publishing"].get("attempts", [])])
+        self.outlive([attempt for entry in marked for marker in pushes_of(entry)
+                      for attempt in marker.get("attempts", [])])
         if not fetch_main(self.queue.main_checkout, self.say):
             # Nothing landed while origin has no main: the entries are gated as before.
             self.say(f"origin has no main, so {', '.join(entry['id'] for entry in marked)}, whose push's answer never "
                      "came, did not land, and are gated as before")
             self.queue.drop_field(marked, "publishing")
+            self.queue.drop_field(marked, "pushedBefore")
             return False
-        main, landed = text(self.queue.main_checkout, "rev-parse", MAIN), False
-        while marked:
-            marker = marked[0]["publishing"]
+        return self.settle_kept(marked, keep=True)
+
+    def settle_kept(self, entries, keep=False):
+        """Land those of entries whose recorded pushes, publishing or kept (pushedBefore), origin/main holds as last
+        fetched, each group as the push that carried it would have landed it: True when any landed. With keep, a
+        push still unanswered that main does not hold moves from publishing to pushedBefore."""
+        main, landed, markers = main_commit(self.queue.main_checkout) or "", False, []
+        for entry in entries:
+            markers += [marker for marker in pushes_of(entry) if marker not in markers]
+        for marker in markers:
             order = marker.get("batch", [])
-            group = sorted((entry for entry in marked if entry["publishing"] == marker),
+            group = sorted((current for entry in entries if (current := self.queue.read(entry["id"]))
+                            and current["state"] in WAITING and marker in pushes_of(current)),
                            key=lambda entry: order.index(entry["id"]) if entry["id"] in order else len(order))
-            marked = [entry for entry in marked if entry["publishing"] != marker]
+            if not group: continue
             ids = ", ".join(entry["id"] for entry in group)
             attempts = marker.get("attempts", [])
             attempt = self.landed_attempt(attempts)
             if attempt is None:
-                self.say(f"origin/main at {main[:12]} holds no push of {', '.join(a['head'][:12] for a in attempts)}, "
-                         f"whose answer never came: {ids} did not land, and are pushed or gated as before")
-                self.queue.drop_field(group, "publishing")
+                fresh = [entry for entry in group if entry.get("publishing") == marker]
+                if keep and fresh:
+                    self.say(f"origin/main at {main[:12]} holds no push of "
+                             f"{', '.join(a['head'][:12] for a in attempts)}, whose answer never came: "
+                             f"{', '.join(entry['id'] for entry in fresh)} did not land, and are pushed or gated as "
+                             "before, keeping that push should it land later")
+                    for entry in fresh:
+                        self.queue.record(entry, pushedBefore=[*entry.get("pushedBefore", []), marker])
+                    self.queue.drop_field(fresh, "publishing")
                 continue
             self.say(f"origin/main at {main[:12]} holds {attempt['head'][:12]}, pushed before its answer came: "
                      f"{ids} landed")
