@@ -2034,9 +2034,12 @@ class RemoteTests(unittest.TestCase):
         self.assertIsNone(process.poll(), log.read_text())
         for slot in range(remote.CHECKOUTS):
             self.assertFalse(self.checkout(slot).exists(), slot)
-        # Waiting holds no heavy-work slot of another Mac's.
+        # Waiting holds no heavy-work slot of another Mac's. A process listing that a loaded Mac makes slow is logged
+        # in the same folder (offload_host.log_slow_listing), which is a record, not a slot (vocaro/queuekeeper#303).
         slots = Path(os.environ["FAKE_SLOTS"])
-        self.assertEqual(sorted(path.name for path in slots.glob("*")) if slots.exists() else [], [])
+        logs = {offload_host.SLOW_LISTING_LOG, offload_host.PREVIOUS_SLOW_LISTING_LOG}
+        self.assertEqual(sorted(path.name for path in slots.glob("*") if path.name not in logs)
+                         if slots.exists() else [], [])
         release()
         self.assertEqual(process.wait(stretched(120)), 0, log.read_text())
         named = self.slot_receipt()["checkoutSlot"]
