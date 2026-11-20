@@ -6432,8 +6432,9 @@ class ToolkitCopy(Fixture):
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed"])
         self.assertEqual(len(self.moves), 1)
         self.assertEqual(json.loads(self.moves[0].env[mq.PROGRESS_VARIABLE]), {"limit": 1, "suspects": 2, "no_verdicts": 0})
-        # Both together, then a alone, then bad alone: not both together again.
-        self.assertEqual(self.gates(), 3)
+        # Both together, then a alone, then bad alone, and bad on the main before a landed, where it fails too
+        # (vocaro/queuekeeper#263): not both together again.
+        self.assertEqual(self.gates(), 4)
 
     def test_a_dirty_shared_checkout_neither_reaches_a_gate_nor_is_touched(self):
         edited = self.kit / "src/python/queuekeeper/cli.py"
