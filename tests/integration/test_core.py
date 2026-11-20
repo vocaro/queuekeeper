@@ -684,6 +684,102 @@ class ConfigurationTests(unittest.TestCase):
             self.assertRegex(said, r"test executed 4 tests, \d+ fewer than the (9|5) its last passing whole run on .*"
                                    r"/test\.json\), which a commit since says with Tests-Removed: test")
 
+    def test_a_run_whose_checkout_moves_while_it_runs_is_no_commits_pass(self):
+        """BreezEPUB, 2026-11-19: a session ran `git switch` in the worktree an hour into a local run, which built and
+        tested the switched files with no word of it (vocaro/queuekeeper#310). A run on another commit by its end is
+        unmeasured and kept as neither commit's; a run whose tracked files changed keeps its verdict as no commit's
+        pass; a group says so as its lane ends; and a run left alone passes and counts, as before."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*arguments):
+                return subprocess.run(["git", "-C", directory, "-c", "user.name=Test", "-c", "user.email=t@example.com",
+                                       *arguments], check=True, capture_output=True, text=True).stdout.strip()
+            def lane(*commands):
+                # The session's Git command, run mid-run from the lane's own command, which then passes.
+                return {"command": [sys.executable, "-c", "import subprocess, sys\n"
+                                    f"for command in {list(commands)!r}: subprocess.run(command, check=True)\n"
+                                    "print('Ran 1 tests'); print(); print('OK')"]}
+            git("init", "-q", "-b", "main")
+            (root / ".gitignore").write_text(".build/\n")
+            (root / "project.yml").write_text("pin: 1\n")
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                "still": lane(), "switch": lane(["git", "switch", "-q", "other"]),
+                "edit": lane(["git", "checkout", "other", "--", "project.yml"]),
+                "untracked": lane([sys.executable, "-c", "open('output.txt', 'w').write('made')"]),
+                "group": {"parallel": ["still", "switch"]}}}))
+            git("add", "-A")
+            git("commit", "-q", "-m", "start")
+            start = git("rev-parse", "HEAD")
+            git("switch", "-q", "-c", "other")
+            (root / "project.yml").write_text("pin: 2\n")
+            git("commit", "-q", "-am", "other")
+            other = git("rev-parse", "HEAD")
+            def run(name):
+                git("switch", "-q", "--discard-changes", "main")
+                (root / "output.txt").unlink(missing_ok=True)
+                with patch.object(cli, "refresh_policy", return_value="policy"), \
+                        patch.object(cli.remote, "keep_here", return_value=None) as kept, \
+                        contextlib.redirect_stderr(StringIO()) as error:
+                    status = cli.main(["--project", directory, "run", name])
+                receipt = json.loads((root / ".build/queuekeeper" / name / "source.json").read_text())
+                # Whether the run would be kept as its commit's pass (remote.keep_here's whole).
+                return status, error.getvalue(), receipt, kept.call_args.args[4]
+            # The negative control: nothing moves, and the run passes and counts for its commit.
+            status, said, receipt, counts = run("still")
+            self.assertEqual((status, receipt["outcome"], receipt["project"]["revision"], counts),
+                             (0, "passed", start, True), said)
+            self.assertNotIn("checkoutMoved", receipt)
+            self.assertNotIn("checkout", said)
+            # A lane's own untracked outputs move nothing.
+            status, said, receipt, counts = run("untracked")
+            self.assertEqual((status, counts), (0, True), said)
+            self.assertNotIn("checkoutChanged", receipt)
+            # A branch switch mid-run: unmeasured, naming both commits, and kept as neither's.
+            status, said, receipt, counts = run("switch")
+            self.assertEqual((status, receipt["outcome"], counts), (lane_results.UNMEASURED, "unmeasured", False), said)
+            self.assertEqual(receipt["checkoutMoved"], {"from": start, "to": other})
+            self.assertIn(f"queuekeeper: unmeasured: the checkout {root.resolve()} moved from {start[:12]} to {other[:12]} (other) "
+                          "while switch ran", said)
+            self.assertIn("its result is neither commit's", receipt["error"])
+            self.assertNotIn("tests", receipt)
+            # Another file checked out at the same commit: the verdict stands, as no commit's pass.
+            status, said, receipt, counts = run("edit")
+            self.assertEqual((status, receipt["outcome"], counts), (0, "passed", False), said)
+            self.assertEqual(receipt["checkoutChanged"], {"commit": start, "files": ["project.yml"]})
+            self.assertIn(f"the checkout's tracked files changed while edit ran (project.yml), so its result is what it "
+                          f"read but no pass of {start[:12]}", said)
+            # A group says so when its lane ends, and ends unmeasured.
+            status, said, receipt, counts = run("group")
+            self.assertEqual((status, receipt["outcome"], counts), (lane_results.UNMEASURED, "unmeasured", False), said)
+            self.assertIn("the group runs on, and its result will be unmeasured", said)
+            self.assertEqual(receipt["checkoutMoved"], {"from": start, "to": other})
+
+    def test_a_run_whose_checkout_moved_while_it_waited_names_the_commit_it_reads(self):
+        """A checkout that moved during the wait for a slot is read as it is once the command starts, and the receipt
+        names that commit, not the one `qk run` was called at (vocaro/queuekeeper#310)."""
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*arguments):
+                return subprocess.run(["git", "-C", directory, "-c", "user.name=Test", "-c", "user.email=t@example.com",
+                                       *arguments], check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q", "-b", "main")
+            git("commit", "-q", "--allow-empty", "-m", "first")
+            first = git("rev-parse", "HEAD")
+            git("commit", "-q", "--allow-empty", "-m", "second")
+            second = git("rev-parse", "HEAD")
+            receipt = {"project": {"revision": first}}
+            with contextlib.redirect_stderr(StringIO()) as error:
+                began = cli.started_here(Path(directory), "gate", receipt)
+            self.assertEqual((began["head"], receipt["project"]["revision"]), (second, second))
+            self.assertIn(f"moved from {first[:12]} to {second[:12]} while gate waited, so it runs {second[:12]}",
+                          error.getvalue())
+            # Unmoved, it says nothing; and a folder that is no repository has no reading to compare.
+            with contextlib.redirect_stderr(StringIO()) as error:
+                self.assertEqual(cli.started_here(Path(directory), "gate", receipt)["head"], second)
+                self.assertIsNone(cli.checkout_moved(Path(directory), "gate", None))
+            self.assertEqual(error.getvalue(), "")
+            with tempfile.TemporaryDirectory() as elsewhere:
+                self.assertIsNone(cli.checkout_state(Path(elsewhere)))
+
     def test_a_lane_that_takes_no_arguments_refuses_them_before_anything_runs_or_is_sent(self):
         """BreezEPUB's ways-in on 2026-11-13 refused two -only-testing arguments in its own script, after the run had
         been staged and sent to another Mac (vocaro/queuekeeper#137)."""

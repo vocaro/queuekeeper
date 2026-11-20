@@ -882,7 +882,7 @@ the next admitted command replaces it: copy it when it is evidence.
 | `failed` | the command's; 2 for too few tests | The command failed, or exited 0 with too few tests |
 | `failed`, before tests | 4 | The log shows no test started, such as a project that could not be generated; the summary quotes the last error |
 | `build-failed` | nonzero | The lane's `compileFirst` step failed; no test ran |
-| `unmeasured` | 3 | The command exited 3, a test reported itself unmeasured, or the `timeout` stopped it |
+| `unmeasured` | 3 | The command exited 3, a test reported itself unmeasured, the `timeout` stopped it, or the checkout moved to another commit during a run on this Mac ([why](#how-the-code-gets-there)) |
 | `not-started` | 127 | The command could not start, such as `python3` given a file the checkout lacks |
 
 A command that cannot measure something, such as a timing check voided by load, exits 3 and says
@@ -1821,6 +1821,23 @@ another Mac does not need. Queuekeeper's own code goes the same way.
 
 **A snapshot's result is no commit's pass.** `qk run` says so as it sends one, naming the changed
 files, and `qk remote passed` never counts it. Commit and run again for a pass that counts.
+
+**A run on this Mac reads your checkout's live files.** Unlike a run sent to another Mac, it takes
+no snapshot, so keep the checkout still while it runs, and start other work in another worktree.
+Queuekeeper reads the checkout's commit and tracked changes as the lane's command starts, and again
+when the run, or each lane of a group, ends:
+
+- **The checkout moved to another commit**, as after `git switch`: the run is unmeasured (exit 3),
+  since it read some of each commit. The message and the receipt's `checkoutMoved` name both
+  commits, and the run is never kept as either commit's pass or test count. A group says so as
+  soon as one of its lanes ends.
+- **Tracked files changed at the same commit**, as after `git checkout other -- FILE` or a build
+  that rewrites a tracked file: the run keeps its verdict, which is what it read, but is no
+  commit's pass. The message and the receipt's `checkoutChanged` name the files.
+- **The checkout moved while the run waited for a slot**: the run reads the new commit, says so,
+  and its receipt names the commit it read.
+
+Untracked files are not compared, since a lane's own outputs land there.
 
 Each Mac keeps four checkouts per project, under `~/Development/queuekeeper-farm`, and a run takes
 the free one closest to its commit, so builds stay warm. The project's `provision` lane, if it has

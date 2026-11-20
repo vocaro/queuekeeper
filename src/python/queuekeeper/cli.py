@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import errno
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -160,6 +161,71 @@ def slept_through(lane, slept):
              "while nothing runs, so its failures say nothing of the commits it ran")
     print(f"queuekeeper: unmeasured: {words}", file=sys.stderr, flush=True)
     return words
+
+
+def checkout_state(root):
+    """The commit the checkout at root has checked out and a digest of its tracked files' changes against it, or None
+    where Git cannot say, such as a folder that is no repository. A run on this Mac reads the checkout's live files, so
+    a branch switch or a checkout of other files during it changes what it tests (vocaro/queuekeeper#310). Untracked
+    files are left out: a lane's own outputs land there, and a run does not read most of them. Optional locks are
+    off, so that reading it never takes the index's lock from a session's Git command."""
+    command = ["git", "--no-optional-locks", "-C", str(root)]
+    try:
+        head = subprocess.run([*command, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30)
+        if head.returncode: return None
+        diff = subprocess.run([*command, "diff", "--binary", "HEAD"], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if diff.returncode: return None
+    return {"head": head.stdout.strip(), "changes": hashlib.sha256(diff.stdout).hexdigest()}
+
+
+def quiet_git(root, *arguments):
+    """What a Git command that only reads the checkout at root printed, or nothing when it could not say."""
+    try:
+        return subprocess.run(["git", "--no-optional-locks", "-C", str(root), *arguments],
+                              capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def started_here(root, lane, receipt):
+    """checkout_state of root as lane's command starts there, after its receipt names the commit it reads. The receipt
+    named the checkout as `qk run` was called, and a wait for a slot can be long: a checkout that moved meanwhile is
+    named again, so that the run is kept as the commit it reads, not the one it was asked for, and says so."""
+    began = checkout_state(root)
+    named = (receipt.get("project") or {}).get("revision")
+    if began is not None and isinstance(named, str) and named and began["head"] != named:
+        print(f"queuekeeper: the checkout {root} moved from {named[:12]} to {began['head'][:12]} while {lane} waited, "
+              f"so it runs {began['head'][:12]}", file=sys.stderr, flush=True)
+        receipt["project"] = source_identity(root)
+    return began
+
+
+def checkout_moved(root, lane, began):
+    """How the checkout at root moved since checkout_state read began as lane's run started, as (words, fields for
+    its receipt, whether the run is unmeasured), or None while it holds the same commit and tracked changes, or when
+    either reading is missing (vocaro/queuekeeper#310).
+
+    A checkout now at another commit, as after `git switch`, ran part of one commit and part of another: the run is
+    unmeasured, its result neither commit's. One at the same commit whose tracked files changed, as after
+    `git checkout other -- FILE` or a build that rewrites a tracked file, keeps its verdict, which is what the lane
+    read, but is no commit's pass, as a run started with uncommitted changes is not (remote.uncounted)."""
+    now = checkout_state(root) if began is not None else None
+    if now is None or now == began: return None
+    if now["head"] != began["head"]:
+        branch = quiet_git(root, "branch", "--show-current").strip()
+        at = f"{now['head'][:12]}" + (f" ({branch})" if branch else "")
+        words = (f"the checkout {root} moved from {began['head'][:12]} to {at} while {lane} ran on {this_mac()}, so "
+                 f"the run read some of each and its result is neither commit's; run it again once the checkout "
+                 "stays at one commit, or start other work in another worktree while it runs")
+        return words, {"checkoutMoved": {"from": began["head"], "to": now["head"]}}, True
+    changed = quiet_git(root, "diff", "--name-only", "HEAD").splitlines()
+    shown = ", ".join(changed[:5]) + (f" and {len(changed) - 5} more" if len(changed) > 5 else "")
+    words = (f"the checkout's tracked files changed while {lane} ran "
+             f"({shown or 'the changes it started with, undone'}), so its result is what it read but no pass of "
+             f"{began['head'][:12]}: run it again on an unchanged checkout for a pass that counts")
+    return words, {"checkoutChanged": {"commit": began["head"], "files": changed}}, False
 
 
 def host_faulted(lane, status, receipt, results):
@@ -1839,6 +1905,10 @@ def perform(argv, report):
             admission = None
             # remote.asleep()'s reading as the lane's command starts, for the sleep its run spans (slept_since).
             asleep_began = None
+            # checkout_state's reading as the lane's command starts in this checkout, for the move it checks for once
+            # the run, or a group's lane, ends (moved, vocaro/queuekeeper#310). None for a run in a worktree of what
+            # was sent, which nothing else moves.
+            began = None
             # Where the lane's command runs: this checkout, or the worktree of what was sent (admitted_tree). Its
             # receipt, logs and results stay in this checkout's directory either way.
             tree = root
@@ -1850,7 +1920,8 @@ def perform(argv, report):
                 # The verdict in this checkout, and kept by commit for every worktree (vocaro-engineering#198).
                 conclude(directory, receipt, status, **fields)
                 # A worktree of a snapshot is clean at a commit no branch holds, which is no commit's run to keep.
-                counts = whole and not (tree != root and offered.sent["commit"] != offered.sent.get("head"))
+                counts = whole and not (tree != root and offered.sent["commit"] != offered.sent.get("head")) \
+                    and not receipt.get("checkoutMoved") and not receipt.get("checkoutChanged")
                 remote.keep_here(root, args.lane, receipt, status, counts, results=directory / "results")
                 # A lane's output goes to its log; the Mac that sent a dispatch prints these once they are back.
                 if not os.environ.get(remote.DISPATCHER): plugins.report_results(directory / "results")
@@ -1928,6 +1999,7 @@ def perform(argv, report):
                 # runs each lane to its end to compare with a failure seen side by side (vocaro/queuekeeper#256).
                 fail_fast = bool(lane.get("failFast")) and not args.serial
                 if fail_fast: receipt["failFast"] = True
+                said_moved = []
                 def execute(on_stop=None):
                     def work():
                         # Each lane's own sandbox, made for the tree the group reads, its profile in the group's directory.
@@ -1946,8 +2018,15 @@ def perform(argv, report):
                         def pace(name, member):
                             return lane_timing.Pace(name, member, project, live=live, commit=commit, group=args.lane) \
                                 if whole else None
-                        return parallel.lanes(tree, wrapped, directory / "lanes", jobs,
-                                              lambda member, status, log: judge(member, status, log)[0], receipt, on_stop,
+                        def judged(member, status, log):
+                            # Said as soon as one of the group's lanes ends after the checkout moved, not only at its end.
+                            moving = checkout_moved(root, args.lane, began) if not said_moved else None
+                            if moving is not None and moving[2]:
+                                said_moved.append(moving[0])
+                                print(f"queuekeeper: {moving[0]}; the group runs on, and its result will be unmeasured",
+                                      file=sys.stderr, flush=True)
+                            return judge(member, status, log)[0]
+                        return parallel.lanes(tree, wrapped, directory / "lanes", jobs, judged, receipt, on_stop,
                                               results_directory=directory / "results", fail_fast=fail_fast, pace=pace)
                     return record(directory, receipt, lambda: prepared(work))
             try:
@@ -1960,6 +2039,7 @@ def perform(argv, report):
                         # Each part its script admits stays on this Mac, which holds what an earlier part built.
                         lane_wait.running()
                         with patch_environment({SELF_LANE: args.lane}):
+                            began = started_here(root, args.lane, receipt)
                             asleep_began = remote.asleep()
                             result = execute()
                     else:
@@ -2022,6 +2102,7 @@ def perform(argv, report):
                             unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited,
                                                              admission.interrupted, tree if tree != root else None)
                             if unprovisioned is not None: return unprovisioned
+                            began = started_here(root, args.lane, receipt) if tree == root else None
                             asleep_began = remote.asleep()
                             result = execute(admission.interrupted)
                             # A failed build ran no test an alert could have disturbed.
@@ -2050,6 +2131,16 @@ def perform(argv, report):
             # A pass through a sleep keeps its pass; the receipt says how long this Mac slept (vocaro/queuekeeper#198).
             slept = slept_since(asleep_began)
             if slept: receipt["sleptSeconds"] = round(slept)
+            # A checkout that moved while the run read it (vocaro/queuekeeper#310).
+            moved = checkout_moved(root, args.lane, began) if not receipt.get("notStarted") else None
+            if moved is not None:
+                words, fields, void = moved
+                receipt.update(fields)
+                if void:
+                    print(f"queuekeeper: unmeasured: {words}", file=sys.stderr, flush=True)
+                    concluded(lane_results.UNMEASURED, unmeasured=[words], error=words)
+                    return lane_results.UNMEASURED
+                print(f"queuekeeper: {words}", file=sys.stderr, flush=True)
             # A group's lanes were each judged by their own logs.
             if "parallel" in lane:
                 short = failed_short(result, admission, tree)
