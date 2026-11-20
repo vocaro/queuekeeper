@@ -132,6 +132,7 @@
                 "unity",
                 "arguments",
                 "idioms",
+                "dimensions",
                 "exactTests",
                 "failedTests",
                 "labels",
@@ -415,6 +416,11 @@
           },
           "idioms": {
             "description": "Why the lane runs its whole selection on an iPhone and an iPad simulator: that every class it selects depends on the idiom, and where the project classifies them. Without it, qk doctor warns of a lane whose command names both with --device, outside release.lanes",
+            "type": "string",
+            "minLength": 1
+          },
+          "dimensions": {
+            "description": "Why the lane runs its whole selection once per appearance or content size, such as that it selects only a view's snapshot tests. Without it, qk doctor warns of a lane whose command names two appearances or content sizes, or another lane's command but for them, outside release.lanes",
             "type": "string",
             "minLength": 1
           },

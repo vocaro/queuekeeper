@@ -1312,6 +1312,26 @@ and an iPad simulator, since tests that do not depend on the idiom then run twic
 `release.lanes`, a lane per idiom, or a lane whose `idioms` says why its whole selection depends on
 the idiom gives no warning.
 
+It warns too of lanes that run one selection once per appearance or content size, where only a
+view's snapshot tests should multiply: a lane whose command names two values of either, or two lanes
+whose commands differ only in them. It reads `--appearance`, `--content-size`,
+`--content-size-category`, `--dynamic-type`, `-AppleInterfaceStyle`,
+`-UIPreferredContentSizeCategoryName` and `xcrun simctl ui DEVICE appearance|content_size VALUE`,
+also inside a `bash -c` line. Run the other tests once, or say in the lane's `dimensions` why its
+whole selection depends on them, such as that it selects only snapshot tests. A lane in
+`release.lanes`, or lanes whose selections differ, such as a deliberately narrow second appearance,
+give no warning. Like the idiom check, it reads only the lane's own words: a script that sets the
+simulator's appearance itself is not seen.
+
+And it warns of a UI test target whose direct `waitForExistence` or `waitForNonExistence` calls are
+spread over more than one file. XCTest first checks such a wait a second after it starts, so each
+wait for an element already on screen costs a second. Put the waits in one helper file of the
+target that checks the condition first (`exists || waitForExistence(timeout:)`). A wait that keeps
+XCTest's, inside a measured window or watching for a change, says so with `// xctest-wait: REASON`
+on its line or the line before. A UI test file is a tracked Swift file that imports XCTest and uses
+`XCUIApplication` or `XCUIElement`, outside `evidence/`; its target is its nearest folder whose name
+ends in `Tests`. These are warnings, which change no gate.
+
 ### Admission
 
 Ten agents that each start a build at once make every build slow and every timing meaningless.

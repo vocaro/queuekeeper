@@ -57,6 +57,15 @@ class Idioms(plugins.LaneKey):
             raise ValueError(f"{name}.idioms must say why the lane's whole selection depends on the idiom")
 
 
+class Dimensions(plugins.LaneKey):
+    """A lane's "dimensions": why it runs its whole selection once per appearance or content size, which `qk doctor`
+    warns of otherwise (doctor.dimension_warnings). It changes nothing in the lane's run."""
+    def check(self, name, lane):
+        if not isinstance(lane["dimensions"], str) or not lane["dimensions"].strip():
+            raise ValueError(f"{name}.dimensions must say why the lane's whole selection depends on the appearance "
+                             "or content size")
+
+
 def simulator_pool(value):
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError("simulatorPool must be a nonempty name, such as the project's")
@@ -100,6 +109,6 @@ def nested_sandbox(text):
 
 def register():
     plugins.CONFIG_KEYS.update(app=app, simulatorPool=simulator_pool)
-    plugins.LANE_KEYS.update(idioms=Idioms())
+    plugins.LANE_KEYS.update(idioms=Idioms(), dimensions=Dimensions())
     if sandbox_refusal not in plugins.SANDBOX_REFUSALS: plugins.SANDBOX_REFUSALS.append(sandbox_refusal)
     if nested_sandbox not in plugins.SANDBOX_NESTED: plugins.SANDBOX_NESTED.append(nested_sandbox)

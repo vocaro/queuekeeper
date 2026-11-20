@@ -120,12 +120,13 @@ def load(root):
 # compares them, vocaro-engineering#248).
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
-                       "deviceRunMinutes", "stall", "unity", "arguments", "idioms", "exactTests",
+                       "deviceRunMinutes", "stall", "unity", "arguments", "idioms", "dimensions", "exactTests",
                        "failedTests", "labels", "sandbox", "timing", "notice", "disk"})
 # The lane keys above that a plugin shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the plugin is told which to switch on.
 PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity", "devices": "queuekeeper_mobile",
-                       "deviceRunMinutes": "queuekeeper_mobile", "idioms": "queuekeeper_apple"}
+                       "deviceRunMinutes": "queuekeeper_mobile", "idioms": "queuekeeper_apple",
+                       "dimensions": "queuekeeper_apple"}
 # The top-level keys a plugin shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
 PLUGIN_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple",
                          "android": "queuekeeper_android", "emulatorPool": "queuekeeper_android"}
