@@ -8005,6 +8005,9 @@ class PublicationUnverified(Fixture):
         self.assertEqual(run(self.repo, "git", "show", "origin/main:a"), "edited")
 
     def test_a_worker_killed_while_settling_the_batch_lands_the_rest(self):
+        """The rest of the batch lands as the push that carried it, without a second gate, even once main moved on
+        past that push: the batch that passed is no longer whole, and what main holds of the rest is no commit of its
+        own there, so only the push's record (publishing) knows it."""
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")
         real, settled = mq.Queue.settle, []
@@ -8016,15 +8019,20 @@ class PublicationUnverified(Fixture):
             self.work()
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "passed"])
         head = self.state(ids[1])["passed"]["head"]
+        self.move_main()
+        moved = self.origin_main()
         self.assertEqual(self.restart(), [])
         self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "landed"])
-        self.assertEqual([self.state(i)["landedTip"] for i in ids], [head, head])
         self.assertEqual(self.state(ids[1])["landedAs"], head)
+        self.assertEqual([self.state(i)["landedTip"] for i in ids], [head, head])
         self.assertEqual(self.gates(), 1)
+        self.assertEqual(self.origin_main(), moved)
 
     def test_a_worker_killed_mid_carry_pushes_the_whole_batch_that_passed(self):
         """A carry resets the checkout and picks the batch again; a worker that died between picks left part of it
-        there, which the next worker must not push as what passed."""
+        there, which the next worker must not push as what passed. Worker.settings leaves the checkout at the head
+        that passed as well, and did so before push_passed reset it there itself, so the code before 3b82cbe624e9
+        passes this test too: it guards both (vocaro/queuekeeper#265)."""
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")
         refusing, _ = self.pushes("before")
