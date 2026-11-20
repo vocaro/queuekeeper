@@ -858,6 +858,9 @@ floor. With no number in `queuekeeper.json`:
   Tests-Removed: gate, unit
   ```
 
+  In the merge queue, a gate that falls short sends back the entry that removes tests without
+  this trailer, and the rest of the batch gates again without it.
+
 `minimumTests` is a typed floor for a lane that must not fall below a number even on a Mac with no
 pass yet; most lanes need none, since a typed floor drifts. A lane that picks its tests by name sets
 `"exactTests": true` beside it, so a whole run must execute exactly that many, and the error names

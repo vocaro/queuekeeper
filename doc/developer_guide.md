@@ -390,6 +390,14 @@ Exits 3 (unmeasured), 69 (a worker without Local Network access), 75 (no admissi
 misconfigured Mac) blame no commit. The worker runs the lanes again, and holds once
 `queue.noVerdictRuns` (3) runs in a row have given no verdict.
 
+- **Tests that all passed.** A failed `qk unittest` gate whose last summary says `OK` names no
+  test to rerun or bisect for (`Worker.weigh_passed`). When it ran too few tests (the count
+  history's `fewer than`, or `minimumTests`), the one entry whose commits remove more `def test`
+  definitions from the suite than they add goes back with the count, and the rest gate again at
+  once; with none or several, the queue holds at once for a session. Bisecting cannot find such an
+  entry, since each half may run on a Mac with no count to compare with. Any other failure after
+  passing tests, such as a step after them, is no verdict and counts toward `queue.noVerdictRuns`
+  (vocaro/queuekeeper#290).
 - **Settling.** Each retry first waits, polling every `SETTLE_POLL` (15 s) for up to `SETTLE_LIMIT`
   (an hour), for the Mac it could run on to read a CPU busy share under its `busyLimit` and
   normal memory pressure (`resources.pressure`). With another Mac configured it reads the Macs the

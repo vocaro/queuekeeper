@@ -264,6 +264,12 @@ UNITTEST_SUMMARY = re.compile(r"^queuekeeper unittest: \d+ tests \(\d+ skipped\)
                               r"[\d.]+s: (.*)$", re.M)
 # What qk unittest prints when it refuses a suite before running anything (parallel.refusals).
 REFUSAL = re.compile(r"^queuekeeper unittest: .*; nothing ran$", re.M)
+# Why qk run failed a lane whose tests all passed, as it ran too few of them: fewer than the lane's last passing whole
+# run on main on the same Mac (count_history.dropped), or than its minimumTests (lane_results.require_tests).
+COUNT_SHORT = re.compile(r"\S+ executed \d+ tests, \d+ fewer than the \d+ its last passing whole run[^\n]*"
+                         r"|Expected (?:at least|exactly) \d+ executed tests; observed[^\n]*")
+# A test method's definition a commit removes or adds, in a diff of a suite's Python files (removers).
+TEST_DEFINITION = re.compile(r"^([-+])\s*(?:async\s+)?def test\w*\s*\(", re.M)
 # How many of the newest gate logs `qk queue doctor` reads back to the last that gave a verdict, and how many of
 # them in a row with no verdict make a finding (doctor).
 DOCTOR_LOGS = 12
@@ -1169,6 +1175,13 @@ def hooks_elsewhere(checkout):
     return (f". The hook ran from {folder}, which core.hooksPath names outside the queue's checkout, so it was that "
             "folder's copy and not the batch's: a change to the hook, or to what it reads, that the old copy refuses "
             "lands in two steps, keeping what the old copy needs for one landing and dropping it in a second")
+
+
+def unittest_passed(log):
+    """Whether a lane's log ends its qk unittest run with the verdict OK, every test it ran having passed: a lane that
+    still failed did so after its tests, as qk run judged their count or another step of the lane failed."""
+    summaries = UNITTEST_SUMMARY.findall(log)
+    return bool(summaries) and summaries[-1].strip() == "OK"
 
 
 def failed_tests(log):
@@ -3474,6 +3487,11 @@ class Worker:
         self.repeated = self.passed_alone = False
         self.added = None  # (entry, why) of the entry that adds the tests the last rerun passed alone, for blame (rerun)
         self.refused = None  # (lane, line, config) of the last gate qk unittest refused before running, for blame (rerun)
+        self.dropped = None  # (entry, why) of the entry that removes the tests a gate ran too few of, for blame (rerun)
+        # (cause, at_once) when the last gate failed though qk unittest's verdict was OK, which is no verdict on the
+        # batch's tests: at_once holds at once rather than running again (rerun, older).
+        self.voided = None
+        self.void_cause = None  # that cause while the queue weighs it as no verdict (voided_gate, no_verdict_cause)
         self.unblamed = None  # {"key", "line"} of that refusal when blame found no one entry that brings it (blame)
         # {refusal_key: which gate} of the refusals that blamed no entry in the gates just before this one, the
         # previous gate's or a bisect's newer half beside it, which the same refusal again holds (older, Beside.weigh).
@@ -4992,7 +5010,7 @@ class Worker:
 
     def weigh_failure(self, config, applied, base, head, log, round_name):
         """rerun's verdict."""
-        self.confirmed = self.refused = self.added = None
+        self.confirmed = self.refused = self.added = self.dropped = self.voided = None
         self.regate = self.repeated = self.passed_alone = False
         lane = self.failed_lane
         if self.altered_files:
@@ -5028,6 +5046,9 @@ class Worker:
             self.refused = (lane, refusals[-1], config)
             self.say(f"{lane} ran nothing, as qk unittest refused it before running anything, which no rerun would "
                      f"change: {refusals[-1]}")
+            return None
+        if tests is None and unittest_passed(said):
+            self.weigh_passed(applied, lane, said, config)
             return None
         if tests is None:
             self.say(f"{lane} failed with no failed test to rerun alone ({why}): bisecting")
@@ -5355,8 +5376,10 @@ class Worker:
         confirmed, self.confirmed = self.confirmed, None
         refused, self.refused, self.unblamed = self.refused, None, None
         added, self.added = self.added, None
+        dropped, self.dropped = getattr(self, "dropped", None), None
         if refused: return self.blame_refusal(applied, *refused)
         if added: return added
+        if dropped: return dropped
         if not confirmed or len(applied) < 2: return None
         changes = {entry["id"]: self.changed_by(entry) for entry in applied}
         prefix = f"{self.checkout.resolve()}/"
@@ -5467,6 +5490,70 @@ class Worker:
         """The paths entry's commits change, each by its name before and after a move."""
         return {path for path in text(self.checkout, "log", "--no-walk", "--format=", "--name-only", "--no-renames",
                                       *entry["commits"]).splitlines() if path}
+
+    def weigh_passed(self, applied, lane, said, config):
+        """What a failed gate of lane, whose log said says qk unittest's verdict was OK, makes of applied: no failed
+        test is there to rerun or bisect for. On 2026-11-19 such a gate failed as it ran 6 fewer tests than main's last
+        on that Mac, one entry having deleted a test module without `Tests-Removed: gate`, and the queue bisected:
+        each half ran on a Mac with no count to hold it to, passed, and three gates went for nothing
+        (vocaro/queuekeeper#290). A gate that ran too few tests is blamed on the one entry whose commits remove more
+        test definitions from the suite than they add (dropped), as no rerun would change the count; with none or
+        several, the queue holds at once for a session, naming the count. Any other failure after tests that all
+        passed is no verdict on them, as a step after the tests, such as the dispatch's teardown, is no entry's
+        (voided), and runs again within queue.noVerdictRuns."""
+        short = COUNT_SHORT.findall(said)
+        if not short:
+            error = self.receipt_error()
+            cause = (f"{lane} failed though qk unittest's verdict was OK, so its tests gave no verdict"
+                     + (f": {shortened(error)}" if error else ""))
+            self.say(f"{cause}: no rerun of a test and no bisect")
+            self.voided = (cause, False)
+            return
+        line = short[-1].strip()
+        removing = self.removers(applied, lane, config)
+        if len(removing) == 1:
+            [(entry, removed)] = removing.items()
+            entry = next(each for each in applied if each["id"] == entry)
+            why = (f"{lane} ran too few tests, though every test it ran passed, and only {entry['id']} removes tests "
+                   f"from its suite ({removed}), which no rerun would change: {line}")
+            rest = len(applied) - 1
+            self.say(f"{lane} failed with every test passing, as it ran too few: {line}")
+            self.say(f"blaming {entry['id']} ({entry.get('subject') or entry['tip'][:12]}): {why}; sending it back"
+                     + (f" and gating the other {rest} at once instead of bisecting" if rest else ""))
+            self.dropped = (entry, why)
+            return
+        found = (f"{'no entry' if not removing else f'{len(removing)} entries'} of the batch's {len(applied)} "
+                 + ("remove tests" if len(removing) > 1 else "removes tests")
+                 + (f" ({'; '.join(f'{key}: {words}' for key, words in removing.items())})" if removing else ""))
+        cause = (f"{lane} ran too few tests, though every test it ran passed, and {found}, so no commit is blamed and "
+                 f"no rerun would change the count: {line}")
+        self.say(f"{cause}: holding")
+        self.voided = (cause, True)
+
+    def removers(self, applied, lane, config):
+        """{entry ID: what it removes} of the entries of applied whose commits remove more test definitions from
+        lane's qk unittest suite than they add, each as how many in which files."""
+        suite = unittest_lanes(config).get(lane)
+        folder = os.path.normpath(suite[0]) if suite else "."
+        found = {}
+        for entry in applied:
+            diff = text(self.checkout, "log", "--no-walk", "-p", "--format=", "--no-renames", *entry["commits"], "--",
+                        *([] if folder == "." else [folder]))
+            removed, files, current = 0, collections.Counter(), None
+            for line in diff.splitlines():
+                if line.startswith("diff --git "):
+                    current = line.rsplit(" b/", 1)[-1]
+                    continue
+                definition = TEST_DEFINITION.match(line)
+                if not definition or current is None or not current.endswith(".py"): continue
+                step = 1 if definition.group(1) == "-" else -1
+                removed += step
+                files[current] += step
+            if removed > 0:
+                named = sorted(path for path, count in files.items() if count > 0)
+                more = f" and {len(named) - 5} more" if len(named) > 5 else ""
+                found[entry["id"]] = f"{removed} test definition{'' if removed == 1 else 's'}, from {', '.join(named[:5])}{more}"
+        return found
 
     def blame_refusal(self, applied, lane, line, config):
         """(the one entry of applied that brings line, qk unittest's refusal of lane's gate before it ran anything,
@@ -5982,6 +6069,84 @@ class Worker:
         self.queue.emit("round.began", round=round_name, head=head, base=base, adopted=adopted or None,
                         entries=[entry["id"] for entry in applied], bisect=bisect)
 
+    def no_verdict(self, config, applied, result, log, runner):
+        """What becomes of applied after its lanes gave no verdict, exiting result: it waits and runs again, or the
+        queue holds (older)."""
+        queue = self.queue
+        queue.mark(applied, QUEUED)
+        # This worker exits, as before a round, so the run counts toward no bound (vocaro-engineering#300). The
+        # worker's own answer decides, so that a lane that merely exits with this status cannot end worker after
+        # worker.
+        if result == remote.LOST_ACCESS: self.connected()
+        full = runner.out_of_space(result, log)
+        if full:
+            # A run again would fill the same disk, so the queue holds at once for a session to free space, and
+            # the batch's commits are not blamed: on 2026-11-14 a gate that ran out of space hung for about 90
+            # minutes, and on 2026-11-15 one whose log could not be written was sent back (vocaro/queuekeeper#162).
+            self.no_verdicts = self.locked_screens = 0
+            queue.hold(worded(SESSION, f"a lane ran out of disk space{runner.ran_where}: {full}. That is the "
+                                       "host's, not the batch's, and no entry is sent back: free space with "
+                                       "`python3 scripts/qk disk --delete`, or by removing what `python3 "
+                                       f"scripts/qk disk` lists, then resume the queue; see {log}"))
+            return NO_VERDICT_OUTCOME
+        locked = runner.screen_locked(result, log)
+        if locked:
+            # The owner's decision of 2026-11-08 (vocaro-engineering#293): a run a locked screen voided does not
+            # count toward the hold, and the lane's next run goes only to a Mac whose screen reads unlocked.
+            lane, reading = locked
+            self.unlocked.add(lane)
+            self.say(f"no verdict (exit {result}){runner.ran_where}: {lane} ran behind a locked screen, the last "
+                     f"reading {reading}, which queue.noVerdictRuns does not count; its next run goes only to a "
+                     "Mac whose screen reads unlocked" + self.count_locked(runner, config, lane, log))
+            if self.locked_screens >= LOCKED_SCREEN_RUNS:
+                queue.hold(worded(SESSION, f"{lane} ended behind a screen that locked during the run in "
+                                           f"{self.locked_screens} runs in a row, the last reading {reading}, the "
+                                           f"most LOCKED_SCREEN_RUNS allows ({LOCKED_SCREEN_RUNS}); see {log}"))
+                return NO_VERDICT_OUTCOME
+            busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
+            if busy: queue.hold(worded(SESSION, f"{lane} ran behind a locked screen, and {busy}; see {log}"))
+            return NO_VERDICT_OUTCOME
+        # A run that waited for an unlocked Mac and exited 75 ran nothing, so it says nothing of the row of locks;
+        # any other cause ends the row.
+        if not (result == resources.BUSY and runner.lane_now and runner.needs_unlocked(runner.lane_now[0], config)):
+            self.locked_screens = 0
+        self.no_verdicts += 1
+        runs = no_verdict_runs(config)
+        cause = runner.no_verdict_cause(result, log)
+        gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
+                f"row, the last with exit {result}{runner.ran_where}, {cause}")
+        # A shared host's configuration is the owner's; a host that stays busy, or tests left unmeasured, a
+        # session reads, and resumes once the host has settled or the cause is gone.
+        kind = OWNER if result == remote.MISCONFIGURED else SESSION
+        if self.no_verdicts >= runs:
+            queue.hold(worded(kind, f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}"
+                                    + runner.shared_timing(result, config)))
+            return NO_VERDICT_OUTCOME
+        self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
+                 + f", run {self.no_verdicts} of at most {runs}"
+                 # What an unmeasured run could not measure, so that the worker's log says it before any hold does.
+                 + (f": {cause}" if result == lane_results.UNMEASURED else ""))
+        # Every retry waits, so that none starts into the load that voided the run before it, or another Mac's.
+        busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
+        if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
+        return NO_VERDICT_OUTCOME
+
+    def voided_gate(self, config, applied, log, runner, cause, at_once):
+        """What becomes of applied after a gate that failed though qk unittest's verdict was OK (Worker.weigh_passed),
+        which sends back no entry: a hold at once, when running again would give the same, else no verdict, within
+        queue.noVerdictRuns (vocaro/queuekeeper#290)."""
+        if at_once:
+            self.queue.mark(applied, QUEUED)
+            self.no_verdicts = self.locked_screens = 0
+            self.queue.hold(worded(SESSION, f"{cause}{runner.ran_where}. No entry is sent back: if tests were removed "
+                                            "on purpose, add the trailer the line names to that entry's commit and "
+                                            "land it again; otherwise find what stopped running, then resume the "
+                                            f"queue; see {log}"))
+            return NO_VERDICT_OUTCOME
+        runner.void_cause = cause
+        try: return self.no_verdict(config, applied, lane_results.UNMEASURED, log, runner)
+        finally: runner.void_cause = None
+
     def older(self, config, applied, base, head, docs, ungated, result, log, round_name, flakes=None, reran=False,
               runner=None):
         """What becomes of applied, the round's batch, or a bisect's older half, after its lanes exited result:
@@ -6000,64 +6165,7 @@ class Worker:
             else: self.say(f"{', '.join(runner.withdrawn)} left the queue, which stopped the gate: gating what is left")
             queue.mark(applied, QUEUED)
             return QUEUED
-        if result in NO_VERDICT:
-            queue.mark(applied, QUEUED)
-            # This worker exits, as before a round, so the run counts toward no bound (vocaro-engineering#300). The
-            # worker's own answer decides, so that a lane that merely exits with this status cannot end worker after
-            # worker.
-            if result == remote.LOST_ACCESS: self.connected()
-            full = runner.out_of_space(result, log)
-            if full:
-                # A run again would fill the same disk, so the queue holds at once for a session to free space, and
-                # the batch's commits are not blamed: on 2026-11-14 a gate that ran out of space hung for about 90
-                # minutes, and on 2026-11-15 one whose log could not be written was sent back (vocaro/queuekeeper#162).
-                self.no_verdicts = self.locked_screens = 0
-                queue.hold(worded(SESSION, f"a lane ran out of disk space{runner.ran_where}: {full}. That is the "
-                                           "host's, not the batch's, and no entry is sent back: free space with "
-                                           "`python3 scripts/qk disk --delete`, or by removing what `python3 "
-                                           f"scripts/qk disk` lists, then resume the queue; see {log}"))
-                return NO_VERDICT_OUTCOME
-            locked = runner.screen_locked(result, log)
-            if locked:
-                # The owner's decision of 2026-11-08 (vocaro-engineering#293): a run a locked screen voided does not
-                # count toward the hold, and the lane's next run goes only to a Mac whose screen reads unlocked.
-                lane, reading = locked
-                self.unlocked.add(lane)
-                self.say(f"no verdict (exit {result}){runner.ran_where}: {lane} ran behind a locked screen, the last "
-                         f"reading {reading}, which queue.noVerdictRuns does not count; its next run goes only to a "
-                         "Mac whose screen reads unlocked" + self.count_locked(runner, config, lane, log))
-                if self.locked_screens >= LOCKED_SCREEN_RUNS:
-                    queue.hold(worded(SESSION, f"{lane} ended behind a screen that locked during the run in "
-                                               f"{self.locked_screens} runs in a row, the last reading {reading}, the "
-                                               f"most LOCKED_SCREEN_RUNS allows ({LOCKED_SCREEN_RUNS}); see {log}"))
-                    return NO_VERDICT_OUTCOME
-                busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
-                if busy: queue.hold(worded(SESSION, f"{lane} ran behind a locked screen, and {busy}; see {log}"))
-                return NO_VERDICT_OUTCOME
-            # A run that waited for an unlocked Mac and exited 75 ran nothing, so it says nothing of the row of locks;
-            # any other cause ends the row.
-            if not (result == resources.BUSY and runner.lane_now and runner.needs_unlocked(runner.lane_now[0], config)):
-                self.locked_screens = 0
-            self.no_verdicts += 1
-            runs = no_verdict_runs(config)
-            cause = runner.no_verdict_cause(result, log)
-            gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
-                    f"row, the last with exit {result}{runner.ran_where}, {cause}")
-            # A shared host's configuration is the owner's; a host that stays busy, or tests left unmeasured, a
-            # session reads, and resumes once the host has settled or the cause is gone.
-            kind = OWNER if result == remote.MISCONFIGURED else SESSION
-            if self.no_verdicts >= runs:
-                queue.hold(worded(kind, f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}"
-                                        + runner.shared_timing(result, config)))
-                return NO_VERDICT_OUTCOME
-            self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
-                     + f", run {self.no_verdicts} of at most {runs}"
-                     # What an unmeasured run could not measure, so that the worker's log says it before any hold does.
-                     + (f": {cause}" if result == lane_results.UNMEASURED else ""))
-            # Every retry waits, so that none starts into the load that voided the run before it, or another Mac's.
-            busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
-            if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
-            return NO_VERDICT_OUTCOME
+        if result in NO_VERDICT: return self.no_verdict(config, applied, result, log, runner)
         unstarted = runner.unstarted(result)
         if unstarted and runner.tooling and runner.batch_stops_start(base, head, log):
             # Queuekeeper starts without the batch and not with it: the batch's own commits stop it, which is a
@@ -6075,7 +6183,6 @@ class Worker:
                                        "so this says nothing of the batch's commits and none is sent back: "
                                        f"{runner.start_fix()}; see {log}"))
             return NO_VERDICT_OUTCOME
-        self.no_verdicts = self.locked_screens = 0
         if result:
             held = runner.main_alters(base, round_name, config) if runner.altered_files else None
             if held:
@@ -6086,6 +6193,11 @@ class Worker:
                 return QUEUED
             # A failure that a rerun alone does not repeat lands, when the batch cannot reach the test (#231).
             if not reran: flakes = runner.rerun(config, applied, base, head, log, round_name)
+            # A gate whose tests all passed gives no verdict, counted with the runs before it (#290).
+            voided, runner.voided = getattr(runner, "voided", None), None
+            if voided: return self.voided_gate(config, applied, log, runner, *voided)
+        self.no_verdicts = self.locked_screens = 0
+        if result:
             if not flakes and runner.regate:
                 queue.mark(applied, QUEUED)
                 return QUEUED
@@ -6558,6 +6670,7 @@ class Worker:
         tests its log reports unmeasured, else the error its receipt records (#288), else the last line in which its log
         gives the project's own reason (lane_results.unmeasured_reasons, vocaro/queuekeeper#30), the reason a lane that
         was not run gave, such as a locked screen, else no admission, or a shared host's configuration."""
+        if getattr(self, "void_cause", None): return self.void_cause
         if self.timed_out: return f"unmeasured: {self.timed_out}"
         if result == lane_results.UNMEASURED:
             try: said = log.read_text(errors="replace") if log else ""

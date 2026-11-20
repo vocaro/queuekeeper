@@ -1540,6 +1540,105 @@ class RefusedGates(UnittestGate):
                                                                                                "test_other")))
 
 
+# A gate whose every test passes, as qk unittest says it, though the lane fails after them (vocaro/queuekeeper#290):
+# with a file named teardown in its tree it exits 1, and when its tests' definitions number fewer than baseline says,
+# it says the count as qk run's count history does and exits 2, as the gate of 2026-11-19 on build-host did. Each run
+# adds a line to the counter whose path follows the command.
+PASSING_UNITTEST = """import pathlib, sys
+with open(sys.argv[-1], "a") as counter: counter.write("x")
+count = sum(path.read_text().count("def test") for path in pathlib.Path("tests").glob("test*.py"))
+if pathlib.Path("skipall").exists(): count -= 1
+print(f"queuekeeper unittest: {count} tests (0 skipped) in 1 processes, 1 at a time, 0.1s: OK")
+baseline = int(pathlib.Path("baseline").read_text())
+if count < baseline:
+    print(f"queuekeeper: gate executed {count} tests, {baseline - count} fewer than the {baseline} its last passing "
+          "whole run on Fixture-Mac executed at 0123456789ab (gate.json). If tests were removed on purpose, add the "
+          "trailer `Tests-Removed: gate` to a commit after 0123456789ab", file=sys.stderr)
+    sys.exit(2)
+sys.exit(1 if pathlib.Path("teardown").exists() else 0)
+"""
+TWO_TESTS = "import unittest\nimport host_isolation\n\nclass T(unittest.TestCase):\n    def test_a(self): pass\n    def test_b(self): pass\n"
+
+
+class PassingTestsFailedGate(Fixture):
+    """A gate whose lane fails though qk unittest's verdict is OK is never bisected, since it names no failed test to
+    find (vocaro/queuekeeper#290): a count too low goes back to the one entry that removes tests, or holds at once with
+    none, and any other cause is no verdict, run again within queue.noVerdictRuns."""
+    def setUp(self):
+        super().setUp()
+        config = self.config()
+        config["lanes"]["gate"] = {"command": ["python3", "tools/qk", "unittest", "-s", "tests", "-v",
+                                               str(self.counter)]}
+        for name, content in (("tools/qk", PASSING_UNITTEST), ("tests/host_isolation.py", ""),
+                              ("tests/test_one.py", ISOLATED), ("tests/test_two.py", TWO_TESTS), ("baseline", "3")):
+            (self.repo / name).parent.mkdir(exist_ok=True)
+            (self.repo / name).write_text(content)
+        run(self.repo, "git", "add", ".")
+        self.publish(config, "Gate on a qk unittest whose tests pass")
+
+    def removal(self, path, branch):
+        """A commit of its own on a new branch that deletes path."""
+        run(self.repo, "git", "fetch", "-q", "origin")
+        run(self.repo, "git", "checkout", "-q", "-B", branch, "origin/main")
+        run(self.repo, "git", "rm", "-q", path)
+        run(self.repo, "git", "commit", "-qm", f"Remove {path}")
+
+    def queued(self, *branches):
+        with patch.object(mq, "checked_before_running"): return self.add(*branches)
+
+    def work_said(self):
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.assertEqual(self.work(), 0)
+        return said.getvalue()
+
+    def test_a_count_too_low_goes_back_to_the_one_entry_that_removes_tests_without_a_bisect(self):
+        self.commit("c", "c")
+        self.removal("tests/test_two.py", "drop")
+        self.commit("tests/test_three.py", "more", ISOLATED)
+        ids = self.queued("c", "drop", "more")
+        log = self.work_said()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "failed", "landed"], log)
+        self.assertIn("gate failed with every test passing, as it ran too few: gate executed 2 tests, 1 fewer than the "
+                      "3 its last passing whole run", log)
+        self.assertIn(f"blaming {ids[1]} (Remove tests/test_two.py): gate ran too few tests, though every test it ran "
+                      f"passed, and only {ids[1]} removes tests from its suite (2 test definitions, from "
+                      "tests/test_two.py), which no rerun would change", log)
+        self.assertIn("Tests-Removed: gate", self.state(ids[1])["why"])
+        self.assertNotIn(": bisecting", log)
+        self.assertNotIn("fail together", log)
+        # The batch, then the other two at once.
+        self.assertEqual(self.gates(), 2, log)
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_count_too_low_that_no_entry_removes_holds_at_once_and_sends_back_nobody(self):
+        self.commit("c", "c")
+        self.commit("skipall", "skip")
+        ids = self.queued("c", "skip")
+        log = self.work_said()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["queued", "queued"], log)
+        self.assertEqual(self.gates(), 1, log)
+        held = mq.Queue(self.repo).held()
+        self.assertTrue(held.startswith("for a session, not the owner: gate ran too few tests, though every test it "
+                                        "ran passed, and no entry of the batch's 2 removes tests"), held)
+        self.assertIn("gate executed 2 tests, 1 fewer than the 3", held)
+        self.assertIn("No entry is sent back", held)
+        self.assertNotIn(": bisecting", log)
+
+    def test_any_other_failure_after_passing_tests_is_no_verdict_and_holds_at_the_bound(self):
+        self.commit("c", "c")
+        self.commit("teardown", "teardown")
+        ids = self.queued("c", "teardown")
+        log = self.work_said()
+        self.assertIn("gate failed though qk unittest's verdict was OK, so its tests gave no verdict", log)
+        self.assertIn(f"run 1 of at most {mq.NO_VERDICT_RUNS}", log)
+        self.assertNotIn(": bisecting", log)
+        self.assertNotIn("fail together", log)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["queued", "queued"], log)
+        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS, log)
+        held = mq.Queue(self.repo).held()
+        self.assertIn(f"the lanes gave no verdict in {mq.NO_VERDICT_RUNS} runs in a row", held)
+        self.assertIn("gate failed though qk unittest's verdict was OK", held)
+
+
 class NoVerdict(Fixture):
     @contextlib.contextmanager
     def no_verdict_for(self, runs, status="3"):
