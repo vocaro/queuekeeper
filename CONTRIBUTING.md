@@ -18,6 +18,7 @@ python3 scripts/qk run gate
 
 This repository lands on `main` through its own merge queue, not by merging pull requests. Open a
 pull request as usual; once it is accepted, a maintainer lands its commits through the queue, with
-your authorship kept, and closes the pull request.
+your authorship kept, and closes the pull request. No hosted CI runs on pull requests: the queue's
+gate, on the maintainer's Macs, tests your commits when they land.
 
 By contributing you agree that your contribution is licensed under the [Apache License 2.0](LICENSE).

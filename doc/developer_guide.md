@@ -33,6 +33,7 @@ this guide assumes you know what a lane, a gate, admission and the farm are.
 
 - **Land through the queue**, with `python3 scripts/qk land --wait --json` in the background.
   Never push to `main`.
+- **Add no hosted CI.** The queue's gate is this repository's only CI; see [No hosted CI](#no-hosted-ci).
 - **Keep the parser and the schema in step.** A setting added to `config.py` goes into
   `schemas/queuekeeper.schema.json` too.
 
@@ -1750,6 +1751,17 @@ schema only grows, so readers ignore what they do not know.
   through the `plugin-lists` lane.
 - **The README's screenshots.** Retake them after changing how the dashboard looks; see
   [The README's screenshots](#the-readmes-screenshots).
+
+### No hosted CI
+
+The gate runs only through the merge queue, on the owner's Macs, and that is Queuekeeper's CI. No
+GitHub Actions workflow or other hosted runner runs its tests or builds, and a change must not add
+one. A workflow that ran `qk run gate` on a hosted macOS runner started a job at every landing,
+since each landing pushes to `main`; the jobs were cancelled or failed on timing tests that pass
+on the owner's Macs, and the workflow was removed
+([#282](https://github.com/vocaro/queuekeeper/issues/282)). An outside pull request needs no hosted
+check either: a maintainer lands its commits through the queue, whose gate tests them
+([CONTRIBUTING.md](../CONTRIBUTING.md#pull-requests)).
 
 ### Spelling
 

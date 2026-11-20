@@ -23,6 +23,10 @@ itself, as described in [the user guide's admission section](doc/user_guide.md#a
 Run `python3 tools/dashboard-screenshots.py`, which retakes the README's screenshots with this Mac's Chrome,
 directly and not through admission ([why](doc/developer_guide.md#the-readmes-screenshots)).
 
+No hosted runner runs Queuekeeper's tests or builds: the merge queue's gate on the owner's Macs is its CI.
+Add no GitHub Actions or other hosted-runner workflow that runs them, not even for outside pull requests,
+which a maintainer lands through the queue ([why](doc/developer_guide.md#no-hosted-ci)).
+
 ## Land and recover
 
 When landing work, commit on your own branch and run `python3 scripts/qk land --wait --json` in the
