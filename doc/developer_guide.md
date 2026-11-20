@@ -309,15 +309,19 @@ rerun of its failed tests alone fails again (`Probe.confirm`); one whose failed 
 counts as no proof, as does one that does not apply to `main` by itself, so their entries stay. A
 probe with no verdict ends the search as any such gate ends a round, and the next round gates the
 halves again. The search's gates and wall time go in the round's account (`together`) and a
-`round.together` event.
+`round.together` event. A half that passed by flakes does not land when the search runs, so its
+flakes are recorded only once the round knows whether it does (`Worker.hold_flakes`,
+`Worker.release`): their `outcome` then says what the search did, and `test.flaky` has `landed`
+false (vocaro/queuekeeper#302).
 
 **When a bisect gates one half at a time,** a passing older half lands at once, so a newer entry
 that breaks only with it fails alone on a `main` that holds it. The worker remembers what the bisect
 landed and the `main` before it. When it gates an entry alone with such landings under it, it also
 gates the entry on that earlier `main`, in the `-beside` checkout on another Mac once a Mac has
 admitted the entry's own final lane (`Beforehand`), as a bisect's halves gate. A pass of the entry
-cancels that probe. A failure waits for it (`Worker.partners_landed`); if the entry passes on the
-earlier `main`, `fewest` finds the landed entries it fails with, and it comes back naming them in
+cancels that probe, whose lane `Worker.gate` records as `canceled`, as it does a thrown-away
+stacked gate's: in the entry's `logs` and the `gate.ended` event, not as unmeasured. A failure
+waits for it (`Worker.partners_landed`); if the entry passes on the earlier `main`, `fewest` finds the landed entries it fails with, and it comes back naming them in
 `conflictWith` with `state` `landed`, to rebase onto `origin/main`. With another Mac free the check
 costs Mac time, not wall time; when no other Mac can start it, or a lane runs only on this Mac, the
 probe gates after the entry fails, and several landed entries cost more gates to search. The search follows mergetrain's `minimize_joint_failure` (MIT; see `THIRD_PARTY_NOTICES.md`). The newer half waits behind the older instead when no other Mac can start it, a
@@ -1741,7 +1745,7 @@ schema only grows, so readers ignore what they do not know.
 | `entries.requeued` | Entries went back to waiting | `entries` |
 | `round.began` | The worker started a round | `round`, `head`, `base`, `entries`, `bisect`, `adopted` |
 | `gate.began` | A lane of a gate started | `lane`, `round`, `role`, `head`, `entries` |
-| `gate.ended` | A lane of a gate ended | `lane`, `round`, `role`, `status`, `log`, `mac`, `seconds` |
+| `gate.ended` | A lane of a gate ended | `lane`, `round`, `role`, `status` (an exit status, `withdrawn` or `canceled`), `log`, `mac`, `seconds` |
 | `gate.stuck` | A gate's wait for admission is held up by dead entries | `lane`, `role`, `why`, `waitingSince` |
 | `batch.passed` | A batch's lanes passed, before its push | `head`, `base`, `entries` |
 | `batch.pushed` | A batch was pushed to `main`, or a push without an answer was found there (`reconciled`) | `head`, `base`, `entries`, `ungated`, `reconciled` |

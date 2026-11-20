@@ -10799,6 +10799,72 @@ class BothHalves(Fixture):
                       right["why"])
         self.assertNotIn("left", self.main_files())
 
+    def test_a_halfs_flakes_record_the_search_rather_than_a_landing(self):
+        """As above, the newer half [right] passes by a flake, whose rerun chose the outcome of a batch that lands
+        (Worker.hold_flakes, as weigh_failure's last step calls it). The search runs instead, so the flake's record,
+        on the entry, the tracker and the test.flaky event, says what the search did, not that the batch landed
+        (vocaro/queuekeeper#302)."""
+        self.commit("left", "left"); self.commit("right", "right")
+        ids = self.add("left", "right")
+        gate, rerun, flaked = mq.Beside.gate, mq.Beside.rerun, []
+        test = "tests.test_fixture.Fixture.test_flaky"
+        landed = "No commit of the batch's 1 changes its module or a file it imports, so the batch landed."
+        def flaky_gate(worker, lanes, round_name, where=(), cancel=None, quick=None):
+            if worker.label == "newer half" and not flaked:
+                flaked.append(round_name)
+                log = self.base / f"{round_name}.log"
+                log.write_text("a flaky failure\n")
+                return 1, log
+            return gate(worker, lanes, round_name, where, cancel, quick)
+        def flaky_rerun(worker, config, applied, base, head, log, round_name):
+            if worker.label == "newer half":
+                flakes = [{"test": test, "commit": head, "gateLog": str(log), "rerunLogs": [], "mac": "fixture"}]
+                worker.hold_flakes(flakes, applied, {}, landed)
+                return flakes
+            return rerun(worker, config, applied, base, head, log, round_name)
+        with patch.object(mq.Beside, "gate", flaky_gate), patch.object(mq.Beside, "rerun", flaky_rerun):
+            log = self.worked()
+        left, right = (self.state(i) for i in ids)
+        self.assertEqual([left["state"], right["state"]], ["failed", "failed"], log)
+        said = (f"Both halves of the bisect passed, this one only once its failed tests passed alone, so it did not "
+                f"land: the search for the entries that fail together ran instead, and sent back {ids[0]}, {ids[1]}.")
+        [flake] = right["flakes"]
+        self.assertEqual(flake["outcome"], said)
+        self.assertNotIn("flakes", left)
+        self.assertEqual([tracked["outcome"] for tracked in self.tracked], [said])
+        [event] = mq.events.read(mq.Queue(self.repo).directory, kinds=["test.flaky"])
+        self.assertEqual((event["test"], event["landed"], event["entries"]), (test, False, [ids[1]]))
+
+    def test_a_halfs_flakes_still_record_a_landing_when_no_search_runs(self):
+        """Negative control: the newer half [d] passes by a flake while the older [bad] fails, so no search runs, d
+        lands as before, and its flake's record says the batch landed."""
+        for name in ("a", "b", "bad", "d"): self.commit(name, name)
+        ids = self.add("a", "b", "bad", "d")
+        gate, rerun, flaked = mq.Beside.gate, mq.Beside.rerun, []
+        test = "tests.test_fixture.Fixture.test_flaky"
+        landed = "No commit of the batch's 1 changes its module or a file it imports, so the batch landed."
+        def flaky_gate(worker, lanes, round_name, where=(), cancel=None, quick=None):
+            if worker.label == "newer half" and [entry["id"] for entry in worker.newer] == [ids[3]] and not flaked:
+                flaked.append(round_name)
+                log = self.base / f"{round_name}.log"
+                log.write_text("a flaky failure\n")
+                return 1, log
+            return gate(worker, lanes, round_name, where, cancel, quick)
+        def flaky_rerun(worker, config, applied, base, head, log, round_name):
+            if worker.label == "newer half" and flaked:
+                flakes = [{"test": test, "commit": head, "gateLog": str(log), "rerunLogs": [], "mac": "fixture"}]
+                worker.hold_flakes(flakes, applied, {}, landed)
+                return flakes
+            return rerun(worker, config, applied, base, head, log, round_name)
+        with patch.object(mq.Beside, "gate", flaky_gate), patch.object(mq.Beside, "rerun", flaky_rerun):
+            log = self.worked()
+        self.assertEqual(len(flaked), 1, log)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "landed", "failed", "landed"], log)
+        self.assertNotIn("each half passed", log)
+        self.assertEqual([flake["outcome"] for flake in self.state(ids[3])["flakes"]], [landed])
+        [event] = mq.events.read(mq.Queue(self.repo).directory, kinds=["test.flaky"])
+        self.assertTrue(event["landed"])
+
     def test_a_probe_with_no_verdict_starts_the_bisect_again_from_its_halves(self):
         """A probe that gives no verdict blames nobody: every entry waits again, and the next round gates the halves
         again, whose search then ends as any does."""
@@ -11307,8 +11373,16 @@ class Stacked(Fixture):
         self.assertEqual((self.state(first)["state"], self.added("b")["state"]), ("failed", "landed"), log)
         self.assertIn("is thrown away, since the batch below it did not land at the tip it was stacked on: queued "
                       "again", log)
-        # Canceled, rather than run out on top of a's: its lane counts once it has started.
-        self.assertIn("stacked: gate: unmeasured: Owned command was canceled", log)
+        # Canceled, rather than run out on top of a's: its lane counts once it has started. It is recorded as
+        # canceled, in b's logs and the journal, not as an unmeasured gate of an entry that then landed
+        # (vocaro/queuekeeper#302).
+        self.assertRegex(log, r"stacked: gate: canceled[^\n]*: Owned command was canceled")
+        self.assertNotIn("unmeasured", log)
+        self.assertEqual([item["status"] for item in self.added("b")["logs"] if item["lane"] == "gate"],
+                         [mq.CANCELED, 0], log)
+        ended = [event["status"] for event in mq.events.read(mq.Queue(self.repo).directory, kinds=["gate.ended"])]
+        self.assertIn(mq.CANCELED, ended)
+        self.assertNotIn(mq.lane_results.UNMEASURED, ended)
         self.assertEqual(self.gates(), 3, log)
         self.assertNotIn("hold", self.main_files())
 

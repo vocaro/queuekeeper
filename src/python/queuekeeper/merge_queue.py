@@ -252,6 +252,11 @@ START_LIMIT = 60
 # whose lane still waits to start is stopped the same way for an entry qk land --front --no-gate put first, which then
 # lands ahead of it (Worker.first_ungated, vocaro/queuekeeper#26).
 WITHDRAWN = "withdrawn"
+# What a gate records, in each entry's logs and its gate.ended event, for a lane its own cancel stopped: a stacked gate
+# thrown away (Stack.drop) or a lone entry's probe on the main before a bisect's landings once the entry passed
+# (Beforehand.finish). Neither reached a limit nor left anything unmeasured, so neither is recorded as unmeasured, though
+# the gate still returns no verdict (Worker.gate, vocaro/queuekeeper#302).
+CANCELED = "canceled"
 # A gate's status for a lane that passed but changed the tracked tree it tested (Worker.unaltered): a failure of the
 # batch, which no rerun clears.
 ALTERED = 1
@@ -3657,6 +3662,9 @@ class Worker:
         # Whether the last rerun ran a failed test that failed again, and whether every failed test it ran passed alone
         # (rerun_each), which a probe of the search for entries that fail together reads (Probe.confirm, #260).
         self.repeated = self.passed_alone = False
+        # Whether flakes a batch would land by wait for the round to say what became of it (hold_flakes), as a bisect's
+        # halves' do until the round knows whether the search for entries that fail together runs, and those waiting.
+        self.withholding, self.withheld = False, []
         self.added = None  # (entry, why) of the entry that adds the tests the last rerun passed alone, for blame (rerun)
         self.refused = None  # (lane, line, config) of the last gate qk unittest refused before running, for blame (rerun)
         self.dropped = None  # (entry, why) of the entry that removes the tests a gate ran too few of, for blame (rerun)
@@ -4302,10 +4310,11 @@ class Worker:
         the gate lane leaves its wall time, its own work and its wait for admission apart (budgets.timed), and the
         parts its log reports in self.measured, for the gate's budget (budgets.py). where is qk run's placement options
         for each lane, those that keep the second gate of a pair off the first gate's Mac (apart), and none
-        otherwise, so that qk run chooses among every Mac. A set cancel ends the lane as its
-        limit would (processes.Canceled), for a stacked gate thrown away (Stack). So does an entry it tests that leaves
-        the queue, as `qk queue remove` takes it out, and the gate then returns WITHDRAWN, with self.withdrawn naming
-        those entries (Removal, vocaro-engineering#247). A lane that still waits to start is stopped in the same way for
+        otherwise, so that qk run chooses among every Mac. A set cancel ends the lane as its limit would
+        (processes.Canceled), for a stacked gate thrown away (Stack) or a probe no longer needed (Beforehand): no
+        verdict, recorded as CANCELED rather than unmeasured (vocaro/queuekeeper#302). So does an entry it tests that
+        leaves the queue, as `qk queue remove` takes it out, and the gate then returns WITHDRAWN, with self.withdrawn
+        naming those entries (Removal, vocaro-engineering#247). A lane that still waits to start is stopped in the same way for
         an entry qk land --front --no-gate put first (first_ungated), and the gate returns WITHDRAWN with self.ahead
         naming it (vocaro/queuekeeper#26). lane_now is (the lane running, when it began, where), by which a gate
         stacked on this one goes to another Mac (Worker.admitted_mac). quick names the lanes run unadmitted first
@@ -4390,6 +4399,11 @@ class Worker:
                     self.say(f"{lane}: stopped before it started, as {self.stopped_for()}")
                     self.gate_ended(lane, round_name, WITHDRAWN, log, time.monotonic() - started)
                     return WITHDRAWN, log
+                if isinstance(error, processes.Canceled) and cancel is not None and cancel.is_set():
+                    # Thrown away on purpose, which says nothing of the lane: no verdict, but not unmeasured either.
+                    self.say(f"{lane}: canceled{self.ran_where}: {error}")
+                    self.gate_ended(lane, round_name, CANCELED, log, time.monotonic() - started)
+                    return lane_results.UNMEASURED, log
                 self.timed_out = f"{lane} reached its limit: {error}"
                 self.say(f"{lane}: unmeasured: {error}")
                 self.gate_ended(lane, round_name, lane_results.UNMEASURED, log, time.monotonic() - started)
@@ -5304,7 +5318,8 @@ class Worker:
             reached = sorted(paths & set(files)) if files is not None else None
             if reached is None: touching[flake["test"]] = "whose module the worker cannot find"
             elif reached: touching[flake["test"]] = f"which changes {', '.join(reached[:5])}, which it imports"
-        self.keep_flakes(flakes, applied, touching,
+        # Only flakes the batch lands by may wait for the round to say otherwise (hold_flakes).
+        (self.keep_flakes if touching or short else self.hold_flakes)(flakes, applied, touching,
                          "The batch was bisected, as it also adds a failed test that passed alone, which is no flake."
                          if added else
                          "The batch was bisected, as one of its entries alone also changes a failed test that passed "
@@ -5394,6 +5409,25 @@ class Worker:
             current = self.queue.read(entry["id"]) or entry
             self.queue.record(entry, flakes=current.get("flakes", []) + flakes)
 
+    def hold_flakes(self, flakes, applied, touching, outcome):
+        """keep_flakes for the flakes a batch lands by, outcome saying it landed; or, while withholding, as a bisect's
+        halves are until the round knows whether the search for the entries that fail together runs instead of their
+        landing (Worker.round), keep them in withheld for release (vocaro/queuekeeper#302)."""
+        if self.withholding: self.withheld.append((flakes, applied, outcome))
+        else: self.keep_flakes(flakes, applied, touching, outcome)
+
+    def release(self, searched=None):
+        """Stop withholding, and record the flakes withheld (hold_flakes): with the outcome their rerun chose, the batch
+        landing, or, when searched says what the search for the entries that fail together did instead
+        (Worker.together), with that, as flakes of a batch that did not land."""
+        self.withholding, withheld, self.withheld = False, self.withheld, []
+        for flakes, applied, outcome in withheld:
+            if searched:
+                outcome = ("Both halves of the bisect passed, this one only once its failed tests passed alone, so it did "
+                           f"not land: the search for the entries that fail together ran instead, and {searched}.")
+            self.keep_flakes(flakes, applied, {flake["test"]: "the search ran instead" for flake in flakes}
+                             if searched else {}, outcome)
+
     def rerun_declared(self, declared, applied, base, head, log, round_name):
         """rerun's verdict for a lane that is not qk unittest but whose failedTests name, in the JUnit XML it wrote to
         its results folder, the tests that failed, and how to rerun one alone (vocaro/queuekeeper#109). Each is rerun
@@ -5440,7 +5474,8 @@ class Worker:
                f"the batch changes {', '.join(reached[:5])}, which {lane}'s tests depend on")
         # A group its first failed lane ended under failFast never finished its other lanes (vocaro/queuekeeper#256).
         again = bool(self.group_cut) and head not in self.regated
-        self.keep_flakes(flakes, applied, {flake["test"]: why for flake in flakes} if why else {},
+        (self.keep_flakes if why or self.group_cut else self.hold_flakes)(
+                         flakes, applied, {flake["test"]: why for flake in flakes} if why else {},
                          f"The batch was bisected, as {why}." if why else
                          f"The gate had stopped at this failure before the rest of {self.unfinished()} ran, so the "
                          "batch gated again." if again else
@@ -6053,16 +6088,23 @@ class Worker:
             outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name)
             self.after_stack(outcome, self, config)
             return True
-        flakes = None
-        if result and result not in NO_VERDICT and result != WITHDRAWN:
-            flakes = self.rerun(config, applied, base, head, log, round_name)
-        older_passes = not result or bool(flakes)
-        # The newer half's failed tests are rerun before either half lands, so that a half that passed only by its
-        # flakes counts as passed here too, and both passing starts the search for the entries that fail together
-        # (vocaro/queuekeeper#261). Until then a flake in either half landed the older and blamed a newer alone.
-        if older_passes and (beside.result[0] == 0 or beside.counted(config, base)) \
-                and self.together(config, base, applied, beside, lanes, round_name, flakes or []):
-            return True
+        flakes, searched = None, False
+        # The flakes either half's rerun finds before the round knows whether the search runs say what became of the
+        # bisect, not that it landed (release, vocaro/queuekeeper#302).
+        self.withholding = beside.withholding = True
+        try:
+            if result and result not in NO_VERDICT and result != WITHDRAWN:
+                flakes = self.rerun(config, applied, base, head, log, round_name)
+            older_passes = not result or bool(flakes)
+            # The newer half's failed tests are rerun before either half lands, so that a half that passed only by its
+            # flakes counts as passed here too, and both passing starts the search for the entries that fail together
+            # (vocaro/queuekeeper#261). Until then a flake in either half landed the older and blamed a newer alone.
+            searched = older_passes and (beside.result[0] == 0 or beside.counted(config, base)) \
+                and self.together(config, base, applied, beside, lanes, round_name, flakes or [])
+        finally:
+            # together released them already, with what it did, if it ran: these are the flakes of halves that land.
+            for half in (self, beside): half.release()
+        if searched: return True
         # What passed beside lands at once while the older half bisects on; after the older half's push when both
         # passed, since the older go first when both can (Beside.weigh).
         if not older_passes: beside.weigh(config, base, older_landed=False)
@@ -6731,6 +6773,7 @@ class Worker:
             if not search.fails(entries):
                 self.say(f"the {len(entries)} pass together on {base[:12]}, or fail only by tests that pass alone: "
                          "gating them again")
+                self.release_both(beside, f"found that the {len(entries)} pass together now, so each gated again")
                 self.queue.mark(entries, QUEUED)
                 self.limit, self.suspects = None, 0
                 search.account()
@@ -6741,6 +6784,7 @@ class Worker:
             alone = [entry for entry in fewest_ if len(fewest_) == 1 or search.fails([entry])]
         except Unsettled as unsettled:
             search.account()
+            self.release_both(beside, "it ended without a verdict, so the bisect started again from its halves")
             self.queue.mark(entries, QUEUED)
             self.say(f"the search for the entries that fail together ended without a verdict on "
                      f"{', '.join(entry['id'] for entry in unsettled.entries)}: the bisect starts again from its halves")
@@ -6749,6 +6793,9 @@ class Worker:
             self.suspects, self.limit = len(entries), len(older)
             return True
         sent = alone or fewest_
+        rest = [entry for entry in entries if entry not in sent]
+        self.release_both(beside, f"sent back {', '.join(entry['id'] for entry in sent)}"
+                          + (f", and the other {len(rest)} gated again" if rest else ""))
         for entry in alone:
             log, runner = search.failure([entry])
             why = (f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again."
@@ -6763,13 +6810,17 @@ class Worker:
                 self.say(f"{entry['id']}: {why}")
                 self.settle_failure(entry, log, why, runner, conflictWith=[
                     {"id": other["id"], "sha": other["tip"], "state": FAILED} for other in partners])
-        rest = [entry for entry in entries if entry not in sent]
         self.queue.mark(rest, QUEUED)
         self.say(f"{len(sent)} of the {len(entries)} sent back after {search.said()}"
                  + (f"; the other {len(rest)} gate again" if rest else ""))
         search.account()
         self.limit, self.suspects = None, 0
         return True
+
+    def release_both(self, beside, words):
+        """Record the flakes both halves withheld (release) with words, what the search did instead of landing them,
+        while their entries still wait, before the search settles any (vocaro/queuekeeper#302)."""
+        for half in (self, beside): half.release(words)
 
     def bisected(self, entries, base):
         """Remember entries, which landed on base while a bisect goes on, and base, the main before the first of them,
