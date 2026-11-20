@@ -299,11 +299,14 @@ halves again. The search's gates and wall time go in the round's account (`toget
 
 **When a bisect gates one half at a time,** a passing older half lands at once, so a newer entry
 that breaks only with it fails alone on a `main` that holds it. The worker remembers what the bisect
-landed and the `main` before it. When an entry it gates alone then fails, the worker gates it on that
-earlier `main` (`Worker.partners_landed`); if it passes there, `fewest` finds the landed entries it
-fails with, and it comes back naming them in `conflictWith` with `state` `landed`, to rebase onto
-`origin/main`. This costs one gate for each entry that fails alone after the bisect landed something,
-more when several entries landed. The search follows mergetrain's `minimize_joint_failure` (MIT; see `THIRD_PARTY_NOTICES.md`). The newer half waits behind the older instead when no other Mac can start it, a
+landed and the `main` before it. When it gates an entry alone with such landings under it, it also
+gates the entry on that earlier `main`, in the `-beside` checkout on another Mac once a Mac has
+admitted the entry's own final lane (`Beforehand`), as a bisect's halves gate. A pass of the entry
+cancels that probe. A failure waits for it (`Worker.partners_landed`); if the entry passes on the
+earlier `main`, `fewest` finds the landed entries it fails with, and it comes back naming them in
+`conflictWith` with `state` `landed`, to rebase onto `origin/main`. With another Mac free the check
+costs Mac time, not wall time; when no other Mac can start it, or a lane runs only on this Mac, the
+probe gates after the entry fails, and several landed entries cost more gates to search. The search follows mergetrain's `minimize_joint_failure` (MIT; see `THIRD_PARTY_NOTICES.md`). The newer half waits behind the older instead when no other Mac can start it, a
 lane must run on this Mac, the round is docs-only, ungated or `--front`, or a newer entry applies
 only on top of an older one.
 

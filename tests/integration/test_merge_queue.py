@@ -10585,6 +10585,54 @@ class BothHalves(Fixture):
         self.assertEqual([self.state(i)["state"] for i in ids], ["failed", "failed"])
         self.assertEqual(log.count("each half passed, though the 2 failed together"), 2, log)
 
+    def one_half_at_a_time(self):
+        """The bisect gates one half at a time, as on one Mac, while a second gate of a pair can still run beside the
+        first (BOTH_HERE): no newer half goes beside the older."""
+        return patch.object(mq.Worker, "beside", lambda worker, *arguments, **keywords: None)
+
+    def test_a_lone_entry_is_gated_on_the_main_before_the_landings_beside_its_own_gate(self):
+        """One half at a time, left lands and right then fails alone; its probe on the main before left landed ran
+        beside its own gate, not after it, so naming left costs no wall time: 4 gates, one of them at once
+        (vocaro/queuekeeper#263)."""
+        self.commit("left", "left"); self.commit("right", "right")
+        ids = self.add("left", "right")
+        with self.one_half_at_a_time():
+            log = self.worked()
+        left, right = (self.state(i) for i in ids)
+        self.assertEqual([left["state"], right["state"]], ["landed", "failed"], log)
+        self.assertEqual(right["conflictWith"], [{"id": ids[0], "sha": left["tip"], "state": "landed"}])
+        self.assertIn(f"gating {ids[1]} at ", log)
+        self.assertIn("the main before this bisect's landings, beside its own gate", log)
+        self.assertIn(f"it gated on ", log)
+        self.assertIn(f"{ids[1]} sent back naming 1 landed entry after 1 probe, 1 pair of them at once", log)
+        self.assertEqual(self.gates(), 4)
+        searches = mq.events.read(mq.Queue(self.repo).directory, kinds=["round.together"])
+        self.assertEqual([(event["probes"], event["atOnce"]) for event in searches], [(1, 1)])
+
+    def test_a_lone_entry_that_fails_before_the_landings_too_comes_back_alone(self):
+        """[a bad]: a lands, and bad fails alone, beside its probe on the main before a, where it fails too: it
+        comes back alone, naming no one, after the same 4 gates."""
+        self.commit("a", "a"); self.commit("bad", "bad")
+        ids = self.add("a", "bad")
+        with self.one_half_at_a_time():
+            log = self.worked()
+        a, bad = (self.state(i) for i in ids)
+        self.assertEqual([a["state"], bad["state"]], ["landed", "failed"], log)
+        self.assertNotIn("conflictWith", bad)
+        self.assertIn("comes back alone", log)
+        self.assertEqual(self.gates(), 4)
+
+    def test_a_lone_entry_that_passes_cancels_its_probe_and_lands(self):
+        """[a b bad]: a lands, then [b bad] fail, and b, gated alone beside its probe, passes: the probe is
+        canceled, b lands, and bad comes back alone."""
+        for name in ("a", "b", "bad"): self.commit(name, name)
+        ids = self.add("a", "b", "bad")
+        with self.one_half_at_a_time():
+            log = self.worked()
+        self.assertEqual([self.state(i)["state"] for i in ids], ["landed", "landed", "failed"], log)
+        self.assertNotIn("conflictWith", self.state(ids[2]))
+        self.assertNotIn(f"{ids[1]} fails alone", log)
+
     def test_a_farm_mac_that_declines_leaves_the_bisect_as_before(self):
         """Negative control: when another Mac cannot start the newer half now, it waits behind the older half,
         and the bisect costs what it did, one half at a time: 5 gates in 5 rounds."""

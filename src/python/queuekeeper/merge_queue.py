@@ -3579,6 +3579,7 @@ class Worker:
         self.role = "batch"  # what its gate is in the round's account (GateWatch): the batch, or a bisect's older half
         # {"base", "entries"}: the entries the bisect going on landed, and the main before the first (bisected).
         self.bisect_landed = None
+        self.early = None  # the Beforehand of this round's lone entry, gating beside its gate (beforehand)
 
     def say(self, words):
         print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True)
@@ -5872,6 +5873,7 @@ class Worker:
         batch = self.stacked.entries if self.stacked else self.choose(waiting)
         if not batch: return False
         if not self.limit: self.bisect_landed = None
+        self.early = None
         passed = [entry for entry in batch if entry["state"] == PASSED] if not self.stacked else []
         if not fetch_main(queue.main_checkout, self.say): return self.first_landing(batch[0])
         self.prepare()
@@ -5926,8 +5928,15 @@ class Worker:
             result, log = self.watched(self, config, lanes, base, head, [*applied, *beside.newer],
                                        lambda: beside.both(self, lanes, round_name), stacks=False)
         elif (self.limit or self.alone) and not (docs or ungated):
-            result, log = self.watched(self, config, lanes, base, head, applied,
-                                       lambda: self.gate(lanes, round_name), stacks=False)
+            # A bisect's lone entry gates on the main before the bisect's landings too, beside its own gate, for
+            # whether it fails only with them (vocaro/queuekeeper#263).
+            self.early = self.beforehand(config, applied, base, lanes)
+            try: result, log = self.watched(self, config, lanes, base, head, applied,
+                                            lambda: self.gate(lanes, round_name), stacks=False)
+            except BaseException:
+                if self.early: self.early.finish(False)
+                raise
+            if self.early: self.early.finish(bool(result) and result not in NO_VERDICT and result != WITHDRAWN)
         elif self.alone or docs or ungated:
             result, log = self.gate(ungated["lanes"] if ungated else docs or lanes, round_name)
         else:
@@ -6294,7 +6303,8 @@ class Worker:
             if not flakes and runner.regate:
                 queue.mark(applied, QUEUED)
                 return QUEUED
-            if not flakes and len(applied) == 1 and self.partners_landed(config, applied[0], base, log, runner):
+            if not flakes and len(applied) == 1 and self.partners_landed(config, applied[0], base, log, runner,
+                                                                          self.early):
                 return FAILED
             if not flakes:
                 blamed = runner.blame(applied)
@@ -6664,32 +6674,57 @@ class Worker:
         if self.bisect_landed is None: self.bisect_landed = {"base": base, "entries": []}
         self.bisect_landed["entries"] += [dict(entry) for entry in entries]
 
-    def partners_landed(self, config, entry, base, log, runner):
-        """Whether entry, which a bisect gated alone, and which fails on top of origin/main, came back naming the
-        entries this bisect landed before it that it fails with, as it passes on the main before they landed
-        (vocaro/queuekeeper#263). When a bisect gates one half at a time, a passing older half lands at once, and a
-        newer entry that breaks only with it then fails alone on a main that holds it. The worker gates entry on the
-        main before the bisect's first landing; when it passes there, it searches the landed entries for the fewest it
-        fails with (fewest), and entry comes back naming them, each by ID and commit, landed (conflictWith). False to
-        send it back alone, as before: nothing landed in this bisect, it fails there too, or a probe gave no verdict.
-        Only the landed entries base, the main entry failed on, holds count: a newer half that landed beside entry's
-        gate is not under it. Costs a gate, and one or more for each landed entry beyond the first."""
+    def landed_under(self, config, entry, base):
+        """(the entries this bisect landed that base, the main entry gates on, holds; the main before the first of
+        them; a Joint to search them with entry on that main), or None when there are none, or no lanes can be chosen
+        for them (partners_landed). A newer half that landed beside entry's gate is not under it."""
         landed = self.bisect_landed
-        if not landed or self.alone or not landed["entries"] or base is None: return False
+        if not landed or self.alone or not landed["entries"] or base is None: return None
         partners = [other for other in landed["entries"] if other["id"] != entry["id"] and landing_proofs.contained(
             lambda *words: git(self.checkout, *words), base, other["tip"])]
-        if not partners: return False
-        before = landed["base"]
-        ids = ", ".join(other["id"] for other in partners)
-        self.say(f"{entry['id']} fails alone on origin/main, which holds {ids}, landed by this bisect: gating it on "
-                 f"{before[:12]}, the main before them, for whether it fails with them")
+        if not partners: return None
         members = sorted([*partners, entry], key=lambda other: (other.get("submitted") or 0, other["id"]))
         try: lanes = lanes_of(config, set().union(*(self.own_paths(other) for other in members)))
         except ValueError as error:
             self.say(f"the lanes for {entry['id']} and the entries landed before it cannot be chosen: {error}")
-            return False
-        search = Joint(self, config, before, lanes, members, watched=[entry["id"]])
+            return None
+        return partners, landed["base"], Joint(self, config, landed["base"], lanes, members, watched=[entry["id"]])
+
+    def beforehand(self, config, applied, base, lanes):
+        """A Beforehand gating applied, a bisect's lone entry, on the main before the bisect's landings, beside the
+        entry's own gate on another Mac (vocaro/queuekeeper#263), or None: not a lone entry of a bisect that landed
+        something under it, or a lane that runs only on this Mac, where the probe gates after, if the entry fails."""
+        if len(applied) != 1 or not self.limit or self.alone or offerable(config, lanes): return None
+        found = self.landed_under(config, applied[0], base)
+        if found is None: return None
+        ahead = Beforehand(self, applied[0], *found)
+        return ahead if ahead.start(lanes[-1]) else None
+
+    def partners_landed(self, config, entry, base, log, runner, ahead=None):
+        """Whether entry, which a bisect gated alone, and which fails on top of origin/main, came back naming the
+        entries this bisect landed before it that it fails with, as it passes on the main before they landed
+        (vocaro/queuekeeper#263). When a bisect gates one half at a time, a passing older half lands at once, and a
+        newer entry that breaks only with it then fails alone on a main that holds it. The worker gates entry on the
+        main before the bisect's first landing, beside its own gate on another Mac where ahead did (beforehand), else
+        now; when it passes there, it searches the landed entries for the fewest it fails with (fewest), and entry
+        comes back naming them, each by ID and commit, landed (conflictWith). False to send it back alone, as before:
+        nothing landed under it in this bisect, it fails there too, or a probe gave no verdict. Costs a gate, beside
+        the entry's own where another Mac can take it, and one or more for each landed entry beyond the first."""
+        found = ahead.found if ahead else self.landed_under(config, entry, base)
+        if found is None: return False
+        partners, before, search = found
+        search.began = time.monotonic()
+        ids = ", ".join(other["id"] for other in partners)
+        beside = bool(ahead and ahead.raw)
+        self.say(f"{entry['id']} fails alone on origin/main, which holds {ids}, landed by this bisect: "
+                 + (f"it gated on {before[:12]}, the main before them, beside its own gate" if beside else
+                    f"gating it on {before[:12]}, the main before them")
+                 + ", for whether it fails with them")
         try:
+            if beside:
+                search.probes += 1
+                search.paired += 1
+                search.judge(ahead.runner, [entry], ahead.head, *ahead.raw, ahead.name)
             search.learn([[entry]])
             if search.known[search.key([entry])][0] is not False:
                 self.say(f"{entry['id']} fails on {before[:12]} too, or gives no proof there: it comes back alone")
@@ -7397,6 +7432,58 @@ class Beside(Worker):
         why = f"the queue's lanes fail on this commit on top of origin/main: fix it and add it again.{facts}"
         self.say(f"{applied[0]['id']}: {why}")
         self.settle_failure(applied[0], log, why)
+
+
+class Beforehand:
+    """The probe of a bisect's lone entry on the main before the bisect's landings, before, gated in the newer half's
+    checkout beside the entry's own gate on a Mac other than the one that admitted its final lane, as a bisect's halves
+    are (Worker.beforehand, vocaro/queuekeeper#263), so that the check partners_landed makes when the entry fails costs
+    no wall time. found is landed_under's answer. A pass of the entry's gate cancels it; a failure waits for it, and
+    raw is then its (result, log), or None when no other Mac could start it now, and partners_landed gates it after."""
+    def __init__(self, worker, entry, partners, before, search):
+        self.worker, self.entry, self.found, self.before = worker, entry, (partners, before, search), before
+        self.runner = search.runner(0)
+        self.ended, self.cancel = threading.Event(), threading.Event()
+        self.raw, self.error, self.thread, self.head, self.name = None, None, None, None, None
+
+    def start(self, final_lane):
+        """Put the entry on before and start the probe's thread, which waits for the Mac that admits final_lane of
+        the worker's gate; False when the entry does not apply there by itself."""
+        runner, entry = self.runner, self.entry
+        runner.unreachable = []
+        applied = runner.integrate([entry], self.before)
+        if runner.unreachable or len(applied) != 1: return False
+        runner.gating = (entry["id"],)
+        self.head = runner.head()
+        self.name = f"{time.strftime('%Y%m%d-%H%M%S')}-{self.head[:8]}"
+        self.worker.lane_now = None
+        lanes, kept = self.found[2].lanes, runner.environment
+        def gate():
+            try:
+                where = runner.apart_from(self.worker, final_lane, self.ended)
+                if where is None or self.cancel.is_set(): return
+                options, excluded, said_where = where
+                if excluded is not None: runner.environment = {**kept, remote.QUEUE_GATE_EXCLUDE: excluded}
+                runner.say(f"gating {entry['id']} at {self.head[:12]} on {self.before[:12]}, the main before this "
+                           f"bisect's landings, beside its own gate: its lanes go {said_where.replace(' them ', ' it ')}")
+                result = runner.gate(lanes, self.name, where=options, cancel=self.cancel)
+                # A Mac that declined ran nothing: the probe gates after, if the entry fails.
+                if not self.cancel.is_set() and not (result[0] == resources.BUSY and not runner.ran_where):
+                    self.raw = result
+            except BaseException as error: self.error = error
+            finally: runner.environment = kept
+        self.thread = threading.Thread(target=gate, name="probe before the landings", daemon=True)
+        self.thread.start()
+        return True
+
+    def finish(self, failed):
+        """Once the entry's own gate has ended, failed or not, wait for the probe, canceled unless failed."""
+        self.ended.set()
+        if not failed: self.cancel.set()
+        self.thread.join()
+        if isinstance(self.error, processes.Interrupted): raise self.error
+        if self.error is not None: self.runner.say(f"its lanes could not run: {self.error}")
+        if not failed: self.raw = None
 
 
 class Probe(Beside):
