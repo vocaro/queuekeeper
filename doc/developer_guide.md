@@ -15,7 +15,8 @@ this guide assumes you know what a lane, a gate, admission and the farm are.
   platform plugins' records and rules
 - [Visibility features](#visibility-features): the event journal, and writing a feature
 - [Checks this repository runs](#checks-this-repository-runs): spelling and the docs check
-- [Maintenance](#maintenance): changing Queuekeeper while work runs, the README's screenshots
+- [Maintenance](#maintenance): changing Queuekeeper while work runs, moving a module, renaming a
+  setting, the README's screenshots
 
 ## Working on Queuekeeper
 
@@ -1855,6 +1856,74 @@ project on that Mac the moment its checkout updates, whatever its queue holds (#
 
 A forwarder may only import what its own component may (see `test_queuekeeper_imports.py`), so the old
 `queuekeeper.apple` and `queuekeeper.mac_desktop` names, which became plugins of their own, cannot have one.
+
+### Renaming or retiring a setting
+
+The merge queue judges every entry by `origin/main`'s `queuekeeper.json`, read with the strict `parse`
+(`merge_queue.main_config`), and a landed Queuekeeper commit reaches every project at once: each project's
+`qk land` runs the shared checkout, and each worker moves its copy to Queuekeeper's `origin/main` every round.
+A release that refuses a key some project's `main` still gives makes that `main` unreadable for every entry of
+that project (#295). So a `queuekeeper.json` key is renamed or retired in two landings with every project moved
+between them, as `extensions` became `plugins` (#48) and `queue.unread` replaced `queue.docsOnly` and
+`queue.carryOver` (#189):
+
+1. **Accept both, and warn.** Read the new key, and the old one only while the new one is absent; refuse the
+   two together; mark the old one `"deprecated": true` in the schema; and warn of it, naming the new key, in
+   `qk doctor`'s warnings and in `qk land`, as `config.old_plugins_warning` did (7441b051). A key retired with
+   no replacement is read as before and warned of. A module renamed with it keeps a forwarder
+   ([Moving a module](#moving-a-module)).
+2. **Wait for the shared checkout to hold step 1.** Every project's `qk` runs from `~/Development/queuekeeper`,
+   which follows `origin/main` only while nothing runs from it. Wait for a file or line that step 1 adds, not
+   for its SHA, which a rewrite of `main` would change.
+3. **Move every project's `main`.** Each project lands its own change through its own queue, from a session
+   started in that project. Rename only the key: a plain text replacement of `extension` also rewrote git's
+   `extensions.worktreeConfig`, Apple's "app extension" and the speech extension. A project that missed one
+   retirement may hold several refused keys, as one held `spelling` (#69) and `queue.docsOnly` beside
+   `extensions`, so move every key the coming release refuses in one change.
+4. **Confirm each project from its `origin/main`** (below), and repeat until none gives the old key.
+5. **Then refuse.** Refuse the old key with a message naming the new one, and remove the fallback, the warning,
+   the schema entry and the forwarder (e71d9bc6). Land it only after step 4 finds no project still giving the
+   key.
+
+**Find every project from `origin/main`, never from checkouts.** A project is a repository whose `main` has a
+`queuekeeper.json`. #48's first list, from `~/Development/*/queuekeeper.json`, missed a project whose checkout
+was 104 commits behind and had no such file, while its `origin/main` still gave `extensions`. List the owner's
+repositories and read each `main` from GitHub, with the key in place of `OLD`:
+
+```sh
+gh repo list OWNER --limit 1000 --json nameWithOwner --jq '.[].nameWithOwner' | while read -r repo; do
+  gh api -H 'Accept: application/vnd.github.raw' "repos/$repo/contents/queuekeeper.json?ref=main" \
+    2>/dev/null | grep -q '"OLD"' && echo "$repo"
+done
+```
+
+In a checkout, `git fetch origin` and then `git show origin/main:queuekeeper.json` read the same file. The
+folders under `~/Development/queuekeeper-workers/` name the projects whose queue has run on this Mac, a check
+on the list. The search matches the key's name anywhere in the file, so read each hit.
+
+**What `qk doctor` reports.** `qk doctor` reads the working tree's `queuekeeper.json`, as every command but
+`qk land` and `qk queue` does. During step 1 it lists the old key's warning; once step 5 lands it stops with the
+refusal. Either way it speaks for that checkout, not for `main`: a clean `qk doctor` in a checkout behind
+`origin/main` says nothing of what the queue reads. `qk land` warns of `origin/main`'s file, which it judges the
+entry by, so its warning does speak for `main`, but only for a project that lands something. Confirm with the read
+above, or with `qk doctor` in a checkout at `origin/main`.
+
+**A project the scan missed is not stranded, but it is stopped.** When `parse` refuses `origin/main`'s file,
+`main_config` names that file as the fault, and an entry whose own `queuekeeper.json` reads is gated by its own
+file instead, less what only `main` may say (`as_batch`: `hookCoveredBy`, `unread`, `preflight` and
+`affected`); `Worker.settings` reads the round's batch the same way (#295). So the fix lands through the queue,
+not by a hand push. Until it does, every other entry of that project is refused; the fix's gate runs without
+those settings, so every gate lane runs; and the fix must clear every key the release refuses, or its own file
+does not read either. Step 1 and the scan stay the way to retire a key: this only keeps a missed project from
+needing the owner.
+
+**A branch older than the new key is told to rebase.** After step 3, `main` gives a key that Queuekeeper code
+from before step 1 cannot read. Where a branch's own code reads the file, as in Queuekeeper's own repository,
+whose launcher runs its checkout, an entry from a branch cut before step 1 is refused with `reasonCode`
+`behind-main` and `git rebase origin/main` (`behind_main_config`, #279), since `origin/main`'s file changed
+after the fork and the fork's copy reads. The user guide's
+[When main's configuration can't be read](user_guide.md#when-mains-configuration-cant-be-read) says what a
+project sees.
 
 ### Copies in each project
 
