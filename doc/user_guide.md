@@ -2703,8 +2703,10 @@ wake you.
 - **A landing deletes its branch** when it can prove the branch landed, and says
   `queue: deleted branch NAME at TIP: ...; restore with git branch NAME TIP`, or
   `queue: kept branch NAME: WHY`. The usual reason to keep it is that your worktree has it
-  checked out. `--json` gives the same as `branchCleanup` ([Cleaning up after a
-  landing](#cleaning-up-after-a-landing)).
+  checked out. `qk land --wait --detach-landed` deletes it anyway once it is proven landed, by
+  detaching your worktree at the same commit, which changes no file. Otherwise the next worker to
+  start deletes it once no worktree has it checked out. `--json` gives the same as
+  `branchCleanup` ([Cleaning up after a landing](#cleaning-up-after-a-landing)).
 - **Each project lands in its own repository.** To land a commit in another project's queue, use
   `qk land --repo NAME BRANCH --wait`.
 - **`qk queue status` shows the whole picture.** For a gate on another Mac, read the lane's own
@@ -3258,10 +3260,28 @@ with the command that restores it. Anything else is kept with the reason.
 
 `qk land --wait` does this for its own branch once the entry lands. With `--json`, the result's
 `branchCleanup` holds `branch`, `tip`, `entry`, `outcome` (`deleted` or `kept`), `why`, and for a
-deletion `how` (`exact`, `contained` or `patch-equivalent`) and `restore`. A failure here never
-changes the landing's exit status. A branch checked out in your own worktree is kept; it goes
-with the next `qk queue reclaim` after the worktree is gone. `qk land --repo` leaves the other
-repository's branches alone.
+deletion `how` (`exact`, `contained` or `patch-equivalent`) and `restore`. A branch kept because a
+worktree has it checked out also gives that worktree as `heldAt`. A failure here never changes
+the landing's exit status. `qk land --repo` leaves the other repository's branches alone.
+
+**A branch checked out in your own worktree** is kept, since you usually land from the worktree
+that has it checked out. You can have it removed in either of two ways:
+
+- **At landing:** `qk land --wait --detach-landed`. After the branch passes every other check above,
+  it detaches the worktree you ran `qk land` in, and only that one, at the branch's tip, then
+  deletes the branch. Detaching at the same commit changes no file. It does this only when that
+  worktree has the branch checked out at that tip, with no change to a tracked file and no merge,
+  rebase, cherry-pick, revert or bisect under way, and no other worktree holds the branch.
+  Untracked and ignored files are not touched, and the worktree is never removed. The message
+  and `branchCleanup` add `detached` (the worktree) and `reattach`. To undo, run `restore` and
+  then `reattach` (`git -C WORKTREE switch NAME`). If Git refuses the deletion, the worktree goes
+  back on the branch. Use it only when you don't need that branch checked out after landing;
+  some clients track the session's branch by name.
+- **Later:** each worker, when it starts, deletes every branch the queue proves landed that no
+  worktree has checked out, using `origin/main` as last fetched. Each deletion is printed in the
+  queue's log and journaled as `branch.deleted`. A branch whose worktree has since been removed,
+  or switched away from it, therefore goes with the next `qk land` without anyone running
+  `qk queue reclaim`.
 
 **Repository-wide**, `qk queue reclaim` deletes every branch that meets the rules above and
 reports each linked worktree that holds only landed work: its branch passes the same checks, or it

@@ -520,6 +520,15 @@ gate's log when the lane ends.
   `landed_cleanup`'s rule: the queue's newest entry from it landed and `origin/main` holds that
   landing, its tip is the one queued or every commit of it has an equal patch on `origin/main`,
   and no worktree holds it. They report worktrees that hold only landed work and never remove one.
+  A worker runs the branch half at its start too (`reclaim_branches`, after `reclaim_scratch`),
+  saying only what it deleted. The worktree report needs an `lsof` census, so it stays in
+  `qk queue reclaim`. `qk land --wait --detach-landed` passes `detach_in`, the top of the worktree
+  `qk land` ran in: a branch kept only because that worktree has it checked out goes through
+  `landed_cleanup.detach`. It runs the same rule as though no worktree held the branch, requires
+  that worktree's HEAD to name the branch at its tip with no tracked change and no operation under
+  way, runs `git switch --detach TIP` (same commit, hooks off), then `git update-ref -d`. If the
+  deletion is refused, it writes HEAD back to the branch. No other worktree is ever changed
+  (vocaro/queuekeeper#311).
 - What a dead worker was testing was never pushed, so the next worker tests it again.
 - A batch whose lanes passed is recorded `passed`, with its commit and base, before its push. After
   a hold and `qk queue resume`, the next worker pushes it without gating again while the batch is
@@ -1748,7 +1757,7 @@ schema only grows, so readers ignore what they do not know.
 | `entry.failed` | An entry came back from its gate | `entry`, `subject`, `tip`, `why`, `log` |
 | `entry.conflict` | An entry came back with a conflict | `entry`, `subject`, `tip`, `why` |
 | `entry.removed` | An entry was taken out | `entry`, `subject`, `tip` |
-| `branch.deleted` | A landed entry's local branch was deleted (`landed_cleanup`) | `branch`, `tip`, `entry`, `how` |
+| `branch.deleted` | A landed entry's local branch was deleted (`landed_cleanup`) | `branch`, `tip`, `entry`, `how`, and `detached` (the worktree) for `--detach-landed` |
 | `entries.testing` | Entries went under test | `entries` |
 | `entries.requeued` | Entries went back to waiting | `entries` |
 | `round.began` | The worker started a round | `round`, `head`, `base`, `entries`, `bisect`, `adopted` |

@@ -23,12 +23,14 @@ def nobody():
 
 
 class Landed(Fixture):
-    def land(self, branch, name=None):
+    def land(self, branch, name=None, reclaim=False):
         """Commit name on a new branch, land it with a worker, and leave the checkout detached, so that no worktree
-        has the branch checked out. The entry."""
+        has the branch checked out. The entry. The worker's start leaves the branches landed before alone unless
+        reclaim, so that a test sets up several before judging them."""
         tip = self.commit(name or branch, branch)
         [identifier] = self.add(branch)
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        quiet = patch.object(mq, "reclaim_branches") if not reclaim else contextlib.nullcontext()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), quiet:
             self.assertEqual(self.work(), 0)
         run(self.repo, "git", "fetch", "-q", "origin")
         run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
@@ -194,6 +196,140 @@ class Worktrees(Landed):
         self.assertEqual([each["branch"] for each in payload["branches"]], ["a"])
         self.assertEqual([each["path"] for each in payload["worktrees"]], [str(self.tree)])
         self.assertTrue(self.tree.is_dir())
+
+
+class DetachLanded(Landed):
+    """qk land --wait --detach-landed: the branch the session's own worktree has checked out goes once proven landed,
+    that worktree detached at the same commit, with no file changed and no worktree removed (#311)."""
+    def setUp(self):
+        super().setUp()
+        self.entry = self.land("a")
+        self.tree = self.base / "tree"
+        run(self.repo, "git", "worktree", "add", "-q", str(self.tree), "a")
+        common = Path(run(self.repo, "git", "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        (common / "info").mkdir(exist_ok=True)
+        (common / "info/exclude").write_text("build/\n")
+
+    def head(self, path=None):
+        """The branch path has checked out, or the commit its detached HEAD is at."""
+        done = wo.run_git(path or self.tree, "symbolic-ref", "--quiet", "--short", "HEAD")
+        return done.stdout.strip() if done.returncode == 0 else run(path or self.tree, "git", "rev-parse", "HEAD")
+
+    def tidy_here(self, path=None, **options):
+        said = []
+        result = mq.tidy_branch(path or self.tree, self.entry["id"], say=said.append, **options)
+        return result, said
+
+    def test_it_detaches_the_worktree_at_the_landed_tip_changing_no_file_and_deletes_the_branch(self):
+        (self.tree / "notes.txt").write_text("untracked\n")
+        (self.tree / "build").mkdir()
+        (self.tree / "build/receipt.json").write_text("{}")
+        result, said = self.tidy_here(detach_landed=True)
+        self.assertEqual((result["outcome"], result["how"], result["detached"]),
+                         (lc.DELETED, "exact", str(self.tree)))
+        self.assertIsNone(self.branch("a"))
+        self.assertEqual(self.head(), self.entry["tip"])
+        # No file changed and the worktree stays, its untracked and ignored files with it.
+        self.assertEqual((self.tree / "notes.txt").read_text(), "untracked\n")
+        self.assertEqual((self.tree / "build/receipt.json").read_text(), "{}")
+        self.assertEqual(run(self.tree, "git", "status", "--porcelain", "--untracked-files=no"), "")
+        self.assertIn(f"detached {self.tree} at ", said[-1])
+        self.assertIn(f"`git branch a {self.entry['tip']}` and then `git -C {self.tree} switch a`", said[-1])
+        queue = mq.Queue(self.repo)
+        [event] = [each for each in map(json.loads, events.path_of(queue.directory).read_text().splitlines())
+                   if each["kind"] == "branch.deleted"]
+        self.assertEqual((event["branch"], event["detached"]), ("a", str(self.tree)))
+
+    def test_without_the_option_it_is_kept_and_said_how_it_goes(self):
+        result, said = self.tidy_here()
+        self.assertEqual((result["outcome"], result["heldAt"]), (lc.KEPT, str(self.tree)))
+        self.assertEqual(self.head(), "a")
+        self.assertIn("--detach-landed", said[-1])
+        self.assertIn("a worker's start or `qk queue reclaim` deletes it", said[-1])
+
+    def test_a_commit_that_did_not_land_keeps_the_branch_and_the_worktree_on_it(self):
+        (self.tree / "more").write_text("more\n")
+        run(self.tree, "git", "add", "more")
+        run(self.tree, "git", "commit", "-qm", "More")
+        result, _ = self.tidy_here(detach_landed=True)
+        self.assertEqual(result["outcome"], lc.KEPT)
+        self.assertIn("have no equal patch on origin/main", result["why"])
+        self.assertEqual(self.head(), "a")
+        self.assertIsNotNone(self.branch("a"))
+
+    def test_a_change_to_a_tracked_file_keeps_it(self):
+        (self.tree / "a").write_text("changed\n")
+        result, _ = self.tidy_here(detach_landed=True)
+        self.assertEqual(result["outcome"], lc.KEPT)
+        self.assertIn("has changes to tracked files, such as a", result["why"])
+        self.assertEqual(self.head(), "a")
+        self.assertEqual((self.tree / "a").read_text(), "changed\n")
+
+    def test_another_worktree_is_never_detached(self):
+        # Landed from the main checkout, while the linked worktree has the branch checked out.
+        result, _ = self.tidy_here(self.repo, detach_landed=True)
+        self.assertEqual(result["outcome"], lc.KEPT)
+        self.assertIn(f"checked out at {self.tree}", result["why"])
+        self.assertEqual(self.head(), "a")
+
+    def test_a_dry_run_and_a_refused_deletion_leave_it_on_the_branch(self):
+        [would] = lc.branches(self.repo, self.entries(), dry_run=True, detach_in=self.tree)
+        self.assertEqual((would["outcome"], would["detached"]), (lc.DELETED, str(self.tree)))
+        self.assertIn("would detach", lc.branch_words(would, dry_run=True))
+        self.assertEqual(self.head(), "a")
+        def refusing(directory, *arguments, **options):
+            if arguments[:2] == ("update-ref", "-d"):
+                return SimpleNamespace(returncode=1, stdout="", stderr="cannot lock ref")
+            return wo.run_git(directory, *arguments, **options)
+        [kept] = lc.branches(self.repo, self.entries(), detach_in=self.tree, git=refusing)
+        self.assertEqual(kept["outcome"], lc.KEPT)
+        self.assertIn("cannot lock ref", kept["why"])
+        self.assertNotIn("detached", kept)
+        self.assertEqual(self.head(), "a")
+        self.assertIsNotNone(self.branch("a"))
+
+    def test_qk_land_takes_the_option(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        mq.land_arguments(parser)
+        self.assertTrue(parser.parse_args(["--wait", "--detach-landed"]).detach_landed)
+        self.assertFalse(parser.parse_args(["--wait"]).detach_landed)
+
+
+class WorkerStart(Landed):
+    """A worker deletes, when it starts, each branch the queue proves landed that no worktree holds (#311)."""
+    def test_a_worker_deletes_a_landed_branch_and_keeps_one_with_unlanded_work_or_checked_out(self):
+        self.land("a")
+        self.land("b")
+        self.land("c")
+        # b has a commit of its own that never landed; c is checked out in a worktree.
+        run(self.repo, "git", "checkout", "-q", "b")
+        (self.repo / "more").write_text("more\n")
+        run(self.repo, "git", "add", "more")
+        run(self.repo, "git", "commit", "-qm", "More")
+        run(self.repo, "git", "checkout", "-q", "--detach")
+        tree = self.base / "tree"
+        run(self.repo, "git", "worktree", "add", "-q", str(tree), "c")
+        said = []
+        deleted = mq.reclaim_branches(mq.Queue(self.repo), said.append)
+        self.assertEqual([result["branch"] for result in deleted], ["a"])
+        self.assertIsNone(self.branch("a"))
+        self.assertIsNotNone(self.branch("b"))
+        self.assertIsNotNone(self.branch("c"))
+        self.assertEqual(len(said), 1)
+        self.assertIn("deleted branch a", said[0])
+        self.assertTrue(tree.is_dir())
+
+    def test_a_worker_start_runs_it(self):
+        self.land("a")
+        self.land("d", reclaim=True)
+        self.assertIsNone(self.branch("a"))
+
+    def test_a_failure_stops_nothing(self):
+        said = []
+        with patch.object(lc, "branches", side_effect=RuntimeError("broken")):
+            self.assertEqual(mq.reclaim_branches(mq.Queue(self.repo), said.append), [])
+        self.assertIn("broken", said[0])
 
 
 def patch_census():

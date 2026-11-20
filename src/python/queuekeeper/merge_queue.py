@@ -2229,16 +2229,19 @@ def _land(root, args, directory=None, details=None):
     status_ = wait(target, identifier, left) if args.wait and identifier is not None else 0
     # Its own branch goes once proven landed; another repository's branches are that repository's sessions' to tidy.
     if status_ == 0 and args.wait and identifier is not None and not args.repo:
-        tidied = tidy_branch(target, identifier)
+        tidied = tidy_branch(target, identifier, detach_landed=getattr(args, "detach_landed", False))
         if details is not None and tidied is not None: details["branchCleanup"] = tidied
     warn(target)
     return status_
 
 
-def tidy_branch(root, identifier, say=print):
+def tidy_branch(root, identifier, say=print, detach_landed=False):
     """After qk land --wait saw identifier land: delete the local branch it came from when landed_cleanup proves
-    it landed, and say so, or why it stays. The result dict, or None when there is no branch to look at. A failure
-    says so and changes nothing else: the landing stands."""
+    it landed, and say so, or why it stays. With detach_landed (qk land --detach-landed), a branch that root's own
+    worktree has checked out at the landed tip goes too, once that worktree's HEAD is detached at the same commit
+    (landed_cleanup.detach); without it, a branch kept for that alone is said to go with the next worker or
+    `qk queue reclaim` once no worktree has it checked out (vocaro/queuekeeper#311). The result dict, or None when
+    there is no branch to look at. A failure says so and changes nothing else: the landing stands."""
     try:
         queue = Queue(root)
         entry = queue.read(identifier)
@@ -2248,13 +2251,20 @@ def tidy_branch(root, identifier, say=print):
         try: fetch_main(root, say=lambda words: None)
         except Exception as error:  # noqa: BLE001 -- a stale origin/main only keeps more
             say(f"queue: could not fetch origin/main before tidying {entry['branch']}: {error}")
-        results = landed_cleanup.branches(root, queue.all(), only=entry["branch"], emit=queue.emit)
+        top = text(root, "rev-parse", "--show-toplevel") if detach_landed else None
+        results = landed_cleanup.branches(root, queue.all(), only=entry["branch"], emit=queue.emit, detach_in=top)
     except Exception as error:  # noqa: BLE001 -- what only tidies up never changes a landing's result
         say(f"queue: could not tidy the branch {identifier} came from: {error}")
         return None
     if not results: return None
-    say(f"queue: {landed_cleanup.branch_words(results[0])}")
-    return results[0]
+    result = results[0]
+    words = landed_cleanup.branch_words(result)
+    if not detach_landed and result["outcome"] == landed_cleanup.KEPT and result.get("heldAt"):
+        words += ("; a worker's start or `qk queue reclaim` deletes it once no worktree has it checked out, and "
+                  "`qk land --wait --detach-landed` deletes it at landing, detaching your worktree at the landed "
+                  "commit")
+    say(f"queue: {words}")
+    return result
 
 
 def other_repository(root, directory):
@@ -7889,6 +7899,20 @@ def reclaim_scratch(queue, say):
     return results
 
 
+def reclaim_branches(queue, say):
+    """Delete each local branch the queue proves landed, as `qk queue reclaim` does and a worker does when it starts,
+    by origin/main as last fetched (a stale one only keeps more), saying what it deleted. A branch some worktree has
+    checked out stays, unsaid: it goes at a later start, once that worktree is gone or detached
+    (vocaro/queuekeeper#311). A failure changes nothing and stops nothing."""
+    try: results = landed_cleanup.branches(queue.root, queue.all(), emit=queue.emit)
+    except Exception as error:  # noqa: BLE001 -- what only tidies up never stops a worker
+        say(f"could not look for landed branches left behind: {error}")
+        return []
+    deleted = [result for result in results if result["outcome"] == landed_cleanup.DELETED]
+    for result in deleted: say(landed_cleanup.branch_words(result))
+    return deleted
+
+
 def reclaim(root, dry_run=False, as_json=False, out=print):
     """`qk queue reclaim`: recover the scratch worktrees whose makers have ended, and list those made before records
     were kept, which nothing removes; delete each local branch the queue proves landed, and list the linked
@@ -8019,6 +8043,8 @@ def run(root, *, if_waiting=False):
             remote.stop_dead_dispatches()
             # And a scratch worktree a killed `qk land` or worker left, once its record proves its maker gone.
             reclaim_scratch(queue, lambda words: print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True))
+            # And each branch the queue proves landed that no worktree holds any longer (vocaro/queuekeeper#311).
+            reclaim_branches(queue, lambda words: print(f"queue: {time.strftime('%H:%M:%S')} {words}", flush=True))
             # Whatever a worker that died left testing was never pushed. What it left passed is pushed first,
             # and a push that had gone through lands it then, as a push of what main already has.
             queue.mark([entry for entry in queue.all() if entry["state"] == TESTING], QUEUED)
@@ -8188,6 +8214,9 @@ def land_arguments(parser):
                         "still waiting at the limit. Refused for entries ahead alone, it waits for them and checks "
                         "again")
     parser.add_argument("--limit", type=float, default=WAIT_LIMIT, metavar="SECONDS")
+    parser.add_argument("--detach-landed", action="store_true", help="with --wait, once the branch is proven landed "
+                        "and this worktree has it checked out at the landed tip with no change to a tracked file, "
+                        "detach this worktree's HEAD at that same commit, changing no file, and delete the branch")
     parser.add_argument("--note", help="what the entry is, for `qk queue status`")
     parser.add_argument("--json", action="store_true", help="write one versioned JSON result; progress goes to standard error")
     options(parser)
