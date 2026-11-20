@@ -18,7 +18,7 @@ from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, co
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
-    self_lane_warnings, sibling_folders, sibling_variables, stays, unadmitted, unlocked_screen
+    self_lane_warnings, sibling_folders, sibling_variables, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -453,20 +453,35 @@ SPACE_POLL, SPACE_SAID = 30, 300
 
 
 def fills_disk(lane, resource):
-    """Whether a lane fills the disk, and so starts only with QUEUEKEEPER_START_FREE_GB free (space_wait): a
+    """Whether a lane fills the disk, and so starts only with its start floor free (space_wait): a
     whole-host or exclusive lane, which holds the Mac, or one that builds first ("compileFirst")."""
     return bool(lane.get("wholeHost")) or resource == "exclusive" or "compileFirst" in lane
 
 
-def space_wait(name, seconds, paths):
-    """None once the volumes that hold paths have QUEUEKEEPER_START_FREE_GB free (disk.START_FREE), within seconds,
-    for a lane that fills the disk; otherwise why not, after the wait. It waits as for an unlocked screen
+def start_floors(config):
+    """For qk doctor: the start floor in force (disk.free_floor), {"gib", "from"}, for the project and for each of its
+    lanes that fills the disk, or why it cannot be read (vocaro/queuekeeper#288)."""
+    def floor(configured):
+        try:
+            gib, variable, whence = disk.free_floor(disk.START_FREE, configured)
+        except ValueError as error:
+            return {"error": str(error)}
+        return {"gib": gib, "from": variable if whence == "set in the environment" else whence}
+    lanes = {name: floor(start_free(config, name, lane)) for name, lane in config.get("lanes", {}).items()
+             if isinstance(lane, dict) and not unadmitted(lane) and fills_disk(lane, admission_of(lane))}
+    return {**floor(start_free(config, None, {})), "lanes": lanes}
+
+
+def space_wait(name, seconds, paths, floor=None):
+    """None once the volumes that hold paths have the start floor free (disk.START_FREE, or floor, the (GiB, where)
+    the project's settings give, config.start_free), within seconds, for a lane that fills the disk; otherwise why
+    not, after the wait, naming the floor and where it comes from. It waits as for an unlocked screen
     (screen_wait), holding no slot, and says so on standard error and in the lane's wait record: on 2026-11-14 a gate
     that started with too little space ran out part way through and hung for about 90 minutes (vocaro/queuekeeper#162).
     A floor that is no number raises ValueError."""
     deadline, said = time.monotonic() + max(seconds, 0), None
     while True:
-        short = disk.short_of_space(disk.START_FREE, paths)
+        short = disk.short_of_space(disk.START_FREE, paths, floor)
         if short is None:
             if said is not None: print(f"queuekeeper: {name} has the disk space it waited for", file=sys.stderr, flush=True)
             return None
@@ -481,7 +496,7 @@ def space_wait(name, seconds, paths):
 
 
 def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False,
-                  screen=False, placement=None, space=None):
+                  screen=False, placement=None, space=None, floor=None):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
     instead: its status on another Mac when another Mac took it after all, MISCONFIGURED, or
     BUSY when no admission came, after saying so. Work another Mac did not take (offered), declined
@@ -492,7 +507,8 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     lane that needs an unlocked screen (screen) is admitted only while this Mac's screen reads unlocked, and waits
     for it as for a slot (screen_wait); a screen that locks while it waits for slots has it give them back and wait
     again (screen_relocked). A lane that fills the disk (space, the paths whose volumes it writes) is
-    admitted only once they have the free space it needs, and waits for it the same way (space_wait). Its admission
+    admitted only once they have the free space it needs, floor or the default, and waits for it the same way
+    (space_wait). Its admission
     line says placement (admission_placement)."""
     refused, said = [], []
     place = resources.Place()
@@ -505,7 +521,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         deadline = time.monotonic() + max(seconds, 0)
         while True:
             if space:
-                short = space_wait(name, max(deadline - time.monotonic(), 0), space)
+                short = space_wait(name, max(deadline - time.monotonic(), 0), space, floor)
                 if short is not None:
                     refused.append(short)
                     return None
@@ -1644,7 +1660,8 @@ def perform(argv, report):
                 "source": source_identity(TOOLKIT_ROOT), "plugins": list(plugins.LOADED),
                 "missingCommands": missing, "errors": errors, "warnings": warnings,
                 "notes": list(dict.fromkeys(note for hosts in compared for note in remote.python_crash_notes(hosts))),
-                "testLanes": test_lanes, **({"affectedPaths": affected} if affected else {}), "farm": compared},
+                "testLanes": test_lanes, **({"affectedPaths": affected} if affected else {}),
+                "startFree": start_floors(config), "farm": compared},
                 indent=2))
             return int(bool(missing or errors or any(hosts["errors"] for hosts in compared)))
         elif args.action == "pre-push": return pre_push.main(root, config, args.remote)
@@ -1961,7 +1978,8 @@ def perform(argv, report):
                                                       needs and not os.environ.get(resources.TOKEN),
                                                       admission_placement(offered, reason),
                                                       (disk.DATA_VOLUME, str(root)) if fills_disk(lane, resource)
-                                                      and not os.environ.get(resources.TOKEN) else None)
+                                                      and not os.environ.get(resources.TOKEN) else None,
+                                                      start_free(config, args.lane, lane))
                             if isinstance(admission, int): return plugins.DEVICES.not_admitted(args.lane, waiting, admission)
                             tree = admitted_tree(stack, root, args.lane, offered, receipt)
                             if isinstance(tree, int): return tree

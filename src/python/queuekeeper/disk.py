@@ -79,8 +79,12 @@ class Process:
 # EPUBLib gate ran out of space part way through and then hung for about 90 minutes, holding the queue and the whole
 # host, with nothing checking free space before it started (vocaro/queuekeeper#162). Builds and result bundles take
 # tens of GiB, so a whole-host, exclusive or building lane waits for START_FREE before admission; RUN_FREE is what a
-# command needs to go on writing at all.
-START_FREE = ("QUEUEKEEPER_START_FREE_GB", 30.0)
+# command needs to go on writing at all. START_FREE was 30 GiB for every project, sized for Xcode builds and result
+# bundles, and kept a Unity lane that writes little waiting over an hour with 11 to 26 GiB free (vocaro/queuekeeper#288):
+# its default is now 10 GiB, five times RUN_FREE, which RUN_FREE still guards mid-run, and a project or lane that
+# writes more says so with "disk": {"startFreeGB": N} in queuekeeper.json (config.start_free), which the variable
+# overrides when it is set.
+START_FREE = ("QUEUEKEEPER_START_FREE_GB", 10.0)
 RUN_FREE = ("QUEUEKEEPER_RUN_FREE_GB", 2.0)
 GIB = 1024 ** 3
 
@@ -94,11 +98,13 @@ def volume_usage(path=DATA_VOLUME):
     return usage.total, usage.used, usage.free
 
 
-def free_floor(setting):
-    """A free-space floor in force, (GiB, its variable, where it comes from), from its environment variable or its
-    default. A value that is no number at or above 0 raises ValueError naming the variable."""
+def free_floor(setting, configured=None):
+    """A free-space floor in force, (GiB, its variable, where it comes from): its environment variable when set, else
+    configured, a (GiB, where) the project's settings give (config.start_free), else its default. A variable that is
+    no number at or above 0 raises ValueError naming it."""
     variable, default = setting
     raw = os.environ.get(variable)
+    if raw is None and configured is not None: return float(configured[0]), variable, configured[1]
     if raw is None: return default, variable, "the default"
     try:
         value = float(raw)
@@ -109,11 +115,17 @@ def free_floor(setting):
     return value, variable, "set in the environment"
 
 
-def short_of_space(setting, paths=(DATA_VOLUME,)):
-    """Why the volumes that hold paths have less free space than setting's floor (free_floor), in words that name
-    the volume, what it has free and the floor, or None when each has enough. A volume whose usage cannot be read
-    is never short: a missing reading stops no work."""
-    floor, variable, whence = free_floor(setting)
+def floor_words(floor, variable, whence):
+    """A floor free_floor gives, in words that say where it comes from: its variable's, or a setting's."""
+    if whence in ("the default", "set in the environment"): return f"{variable}={floor:g} GiB ({whence})"
+    return f"{floor:g} GiB ({whence}; {variable} overrides it)"
+
+
+def short_of_space(setting, paths=(DATA_VOLUME,), configured=None):
+    """Why the volumes that hold paths have less free space than setting's floor (free_floor, with configured), in
+    words that name the volume, what it has free, the floor and where it comes from, or None when each has enough. A
+    volume whose usage cannot be read is never short: a missing reading stops no work."""
+    floor, variable, whence = free_floor(setting, configured)
     seen = set()
     for path in paths:
         try:
@@ -124,7 +136,7 @@ def short_of_space(setting, paths=(DATA_VOLUME,)):
         seen.add(device)
         found = volume_usage(path)
         if found is None or found[2] >= floor * GIB: continue
-        return (f"the volume of {path} has {human(found[2])} free, below {variable}={floor:g} GiB ({whence}); "
+        return (f"the volume of {path} has {human(found[2])} free, below {floor_words(floor, variable, whence)}; "
                 "`python3 scripts/qk disk --delete` removes what nobody owns, and `python3 scripts/qk disk` lists "
                 "what takes the space")
     return None

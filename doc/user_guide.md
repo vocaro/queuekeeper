@@ -76,6 +76,7 @@ one lane, `gate`, the command every change must pass:
 | `schemaVersion` | Always `1` |
 | `name` | The project's name |
 | `plugins` | The [plugins](../README.md#plugins) to load. `[]`, or leaving it out, loads the core alone |
+| `disk` | `{"startFreeGB": N}`, the free space a lane that fills the disk waits for ([Free disk space](#free-disk-space)) |
 | `command` | An argument list, not a shell string |
 | `timeout` | Seconds. A lane that reaches it ends as *unmeasured*, not failed |
 
@@ -836,6 +837,7 @@ The most useful settings:
 | `stall` | Reports, and optionally stops, a lane that has gone quiet ([Time limits](#time-limits-and-the-gates-budget)) |
 | `timing` | Warns while a lane runs past its usual time, and optionally fails it past a threshold ([Time limits](#time-limits-and-the-gates-budget)) |
 | `notice` | What an agent is shown when the lane's timeout, stall bound or timing threshold stops it |
+| `disk` | `{"startFreeGB": N}`, the lane's own free-space floor before admission ([Free disk space](#free-disk-space)) |
 
 [`schemas/queuekeeper.schema.json`](../schemas/queuekeeper.schema.json) lists every setting.
 
@@ -3050,11 +3052,33 @@ GiB free on the data volume and on the checkout's volume, prevent it:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `QUEUEKEEPER_START_FREE_GB` | 30 | A whole-host or exclusive lane, or one with `compileFirst`, waits for this much before asking for admission, holding no slot. `qk queue status` shows `waiting: free disk space: ...`. Waiting longer than the lane's admission wait exits 75 and runs nothing |
+| `QUEUEKEEPER_START_FREE_GB` | 10 | A whole-host or exclusive lane, or one with `compileFirst`, waits for this much before asking for admission, holding no slot. `qk queue status` shows `waiting: free disk space: ...`, with the floor and where it comes from. Waiting longer than the lane's admission wait exits 75 and runs nothing. A project can set its own floor (below) |
 | `QUEUEKEEPER_RUN_FREE_GB` | 2 | A running admitted command is checked every 10 seconds. Below the floor, or when a write finds the disk full, it is stopped as a timeout would stop it: unmeasured, exit 3, with a line starting `queuekeeper: out of disk space:`. The merge queue holds at once |
 
 Both are environment variables inherited by child processes; 0 turns a floor off. Free space with
 `qk disk --delete`.
+
+The start floor's default suits a lane that writes little. A project whose builds and result
+bundles take tens of GiB, such as a large Xcode project, sets a higher one in `queuekeeper.json`,
+and a lane or lane group can set its own:
+
+```json queuekeeper.json
+{
+  "schemaVersion": 1,
+  "name": "my-app",
+  "plugins": [],
+  "disk": {"startFreeGB": 30},
+  "lanes": {
+    "gate":  {"command": ["scripts/gate.sh"], "wholeHost": true},
+    "timed": {"command": ["scripts/timed.sh"], "resource": "exclusive", "disk": {"startFreeGB": 12}}
+  }
+}
+```
+
+The floor in force is `QUEUEKEEPER_START_FREE_GB` when it is set, then the lane's
+`disk.startFreeGB`, then the project's, then the default of 10. `qk doctor` reports it under
+`startFree`: the project's floor and that of each lane that waits for one, each with where it
+comes from.
 
 ### Processes left over from runs
 

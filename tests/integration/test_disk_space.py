@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
-from queuekeeper import cli, disk, lane_results, lane_wait, processes, resources
+from queuekeeper import cli, config, disk, lane_results, lane_wait, processes, resources
 import host_isolation
 from host_isolation import stretched
 
@@ -47,13 +47,84 @@ class FloorTests(unittest.TestCase):
     def test_each_floor_has_a_default_and_refuses_a_value_that_is_no_number(self):
         with patch.dict(os.environ):
             for variable, _default in (disk.START_FREE, disk.RUN_FREE): os.environ.pop(variable, None)
-            self.assertEqual(disk.free_floor(disk.START_FREE), (30.0, "QUEUEKEEPER_START_FREE_GB", "the default"))
+            self.assertEqual(disk.free_floor(disk.START_FREE), (10.0, "QUEUEKEEPER_START_FREE_GB", "the default"))
             self.assertEqual(disk.free_floor(disk.RUN_FREE), (2.0, "QUEUEKEEPER_RUN_FREE_GB", "the default"))
             for value in ("x", "-1", "nan"):
                 with self.subTest(value=value):
                     os.environ["QUEUEKEEPER_RUN_FREE_GB"] = value
                     with self.assertRaisesRegex(ValueError, f"QUEUEKEEPER_RUN_FREE_GB={value} is not a number"):
                         disk.free_floor(disk.RUN_FREE)
+
+
+    def test_the_environment_overrides_a_configured_floor_which_overrides_the_default(self):
+        """vocaro/queuekeeper#288: one host-wide floor of 30 GiB kept a Unity lane that writes little waiting over an
+        hour; a project's settings now give its own, which the variable still overrides."""
+        configured = (12, "lanes.timed.disk.startFreeGB in queuekeeper.json")
+        with patch.dict(os.environ):
+            os.environ.pop("QUEUEKEEPER_START_FREE_GB", None)
+            self.assertEqual(disk.free_floor(disk.START_FREE, configured),
+                             (12.0, "QUEUEKEEPER_START_FREE_GB", configured[1]))
+            with patch.object(disk, "volume_usage", return_value=reading(11)):
+                short = disk.short_of_space(disk.START_FREE, (tempfile.gettempdir(),), configured)
+            self.assertIn("has 11.0 GiB free, below 12 GiB (lanes.timed.disk.startFreeGB in queuekeeper.json; "
+                          "QUEUEKEEPER_START_FREE_GB overrides it)", short)
+            # Negative controls: the default alone lets 11 GiB through, and so does a configured floor of 0.
+            with patch.object(disk, "volume_usage", return_value=reading(11)):
+                self.assertIsNone(disk.short_of_space(disk.START_FREE, (tempfile.gettempdir(),)))
+                self.assertIsNone(disk.short_of_space(disk.START_FREE, (tempfile.gettempdir(),), (0, "zero")))
+            os.environ["QUEUEKEEPER_START_FREE_GB"] = "5"
+            self.assertEqual(disk.free_floor(disk.START_FREE, configured),
+                             (5.0, "QUEUEKEEPER_START_FREE_GB", "set in the environment"))
+
+
+class ConfiguredFloorTests(unittest.TestCase):
+    """The project's and each lane's "disk": {"startFreeGB": N} in queuekeeper.json (vocaro/queuekeeper#288)."""
+
+    def load(self, **settings):
+        source = {"schemaVersion": 1, "name": "Space", "lanes": {"gate": {"command": ["true"]}}, **settings}
+        return config.parse(json.dumps(source))
+
+    def test_a_lane_floor_comes_before_the_project_floor_which_comes_before_none(self):
+        lanes = {"gate": {"command": ["true"], "wholeHost": True},
+                 "timed": {"command": ["true"], "resource": "exclusive", "disk": {"startFreeGB": 12.5}},
+                 "both": {"parallel": ["gate", "timed"], "resource": "exclusive",
+                          "disk": {"startFreeGB": 0}}}
+        loaded = self.load(disk={"startFreeGB": 30}, lanes=lanes)
+        self.assertEqual(config.start_free(loaded, "timed"), (12.5, "lanes.timed.disk.startFreeGB in queuekeeper.json"))
+        self.assertEqual(config.start_free(loaded, "both"), (0, "lanes.both.disk.startFreeGB in queuekeeper.json"))
+        self.assertEqual(config.start_free(loaded, "gate"), (30, "disk.startFreeGB in queuekeeper.json"))
+        self.assertIsNone(config.start_free(self.load(lanes=lanes), "gate"))
+        self.assertIsNone(config.start_free(self.load(disk={}), "gate"))
+
+    def test_a_floor_that_is_no_number_at_or_above_0_or_an_unknown_key_is_refused(self):
+        for value in (-1, "12", True, None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, r"^disk\.startFreeGB must be a number"):
+                    self.load(disk={"startFreeGB": value})
+                with self.assertRaisesRegex(ValueError, r"^gate\.disk\.startFreeGB must be a number"):
+                    self.load(lanes={"gate": {"command": ["true"], "disk": {"startFreeGB": value}}})
+        with self.assertRaisesRegex(ValueError, "disk takes only startFreeGB"): self.load(disk={"runFreeGB": 2})
+        with self.assertRaisesRegex(ValueError, "disk takes only startFreeGB"): self.load(disk=12)
+        with self.assertRaisesRegex(ValueError, r"^group\.disk takes only startFreeGB"):
+            self.load(lanes={"gate": {"command": ["true"]}, "group": {"parallel": ["gate"], "disk": {"free": 1}}})
+
+    def test_doctor_reports_the_floor_in_force_and_where_it_comes_from(self):
+        loaded = self.load(disk={"startFreeGB": 30}, lanes={
+            "gate": {"command": ["true"], "wholeHost": True},
+            "timed": {"command": ["true"], "resource": "exclusive", "disk": {"startFreeGB": 12}},
+            "unit": {"command": ["true"]}, "own": {"command": ["true"], "resource": "self"}})
+        with patch.dict(os.environ):
+            os.environ.pop("QUEUEKEEPER_START_FREE_GB", None)
+            self.assertEqual(cli.start_floors(loaded), {
+                "gib": 30.0, "from": "disk.startFreeGB in queuekeeper.json",
+                "lanes": {"gate": {"gib": 30.0, "from": "disk.startFreeGB in queuekeeper.json"},
+                          "timed": {"gib": 12.0, "from": "lanes.timed.disk.startFreeGB in queuekeeper.json"}}})
+            self.assertEqual(cli.start_floors(self.load())["gib"], 10.0)
+            self.assertEqual(cli.start_floors(self.load())["from"], "the default")
+            os.environ["QUEUEKEEPER_START_FREE_GB"] = "4"
+            self.assertEqual(cli.start_floors(loaded)["lanes"]["timed"], {"gib": 4.0, "from": "QUEUEKEEPER_START_FREE_GB"})
+            os.environ["QUEUEKEEPER_START_FREE_GB"] = "x"
+            self.assertIn("is not a number", cli.start_floors(loaded)["error"])
 
 
 class SupervisionTests(unittest.TestCase):
@@ -161,6 +232,39 @@ class LaneTests(unittest.TestCase):
                                           space=(str(self.root),))
             self.assertIsInstance(admission, resources.Admission)
         self.assertIn("gate has the disk space it waited for", said.getvalue())
+
+    def test_a_lane_waits_for_its_configured_floor_and_its_wait_names_it(self):
+        os.environ[lane_wait.VARIABLE] = str(self.root / "wait.json")
+        self.addCleanup(os.environ.pop, lane_wait.VARIABLE, None)
+        floor = (12, "lanes.gate.disk.startFreeGB in queuekeeper.json")
+        with patch.dict(os.environ), patch.object(disk, "volume_usage", return_value=reading(11)), \
+                contextlib.ExitStack() as stack, patch("sys.stderr", new_callable=StringIO) as said:
+            os.environ.pop("QUEUEKEEPER_START_FREE_GB", None)
+            status = cli.admitted_here(stack, "gate", "Space gate", 0, whole_host=True, space=(str(self.root),),
+                                       floor=floor)
+        self.assertEqual(status, resources.BUSY)
+        self.assertIn("below 12 GiB (lanes.gate.disk.startFreeGB in queuekeeper.json; QUEUEKEEPER_START_FREE_GB "
+                      "overrides it)", said.getvalue())
+        self.assertIn("lanes.gate.disk.startFreeGB", lane_wait.words(lane_wait.read(self.root / "wait.json")))
+        # Negative control: the same reading under the default floor is admitted.
+        with patch.dict(os.environ), patch.object(disk, "volume_usage", return_value=reading(11)), \
+                contextlib.ExitStack() as stack, patch("sys.stderr", new_callable=StringIO):
+            os.environ.pop("QUEUEKEEPER_START_FREE_GB", None)
+            self.assertIsInstance(cli.admitted_here(stack, "gate", "Space gate", stretched(30), whole_host=True,
+                                                    space=(str(self.root),)), resources.Admission)
+
+    def test_a_lane_run_reads_its_floor_from_the_project(self):
+        marker = self.root / "ran"
+        (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Space",
+            "disk": {"startFreeGB": 30}, "lanes": {"gate": {"command": [sys.executable, "-c",
+            f"open({str(marker)!r}, 'w')"], "wholeHost": True}}}))
+        with patch.dict(os.environ), patch.object(disk, "volume_usage", return_value=reading(20)), \
+                patch.object(cli.remote, "OVERFLOW_TIMEOUT", 0):
+            os.environ.pop("QUEUEKEEPER_START_FREE_GB", None)
+            status, said = self.run_lane("gate")
+        self.assertEqual(status, resources.BUSY, said)
+        self.assertIn("below 30 GiB (disk.startFreeGB in queuekeeper.json", said)
+        self.assertFalse(marker.exists())
 
     def test_which_lanes_fill_the_disk(self):
         self.assertTrue(cli.fills_disk({"wholeHost": True}, "heavy"))

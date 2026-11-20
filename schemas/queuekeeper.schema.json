@@ -137,7 +137,8 @@
                 "labels",
                 "sandbox",
                 "timing",
-                "notice"
+                "notice",
+                "disk"
               ]
             }
           },
@@ -157,7 +158,8 @@
                 "wholeHost",
                 "unlockedScreen",
                 "labels",
-                "failFast"
+                "failFast",
+                "disk"
               ]
             }
           }
@@ -429,6 +431,18 @@
             "description": "A lane whose tests need an unlocked console screen, such as one that reads its own tree through the accessibility API; a lane group that runs such a lane says so too. queuekeeper places it only on a Mac whose screen reads unlocked, locked and unknown alike counting as no room for it, and otherwise it waits instead of running unmeasured. It needs an admitted lane",
             "type": "boolean"
           },
+          "disk": {
+            "description": "The lane's own free disk space settings, which take the place of the project's disk for it, and a lane group's for the lanes it runs under its one admission",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "startFreeGB": {
+                "description": "The GiB free on the data volume and the checkout's volume that the lane waits for before admission when it fills the disk: a whole-host or exclusive lane, or one with compileFirst. It takes the place of the project's disk.startFreeGB; QUEUEKEEPER_START_FREE_GB, when set, overrides both. 0 waits for none",
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          },
           "compileFirst": {
             "description": "An argv that compiles the lane's test target, such as xcodebuild build-for-testing on the derived data its command uses. It runs before the command in the lane's one admission and timeout, and a failure ends the run as build-failed with no test run. It needs an admitted lane, and a group runs its lanes' commands without it",
             "type": "array",
@@ -438,6 +452,18 @@
               "minLength": 1
             }
           }
+        }
+      }
+    },
+    "disk": {
+      "description": "The project's free disk space settings",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startFreeGB": {
+          "description": "The GiB free on the data volume and the checkout's volume that each of the project's lanes that fills the disk (a whole-host or exclusive lane, or one with compileFirst) waits for before admission, unless the lane gives its own disk.startFreeGB; QUEUEKEEPER_START_FREE_GB, when set, overrides both. Without either, 10. Set it higher for a project whose builds and result bundles take tens of GiB. 0 waits for none",
+          "type": "number",
+          "minimum": 0
         }
       }
     },

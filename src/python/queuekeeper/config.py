@@ -121,7 +121,7 @@ def load(root):
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall", "unity", "arguments", "idioms", "exactTests",
-                       "failedTests", "labels", "sandbox", "timing", "notice"})
+                       "failedTests", "labels", "sandbox", "timing", "notice", "disk"})
 # The lane keys above that a plugin shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the plugin is told which to switch on.
 PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity", "devices": "queuekeeper_mobile",
@@ -130,7 +130,7 @@ PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_
 PLUGIN_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple",
                          "android": "queuekeeper_android", "emulatorPool": "queuekeeper_android"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen",
-                        "labels", "failFast"})
+                        "labels", "failFast", "disk"})
 
 
 
@@ -145,7 +145,7 @@ def parse(source):
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("queuekeeper.json requires schemaVersion 1")
     allowed = {"schemaVersion", "name", "plugins", "lanes", "integration", "repository",
-               "queue", "release", "testLanes", "gitHooks", "docs", "siblings"}
+               "queue", "release", "testLanes", "gitHooks", "docs", "siblings", "disk"}
     if "spelling" in value: raise ValueError(f"spelling {SPELLING_GONE}")
     if "extensions" in value: raise ValueError("extensions is now plugins (vocaro/queuekeeper#48): rename the "
                                              "key in queuekeeper.json, which lists the same modules")
@@ -167,6 +167,7 @@ def parse(source):
                              f"on: list {module} in plugins")
         hooks.CONFIG_KEYS[key](value[key])
     git_hooks(value.get("gitHooks"))
+    disk_settings("disk", value.get("disk", {}))
     if value.get("integration", "direct-main") not in {"direct-main", "pull-request"}:
         raise ValueError("Unknown integration policy")
     if not isinstance(value.get("lanes", {}), dict):
@@ -191,6 +192,7 @@ def parse(source):
                              "run's admission, and a self lane is not admitted")
         place(name, lane)
         labels(name, lane)
+        disk_settings(f"{name}.disk", lane.get("disk", {}))
         model(name, lane)
         whole_host(name, lane)
         screen(name, lane)
@@ -926,7 +928,7 @@ def group(name, lane, lanes):
     time when several do."""
     if set(lane) - GROUP_KEYS:
         raise ValueError(f"Lane group {name} takes only parallel, jobs, resource, here, model, wholeHost, "
-                         "unlockedScreen, labels, failFast and budgetMinutes")
+                         "unlockedScreen, labels, failFast, disk and budgetMinutes")
     members = lane["parallel"]
     if not isinstance(members, list) or not members or len(set(members)) != len(members) \
             or any(not isinstance(member, str) for member in members):
@@ -967,9 +969,34 @@ def group(name, lane, lanes):
             raise ValueError(f"{name}.{key} must be true or false")
     place(name, lane)
     labels(name, lane)
+    disk_settings(f"{name}.disk", lane.get("disk", {}))
     model(name, lane)
     whole_host(name, lane)
     screen(name, lane)
+
+
+def disk_settings(where, value):
+    """The project's, a lane's or a group's "disk": {"startFreeGB": N}, the GiB free a lane that fills the disk waits
+    for before admission (start_free): a number at or above 0, where 0 waits for none (vocaro/queuekeeper#288)."""
+    if not isinstance(value, dict) or set(value) - {"startFreeGB"}:
+        raise ValueError(f"{where} takes only startFreeGB")
+    if "startFreeGB" in value:
+        floor = value["startFreeGB"]
+        if type(floor) not in (int, float) or not floor >= 0:
+            raise ValueError(f"{where}.startFreeGB must be a number of GiB at or above 0")
+
+
+def start_free(config, name, lane=None):
+    """The GiB free that lane name (lane, else config's) waits for before admission when it fills the disk, as the
+    project's settings give it, with where it comes from: (GiB, where) from the lane's disk.startFreeGB, else the
+    project's, else None for disk.START_FREE's default. QUEUEKEEPER_START_FREE_GB overrides either (disk.free_floor).
+    The floor was one for every project, sized for Xcode builds, and kept a Unity lane that writes little waiting over
+    an hour (vocaro/queuekeeper#288)."""
+    lane = lane if lane is not None else config.get("lanes", {}).get(name)
+    own = lane.get("disk", {}) if isinstance(lane, dict) else {}
+    if "startFreeGB" in own: return own["startFreeGB"], f"lanes.{name}.disk.startFreeGB in {FILE}"
+    if "startFreeGB" in config.get("disk", {}): return config["disk"]["startFreeGB"], f"disk.startFreeGB in {FILE}"
+    return None
 
 
 def source_identity(root):
