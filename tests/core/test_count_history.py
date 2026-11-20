@@ -30,18 +30,19 @@ class CountHistoryTests(unittest.TestCase):
         git(self.root, "commit", "-q", "--allow-empty", "-m", message)
         return git(self.root, "rev-parse", "HEAD")
 
-    def keep(self, commit, executed, mac="mac-a", lane="gate", status=0, outcome="passed", ran_on=HERE, **keys):
+    def keep(self, commit, executed, mac="mac-a", lane="gate", status=0, outcome="passed", ran_on=HERE, skipped=0,
+             **keys):
         """A run kept by commit as remote.keep_here keeps one; executed None records no count, as before counts were."""
         inner = {"mac": mac, "outcome": outcome, "project": {"revision": commit}}
-        if executed is not None: inner["tests"] = {"executed": executed, "skipped": 0}
+        if executed is not None: inner["tests"] = {"executed": executed, "skipped": skipped}
         kept = {"ranOn": ran_on, "mac": mac, "commit": commit, "head": commit, "lane": lane, "arguments": [],
                 "result": {"exitStatus": status, "outcome": outcome, "stopped": False, "receipt": inner}, **keys}
         (self.store / commit).mkdir(parents=True, exist_ok=True)
         (self.store / commit / f"{lane}.json").write_text(json.dumps(kept))
 
-    def run_at(self, commit, executed, mac="mac-a"):
+    def run_at(self, commit, executed, mac="mac-a", skipped=0):
         receipt = {"mac": mac, "project": {"revision": commit}}
-        if executed is not None: receipt["tests"] = {"executed": executed, "skipped": 0}
+        if executed is not None: receipt["tests"] = {"executed": executed, "skipped": skipped}
         said = []
         return count_history.dropped(self.root, self.store, "gate", receipt, HERE, say=said.append), said
 
@@ -84,8 +85,55 @@ class CountHistoryTests(unittest.TestCase):
         self.keep(commit, 70, mac="mac-a", ran_on="fake", outcome=None)
         self.assertIn(f"the 70 its last passing whole run on mac-a executed at {commit[:12]}",
                       self.run_at(self.commit(), 60)[0])
-        # A Mac with no pass of its own is held to none.
-        self.assertEqual(self.run_at("HEAD", 1, mac="mac-c"), (None, []))
+        # A Mac with no pass of its own is held to the newest on any Mac (vocaro/queuekeeper#300).
+        self.assertIn(f"the 70 its last passing whole run on main on any Mac selected, less the 0 this run skipped: "
+                      f"mac-c has no passing whole run on main with a count, so it is held to mac-a's at {commit[:12]}",
+                      self.run_at("HEAD", 1, mac="mac-c")[0])
+
+    def test_a_mac_with_no_pass_of_its_own_is_held_to_the_tests_another_macs_pass_selected(self):
+        """On 2026-11-19 a bisect's half that deleted 15 tests passed on the workstation, which had no count of its
+        own, while build-host's last pass on main had executed 3200 and skipped 1 (vocaro/queuekeeper#300)."""
+        base = self.commit()
+        self.keep(base, 3200, mac="build-host", skipped=1)
+        head = self.commit()
+        why, _ = self.run_at(head, 3186, mac="workstation")
+        self.assertIn(f"gate executed 3186 tests, 15 fewer than the 3201 its last passing whole run on main on any Mac "
+                      f"selected, less the 0 this run skipped: workstation has no passing whole run on main with a "
+                      f"count, so it is held to build-host's at {base[:12]}, which executed 3200 and skipped 1 "
+                      f"({self.store / base / 'gate.json'})", why)
+        self.assertIn(f"add the trailer `Tests-Removed: gate` to a commit after {base[:12]}", why)
+        # The merge queue reads the fall as a gate that ran too few (Worker.weigh_passed).
+        from queuekeeper import merge_queue
+        self.assertTrue(merge_queue.COUNT_SHORT.search(why))
+        # The negative control: a test that skips on build-host and runs here, or skips here and runs there, is no fall.
+        self.assertEqual(self.run_at(head, 3201, mac="workstation"), (None, []))
+        self.assertEqual(self.run_at(head, 3199, mac="workstation", skipped=2), (None, []))
+        self.assertIsNotNone(self.run_at(head, 3198, mac="workstation", skipped=2)[0])
+        # A trailer after the other Mac's pass lets the count fall there too.
+        trailer = self.commit("Remove the hardware tests\n\nTests-Removed: gate")
+        why, said = self.run_at(trailer, 3186, mac="workstation")
+        self.assertIsNone(why)
+        self.assertIn("held to build-host's", said[0])
+        self.assertIn("which a commit since says with Tests-Removed: gate", said[0])
+
+    def test_a_macs_own_pass_is_its_baseline_however_old_or_short_beside_another_macs(self):
+        own = self.commit()
+        self.keep(own, 100, mac="mac-a", skipped=5)
+        newer = self.commit()
+        # A newer pass on a Mac whose tests skip apart, by more than this Mac's would allow.
+        self.keep(newer, 150, mac="mac-b", skipped=0)
+        why, _ = self.run_at(self.commit(), 100, mac="mac-a", skipped=5)
+        self.assertIsNone(why)
+        why, _ = self.run_at("HEAD", 99, mac="mac-a", skipped=5)
+        self.assertIn(f"1 fewer than the 100 its last passing whole run on mac-a executed at {own[:12]}", why)
+        self.assertNotIn("any Mac", why)
+        # A Mac with none of its own is held to the newest pass on any Mac, passing over one that kept no skipped count.
+        self.assertIn("than the 150 its last passing whole run on main on any Mac selected",
+                      self.run_at("HEAD", 1, mac="mac-c")[0])
+        self.keep(newer, 150, mac="mac-b", skipped=None)
+        self.assertIn(f"than the 105 its last passing whole run on main on any Mac selected, less the 0 this run "
+                      f"skipped: mac-c has no passing whole run on main with a count, so it is held to mac-a's at "
+                      f"{own[:12]}", self.run_at("HEAD", 1, mac="mac-c")[0])
 
     def test_a_branch_not_yet_on_main_sets_no_baseline(self):
         landed = self.commit()

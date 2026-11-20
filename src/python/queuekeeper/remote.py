@@ -1366,7 +1366,7 @@ def keep_here(root, lane, receipt, status, whole=True, results=None):
 
 def held_to_history(root, lane, receipt):
     """Fail a whole lane's pass on another Mac, in its dispatch's receipt, that executed fewer tests than the lane's
-    last passing whole run on main on that Mac (count_history.dropped), saying why: its result's exitStatus becomes 2
+    last passing whole run on main on that Mac, or on any Mac where it has none (count_history.dropped), saying why: its result's exitStatus becomes 2
     and the lane's own receipt says failed, with the reason under error, so that it is kept and returned as a failure."""
     result = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
     if result.get("exitStatus") != 0 or result.get("stopped") or result.get("stage", "work") != "work": return

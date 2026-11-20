@@ -898,8 +898,10 @@ floor. With no number in `queuekeeper.json`:
 - **A run that reports a count must run at least one test.** One whose every test skipped fails.
   A lane whose log reports no count, such as a spelling check, is held to nothing.
 - **A whole run must run as many tests as the lane's last passing whole run on `main` on the same
-  Mac.** A run that falls short fails with exit 2, naming the count, the commit and the receipt to
-  compare with. A count that rises needs nothing. A run with arguments, and each member of a
+  Mac.** A Mac with no such run is held to the newest on any Mac, by the tests it selected (executed
+  plus skipped), so tests that skip on only one of the two Macs do not count against it. A run that
+  falls short fails with exit 2, naming the count, the Mac, the commit and the receipt to compare
+  with. A count that rises needs nothing. A run with arguments, and each member of a
   group, is held only to the first rule.
 - **Removing tests on purpose** takes a trailer in any commit of the change, naming each lane whose
   count falls, or `*` for every lane:

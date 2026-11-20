@@ -609,9 +609,12 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   A group run on another Mac brings its `lanes/` back under `.build/queuekeeper/remote/GROUP/`.
 - **History.** `count_history.py` searches up to 200 first-parent commits of `main` (`origin/main`,
   or local `main` without an origin) below the run's commit for the newest passing whole run on the
-  same Mac that recorded a count. Only runs on `main` set the count, so a branch cannot lower it. A
-  `Tests-Removed:` trailer counts only in a commit after the run compared with. `exactTests` lanes
-  are held to their own count instead.
+  same Mac that recorded a count. A Mac with none is held to the newest such run on any Mac that
+  recorded its executed and skipped counts: the tests that run selected (executed plus skipped),
+  less those this run skipped, so a test that skips on one Mac and not the other is no fall, and
+  the message names that Mac and commit. Only runs on `main` set the count, so a branch cannot
+  lower it. A `Tests-Removed:` trailer counts only in a commit after the run compared with.
+  `exactTests` lanes are held to their own count instead.
 - **Outcome details.** A failure before any test (exit 4, `lane_report.before_tests`) quotes the
   log's last error under `beforeTests`. A run that failed or was unmeasured without counting or
   naming a test quotes its last five non-blank lines of its own (`lane_report.own_output`). A

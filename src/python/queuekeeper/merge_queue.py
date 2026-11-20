@@ -275,7 +275,8 @@ UNITTEST_SUMMARY = re.compile(r"^queuekeeper unittest: \d+ tests \(\d+ skipped\)
 # What qk unittest prints when it refuses a suite before running anything (parallel.refusals).
 REFUSAL = re.compile(r"^queuekeeper unittest: .*; nothing ran$", re.M)
 # Why qk run failed a lane whose tests all passed, as it ran too few of them: fewer than the lane's last passing whole
-# run on main on the same Mac (count_history.dropped), or than its minimumTests (lane_results.require_tests).
+# run on main on the same Mac, or on any Mac where it has none (count_history.dropped), or than its minimumTests
+# (lane_results.require_tests).
 COUNT_SHORT = re.compile(r"\S+ executed \d+ tests, \d+ fewer than the \d+ its last passing whole run[^\n]*"
                          r"|Expected (?:at least|exactly) \d+ executed tests; observed[^\n]*")
 # A test method's definition a commit removes or adds, in a diff of a suite's Python files (removers).

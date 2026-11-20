@@ -334,7 +334,7 @@ def judge(lane, result, log, extra=(), expect=None):
 
 def held_to_history(root, name, lane, receipt):
     """Raise ValueError when a passing whole run of the lane name executed fewer tests than its last passing whole run
-    on main on this Mac (count_history.dropped). A lane that says "exactTests": true is held to its own count instead,
+    on main on this Mac, or on any Mac where this one has none (count_history.dropped). A lane that says "exactTests": true is held to its own count instead,
     and work run here for another Mac is held to the history of the Mac that sent it (remote.held_to_history)."""
     if lane.get("exactTests") or os.environ.get(remote.DISPATCHER): return
     try: store = remote.store(root)
