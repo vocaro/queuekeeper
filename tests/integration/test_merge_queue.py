@@ -8648,6 +8648,81 @@ class Refusals(Fixture):
         self.assertEqual(left, {})
 
 
+class MainConfigurationUnreadable(Fixture):
+    """origin/main's queuekeeper.json, which the queue judges every entry by, holds what this Queuekeeper refuses: a
+    setting a release turned from warned into refused (vocaro/queuekeeper#295), or a key added after a branch left main,
+    which the branch's Queuekeeper predates (vocaro/queuekeeper#279)."""
+
+    def push_main(self, config, message):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        run(self.repo, "git", "checkout", "-q", "-B", "main-change", "origin/main")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", message)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+
+    def good(self):
+        return json.loads(run(self.repo, "git", "show", "origin/main:queuekeeper.json"))
+
+    def test_an_entry_that_fixes_mains_configuration_lands_gated_by_its_own(self):
+        """#295: every entry was refused, the fix included, with a message that read as if about the entry's file."""
+        good = self.good()
+        self.push_main({**good, "spelling": {"words": []}}, "A setting since refused")
+        run(self.repo, "git", "checkout", "-q", "-B", "fix", "origin/main")
+        (self.repo / "queuekeeper.json").write_text(json.dumps(good))
+        run(self.repo, "git", "commit", "-qam", "Drop the refused setting")
+        said = io.StringIO()
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            fixed = mq.add(self.repo, "fix", quiet_wait=True)
+        self.assertIn("origin/main's queuekeeper.json at", said.getvalue())
+        self.assertIn("spelling is no longer a Queuekeeper setting", said.getvalue())
+        self.assertIn("That is origin/main's file, not", said.getvalue())
+        self.assertIn("'s own reads, so it gates this landing, all but its queue.hookCoveredBy", said.getvalue())
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said): self.work()
+        self.assertEqual(self.state(fixed)["state"], "landed")
+        self.assertEqual(self.gates(), 1)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn("cannot be read", said.getvalue())
+        self.assertIn("so this round reads it, all but its queue.hookCoveredBy", said.getvalue())
+        self.assertEqual(self.good(), good)
+
+    def test_an_entry_that_leaves_mains_configuration_as_it_is_is_refused_naming_mains_file(self):
+        """Negative control: an entry whose own file is main's, unchanged, cannot gate itself by it."""
+        self.push_main({**self.good(), "spelling": {"words": []}}, "A setting since refused")
+        self.commit("a", "a")
+        with self.assertRaises(ValueError) as raised, patch.object(mq.Queue, "start"), patch("builtins.print"):
+            mq.add(self.repo, "a")
+        message = str(raised.exception)
+        self.assertNotIsInstance(raised.exception, mq.Refused)
+        self.assertIn("origin/main's queuekeeper.json at", message)
+        self.assertIn("That is origin/main's file, not", message)
+        self.assertIn("own cannot be read either", message)
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+
+    def test_a_branch_behind_a_key_main_added_is_told_to_rebase(self):
+        """#279: a branch cut before main's file gained a key was told only "Unknown configuration keys"."""
+        self.commit("a", "behind")
+        self.push_main({**self.good(), "novel": True}, "A key this Queuekeeper does not know")
+        with self.assertRaises(mq.Refused) as raised, patch.object(mq.Queue, "start"), patch("builtins.print"):
+            mq.add(self.repo, "behind")
+        error = raised.exception
+        self.assertIn("Unknown configuration keys: ['novel']", str(error))
+        self.assertIn("the branch is behind origin/main", str(error))
+        self.assertIn("git rebase origin/main", str(error))
+        advice = error.recovery
+        self.assertEqual((advice["reasonCode"], advice["responsibleParty"], advice["action"], advice["retryable"]),
+                         ("behind-main", "session", "rebase", True))
+        self.assertEqual(advice["suggestedCommands"], [["git", "rebase", "origin/main"]])
+        self.assertEqual(mq.Queue(self.repo).all(), [])
+        # Negative control: rebased, it holds main's file, which a rebase does not make this code read.
+        run(self.repo, "git", "checkout", "-q", "behind")
+        run(self.repo, "git", "rebase", "-q", "origin/main")
+        with self.assertRaises(ValueError) as raised, patch.object(mq.Queue, "start"), patch("builtins.print"):
+            mq.add(self.repo, "behind")
+        self.assertNotIsInstance(raised.exception, mq.Refused)
+        self.assertIn("own cannot be read either", str(raised.exception))
+
+
 # A fixture suite for an qk unittest gate: test_sometimes fails on each run whose letter in PLAN is F, counting its
 # runs in RUNS, and imports fixturelib.helper, which imports fixturelib.deeper.
 FLAKY_MODULE = """import pathlib, sys, unittest

@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- before queue imports
 from queuekeeper import cli, merge_queue as mq, recovery
-from test_support.queue import Fixture
+from test_support.queue import Fixture, run
 
 
 class AgentCli(Fixture):
@@ -164,6 +164,25 @@ class AgentCli(Fixture):
         mq.Queue(self.repo).reopen()
         status, result, _ = self.invoke("land", "feature", "--json")
         self.assertEqual((status, result["state"]), (0, mq.QUEUED))
+
+    def test_a_branch_behind_mains_configuration_is_told_to_rebase_in_the_structured_result(self):
+        """vocaro/queuekeeper#279: the recovery said inspect-error with no command, where a rebase was the fix."""
+        commit = self.commit("feature", "feature")
+        run(self.repo, "git", "checkout", "-q", "-B", "main-change", "origin/main")
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "novel": True}))
+        run(self.repo, "git", "commit", "-qam", "A key this Queuekeeper does not know")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        for command in (("land", "feature", "--wait"), ("land", "feature")):
+            with self.subTest(command=command):
+                status, result, progress = self.invoke(*command, "--json")
+                self.assertEqual((status, result["state"], result["commit"]), (1, "refused", commit))
+                self.assertIn("the branch is behind origin/main", result["failure"]["message"])
+                advice = result["recovery"]
+                self.assertEqual((advice["reasonCode"], advice["action"], advice["retryable"]),
+                                 ("behind-main", "rebase", True))
+                self.assertEqual(advice["suggestedCommands"], [["git", "rebase", "origin/main"]])
+                self.assertIn("Unknown configuration keys: ['novel']", progress)
 
     def test_runtime_and_configuration_errors_have_json_results(self):
         for error in (ValueError("Invalid project configuration"), OSError("Cannot read repository")):

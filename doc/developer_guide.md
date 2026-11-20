@@ -200,6 +200,18 @@ only while `origin/main` has none that names lanes. The settings that loosen che
 (`hookCoveredBy`, `unread`, `preflight`, `affected`) count only
 from `main` even then.
 
+**A `main` whose configuration does not parse.** `add` reads `origin/main`'s file through
+`main_config`. When `parse` refuses it, `behind_main_config` first checks whether the tip is behind:
+`origin/main` is not its ancestor, `queuekeeper.json` differs between the fork point and
+`origin/main`, and the fork point's copy parses. If so, it raises `Refused` with a `recovery` of
+`reasonCode` `behind-main`, `action` `rebase`, `retryable` true and `git rebase origin/main`.
+`qk land --json` reports that recovery in place of the generic one (vocaro/queuekeeper#279).
+Otherwise, when the tip's own file parses, it gates the landing through `as_batch`, as for a first
+landing. When it doesn't, the error names `origin/main`'s file as the fault. In a round,
+`Worker.settings` does the same: when `judged` holds on `main`'s file, it reads the batch's through
+`as_batch`, or raises the original hold when the batch's doesn't read either
+(vocaro/queuekeeper#295).
+
 **A repository with no `main`.** `fetch_main` lets the fetch fail with git's "couldn't find remote
 ref" (`NO_MAIN`), deletes any stale `origin/main`, and returns False. `add` then reads the tip's
 own configuration (`first_config`), records `base` as `None` with every commit to the tip, skips

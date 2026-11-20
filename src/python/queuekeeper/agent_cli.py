@@ -48,6 +48,7 @@ def execute(root, operation, command, *, reference=None, identifiers=(), details
                                                        "session" if reason else None, False, "fix-submission" if reason else "none",
                                                        reason or "The commit is already present on origin/main.")}
                 if details.get("closed"): payload["recovery"] = recovery.for_closed(details["closed"], reason)
+                if details.get("recovery"): payload["recovery"] = details["recovery"]
                 if details.get("waitsFor"):
                     payload["waitsFor"] = details["waitsFor"]
                     held = recovery.read_hold(store.hold_file, store.held())
@@ -60,6 +61,7 @@ def execute(root, operation, command, *, reference=None, identifiers=(), details
             payload = error_result("submission-refused", str(error), "refused")
             payload["waitsFor"] = list(error.waits_for)
             if error.closed: payload["recovery"] = recovery.for_closed(error.closed, str(error))
+            if error.recovery: payload["recovery"] = error.recovery
         except (remote.Lost, plugins.Unavailable) as error:
             status = queue.lane_results.UNMEASURED
             print(f"queuekeeper: {error}", file=sys.stderr)

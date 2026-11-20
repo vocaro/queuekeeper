@@ -431,11 +431,14 @@ class Refused(ValueError):
     `qk queue add` exit 1 for it, as `qk land --wait` does for an entry that came back. waits_for names the entries
     ahead that it conflicts with alone, not with origin/main, which `qk land --wait` waits for before it checks again
     (vocaro-engineering#302); it is empty for any other refusal. closed is the closure's record (Queue.closed) when
-    the queue refused it as closed to new entries, and None for any other refusal."""
-    def __init__(self, words, waits_for=(), closed=None):
+    the queue refused it as closed to new entries, and None for any other refusal. recovery, when given, is the
+    structured recovery (recovery.advice) that `--json` reports for it in place of the generic one, as for a branch
+    behind origin/main's configuration (behind_main_config)."""
+    def __init__(self, words, waits_for=(), closed=None, recovery=None):
         super().__init__(words)
         self.waits_for = list(waits_for)
         self.closed = closed
+        self.recovery = recovery
 
 
 # How long a closure lasts without --for, and the most --for may ask (vocaro/queuekeeper#286). A closure with no end
@@ -675,6 +678,52 @@ def config_at(root, commit):
 def has_config(root, commit):
     """Whether commit holds a queuekeeper.json, which origin/main lacks until a project's first landing (#10)."""
     return git(root, "cat-file", "-e", f"{commit}:queuekeeper.json").returncode == 0
+
+
+def main_config(root, tip):
+    """The settings qk land judges an entry at tip by while origin/main has a queuekeeper.json: origin/main's, parsed by
+    this code. When this code cannot read origin/main's, the refusal says the fault is in origin/main's file, not the
+    entry's (vocaro/queuekeeper#295). A tip behind origin/main, whose copy at the fork this code reads, is refused with
+    a rebase onto origin/main (behind_main_config, vocaro/queuekeeper#279). Otherwise, when tip's own queuekeeper.json
+    reads, as an entry's that fixes main's does, it gates this landing, less what only main may say (as_batch), as for a
+    project's first landing (#10), and the round reads it the same way (Worker.settings): a refusal of main's file must
+    not strand the project outside the queue, with only a push by hand to fix it."""
+    try: return config_at(root, MAIN)
+    except ValueError as error: broken = error
+    main = text(root, "rev-parse", MAIN)
+    said = (f"origin/main's queuekeeper.json at {main[:12]}, which the queue judges every entry by, cannot be read by "
+            f"this Queuekeeper: {broken}. That is origin/main's file, not {tip[:12]}'s")
+    behind = behind_main_config(root, tip, said)
+    if behind: raise behind
+    if not has_config(root, tip):
+        raise ValueError(f"{said}, and {tip[:12]} has no queuekeeper.json to land in its place: commit one that fixes "
+                         "it and land that")
+    try: own = as_batch(config_at(root, tip))
+    except ValueError as error:
+        raise ValueError(f"{said}; {tip[:12]}'s own cannot be read either: {error}. Fix queuekeeper.json in this "
+                         "entry, as main's needs, and land it again") from error
+    print(f"queue: {said}. {tip[:12]}'s own reads, so it gates this landing, all but its "
+          f"queue.{' and queue.'.join(MAIN_ONLY)}, and main's from then on", file=sys.stderr)
+    return own
+
+
+def behind_main_config(root, tip, said):
+    """A refusal of tip, as Refused, when origin/main's queuekeeper.json, which this code cannot read (said), changed
+    after tip branched from origin/main, and the copy at the fork reads: the branch predates what main's file now
+    says, such as a key added there, and its Queuekeeper does not know it (vocaro/queuekeeper#279). Rebasing onto
+    origin/main brings the code that reads it, in Queuekeeper's own repository, or the toolkit pin that does. None when
+    tip holds origin/main, when main's file is as it was at the fork, or when the fork's copy cannot be read either."""
+    if git(root, "merge-base", "--is-ancestor", MAIN, tip).returncode == 0: return None
+    fork = git(root, "merge-base", tip, MAIN).stdout.strip()
+    if not fork or git(root, "diff", "--quiet", fork, MAIN, "--", "queuekeeper.json").returncode == 0: return None
+    if has_config(root, fork):
+        try: config_at(root, fork)
+        except ValueError: return None
+    words = (f"{tip[:12]} is not queued: {said}. origin/main changed it after this branch left origin/main at "
+             f"{fork[:12]}, whose copy this code reads: the branch is behind origin/main, and its Queuekeeper predates "
+             "what main's file now says. Rebase onto origin/main (git rebase origin/main) and land it again")
+    return Refused(words, recovery=recovery.advice("behind-main", "session", True, "rebase", words,
+                                                   [["git", "rebase", "origin/main"]]))
 
 
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
@@ -2085,7 +2134,8 @@ def _land(root, args, directory=None, details=None):
             break
         except Refused as error:
             if details is not None:
-                details.update(refused=str(error), waitsFor=list(error.waits_for), closed=error.closed)
+                details.update(refused=str(error), waitsFor=list(error.waits_for), closed=error.closed,
+                               recovery=error.recovery)
             print(f"queuekeeper: {error}", file=sys.stderr)
             if not args.wait or not error.waits_for: return 1
             # Refused for entries ahead alone: wait for them, then check again against the whole queue, which may
@@ -2099,6 +2149,7 @@ def _land(root, args, directory=None, details=None):
         details.pop("refused", None)
         details.pop("waitsFor", None)
         details.pop("closed", None)
+        details.pop("recovery", None)
     left = max(0.0, deadline - time.monotonic())
     status_ = wait(target, identifier, left) if args.wait and identifier is not None else 0
     warn(target)
@@ -2185,7 +2236,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         config = first_config(root, tip, no_gate)
         print(f"queue: origin has no main yet, so this landing creates it from {tip[:12]}, gated alone by its own "
               "queuekeeper.json, all but what only main may say, and by main's from then on", file=sys.stderr)
-    elif has_config(root, MAIN): config = config_at(root, MAIN)
+    elif has_config(root, MAIN): config = main_config(root, tip)
     elif has_config(root, tip):
         config = as_batch(config_at(root, tip))
         print(f"queue: origin/main has no queuekeeper.json yet, so the queue reads {tip[:12]}'s for this landing "
@@ -6801,10 +6852,22 @@ class Worker:
         """The project's lanes and settings as they stand on main at base, so that no branch chooses its own gate,
         with the checkout left at head. Until main has a queuekeeper.json that names lanes, the batch's, less what
         only main may say (as_batch), for this round alone: the commit that adds a project's configuration, or first
-        names its lanes, has to land (#10). Main then had no gate for the batch to loosen."""
+        names its lanes, has to land (#10). Main then had no gate for the batch to loosen. The same while main's
+        queuekeeper.json cannot be read, when the batch's can: the batch fixes it, and a refusal of main's file must not
+        leave only a push by hand to land the fix (vocaro/queuekeeper#295). A batch whose file cannot be read either,
+        as one that leaves main's as it is, holds the queue for main's."""
         self.reset(base)
-        config = self.judged(f"main at {base[:12]}") if has_config(self.checkout, base) else None
+        unreadable = None
+        try: config = self.judged(f"main at {base[:12]}") if has_config(self.checkout, base) else None
+        except Hold as error: config, unreadable = None, error
         self.reset(head)
+        if unreadable is not None:
+            try: own = self.judged(f"the batch at {head[:12]}")
+            except Hold: raise unreadable from None
+            self.say(f"main's queuekeeper.json at {base[:12]} cannot be read ({unreadable}); the batch's at "
+                     f"{head[:12]} can, so this round reads it, all but its queue.{' and queue.'.join(MAIN_ONLY)}, "
+                     "and main's from the next landing on")
+            return as_batch(own)
         if config is not None:
             try: lanes_of(config)
             except ValueError: why = "names no lanes"

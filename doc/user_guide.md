@@ -756,6 +756,22 @@ nothing is rewritten. Until then:
 - a `main` someone pushes while the gate runs sends the entry back into the queue, which lands it
   on top of that `main`.
 
+### When main's configuration can't be read
+
+A Queuekeeper release can refuse a setting that it only warned about before. A project whose
+`main` still has that setting can't have its `queuekeeper.json` read from `origin/main`. Then
+`qk land` says that the fault is in `origin/main`'s file, not the entry's, and names the setting.
+
+- **An entry that fixes it lands through the queue.** When the entry's own `queuekeeper.json`
+  reads, the queue gates that landing, and the round's batch, by the entry's file, as for a
+  project's first landing. It says so. The settings that loosen what the queue checks still count
+  only from `main`, so they are left out. `main`'s file is used again from the next landing on.
+- **Any other entry is refused**, since its own file is `main`'s, unchanged. Land the fix first.
+- **A branch that is behind** is told to rebase instead, when `main`'s file changed after the
+  branch left `main` and the branch's own copy from that point still reads. A branch's
+  Queuekeeper can predate a key that `main` added since, and rebasing brings in the code that
+  knows it.
+
 ## Lanes and admission
 
 ### Lanes
@@ -2580,6 +2596,12 @@ wake you.
   replaces its earlier entry instead.
 - **A refused entry because the queue is closed** gets `state: refused` and
   `reasonCode: "queue-closed"` in `--json`. Wait for the queue to reopen, then land again.
+- **A branch behind `main`'s configuration** is refused with exit 1 when `origin/main`'s
+  `queuekeeper.json` changed after the branch left `main`, and the branch's Queuekeeper can't read
+  the new file, for example because it uses a key added since. `--json` gives
+  `reasonCode: "behind-main"`, `action: "rebase"`, `retryable: true` and the suggested command
+  `git rebase origin/main`. Rebase, then land again
+  ([When main's configuration can't be read](#when-mains-configuration-cant-be-read)).
 - **Each project lands in its own repository.** To land a commit in another project's queue, use
   `qk land --repo NAME BRANCH --wait`.
 - **`qk queue status` shows the whole picture.** For a gate on another Mac, read the lane's own
