@@ -27,6 +27,8 @@ session and the queue share one store, outside every checkout and outside Xcode'
     apps/NAME/kept.json        what each kept build is: its commit, bundle identifier, product and when it built
     apps/NAME/logs/            each build's log
     apps/NAME/lock             held by a keep while it builds, so that one build at a time uses source and derived
+    apps/NAME/probes/CHECKOUT/ each checkout's probe builds (`qk app build`), with derived, logs, built.json and lock
+                               of their own: a checkout's working tree as it stands, never kept and never landed
 
 A build runs through `qk admit --here`, on this Mac, since its product is this Mac's. `qk app run` opens the newest kept Mac
 build, or with --iphone or --ipad installs the newest kept device build on that paired device and launches it,
@@ -36,12 +38,20 @@ agreed, which is between the session and the owner (owner's decision, 2026-11-06
 it runs one, it builds origin/main when the newest kept build is older, unless --no-build, and runs the newest
 kept build, saying so, when that build fails. Opening an app on this Mac uses the owner's screen: it is the
 owner's command, or a session's at his request.
+
+A probe build, such as an app with one more logging line for a diagnostic, never lands, so no kept build holds it
+(vocaro/queuekeeper#175). `qk app build` builds the working tree of the checkout it runs from, with the project's
+prepare steps, settings and the environment qk gives its commands, and prints the .app's path; `qk app run --iphone
+--app PATH` runs such an .app, and `--here` builds and runs one, under the same reservation, silence, launched-app
+record and release as a kept build. A given .app runs only when it is a build for the platform, a device build for
+a device, and its bundle identifier is one the project's kept or probe builds have.
 """
 import argparse
 import contextlib
 from datetime import datetime, timezone
 import fcntl
 import getpass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -72,6 +82,8 @@ SOURCE_REASON = "qk app's source checkout for kept app builds (app_builds.py)"
 # whose registrations a migrated Mac still lists, locked, after their folders went (vocaro/queuekeeper#138).
 OLD_SOURCE_REASONS = (SOURCE_REASON, "eng app's source checkout for kept app builds (app_builds.py)")
 OLD_STORE = "vocaro-engineering/apps"
+# The folder of a project's store that holds each checkout's probe builds (build_probe).
+PROBES = "probes"
 DESTINATIONS = {"mac": "generic/platform=macOS", "ios": "generic/platform=iOS"}
 # The folder under Build/Products that holds each platform's product, after the configuration's name.
 PRODUCT_SUFFIX = {"mac": "", "ios": "-iphoneos"}
@@ -359,6 +371,42 @@ def info(path):
     raise Failed(f"{path} holds no Info.plist")
 
 
+def launcher(checkout):
+    """The `qk` that runs for checkout: its own launcher, or this Queuekeeper's naming it as the project."""
+    own = Path(checkout) / "scripts/qk"
+    if own.is_file(): return [sys.executable, str(own)]
+    return [sys.executable, str(TOOLKIT_ROOT / "scripts/qk"), "--project", str(checkout)]
+
+
+def admitted(checkout):
+    """What runs a build under admission on this Mac: --here, since its product is this Mac's, kept in the store and
+    run here (qk admit offers a command to another Mac first otherwise)."""
+    return lambda words: [*launcher(checkout), "admit", "--here", "--time-limit", str(BUILD_LIMIT), "--", *words]
+
+
+def compile_app(app, platform, directory, derived, log, what, admit):
+    """Run app.prepare in directory, then build platform's app into derived under admit; the product. what says which
+    build it is, as "at COMMIT" or "of CHECKOUT"."""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    steps = prepare_steps(app)
+    for number, step in enumerate(steps, 1):
+        say(f"preparing {platform} {what}: {' '.join(step)}")
+        prepared = log.with_suffix(".prepare.log" if len(steps) == 1 else f".prepare-{number}.log")
+        try:
+            status = processes.run(step, cwd=directory, log_path=prepared, timeout=PREPARE_LIMIT)
+        except processes.TimedOut as error:
+            raise Failed(f"app.prepare reached its limit: {error}")
+        if status: raise Failed(f"app.prepare's {step[0]} exited {status}; see {prepared}")
+    command = build_command(app, platform, derived)
+    say(f"building {platform} {what}; log {log}")
+    try:
+        status = processes.run(admit(command), cwd=directory, log_path=log, timeout=BUILD_LIMIT * 4)
+    except processes.TimedOut as error:
+        raise Failed(f"the {platform} build reached its limit: {error}; see {log}")
+    if status: raise Failed(f"the {platform} build {what} exited {status}; see {log}{signing_hint(log)}")
+    return product(app, platform, derived)
+
+
 def build(root, store, config, platform, commit, *, admit=None):
     """Build platform's app at commit in the store's source worktree and keep it; the kept build. Run with the
     store's lock held. admit runs the build under admission: by default the source checkout's `qk admit`."""
@@ -369,32 +417,10 @@ def build(root, store, config, platform, commit, *, admit=None):
         raise Failed(f"queuekeeper.json at {commit[:12]} configures no {platform} app")
     link_beside(root, store, config)
     app = config["app"]
-    directory = source / app.get("directory", ".")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     log = store.logs / f"{stamp}-{platform}-{commit[:12]}.log"
-    store.logs.mkdir(parents=True, exist_ok=True)
-    steps = prepare_steps(app)
-    for number, step in enumerate(steps, 1):
-        say(f"preparing {platform} at {commit[:12]}: {' '.join(step)}")
-        prepared = log.with_suffix(".prepare.log" if len(steps) == 1 else f".prepare-{number}.log")
-        try:
-            status = processes.run(step, cwd=directory, log_path=prepared, timeout=PREPARE_LIMIT)
-        except processes.TimedOut as error:
-            raise Failed(f"app.prepare reached its limit: {error}")
-        if status: raise Failed(f"app.prepare's {step[0]} exited {status}; see {prepared}")
-    derived = store.derived(platform)
-    command = build_command(app, platform, derived)
-    say(f"building {platform} at {commit[:12]}; log {log}")
-    # --here: the build's product is this Mac's, kept in the store and run here (qk admit offers a command to another
-    # Mac first otherwise).
-    admit = admit or (lambda words: [sys.executable, str(source / "scripts/qk"), "admit", "--here", "--time-limit",
-                                     str(BUILD_LIMIT), "--", *words])
-    try:
-        status = processes.run(admit(command), cwd=directory, log_path=log, timeout=BUILD_LIMIT * 4)
-    except processes.TimedOut as error:
-        raise Failed(f"the {platform} build reached its limit: {error}; see {log}")
-    if status: raise Failed(f"the {platform} build at {commit[:12]} exited {status}; see {log}{signing_hint(log)}")
-    built = product(app, platform, derived)
+    built = compile_app(app, platform, source / app.get("directory", "."), store.derived(platform), log,
+                        f"at {commit[:12]}", admit or admitted(source))
     bundle = info(built).get("CFBundleIdentifier")
     if not bundle: raise Failed(f"{built} names no CFBundleIdentifier")
     # By the short commit: forty hex digits in the device command's words would read as an older device's UDID.
@@ -414,6 +440,88 @@ def build(root, store, config, platform, commit, *, admit=None):
     store.record(platform, kept)
     say(f"kept {platform} {built.name} at {commit[:12]}: {kept['app']}")
     return kept
+
+
+def probes(store, root):
+    """Where the probe builds of the checkout at root are made: a store of their own in the project's, named by the
+    checkout's folder, so that two worktrees build side by side and none touches the kept builds' source or
+    DerivedData. Its built.json holds the newest probe build of each platform."""
+    root = Path(root).resolve()
+    probe = Store(f"{root.name}-{hashlib.sha1(str(root).encode()).hexdigest()[:10]}", store.path / PROBES)
+    probe.index = probe.path / "built.json"
+    return probe
+
+
+def build_probe(root, store, config, platform, *, admit=None, wait=LOCK_WAIT):
+    """Build the working tree of the checkout at root for platform as it stands, with the project's prepare steps and
+    the environment qk gives its commands: a probe build, which never lands and is never kept as a last good build.
+    Returns the build. admit runs it under admission: by default the checkout's own `qk admit --here`."""
+    app = config["app"]
+    if platform not in app: raise Failed(f"queuekeeper.json's app builds no {platform} app")
+    root = Path(root).resolve()
+    probe = probes(store, root)
+    head = git(root, "rev-parse", "--verify", "HEAD", check=False).stdout.strip()
+    changed = bool(git(root, "status", "--porcelain", check=False).stdout.strip())
+    with probe.locked(wait, waiting=lambda: say(f"waiting for the probe build of {root} under way")):
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        log = probe.logs / f"{stamp}-{platform}.log"
+        built = compile_app(app, platform, root / app.get("directory", "."), probe.derived(platform), log,
+                            f"of {root}", admit or admitted(root))
+        bundle = info(built).get("CFBundleIdentifier")
+        if not bundle: raise Failed(f"{built} names no CFBundleIdentifier")
+        made = {"app": str(built), "bundle": bundle, "probe": True, "checkout": str(root), "commit": head,
+                "changed": changed, "configuration": app.get("configuration", "Debug"),
+                "builtAt": datetime.now(timezone.utc).isoformat(), "log": str(log)}
+        probe.write({**probe.read(), platform: made})
+    say(f"built a probe {platform} build {origin(made)}: {built}")
+    return made
+
+
+def bundles(store, platform):
+    """The bundle identifiers the project's own builds of platform have: its kept builds' and its probe builds'."""
+    found = {kept.get("bundle") for kept in store.kept(platform)}
+    for record in sorted((store.path / PROBES).glob("*/built.json")):
+        try: found.add(json.loads(record.read_text()).get(platform, {}).get("bundle"))
+        except (OSError, ValueError, AttributeError): pass
+    return found - {None}
+
+
+def given_app(path, platform, store):
+    """The .app at path, to run as a probe build of platform. Refused unless it is a build for platform, for ios a
+    device build, whose bundle identifier is the project's, as its kept or probe builds have it."""
+    path = Path(path).expanduser().resolve()
+    if path.suffix != ".app" or not path.is_dir(): raise Failed(f"{path} is no .app bundle")
+    plist = info(path)
+    named = set(plist.get("CFBundleSupportedPlatforms") or []) | {plist.get("DTPlatformName")}
+    mac = (path / "Contents/Info.plist").is_file()
+    if platform == "ios":
+        if mac: raise Failed(f"{path} is a Mac build, which no iPhone or iPad installs")
+        if named & {"iPhoneSimulator", "iphonesimulator"}:
+            raise Failed(f"{path} is a Simulator build, which a device cannot install: build it for "
+                         f"{DESTINATIONS['ios']}, as `qk app build` does")
+        if not named & {"iPhoneOS", "iphoneos"}:
+            raise Failed(f"{path} names no device platform (CFBundleSupportedPlatforms iPhoneOS), so it is no device "
+                         "build")
+    elif not mac:
+        raise Failed(f"{path} is no Mac build: it holds no Contents/Info.plist")
+    bundle = plist.get("CFBundleIdentifier")
+    known = bundles(store, platform)
+    if not known:
+        raise Failed(f"no build of the project's {platform} app is kept or built here yet, so {path}'s bundle "
+                     f"identifier has nothing to match: run `qk app build --platform {platform}` or "
+                     f"`qk app keep --platform {platform}` first")
+    if bundle not in known:
+        raise Failed(f"{path} is {bundle or 'an app with no CFBundleIdentifier'}, not the project's "
+                     f"{', '.join(sorted(known))}: qk app runs only the project's own app")
+    return {"app": str(path), "bundle": bundle, "probe": True}
+
+
+def origin(kept):
+    """What build kept is, for what qk app says: a kept build's commit, or a probe build's checkout or path."""
+    if not kept.get("probe"): return f"built at {kept['commit'][:12]} ({kept.get('subject', '')})"
+    if not kept.get("checkout"): return f"from {kept['app']}"
+    return (f"of {kept['checkout']}" + (f" at {kept['commit'][:12]}" if kept.get("commit") else "")
+            + (" with its uncommitted changes" if kept.get("changed") else ""))
 
 
 def keep(root, config, *, commit=None, chosen=None, after=False, store=None, admit=None, wait=LOCK_WAIT):
@@ -502,7 +610,7 @@ def open_on_mac(kept, *, replace=False, run=subprocess.run, sleep=time.sleep):
             raise Failed(f"{bundle} did not quit within {QUIT_WAIT}s; nothing was opened")
     done = run(["open", app], capture_output=True, text=True)
     if done.returncode: raise Failed(f"open {app} failed: {done.stderr.strip()}")
-    say(f"opened {Path(app).name} built at {kept['commit'][:12]} ({kept.get('subject', '')})")
+    say(f"opened {Path(app).name} {origin(kept)}")
 
 
 def device_command(kept):
@@ -542,13 +650,15 @@ def install_and_launch(udid, app, bundle, run=subprocess.run, sleep=time.sleep):
 
 def run_on_device(kept, key, *, owner, wait=device_pass.WAIT, record=None, pass_run=device_pass.run):
     """Install and launch the kept device build on key's device under its reservation; the exit status."""
-    parts, code = pass_run([key], device_command(kept), owner=owner, purpose=f"qk app run of {Path(kept['app']).name}",
+    probe = " (a probe build)" if kept.get("probe") else ""
+    parts, code = pass_run([key], device_command(kept), owner=owner,
+                           purpose=f"qk app run of {Path(kept['app']).name}{probe}",
                            minutes=DEVICE_MINUTES, wait=wait, launched=[kept["bundle"]],
                            apps_quit="left running on the device for the owner to use", record=record,
                            said=say, results=None)
     for part in parts:
         if part.outcome != device_pass.PASSED: say(f"{key}: {part.outcome}: {part.detail}")
-    if code == 0: say(f"{key} runs {Path(kept['app']).name} built at {kept['commit'][:12]} ({kept.get('subject', '')})")
+    if code == 0: say(f"{key} runs {Path(kept['app']).name} {origin(kept)}")
     return code
 
 
@@ -584,21 +694,32 @@ def spawn_keep(checkout, commit, log, env=None):
 
 
 def add_arguments(parser):
-    operations = parser.add_subparsers(dest="operation", required=True, metavar="{run,keep,status,retire-old-source}")
+    operations = parser.add_subparsers(dest="operation", required=True,
+                                       metavar="{run,build,keep,status,retire-old-source}")
     running = operations.add_parser("run", help="open the newest kept Mac build, or install and launch the device "
         "build on the paired iPhone or iPad, building origin/main first when the newest kept build is older")
     target = running.add_mutually_exclusive_group()
     target.add_argument("--iphone", action="store_true", help="install and launch on the paired iPhone, taken in "
                         "turn; ask the owner first, since it is his personal phone")
     target.add_argument("--ipad", action="store_true", help="install and launch on the paired iPad, taken in turn")
-    running.add_argument("--no-build", action="store_true", help="run the newest kept build as it is, building "
-                         "nothing")
+    which = running.add_mutually_exclusive_group()
+    which.add_argument("--no-build", action="store_true", help="run the newest kept build as it is, building "
+                       "nothing")
+    which.add_argument("--app", metavar="PATH", help="run this .app instead, a probe build that never lands: a device "
+                       "build for --iphone or --ipad, whose bundle identifier is the project's")
+    which.add_argument("--here", action="store_true", help="build this checkout's working tree as it stands, as "
+                       "`qk app build` does, and run that probe build")
     running.add_argument("--replace", action="store_true", help="on this Mac, quit another copy of the app that runs "
                          "from elsewhere, such as a test run's, before opening the kept one")
     running.add_argument("--owner", help="the session the device's reservation names (default: QUEUEKEEPER_DEVICE_OWNER, "
                          "else the agent session, else this account)")
     running.add_argument("--wait", type=float, default=device_pass.WAIT, metavar="SECONDS", help="how long to wait "
                          f"in the device's line (default {device_pass.WAIT})")
+    building = operations.add_parser("build", help="build this checkout's working tree as it stands, a probe build "
+                                     "that is never kept, with the project's prepare steps and environment, and print "
+                                     "the .app's path for `qk app run --app`")
+    building.add_argument("--platform", choices=sorted(APP_PLATFORMS), help="the platform to build (default ios when "
+                          "the app builds it, else mac)")
     keeping = operations.add_parser("keep", help="build the app at a commit, by default origin/main, and keep it "
                                     "as the newest build when it builds")
     keeping.add_argument("--commit", help="the commit to build (default origin/main, fetched)")
@@ -667,12 +788,19 @@ def execute(root, args, config=None):
             with processes.forwarding_signals():
                 return keep(root, config, commit=args.commit, chosen=chosen or None, after=args.after_landing,
                             store=store)
+        if args.operation == "build":
+            platform = args.platform or ("ios" if "ios" in config["app"] else "mac")
+            with processes.forwarding_signals():
+                print(build_probe(root, store, config, platform)["app"])
+            return 0
         key = DEVICES["iphone"] if args.iphone else DEVICES["ipad"] if args.ipad else None
         platform = "ios" if key else "mac"
         if platform not in config["app"]:
             raise Failed(f"queuekeeper.json's app builds no {platform} app")
         with processes.forwarding_signals():
-            kept = current(root, config, platform, store=store, build_missing=not args.no_build)
+            if getattr(args, "app", None): kept = given_app(args.app, platform, store)
+            elif getattr(args, "here", False): kept = build_probe(root, store, config, platform)
+            else: kept = current(root, config, platform, store=store, build_missing=not args.no_build)
             if key is None:
                 open_on_mac(kept, replace=args.replace)
                 return 0

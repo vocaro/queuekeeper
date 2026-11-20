@@ -94,6 +94,21 @@ to it at once.
 The record coordinates only work that goes through Queuekeeper. A person running `xcodebuild` by
 hand bypasses it. It currently tracks one iPhone and one iPad.
 
+## Kept and probe app builds
+
+`qk app` keeps the last good build of a project's app and runs it: on this Mac, or with `--iphone`
+or `--ipad` installed and launched on that device as a device pass. The pass takes the device in
+turn, silences its notifications, records the launched app, and releases the device afterward.
+
+A diagnostic sometimes needs a build that never lands, such as the app with one more logging line.
+`qk app build` builds the working tree of the checkout it runs from, as it stands. It runs the
+project's `prepare` steps and settings in the environment `qk` gives its lanes, admitted on this Mac,
+and prints the `.app`'s path. `qk app run --ipad --app PATH` runs such an `.app` under the same device
+pass as a kept build, and `qk app run --ipad --here` builds and runs one in a single command. A given
+`.app` is refused unless it is a device build, not a Simulator or Mac build, and its bundle identifier
+is the project's. Probe builds are never kept, and `qk disk` offers each checkout's for deletion once
+they are idle.
+
 ## Unattended Macs
 
 A UI test on a Mac nobody is watching fails for reasons unrelated to the code. The

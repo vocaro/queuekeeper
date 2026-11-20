@@ -561,6 +561,16 @@ def app_builds(host, usage, sizes):
             items += [cache_item(host, usage, sizes, "app-builds", child, "qk app's build cache, which the next keep "
                                  "builds again in full") for child in sorted(derived.iterdir())
                       if child.is_dir() and not child.is_symlink()]
+        # Each checkout's probe builds (`qk app build`): never kept, so a cache once no build of it runs.
+        probes = project / kept_apps.PROBES
+        for probe in sorted(probes.iterdir()) if probes.is_dir() else []:
+            if not probe.is_dir() or probe.is_symlink(): continue
+            if kept_apps.Store(probe.name, probes).busy():
+                items.append(Item("app-builds", str(probe), KEPT, "a probe build is building with it now",
+                                  sizes.of(probe)))
+            else:
+                items.append(cache_item(host, usage, sizes, "app-builds", probe, "a checkout's probe builds from "
+                                        "`qk app build`, which are never kept"))
     return items
 
 

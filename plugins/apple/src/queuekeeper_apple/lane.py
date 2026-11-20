@@ -56,7 +56,8 @@ def register():
         "app": ("run the last good build of the project's app: qk app run opens the newest kept Mac build, and "
                 "qk app run --iphone or --ipad installs and launches the device build on that paired device, "
                 "building origin/main first when the kept build is older; qk app keep builds and keeps one, as "
-                "the merge queue does after each gated landing; qk app status lists them",
+                "the merge queue does after each gated landing; qk app status lists them; qk app build builds "
+                "this checkout as a probe build, which qk app run --app PATH (or --here) runs",
                 app_builds.add_arguments, app_builds.execute, True),
     })
     if keep_app not in plugins.AFTER_LANDING: plugins.AFTER_LANDING.append(keep_app)

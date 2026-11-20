@@ -36,8 +36,9 @@ ios = "generic/platform=iOS" in words
 folder = derived / "Build/Products" / ("Debug-iphoneos" if ios else "Debug") / "Demo.app"
 plist = folder / "Info.plist" if ios else folder / "Contents/Info.plist"
 plist.parent.mkdir(parents=True, exist_ok=True)
-plist.write_bytes(plistlib.dumps({{"CFBundleIdentifier": "{BUNDLE}"}}))
-open(os.environ["APP_BUILD_CALLS"], "a").write(" ".join(words) + "\\n")
+plist.write_bytes(plistlib.dumps({{"CFBundleIdentifier": "{BUNDLE}",
+                                  "CFBundleSupportedPlatforms": ["iPhoneOS" if ios else "MacOSX"]}}))
+open(os.environ["APP_BUILD_CALLS"], "a").write(" ".join(words) + " cwd=" + os.getcwd() + "\\n")
 """
 APP = {"project": "Demo.xcodeproj", "mac": {"scheme": "Demo"}, "ios": {"scheme": "Demo"}}
 
@@ -629,6 +630,126 @@ class Queue(Fixture):
         self.assertEqual((checkout / "logs/keep.log").read_text(), f"app keep --after-landing --commit {'c' * 40}\n")
 
 
+def device_app(path, bundle=BUNDLE, platforms=("iPhoneOS",)):
+    """An .app as an iOS build lays it out, its Info.plist at the top, for the platforms it names."""
+    path.mkdir(parents=True)
+    (path / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle,
+                                                      "CFBundleSupportedPlatforms": list(platforms)}))
+    return path
+
+
+class Probe(Fixture):
+    """vocaro/queuekeeper#175: a probe build that never lands, built from a checkout's working tree and run under
+    the same device pass as a kept build."""
+
+    def probe(self, platform="ios", app=APP):
+        return app_builds.build_probe(self.root, self.store, project(app), platform, admit=self.admit)
+
+    def test_the_working_tree_is_built_as_it_stands_in_a_store_of_its_own_and_kept_nowhere(self):
+        trace = self.temp / "trace"
+        step = [sys.executable, "-c", f"open({str(trace)!r}, 'a').write(__import__('os').getcwd() + '\\n')"]
+        app = {**APP, "prepare": step, "ios": {"scheme": "Demo", "settings": {"DEVELOPMENT_TEAM": "TEAM"}}}
+        (self.root / "change").write_text("one more logging line")
+        made = self.probe(app=app)
+        probe = app_builds.probes(self.store, self.root)
+        self.assertEqual(Path(made["app"]), probe.derived("ios") / "Build/Products/Debug-iphoneos/Demo.app")
+        self.assertEqual((made["bundle"], made["probe"], made["changed"], made["commit"], made["checkout"]),
+                         (BUNDLE, True, True, git(self.root, "rev-parse", "HEAD"), str(self.root)))
+        # The prepare step and the build ran in the checkout itself, with the platform's settings, admitted.
+        self.assertEqual(trace.read_text().split(), [str(self.root)])
+        [build] = self.builds()
+        self.assertIn("-destination generic/platform=iOS", build)
+        self.assertIn("DEVELOPMENT_TEAM=TEAM", build)
+        self.assertTrue(build.endswith(f"cwd={self.root}"), build)
+        # Nothing is kept, the store's source worktree is not made, and the build is recorded for --app to match.
+        self.assertEqual(self.store.kept("ios"), [])
+        self.assertFalse(self.store.source.exists())
+        self.assertEqual(json.loads(probe.index.read_text())["ios"]["app"], made["app"])
+        self.assertEqual(app_builds.bundles(self.store, "ios"), {BUNDLE})
+        # Each checkout has its own place, so two worktrees build side by side.
+        other = self.temp / "other/Demo"
+        other.mkdir(parents=True)
+        self.assertNotEqual(app_builds.probes(self.store, other).path, probe.path)
+
+    def test_a_failed_probe_build_says_which_checkout_it_was(self):
+        self.broken.write_text("error: signing")
+        with self.assertRaisesRegex(app_builds.Failed, f"the ios build of {self.root} exited 65"):
+            self.probe()
+
+    def test_the_build_command_prints_the_apps_path_and_run_here_runs_it_on_the_device(self):
+        printed = StringIO()
+        seen = []
+        with patch.dict(os.environ, {app_builds.OVERRIDE: str(self.temp / "store")}), \
+                patch.object(app_builds, "admitted", lambda checkout: self.admit), \
+                patch.object(app_builds, "run_on_device", lambda kept, key, **options: seen.append((kept, key)) or 0), \
+                contextlib.redirect_stdout(printed):
+            self.assertEqual(app_builds.execute(self.root, SimpleNamespace(operation="build", platform=None),
+                                                project()), 0, self.said)
+            run = SimpleNamespace(operation="run", iphone=False, ipad=True, app=None, here=True, no_build=False,
+                                  owner="s", wait=1, replace=False)
+            self.assertEqual(app_builds.execute(self.root, run, project()), 0, self.said)
+        built = printed.getvalue().strip()
+        self.assertTrue(built.endswith("Debug-iphoneos/Demo.app"), built)
+        [(kept, key)] = seen
+        self.assertEqual((kept["app"], kept["probe"], key), (built, True, "iPad"))
+
+    def test_a_given_app_runs_under_the_device_pass_and_is_installed_and_launched(self):
+        made = self.probe()
+        copy = self.temp / "copy/Demo.app"
+        shutil.copytree(made["app"], copy)
+        seen = {}
+
+        def pass_run(keys, command, **options):
+            # The device step, as the pass runs it on the reserved device, with a stand-in devicectl.
+            seen.update(keys=keys, command=command, **options)
+            seen["devicectl"] = Devicectl(0, 0)
+            code = app_builds.install_and_launch("U", command[-1], command[command.index("--bundle") + 1],
+                                                 run=seen["devicectl"])
+            return [device_pass.Part(keys[0], device_pass.PASSED if code == 0 else device_pass.FAILED, "", code)], code
+
+        kept = app_builds.given_app(str(copy), "ios", self.store)
+        self.assertEqual(app_builds.run_on_device(kept, "iPad", owner="s", pass_run=pass_run), 0, self.said)
+        self.assertEqual((seen["keys"], seen["launched"], seen["command"][-1]), (["iPad"], [BUNDLE], str(copy)))
+        self.assertIn("probe", seen["purpose"])
+        self.assertEqual([call[3] for call in seen["devicectl"].calls], ["install", "process"])
+        self.assertIn(f"iPad runs Demo.app from {copy}", self.said)
+
+    def test_only_a_device_build_of_the_projects_own_app_is_run(self):
+        apps = self.temp / "apps"
+        device = device_app(apps / "device/Demo.app")
+        # Nothing of the project's is built or kept yet to match a bundle identifier with.
+        with self.assertRaisesRegex(app_builds.Failed, "nothing to match"):
+            app_builds.given_app(str(device), "ios", self.store)
+        self.probe()
+        self.assertEqual(app_builds.given_app(str(device), "ios", self.store),
+                         {"app": str(device.resolve()), "bundle": BUNDLE, "probe": True})
+        mac = apps / "mac/Demo.app"
+        (mac / "Contents").mkdir(parents=True)
+        (mac / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": BUNDLE,
+                                                                  "CFBundleSupportedPlatforms": ["MacOSX"]}))
+        for path, words in [
+                (device_app(apps / "simulator/Demo.app", platforms=("iPhoneSimulator",)), "Simulator build"),
+                (device_app(apps / "unnamed/Demo.app", platforms=()), "no device platform"),
+                (device_app(apps / "other/Demo.app", bundle="com.example.other"), "not the project's com.example.demo"),
+                (mac, "Mac build"), (apps / "missing/Demo.app", "no .app bundle"), (apps, "no .app bundle")]:
+            with self.subTest(path=path), self.assertRaisesRegex(app_builds.Failed, words):
+                app_builds.given_app(str(path), "ios", self.store)
+        with self.assertRaisesRegex(app_builds.Failed, "no Mac build"):
+            app_builds.given_app(str(device), "mac", self.store)
+
+    def test_the_command_line_refuses_a_given_app_with_no_build_and_a_wrong_app(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        (root / "queuekeeper.json").write_text(json.dumps(project()))
+        with contextlib.redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            cli.main(["--project", str(root), "app", "run", "--ipad", "--app", "/a/Demo.app", "--no-build"])
+        simulator = device_app(root / "Demo.app", platforms=("iPhoneSimulator",))
+        with patch.dict(os.environ, {app_builds.OVERRIDE: str(root / "store")}):
+            self.assertEqual(cli.main(["--project", str(root), "app", "run", "--ipad", "--app", str(simulator)]), 2)
+        self.assertTrue(any("Simulator build" in line for line in self.said), self.said)
+
+
 class Disk(unittest.TestCase):
     def test_kept_builds_stay_and_an_idle_build_cache_is_a_candidate(self):
         temp = tempfile.TemporaryDirectory()
@@ -649,6 +770,17 @@ class Disk(unittest.TestCase):
             [_, cache] = apple_disk.app_builds(host, disk.Usage([]), disk.Sizes(measure=False))
         self.assertEqual((cache.status, cache.reason), (disk.KEPT, "a keep is building with it now"))
         self.assertEqual(apple_disk.app_builds(SimpleNamespace(home=home / "none"), None, None), [])
+        # A checkout's probe builds are never kept: a candidate once idle, kept while one builds (#175).
+        probes = store / app_builds.PROBES
+        (probes / "Demo-0123456789/derived/ios").mkdir(parents=True)
+        for path in (probes / "Demo-0123456789", probes / "Demo-0123456789/derived/ios",
+                     probes / "Demo-0123456789/derived"): os.utime(path, (old, old))
+        [*_, probe] = apple_disk.app_builds(host, disk.Usage([]), disk.Sizes(measure=False))
+        self.assertEqual((Path(probe.path).relative_to(store).as_posix(), probe.status),
+                         ("probes/Demo-0123456789", disk.CANDIDATE))
+        with app_builds.Store("Demo-0123456789", probes).locked():
+            [*_, probe] = apple_disk.app_builds(host, disk.Usage([]), disk.Sizes(measure=False))
+        self.assertEqual(probe.status, disk.KEPT)
 
 
 if __name__ == "__main__":

@@ -2558,6 +2558,27 @@ qk app status           # the kept builds, and how far each is behind origin/mai
   notifications silenced and put back, and the app left running. Use `--iphone` only when the owner has
   asked or agreed.
 
+**Probe builds.** A diagnostic may need a build that never lands, such as the app with one added
+logging line or a dependency pointed at a local copy. Build and run it from the worktree that holds
+the change:
+
+```sh
+qk app build [--platform ios]      # build this working tree as it stands; prints the .app's path
+qk app run --ipad --app PATH       # install and launch that .app (or --iphone)
+qk app run --ipad --here           # both in one command
+```
+
+- `qk app build` runs the project's `prepare` steps and the platform's `settings`, such as
+  `DEVELOPMENT_TEAM`, in the environment `qk` gives its lanes (folders such as
+  `APPLE_ENGINEERING_ROOT` included). The build runs through `qk admit --here` into a build folder of
+  that checkout's own in the store, so it never touches the kept builds, and nothing is kept.
+- `--app` takes any `.app` built for the platform: for `--ipad` or `--iphone`, a device build (for
+  `generic/platform=iOS`), not a Simulator or Mac build. Its bundle identifier must be one the project's
+  kept or probe builds have; otherwise it is refused, with the reason.
+- A probe build runs under the same device pass as a kept build: the take, the silenced
+  notifications, the launched-app record and the release.
+- `qk disk` lists each checkout's probe builds as a cache, deletable once idle.
+
 Configure it with `app` in `queuekeeper.json`:
 
 ```json
