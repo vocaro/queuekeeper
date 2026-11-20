@@ -579,13 +579,15 @@ class DiskTests(Folder):
         self.development = self.folder / "Development"
         self.main = self.development / "Game"
         self.lab = self.checkout(self.main)
-        subprocess.run(["git", "init", "-q", "-b", "main", str(self.main)], check=True)
         (self.main / "queuekeeper.json").write_text(json.dumps({
             "schemaVersion": 1, "name": "Game", "plugins": ["queuekeeper_unity"], "unity": {"project": "lab"}}))
 
     def checkout(self, root):
         lab = root / "lab"
         for name in ("ProjectSettings", "Library", "Temp", "Logs"): (lab / name).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+        # As a Unity project's .gitignore has it.
+        (lab / ".gitignore").write_text("/[Ll]ibrary/\n/[Tt]emp/\n/[Ll]ogs/\n")
         for path in lab.rglob("*"): os.utime(path, (self.NOW - 10 * 86400,) * 2)
         os.utime(lab, (self.NOW - 10 * 86400,) * 2)
         return lab
@@ -619,6 +621,62 @@ class DiskTests(Folder):
         found = self.items()
         self.assertEqual(found[str(self.lab / "Library")].status, disk.KEPT)
         self.assertEqual(found[str(self.lab / "Temp")].status, disk.CANDIDATE)
+
+    def git(self, *arguments):
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="Test",
+                           GIT_AUTHOR_EMAIL="test@example.com", GIT_COMMITTER_NAME="Test",
+                           GIT_COMMITTER_EMAIL="test@example.com")
+        subprocess.run(["git", "-C", str(self.main), *arguments], check=True, capture_output=True, env=environment)
+
+    def test_a_candidate_names_its_working_tree_and_delete_removes_it_there(self):
+        # vocaro/queuekeeper#291: the inventory counted Library a candidate that --delete always skipped, being in a
+        # working tree. A folder git ignores and tracks nothing in is generated state, which --delete now removes.
+        (self.lab / "Library/ArtifactDB").write_text("cache")
+        found = self.items()
+        library = found[str(self.lab / "Library")]
+        self.assertEqual((library.status, library.worktree), (disk.CANDIDATE, str(self.main)))
+        ledger = self.folder / "ledger.jsonl"
+        with contextlib.redirect_stdout(io.StringIO()):
+            removed = disk.delete([library], lambda category: list(self.items().values()), ledger)
+        self.assertEqual(removed, 1)
+        self.assertFalse((self.lab / "Library").exists())
+        self.assertTrue((self.lab / "ProjectSettings").is_dir() and (self.lab / "Temp").is_dir())
+        self.assertEqual(json.loads(ledger.read_text())["outcome"], "removed")
+
+    def test_a_folder_git_tracks_files_in_or_does_not_ignore_is_kept_and_never_removed(self):
+        (self.lab / "Logs/editor.log").write_text("log")
+        self.git("add", "-f", "lab/Logs/editor.log")
+        (self.lab / ".gitignore").write_text("/[Ll]ogs/\n")
+        found = self.items()
+        for name, why in (("Logs", "git tracks files in it"), ("Library", "git does not ignore it"),
+                          ("Temp", "git does not ignore it")):
+            item = found[str(self.lab / name)]
+            self.assertEqual((item.status, item.command, item.worktree), (disk.KEPT, None, None), name)
+            self.assertIn(why, item.reason)
+        # A candidate taken before git began to track a file in it is checked again, and refused, at removal.
+        stale = disk.Item(unity_disk.CATEGORY, str(self.lab / "Logs"), disk.CANDIDATE, "test",
+                          command=["rm", "-rf", "--", str(self.lab / "Logs")], worktree=str(self.main))
+        ledger = self.folder / "ledger.jsonl"
+        with contextlib.redirect_stdout(io.StringIO()):
+            disk.delete([stale], lambda category: [stale], ledger)
+        self.assertTrue((self.lab / "Logs/editor.log").exists())
+        self.assertIn("skipped: a generated folder in a working tree, but git tracks files in it", ledger.read_text())
+
+    def test_a_generated_folder_reached_through_a_link_or_in_a_nested_repository_is_never_removed(self):
+        elsewhere = self.folder / "elsewhere"
+        elsewhere.mkdir()
+        (self.lab / "Library").rmdir()
+        (self.lab / "Library").symlink_to(elsewhere)
+        nested = self.lab / "Temp"
+        subprocess.run(["git", "init", "-q", str(nested)], check=True)
+        refused = {path: disk.generated_in_worktree(path, self.main) for path in
+                   (self.lab / "Library", nested, self.lab / "Logs", self.main, self.folder / "outside")}
+        self.assertEqual(refused[self.lab / "Library"], "behind a link")
+        self.assertIn("inside a working tree other than", refused[nested])
+        self.assertIsNone(refused[self.lab / "Logs"])
+        self.assertIn("not inside the working tree", refused[self.main])
+        self.assertIn("not inside the working tree", refused[self.folder / "outside"])
 
     def test_a_project_that_does_not_switch_the_plugin_on_lists_nothing(self):
         (self.main / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Game"}))

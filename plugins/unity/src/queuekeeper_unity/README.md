@@ -58,8 +58,9 @@ that label (the user guide's What a Mac takes).
 - `qk doctor` warns when the pinned editor is missing on this Mac or another Mac, when
   Unity Hub is signed out on this Mac, when a lane passes `-nographics`, and when there is no Unity
   project where the project says.
-- `qk disk` lists `Library/`, `Temp/` and `Logs/` in every checkout of the project. They
-  are kept while an editor has the project open or while they changed lately.
+- `qk disk` lists `Library/`, `Temp/` and `Logs/` in every checkout of the project, and
+  `qk disk --delete` removes them. They are kept while an editor has the project open, while they
+  changed lately, or unless the project's `.gitignore` ignores them and nothing in them is tracked.
 - `qk host editors` lists the editors and batch runs on this Mac, each with its project
   and version, whether an editor is in Play mode, and the versions installed.
 

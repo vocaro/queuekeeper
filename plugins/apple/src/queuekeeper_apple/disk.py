@@ -1,6 +1,7 @@
-"""The Apple plugin's disk items for `qk disk`: simulators and their runtimes, Xcode's DerivedData, the SwiftPM
-cache and kept app builds (decision E of vocaro/vocaro-engineering#403). The core lists and removes them with its
-own (queuekeeper.disk); `register` adds them."""
+"""The Apple plugin's disk items for `qk disk`: simulators and their runtimes, Xcode's DerivedData and device
+support, the SwiftPM cache, kept app builds (decision E of vocaro/vocaro-engineering#403) and the large caches macOS
+tools keep under ~/Library/Caches (vocaro/queuekeeper#292). The core lists and removes them with its own
+(queuekeeper.disk); `register` adds them."""
 from dataclasses import dataclass, field
 import datetime
 import glob
@@ -30,8 +31,10 @@ from . import app_builds as kept_apps, apple_platform  # noqa: F401 -- switches 
 from .simulators import pool as simulator_pool
 
 CATEGORIES = {"simulator": "Simulators", "runtime": "Simulator runtimes", "derived-data": "Xcode DerivedData",
+              "device-support": "Xcode device support (symbols copied from connected devices)",
               "swiftpm-cache": "SwiftPM shared cache",
-              "app-builds": "Kept app builds and their build caches (qk app)"}
+              "app-builds": "Kept app builds and their build caches (qk app)",
+              "known-caches": "Large caches of macOS tools in ~/Library/Caches"}
 # A runtime no device uses is removed once it has gone unused this long, as a pool member is pruned: a
 # lane may make its devices on it next.
 RUNTIME_IDLE_DAYS = 14
@@ -46,6 +49,21 @@ UNBUILT = frozenset({"Logs", "SourcePackages", "TestResults"})
 COVERAGE_ONLY = frozenset({"ProfileData"})
 # qk app's store of kept builds under the account's home (app_builds.store_root).
 APP_STORE = "Library/Application Support/queuekeeper/apps"
+# Where Xcode copies a connected device's symbols, one folder for each OS build: "iOS DeviceSupport", and the same
+# for watchOS, tvOS and visionOS. Xcode names a folder "MODEL VERSION (BUILD)", as "iPhone17,1 27.2 (24B119)", or
+# without the model before Xcode 14, and some with the architecture after it, as "16.0 (20A362) arm64e".
+DEVICE_SUPPORT = "Library/Developer/Xcode"
+SYMBOLS = re.compile(r"(?:(?P<model>\S+) )?(?P<version>[0-9]+(?:\.[0-9]+)*) \((?P<build>[0-9]+[A-Z][0-9]+[a-z]?)\)"
+                     r"(?: (?P<arch>\S+))?")
+# Large caches under ~/Library/Caches that a macOS tool fills and fills again as it needs: each folder's name, what
+# it holds and whether nothing in it can be wanted (CANDIDATE) or only the owner knows (OWNER) (vocaro/queuekeeper#292).
+KNOWN_CACHES = {
+    "com.apple.python": ("the bytecode the system's Python, which runs qk, compiles again as it imports", CANDIDATE),
+    "com.microsoft.VSCode.ShipIt": ("VS Code's downloads of its past updates, which it fetches again when it updates",
+                                    CANDIDATE),
+    "Homebrew": ("Homebrew's downloads of the current formulae, which `brew cleanup` keeps and which Homebrew fetches "
+                 "again only when it reinstalls one", OWNER),
+}
 
 
 def _json(run, *arguments):
@@ -447,6 +465,83 @@ def derived_data(host, usage, sizes):
     return items
 
 
+def symbols_build(name):
+    """(device, version, build, beta) a device support folder's name gives, or None for any other name: device is
+    the model and architecture the name has, either None in a name without it, version a tuple to compare and beta
+    whether the build is a beta's, whose build number ends in a letter, as 24B5110a."""
+    match = SYMBOLS.fullmatch(name)
+    if not match: return None
+    build = match["build"]
+    return ((match["model"], match["arch"]), tuple(int(part) for part in match["version"].split(".")), build,
+            build[-1].islower())
+
+
+def build_order(build):
+    """A build's place among one release's builds, as 24A335 before 24B119."""
+    match = re.fullmatch(r"([0-9]+)([A-Z])([0-9]+)([a-z]?)", build)
+    return (int(match[1]), match[2], int(match[3]), match[4]) if match else (0, "", 0, build)
+
+
+def device_support(host, usage, sizes):
+    """The symbols Xcode copies from a connected device for each OS build it runs, several GiB a folder, which
+    Xcode copies again when a device on that build next connects. A folder is a candidate once idle when it is
+    for a beta build, or a folder of the same platform has a later release build for the same model (the folders
+    whose older names give no model counting as one model); any other folder is the owner's decision, since only
+    the owner knows which devices still run that build (vocaro/queuekeeper#292)."""
+    root = host.home / DEVICE_SUPPORT
+    if not root.is_dir(): return []
+    items = []
+    for platform in sorted(root.glob("*DeviceSupport")):
+        if not platform.is_dir() or platform.is_symlink(): continue
+        folders = [(child, symbols_build(child.name)) for child in sorted(platform.iterdir())
+                   if child.is_dir() and not child.is_symlink()]
+        releases = {}
+        for _, found in folders:
+            if found and not found[3]: releases.setdefault(found[0], []).append(found)
+        for child, found in folders:
+            if not found:
+                use = usage.of(child)
+                items.append(Item("device-support", str(child), KEPT, "in use: " + described(use) if use else
+                                  "a name Xcode does not give its device support folders", sizes.of(child)))
+                continue
+            model, version, build, beta = found
+            device = f"the {model[0]}" if model[0] else "devices"
+            later = max((other for other in releases.get(model, ()) if (other[1], build_order(other[2])) >
+                         (version, build_order(build))), default=None, key=lambda other: (other[1], build_order(other[2])))
+            again = f"Xcode copies it again if {device} connects on {build}"
+            if beta:
+                items.append(cache_item(host, usage, sizes, "device-support", child,
+                                        f"symbols of {device} on the beta build {build}; {again}"))
+            elif later:
+                items.append(cache_item(host, usage, sizes, "device-support", child,
+                                        f"symbols of {device} on {build}, superseded by the release build {later[2]} "
+                                        f"({'.'.join(map(str, later[1]))}); {again}"))
+            else:
+                use = usage.of(child)
+                items.append(Item("device-support", str(child), KEPT if use else OWNER,
+                                  "in use: " + described(use) if use else
+                                  f"symbols of {device} on the newest release build {build} it has; only the owner "
+                                  f"knows whether a device still runs it; {again}", sizes.of(child),
+                                  None if use else ["rm", "-rf", "--", str(child)], host.now - last_activity(child)))
+    return items
+
+
+def known_caches(host, usage, sizes):
+    """The large caches macOS tools keep under ~/Library/Caches that `qk disk` knows (KNOWN_CACHES), so a Mac short
+    of space shows them beside its builds' caches: a candidate once idle and unused when nothing in it can be wanted,
+    the owner's decision otherwise (vocaro/queuekeeper#292)."""
+    root = host.home / "Library/Caches"
+    items = []
+    for name, (what, status) in KNOWN_CACHES.items():
+        folder = root / name
+        if not folder.is_dir() or folder.is_symlink(): continue
+        item = cache_item(host, usage, sizes, "known-caches", folder, what)
+        if status == OWNER and item.status == CANDIDATE:
+            item.status, item.reason = OWNER, item.reason + "; only the owner knows whether to keep them, to work offline"
+        items.append(item)
+    return items
+
+
 def app_builds(host, usage, sizes):
     """qk app's store (app_builds.py): each project's kept builds, which stay, being what `qk app run` opens, and
     its DerivedData for each platform, which only makes the next keep incremental and goes once idle."""
@@ -517,15 +612,18 @@ def items(host, usage, sizes, wanted):
     if "simulator" in wanted: found += simulators(host, usage, sizes)
     if "runtime" in wanted: found += runtimes(host)
     if "derived-data" in wanted: found += derived_data(host, usage, sizes)
+    if "device-support" in wanted: found += device_support(host, usage, sizes)
     if "swiftpm-cache" in wanted: found += swiftpm_cache(host, usage, sizes)
     if "app-builds" in wanted: found += app_builds(host, usage, sizes)
+    if "known-caches" in wanted: found += known_caches(host, usage, sizes)
     return found
 
 
 def prime(host):
     """The folders that hold many small items, each worth one du pass."""
     return [(host.home / "Library/Developer/Xcode/DerivedData", 1), (host.device_directory, 1),
-            (host.home / "Library/Caches/org.swift.swiftpm", 2)]
+            (host.home / "Library/Caches/org.swift.swiftpm", 2),
+            *((folder, 1) for folder in sorted((host.home / DEVICE_SUPPORT).glob("*DeviceSupport")))]
 
 
 def pins():

@@ -1,11 +1,13 @@
 """The Unity plugin's disk items for `qk disk`: the folders the editor generates in each checkout of a
 Unity project. Library/ is the import cache, several GB a worktree, which the editor rebuilds on its next open,
-taking minutes; Temp/ and Logs/ are small. The core lists and removes them with its own (queuekeeper.disk)."""
+taking minutes; Temp/ and Logs/ are small. The core lists and removes them with its own (queuekeeper.disk), inside
+the working tree only while git ignores a folder and tracks nothing in it (disk.generated_in_worktree), so the
+inventory counts a folder a candidate only when --delete would remove it (vocaro/queuekeeper#291)."""
 import json
 from pathlib import Path
 
 from queuekeeper import config as configuration, disk, git_state
-from queuekeeper.disk import Item, KEPT, cache_item
+from queuekeeper.disk import CANDIDATE, Item, KEPT, cache_item
 from . import settings
 
 CATEGORY = "unity-generated"
@@ -29,22 +31,33 @@ def unity_project(checkout):
 
 
 def projects(host):
-    """Each Unity project folder in the projects' checkouts, linked worktrees among them. A worktree keeps the
-    place its main checkout names."""
+    """(project, worktree) for each Unity project folder in the projects' checkouts, linked worktrees among them,
+    with the working tree it lies in. A worktree keeps the place its main checkout names."""
     found = []
     for checkout in disk.main_checkouts(host):
         place = unity_project(checkout)
         if place is None: continue
         worktrees = [Path(entry["worktree"]) for entry in git_state.worktrees(checkout)] or [checkout]
-        found += [worktree / place for worktree in worktrees if (worktree / place / "ProjectSettings").is_dir()]
+        found += [(worktree / place, worktree) for worktree in worktrees
+                  if (worktree / place / "ProjectSettings").is_dir()]
     return found
+
+
+def generated(host, item, worktree):
+    """A candidate as --delete would find it: one in the working tree git does not ignore, or tracks files in, is
+    kept, and one it may remove names its working tree."""
+    if item.status != CANDIDATE: return item
+    refused = disk.generated_in_worktree(item.path, worktree, host.run)
+    if refused: return Item(CATEGORY, item.path, KEPT, f"{item.reason}; but {refused}", item.size, None, item.idle)
+    item.worktree = str(worktree)
+    return item
 
 
 def items(host, usage, sizes, wanted):
     """The plugin's items of the categories in wanted."""
     if CATEGORY not in wanted: return []
     found = []
-    for project in projects(host):
+    for project, worktree in projects(host):
         # An editor names its project, not the folders in it, and holds them for as long as it runs.
         editor = usage.naming(f"-projectPath {project}")
         for name, what in FOLDERS.items():
@@ -53,7 +66,7 @@ def items(host, usage, sizes, wanted):
             if editor:
                 found.append(Item(CATEGORY, str(folder), KEPT, f"in use: PID {editor.pid} has the project open",
                                   sizes.of(folder)))
-            else: found.append(cache_item(host, usage, sizes, CATEGORY, folder, what))
+            else: found.append(generated(host, cache_item(host, usage, sizes, CATEGORY, folder, what), worktree))
     return found
 
 

@@ -474,6 +474,97 @@ class CacheTests(Fixture):
         self.assertEqual(items[str(project)].status, disk.CANDIDATE)
 
 
+class DeviceSupportTests(Fixture):
+    # vocaro/queuekeeper#292: 20 GiB of device symbols that neither inventory listed, one folder a beta build of a
+    # device that also had the release build.
+    def symbols(self, name, platform="iOS DeviceSupport"):
+        directory = self.home / "Library/Developer/Xcode" / platform / name
+        (directory / "Symbols").mkdir(parents=True)
+        return directory
+
+    def test_a_beta_or_superseded_build_is_a_candidate_and_the_newest_release_the_owner_s(self):
+        beta = self.symbols("iPhone17,1 27.2 (24B5110a)")
+        released = self.symbols("iPhone17,1 27.2 (24B119)")
+        older = self.symbols("iPhone17,1 27.1 (24A335)")
+        other = self.symbols("iPhone16,2 27.1 (24A335)")
+        watch = self.symbols("Watch7,1 11.1 (22R335)", "watchOS DeviceSupport")
+        unnamed = self.symbols("16.4 (20E247)")
+        unnamed_later = self.symbols("16.4.1 (20E252)")
+        odd = self.symbols("Copied by hand")
+        items = self.items(self.host(), ["device-support"])
+        for candidate in (beta, older, unnamed):
+            self.assertEqual(items[str(candidate)].status, disk.CANDIDATE, items[str(candidate)].reason)
+            self.assertEqual(items[str(candidate)].command, ["rm", "-rf", "--", str(candidate)])
+        self.assertIn("on the beta build 24B5110a", items[str(beta)].reason)
+        self.assertIn("superseded by the release build 24B119 (27.2)", items[str(older)].reason)
+        self.assertIn("superseded by the release build 20E252 (16.4.1)", items[str(unnamed)].reason)
+        # A model's newest release build, here or on another model or platform, is the owner's to judge.
+        for owner in (released, other, watch, unnamed_later):
+            self.assertEqual(items[str(owner)].status, disk.OWNER, items[str(owner)].reason)
+            self.assertEqual(items[str(owner)].command, ["rm", "-rf", "--", str(owner)])
+            self.assertIn("only the owner knows whether a device still runs it", items[str(owner)].reason)
+        self.assertEqual((items[str(odd)].status, items[str(odd)].command), (disk.KEPT, None))
+
+    def test_a_candidate_in_use_or_changed_lately_is_kept(self):
+        self.symbols("iPhone17,1 27.2 (24B119)")
+        used = self.symbols("iPhone17,1 27.2 (24B5110a)")
+        recent = self.symbols("iPhone17,1 27.1 (24A335)")
+        os.utime(recent, (LATER - 3600, LATER - 3600))
+        process = disk.Process(9, "lldb", paths=(str(used / "Symbols/dyld"),))
+        items = self.items(self.host([process]), ["device-support"])
+        self.assertEqual(items[str(used)].status, disk.KEPT)
+        self.assertIn("in use: PID 9 (lldb)", items[str(used)].reason)
+        self.assertEqual(items[str(recent)].status, disk.KEPT)
+        self.assertIn("but changed 60 min ago", items[str(recent)].reason)
+
+    def test_each_platform_folder_is_measured_in_one_du_pass(self):
+        self.symbols("iPhone17,1 27.2 (24B119)")
+        self.symbols("Watch7,1 11.1 (22R335)", "watchOS DeviceSupport")
+        roots = [root for root, depth in apple_disk.prime(self.host())]
+        xcode = self.home / "Library/Developer/Xcode"
+        self.assertIn(xcode / "iOS DeviceSupport", roots)
+        self.assertIn(xcode / "watchOS DeviceSupport", roots)
+
+
+class KnownCacheTests(Fixture):
+    def cache(self, name):
+        directory = self.home / "Library/Caches" / name
+        (directory / "data").mkdir(parents=True)
+        return directory
+
+    def test_python_bytecode_and_vs_code_updates_are_candidates_and_homebrew_the_owner_s(self):
+        python, shipit, brew = (self.cache(name) for name in ("com.apple.python", "com.microsoft.VSCode.ShipIt",
+                                                               "Homebrew"))
+        unknown = self.cache("com.example.unknown")
+        items = self.items(self.host(), ["known-caches"])
+        for candidate in (python, shipit):
+            self.assertEqual(items[str(candidate)].status, disk.CANDIDATE, items[str(candidate)].reason)
+            self.assertEqual(items[str(candidate)].command, ["rm", "-rf", "--", str(candidate)])
+        self.assertEqual(items[str(brew)].status, disk.OWNER)
+        self.assertEqual(items[str(brew)].command, ["rm", "-rf", "--", str(brew)])
+        self.assertIn("only the owner knows whether to keep them", items[str(brew)].reason)
+        self.assertNotIn(str(unknown), items)  # only the caches it knows
+
+    def test_a_cache_in_use_or_changed_lately_is_kept(self):
+        python, brew = self.cache("com.apple.python"), self.cache("Homebrew")
+        os.utime(python / "data", (LATER - 600, LATER - 600))
+        process = disk.Process(10, "brew", cwd=str(brew / "data"))
+        items = self.items(self.host([process]), ["known-caches"])
+        self.assertEqual((items[str(python)].status, items[str(python)].command), (disk.KEPT, None))
+        self.assertEqual((items[str(brew)].status, items[str(brew)].command), (disk.KEPT, None))
+        self.assertIn("in use: PID 10 (brew)", items[str(brew)].reason)
+
+    def test_delete_removes_a_known_cache_candidate_and_never_the_owner_s(self):
+        python, brew = self.cache("com.apple.python"), self.cache("Homebrew")
+        ledger = self.root / "ledger.jsonl"
+        collect = lambda category: disk.inventory(self.host(), disk.Sizes(measure=False), [category])
+        with contextlib.redirect_stdout(StringIO()):
+            removed = disk.delete(collect("known-caches"), collect, ledger)
+        self.assertEqual(removed, 1)
+        self.assertFalse(python.exists())
+        self.assertTrue(brew.exists())
+
+
 class DeletionTests(Fixture):
     def setUp(self):
         super().setUp()

@@ -2940,8 +2940,10 @@ python3 scripts/qk disk --json
 
 - **What it reads.** Every project in `~/Development` (`--development` names another folder), and
   only what Queuekeeper and its plugins create: simulators and runtimes, DerivedData and SwiftPM
-  caches, lane results kept in each Git directory, kept app builds and the checkouts runs were
-  pinned to. Never the rest of the home folder or the volume.
+  caches, lane results kept in each Git directory, kept app builds, the checkouts runs were
+  pinned to and Unity projects' generated folders. With the Apple plugin it also lists Xcode's
+  device support folders and a few large caches of macOS tools in `~/Library/Caches`. Never the
+  rest of the home folder or the volume.
 - **What it prints.** Each item's size, why it has its status, and the exact command that removes
   it. `--min-size-mb` lists small items only as totals.
 - **Progress.** Stderr names each pass and removal as it starts. Stdout is written line by line,
@@ -2970,7 +2972,10 @@ open file or an argument inside it. The rules for each category:
 | Xcode's default devices, unavailable devices, orphaned device folders | Always (`qk doctor` deletes this Mac's defaults itself). Any other named device is kept, since it may belong to a pool Queuekeeper cannot see |
 | Simulator runtimes | No device uses it and it was last used over 14 days ago, or it is a superseded build of an identifier last used over 14 days ago. Kept if it came with Xcode, is pinned by the toolkit or named by a device record (such as a pool template's `runtimeBuild`), or another Mac still uses its copy |
 | DerivedData | Its `info.plist` names a workspace that no longer exists; or it has no `info.plist`, no process, has been idle for `--min-idle-hours` (24), and holds only what a stray `xcodebuild` leaves (`Logs`, `SourcePackages`, `TestResults`, or a `Build` with only `ProfileData`). Shared folders such as `ModuleCache.noindex` are kept |
+| Xcode device support (`~/Library/Developer/Xcode/iOS DeviceSupport`, and watchOS, tvOS and visionOS) | Idle and unused, and for a beta build (its build number ends in a letter, such as `24B5110a`), or the same platform has a later release build for the same device model. A model's newest release build is an owner item. Xcode copies a folder again when a device on that build connects |
 | SwiftPM's cache | Its clones and artifacts, which SwiftPM fetches again |
+| Caches of macOS tools (`~/Library/Caches`) | Idle and unused: `com.apple.python` (the system Python's bytecode) and `com.microsoft.VSCode.ShipIt` (VS Code's past update downloads). `Homebrew` (current downloads `brew cleanup` keeps) is an owner item. No other cache there is listed |
+| Unity projects' `Library`, `Temp` and `Logs` | Idle, no editor has the project open, and Git ignores the folder and tracks nothing in it. Otherwise kept |
 | Kept lane results | Beyond each lane's newest 10 commits and older than 14 days; removed by `qk remote prune-results CHECKOUT`. Receipts are never removed |
 | Pinned checkouts | Unused by any run for a week and by any process; removed by `qk disk --prune-pins` |
 
@@ -2986,8 +2991,10 @@ python3 scripts/qk disk --delete [--yes 'WHO ASKED']
 
 - **Any session may run it** when the volume runs short. It removes every candidate without
   asking; `--yes` only records who asked.
-- **Each removal is checked again** just before it, with a fresh census. It never removes inside a
-  working tree or through a link, and logs every decision to
+- **Each removal is checked again** just before it, with a fresh census. It never removes through a
+  link, nor inside a working tree, except a folder a tool generates there, such as a Unity project's
+  `Library`, while Git ignores it and tracks nothing in it and no other repository is nested
+  around it. It logs every decision to
   `~/Library/Application Support/queuekeeper/disk-reclaimed.jsonl`.
 - **Report the space freed by measuring it.** Sizes are allocated sizes, and APFS clones share
   blocks, so a removal can free less than its size. Compare `df -k /System/Volumes/Data` before and

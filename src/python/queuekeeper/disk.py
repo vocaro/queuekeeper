@@ -60,6 +60,9 @@ class Item:
     command: list = None
     idle: float = None
     location: str = None  # the directory on disk, when the path is a device's name
+    # The working tree a folder a tool generates lies in, such as a Unity project's Library: --delete removes it
+    # there only while git ignores it and tracks nothing in it (generated_in_worktree).
+    worktree: str = None
 
 
 @dataclass(frozen=True)
@@ -586,6 +589,40 @@ def outside_checkouts(path):
     return not any((ancestor / ".git").exists() for ancestor in [path, *path.parents])
 
 
+def generated_in_worktree(path, worktree, run=subprocess.run):
+    """Why --delete may not remove path, a folder a tool generates in the working tree worktree, or None when it may:
+    an absolute path reached through no link, inside worktree and no repository nested in it, that git ignores and
+    tracks nothing in. Such a folder holds no work a commit could keep, and the tool makes it again, so the rule
+    that keeps --delete out of working trees, which guards their tracked and untracked work, does not keep it
+    (vocaro/queuekeeper#291)."""
+    path, worktree = Path(path), Path(worktree)
+    if not path.is_absolute() or canonical(os.path.realpath(path)) != canonical(path): return "behind a link"
+    if canonical(path) == canonical(worktree) or not within(path, worktree):
+        return f"not inside the working tree {worktree}"
+    nearest = next((ancestor for ancestor in [path, *path.parents] if (ancestor / ".git").exists()), None)
+    if nearest is None or canonical(nearest) != canonical(worktree):
+        return f"inside a working tree other than {worktree}"
+    try:
+        tracked = git(run, worktree, "ls-files", "-z", "--", str(path), timeout=120)
+        ignored = git(run, worktree, "check-ignore", "-q", "--", str(path), timeout=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"git could not say whether it tracks or ignores it ({error})"
+    if tracked.returncode != 0: return f"git could not list what it tracks in it: {tracked.stderr.strip()[:200]}"
+    if tracked.stdout: return "git tracks files in it"
+    if ignored.returncode != 0: return "git does not ignore it, so it may hold work"
+    return None
+
+
+def removal_refused(item, run=subprocess.run):
+    """Why --delete may not run item's rm, or None: its target lies in no working tree and behind no link, or is a
+    folder a tool generates in item.worktree that git ignores and tracks nothing in (generated_in_worktree)."""
+    if item.command[0] != "rm" or outside_checkouts(item.command[-1]): return None
+    if item.worktree and item.command[-1] == item.path:
+        refused = generated_in_worktree(item.path, item.worktree, run)
+        return refused and f"a generated folder in a working tree, but {refused}"
+    return "inside a repository's working tree or behind a link"
+
+
 def record_removal(ledger, entry, out):
     out(f"{entry['outcome']}: {entry['path']}")
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -617,10 +654,10 @@ def delete(items, fresh, ledger, out=print, run=subprocess.run, approval=None, p
             progress(f"Removing {place} of {len(group)} {category} candidates: {item.path}", force=True)
             now = current.get(item.path)
             entry = removal_entry(item, answered)
-            if now is None or now.status != CANDIDATE or now.command != item.command:
+            if now is None or now.status != CANDIDATE or now.command != item.command or now.worktree != item.worktree:
                 entry["outcome"] = "skipped: " + (now.reason if now else "no longer present")
-            elif item.command[0] == "rm" and not outside_checkouts(item.command[-1]):
-                entry["outcome"] = "skipped: inside a repository's working tree or behind a link"
+            elif refused := removal_refused(item, run):
+                entry["outcome"] = "skipped: " + refused
             else:
                 result = run(item.command, capture_output=True, text=True, timeout=3600, env=git_environment())
                 entry["outcome"] = "removed" if result.returncode == 0 else f"failed ({result.returncode}): {result.stderr.strip()[:300]}"
