@@ -11850,11 +11850,14 @@ class IdleStatus(Fixture):
         return code, out.getvalue()
 
     def asked(self):
-        """--idle's exit status, after checking that its lines are status's own and that --json says the same."""
-        code, said = self.said("--idle")
-        plain, shown = self.said()
-        self.assertEqual((plain, said), (0, shown))
-        answer, printed = self.said("--idle", "--json")
+        """--idle's exit status, after checking that its lines are status's own and that --json says the same. The
+        three reads see one clock, since a second that passes between them, as on a loaded Mac, changes the times
+        status prints, such as how long the worker has waited (vocaro/queuekeeper#305)."""
+        with patch.object(mq.time, "time", return_value=time.time()):
+            code, said = self.said("--idle")
+            plain, shown = self.said()
+            self.assertEqual((plain, said), (0, shown))
+            answer, printed = self.said("--idle", "--json")
         self.assertEqual(answer, code)
         self.assertEqual(json.loads(printed)["idle"], code == 0)
         return code
@@ -11911,14 +11914,16 @@ class IdleStatus(Fixture):
         """vocaro/queuekeeper#285: a worker that has settled every entry and only waits for the shared checkout to
         follow origin/main (Worker.catch_up) blocks no maintenance, though another project's run can hold it for
         hours, so --idle exits 0 and status says that this waiting does not block maintenance."""
-        queue = mq.Queue(self.repo)
+        queue, now = mq.Queue(self.repo), time.time()
         with self.live_worker():
             queue.note(lambda state: state.update(
                 waiting="the shared checkout to follow origin/main once nothing runs from it",
-                waitingSince=time.time() - 60, catchingUp=True,
-                holders=[{"pid": 26815, "what": "the queue worker for mpm", "since": time.time() - 120}]))
+                waitingSince=now - 60, catchingUp=True,
+                holders=[{"pid": 26815, "what": "the queue worker for mpm", "since": now - 120}]))
             self.assertEqual(self.asked(), 0)
-            lines = self.said("--idle")[1].splitlines()
+            # Read at the moment the account says it was written, so that the holder has run exactly 2m00s however
+            # slowly the reads before came (vocaro/queuekeeper#305).
+            with patch.object(mq.time, "time", return_value=now): lines = self.said("--idle")[1].splitlines()
             self.assertEqual(lines[0], "worker: running")
             self.assertIn("    held by the queue worker for mpm, PID 26815, running 2m00s", lines)
             self.assertIn(f"    {mq.CATCHING_UP_WORDS}", lines)
