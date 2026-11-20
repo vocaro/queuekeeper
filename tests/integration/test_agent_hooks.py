@@ -107,6 +107,14 @@ class SessionStart(Repository):
         self.entry("work-1", "conflict", directory=str(self.root / "elsewhere"), why="file conflicts")
         self.assertIn("work-1", self.context())
 
+    def test_an_earlier_sessions_entry_from_this_folder_on_another_branch_is_not_this_sessions(self):
+        # Claude Code gives a finished session's worktree folder to a new session, on a branch of its own.
+        self.entry("earlier-1", "failed", branch="earlier", why="its gate failed")
+        self.assertIsNone(self.context())
+        # Mid-rebase the checkout is on no branch, and the folder's entries are still its own.
+        self.git(self.linked, "checkout", "-q", "--detach")
+        self.assertIn("earlier-1", self.context())
+
     def test_a_repository_without_a_queue_is_not_given_one(self):
         self.assertIsNone(self.context())
         self.assertFalse(self.store.exists())

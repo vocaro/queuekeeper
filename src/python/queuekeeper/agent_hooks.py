@@ -76,10 +76,14 @@ def queued_refs(checkout):
 
 def relevant(found, checkout, branch, refs, now):
     """The entries a session in checkout on branch should hear of: of each branch's or worktree's entries, the
-    newest, when it is waiting, or was sent back recently and is not yet removed."""
+    newest, when it is waiting, or was sent back recently and is not yet removed. A worktree's folder outlives its
+    branch, as Claude Code gives a finished session's folder to a new session on a branch of its own, so an entry
+    queued from this folder on another branch is another session's, unless this checkout is on no branch, as in a
+    rebase."""
     newest = {}
     for entry in found:
-        mine = entry.get("directory") and Path(entry["directory"]) == checkout
+        here = entry.get("directory") and Path(entry["directory"]) == checkout
+        mine = here and (not branch or not entry.get("branch") or entry.get("branch") == branch)
         same_branch = branch and branch not in (MAIN, "HEAD") and entry.get("branch") == branch
         if mine or same_branch: newest[entry.get("branch") or entry.get("directory")] = entry
     chosen = []

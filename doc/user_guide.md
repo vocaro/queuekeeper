@@ -2706,7 +2706,9 @@ never stops a session.
 worktree or branch queued earlier. Of each branch's entries it reports the newest when it is
 still waiting, with the hold when the queue is held, or came back in the last fourteen days and
 is still in the queue's records. Each line gives the reason and the entry's
-`recovery.suggestedCommands`. It says nothing otherwise, and never creates a queue.
+`recovery.suggestedCommands`. An entry queued from the same folder on another branch belongs to an
+earlier session that used the folder, so it is left out unless the checkout is on no branch, as in
+a rebase. It says nothing otherwise, and never creates a queue.
 `qk queue remove ID` silences an entry that came back and is no longer wanted. The hook is:
 
 ```json
