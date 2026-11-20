@@ -615,7 +615,28 @@ one of `queue.lanes` or else `gate`, lists `inputs`: the globs of the paths that
 
 List every path a lane reads: a file left off a lane's `inputs` lands untested by that lane, and
 the next batch that runs the lane takes the blame. Read `qk doctor`'s list after each change to
-the globs. A lane group takes `inputs` for the group as a whole; its members do not yet.
+the globs.
+
+**A gate that is a lane group** takes `inputs` in one of two ways, never both:
+
+```json
+"lanes": {
+  "unit": {"command": ["python3", "scripts/qk", "unittest", "-s", "tests"], "inputs": ["src/python/**", "tests/**"]},
+  "app":  {"command": ["xcodebuild", "test", "-scheme", "App"], "inputs": ["apple/**", "*.xcconfig"]},
+  "gate": {"parallel": ["unit", "app"], "resource": "heavy"}
+}
+```
+
+- **On its lanes**, as above: a batch runs the group with only the lanes whose `inputs` a changed
+  path matches, under the group's one admission. A lane of the group without `inputs` runs
+  whenever the group does, and makes the group run for every change. The round's log says
+  `gate: only unit of its lanes`, and the lanes left out show as `NOT SELECTED` in the group's
+  output, with `notSelected` in its receipt.
+- **On the group itself**: all of its lanes run, or none.
+- **A group of which only some lanes ran** does not cover the pre-push hook for
+  `queue.hookCoveredBy`, and a bisect's halves, a stacked gate and the pre-push hook run the
+  whole group.
+- **By hand**, `qk run gate -- unit` runs only the lanes named after `--`, as the queue does.
 
 `queue.affected` is the older way to write the same map, from the paths to the lanes. It differs in
 one rule: a path no rule covers runs every gate lane, not none. A project gives one or the other,
@@ -1096,6 +1117,12 @@ A lane whose `parallel` names other lanes runs them at once under one admission:
   for a group whose members need more than SIGTERM to stop cleanly, such as one holding a device.
 - A member that fails fails the group. A member that did not run, or ended unmeasured, leaves the
   group without a verdict rather than failed.
+- **`qk run GROUP -- MEMBER...`** runs only the members named, under the group's admission. The
+  others are reported `NOT SELECTED`, with the outcome `not selected` in their receipts and their
+  names in the group's `notSelected`; they count for nothing in the group's status. The merge
+  queue runs a gate group this way for the members whose `inputs` a batch changes
+  ([Gate lanes chosen by changed paths](#gate-lanes-chosen-by-changed-paths)). Such a run is not a
+  run of the whole lane: it is kept as no commit's pass and adds nothing to the timing history.
 - The group needs a `resource` at least as heavy as its heaviest member. A lane that takes the
   screen cannot join a group, and a group cannot name another group.
 - A group takes no arguments: filter one member instead (`qk run ios-tests -- -only-testing:T/C`).

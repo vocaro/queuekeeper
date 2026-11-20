@@ -64,7 +64,7 @@ from . import events, landed_cleanup, pre_push, recovery, restartable, worktree_
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
-    siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, lane_inputs, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
+    siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, lane_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -2522,6 +2522,13 @@ def rides(config, changed):
                                                        "ahead of it, for its documents" if also else "")
 
 
+def group_members(config, lanes, changed):
+    """{lane group: its lanes to run} for each of lanes, a batch's gate lanes, that is a group of which the paths
+    changed select only some lanes, by main's inputs (config.selected_members): Worker.gate runs those alone."""
+    found = {name: selected_members(config, name, changed) for name in lanes or () if name in gate_lanes(config)}
+    return {name: chosen for name, chosen in found.items() if chosen}
+
+
 def lane_inputs_all(config):
     """Whether every gate lane of main gives inputs, so that a path none of them names skips the gate."""
     return bool(gate_lanes(config)) and len(lane_inputs(config)) == len(gate_lanes(config))
@@ -4361,7 +4368,7 @@ class Worker:
                         mac=self.ran_where.removeprefix(" on ") or None,
                         seconds=None if seconds is None else round(seconds))
 
-    def gate(self, lanes, round_name, where=(), cancel=None, quick=None):
+    def gate(self, lanes, round_name, where=(), cancel=None, quick=None, members=None):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is another Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time, its own work and its wait for admission apart (budgets.timed), and the
@@ -4429,7 +4436,13 @@ class Worker:
             if screen: self.say(f"{lane}: only on a Mac whose screen reads unlocked, since a locked screen left its "
                                 "last run without a verdict")
             # The project's launcher, or the toolkit's own qk where it has none (vocaro/queuekeeper#108).
-            command = toolkit_command(self.checkout, ["run", *placed, *screen, lane], self.toolkit_root())
+            # Of a lane group, only the lanes the batch's paths select by their inputs, as the group's arguments
+            # (group_members); members is given only by a caller that chose them for the paths these lanes test.
+            only = (members or {}).get(lane)
+            if only: self.say(f"{lane}: only {', '.join(only)} of its lanes, which main's lane inputs select for "
+                              "the batch's paths")
+            command = toolkit_command(self.checkout, ["run", *placed, *screen, lane, *(["--", *only] if only else [])],
+                                      self.toolkit_root())
             if lane == DOCS and not self.has_lane(lane):
                 self.say(f"{lane}: the project has no {lane} lane, so qk run runs the toolkit's: "
                          f"{shlex.join(self.implicit(lane))}")
@@ -4959,7 +4972,9 @@ class Worker:
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
         # A lane that covers the hook covers it only when it ran: queue.affected or its inputs may have left it out.
-        skipped = [lane for lane in covered if lane not in lanes_of(config, changed)] \
+        # Nor does a lane group cover it of which only some lanes ran.
+        partly = group_members(config, lanes_of(config, changed), changed) if covered and not docs and not ungated else {}
+        skipped = [lane for lane in covered if lane not in lanes_of(config, changed) or lane in partly] \
             if covered and not docs and not ungated else []
         if skipped:
             self.say(f"the pre-push hook runs: main's queue.hookCoveredBy names {', '.join(skipped)}, which the "
@@ -6120,6 +6135,9 @@ class Worker:
             left = [lane for lane in gate_lanes(config) if lane not in selected]
             self.say(f"by main's {selects_by(config)}, the batch's paths select {', '.join(selected)} of the gate lanes, "
                      f"not {', '.join(left)}")
+        # Of a gate lane group, only the lanes the batch's paths select (group_members); a bisect's halves run them all.
+        chosen = group_members(config, lanes, changed) if lanes and not beside else {}
+        only = {"members": chosen} if chosen else {}
         self.role = "older half" if beside else "batch"
         # The preflight lanes and the docs check run unadmitted first, whatever the batch changes (#169).
         self.checks = quick_lanes(config, code=not docs)
@@ -6135,17 +6153,18 @@ class Worker:
             # whether it fails only with them (vocaro/queuekeeper#263).
             self.early = self.beforehand(config, applied, base, lanes)
             try: result, log = self.watched(self, config, lanes, base, head, applied,
-                                            lambda: self.gate(lanes, round_name), stacks=False)
+                                            lambda: self.gate(lanes, round_name, **only), stacks=False)
             except BaseException:
                 if self.early: self.early.finish(False)
                 raise
             if self.early: self.early.finish(bool(result) and result not in NO_VERDICT and result != WITHDRAWN)
         elif self.alone or docs or ungated:
-            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes, round_name)
+            result, log = self.gate(ungated["lanes"] if ungated else docs or lanes, round_name,
+                                    **({} if ungated or docs else only))
         else:
             self.lane_now = None
             result, log = self.watched(self, config, lanes, base, head, applied,
-                                       lambda: self.gate(lanes, round_name))
+                                       lambda: self.gate(lanes, round_name, **only))
         self.prune()
         if not beside:
             if self.back_in_line(applied, result): return True

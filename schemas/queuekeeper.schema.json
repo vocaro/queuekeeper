@@ -169,7 +169,7 @@
         ],
         "properties": {
           "inputs": {
-            "description": "For a gate lane, one of queue.lanes or else gate: globs of the repository-relative paths that affect it (* and ? within one directory, ** across any number). A batch runs the lane only when one of its changed paths matches one, and a batch that selects no gate lane skips the gate, running its preflight and docs lanes as a batch of unread paths does. A gate lane without inputs runs for every change. queuekeeper.json and queuekeeper-workspace.json affect every lane. Not given beside queue.affected. Read from main",
+            "description": "For a gate lane, one of queue.lanes or else gate, or a lane of a gate lane group: globs of the repository-relative paths that affect it (* and ? within one directory, ** across any number). A batch runs the lane only when one of its changed paths matches one, and a batch that selects no gate lane skips the gate, running its preflight and docs lanes as a batch of unread paths does. A gate lane without inputs runs for every change. A group's lanes that give inputs are chosen among by a batch's paths, under the group's one admission; a group gives its own or its lanes do, never both. queuekeeper.json and queuekeeper-workspace.json affect every lane. Not given beside queue.affected. Read from main",
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,

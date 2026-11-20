@@ -62,6 +62,8 @@ HALTED = "stopped after a failed test failed again alone"
 # verdict, naming that failed lane. The merge queue reads the receipts: a batch whose failure passes alone gates again
 # rather than land, as the stopped lanes never finished (Worker.read_group, Worker.rerun; vocaro/queuekeeper#256).
 CUT_SHORT = "cut short"
+# A lane's outcome in its receipt when a run of its group was asked to leave it out (lanes' unselected).
+NOT_SELECTED = "not selected"
 GROUP_STOPPED = "STOPPED: the group stopped at "
 # Seconds the git command that finds a --fail-fast run's failure history may take (history_place).
 GIT_SECONDS = 30
@@ -127,7 +129,7 @@ def hand_up(results, lane, environment=None):
 
 
 def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None, fail_fast=False,
-          pace=None):
+          pace=None, unselected=()):
     """Run members, (name, lane) pairs, jobs at a time, each with its log at directory/NAME.log and
     its receipt at directory/NAME.json, and return the combined status. judge(lane, status, log) is
     a lane's status from its command's and its log, raising ValueError for a run that executed too
@@ -148,6 +150,11 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
     (vocaro/queuekeeper#284): past its fail threshold the lane fails, and a pass adds its time to its history. A lane
     that its own timeout, stall bound or fail threshold stops shows its own notice (lane_timing.notice) in its log
     and the group's output.
+
+    unselected, (name, lane) pairs, are the group's lanes this run was asked to leave out, as the merge queue asks
+    for those whose inputs a batch does not change (vocaro/queuekeeper#289). Each has a log and a receipt that say
+    so, in place of an earlier run's, with status 0 and the outcome NOT_SELECTED, and the group's receipt names them
+    in notSelected: none is run, and none counts in the group's status.
     """
     directory.mkdir(parents=True, exist_ok=True)
     results, lock, started = {}, threading.Lock(), time.monotonic()
@@ -243,20 +250,28 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
             lines += ["    " + line for line in log.read_text(errors="replace").splitlines()[-TAIL:]] if log.exists() else []
         say(*lines)
 
+    for name, lane in unselected:
+        log = directory / f"{name}.log"
+        log.write_text(f"queuekeeper: {name} not run: this run of the group selects "
+                       f"{', '.join(member for member, _lane in members)} alone\n")
+        conclude(name, lane, log, time.monotonic(), 0, NOT_SELECTED, None)
+        say(f"NOT SELECTED {name}")
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = [pool.submit(one, name, lane) for name, lane in members]
     failures = [future.exception() for future in futures if future.exception() is not None]
     receipt["lanes"] = results
+    if unselected: receipt["notSelected"] = [name for name, _lane in unselected]
     if failures:
         uncertain = [error for error in failures if not isinstance(error, processes.Interrupted)]
         raise uncertain[0] if uncertain else failures[0]
     stopped = [name for name, _lane in members if results[name]["outcome"] == CUT_SHORT]
     if stopped: receipt.update(stoppedAt=failed[0], cutShort=stopped)
     status = combined([results[name]["status"] for name, _lane in members if name not in stopped])
-    width = max(len(name) for name, _lane in members)
+    width = max(len(name) for name, _lane in [*members, *unselected])
     say(f"Lane times (wall-clock {round(time.monotonic() - started)}s, {jobs} at a time):",
         *(f"  {name:<{width}}  {results[name]['seconds']:>6}s  "
           f"{'CUT SHORT' if name in stopped else outcome(results[name]['status'])}" for name, _lane in members),
+        *(f"  {name:<{width}}  {'':>6}   NOT SELECTED" for name, _lane in unselected),
         *([f"{GROUP_STOPPED}{failed[0]}'s failure; not run or not finished: {', '.join(stopped)}"] if stopped else []),
         outcome(status))
     return status

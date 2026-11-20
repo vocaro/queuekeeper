@@ -1218,6 +1218,32 @@ class LaneGroupTests(unittest.TestCase):
                 self.assertEqual(status, 0, output)
                 self.assertNotIn("did not start", output)
 
+    def test_a_groups_arguments_name_the_lanes_of_it_to_run_and_the_rest_are_recorded_as_not_selected(self):
+        """vocaro/queuekeeper#289: the merge queue runs only the lanes of a group whose inputs a batch changes."""
+        ran = self.root / "ran"
+        def touch(name): return {"command": [sys.executable, "-c", f"open({str(ran)!r}, 'a').write({name!r})"]}
+        self.configure({"left": touch("L"), "right": touch("R"), "both": {"parallel": ["left", "right"], "jobs": 2}})
+        folder = self.root / ".build/queuekeeper/both"
+        # An earlier whole run's log of the lane left out must not stand beside this run's receipt.
+        self.assertEqual(self.run_lane("both")[0], 0)
+        self.assertEqual(sorted(ran.read_text()), ["L", "R"])
+        ran.unlink()
+        status, output = self.run_lane("both", "--", "right")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(ran.read_text(), "R")
+        self.assertIn("NOT SELECTED left", output)
+        self.assertIn("PASS right", output)
+        receipt = json.loads((folder / "source.json").read_text())
+        self.assertEqual((receipt["notSelected"], receipt["jobs"], receipt["parallel"]), (["left"], 1, ["left", "right"]))
+        own = json.loads((folder / "lanes/left.json").read_text())
+        self.assertEqual((own["status"], own["outcome"]), (0, parallel.NOT_SELECTED))
+        self.assertIn("left not run: this run of the group selects right alone", (folder / "lanes/left.log").read_text())
+        # Naming them all is the whole group.
+        ran.unlink()
+        status, output = self.run_lane("both", "--", "left", "right")
+        self.assertEqual((status, sorted(ran.read_text())), (0, ["L", "R"]), output)
+        self.assertNotIn("notSelected", json.loads((folder / "source.json").read_text()))
+
     def test_a_group_takes_no_arguments_and_serial_needs_a_group(self):
         self.configure({"one": {"command": [sys.executable, "-c", "pass"]}, "group": {"parallel": ["one"]}})
         for arguments in (["group", "--", "x"], ["--expect", "1", "group"], ["--serial", "one"]):

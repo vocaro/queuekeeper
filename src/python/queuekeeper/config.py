@@ -543,10 +543,42 @@ EVERY_LANE = ("queuekeeper.json", "queuekeeper-workspace.json")
 
 def lane_inputs(config):
     """{gate lane: its inputs} for the gate lanes (gate_lanes) of main that give inputs, the globs of the paths that
-    affect each: a batch runs such a lane only when one of its changed paths matches one (vocaro/queuekeeper#289)."""
+    affect each: a batch runs such a lane only when one of its changed paths matches one (vocaro/queuekeeper#289).
+    A lane group that gives none of its own has those of its lanes together, once each of them gives inputs
+    (member_inputs): one that gives none runs for every change, and so does its group."""
+    lanes, found = config.get("lanes", {}), {}
+    for name in gate_lanes(config):
+        lane = lanes.get(name)
+        if not isinstance(lane, dict): continue
+        if "inputs" in lane: found[name] = lane["inputs"]
+        elif "parallel" in lane:
+            members = member_inputs(config, name)
+            if len(members) == len(lane["parallel"]):
+                found[name] = list(dict.fromkeys(pattern for patterns in members.values() for pattern in patterns))
+    return found
+
+
+def member_inputs(config, name):
+    """{lane: its inputs} for the lanes of the lane group name that give inputs; none for a lane that is no group."""
     lanes = config.get("lanes", {})
-    return {name: lanes[name]["inputs"] for name in gate_lanes(config)
-            if isinstance(lanes.get(name), dict) and "inputs" in lanes[name]}
+    group = lanes.get(name)
+    return {member: lanes[member]["inputs"] for member in (group.get("parallel", ()) if isinstance(group, dict) else ())
+            if isinstance(lanes.get(member), dict) and "inputs" in lanes[member]}
+
+
+def selected_members(config, name, changed):
+    """The lanes of the gate lane group name that a batch changing the paths changed runs, in the group's order, or
+    None for all of them: those whose inputs one of its paths matches, and those that give none. Every one when a
+    path that selects every gate lane changed (affected_by), when no lane of the group gives inputs, or when the
+    paths select them all anyway."""
+    lanes = config.get("lanes", {})
+    group, inputs = lanes.get(name), member_inputs(config, name)
+    if not inputs or not changed or any(path in EVERY_LANE for path in changed): return None
+    # A path that selects every gate lane, as one queue.unread says code reads and no lane names.
+    if lane_inputs(config) and any(affected_by(config, path) is None for path in changed): return None
+    chosen = [member for member in group["parallel"] if member not in inputs
+              or any(matches(path, pattern) for path in changed for pattern in inputs[member])]
+    return None if len(chosen) == len(group["parallel"]) else chosen
 
 
 def unselected(config, path):
@@ -806,8 +838,9 @@ def affected_rules(queue, lanes):
 
 
 def lane_inputs_checked(queue, lanes):
-    """Each lane's inputs, checked: distinct globs of the paths that affect a gate lane (gate_lanes), which no other
-    lane takes yet, and never beside queue.affected, the same map written from the paths."""
+    """Each lane's inputs, checked: distinct globs of the paths that affect a gate lane (gate_lanes) or a lane of a
+    gate lane group, which no other lane takes, never both for a group and for one of its lanes, and never beside
+    queue.affected, the same map written from the paths."""
     given = [name for name, lane in lanes.items() if isinstance(lane, dict) and "inputs" in lane]
     if not given: return
     queue = queue if isinstance(queue, dict) else {}
@@ -821,10 +854,17 @@ def lane_inputs_checked(queue, lanes):
         for pattern in patterns:
             if pattern.startswith("/") or not PurePosixPath(pattern).parts:
                 raise ValueError(f"{name}.inputs' glob {pattern} is no path relative to the repository")
-        if name not in named:
+        groups = [group for group in named if isinstance(lanes.get(group), dict)
+                  and name in lanes[group].get("parallel", ())]
+        if name not in named and not groups:
             raise ValueError(f"{name}.inputs is given for a lane that is not one of the gate lanes "
-                             f"({', '.join(named) or 'none'}), queue.lanes or else gate: only a gate lane is chosen "
-                             "by a batch's paths")
+                             f"({', '.join(named) or 'none'}), queue.lanes or else gate, nor a lane of a gate lane "
+                             "group: only those are chosen by a batch's paths")
+        both = next((group for group in groups if "inputs" in lanes[group]), None)
+        if both:
+            raise ValueError(f"{both}.inputs and {name}.inputs are both given, for a lane group and for one of its "
+                             f"lanes: give the group's to run all of its lanes or none, or its lanes' to choose "
+                             "among them")
     if "affected" in queue:
         raise ValueError(f"queuekeeper.json gives queue.affected and {given[0]}.inputs, two ways to write which paths "
                          "select which gate lanes: give one of them")

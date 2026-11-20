@@ -187,7 +187,14 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   docs-only route in every kind of round, and `main` moving by one carries a pass over, with no
   second mechanism. `skips_by_inputs` tells such a path from a declared document, which alone
   runs the docs lanes beside code (`docs_also`). `as_batch` drops `inputs` from a batch's own
-  settings. The push recomputes this to
+  settings. A gate lane group whose lanes give `inputs` has them all as its own
+  (`config.lane_inputs`), and `group_members` picks the lanes a batch's paths select
+  (`config.selected_members`). `Worker.gate` passes them as the group's arguments,
+  `qk run GROUP -- MEMBER...`, which reach another Mac as any lane's arguments do, and
+  `parallel.lanes` writes a `not selected` receipt and log for each lane left out, in place of an
+  earlier run's, so that `Worker.read_group` and `remote.group_files` find one for every lane.
+  Only the batch's own gate passes them: a caller of `Worker.gate` that does not, such as a
+  bisect's halves or a stacked gate, runs the whole group. The push recomputes this to
   decide whether `queue.hookCoveredBy`'s lanes ran, and records it as the lanes a carry-over by path
   must avoid.
 - **Changelog conflicts.** A conflict made only of whole lines both sides added directly below one

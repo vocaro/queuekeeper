@@ -3287,8 +3287,8 @@ class MainMoves(Fixture):
         outside = self.base / "outside"
         run(self.base, "git", "clone", "-q", str(self.origin), str(outside))
         pushed = []
-        def gate(worker, lanes, round_name):
-            outcome = real(worker, lanes, round_name)
+        def gate(worker, lanes, round_name, **options):
+            outcome = real(worker, lanes, round_name, **options)
             if not pushed:
                 pushed.append(True)
                 path = outside / name
@@ -3503,6 +3503,85 @@ class Inputs(Affected):
         self.assertEqual((self.gates() - gates, self.app_gates() - apps), (1, 0))
 
 
+class MemberInputs(Affected):
+    """Inputs on the lanes of a gate lane group (vocaro/queuekeeper#289): a batch runs the group with only the lanes
+    its paths select, skips the gate when it selects none, and runs them all for a path every lane reads."""
+
+    def setUp(self):
+        Fixture.setUp(self)
+        self.app = self.base / "app-gates"
+        config = self.config()
+        config["lanes"]["unit"] = {**config["lanes"]["gate"], "inputs": ["src/**", "shared/*.py"]}
+        config["lanes"]["app"] = {"command": ["python3", "lane.py", str(self.app), str(self.base / "app-status")],
+                                  "inputs": ["app/**", "shared/*.py"]}
+        config["lanes"]["gate"] = {"parallel": ["unit", "app"]}
+        self.publish(config, "Gate on a group whose lanes give inputs")
+        self.ran = self.base / "hook-runs"
+
+    def landed(self, path, expected):
+        self.commit(path, "a")
+        [identifier] = self.add("a")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed", said.getvalue())
+        self.assertEqual((self.gates(), self.app_gates()), expected, said.getvalue())
+        return said.getvalue()
+
+    def test_a_batch_runs_only_the_lanes_its_paths_select(self):
+        said = self.landed("src/a.py", (1, 0))
+        self.assertIn("gate: only unit of its lanes, which main's lane inputs select for the batch's paths", said)
+
+    def test_a_path_of_both_lanes_runs_the_whole_group(self):
+        self.assertNotIn("of its lanes", self.landed("shared/b.py", (1, 1)))
+
+    def test_a_path_no_rule_covers_runs_every_lane(self):
+        """With inputs on every lane of the group, such a path skips the gate."""
+        self.landed("tools/make.txt", (0, 0))
+
+    def test_a_lane_of_the_group_without_inputs_runs_for_every_change(self):
+        config = self.config()
+        del config["lanes"]["unit"]["inputs"]
+        self.publish(config, "Only the app lane gives inputs")
+        self.landed("tools/make.txt", (1, 0))
+
+    def test_a_change_to_the_lanes_own_settings_runs_every_lane(self):
+        config = self.config()
+        config["lanes"]["unit"]["inputs"] = ["src/**", "shared/*.py", "extra/**"]
+        self.commit("queuekeeper.json", "settings", json.dumps(config))
+        [identifier] = self.add("settings")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.app_gates()), (1, 1))
+
+    def test_main_moving_by_paths_of_other_lanes_carries_the_pass_over(self):
+        """A move by a path of the group's other lane gates again: the group is one gate lane, and it ran."""
+        self.gates_again_after("app/view.py")
+
+    def test_main_moving_by_a_path_no_rule_covers_gates_again(self):
+        """With inputs, no lane reads such a path, so the pass stands."""
+        self.commit("src/a.py", "a")
+        [identifier] = self.add("a")
+        with self.during_gate("tools/make.txt"): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual((self.gates(), self.app_gates()), (1, 0))
+
+    def test_a_lane_covers_the_pre_push_hook_only_when_its_paths_selected_it(self):
+        """A group covers the hook only when all of its lanes ran."""
+        config = self.config()
+        config["queue"]["hookCoveredBy"] = {"gate": "the hook's checks"}
+        self.publish(config, "The gate covers the hook")
+        self.hook("exit 0")
+        self.landed("shared/b.py", (1, 1))
+        self.assertEqual(self.runs(), [])
+        self.commit("src/a.py", "src")
+        [identifier] = self.add("src")
+        self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(len(self.runs()), 1)
+
+    # A group is one gate lane, so no move by a path of its lanes carries over by lane.
+    test_a_carry_by_path_reruns_the_preflight_lanes = None
+
+
 class InputRules(unittest.TestCase):
     """Lane inputs read without a queue: the lanes each path selects, the parser's checks and qk doctor's report."""
     LANES = {"gate": {"command": ["true"], "inputs": ["src/**", "tests/**"]},
@@ -3567,6 +3646,45 @@ class InputRules(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "queue.affected and gate.inputs"):
             self.parsed(self.LANES, affected=[{"paths": ["src/**"], "lanes": ["gate"]}])
 
+    GROUP = {"gate": {"parallel": ["unit", "app"]}, "unit": {"command": ["true"], "inputs": ["src/**", "shared/*.py"]},
+             "app": {"command": ["true"], "inputs": ["app/**", "shared/*.py"]}}
+
+    def group(self, lanes=None, **queue):
+        return {"lanes": lanes or self.GROUP, "queue": {"lanes": ["gate"], **queue}}
+
+    def test_a_groups_lanes_give_inputs_and_a_batch_selects_among_them(self):
+        config = self.group()
+        self.assertEqual(configuration.lane_inputs(config), {"gate": ["src/**", "shared/*.py", "app/**"]})
+        cases = [(["src/a.py"], ["unit"]), (["app/x.swift", "Makefile"], ["app"]), (["shared/a.py"], None),
+                 (["src/a.py", "app/b.swift"], None), (["src/a.py", "queuekeeper.json"], None), ([], None),
+                 (["src/a.py", "README.md"], ["unit"])]
+        for changed, expected in cases:
+            with self.subTest(changed=changed):
+                self.assertEqual(configuration.selected_members(config, "gate", changed), expected)
+        self.assertEqual(mq.group_members(config, ["gate"], ["src/a.py"]), {"gate": ["unit"]})
+        self.assertEqual(mq.group_members(config, ["gate"], ["shared/a.py"]), {})
+        self.assertEqual(mq.docs_lanes(config, ["Makefile"]), ["docs"])
+        # A path queue.unread says code reads, which no lane names, runs them all.
+        excluded = self.group(unread={"exclude": {"assets/": "a test reads them"}})
+        self.assertIsNone(configuration.selected_members(excluded, "gate", ["src/a.py", "assets/a.png"]))
+
+    def test_a_lane_of_a_group_without_inputs_runs_whenever_the_group_does_and_for_every_change(self):
+        config = self.group({**self.GROUP, "unit": {"command": ["true"]}})
+        self.assertEqual(configuration.lane_inputs(config), {})
+        self.assertIsNone(mq.docs_lanes(config, ["Makefile"]))
+        self.assertEqual(configuration.selected_members(config, "gate", ["Makefile"]), ["unit"])
+        self.assertIsNone(configuration.selected_members(config, "gate", ["app/a.swift"]))
+        # A group that gives its own runs whole or not at all.
+        whole = self.group({"gate": {"parallel": ["unit"], "inputs": ["src/**"]}, "unit": {"command": ["true"]}})
+        self.assertIsNone(configuration.selected_members(whole, "gate", ["src/a.py"]))
+
+    def test_the_parser_takes_inputs_of_a_gate_groups_lanes_and_not_of_both(self):
+        self.parsed(self.GROUP, named=["gate"])
+        with self.assertRaisesRegex(ValueError, "gate.inputs and unit.inputs are both given"):
+            self.parsed({**self.GROUP, "gate": {"parallel": ["unit", "app"], "inputs": ["src/**"]}}, named=["gate"])
+        with self.assertRaisesRegex(ValueError, "unit.inputs is given for a lane that is not one of the gate lanes"):
+            self.parsed({**self.GROUP, "other": {"command": ["true"]}}, named=["other"])
+
     def test_only_main_may_give_inputs(self):
         own = mq.as_batch(json.loads(json.dumps(self.config())))
         self.assertEqual(configuration.lane_inputs(own), {})
@@ -3592,6 +3710,9 @@ class InputRules(unittest.TestCase):
         self.assertIn("gate: tests/**, app: *.xcconfig", warning)
         self.assertEqual(lane_coverage.skipping_notes(lane_coverage.affected_paths(
             Path("."), {"lanes": {}, "queue": {"affected": AffectedRules.RULES, "lanes": []}}, tracked)), [])
+        grouped = lane_coverage.affected_paths(Path("."), self.group(), tracked)
+        self.assertEqual((grouped["skipping"], grouped["unmatched"]),
+                         (["Makefile", "tools/x.py"], ["gate: shared/*.py"]))
 
 
 class AffectedRules(unittest.TestCase):

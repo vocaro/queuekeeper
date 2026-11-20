@@ -1804,9 +1804,15 @@ def perform(argv, report):
                     return remote.foreground_lane(root, config, args.lane, extra, args.expect)
                 plugins.FOREGROUND.require_foreground()
             group = report.group = lane.get("parallel")
-            if group is not None and (extra or args.expect):
-                raise ValueError(f"{args.lane} runs a group of lanes, which takes no arguments or --expect; "
-                                 "pass them to one of its lanes")
+            if group is not None and args.expect:
+                raise ValueError(f"{args.lane} runs a group of lanes, which takes no --expect; pass it to one of "
+                                 "its lanes")
+            # A group's arguments name the lanes of it to run, and the rest are left out (vocaro/queuekeeper#289).
+            strangers = [word for word in extra if word not in group] if group is not None else []
+            if strangers:
+                raise ValueError(f"{args.lane} runs a group of lanes, whose arguments name the lanes of it to run "
+                                 f"({', '.join(group)}), and {strangers[0]} is none of them; pass a lane's own "
+                                 "arguments to that lane")
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
             # Why the lane runs only here, as its configuration says, or None: it goes to another Mac.
             reason = stays(config["lanes"], args.lane)
@@ -1996,6 +2002,11 @@ def perform(argv, report):
                 receipt.update(parallel=group, jobs=jobs)
                 # Each lane's receipt shows the command it ran, as its own keys make it.
                 members = [(name, {**config["lanes"][name], "command": lane_command(config["lanes"][name])}) for name in group]
+                # The lanes the run's arguments leave out, each recorded as not selected (parallel.lanes).
+                unselected = [pair for pair in members if extra and pair[0] not in extra]
+                members = [pair for pair in members if pair not in unselected]
+                jobs = min(jobs, len(members))
+                receipt["jobs"] = jobs
                 # A group that says failFast ends at its first failed lane, except as the serial reference, which
                 # runs each lane to its end to compare with a failure seen side by side (vocaro/queuekeeper#256).
                 fail_fast = bool(lane.get("failFast")) and not args.serial
@@ -2028,7 +2039,8 @@ def perform(argv, report):
                                       file=sys.stderr, flush=True)
                             return judge(member, status, log)[0]
                         return parallel.lanes(tree, wrapped, directory / "lanes", jobs, judged, receipt, on_stop,
-                                              results_directory=directory / "results", fail_fast=fail_fast, pace=pace)
+                                              results_directory=directory / "results", fail_fast=fail_fast, pace=pace,
+                                              unselected=unselected)
                     return record(directory, receipt, lambda: prepared(work))
             try:
                 with processes.forwarding_signals():
