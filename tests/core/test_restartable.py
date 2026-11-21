@@ -62,20 +62,20 @@ class Restartable(unittest.TestCase):
         self.assertEqual(moved, [(first, git(self.repo, "rev-parse", "HEAD"))])
 
     def test_a_process_whose_checkout_moves_replaces_itself_with_the_same_command(self):
-        # The process watches the checkout, says its PID, and on the move restarts; the process it becomes says
-        # it restarted, with the same PID, and ends.
+        # The child reports readiness only after watch has read the initial HEAD, so the next commit
+        # can trigger a restart. The new process reports the same PID and exits.
         code = (f"import os, sys, time\nsys.path.insert(0, {str(SOURCE)!r})\nfrom queuekeeper import restartable\n"
                 f"if os.environ.get(restartable.RESTARTED): print('restarted', os.getpid(), flush=True); sys.exit(0)\n"
-                f"print('started', os.getpid(), flush=True)\n"
                 f"restartable.watch({str(self.repo)!r}, lambda old, new: restartable.restart(), poll=0.05, settle=0.05)\n"
+                "print('ready', os.getpid(), flush=True)\n"
                 "time.sleep(30)\n")
         process = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
                                    env={key: value for key, value in os.environ.items() if key != restartable.RESTARTED})
         self.addCleanup(process.kill)
         first = process.stdout.readline().split()
+        self.assertEqual(first[:1], ["ready"])
         self.commit("second")
         out, _ = process.communicate(timeout=stretched(30))
-        self.assertEqual(first[0], "started")
         self.assertIn(f"restarted {first[1]}", out)
         self.assertIn("the toolkit moved; restarting from it", out)
         self.assertEqual(process.returncode, 0)
