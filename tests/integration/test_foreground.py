@@ -5,6 +5,7 @@ from io import StringIO
 import json
 import os
 import re
+import shlex
 import signal
 import sqlite3
 from pathlib import Path
@@ -259,11 +260,12 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(devices.condition(entry), "uncertain")
         # The next run names the exact recovery command, which runs as printed on another Mac, where no import
         # path names the plugins (vocaro/queuekeeper#167).
-        command = ("python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover "
+        command = (f"python3 {shlex.quote(str(config.TOOLKIT_ROOT / 'bin/qk'))} "
+                   f"--project {shlex.quote(str(config.TOOLKIT_ROOT))} devices recover "
                    f"mac-foreground --by SESSION --revision {entry['revision']} --verified WHAT")
         with self.assertRaisesRegex(devices.Refused, re.escape(f"`{command}`")) as refused:
             with self.slot(): self.fail("ran over an uncertain foreground")
-        self.assertIn("or from another Mac the same with `--host`", str(refused.exception))
+        self.assertIn("`qk devices recover --host HOST`", str(refused.exception))
         ran = run_printed(str(refused.exception).partition("`")[2].partition("`")[0] + " --help")
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertIn("usage: qk devices recover", ran.stdout)
