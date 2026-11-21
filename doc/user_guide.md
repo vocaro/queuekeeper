@@ -1466,6 +1466,11 @@ cleanup grace period.
 
 ### Every test has a lane
 
+Give every test a lane that selects it: the landing gate, a lane in `release.lanes`, or a
+named on-demand lane whose runbook or issue says when to run it. Give any test with no lane
+a lane or remove it. Label a retained qualification or measurement as a record and leave it
+out of the project's test coverage.
+
 `qk doctor` reports `testLanes`: whether every XCTest class, Swift Testing suite and Python test
 module in the tracked source is selected by some lane. It reads `swift test`, `qk xctest`,
 `qk unittest`, `python3 -m unittest discover`, `xcodebuild test` and `qk simulator-tests` commands
