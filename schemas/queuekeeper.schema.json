@@ -45,10 +45,23 @@
       "type": "string"
     },
     "siblings": {
-      "description": "The folders beside this checkout that its own code loads from, each with the environment variable the code finds it by, as in {\"apple-engineering\": \"APPLE_ENGINEERING_ROOT\"}. A run that pins this checkout, or a run of this project, pins each at one commit and sets the variable to its checkout of it",
+      "description": "Folders beside the project. A variable name follows the sibling's origin/main. An object pins a full Git commit and exports the named variable to its pinned checkout.",
       "type": "object",
       "propertyNames": {"pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"},
-      "additionalProperties": {"type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$"}
+      "additionalProperties": {
+        "oneOf": [
+          {"type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$"},
+          {
+            "type": "object",
+            "required": ["variable", "revision"],
+            "additionalProperties": false,
+            "properties": {
+              "variable": {"type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$"},
+              "revision": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"}
+            }
+          }
+        ]
+      }
     },
     "gitHooks": {
       "description": "The folder of the project's tracked Git hooks, relative to the checkout's top, such as .githooks. qk doctor sets core.hooksPath to it where it is unset, as in a fresh clone, and warns where it names another folder",

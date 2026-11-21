@@ -915,17 +915,19 @@ fast-forwarded the same way.
 
 ### Plugin pins
 
-A run pins each plugin folder beside the project, and each folder its `siblings` lists, at its
-`origin/main` as this Mac's checkout names it: fetched by the queue worker each round, taken as is
-by `qk run`. The pin set travels in `QUEUEKEEPER_SIBLINGS` (`pins.py`); a command that finds it
+A run pins each plugin folder beside the project and each folder its `siblings` lists. Entries
+with a `revision` select that exact commit, fetched when needed. Floating siblings follow
+`origin/main` as this Mac's checkout names it: fetched by the queue worker each round and taken
+as is by `qk run`. The pin set travels in `QUEUEKEEPER_SIBLINGS` (`pins.py`); a command that finds it
 set uses it, and the worker drops an inherited one and makes its own. Each pinned commit is
 checked out once per Mac as a read-only detached worktree at
 `~/Development/queuekeeper-pins/FOLDER/COMMIT/FOLDER`, ending in the folder's name because SwiftPM
 names a local package by its folder. Another Mac is sent only the commits, takes each from its
 own `~/Development/FOLDER`, and links the pinned checkout beside the dispatched one. Before a
-round adopts a new set, the worker starts Queuekeeper with it at `origin/main`; exit 70 keeps the
-last set that started. Without the pin, a landing mid-run could reach later lanes with an adapter
-that no longer matches.
+round adopts a new set, the worker starts Queuekeeper with it at `origin/main`; exit 70 allows
+retrying the last working floating revisions. Exact declarations are required. A gate or probe
+uses the exact declarations in the tree it evaluates, including a candidate changing a pin.
+Main still defines which gate lanes the queue requires.
 
 A plugin folder inside the project is not pinned: `config.plugins_of` resolves it against
 the main checkout, so no command's hooks are an unlanded copy, and `qk unittest` sets it aside while

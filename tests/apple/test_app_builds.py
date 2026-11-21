@@ -557,8 +557,10 @@ class Devices(unittest.TestCase):
 class Queue(Fixture):
     def worker(self):
         said = []
-        worker = SimpleNamespace(queue=SimpleNamespace(logs=self.temp / "logs"), checkout=self.root,
-                                 environment={"A": "1"}, say=said.append)
+        worker = merge_queue.Worker(merge_queue.Queue(self.root))
+        worker.checkout = self.root
+        worker.environment = {"A": "1"}
+        worker.say = said.append
         return worker, said
 
     def test_a_gated_push_starts_keeping_the_app_by_the_pushed_commits_settings(self):
@@ -566,7 +568,7 @@ class Queue(Fixture):
         worker, said = self.worker()
         head = git(self.root, "rev-parse", "HEAD")
         with patch.object(app_builds, "spawn_keep") as spawn:
-            merge_queue.Worker.keep_app(worker, head)
+            worker.keep_app(head)
         spawn.assert_called_once_with(self.root, head, worker.queue.logs / f"app-keep-{head[:12]}.log", env={"A": "1"})
         self.assertIn("in the background", said[0])
 
@@ -576,8 +578,8 @@ class Queue(Fixture):
         (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Demo"}))
         git(self.root, "commit", "-q", "-am", "no app")
         with patch.object(app_builds, "spawn_keep") as spawn:
-            merge_queue.Worker.keep_app(worker, none)
-            merge_queue.Worker.keep_app(worker, git(self.root, "rev-parse", "HEAD"))
+            worker.keep_app(none)
+            worker.keep_app(git(self.root, "rev-parse", "HEAD"))
         spawn.assert_not_called()
         self.assertEqual(said, [])
 
@@ -595,7 +597,7 @@ class Queue(Fixture):
                 self.assertEqual(merge_queue.config_at(self.root, head), settings)
                 worker, said = self.worker()
                 with patch.object(app_builds, "spawn_keep") as spawn:
-                    merge_queue.Worker.keep_app(worker, head)
+                    worker.keep_app(head)
                 if keeps_app:
                     spawn.assert_called_once_with(self.root, head, worker.queue.logs / f"app-keep-{head[:12]}.log",
                                                   env={"A": "1"})
@@ -615,7 +617,7 @@ class Queue(Fixture):
                 head = git(self.root, "rev-parse", "HEAD")
                 worker, said = self.worker()
                 with patch.object(app_builds, "spawn_keep") as spawn:
-                    merge_queue.Worker.keep_app(worker, head)
+                    worker.keep_app(head)
                 spawn.assert_not_called()
                 self.assertEqual(said, [f"keeping no app build of {head[:12]}: {reason}"])
 

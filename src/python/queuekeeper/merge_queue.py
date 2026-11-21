@@ -63,7 +63,7 @@ from . import add_only_json, events, landed_cleanup, pre_push, recovery, restart
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
-    siblings_in, stays, toolkit_command, full_run, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
+    project_siblings, sibling_revisions, siblings_in, stays, toolkit_command, full_run, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -1225,15 +1225,20 @@ def preflight_run(queue, root, commit, name):
             ours = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
             if ours != text(root, "rev-parse", "--path-format=absolute", "--git-common-dir"):
                 env[TOOLKIT_VARIABLE] = str(TOOLKIT_ROOT)
-        try: lanes = load(path).get("lanes", {})
-        except (OSError, ValueError): lanes = {}
-        lane = lanes.get(name)
+        try: settings = load(path)
+        except (OSError, ValueError): settings = {}
+        lane = settings.get("lanes", {}).get(name)
         command = lane.get("command") if isinstance(lane, dict) else None
         if not (isinstance(command, list) and command) or (isinstance(lane, dict) and any(
                 lane.get(key) for key in (*NOT_PREFLIGHT, *plugins.LANE_KEYS))):
             return None, [f"the project's {name} lane is not one command that qk land can run here"], None
         limit = min(lane.get("timeout", PREFLIGHT_LIMIT), PREFLIGHT_LIMIT) if isinstance(lane, dict) else PREFLIGHT_LIMIT
         log = path.parent / f"{name}.log"
+        names = siblings_in(settings)
+        if sibling_revisions(names):
+            made = pins.make(root, names)
+            env.update(pins.exported(made))
+            env[pins.VARIABLE] = pins.encoded(made)
         try: status_ = processes.run(command, cwd=path, log_path=log, timeout=limit, env=env)
         except processes.TimedOut as error: return None, [f"{shlex.join(command)} reached its limit: {error}"], command
         except processes.NotStarted as error: return None, [f"{shlex.join(command)} could not start: {error}"], command
@@ -3809,6 +3814,7 @@ class Worker:
         self.failed_dispatch = None  # the last failed gate log and its dispatch evidence (gate)
         self.ran_on = None  # another Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
+        self.pin_names, self.evaluated_pins = {}, {}
         self.measured = None  # the passing gate run of the last round, which its landed entries record
         self.alone = False  # whether this round's batch is one entry an option of qk land put on its own (choose)
         self.ungating = False  # whether this round lands that entry without the gate (round, first_ungated)
@@ -4045,28 +4051,32 @@ class Worker:
         if not own: self.environment = {**environment(), TOOLKIT_VARIABLE: str(copy)}
         if self.code and head != self.code: self.move_to(copy, head)
 
+    def fetch_sibling(self, clone):
+        if git(clone, "remote", "get-url", "origin").returncode == 0:
+            reach(clone, *FETCH, say=self.say, check=True)
+
     def pin(self):
         """Pin, for this round, the folders beside the project that its plugins load from, as main's
-        queuekeeper.json names them: each at its origin/main, fetched now, in a checkout no session edits
+        queuekeeper.json names them: at their declared revisions or their origin/main, in checkouts no session edits
         (pins.make), carried to every lane and the qk commands nested in them by QUEUEKEEPER_SIBLINGS. A lane
         otherwise loaded them from the shared checkouts beside the project as those stood when each command began, so
         that a landing there mid-round, or a session's edit, changed what the round's later lanes ran
-        (vocaro-engineering#497). A folder an entry adds is not in main's list, and loads as it stands.
+        (vocaro-engineering#497). run_environment applies changes to exact pins when a gate tests a candidate.
 
         Queuekeeper's origin/main and a folder's need not work together: a change across both lands in two steps.
         So a set this Queuekeeper has not started with before is tried first, as the command every lane begins
         with, in the checkout at origin/main (pin_starts). One that does not start is not adopted: the round runs
-        with the folders at the commits the last set that started held, and the next round tries again. With no such
+        with the last working floating commits alongside its exact pins, and the next round tries again. With no such
         set, or when that does not start either, the queue holds, sending nothing back, as for a lane Queuekeeper
         could not start for (vocaro/queuekeeper#158)."""
         queue = self.queue
         self.environment = {key: value for key, value in self.environment.items() if key != pins.VARIABLE}
-        try: names = siblings_in(json.loads(config_source(queue.main_checkout, MAIN)))
+        self.pin_names, self.evaluated_pins = {}, {}
+        try: self.pin_names = siblings_in(json.loads(config_source(queue.main_checkout, MAIN)))
         except (ValueError, AttributeError): return  # main's configuration is unreadable, which the round says itself
+        names = self.pin_names
         if not names: return
-        def fetch(clone):
-            if git(clone, "remote", "get-url", "origin").returncode == 0: reach(clone, *FETCH, say=self.say, check=True)
-        try: made = pins.make(queue.main_checkout, names, fetch=fetch)
+        try: made = pins.make(queue.main_checkout, names, fetch=self.fetch_sibling)
         except pins.Unpinned as error:
             raise Hold(SESSION, f"a folder the project's plugins load from could not be pinned for the round: {error}")
         if not made: return
@@ -4080,8 +4090,11 @@ class Worker:
             log = queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-pins.log"
             if self.pin_starts(made, log) is False:
                 held = (last or {}).get("siblings") or {}
-                earlier = {name: (pins.clone(queue.main_checkout, name), held[name], None) for name in made if name in held}
-                why = (f"Queuekeeper does not start in the project at origin/main with {said}, each at its origin/main "
+                earlier = {name: (pins.clone(queue.main_checkout, name), held[name], None)
+                           for name, pin in made.items() if name in held and "revision" not in pin}
+                source = "from its sibling declarations" if any("revision" in pin for pin in made.values()) \
+                    else "each at its origin/main"
+                why = (f"Queuekeeper does not start in the project at origin/main with {said}, {source} "
                        f"({log.with_name(f'{log.stem}-start.log')})")
                 if not earlier or all(made[name]["commit"] == commit for name, (_, commit, _) in earlier.items()):
                     raise Hold(SESSION, f"{why}, and no earlier set started: bring Queuekeeper and those folders to "
@@ -4100,6 +4113,24 @@ class Worker:
                 (queue.directory / PINS_STARTED).write_text(json.dumps(found) + "\n")
         self.say(f"folders beside the project: {said}")
         self.environment = {**self.environment, pins.VARIABLE: pins.encoded(made)}
+
+    def run_environment(self):
+        """Use the exact declarations of the checkout being evaluated. Other siblings keep the
+        round's selection, including when the base and candidate are tested in different checkouts."""
+        try: names = project_siblings(self.checkout)
+        except (OSError, ValueError, AttributeError):
+            return self.environment  # The lane's own configuration check can report this.
+        exact, baseline = sibling_revisions(names), sibling_revisions(self.pin_names)
+        if not (exact or baseline): return self.environment
+        made = pins.held(self.environment) or {}
+        if names != self.pin_names:
+            key = pins.encoded(names)
+            if key not in self.evaluated_pins:
+                self.evaluated_pins[key] = pins.make(self.queue.main_checkout, names, fetch=True, reuse=made)
+                for name, pin in self.evaluated_pins[key].items():
+                    self.say(f"the evaluated tree selects {name} at {pin['commit'][:12]}")
+            made = self.evaluated_pins[key]
+        return {**self.environment, **pins.exported(made), pins.VARIABLE: pins.encoded(made)}
 
     def pins_started(self):
         """The last pin set this queue's worker started Queuekeeper with: {"queuekeeper", "siblings"}, or None."""
@@ -4615,6 +4646,12 @@ class Worker:
             self.say(f"{lane} on {tested[:12]}")
             self.queue.emit("gate.began", lane=lane, round=round_name, role=self.role, head=tested,
                             entries=list(self.gating))
+            try: env = self.run_environment()
+            except pins.Unpinned as error:
+                log.write_text(f"{lane_results.TOOL_SAID}Unpinned: {error}\n")
+                self.failed_lane, self.tooling = lane, self.tool_said(log, False)
+                self.gate_ended(lane, round_name, lane_results.TOOL_NOT_STARTED, log)
+                return lane_results.TOOL_NOT_STARTED, log
             if lane in quick:
                 # In the round's account while it runs, as any lane is, with no wait to read (GateWatch).
                 watch = GateWatch(self, lane, time.time(), log)
@@ -4655,7 +4692,7 @@ class Worker:
             try:
                 try:
                     status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=LANE_LIMIT,
-                                            env={**self.environment, remote.QUEUE_GATE: "1"}, cancel=removal)
+                                            env={**env, remote.QUEUE_GATE: "1"}, cancel=removal)
                 finally: watch.finish()
             except processes.TimedOut as error:
                 loads.stopped.set()
@@ -4814,7 +4851,7 @@ class Worker:
         if command is None: return None
         try:
             status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT, cancel=cancel,
-                                    env={**self.environment, PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
+                                    env={**self.run_environment(), PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
         except processes.Canceled: return None
         except processes.TimedOut as error:
             self.say(f"{lane}: did not end unadmitted within {DOCS_CHECK_LIMIT}s ({error}): running it admitted")
@@ -4867,8 +4904,8 @@ class Worker:
             command = self.quick_command(lane)
             if command is None: return ""
             status_ = processes.run(command, cwd=self.checkout, log_path=output, timeout=DOCS_CHECK_LIMIT,
-                                    env={**self.environment, PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
-        except (OSError, processes.TimedOut, subprocess.SubprocessError) as error:
+                                    env={**self.run_environment(), PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
+        except (OSError, processes.TimedOut, subprocess.SubprocessError, pins.Unpinned) as error:
             return f" Whether origin/main at {base[:12]} fails {lane} too could not be determined: {error}."
         finally: self.reset(head)
         self.say(f"{lane} exited {status_} on origin/main at {base[:12]}, without the entry sent back")
@@ -4979,7 +5016,8 @@ class Worker:
         command = toolkit_command(self.checkout, ["--version"], self.toolkit_root())
         try:
             status_ = processes.run(command, cwd=self.checkout, log_path=log.with_name(f"{log.stem}-start.log"),
-                                    timeout=START_LIMIT, env=self.environment)
+                                    timeout=START_LIMIT, env=self.run_environment())
+        except pins.Unpinned: return False
         except (OSError, processes.TimedOut): return None
         return True if status_ == 0 else False if status_ == lane_results.TOOL_NOT_STARTED else None
 
@@ -5098,8 +5136,8 @@ class Worker:
         for number, command in enumerate(commands):
             log = self.queue.logs / f"{time.strftime('%Y%m%d-%H%M%S')}-{self.head()[:8]}-carry-{number}.log"
             self.say(f"carry-over check: {shlex.join(command)}")
-            try: status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=self.environment)
-            except OSError as error: status_ = error
+            try: status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=LANE_LIMIT, env=self.run_environment())
+            except (OSError, pins.Unpinned) as error: status_ = error
             if status_:
                 self.say(f"carry-over check {shlex.join(command)} ended with {status_}: gating again; see {log}")
                 return False
@@ -5438,8 +5476,8 @@ class Worker:
         log = self.queue.logs / f"app-keep-{head[:12]}.log"
         for keep in plugins.AFTER_LANDING:
             try:
-                started = keep(self.checkout, config, head, log, self.environment)
-            except OSError as error:
+                started = keep(self.checkout, config, head, log, self.run_environment())
+            except (OSError, pins.Unpinned) as error:
                 self.say(f"could not start keeping the app built at {head[:12]}: {error}")
                 continue
             if started: self.say(f"keeping the app built at {head[:12]} in the background; see {log}")
@@ -5523,7 +5561,10 @@ class Worker:
         try:
             result = processes.run(["git", "hook", "run", "--ignore-missing", f"--to-stdin={told}", "pre-push", "--",
                                     "origin", url], cwd=self.checkout, log_path=log, timeout=LANE_LIMIT,
-                                   env={**self.environment, pre_push.QUEUE_VARIABLE: "1"})
+                                   env={**self.run_environment(), pre_push.QUEUE_VARIABLE: "1"})
+        except pins.Unpinned as error:
+            log.write_text(f"{lane_results.TOOL_SAID}Unpinned: {error}\n")
+            return lane_results.TOOL_NOT_STARTED, log
         except processes.TimedOut as error:
             self.say(f"pre-push hook: unmeasured: {error}")
             return lane_results.UNMEASURED, log
@@ -5716,9 +5757,9 @@ class Worker:
                 self.failure_note(tests=list(tests), reruns=RERUNS, test=test, number=number, attempt=attempt,
                                   rerunLog=str(path), began=time.time(), waitRecord=str(record))
                 try: status_ = processes.run(command_of(test), cwd=self.checkout, log_path=path, timeout=LANE_LIMIT,
-                                             env={**self.environment, lane_wait.VARIABLE: str(record)})
+                                             env={**self.run_environment(), lane_wait.VARIABLE: str(record)})
                 except processes.TimedOut as error: status_ = f"unmeasured, {error}"
-                except OSError as error: status_ = f"not started, {error}"
+                except (OSError, pins.Unpinned) as error: status_ = f"not started, {error}"
                 if status_:
                     self.say(f"{test} failed again alone, on rerun {attempt} (exit {status_}), so the failure is real; "
                              f"see {path}")
@@ -6041,9 +6082,9 @@ class Worker:
             for number, test in enumerate(tests, 1):
                 path = self.queue.logs / f"{confirmed['round']}-without-{number}.log"
                 try: status_ = processes.run([*confirmed["command"], test], cwd=self.checkout, log_path=path,
-                                             timeout=LANE_LIMIT, env=self.environment)
+                                             timeout=LANE_LIMIT, env=self.run_environment())
                 except processes.TimedOut as error: status_ = f"unmeasured, {error}"
-                except OSError as error: status_ = f"not started, {error}"
+                except (OSError, pins.Unpinned) as error: status_ = f"not started, {error}"
                 if status_:
                     self.say(f"{entry['id']} is blamed, but {test} "
                              + (f"failed without it too, on the batch's other entries ({named}), "
@@ -6799,7 +6840,7 @@ class Worker:
         """Keep diagnostics best-effort and bounded, even when hosts are unhealthy."""
         command = toolkit_command(self.checkout, words, self.toolkit_root())
         try:
-            processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT, env=self.environment)
+            processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT, env=self.run_environment())
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             message = f"could not finish qk {' '.join(words)}: {error}"
             self.say(message)
@@ -8007,6 +8048,7 @@ class Beside(Worker):
         self.role = label
         self.checkout = checkout or worker.queue.home / f"{worker.queue.main_checkout.name}{BESIDE_SUFFIX}"
         self.code, self.environment = worker.code, worker.environment
+        self.pin_names = worker.pin_names
         self.unlocked = worker.unlocked  # the worker's own, which a lock either half meets adds to (screen_locked)
         self.regated = worker.regated  # the worker's own, so that each commit gates again at most once (rerun)
         self.unreachable = []  # the newer entries that apply to origin/main only after the older half (left_out)

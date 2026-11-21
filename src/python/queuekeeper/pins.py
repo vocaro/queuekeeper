@@ -9,7 +9,8 @@ that no longer matched the Queuekeeper they ran (vocaro-engineering#497).
 
 What runs lanes pins them: the merge queue's worker for each round, `qk run`, and a caller that runs lanes one after
 another, such as the toolkit's `eng checkpoint`. Each folder is pinned at its origin/main, as this Mac's own checkout of
-it names that, unless `qk run --sibling NAME=WHERE` chooses another commit or checkout. The set travels in
+it names that, or at the exact commit the project declares. `qk run --sibling NAME=WHERE` can choose another
+commit or checkout. The set travels in
 QUEUEKEEPER_SIBLINGS, {NAME: {"commit", "root"}} as JSON, and every qk command that finds it set loads the project's
 plugins from each root in place of the folder (config.plugins_of), sets each folder's variable, where it has
 one, to its root for itself and what it starts (exported), and makes no set of its own. A root is the Mac's one
@@ -121,58 +122,75 @@ def chosen(root, names, given):
     return choices
 
 
-def make(root, names, choices=None, fetch=False, say=None):
-    """The pin set for a run of the project at root: each of names, the folders its configuration declares
-    (config.siblings_in; a list names them with no variable), at its origin/main as this Mac's checkout of it holds
-    that, fetched first with fetch, which may be the function that fetches a checkout, or as choices says (chosen),
-    with this Mac's one checkout of it at that commit made if it is not there. A folder chosen by hand says so
-    ("chosen"), one whose commit no branch of its origin holds says "local", as another Mac cannot take it, and
-    one that code finds by an environment variable names it ("variable").
-
-    Each folder a pinned one declares in turn, in its queuekeeper.json at the commit pinned
-    (config.further_siblings), is pinned by the same rules: the toolkit, loaded as a project's plugin, loads
-    from two more.
-
-    A folder that is no Git checkout, or whose checkout names no origin/main, has no commit to pin: it is left out,
-    and loads as it stands. So is a folder found by a variable that this Mac has nothing of. A plugin's folder
-    this Mac has nothing of, or a commit that cannot be checked out, is Unpinned."""
+def make(root, names, choices=None, fetch=False, say=None, reuse=None):
+    """Make a run's pin set from its sibling declarations (config.siblings_in). An explicit choice
+    wins over an exact revision, which wins over origin/main. Reuse carries floating pins into
+    another tree the same queue round evaluates. Read each selected sibling's dependencies from
+    that checkout. A floating folder can load as it stands when there is no origin/main to pin."""
     from . import config  # which imports this module
-    wanted = dict(names) if isinstance(names, dict) else dict.fromkeys(names)
+    if isinstance(names, dict):
+        wanted = dict(names)
+    else:
+        # Callers such as eng checkpoint pass a list of folders. Keep any exact declarations
+        # for those folders before handing the set to nested qk commands.
+        wanted = dict.fromkeys(names)
+        try: declared = config.sibling_revisions(config.project_siblings(root))
+        except (OSError, ValueError, AttributeError): declared = {}
+        wanted.update({name: declared[name] for name in wanted if name in declared})
     pins, waiting = {}, list(wanted)
+
+    def discover(checkout):
+        try: further = config.further_siblings(checkout)
+        except ValueError as error: raise Unpinned(f"{checkout / config.FILE}: {error}") from error
+        for more, entry in further.items():
+            if more not in wanted: waiting.append(more)
+            if not wanted.get(more): wanted[more] = entry
+
     while waiting:
         name = waiting.pop(0)
-        own, commit, where = (choices or {}).get(name) or (clone(root, name), None, None)
-        if not own.is_dir() and wanted.get(name):
+        declaration = wanted[name]
+        revision = declaration["revision"] if isinstance(declaration, dict) else None
+        own, commit, where = (choices or {}).get(name) or (clone(root, name), revision, None)
+        if revision and where is None and not (own / ".git").exists():
+            raise Unpinned(f"{name} declared at {revision}: this Mac has no Git checkout at {own}; clone it there")
+        if not own.is_dir() and declaration:
             # Found by a variable, by code that does without it where the Mac has none.
             if say: say(f"no {name}: this Mac has no {own}")
             continue
         if not own.is_dir():
             raise Unpinned(f"this Mac has no {own}, which the project's plugin loads from: clone it there")
+        earlier = (reuse or {}).get(name)
+        if commit is None and earlier and "revision" not in earlier:
+            commit = earlier["commit"]
+        if commit is None and (own / ".git").exists():
+            if callable(fetch): fetch(own)
+            try: commit = main_commit(own, fetch is True)
+            except Unpinned:
+                if say: say(f"{name} as {own} stands: it names no origin/main to pin it at")
         if commit is None:
-            further = config.further_siblings(own)
-            if (own / ".git").exists():
-                if callable(fetch): fetch(own)
-                try: commit = main_commit(own, fetch is True)
-                except Unpinned:
-                    if say: say(f"{name} as {own} stands: it names no origin/main to pin it at")
-            if commit is None:
-                # No commit to pin it at: it loads as it stands, and so does what it declares, by that checkout.
-                for more, variable in further.items():
-                    if more not in wanted: waiting.append(more)
-                    if not wanted.get(more): wanted[more] = variable
-                continue
-        try: checkout = offload_host.pinned_checkout(own, name, commit, fetch=False)
+            discover(own)
+            continue
+        exact = revision if where is None else None
+        try: checkout = offload_host.pinned_checkout(own, name, commit, fetch=exact is not None)
         except (RuntimeError, OSError, subprocess.SubprocessError) as error:
-            raise Unpinned(f"{name} could not be pinned at {commit[:12]}: {error}")
-        for more, variable in config.further_siblings(checkout).items():
-            if more not in wanted: waiting.append(more)
-            if not wanted.get(more): wanted[more] = variable
-        pins[name] = {"commit": commit, "root": str(checkout), **({"chosen": where} if where else {}),
-                      **({} if pushed(own, commit) else {"local": True})}
-        if say: say(f"{name} at {commit[:12]}, " + (f"chosen with --sibling {name}={where}" if where else "its origin/main")
-                    + f", from {checkout}")
+            raise Unpinned(f"{name} could not be pinned at {commit}: {error}") from error
+        discover(checkout)
+        pins[name] = {"commit": commit, "root": str(checkout)}
+        if where: pins[name]["chosen"] = where
+        if exact: pins[name]["revision"] = exact
+        # Only a hand-picked or floating commit is known to be local from the tracking refs.
+        # A declared commit can be fetched by ID on the receiving Mac.
+        if not exact and not pushed(own, commit): pins[name]["local"] = True
+        if say:
+            source = f"chosen with --sibling {name}={where}" if where else "declared revision" if exact else "its origin/main"
+            say(f"{name} at {commit[:12]}, {source}, from {checkout}")
     for name, pin in pins.items():
-        if wanted.get(name): pin["variable"] = wanted[name]
+        entry = wanted[name]
+        if isinstance(entry, dict) and not pin.get("chosen") and pin["commit"] != entry["revision"]:
+            raise Unpinned(f"{name} was selected at {pin['commit']} before another sibling declared {entry['revision']}; "
+                           f"declare its revision directly in the project")
+        variable = config.sibling_variable(entry)
+        if variable: pin["variable"] = variable
     return pins
 
 
@@ -195,17 +213,22 @@ def local(pins):
 
 def dispatched(root, names):
     """What a dispatch asks another Mac to place for the project at root, for each folder of the run's pin set and
-    each of names, {NAME: VARIABLE or None} (config.sibling_variables), that the set lacks: {"name", "commit"}, the
+    each sibling declaration in names (config.sibling_declarations), that the set lacks: {"name", "commit"}, the
     commit the set holds, and for work that runs under none, such as `qk admit`, the folder's origin/main as this
     Mac's checkout of it names that, which is where another Mac's own checkout of it stood for such work before;
     and "variable", where the folder has one. A folder with no commit to name, as one that is no Git checkout here,
     has none, and another Mac loads its own as it stands."""
+    from . import config  # which imports this module
     pins, wanted = held() or {}, []
     names = dict(names) if isinstance(names, dict) else dict.fromkeys(names)
     for name in [*pins, *(name for name in names if name not in pins)]:
-        try: commit = pins[name]["commit"] if name in pins else main_commit(clone(root, name))
+        entry = names.get(name)
+        try:
+            if name in pins: commit = pins[name]["commit"]
+            elif isinstance(entry, dict): commit = entry["revision"]
+            else: commit = main_commit(clone(root, name))
         except Unpinned: commit = None
-        variable = pins[name].get("variable") if name in pins else names.get(name)
+        variable = pins[name].get("variable") if name in pins else config.sibling_variable(entry)
         wanted.append({"name": name, **({"commit": commit} if commit else {}), **({"variable": variable} if variable else {})})
     return wanted
 

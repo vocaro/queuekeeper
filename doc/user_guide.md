@@ -2273,29 +2273,45 @@ certificates are the owner's to change; neither command touches them.
 ### Plugin folders beside a project
 
 A project's plugin may load from a folder beside it, named in `queuekeeper.json` as
-`{"module": "NAME", "path": "../FOLDER/..."}`. Other projects share that folder and landings move
-it, so a run pins it: every lane of a `qk run`, a `qk remote run` or a queue round, on any Mac,
-loads the folder at the commit its `origin/main` named when the run started, never your
-checkout's branch or changes. `qk run` names the commit as it starts and the receipt records it.
-Other commands, such as `qk doctor` and `qk admit`, load the folder as it stands.
+`{"module": "NAME", "path": "../FOLDER/..."}`. A lane defaults to the commit the sibling's
+`origin/main` named when the run started. Every Mac loads the selected commit from an immutable
+checkout. `qk run` names the commit as it starts and the receipt records its commit and root.
 
-- **Folders it loads from in turn.** A folder's own `queuekeeper.json` may list further folders
-  under `siblings`, each with the variable its code finds it by:
-  `"siblings": {"apple-engineering": "APPLE_ENGINEERING_ROOT"}`. They are pinned the same way.
-- **Testing a newer commit of the folder.** `qk run --sibling FOLDER=WHERE LANE` pins it at a
-  commit or a checkout's path instead. A commit no branch of the origin holds runs on this Mac
-  only. A change that needs an unlanded folder change is two landings, the folder's first.
-- **Another Mac needs its own checkout** of each folder before you list the plugin in
-  `queuekeeper.json`. Clone the same origin into `~/Development/FOLDER` on that Mac.
-  `qk doctor` and `qk remote setup` name the clone. Without that checkout, or when the Mac
-  cannot fetch the commit, the lane ends with exit 70, `queuekeeper: could not start:`, and the
-  queue holds for the owner.
-- **A pin set that does not start** in the project is not adopted: the queue keeps the last set
-  that worked, and with none it holds.
+- **Choosing an exact revision.** Add a `siblings` entry with the variable your scripts use and
+  the full 40-digit Git commit ID. Queuekeeper rewrites the plugin path and exports the variable
+  to the same checkout. A queue gate or preflight reads the pin from the tree it tests, so a
+  change to the pin is tested in the landing that changes it. `qk admit` also uses exact pins.
+  Bump this revision together with any language package lockfile that pins the same toolkit.
+
+  ```json
+  {
+    "siblings": {
+      "AXVerify": {
+        "variable": "AXVERIFY_ROOT",
+        "revision": "3834e3cb3de74164e86710e7bb4318e1de62ddb3"
+      }
+    }
+  }
+  ```
+
+- **Following a sibling's main.** Use a variable name alone, for example
+  `"siblings": {"apple-engineering": "APPLE_ENGINEERING_ROOT"}`. Siblings can also declare
+  folders they load from. Commands outside a run, such as `qk doctor`, can still load from the
+  shared checkout.
+- **Trying a different revision locally.** `qk run --sibling FOLDER=WHERE LANE` takes precedence
+  when starting a developer run. WHERE is a commit or a checkout's path. A hand-picked commit no
+  branch of the origin holds runs on this Mac only. A nested command keeps its enclosing run's
+  selection.
+- **Preparing the Macs.** Update Queuekeeper on both Macs before landing the configuration.
+  Clone the same sibling origin into `~/Development/FOLDER` on each Mac. `qk doctor` and
+  `qk remote setup` check for the clone. Publish the pinned commit so either Mac can fetch it.
+  An unavailable exact revision prevents the lane from starting with exit 70. If a set of
+  floating siblings prevents Queuekeeper from starting on main, the worker can retry with the
+  last working floating revisions.
 
 Pinned checkouts live in `~/Development/queuekeeper-pins/` on each Mac; `qk disk` lists them and
-`qk disk --prune-pins` removes those unused for a week. A folder that is not a Git checkout loads
-as it stands.
+`qk disk --prune-pins` removes those unused for a week. A folder without an exact pin can load as
+an ordinary directory.
 
 ### Running a Queuekeeper module in a child process
 
@@ -3335,9 +3351,9 @@ Common holds:
 - **Out of disk space.** Free space with `qk disk --delete` and resume.
 - **A refusal `qk unittest` gives every gate** with no entry to blame, such as a broken module
   that reached `main` past the queue. The reason quotes the line.
-- **A plugin folder beside the project.** A run loads such a folder at its `origin/main`, not
-  as your checkout stands. Test a change to it with `qk run --sibling FOLDER=WHERE LANE`, and land
-  it before the change that needs it.
+- **A plugin folder beside the project.** A run loads the folder at its declared revision, or
+  follows its `origin/main` when it floats. Test a change with `qk run --sibling FOLDER=WHERE LANE`
+  and land the sibling change before the project change that needs it.
 
 ### A queue that looks stuck
 

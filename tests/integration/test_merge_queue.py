@@ -5848,6 +5848,52 @@ class PinnedFolders(Fixture):
         self.assertEqual(json.loads((mq.Queue(self.repo).directory / mq.PINS_STARTED).read_text())["siblings"],
                          {"kit": two})
 
+    def test_gates_the_batch_with_its_own_pin_then_keeps_it_on_main(self):
+        two = self.kit_lands("two", here=False)
+        # After the second release the shared checkout is still at one, and the floating ref moves again.
+        run(self.kit, "git", "reset", "-q", "--hard", two)
+        three = self.kit_lands("three", here=False)
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["siblings"] = {"kit": {"variable": "KIT_ROOT", "revision": self.one}}
+        config["lanes"]["gate"]["command"] = ["python3", "-c", """
+import json, os, subprocess
+from pathlib import Path
+settings = json.loads(Path('queuekeeper.json').read_text())
+root = Path(os.environ['KIT_ROOT'])
+declared = settings['siblings']['kit']
+expected = declared['revision'] if isinstance(declared, dict) else os.environ['KIT_FLOATING']
+assert subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], text=True).strip() == expected
+"""]
+        self.publish(config, "Declare the initial kit revision")
+        for branch, selected, expected in (("bump-pin", {"variable": "KIT_ROOT", "revision": two}, two),
+                                           ("return-to-floating", "KIT_ROOT", three)):
+            with self.subTest(branch=branch), patch.dict(os.environ, {"KIT_FLOATING": three}):
+                config["siblings"]["kit"] = selected
+                tip = self.commit("queuekeeper.json", branch, content=json.dumps(config))
+                if isinstance(selected, dict):
+                    status, printed, _ = mq.preflight_run(mq.Queue(self.repo), self.repo, tip, "gate")
+                    self.assertEqual(status, 0, printed)
+                [entry] = self.add(branch)
+                self.loaded()
+                self.assertEqual(self.work(), 0)
+                self.assertEqual(self.state(entry)["state"], "landed")
+                checkout = mq.Queue(self.repo).checkout
+                receipt = json.loads((checkout / ".build/queuekeeper/gate/source.json").read_text())
+                self.assertEqual(receipt["siblings"]["kit"]["commit"], expected)
+        self.assertEqual(run(self.kit, "git", "rev-parse", "HEAD"), two)
+
+    def test_a_candidate_pin_that_cannot_be_fetched_does_not_gate_with_the_main_pin(self):
+        config = json.loads((self.repo / "queuekeeper.json").read_text())
+        config["siblings"] = {"kit": {"variable": "KIT_ROOT", "revision": self.one}}
+        self.publish(config, "Declare the initial kit revision")
+        config["siblings"]["kit"]["revision"] = "4" * 40
+        self.commit("queuekeeper.json", "unavailable-pin", content=json.dumps(config))
+        [entry] = self.add("unavailable-pin")
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(entry)["state"], "failed")
+        self.assertEqual(self.gates(), 0)
+        self.assertIn("kit could not be pinned at " + "4" * 40, Path(self.state(entry)["log"]).read_text())
+
     def test_a_set_that_does_not_start_is_not_adopted_and_the_round_runs_with_the_last_that_did(self):
         first, _ = self.round("first")
         self.assertEqual(self.state(first)["state"], "landed")

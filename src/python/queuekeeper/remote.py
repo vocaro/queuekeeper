@@ -70,7 +70,7 @@ import zlib
 
 from . import disk, plugins, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
 from . import count_history, window_placement
-from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_folders, sibling_variables, unadmitted, unlocked_screen
+from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_declarations, sibling_folders, unadmitted, unlocked_screen
 from . import farm
 from .resources import BUSY, FREE_WAIT
 
@@ -2034,7 +2034,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     plan = {"root": ROOT, "checkouts": CHECKOUTS, "project": project, "toolkit": kit, "work": work,
             # The folders beside the project its plugins load from, each at the commit this run pinned, which another
             # Mac takes from its own checkout of the folder (pins.dispatched, offload_host.place_siblings).
-            "siblings": pins.dispatched(root, sibling_variables(root)),
+            "siblings": pins.dispatched(root, sibling_declarations(root)),
             "decline": decline, "busy": BUSY,
             "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
             "provision": "provision" in config.get("lanes", {}) and lane != "provision",
@@ -4663,11 +4663,12 @@ def update_request(want=True):
 
 
 def sibling_requests(root):
-    """What a connection asks of offload_host.update_toolkit for each folder beside the project that its
-    plugins load from (config.sibling_folders): another Mac's own ~/Development/NAME, and the commit this Mac's
-    checkout of it names as origin/main, which spares the fetch there when that checkout holds it already."""
+    """Ask another Mac's shared checkouts of floating siblings to follow origin/main.
+    offload_host.place_siblings fetches exact revisions without moving those shared checkouts."""
     requests = []
-    for name in sibling_folders(root):
+    held = pins.held() or {}
+    for name, entry in sibling_declarations(root).items():
+        if isinstance(entry, dict) or "revision" in held.get(name, {}): continue
         request = {"path": f"Development/{name}", "root": ROOT}
         here = (git_state.main_checkout(root) or Path(root)).resolve().parent / name
         try: request["want"] = git(here, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}")

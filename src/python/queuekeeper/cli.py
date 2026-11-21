@@ -20,7 +20,7 @@ from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, co
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
-    self_lane_warnings, sibling_folders, sibling_variables, start_free, stays, unadmitted, unlocked_screen
+    project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -1054,6 +1054,7 @@ def admit(root, args, config=None, *, device_window=None):
                "policy": refresh_policy(root, sys.stderr), "command": command,
                "directory": str(Path.cwd()), "exclusive": args.exclusive, "model": args.model,
                "foreground": args.foreground, "timeLimit": args.time_limit, **placement(reason)}
+    if pins.held(): receipt["siblings"] = pins.recorded(pins.held())
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
         asked = time.monotonic()
         waiting = plugins.DEVICES.window_wait("the command", device_window, " ".join(command))
@@ -1308,8 +1309,8 @@ SIBLING = "--sibling"
 
 
 def pin_run(argv):
-    """Pin, for a command that runs a lane, `qk run` or `qk remote run`, the folders beside the project that its
-    plugins load from, before they load: each at its origin/main, or as `--sibling NAME=WHERE` chooses, in
+    """Pin, for a lane or an admitted command in a project with exact revisions, the folders beside the project
+    before its plugins load. Use exact declarations, origin/main, or a developer's `--sibling NAME=WHERE`, in
     QUEUEKEEPER_SIBLINGS for this process and every command the lane starts (pins). A run of hours otherwise loaded
     whatever landed in such a folder meanwhile, in its later lanes' nested qk commands (vocaro-engineering#497).
 
@@ -1321,9 +1322,13 @@ def pin_run(argv):
     given = sys.argv[1:] if argv is None else list(argv)
     first = 2 if given[:1] == ["--project"] else 1 if given[:1] and given[0].startswith("--project=") else 0
     words = given[first:given.index("--") if "--" in given else len(given)]
-    if words[:1] != ["run"] and words[:2] != ["remote", "run"]: return None
-    asked = [words[index + 1] for index, word in enumerate(words[:-1]) if word == SIBLING] \
-        + [word.split("=", 1)[1] for word in words if word.startswith(f"{SIBLING}=")]
+    lane = words[:1] == ["run"] or words[:2] == ["remote", "run"]
+    admitting = words[:1] == ["admit"] or words[:2] == ["remote", "admit"]
+    if not (lane or admitting): return None
+    asked = []
+    if lane:
+        asked = [words[index + 1] for index, word in enumerate(words[:-1]) if word == SIBLING]
+        asked += [word.split("=", 1)[1] for word in words if word.startswith(f"{SIBLING}=")]
     if pins.held() is not None:
         if not asked: return None
         print(f"queuekeeper: {SIBLING} {asked[0]} refused: this command runs under a pin set already, {pins.VARIABLE}, "
@@ -1331,14 +1336,22 @@ def pin_run(argv):
               "folder's commit where the run starts", file=sys.stderr, flush=True)
         return USAGE
     root = Path(given[1] if first == 2 else given[0].split("=", 1)[1] if first == 1 else ".").resolve()
-    names = sibling_variables(root)
-    try: choices = pins.chosen(root, list(names), asked)
+    names = project_siblings(root)
+    exact = sibling_revisions(names)
+    if admitting and not exact: return None
+    if not exact: names = sibling_declarations(root)
+    known = sibling_declarations(root) if asked and exact else names
+    try: choices = pins.chosen(root, list(known), asked)
     except ValueError as error:
         print(f"queuekeeper: {error}", file=sys.stderr, flush=True)
         return USAGE
     if not names: return None
     made = pins.make(root, names, choices,
                      say=lambda text: print(f"queuekeeper: this run loads {text}", file=sys.stderr, flush=True))
+    if missing := choices.keys() - made.keys():
+        print(f"queuekeeper: --sibling names {', '.join(sorted(missing))}, which the selected checkouts do not use",
+              file=sys.stderr, flush=True)
+        return USAGE
     if made: os.environ[pins.VARIABLE] = pins.encoded(made)
     return None
 

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
-from queuekeeper import config, disk, lane_results, offload_host, pins
+from queuekeeper import config, disk, lane_results, offload_host, pins, remote
 import host_isolation
 
 # A plugin that says which of its versions loaded: `qk kit-says` prints VALUE, and names the file it came from.
@@ -349,7 +349,7 @@ class FurtherFolderTests(Fixture):
 
     def test_siblings_that_names_no_folder_and_variable_is_refused(self):
         for wrong in (["more"], {"more": "more_root"}, {"../more": "MORE_ROOT"}, {"more": None}):
-            with self.subTest(siblings=wrong), self.assertRaisesRegex(ValueError, "siblings is {FOLDER: VARIABLE}"):
+            with self.subTest(siblings=wrong), self.assertRaisesRegex(ValueError, "siblings"):
                 config.parse(json.dumps({"schemaVersion": 1, "name": "fixture", "siblings": wrong}))
         self.assertEqual(config.parse(json.dumps({"schemaVersion": 1, "name": "fixture",
                                                   "siblings": {"more": "MORE_ROOT"}}))["siblings"], {"more": "MORE_ROOT"})
@@ -400,6 +400,83 @@ class RunTests(Fixture):
         self.assertIn(f"kit-says two from {self.kit / 'src/python/fixture_kit.py'}", self.qk("kit-says").stdout)
         receipt = json.loads((self.project / ".build/queuekeeper/nested/source.json").read_text())
         self.assertEqual(receipt["siblings"], {"kit": {"commit": self.one, "root": str(self.pinned("kit", self.one))}})
+
+    def declare_kit(self, revision):
+        path = self.project / "queuekeeper.json"
+        settings = json.loads(path.read_text())
+        settings["siblings"] = {"kit": {"variable": "KIT_ROOT", "revision": revision}}
+        settings["lanes"]["check"] = {
+            "command": [sys.executable, "-c", """
+import os, subprocess, sys
+from pathlib import Path
+root = Path(os.environ['KIT_ROOT'])
+sys.path.insert(0, str(root / 'src/python'))
+import fixture_kit
+loaded = subprocess.check_output([sys.executable, sys.argv[1], 'kit-says'], text=True).strip()
+assert loaded == f'kit-says {fixture_kit.VALUE} from {Path(fixture_kit.__file__).resolve()}', loaded
+print(loaded)
+""", str(ROOT / "bin/qk")]}
+        path.write_text(json.dumps(settings))
+
+    def test_exact_pin_agrees_with_plugin_and_command_root_on_both_checkout_layouts(self):
+        there = self.home / "there/Development/kit"
+        there.parent.mkdir(parents=True)
+        git(self.home, "clone", "-q", str(self.origin), str(there))
+        two = self.publish("two")
+        three = self.publish("three")
+        self.declare_kit(two.upper())
+        ran = self.qk("run", "--here", "check")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertIn(f"kit at {two[:12]}, declared revision", ran.stderr)
+        log = self.project / ".build/queuekeeper/check/run.log"
+        self.assertIn(f"kit-says two from {self.pinned('kit', two)}/src/python/fixture_kit.py", log.read_text())
+        receipt = json.loads(log.with_name("source.json").read_text())
+        self.assertEqual(receipt["siblings"]["kit"],
+                         {"commit": two, "root": str(self.pinned("kit", two)), "variable": "KIT_ROOT"})
+
+        # Dispatch the commit, then prepare it on a Mac whose clone predates that commit.
+        self.assertEqual(remote.sibling_requests(self.project), [])
+        names = config.sibling_folders(self.project)
+        made = pins.make(self.project, names)
+        self.assertEqual(pins.recorded(made), receipt["siblings"])
+        with patch.dict(os.environ, {pins.VARIABLE: pins.encoded(made)}):
+            sent = pins.dispatched(self.project, config.sibling_declarations(self.project))
+        self.assertEqual(sent, [{"name": "kit", "commit": two, "variable": "KIT_ROOT"}])
+        slot = self.home / "slot"
+        slot.mkdir()
+        with patch.object(offload_host, "say"):
+            placed = offload_host.place_siblings(slot, sent, home=self.home / "there")
+        ran = self.qk("run", "--here", "check", **{pins.VARIABLE: pins.encoded(placed)})
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertIn(f"kit-says two from {placed['kit']['root']}/src/python/fixture_kit.py", log.read_text())
+        self.assertEqual(git(there, "rev-parse", "HEAD"), self.one)
+        self.assertEqual(git(self.kit, "rev-parse", "HEAD"), three)
+
+        admitted = self.qk("admit", "--here", "--", sys.executable, "-c", "import os; print(os.environ['KIT_ROOT'])")
+        self.assertEqual(admitted.returncode, 0, admitted.stderr)
+        self.assertIn(str(self.pinned("kit", two)), admitted.stdout)
+        receipt = json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())
+        self.assertEqual(receipt["siblings"]["kit"]["commit"], two)
+
+        ran = self.qk("run", "--here", "--sibling", "kit=origin/main", "check")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertIn(f"kit-says three from {self.pinned('kit', three)}/src/python/fixture_kit.py", log.read_text())
+
+    def test_unavailable_declared_commit_stops_before_running_the_lane(self):
+        self.declare_kit("4" * 40)
+        ran = self.qk("run", "--here", "check")
+        self.assertEqual(ran.returncode, lane_results.TOOL_NOT_STARTED, ran.stderr)
+        self.assertIn("kit could not be pinned at " + "4" * 40, ran.stderr)
+        self.assertFalse((self.project / ".build/queuekeeper/check/run.log").exists())
+
+    def test_exact_declaration_rejects_refs_abbreviations_and_unknown_fields(self):
+        base = {"schemaVersion": 1, "name": "fixture"}
+        for entry in ({"variable": "KIT_ROOT", "revision": "main"},
+                      {"variable": "KIT_ROOT", "revision": self.one[:12]},
+                      {"variable": "KIT_ROOT", "revision": self.one, "other": True},
+                      {"revision": self.one}):
+            with self.subTest(entry=entry), self.assertRaisesRegex(ValueError, "siblings.kit"):
+                config.parse(json.dumps({**base, "siblings": {"kit": entry}}))
 
     def test_sibling_is_refused_under_a_set_and_for_a_folder_the_project_does_not_load_from(self):
         made = pins.encoded(pins.make(self.project, ["kit"]))

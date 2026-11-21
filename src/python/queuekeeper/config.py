@@ -66,24 +66,47 @@ def sibling_folders(root):
 
 
 def sibling_variables(root):
-    """The folders beside the project at root that a run of it loads from, {NAME: VARIABLE or None}: those its
-    queuekeeper.json declares (siblings_in), and those each of them declares in turn under "siblings" in its own
-    queuekeeper.json, as that folder's checkout beside the project stands. A run pins each at a commit (pins), which
-    reads a pinned folder's own list at that commit, and another Mac is not sent them: it takes that commit from
-    its own checkout of each (offload_host.place_siblings)."""
-    try: found = siblings_in(json.loads((Path(root) / FILE).read_text()))
+    """The sibling folders a project loads from, {NAME: VARIABLE or None}."""
+    return {name: sibling_variable(entry) for name, entry in sibling_declarations(root).items()}
+
+
+def project_siblings(root):
+    """The siblings named directly by the working tree at root."""
+    try: return siblings_in(json.loads((Path(root) / FILE).read_text()))
+    except FileNotFoundError: return {}
+
+
+def sibling_declarations(root):
+    """The project's siblings and those they declare in turn. For inventory, read the run's pinned
+    checkouts where it has them, otherwise the shared checkouts. pins.make reads dependencies from
+    the checkout it actually selects."""
+    try: found = project_siblings(root)
     except (OSError, ValueError, AttributeError): return {}
+    held = pins.held() or {}
     waiting = list(found)
     while waiting:
-        for name, variable in further_siblings(pins.clone(root, waiting.pop(0))).items():
-            if name not in found: waiting.append(name)
-            if not found.get(name): found[name] = variable
+        name = waiting.pop(0)
+        folder = held[name]["root"] if name in held else pins.clone(root, name)
+        try: further = further_siblings(folder)
+        except ValueError: continue
+        for more, entry in further.items():
+            if more not in found: waiting.append(more)
+            if not found.get(more): found[more] = entry
     return found
 
 
+def sibling_variable(entry):
+    return entry["variable"] if isinstance(entry, dict) else entry
+
+
+def sibling_revisions(entries):
+    """Only the exact declarations, including the variable each one exports."""
+    return {name: entry for name, entry in entries.items() if isinstance(entry, dict)}
+
+
 def siblings_in(configuration):
-    """The folders beside a project that its configuration declares, {NAME: VARIABLE or None}, as the merge queue
-    reads them from main's commit: NAME for each plugin folder "../NAME/...", and each NAME of "siblings", a folder
+    """The folders beside a project that its configuration declares, with a variable name, an exact
+    declaration, or None: NAME for each plugin folder "../NAME/...", and each NAME of "siblings", a folder
     the project's own code loads from, found by the environment variable VARIABLE, which a run that pins the folder
     sets to its checkout of it (pins.exported). A ValueError says what is wrong with either."""
     found = {}
@@ -95,21 +118,28 @@ def siblings_in(configuration):
 
 
 def siblings(declared):
-    """A configuration's "siblings", checked: {NAME: VARIABLE}, a folder's name beside the project and the
-    environment variable its code finds that folder by."""
-    if not isinstance(declared, dict) or not all(
-            isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name) and isinstance(variable, str)
-            and re.fullmatch(r"[A-Z_][A-Z0-9_]*", variable) for name, variable in declared.items()):
-        raise ValueError('siblings is {FOLDER: VARIABLE}: a folder beside the project that its code loads from, and '
-                         "the environment variable it finds the folder by")
-    return dict(declared)
+    """Check sibling names, environment variables, and full commit IDs."""
+    if not isinstance(declared, dict):
+        raise ValueError("siblings must be an object")
+    checked = {}
+    for name, entry in declared.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
+            raise ValueError(f"siblings names {name!r}, which is not a folder name")
+        if isinstance(entry, dict) and (entry.keys() != {"variable", "revision"}
+                or not isinstance(entry["revision"], str) or not re.fullmatch(r"[0-9a-fA-F]{40}", entry["revision"])):
+            raise ValueError(f'siblings.{name} needs "variable" and "revision", a full 40-digit Git commit ID')
+        variable = sibling_variable(entry)
+        if not isinstance(variable, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", variable):
+            raise ValueError(f"siblings.{name} needs an uppercase environment variable name")
+        checked[name] = {**entry, "revision": entry["revision"].lower()} if isinstance(entry, dict) else entry
+    return checked
 
 
 def further_siblings(folder):
-    """What the checkout at folder, itself a folder beside a project, declares under "siblings" in its own
-    queuekeeper.json: the folders its code loads from when a project loads it. None where it has no such list."""
-    try: return siblings(json.loads((Path(folder) / FILE).read_text()).get("siblings", {}))
+    """What a sibling's checkout declares under "siblings" in its own queuekeeper.json."""
+    try: declared = json.loads((Path(folder) / FILE).read_text()).get("siblings", {})
     except (OSError, ValueError, AttributeError): return {}
+    return siblings(declared)
 
 
 def load(root):
