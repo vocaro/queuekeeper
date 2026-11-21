@@ -93,7 +93,7 @@ qk doctor
 It reports missing commands, lanes without a timeout, tests that no lane runs, and problems on
 any Mac.
 
-Two defaults to know about:
+Defaults to know about:
 
 - **Preflight lanes.** List the project's cheap checks, such as a linter, in `queue.preflight`.
   The queue runs them before it accepts an entry and first in every round
@@ -868,8 +868,9 @@ landing alone, and says so. After that commit lands, every later entry is gated 
 settings.
 
 Settings that loosen what the queue checks count only from `main`, even on the first landing:
-`queue.hookCoveredBy`, `queue.unread` and `queue.preflight`. A project that wants one of them lands its
-configuration through the full checks once.
+`queue.hookCoveredBy`, `queue.unread`, `queue.preflight`, `queue.fullRun`, `queue.addOnlyJson`
+and each lane's `inputs`. Land the configuration through the full checks once. A preflight
+lane takes effect after its configuration reaches `main`.
 
 A repository created empty has no `main` at all. Its first `qk land` creates it: the worker gates
 the entry's commit alone, on its own `queuekeeper.json` as above, runs the pre-push hook, and

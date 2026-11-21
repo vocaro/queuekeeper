@@ -53,8 +53,10 @@ later if builds need it. You can do each step below yourself, following the
    land work with `qk land --wait` instead of pushing to `main` and run builds and tests through
    `qk run` or `qk admit`, and adds Claude Code hooks that report entries that came back when a
    session starts and refuse pushes to `main`. Installing `qk` alone does not change how agents work.
-4. **Land the setup** through Queuekeeper with `qk land --wait`. Later landings use the gate on
-   `main`, so a branch cannot loosen its own checks.
+4. **Land the setup.** Commit the configuration and agent instructions on a branch, then run
+   `qk land --wait` and follow it to its result. The first landing uses the checks in the setup
+   commit and creates `main` if the remote has none. Later landings use `main`'s queue policy
+   ([details](doc/user_guide.md#a-projects-first-landing)).
 5. **Follow the work** in the [dashboard](#dashboard), through
    [notifications](doc/user_guide.md#the-notify-feature), or with `qk queue status`.
 
