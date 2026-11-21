@@ -3308,6 +3308,11 @@ GiB free on the data volume and on the checkout's volume, prevent it:
 Both are environment variables inherited by child processes; 0 turns a floor off. Free space with
 `qk disk --delete`.
 
+If a running lane goes quiet, its `stall` setting can report the quiet interval once it exceeds
+the configured bound. The lane's latest observation appears in `qk queue status` and in the
+heartbeat of `qk land --wait` or `qk queue wait`. Use the volume reading from `qk disk` to check
+available space. See [Quiet lanes](#time-limits-and-the-gates-budget) for setting a report-only bound.
+
 The start floor's default suits a lane that writes little. A project whose builds and result
 bundles take tens of GiB, such as a large Xcode project, sets a higher one in `queuekeeper.json`,
 and a lane or lane group can set its own:
