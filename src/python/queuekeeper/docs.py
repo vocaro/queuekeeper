@@ -1,5 +1,6 @@
 """Portable Markdown link and anchor checks."""
 import html
+from html.parser import HTMLParser
 from pathlib import Path
 import re
 import os
@@ -46,6 +47,35 @@ SHELL = {"", "sh", "bash", "zsh", "shell", "console", "shell-session", "sh-sessi
 # A command line's `qk WORD`, by any path to the command, as in python3 scripts/qk land or ~/.local/bin/qk doctor,
 # with --project before the word if given. A word in capitals, such as qk COMMAND, is a placeholder.
 QK_COMMAND = re.compile(r"(?<![\w.$-])(?:\S*/)?qk(?:[ \t]+--project(?:=\S+|[ \t]+\S+))?[ \t]+([a-z][a-z0-9-]*)(?![\w-])")
+
+
+class ImageSources(HTMLParser):
+    """Image sources in raw HTML, including multiline tags and escaped attributes."""
+
+    def __init__(self):
+        super().__init__()
+        self.sources = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "img":
+            source = next((value for name, value in attrs if name == "src"), None)
+            if source:
+                self.sources.append(source.strip())
+
+
+def html_images(markdown):
+    parser = ImageSources()
+    fence = None
+    for line in markdown.splitlines(keepends=True):
+        if fence:
+            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*\r?\n?", line):
+                fence = None
+        elif opening := FENCE.match(line):
+            fence = opening[1]
+        else:
+            parser.feed(CODE_SPAN.sub("", line))
+    parser.close()
+    return parser.sources
 
 
 def slug(text):
@@ -171,19 +201,20 @@ def check(root, paths=None, citations=False, commands=()):
             failures += [f"{path}:{number}: names no qk command: qk {word}"
                          for number, word in commands_typed(whole) if word not in commands]
         text = re.sub(r"```.*?```", "", whole, flags=re.S)
-        for raw in re.findall(r"\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)", text):
-            target = unquote(raw.strip("<>"))
+        links = re.findall(r"\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)", text)
+        for raw, image in [(link, False) for link in links] + [(src, True) for src in html_images(whole)]:
+            target = raw if image else unquote(raw.strip("<>"))
             url = urlsplit(target)
             if url.scheme or url.netloc:
                 continue
             if target.startswith("#"):
-                if url.fragment and missing_anchor(path.resolve(), url.fragment):
+                if not image and url.fragment and missing_anchor(path.resolve(), url.fragment):
                     failures.append(f"{path}: missing anchor: {raw}")
                 continue
-            relative = url.path
+            relative = unquote(url.path) if image else url.path
             if not relative: continue
             # PATH:LINE names a line of PATH, unless a file's whole name is the target.
-            line = LINE_LINK.fullmatch(relative)
+            line = None if image else LINE_LINK.fullmatch(relative)
             if line and not (path.parent / relative).exists(): relative = line[1]
             else: line = None
             destination = path.parent / relative
@@ -193,8 +224,11 @@ def check(root, paths=None, citations=False, commands=()):
             if not destination.exists():
                 failures.append(f"{path}: missing link: {raw}")
                 continue
+            if image and not destination.is_file():
+                failures.append(f"{path}: image link to a directory: {raw}")
+                continue
             # Only a Markdown target's fragments are known here; a source line's (#L10) is not.
-            if (url.fragment and not url.query and destination.suffix.lower() in MARKDOWN
+            if (not image and url.fragment and not url.query and destination.suffix.lower() in MARKDOWN
                     and destination.is_file() and missing_anchor(destination.resolve(), url.fragment)):
                 failures.append(f"{path}: missing anchor: {raw}")
             if line and not destination.is_file():

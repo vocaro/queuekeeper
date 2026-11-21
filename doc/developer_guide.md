@@ -1884,9 +1884,11 @@ schema only grows, so readers ignore what they do not know.
   linked from the README's [Plugins](../README.md#plugins) section, this guide's
   [Plugins](#plugins) or the user guide's
   [Further reading](user_guide.md#further-reading), or has no box of its README name in
-  `assets/overview.svg`. A documentation-only change to one of those three documents runs it
+  `assets/overview.svg`. A documentation-only change to one of those files runs it
   through the `plugin-lists` lane.
-- **The README's screenshots.** Retake them after changing how the dashboard looks; see
+- **The README's screenshots.** Changes to assets and the screenshot script take the documentation
+  route. A change to the script also runs `test_dashboard_screenshots` through the
+  `dashboard-screenshots` lane. Retake the screenshots after changing how the dashboard looks. See
   [The README's screenshots](#the-readmes-screenshots).
 
 ### No hosted CI
@@ -1913,7 +1915,8 @@ belong to vocaro-engineering, as `eng spelling`.
 Markdown at the root and under `doc/`, `docs/`, `guides/`, `knowledge/`, `agents/` and `policies/`.
 It takes under a second here.
 
-- **Links.** Each link's file and anchor, and each `PATH:LINE` reference, must exist.
+- **Links.** Each link's file and anchor, and each `PATH:LINE` reference, must exist. Local HTML
+  image sources must point to files in the checkout.
 - **Size.** An `AGENTS.md` must stay under 32 KiB.
 - **Commands.** Each `qk WORD` in a fenced shell block (`sh`, `bash`, `zsh`, `shell`, `console` or
   none) or a code span must name a subcommand of the core, the project's plugins, or any plugin

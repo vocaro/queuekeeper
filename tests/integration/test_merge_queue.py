@@ -5004,23 +5004,27 @@ class DefaultDocsOnly(Fixture):
     def test_queuekeepers_own_guides_are_unread_by_the_default(self):
         """Queuekeeper keeps its guides under doc/, so the default takes them, and only their Markdown, with no
         older queue.docsOnly or queue.carryOver; nothing is left at guides/, which is no default folder (vocaro/queuekeeper#106).
-        Its queue.unread keeps the defaults and names only the documents a test reads, the setup guide
-        (vocaro/queuekeeper#147) and the plugin lists (vocaro/queuekeeper#253), each with the lanes of the tests that
-        read it, which a docs-only batch changing it runs, and so never carries over."""
+        Its queue.unread keeps the defaults and adds the README assets and screenshot script (vocaro/queuekeeper#127).
+        Paths a test reads name the lanes of those tests, which a docs-only batch changing them runs in place of the
+        code gate and never carries over."""
         own = configuration.load(ROOT)
         self.assertEqual(configuration.DOCS_FOLDERS, ("doc/", "docs/"))
         self.assertFalse({"docsOnly", "carryOver"} & set(own.get("queue", {})))
         self.assertEqual(set(own["queue"]["unread"]), {"paths"})
-        self.assertEqual(set(own["queue"]["unread"]["paths"]), {"doc/user_guide.md", "doc/developer_guide.md", "README.md"})
-        self.assertEqual(mq.docs_lanes(own, ["doc/user_guide.md"]), ["docs", "setup-examples", "plugin-lists"])
-        for path in ("doc/developer_guide.md", "README.md"):
+        checked = {
+            "doc/user_guide.md": ["setup-examples", "plugin-lists"],
+            "doc/developer_guide.md": ["plugin-lists"],
+            "README.md": ["plugin-lists"],
+            "assets/overview.svg": ["plugin-lists"],
+            "tools/dashboard-screenshots.py": ["dashboard-screenshots"],
+        }
+        self.assertEqual(set(own["queue"]["unread"]["paths"]), {"assets/", *checked})
+        for path, lanes in checked.items():
             with self.subTest(path=path):
-                self.assertEqual(mq.docs_lanes(own, [path]), ["docs", "plugin-lists"])
-        for path in ("doc/user_guide.md", "doc/developer_guide.md", "README.md"):
-            with self.subTest(path=path):
+                self.assertEqual(mq.docs_lanes(own, [path]), ["docs", *lanes])
                 self.assertFalse(mq.carried_over(path, own, set()))
         self.assertEqual(run(ROOT, "git", "ls-files", "--", "guides"), "")
-        for path in ("doc/related_tools.md",):
+        for path in ("doc/related_tools.md", "assets/dashboard-farm.png"):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
                 self.assertEqual(mq.docs_lanes(own, [path]), ["docs"])

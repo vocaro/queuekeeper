@@ -32,6 +32,27 @@ class DocumentationTests(unittest.TestCase):
             self.assertEqual(len(failures), 1, failures)
             self.assertIn("missing link: absent.md", failures[0])
 
+    def test_readme_image_sources_must_resolve_to_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            assets = root / "assets"
+            assets.mkdir()
+            (assets / "a & b.svg").touch()
+            readme = root / "README.md"
+            readme.write_text(
+                '<IMG alt="Example"\n src="assets/a%20&amp;%20b.svg#view">\n'
+                "<img src='assets/missing.svg'/>\n"
+                "<img src=assets>\n"
+                '<img src="https://example.com/remote.svg">\n'
+                '<!-- <img src="ignored-comment.svg"> -->\n'
+                '`<img src="ignored-inline.svg">`\n'
+                '~~~html\n<img src="ignored-example.svg">\n~~~\n'
+                '![Markdown image](assets/also-missing.svg)\n')
+            self.assertEqual(docs.check(root, [readme]), [
+                f"{readme}: missing link: assets/also-missing.svg",
+                f"{readme}: missing link: assets/missing.svg",
+                f"{readme}: image link to a directory: assets"])
+
     def test_a_fragment_must_name_a_heading_or_anchor_of_its_markdown_target(self):
         target = ("# Target\n\n## Repeated\n\n## Repeated\n\n## The `eng docs` check — 0.3.1\n\n"
                   "## [Linked](elsewhere.md) __init__ and C#\n\n"

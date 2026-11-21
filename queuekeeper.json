@@ -18,6 +18,10 @@
     "plugin-lists": {
       "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "core.test_plugin_lists"],
       "timeout": 300
+    },
+    "dashboard-screenshots": {
+      "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "visibility.test_dashboard_screenshots"],
+      "timeout": 300
     }
   },
   "queue": {
@@ -31,6 +35,13 @@
         "lanes": ["plugin-lists"]},
       "README.md": {
         "why": "only test_plugin_lists reads it, for its Plugins section (vocaro/queuekeeper#253)",
-        "lanes": ["plugin-lists"]}}}
+        "lanes": ["plugin-lists"]},
+      "assets/": "README illustrations and screenshots checked by the docs lane (vocaro/queuekeeper#127)",
+      "assets/overview.svg": {
+        "why": "only test_plugin_lists reads it, for the platform plugin names (vocaro/queuekeeper#253)",
+        "lanes": ["plugin-lists"]},
+      "tools/dashboard-screenshots.py": {
+        "why": "only test_dashboard_screenshots reads its sample dashboard data (vocaro/queuekeeper#127)",
+        "lanes": ["dashboard-screenshots"]}}}
   }
 }
