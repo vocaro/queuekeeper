@@ -107,8 +107,30 @@ def nested_sandbox(text):
     return next((tool for tool, said in NESTED_TOOLS if said.search(text)), None)
 
 
+def remote_environment(lane, names):
+    """Caller variables an Xcode test lane can read here, except assignments in its own command."""
+    words = iter(lane.get("command", ()))
+    first = next(words, "")
+    assigned = set()
+    if Path(first).name == "env":
+        first = next(words, "")
+        while re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", first):
+            assigned.add(first.split("=", 1)[0])
+            first = next(words, "")
+    if re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(first).name):
+        first = next(words, "")
+    tool = Path(first).name
+    qk_simulators = tool == "qk" and next(words, "") == "simulator-tests"
+    xcode = tool == "xcodebuild" or (tool == "xcrun" and next(words, "") == "xcodebuild")
+    xcode_tests = xcode and any(word in {"test", "test-without-building"} for word in words)
+    if not (qk_simulators or xcode_tests or lane.get("idioms") is not None):
+        return set()
+    return {name for name in names if re.fullmatch(r"TEST_RUNNER_[A-Za-z0-9_]+", name)} - assigned
+
+
 def register():
     plugins.CONFIG_KEYS.update(app=app, simulatorPool=simulator_pool)
     plugins.LANE_KEYS.update(idioms=Idioms(), dimensions=Dimensions())
+    if remote_environment not in plugins.REMOTE_ENVIRONMENT: plugins.REMOTE_ENVIRONMENT.append(remote_environment)
     if sandbox_refusal not in plugins.SANDBOX_REFUSALS: plugins.SANDBOX_REFUSALS.append(sandbox_refusal)
     if nested_sandbox not in plugins.SANDBOX_NESTED: plugins.SANDBOX_NESTED.append(nested_sandbox)

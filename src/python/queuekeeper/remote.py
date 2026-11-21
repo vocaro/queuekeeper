@@ -1528,6 +1528,20 @@ def group_files(config, lane):
     return [f"lanes/{member}{suffix}" for member in members for suffix in (".log", ".json")] if members else None
 
 
+def dropped_environment(config, lane, result):
+    """Names of caller variables relevant to the lane or members that ran on another Mac."""
+    receipt = result.get("receipt") or {}
+    if not plugins.REMOTE_ENVIRONMENT or result.get("stage") != "work" or not receipt:
+        return []
+    lanes = config.get("lanes", {})
+    ran = receipt.get("lanes", {lane: receipt})
+    names = tuple(os.environ)
+    return sorted({name for member, outcome in ran.items()
+                   if member in lanes and outcome.get("outcome") not in
+                   ("not-run", "not-started", "build-failed", parallel.NOT_SELECTED, parallel.CUT_SHORT)
+                   for relevant in plugins.REMOTE_ENVIRONMENT for name in relevant(lanes[member], names)})
+
+
 def asleep():
     """Seconds this Mac has slept since it started, or None where that cannot be read: a clock that runs
     through sleep less one that stops for it. On macOS those are CLOCK_MONOTONIC_RAW and CLOCK_UPTIME_RAW,
@@ -2204,6 +2218,12 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         raise RuntimeError(f"{host}: {result['error']}")
     status = result["exitStatus"]
     remote = result["host"]
+    if lane is not None and not (sent or {}).get("saidDroppedEnvironment"):
+        if dropped := dropped_environment(config, lane, result):
+            print(f"remote: {lane} ran on {called(host)} without sending this Mac's environment variables "
+                  f"{', '.join(dropped)}; use a lane argument after -- if the runner takes one, or "
+                  f"qk run --here {lane} to use this Mac's environment", file=sys.stderr, flush=True)
+            if sent is not None: sent["saidDroppedEnvironment"] = True
     print(f"remote: {name} at {at} on {describe(remote)} in {result.get('checkout')}: "
           f"{'stopped' if result['stopped'] else f'exit {status}'}; results in {results}, and this dispatch's alone in "
           f"{own}", file=sys.stderr, flush=True)

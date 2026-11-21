@@ -1961,9 +1961,14 @@ changes is passed over and kept for inspection; the message names the files and 
 removes it.
 
 **Environment variables do not travel.** Another Mac runs work in its own login shell's
-environment, and a variable set here is silently lost. Pass lane settings as arguments after
-`--`, such as `qk run purchases -- --runtime ID`, and confirm them in the receipt. What a
-project's plugins add to every command's environment does reach it.
+environment. Pass lane settings as arguments after `--`, such as
+`qk run purchases -- --runtime ID`, and confirm them in the receipt. What a project's plugins
+add to every command's environment does reach it. The Apple plugin names
+caller-set `TEST_RUNNER_` variables after an applicable remote lane runs. This covers lanes that
+invoke `xcodebuild test`, `xcodebuild test-without-building`, or `qk simulator-tests` directly
+and lanes that declare `idioms`. The notice gives names only. A value set explicitly by the
+lane's command remains part of that command. Use `qk run --here LANE` when a lane needs this
+Mac's environment.
 
 **What comes back:**
 
