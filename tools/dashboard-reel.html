@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Queuekeeper sizzle reel</title>
+<style>
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  width: 1080px;
+  height: 1080px;
+  overflow: hidden;
+  background: #0d1211;
+  color: #f5faf7;
+  font: 32px "Helvetica Neue",sans-serif;
+}
+
+.scene {
+  position: absolute;
+  inset: 0;
+  display: none;
+  background: radial-gradient(ellipse at 73% 48%,#18332b,#0d1211 70%);
+  overflow: hidden;
+}
+
+.scene:before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(#8affbd0d 1px,transparent 1px),linear-gradient(90deg,#8affbd0d 1px,transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(130deg,#000,transparent 83%);
+}
+
+.inner {
+  position: absolute;
+  inset: 52px 60px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -.5px;
+}
+.brand img {
+  width: 50px;
+  height: 50px;
+}
+
+.label {
+  font: 600 24px Menlo,monospace;
+  color: #93f7b9;
+  margin-top: 61px;
+}
+
+h1 {
+  font-size: 69px;
+  line-height: .98;
+  letter-spacing: -3.6px;
+  margin: 17px 0 0;
+  font-weight: 750;
+}
+
+p {
+  font-size: 30px;
+  line-height: 1.28;
+  color: #cad9d0;
+  margin: 21px 0 0;
+}
+
+.frame {
+  position: absolute;
+  top: 365px;
+  left: 0;
+  width: 960px;
+  height: 525px;
+  border: 1px solid #467061;
+  border-radius: 19px;
+  overflow: hidden;
+  background: #101716;
+  box-shadow: 0 25px 85px #0008;
+}
+
+.frame img,.frame svg {
+  position: absolute;
+  display: block;
+  max-width: none;
+  transform-origin: 50% 0;
+}
+
+footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 5px;
+  border-top: 1px solid #6bae8b52;
+  padding-top: 20px;
+  display: flex;
+  justify-content: space-between;
+  color: #bcd6c7;
+  font: 600 20px Menlo,monospace;
+}
+
+#flow .frame {
+  top: 365px;
+  height: 525px;
+  background: rgb(18,23,34);
+}
+
+#flow-card > svg {
+  width: 900px;
+  height: 294px;
+  left: 21px;
+  top: 16px;
+  transform-origin: 0 0;
+}
+
+#flow-card svg .moving {
+  r: 5.2px;
+  stroke: #fff;
+  stroke-opacity: .82;
+  stroke-width: .7px;
+  filter: drop-shadow(0 0 3px currentColor);
+}
+
+/* FLOW_STYLES */
+
+.end .inner {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding-bottom: 44px;
+}
+
+.end img {
+  width: 170px;
+  height: 170px;
+}
+.end h1 {
+  font-size: 103px;
+  margin: 18px 0;
+}
+.end p {
+  font-size: 36px;
+  margin: 0;
+}
+
+.end .link {
+  font-size: 27px;
+  color: #98f8bd;
+  border: 1px solid #44745d;
+  border-radius: 100px;
+  padding: 17px 26px;
+  margin-top: 52px;
+  font-family: Menlo,monospace;
+}
+</style>
+<section class="scene" id="flow">
+  <div class="inner">
+    <div class="brand"><img src="logo.svg" alt="">Queuekeeper</div>
+    <div class="label">FLOW</div>
+    <h1>Test changes together.</h1>
+    <p>Queuekeeper batches commits before they reach main.</p>
+    <div class="frame" id="flow-card"><!-- FLOW_MAP --></div>
+    <footer><span>LOCAL MERGE QUEUE</span><span>01 / 04</span></footer>
+  </div>
+</section>
+<section class="scene">
+  <div class="inner">
+    <div class="brand"><img src="logo.svg" alt="">Queuekeeper</div>
+    <div class="label">FARM</div>
+    <h1>Build on your own Macs.</h1>
+    <p>See which machines have room for the next job.</p>
+    <div class="frame"><img src="dashboard-farm.png" style="width:960px;top:-65px"></div>
+    <footer><span>SHARED BUILD CAPACITY</span><span>02 / 04</span></footer>
+  </div>
+</section>
+<section class="scene">
+  <div class="inner">
+    <div class="brand"><img src="logo.svg" alt="">Queuekeeper</div>
+    <div class="label">TRENDS</div>
+    <h1>See how checks behave.</h1>
+    <p>Track gate times, landings, and flaky tests.</p>
+    <div class="frame"><img src="dashboard-history.png" style="width:960px;top:-96px"></div>
+    <footer><span>GATE HISTORY</span><span>03 / 04</span></footer>
+  </div>
+</section>
+<section class="scene">
+  <div class="inner">
+    <div class="brand"><img src="logo.svg" alt="">Queuekeeper</div>
+    <div class="label">ACTIVITY</div>
+    <h1>Follow each round.</h1>
+    <p>See what landed and what came back.</p>
+    <div class="frame"><img src="dashboard-activity.png" style="width:960px;top:-96px"></div>
+    <footer><span>QUEUE ACTIVITY</span><span>04 / 04</span></footer>
+  </div>
+</section>
+<section class="scene end">
+  <div class="inner">
+    <img src="logo.svg" alt="">
+    <h1>Queuekeeper</h1>
+    <p>Free and open source.</p>
+    <div class="link">vocaro.com/products/queuekeeper/</div>
+  </div>
+</section>
+<script>
+const scenes = [...document.querySelectorAll('.scene')];
+const stills = scenes.map(scene => scene.querySelector('.frame img'));
+const flow = document.querySelector('#flow-card > svg');
+const sceneStarts = [0, 7, 11, 15, 19];
+const ease = progress => progress * progress * (3 - 2 * progress);
+const clamp = progress => Math.max(0, Math.min(1, progress));
+
+function prepare() {
+  flow.pauseAnimations();
+  if (!flow.querySelector('animateMotion')) throw new Error('The Flow map has no animation.');
+}
+
+function frame(time) {
+  const current = sceneStarts.findLastIndex(start => time >= start);
+  const elapsed = time - sceneStarts[current];
+  const blend = current > 0 ? ease(clamp(elapsed / .36)) : 1;
+  for (const [index, scene] of scenes.entries()) {
+    const incoming = index === current;
+    const visible = incoming || (index === current - 1 && blend < 1);
+    scene.style.display = visible ? 'block' : 'none';
+    if (!visible) continue;
+
+    scene.style.opacity = incoming ? blend : 1;
+    const offset = incoming ? (1 - blend) * 18 : 0;
+    scene.querySelector('.inner').style.transform = `translateY(${offset}px)`;
+    if (index === 0) {
+      flow.setCurrentTime(time);
+      const reveal = ease(clamp((time - 3.2) / 2.2));
+      flow.style.transform = `translateY(${100 * reveal}px) scale(${1.71 - .69 * reveal})`;
+    } else if (stills[index]) {
+      const progress = clamp((time - sceneStarts[index]) / 4);
+      stills[index].style.transform =
+        `translateY(${-ease(progress) * 112}px) scale(${1 + progress * .05})`;
+    }
+  }
+}
+</script>
+</html>

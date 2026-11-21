@@ -16,7 +16,7 @@ this guide assumes you know what a lane, a gate, admission and the farm are.
 - [Visibility features](#visibility-features): the event journal, and writing a feature
 - [Checks this repository runs](#checks-this-repository-runs): spelling and the docs check
 - [Maintenance](#maintenance): changing Queuekeeper while work runs, moving a module, renaming a
-  setting, the README's screenshots
+  setting, the README's screenshots and the dashboard reel
 
 ## Working on Queuekeeper
 
@@ -2126,3 +2126,27 @@ writes into this checkout; through admission it might go to another Mac with no 
 refuses with exit 2. Its test, `tests/visibility/test_dashboard_screenshots.py`, does run through
 admission, and fails when a panel's data no longer has the fields the script makes up. That is when
 to change the script.
+
+### The dashboard reel
+
+The [dashboard reel](../assets/queuekeeper-sizzle.mp4) is a 23-second square video with captions
+and no audio. It starts close on the animated dots in Flow, pulls back to show the whole map,
+then shows Farm, Trends and Activity. It uses the README's dashboard assets and their sample data.
+
+To regenerate it from the checkout root, use Node.js 22 or newer, Google Chrome, and FFmpeg with
+the `libx264` encoder on your Mac:
+
+```sh
+python3 scripts/qk admit --here -- node tools/dashboard-reel.mjs
+```
+
+The renderer opens headless Chrome with a temporary profile, advances the Flow SVG's own clock for
+each frame, and writes a 1080 × 1080 H.264 MP4 at 24 frames per second. Set
+`QUEUEKEEPER_REEL_CHROME` to Chrome's executable if it is installed outside `/Applications`.
+
+Edit [the reel template](../tools/dashboard-reel.html) for captions, framing, dot size and scene
+timing. For a different total runtime or frame rate, edit
+[the renderer](../tools/dashboard-reel.mjs). Retake the README's screenshots first if the dashboard
+itself has changed. To try an edit before replacing the checked-in video, pass an output path after
+the script name. Play the result and check that the dots move in the opening close-up and the final
+URL is readable at phone size.
