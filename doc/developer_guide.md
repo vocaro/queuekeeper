@@ -716,6 +716,8 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   `results/progress.json` (with `observedSeconds` and `maximumObservationGapSeconds`, to review
   coverage before choosing a bound) and publishes a live copy in its wait record's namespace for
   `qk queue status` and `qk admissions now`; a copy expires 15 seconds after its last observation.
+  The retained receipt's `samplingGapSamples` counts samples invalidated by either clock moving
+  backward or advancing by more than three sampling intervals, even if the sample was also unreadable.
   Stopping rechecks output and CPU, uses the supervisor's TERM and KILL, and reports `Stalled` as
   unmeasured only after the owned tree has ended.
 

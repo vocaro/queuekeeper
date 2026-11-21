@@ -287,6 +287,10 @@ class Coverage(unittest.TestCase):
             self.assertEqual(monitor.last["unobservableSamples"], 2)
             self.assertEqual(monitor.last["observedSeconds"], 3)
             self.assertEqual(monitor.last["maximumObservationGapSeconds"], 5)
+            self.assertEqual(json.loads(monitor.status.read_text())["samplingGapSamples"], 1)
+            self.assertNotIn("samplingGapSamples", monitor.last)
+            monitor.finish("exit-0")
+            self.assertEqual(json.loads(monitor.status.read_text())["samplingGapSamples"], 1)
 
     def test_failed_publication_is_not_healthy_observed_coverage(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {}, clear=True):
@@ -303,6 +307,7 @@ class Coverage(unittest.TestCase):
                     else: monitor.observe({123: "born"})
             self.assertEqual(monitor.last["observedSeconds"], 0)
             self.assertEqual(monitor.last["unobservableSamples"], 1)
+            self.assertEqual(json.loads(monitor.status.read_text())["samplingGapSamples"], 0)
 
     def test_wall_clock_gap_is_visible_when_monotonic_time_excludes_sleep(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {}, clear=True):
@@ -316,3 +321,4 @@ class Coverage(unittest.TestCase):
             self.assertEqual(monitor.last["maximumObservationGapSeconds"], 49)
             self.assertEqual(monitor.last["observedSeconds"], 1)
             self.assertEqual(monitor.last["unobservableSamples"], 1)
+            self.assertEqual(json.loads(monitor.status.read_text())["samplingGapSamples"], 1)
