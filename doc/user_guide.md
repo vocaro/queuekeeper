@@ -1980,9 +1980,28 @@ project's plugins add to every command's environment does reach it.
 
 The receipt names both Macs' model, macOS and Xcode, and `ranOn` says where the lane ran.
 
-A run is journaled on the Mac that executes it. If your Mac sleeps or the connection drops, the
-run continues there and your Mac collects the result when it reconnects. Stopping the run here
-stops it there.
+Once the sender has acknowledged a run's journal, a run without a device lease can continue on
+the other Mac if your Mac sleeps or the connection drops. The sender reconnects to collect the
+same run's result. Stopping a run here asks the other Mac to stop it, including on reconnection.
+A run with a device lease, or whose journal was never acknowledged, stops when its connection
+ends or the sender is silent past its bound.
+
+**Reading an uncollected journal.** If the sender reports an unmeasured run and names a retained
+journal, use the host and journal ID from that message to copy its frame file into a scratch
+directory with room for the log and returned files. This reads a snapshot while leaving the
+running or finished dispatch alone.
+
+```sh
+ssh HOST 'cat "$HOME/Development/queuekeeper-farm/dispatches/JOURNAL_ID/frames"' > dispatch.frames
+grep '^R ' dispatch.frames
+```
+
+Check that the journal announcement (the `J ` line) names the expected ID. The terminal `R ` line
+contains JSON. Compare its host, checkout and receipt's project revision and arguments with the
+host and work originally sent. A matching terminal result gives the remote exit status and
+whether the run was stopped or refused. An absent, incomplete or mismatched result gives no
+verdict. This copy neither acknowledges the result nor requests a stop, and does not turn the
+local unmeasured receipt into a pass.
 
 If a lane this Mac takes finds the working tree changed since the commit was sent, it runs the
 commit sent in a temporary worktree, saying so, and removes the worktree afterwards, so its
