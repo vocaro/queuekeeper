@@ -1390,7 +1390,9 @@ def perform(argv, report):
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="action", required=True)
     doctor = commands.add_parser("doctor")
-    doctor.add_argument("--hooks", action="store_true", help="check and repair core.hooksPath alone, as a session-start "
+    doctor_mode = doctor.add_mutually_exclusive_group()
+    doctor_mode.add_argument("--check-only", action="store_true", help="report findings without applying repairs")
+    doctor_mode.add_argument("--hooks", action="store_true", help="check and repair core.hooksPath alone, as a session-start "
         "hook asks: one line for each finding, each beginning repaired or warning, or one beginning fine; exit 0 "
         "unless a warning is left")
     hook = commands.add_parser("pre-push", help="a pre-push hook: run the lanes the project names for the paths a push "
@@ -1672,11 +1674,13 @@ def perform(argv, report):
         parser.error("only run and admit take arguments after --")
     # What the project's tooling does before each command that reaches the hosts, such as offering another Mac
     # the evidence an offload found it unreachable for (plugins.HOST_COMMAND).
-    if args.action in HOST_COMMANDS:
+    check_only = args.action == "doctor" and args.check_only
+    diagnosing_queue = args.action == "queue" and args.operation == "doctor"
+    if args.action in HOST_COMMANDS and not diagnosing_queue:
         for started in plugins.HOST_COMMAND: started()
     root = args.project.resolve()
-    # What a run that died left changed on this Mac, the next command puts back.
-    plugins.recover()
+    # What a run that died left changed on this Mac, the next repairing command puts back.
+    if not (check_only or diagnosing_queue): plugins.recover()
     # What a lane's run holds until it ends, however it ends: its directory (lane_directory).
     held = contextlib.ExitStack()
     try:
@@ -1732,20 +1736,33 @@ def perform(argv, report):
             warnings += fixed_wait_warnings(root)
             warnings += lane_wait.admission_warnings(root)
             # What a push by hand from this checkout runs, put right where it can be (git_hooks).
-            warnings += git_hooks.check(root, config.get("gitHooks"))
+            warnings += git_hooks.check(root, config.get("gitHooks"), repair=not check_only)
             # Each of the farm's Macs that take work now is compared with this Mac, in the farm's order: a difference
             # is an error, and a Mac that cannot be reached is unchecked. A farm with none compares this Mac with none.
-            compared = [fix_hosts(root, remote.compare_hosts(host)) for host in farm.destinations()] \
-                or [fix_hosts(root, remote.compare_hosts())]
-            for check in plugins.HOST_CHECKS: check(root, config, compared)
+            def consider(report):
+                return report if check_only else fix_hosts(root, report)
+
+            def callbacks(checks):
+                if not check_only: return checks
+                return [plugins.DOCTOR_WITHOUT_REPAIRS[check] for check in checks
+                        if check in plugins.DOCTOR_WITHOUT_REPAIRS]
+
+            if check_only:
+                warnings.append("doctor is reporting findings without applying repairs")
+                if any(check not in plugins.DOCTOR_WITHOUT_REPAIRS
+                       for check in (*plugins.HOST_CHECKS, *plugins.DOCTOR, *plugins.DOCTOR_CHECKS)):
+                    warnings.append("some plugin checks did not opt in to doctor --check-only and were skipped")
+            compared = [consider(remote.compare_hosts(host)) for host in farm.destinations()] \
+                or [consider(remote.compare_hosts())]
+            for check in callbacks(plugins.HOST_CHECKS): check(root, config, compared)
             if trial.active(): warnings.append(f"{trial.refusal('the fixes')}; its state is under {trial.folder()}")
             # Each lane no Mac of the farm takes by its own settings: its labels or its kind (vocaro/queuekeeper#224).
             warnings += remote.unplaceable_lanes(config)
             # Each Mac where sandbox-exec applies no profile, when a lane has a sandbox (vocaro/queuekeeper#268).
             warnings += sandbox.doctor_warnings(config)
-            for check in plugins.DOCTOR: warnings += check(root, config)
+            for check in callbacks(plugins.DOCTOR): warnings += check(root, config)
             errors = []
-            for check in plugins.DOCTOR_CHECKS:
+            for check in callbacks(plugins.DOCTOR_CHECKS):
                 found, said = check(root, config)
                 errors += found
                 warnings += said

@@ -153,6 +153,8 @@ AUTHENTICATION = re.compile(r"Permission denied \(publickey\)|Authentication fai
 NO_MAIN = re.compile(r"couldn't find remote ref refs/heads/main")
 # What git says when a push's --force-with-lease found the ref other than expected: main created meanwhile.
 STALE_LEASE = re.compile(r"\(stale info\)")
+# A destination ref the server explicitly declined, as Git prints it on stderr.
+REJECTED_MAIN = re.compile(r"^\s*!\s+\[remote rejected\][^\n]* -> main(?=\s|$)[^\n]*", re.MULTILINE)
 # GitHub's status page, and its component for Git over SSH and HTTPS, which says whether a refusal may be GitHub's.
 GITHUB_STATUS = "https://www.githubstatus.com/api/v2/components.json"
 GIT_OPERATIONS = "Git Operations"
@@ -543,16 +545,17 @@ def now():
     return time.monotonic()
 
 
-def reach(directory, *arguments, say=print, check=False, allow=None, started=None):
+def reach(directory, *arguments, say=print, check=False, allow=None, started=None, retrying=None):
     """Git in directory for what talks to the remote, a fetch or a push: one that did not reach it is tried
     again after each of BACKOFF, and only then fails, as anything else does at once. With check, a failure is a
     Hold: one that clears by itself for a remote still out of reach, the owner's for a refusal, which only he
     can fix, and a session's for anything else; a failure whose message allow, a pattern, finds is returned instead.
-    started is git's, for each try."""
+    started is git's, for each try. retrying records a lost reply before starting the next one."""
     for tries, delay in enumerate((*BACKOFF, None), start=1):
         done = git(directory, *arguments, **({"started": started} if started else {}))
         said = done.stderr.strip()
         if done.returncode == 0 or delay is None or not unreached(said): break
+        if retrying is not None: retrying()
         say(f"`git {arguments[0]}` did not reach the remote, so trying again in {delay}s: {said.splitlines()[-1]}")
         pause(delay)
     if check and done.returncode and not (allow and allow.search(said)):
@@ -5137,8 +5140,8 @@ class Worker:
         return new_base, self.head()
 
     def push(self, config, batch, base, docs=None, ungated=None, flakes=None):
-        """Push HEAD to main. True on a push, False to gate again; a refusal that is no race holds, as a remote
-        that stays out of reach does.
+        """Push HEAD to main. LANDED on a push, QUEUED to gate again, FAILED on a publication refusal scoped
+        to this batch. Repository-wide access problems and unanswered pushes follow the hold and recovery paths.
         The project's pre-push hook runs here rather than inside the push, unless main's queue.hookCoveredBy
         says which passed lanes cover it: a long hook then holds no connection open, and its refusal is its own.
         A docs-only batch, whose lanes docs names, skips it too: the hook is part of lanes that read none of the
@@ -5159,9 +5162,9 @@ class Worker:
         except Hold as hold:
             # Only a remote out of reach leaves a push's answer unknown: any other hold had one, or pushed nothing.
             if hold.kind == CLEARS: self.unanswered(batch)
-            else: self.queue.drop_field(batch, "publishing")
+            else: self.drop_answered_publication(batch)
             raise
-        if not pushed: self.queue.drop_field(batch, "publishing")
+        if pushed == QUEUED: self.drop_answered_publication(batch)
         return pushed
 
     def pushing(self, config, batch, base, docs, ungated, flakes, attempts):
@@ -5195,15 +5198,15 @@ class Worker:
                 self.say(f"origin/main holds {landed['head'][:12]}, pushed before its answer came: it landed")
                 self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated, self.measured,
                                    partial=partial)
-                return True
+                return LANDED
             # An earlier push of some of the batch, whose answer never came, may have landed since (reconcile).
             kept = [current for entry in batch if (current := self.queue.read(entry["id"])) and current.get("pushedBefore")]
             if kept and self.settle_kept(kept):
                 self.say("an earlier push of part of the batch landed before this one: the rest gate again")
-                return False
+                return QUEUED
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
                 carried = self.carry(config, batch, base, head, ran, group_members(config, ran, changed))
-                if carried is None: return False
+                if carried is None: return QUEUED
                 base, head = carried
                 if ungated: head = self.mark_ungated(ungated, base)
                 if flakes: head = self.mark_flaky(flakes, base)
@@ -5219,13 +5222,15 @@ class Worker:
                     self.say(f"the pre-push hook gave no verdict (exit {result})")
                     busy = self.settle("the pre-push hook runs")
                     if busy:
-                        raise Hold(SESSION, f"the pre-push hook gave no verdict, exit {result}, on {head[:12]}, and "
-                                            f"{busy}; see {log}")
+                        return self.send_back_publication(batch, log, f"the pre-push hook gave no verdict, "
+                                                          f"exit {result}, on {head[:12]}, and {busy}")
                     continue
                 if result in NO_VERDICT:
-                    raise Hold(SESSION, f"the pre-push hook gave no verdict, exit {result}, twice on {head[:12]}; see {log}")
-                if result: raise Hold(SESSION, f"the pre-push hook refused {head[:12]}, exit {result}; see {log}"
-                                               + hooks_elsewhere(self.checkout))
+                    return self.send_back_publication(batch, log, f"the pre-push hook gave no verdict, "
+                                                      f"exit {result}, twice on {head[:12]}")
+                if result:
+                    return self.send_back_publication(batch, log, f"the pre-push hook refused {head[:12]}, exit {result}"
+                                                      + hooks_elsewhere(self.checkout))
                 checked = head
             attempts.append({"head": head, "base": base, "at": time.time()})
             marker = {
@@ -5233,17 +5238,12 @@ class Worker:
                 **({"docsOnly": docs} if docs else {}), **({"docsNamed": named} if named else {}),
                 **({"ungated": ungated} if ungated else {}), **({"gate": self.measured} if self.measured else {}),
                 **({"partialGate": partial} if partial else {})}
-            self.queue.mark_publishing(batch, marker)
-            def started(pid, attempt=attempts[-1], marker=marker):
-                # The push's own process, which outlives a worker killed alone (vocaro/queuekeeper#265): reconcile
-                # waits it out before it takes a fetch's word that the push did not land.
-                attempt.update(pid=pid, start=pushing_start(pid))
-                self.queue.mark_publishing(batch, marker)
+            started, retrying = self.publication_callbacks(batch, marker)
             # A connection that dropped pushes again here, without running the hook again.
             try:
                 pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say,
-                               started=started)
-                pushed, status = self.push_again(pushed, started)
+                               started=started, retrying=retrying)
+                pushed, status = self.push_again(pushed, started, retrying)
             except subprocess.TimeoutExpired as error:
                 raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: the push of {head[:12]} gave no answer in "
                                    f"{error.timeout:g}s, so whether origin/main took it is unknown until a fetch "
@@ -5253,14 +5253,32 @@ class Worker:
                 self.say(f"pushed {head[:12]}" + (", landed without the gate, which the next gate on main covers"
                                                   if ungated else ""))
                 self.settle_pushed(batch, base, head, gated_on, docs, named, ungated, self.measured, partial=partial)
-                return True
+                return LANDED
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
             if unreached(said):
                 raise Hold(CLEARS, f"the push of {head[:12]} did not reach the remote in {len(BACKOFF) + 1} tries: "
                                    f"{said}; {PUBLICATION_UNVERIFIED} until a fetch says whether it landed")
-            raise Hold(OWNER, f"the push of {head[:12]} was refused: {said or 'no output'}{status}")
-        return False
+            if REJECTED_MAIN.search(said) and self.same_push_remote():
+                # A previous attempt of this push can have landed before a later one was refused. Read origin/main
+                # before taking the refusal, letting reconciliation keep the marker if the read cannot be made.
+                try: reach(self.checkout, *FETCH, say=self.say, check=True)
+                except (Hold, subprocess.SubprocessError) as error:
+                    raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: could not verify {head[:12]} after the remote "
+                                       f"rejected the push: {error}") from error
+                if landed := self.landed_attempt(attempts):
+                    self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated,
+                                       self.measured, reconciled=True, partial=partial)
+                    return LANDED
+                if kept and self.settle_kept(kept): return QUEUED
+                return self.rejected_push(batch, head, pushed)
+            if REFUSED.search(said) or REJECTED_MAIN.search(said):
+                reason = f"the push of {head[:12]} was refused: {said or 'no output'}{status}"
+                self.check_unanswered(batch, reason)
+                raise Hold(OWNER, reason)
+            raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: the push of {head[:12]} ended without a definitive "
+                               f"answer: {said or 'no output'}")
+        return QUEUED
 
     def settle_pushed(self, batch, base, head, gated_on, docs, named, ungated, gate, reconciled=False, partial=None):
         """Settle batch as landed by head, pushed on base: each entry its own commit (landed), the push's event,
@@ -5288,6 +5306,38 @@ class Worker:
         return next((attempt for attempt in reversed(attempts) if not git(
             self.queue.main_checkout, "merge-base", "--is-ancestor", attempt["head"], MAIN).returncode), None)
 
+    def drop_answered_publication(self, batch):
+        answered = [entry for entry in batch
+                    if not ((self.queue.read(entry["id"]) or {}).get("publishing") or {}).get("unanswered")]
+        self.queue.drop_field(answered, "publishing")
+
+    def publication_callbacks(self, batch, marker):
+        """Record the active child and any earlier lost reply before another attempt can replace it."""
+        attempt = marker["attempts"][-1]
+        earlier = [previous["unanswered"] for previous in marker["attempts"] if previous.get("unanswered")]
+        if earlier: marker["unanswered"] = earlier[-1]
+        self.queue.mark_publishing(batch, marker)
+
+        def started(pid):
+            # Reconcile waits for a child that outlives a killed worker before asking what landed (#265).
+            attempt.update(pid=pid, start=pushing_start(pid))
+            self.queue.mark_publishing(batch, marker)
+
+        def retrying():
+            attempt["unanswered"] = marker["unanswered"] = time.time()
+            self.queue.mark_publishing(batch, marker)
+
+        return started, retrying
+
+    def check_unanswered(self, batch, reason):
+        """A later refusal answers only that attempt. Keep earlier unanswered pushes for reconciliation."""
+        for entry in batch:
+            current = self.queue.read(entry["id"]) or {}
+            marker = current.get("publishing") or {}
+            if current.get("pushedBefore") or marker.get("unanswered"):
+                self.unanswered(batch)
+                raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: {reason}; an earlier push may still land")
+
     def unanswered(self, batch):
         """Mark the push batch's entries record as one whose answer did not come (publication-unverified)."""
         for entry in batch:
@@ -5307,13 +5357,7 @@ class Worker:
         if not marked: return False
         self.outlive([attempt for entry in marked for marker in pushes_of(entry)
                       for attempt in marker.get("attempts", [])])
-        if not fetch_main(self.queue.main_checkout, self.say):
-            # Nothing landed while origin has no main: the entries are gated as before.
-            self.say(f"origin has no main, so {', '.join(entry['id'] for entry in marked)}, whose push's answer never "
-                     "came, did not land, and are gated as before")
-            self.queue.drop_field(marked, "publishing")
-            self.queue.drop_field(marked, "pushedBefore")
-            return False
+        fetch_main(self.queue.main_checkout, self.say)
         return self.settle_kept(marked, keep=True)
 
     def settle_kept(self, entries, keep=False):
@@ -5335,8 +5379,9 @@ class Worker:
             if attempt is None:
                 fresh = [entry for entry in group if entry.get("publishing") == marker]
                 if keep and fresh:
-                    self.say(f"origin/main at {main[:12]} holds no push of "
-                             f"{', '.join(a['head'][:12] for a in attempts)}, whose answer never came: "
+                    where = f"origin/main at {main[:12]}" if main else "origin, which has no main yet,"
+                    self.say(f"{where} holds no push of {', '.join(a['head'][:12] for a in attempts)}, "
+                             "whose answer never came: "
                              f"{', '.join(entry['id'] for entry in fresh)} did not land, and are pushed or gated as "
                              "before, keeping that push should it land later")
                     for entry in fresh:
@@ -5423,7 +5468,19 @@ class Worker:
             position = match + 1
         return own
 
-    def push_again(self, pushed, running=None):
+    def same_push_remote(self):
+        return text(self.checkout, "remote", "get-url", "--push", "origin") == \
+            text(self.checkout, "remote", "get-url", "origin")
+
+    def rejected_push(self, batch, head, pushed):
+        """Record the server's answer after confirming no earlier attempt landed."""
+        log = self.queue.logs / f"push-refusal-{time.strftime('%Y%m%d-%H%M%S')}-{head[:8]}.log"
+        with contextlib.suppress(OSError):
+            log.write_text(pushed.stdout + pushed.stderr)
+        refusal = REJECTED_MAIN.search(pushed.stderr).group().strip()
+        return self.send_back_publication(batch, log, f"the remote refused the push of {head[:12]}: {refusal}")
+
+    def push_again(self, pushed, running=None, retrying=None):
         """(the last push, what a hold adds of GitHub's status). A push the remote refused for its credentials, when
         the fetch at the top of push went through from the same URL a moment before, is tried again after each of
         BACKOFF; and then, on GitHub, while its status says Git Operations is not operational, every REFUSAL_POLL
@@ -5432,8 +5489,8 @@ class Worker:
         operational, which holds as before."""
         said = pushed.stderr.strip()
         if pushed.returncode == 0 or not AUTHENTICATION.search(said): return pushed, ""
+        if not self.same_push_remote(): return pushed, ""
         url = text(self.checkout, "remote", "get-url", "--push", "origin")
-        if url != text(self.checkout, "remote", "get-url", "origin"): return pushed, ""
         backoff, started, status = list(BACKOFF), now(), None
         while True:
             if backoff: delay = backoff.pop(0)
@@ -5450,7 +5507,7 @@ class Worker:
                      + (f" while GitHub's {GIT_OPERATIONS} is {status}" if status else "") + f": {said.splitlines()[-1]}")
             pause(delay)
             pushed = reach(self.checkout, "push", "--no-verify", "origin", "HEAD:refs/heads/main", say=self.say,
-                           started=running)
+                           started=running, retrying=retrying)
             said = pushed.stderr.strip()
             if pushed.returncode == 0 or not AUTHENTICATION.search(said): return pushed, ""
 
@@ -6487,17 +6544,31 @@ class Worker:
         """Push tip, which passed its gate alone, as origin's new main (first_landing), after the pre-push hook, which
         runs as for any landing, since only main may say that lanes cover it. The lease says main must still be absent:
         one created meanwhile queues entry again, and the next round lands it on top of that main, or finds main
-        already holds it. A refusal of any other kind holds, as push's does."""
+        already holds it. A refusal specific to the entry sends it back."""
         result, log = self.pre_push(tip)
         if result in NO_VERDICT:
-            raise Hold(SESSION, f"the pre-push hook gave no verdict, exit {result}, on {tip[:12]}, which would create "
-                                f"main; see {log}")
-        if result: raise Hold(SESSION, f"the pre-push hook refused {tip[:12]}, exit {result}; see {log}"
+            busy = self.settle("the pre-push hook runs")
+            if busy:
+                self.send_back_publication([entry], log, f"the pre-push hook gave no verdict, exit {result}, on "
+                                           f"{tip[:12]}, which would create main, and {busy}")
+                return True
+            result, log = self.pre_push(tip)
+        if result in NO_VERDICT:
+            self.send_back_publication([entry], log, f"the pre-push hook gave no verdict, exit {result}, twice on "
+                                       f"{tip[:12]}, which would create main")
+            return True
+        if result:
+            self.send_back_publication([entry], log, f"the pre-push hook refused {tip[:12]}, exit {result}"
                                        + hooks_elsewhere(self.checkout))
+            return True
+        marker = {"batch": [entry["id"]], "attempts": [{"head": tip, "base": None, "at": time.time()}]}
+        if self.measured: marker["gate"] = self.measured
+        started, retrying = self.publication_callbacks([entry], marker)
         try:
             pushed = reach(self.checkout, "push", "--no-verify", "--force-with-lease=refs/heads/main:", "origin",
-                           f"{tip}:refs/heads/main", say=self.say)
+                           f"{tip}:refs/heads/main", say=self.say, started=started, retrying=retrying)
         except subprocess.TimeoutExpired as error:
+            self.unanswered([entry])
             raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: the push of {tip[:12]}, which would create main, gave no "
                                f"answer in {error.timeout:g}s; the next round's fetch says whether it did") from error
         said = pushed.stderr.strip()
@@ -6509,12 +6580,29 @@ class Worker:
         if STALE_LEASE.search(said) and fetch_main(self.queue.main_checkout, self.say):
             self.say(f"main was created while {entry['id']} gated, so its push, which creates main only while there is "
                      "none, was refused: queued again, to land on top of that main")
+            self.drop_answered_publication([entry])
             self.queue.mark([entry], QUEUED)
             return True
         if unreached(said):
-            raise Hold(CLEARS, f"the push of {tip[:12]}, which would create main, did not reach the remote in "
-                               f"{len(BACKOFF) + 1} tries: {said}")
-        raise Hold(OWNER, f"the push of {tip[:12]}, which would create main, was refused: {said or 'no output'}")
+            self.unanswered([entry])
+            raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: the push of {tip[:12]}, which would create main, did not "
+                               f"reach the remote in {len(BACKOFF) + 1} tries: {said}")
+        if REJECTED_MAIN.search(said) and self.same_push_remote():
+            if fetch_main(self.queue.main_checkout, self.say):
+                # Let the next round reconcile an earlier uncertain attempt or gate atop the new main.
+                self.drop_answered_publication([entry])
+                self.queue.mark([entry], QUEUED)
+            else:
+                self.rejected_push([entry], tip, pushed)
+            return True
+        if REFUSED.search(said) or REJECTED_MAIN.search(said):
+            reason = f"the push of {tip[:12]}, which would create main, was refused: {said or 'no output'}"
+            self.check_unanswered([entry], reason)
+            self.queue.drop_field([entry], "publishing")
+            raise Hold(OWNER, reason)
+        self.unanswered([entry])
+        raise Hold(CLEARS, f"{PUBLICATION_UNVERIFIED}: the push of {tip[:12]}, which would create main, "
+                           f"ended without a definitive answer: {said or 'no output'}")
 
     def docs_ahead(self, waiting, batch, config):
         """This round's batch, once docs-only entries are kept out of code batches (vocaro-engineering#394): the
@@ -6638,7 +6726,7 @@ class Worker:
                 runner.say("an entry was removed during the run: queued again")
             else:
                 runner.keep(landing_, base, head, lanes)
-                if runner.push(main, landing_, base, lanes): return
+                if runner.push(main, landing_, base, lanes) != QUEUED: return
             self.queue.mark(landing_, QUEUED)
             return
         if result in NO_VERDICT or result == WITHDRAWN:
@@ -6685,22 +6773,36 @@ class Worker:
         """Finish the affected entries without attributing a test failure, and preserve a read-only diagnosis."""
         self.reset_no_verdict()
         if not self.alone: self.limit, self.suspects = None, 0
+        return self.send_back_with_diagnosis(applied, log, reason, runner, noVerdict=True)
+
+    def send_back_publication(self, batch, log, reason):
+        """Finish a batch whose gate passed but whose publication was refused (#24)."""
+        self.check_unanswered(batch, reason)
+        return self.send_back_with_diagnosis(batch, log, reason, self, publicationRefused=True)
+
+    def send_back_with_diagnosis(self, entries, log, reason, runner, **fields):
         doctor_log = log.with_name(f"queue-doctor-{log.name}")
-        self.say(f"sending back {', '.join(entry['id'] for entry in applied)}: {reason}; "
-                 f"see {log}. Recording queue doctor in {doctor_log}")
-        command = toolkit_command(self.checkout, ["queue", "doctor"], self.toolkit_root())
-        try:
-            processes.run(command, cwd=self.checkout, log_path=doctor_log, timeout=DOCS_CHECK_LIMIT,
-                          env=self.environment)
-        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-            message = f"could not finish queue doctor: {error}"
-            self.say(message)
-            with contextlib.suppress(OSError), doctor_log.open("a") as report:
-                report.write(message + "\n")
+        setup_log = log.with_name(f"setup-doctor-{log.name}")
+        self.say(f"sending back {', '.join(entry['id'] for entry in entries)}: {reason}; "
+                 f"see {log}. Recording setup and queue doctor reports")
+        runner.record_diagnosis(["doctor", "--check-only"], setup_log)
+        runner.record_diagnosis(["queue", "doctor"], doctor_log)
         why = f"{reason}; see {log}. Address the cause before landing again."
-        for entry in applied:
-            self.settle_failure(entry, log, why, runner, noVerdict=True, doctorLog=str(doctor_log))
+        for entry in entries:
+            self.settle_failure(entry, log, why, runner, doctorLog=str(doctor_log), setupDoctorLog=str(setup_log),
+                                **fields)
         return FAILED
+
+    def record_diagnosis(self, words, log):
+        """Keep diagnostics best-effort and bounded, even when hosts are unhealthy."""
+        command = toolkit_command(self.checkout, words, self.toolkit_root())
+        try:
+            processes.run(command, cwd=self.checkout, log_path=log, timeout=DOCS_CHECK_LIMIT, env=self.environment)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            message = f"could not finish qk {' '.join(words)}: {error}"
+            self.say(message)
+            with contextlib.suppress(OSError), log.open("a") as report:
+                report.write(message + "\n")
 
     def no_verdict(self, config, applied, result, log, runner):
         """Retry a batch whose lanes gave no verdict until its limit, then send it back (older)."""
@@ -6859,12 +6961,15 @@ class Worker:
         if ungated: head = runner.mark_ungated(ungated, base)
         if flakes: head = runner.mark_flaky(flakes, base)
         runner.keep(applied, base, head, docs, ungated, flakes)
-        if runner.push(config, applied, base, docs, ungated, flakes):
+        outcome = runner.push(config, applied, base, docs, ungated, flakes)
+        if outcome == LANDED:
             self.bisected(applied, base)
             self.passed(len(applied))
-            return LANDED
-        queue.mark(applied, QUEUED)
-        return QUEUED
+        elif outcome == QUEUED:
+            queue.mark(applied, QUEUED)
+        elif not self.alone:
+            self.limit, self.suspects = None, 0
+        return outcome
 
     def count_locked(self, runner, config, lane, log):
         """Count toward LOCKED_SCREEN_RUNS the run of lane that log holds, which ended behind a locked screen, when
@@ -7582,8 +7687,10 @@ class Worker:
                  "pushing without gating again")
         # What passed, not whatever the checkout holds: a worker that died mid-carry left part of a batch there.
         if self.head() != head: self.reset(head)
-        if self.push(config, batch, base, docs, ungated, flakes): self.passed(len(batch))
-        else: self.queue.mark(batch, QUEUED)
+        outcome = self.push(config, batch, base, docs, ungated, flakes)
+        if outcome == LANDED: self.passed(len(batch))
+        elif outcome == QUEUED: self.queue.mark(batch, QUEUED)
+        elif not self.alone: self.limit, self.suspects = None, 0
         return True
 
     def prune(self):
@@ -8066,10 +8173,10 @@ class Beside(Worker):
                                   "result carries over, else gating again")
         head = self.mark_flaky(flakes, base) if flakes else self.head()
         self.keep(self.newer, base, head, None, None, flakes)
-        if self.push(config, self.newer, base, None, None, flakes):
+        self.outcome = self.push(config, self.newer, base, None, None, flakes)
+        if self.outcome == LANDED:
             self.worker.bisected(self.newer, base)
-            self.outcome = LANDED
-        else:
+        elif self.outcome == QUEUED:
             self.queue.mark(self.newer, QUEUED)
             self.outcome = PASSED
 

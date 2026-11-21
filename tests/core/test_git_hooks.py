@@ -58,6 +58,9 @@ class HooksPathTests(Repository):
 
     def test_an_absolute_path_into_the_main_checkout_is_made_relative(self):
         self.git(self.main, "config", git_hooks.KEY, str(self.main / ".githooks"))
+        warning, = git_hooks.check(self.linked, repair=False)
+        self.assertIn("every worktree runs that one checkout's hooks", warning)
+        self.assertEqual(self.value(self.main), str(self.main / ".githooks"))
         warning, = git_hooks.check(self.linked)
         self.assertIn("repaired core.hooksPath: the repository's value was the absolute", warning)
         self.assertEqual(self.value(self.main), ".githooks")

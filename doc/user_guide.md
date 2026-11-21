@@ -516,7 +516,7 @@ unmeasured. The worker waits for a Mac to settle (CPU under its busy limit and m
 normal, for up to an hour) and runs the lanes again.
 
 - **Three runs in a row without a verdict** send back the batch with the reason and the gate
-  log. The worker records a `qk queue doctor` log in the result and continues with the queue.
+  log. The worker records both `qk doctor --check-only` and `qk queue doctor` and continues with the queue.
   With the [notify feature](#the-notify-feature) on, the usual send-back notice tells the owner.
   A project changes the bound on `main` with `"queue": {"noVerdictRuns": N}`. A verdict or a
   change in the batch starts the count again. If no eligible Mac settles within an hour, the
@@ -698,9 +698,15 @@ paths with their own lanes. The batch is pushed without gating again, after the 
 ### The pre-push hook
 
 After a gate passes, the worker runs the project's pre-push hook itself, as Git would for a push to
-`main`, then pushes. A hook that refuses holds the queue for a session; a hook's exit 3, 69, 75 or
-78 is no verdict and is tried once more. A hook that waits for admission should exit with the
-status it got rather than 1.
+`main`, then pushes. An exit of 3, 69, 75 or 78 gives no verdict. The worker retries the hook
+once after the host settles. A definitive hook refusal or an exhausted retry sends back the batch
+with the hook log and doctor reports. A hook that waits for admission should return the admission
+result so the worker can recognize a retryable outcome.
+
+An explicit server rejection of the `main` update also sends back the batch once the worker
+accounts for every attempt. A push without a definitive answer stays in publication recovery,
+including when a later attempt is rejected. Repository
+access problems, such as invalid credentials, keep the passing batch for an operator to resume.
 
 **A hook that only repeats the lanes** can be one line, which runs the right lanes for the paths a
 push changes: the docs lanes for documents, `queue.lanes` or `gate` for anything else, narrowed by
@@ -767,7 +773,7 @@ does not help, since the second is still judged by `main` as it was.
   A rejected entry that changes such a folder is told that main's copy judged it.
 - **A pre-push hook outside the queue's checkout.** When `core.hooksPath` is absolute and names
   the main checkout's hooks, the worker runs that copy. Keep what it reads working for one landing
-  and drop it in a second. A hold for its refusal names the folder it ran from.
+  and drop it in a second. A send-back for its refusal names the folder it ran from.
 
 ### Emergencies
 
@@ -3276,8 +3282,8 @@ saying whom it is for:
 - **`for a session, not the owner`**: most holds. Any session that fixes the cause, or finds it
   gone, runs `qk queue resume` and says so in its report, without asking the owner. A cause a
   session cannot find is still a session's: say what was looked at.
-- **`for the owner, since nobody else can fix it`**: a push the remote refused, or a remote
-  that refused its key or token. Once the owner has fixed it, any session
+- **`for the owner, since nobody else can fix it`**: the remote denied repository access,
+  for example because it refused its key or token. Once the owner has fixed it, any session
   resumes. With the [notify feature](#the-notify-feature) on, you hear about these at once.
 
 `qk queue status`, `qk land` and `qk land --wait` print the reason. A batch that passed before a
@@ -3314,7 +3320,10 @@ Common holds:
 ### Checking a project's setup
 
 `qk doctor` checks a project's lanes and every Mac's setup. It also notes recent Python crash
-reports on each Mac, without changing its verdict.
+reports on each Mac, without changing its verdict. Run `qk doctor --check-only` to report setup
+findings without repairing Git hook configuration, device records or the farm's toolkits and simulators.
+Publication and gate send-backs that include diagnostics keep this report as `setup-doctor-log` and the
+queue report as `queue-doctor-log` in `qk queue result --json`. Read either with `qk queue logs ID --artifact KIND`.
 
 ### Disk space
 

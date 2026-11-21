@@ -59,3 +59,4 @@ def warnings(root, config):
 def register():
     """Add these checks to `doctor`."""
     if warnings not in plugins.DOCTOR: plugins.DOCTOR.append(warnings)
+    plugins.DOCTOR_WITHOUT_REPAIRS[warnings] = warnings

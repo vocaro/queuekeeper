@@ -63,6 +63,8 @@ def entry_artifacts(queue, entry):
         artifacts.append({**artifact("queue-log", log, host), "primary": True})
     if entry.get("doctorLog"):
         artifacts.append(artifact("queue-doctor-log", entry["doctorLog"]))
+    if entry.get("setupDoctorLog"):
+        artifacts.append(artifact("setup-doctor-log", entry["setupDoctorLog"]))
     for reference in entry.get("logs", []):
         if not reference.get("path"): continue
         item = artifact("queue-log", reference["path"], reference.get("mac"))
@@ -133,6 +135,7 @@ def entry_result(queue, entry):
     if state in ("failed", "conflict"):
         category = "conflict" if state == "conflict" else "fails-together" if partners else "gate-failed"
         if entry.get("noVerdict"): category = "gate-no-verdict"
+        if entry.get("publicationRefused"): category = "publication-refused"
         failure = {"category": category,
                    "message": entry.get("why"), "tests": [
                        {"name": name, "location": place} for name, place in list(failures.items())[:SHOWN]],
@@ -163,17 +166,20 @@ def entry_result(queue, entry):
 def unverified(queue, entry):
     """Whether entry, still waiting, was pushed without an answer: its push timed out or lost its connection
     (unanswered), or no worker runs to hear one, as when the worker died mid-push."""
-    marker = entry.get("publishing") if entry.get("state") in WAITING else None
+    if entry.get("state") not in WAITING: return False
+    if entry.get("pushedBefore"): return True
+    marker = entry.get("publishing")
     return bool(marker) and (bool(marker.get("unanswered")) or not queue.working())
 
 
 def publication(queue, entry):
     """The push a waiting entry's record keeps until it is answered (Worker.push's publishing): unverified, as
     unverified says, or pushing; None when there is none."""
-    marker = entry.get("publishing")
-    if not marker: return None
-    return {"status": "unverified" if unverified(queue, entry) else "pushing",
-            "heads": [attempt.get("head") for attempt in marker.get("attempts", [])]}
+    markers = [*(entry.get("pushedBefore") or []), entry.get("publishing")]
+    heads = list(dict.fromkeys(attempt["head"] for marker in markers if marker
+                               for attempt in marker.get("attempts", []) if attempt.get("head")))
+    if not heads: return None
+    return {"status": "unverified" if unverified(queue, entry) else "pushing", "heads": heads}
 
 
 def read_entry(queue, identifier):

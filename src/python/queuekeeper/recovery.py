@@ -116,6 +116,9 @@ def for_entry(entry, held=None, *, limit_reached=False, unverified=False):
     if state == "failed" and entry.get("noVerdict"):
         return advice("entry-no-verdict", "session", False, "inspect-no-verdict", entry["why"],
                       [["qk", "queue", "result", identifier, "--json"]])
+    if state == "failed" and entry.get("publicationRefused"):
+        return advice("publication-refused", "session", False, "inspect-publication-refusal", entry["why"],
+                      [["qk", "queue", "logs", identifier, "--json"]])
     if state == "failed":
         return advice("entry-failed", "session", False, "fix-failure",
                       entry.get("why") or "Inspect the result and fix the failure before submitting again.",
@@ -149,6 +152,9 @@ def next_action(entry, detail, root):
     if state == "failed" and entry.get("noVerdict"):
         found = action(["qk", "queue", "logs", identifier, "--json"], "Read the gate and doctor logs, address the "
                        "cause, and land again with `qk land --wait --json`.")
+    elif state == "failed" and entry.get("publicationRefused"):
+        found = action(["qk", "queue", "logs", identifier, "--json"], "Read the publication refusal, address it, "
+                       "and land again with `qk land --wait --json`.")
     elif state == "failed":
         found = action(["qk", "queue", "logs", identifier, "--json"], "Read the failing run's log, fix the failure, "
                        "commit, and land again with `qk land --wait --json`.")

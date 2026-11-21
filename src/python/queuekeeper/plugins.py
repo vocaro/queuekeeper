@@ -37,6 +37,8 @@ PREPARE_LANE = []
 POLICY = []
 # Each (root, config) -> [warning]: checks `doctor` adds to its own.
 DOCTOR = []
+# Explicit opt-in for check-only. Map a pure doctor callback to itself or a repairing callback to a pure variant.
+DOCTOR_WITHOUT_REPAIRS = {}
 # Each (root, config) -> (errors, warnings): checks `doctor` adds whose errors fail it, as a difference between the
 # Macs does.
 DOCTOR_CHECKS = []

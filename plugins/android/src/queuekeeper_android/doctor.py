@@ -67,4 +67,6 @@ def compare_sdk(root, config, reports):
 
 def register():
     if warnings not in plugins.DOCTOR: plugins.DOCTOR.append(warnings)
+    plugins.DOCTOR_WITHOUT_REPAIRS[warnings] = warnings
     if compare_sdk not in plugins.HOST_CHECKS: plugins.HOST_CHECKS.append(compare_sdk)
+    plugins.DOCTOR_WITHOUT_REPAIRS[compare_sdk] = compare_sdk

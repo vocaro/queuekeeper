@@ -176,6 +176,32 @@ class Doctor(unittest.TestCase):
 
 
 
+    def test_check_only_reports_findings_without_invoking_repairs(self):
+        hosts = {"host": "build", "errors": ["the default Xcodes differ"], "unchecked": [],
+                 "pythonCrashes": {}, "remote": {"hostHealth": reading()}}
+        with tempfile.TemporaryDirectory() as directory, farm_fixture.only("build"), \
+                patch.object(remote, "compare_hosts", return_value=hosts), \
+                patch.object(cli, "fix_hosts") as fix, patch.object(cli.plugins, "recover") as recover, \
+                patch.object(cli.shutil, "which", return_value="/usr/bin/true"), \
+                patch.object(cli, "source_identity", return_value={}), \
+                patch.object(offload_host, "host_health", return_value=reading()), \
+                contextlib.redirect_stdout(StringIO()) as output:
+            Path(directory, "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                "integration": "direct-main", "lanes": {"gate": {"command": ["true"], "timeout": 60}}}))
+            def unregistered(_root, _config):
+                raise AssertionError("check without a read-only implementation ran")
+
+            with patch.object(cli.plugins, "DOCTOR", [fix, unregistered]), \
+                    patch.object(cli.plugins, "DOCTOR_WITHOUT_REPAIRS", {fix: lambda _root, _config: ["observed"]}):
+                self.assertEqual(cli.main(["--project", directory, "doctor", "--check-only"]), 1)
+        fix.assert_not_called()
+        recover.assert_not_called()
+        shown = json.loads(output.getvalue())
+        self.assertIn("observed", shown["warnings"])
+        self.assertTrue(any("did not opt in" in warning for warning in shown["warnings"]))
+        self.assertEqual(shown["farm"][0]["errors"], ["the default Xcodes differ"])
+
+
 class QueueDoctor(unittest.TestCase):
     def test_queue_doctor_finds_each_mac_short_of_memory_and_notes_one_it_cannot_read(self):
         asked = []

@@ -54,3 +54,4 @@ def register():
     """Add the key and its doctor check to the core."""
     if not isinstance(plugins.LANE_KEYS.get(KEY), Display): plugins.LANE_KEYS[KEY] = Display()
     if warnings not in plugins.DOCTOR: plugins.DOCTOR.append(warnings)
+    plugins.DOCTOR_WITHOUT_REPAIRS[warnings] = warnings

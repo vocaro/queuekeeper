@@ -2725,30 +2725,36 @@ class HoldKinds(Fixture):
     def state_of(self, branch):
         return next((entry for entry in mq.Queue(self.repo).all() if entry["branch"] == branch), None)
 
-    def test_a_refused_push_holds_for_the_owner_at_once_and_says_so(self):
+    def test_a_remote_push_rejection_sends_back_the_batch_and_the_next_entry_lands(self):
         self.commit("a", "a")
-        [identifier] = self.add("a")
-        hook = self.origin / "hooks/pre-receive"
-        hook.write_text("#!/bin/sh\necho declined by the remote >&2\nexit 1\n")
-        host_isolation.executable(hook)
-        with patch.object(mq, "pause") as slept, patch("builtins.print"): self.assertEqual(self.work(), 1)
-        slept.assert_not_called()
-        held = mq.Queue(self.repo).held()
-        self.assertTrue(held.startswith(f"{self.FOR_OWNER}the push of "), held)
-        self.assertIn(" was refused: ", held)
-        self.assertTrue(held.endswith(f"which the resume pushes without gating again{self.OWNER_FIXES}"), held)
-        self.assertNotIn(self.FOR_SESSION, held)
-        self.assertEqual(self.state(identifier)["state"], "passed")
-        with contextlib.redirect_stdout(io.StringIO()) as shown: mq.status(self.repo)
-        self.assertIn(f"worker: none; held {self.FOR_OWNER}the push of ", shown.getvalue())
-        with contextlib.redirect_stdout(io.StringIO()) as told:
-            self.assertEqual(mq.wait(self.repo, identifier, 1), mq.resources.BUSY)
-        self.assertIn(f"{identifier} is waiting, and the queue is held {self.FOR_OWNER}the push of ", told.getvalue())
         self.commit("b", "b")
-        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(io.StringIO()), \
-                contextlib.redirect_stderr(io.StringIO()) as said:
-            later = mq.add(self.repo, "b")
-        self.assertIn(f"queue: {later} waits, since the queue is held {self.FOR_OWNER}the push of ", said.getvalue())
+        [first] = self.add("a")
+        later = []
+        hook = self.origin / "hooks/pre-receive"
+        hook.write_text('#!/bin/sh\nread old new ref\n'
+                        'if git show "$new:a" >/dev/null 2>&1; then echo declined by the remote >&2; exit 1; fi\n')
+        host_isolation.executable(hook)
+        real = mq.Worker.gate
+
+        def gate(worker, *arguments, **options):
+            outcome = real(worker, *arguments, **options)
+            if self.gates() == 1: later.extend(self.add("b"))
+            return outcome
+
+        with patch.object(mq, "pause") as slept, patch.object(mq.Worker, "gate", gate), \
+                patch.object(mq.Worker, "stack"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        slept.assert_not_called()
+        entry = self.state(first)
+        self.assertEqual(entry["state"], "failed")
+        self.assertIn("pre-receive hook declined", entry["why"])
+        self.assertIn("declined by the remote", Path(entry["log"]).read_text())
+        self.assertNotIn("publishing", entry)
+        self.assertTrue(Path(entry["setupDoctorLog"]).is_file())
+        self.assertEqual(self.state(later[0])["state"], "landed")
+        self.assertIn("b", self.main_files())
+        self.assertNotIn("a", self.main_files())
+        self.assertIsNone(mq.Queue(self.repo).held())
 
     def test_a_refused_fetch_holds_for_the_owner_and_a_dropped_one_is_a_sessions_past_the_tries(self):
         """The negative control of the retry: a refusal is tried no further and names the owner."""
@@ -2763,7 +2769,7 @@ class HoldKinds(Fixture):
         self.assertNotIn("did not clear it", held)
 
     def test_what_a_session_can_fix_holds_for_a_session_not_the_owner(self):
-        """A path where the worker's checkout goes, and a hook that refuses what the gate passed."""
+        """A path where the worker's checkout goes is a repository-wide failure."""
         checkout = self.base / "queuekeeper-workers/project/project"
         checkout.mkdir(parents=True)
         (checkout / "kept").write_text("x")
@@ -2774,16 +2780,6 @@ class HoldKinds(Fixture):
         self.assertEqual(held, f"{self.FOR_SESSION}{checkout} exists and is no worktree of {self.repo}: move it"
                                f"{self.SESSION_RESUMES}")
         self.assertEqual(self.state(identifier)["state"], "queued")
-        shutil.rmtree(checkout)
-        mq.Queue(self.repo).hold_file.unlink()
-        hook = self.repo / ".git/hooks/pre-push"
-        hook.write_text("#!/bin/sh\necho the reason >&2\nexit 1\n")
-        host_isolation.executable(hook)
-        with patch("builtins.print"): self.assertEqual(self.work(), 1)
-        held = mq.Queue(self.repo).held()
-        self.assertTrue(held.startswith(f"{self.FOR_SESSION}the pre-push hook refused "), held)
-        self.assertTrue(held.endswith(f"which the resume pushes without gating again{self.SESSION_RESUMES}"), held)
-        self.assertEqual(self.state(identifier)["state"], "passed")
 
     def test_a_hook_core_hookspath_places_outside_the_queues_checkout_is_named_as_that_folders_copy(self):
         """vocaro/queuekeeper#186: Pagepour's core.hooksPath named its main checkout's .githooks, whose old hook refused
@@ -2794,12 +2790,12 @@ class HoldKinds(Fixture):
         host_isolation.executable(hooks / "pre-push")
         run(self.repo, "git", "config", "core.hooksPath", str(hooks))
         self.commit("a", "a")
-        self.add("a")
-        with patch("builtins.print"): self.assertEqual(self.work(), 1)
-        held = mq.Queue(self.repo).held()
-        self.assertIn(f"pre-push.log. The hook ran from {hooks.resolve()}, which core.hooksPath names outside the "
+        [identifier] = self.add("a")
+        with patch("builtins.print"): self.assertEqual(self.work(), 0)
+        why = self.state(identifier)["why"]
+        self.assertIn(f"The hook ran from {hooks.resolve()}, which core.hooksPath names outside the "
                       "queue's checkout, so it was that folder's copy and not the batch's: a change to the hook, or to "
-                      "what it reads, that the old copy refuses lands in two steps", held)
+                      "what it reads, that the old copy refuses lands in two steps", why)
         self.assertEqual(mq.hooks_elsewhere(self.repo), f". The hook ran from {hooks.resolve()}, which core.hooksPath "
                          "names outside the queue's checkout, so it was that folder's copy and not the batch's: a change "
                          "to the hook, or to what it reads, that the old copy refuses lands in two steps, keeping what "
@@ -4010,19 +4006,21 @@ class PrePushHooks(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertEqual(order.read_text().split(), ["hook", "connect"])
 
-    def test_a_hook_refusal_holds_after_one_run_and_names_its_log(self):
+    def test_a_hook_refusal_sends_back_after_one_run_and_names_its_log(self):
         self.hook("echo the reason >&2\nexit 1")
         self.commit("a", "a")
         [identifier] = self.add("a")
-        self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "passed")
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertNotIn("a", self.main_files())
         self.assertEqual(len(self.runs()), 1)
-        held = mq.Queue(self.repo).held()
-        self.assertIn("refused", held)
-        self.assertTrue(held.startswith("for a session, not the owner: "), held)
-        self.assertNotIn("the reason", held)
-        self.assertIn("the reason", Path(held.split("see ")[1].split(";")[0]).read_text())
+        entry = self.state(identifier)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn("refused", entry["why"])
+        self.assertIn("the reason", Path(entry["log"]).read_text())
+        result = agent_results.entry_result(mq.Queue(self.repo), entry)
+        self.assertEqual(result["failure"]["category"], "publication-refused")
+        self.assertEqual(result["recovery"]["reasonCode"], "publication-refused")
 
     def test_no_verdict_from_the_hook_tries_it_again_without_another_gate(self):
         for status in (3, 75, 78):
@@ -4050,28 +4048,30 @@ class PrePushHooks(Fixture):
         self.assertIn("memory pressure is level 2 (warning), not 1 (normal): the pre-push hook runs again once the host "
                       "settles", said.getvalue())
 
-    def test_a_hook_that_gave_no_verdict_holds_when_the_host_stays_busy(self):
+    def test_a_hook_that_gave_no_verdict_comes_back_when_the_host_stays_busy(self):
         self.hook("exit 3")
         self.commit("a", "a")
         [identifier] = self.add("a")
         with self.host([NoVerdict.BUSY]) as (slept, _):
-            self.assertEqual(self.work(), 1)
+            self.assertEqual(self.work(), 0)
         self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
         self.assertEqual(len(self.runs()), 1)
-        self.assertEqual(self.state(identifier)["state"], "passed")
-        held = mq.Queue(self.repo).held()
-        self.assertIn("the pre-push hook gave no verdict, exit 3, on", held)
-        self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s", held)
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        why = self.state(identifier)["why"]
+        self.assertIn("the pre-push hook gave no verdict, exit 3, on", why)
+        self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s", why)
 
-    def test_a_hook_that_keeps_giving_no_verdict_holds_and_blames_nobody(self):
+    def test_a_hook_that_keeps_giving_no_verdict_comes_back_without_a_test_failure(self):
         self.hook("exit 75")
         self.commit("a", "a")
         [identifier] = self.add("a")
-        self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "passed")
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertEqual(len(self.runs()), 2)
         self.assertEqual(self.gates(), 1)
-        self.assertIn("no verdict, exit 75", mq.Queue(self.repo).held())
+        self.assertIn("no verdict, exit 75", self.state(identifier)["why"])
+        self.assertIsNone(mq.Queue(self.repo).held())
 
     def test_a_dropped_connection_does_not_run_the_hook_again(self):
         self.hook("exit 0")
@@ -4124,8 +4124,8 @@ class PrePushHooks(Fixture):
         self.opt_in({"gate": "all the hook runs"}, branch="sneaks")
         self.hook("exit 1")
         [identifier] = self.add("sneaks")
-        self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "passed")
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertEqual(len(self.runs()), 1)
 
     def test_the_commit_that_first_names_the_lanes_cannot_opt_out_either(self):
@@ -4142,8 +4142,8 @@ class PrePushHooks(Fixture):
         run(self.repo, "git", "commit", "-qm", "Name the lanes")
         self.hook("exit 1")
         [identifier] = self.add("name")
-        self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "passed")
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertEqual(len(self.runs()), 1)
 
     def test_the_opt_in_must_name_lanes_the_queue_runs_and_what_they_cover(self):
@@ -6570,16 +6570,16 @@ class AheadOfTheQueue(Fixture):
         self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertNotIn("fix", self.main_files())
 
-    def test_the_pre_push_hook_still_runs_and_its_refusal_holds(self):
+    def test_the_pre_push_hook_still_runs_and_its_refusal_sends_back(self):
         self.ran = self.base / "hook-runs"
         PrePushHooks.hook(self, "exit 1")
         self.commit("fix", "fix")
         identifier = self.ungated("fix")
         with contextlib.redirect_stdout(io.StringIO()): self.work()
         self.assertEqual(len(PrePushHooks.runs(self)), 1)
-        self.assertIn("pre-push hook refused", mq.Queue(self.repo).held())
+        self.assertIn("pre-push hook refused", self.state(identifier)["why"])
         self.assertNotIn("fix", self.main_files())
-        self.assertEqual(self.state(identifier)["state"], "passed")
+        self.assertEqual(self.state(identifier)["state"], "failed")
 
     def test_the_options_reach_eng_land_and_eng_queue_add(self):
         import argparse
@@ -8248,10 +8248,10 @@ class Unreachable(Fixture):
         self.assertEqual(self.gates(), 0)
 
     def test_a_fetch_or_push_the_remote_refused_holds_at_once(self):
-        """A push refused for its credentials is tried again (PushRefusedInAnIncident); a fetch so refused is not."""
+        """Repository access errors hold. Credential backoff and ref rejection have their own tests."""
         for command in ("fetch", "push"):
             for name, said in REFUSED.items():
-                if command == "push" and mq.AUTHENTICATION.search(said): continue
+                if command == "push" and (mq.AUTHENTICATION.search(said) or mq.REJECTED_MAIN.search(said)): continue
                 with self.subTest(command=command, refusal=name):
                     with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
                     branch = f"{command}-{name}".replace(" ", "-")
@@ -8709,6 +8709,72 @@ class PublicationUnverified(Fixture):
         self.assertEqual(self.gates(), 1)
         self.assertEqual(self.reconciled(), [])
 
+    def test_a_rejected_last_attempt_does_not_send_back_a_push_origin_already_took(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        real = mq.git
+        pushed = []
+
+        def git(directory, *arguments, **options):
+            if not arguments or arguments[0] != "push": return real(directory, *arguments, **options)
+            pushed.append(arguments)
+            if len(pushed) == 1:
+                self.assertEqual(real(directory, *arguments, **options).returncode, 0)
+                return subprocess.CompletedProcess(arguments, 1, "", UNREACHED["ssh dropped"])
+            return subprocess.CompletedProcess(arguments, 1, "", REFUSED["rejected"])
+
+        with patch.object(mq, "git", git), patch.object(mq, "pause"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(len(pushed), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_rejected_retry_keeps_an_earlier_unanswered_push_until_it_reconciles(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        real = mq.git
+        attempted = []
+
+        def git(directory, *arguments, **options):
+            if not arguments or arguments[0] != "push": return real(directory, *arguments, **options)
+            attempted.append(arguments)
+            said = UNREACHED["ssh dropped"] if len(attempted) == 1 else REFUSED["rejected"]
+            return subprocess.CompletedProcess(arguments, 1, "", said)
+
+        queue = mq.Queue(self.repo)
+        with patch.object(mq, "git", git), patch.object(mq, "pause"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 1)
+        entry = self.state(identifier)
+        head = entry["passed"]["head"]
+        self.assertTrue(any(attempt.get("unanswered") for marked in entry["pushedBefore"]
+                            for attempt in marked["attempts"]))
+        self.assertEqual(entry["state"], "passed")
+        result = agent_results.lookup(queue, identifier)
+        self.assertEqual(result["recovery"]["reasonCode"], "publication-unverified")
+        self.assertEqual(result["publication"], {"status": "unverified", "heads": [head]})
+        self.assertIn("an earlier push may still land", queue.held())
+        run(self.repo, "git", "push", "-q", "origin", f"{head}:refs/heads/main")
+        queue.hold_file.unlink()
+        self.assertEqual(self.restart(), [])
+        self.assertEqual(self.state(identifier)["landedAs"], head)
+
+    def test_a_hook_refusal_preserves_unanswered_history_from_another_worker(self):
+        self.commit("a", "a")
+        [identifier] = self.die("before", "a")
+        queue = mq.Queue(self.repo)
+        hook = self.repo / ".git/hooks/pre-push"
+        host_isolation.executable(hook, "#!/bin/sh\nexit 1\n")
+        with patch.object(mq, "pause"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 1)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "passed")
+        [kept] = entry["pushedBefore"]
+        head = entry["passed"]["head"]
+        self.assertEqual(kept["attempts"][0]["head"], head)
+        self.assertNotIn("publishing", entry)
+        self.assertEqual(agent_results.lookup(queue, identifier)["publication"],
+                         {"status": "unverified", "heads": [head]})
+
     def test_a_worker_killed_after_its_push_went_through_lands_it_without_pushing_again(self):
         self.commit("a", "a")
         [identifier] = self.die("after", "a")
@@ -9042,8 +9108,8 @@ class PushRefusedInAnIncident(Fixture):
         self.assertEqual((len(pushes), slept, self.looks), (1, [], 0))
 
     def test_a_refusal_of_another_kind_holds_at_once(self):
-        """Negative control: a missing repository or a rejected push is no incident's."""
-        for name in ("missing", "rejected", "ssh host key"):
+        """Negative control: a missing repository or failed host-key verification requires repository access."""
+        for name in ("missing", "ssh host key"):
             with self.subTest(name):
                 with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
                 self.commit(name.replace(" ", "-"), name.replace(" ", "-"))
@@ -9144,15 +9210,18 @@ class Refusals(Fixture):
             (self.repo / "queuekeeper.json").write_text(json.dumps({**config, "queue": bad}))
             with self.assertRaises(ValueError): self.config()
 
-    def test_a_push_refused_for_any_other_reason_holds(self):
+    def test_an_explicit_remote_rejection_sends_back_the_entry(self):
         self.commit("a", "a")
         [identifier] = self.add("a")
         hook = self.origin / "hooks/pre-receive"
         hook.write_text("#!/bin/sh\necho no >&2\nexit 1\n")
         host_isolation.executable(hook)
-        self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "passed")
-        self.assertIn("refused", mq.Queue(self.repo).held())
+        self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed")
+        self.assertIn("pre-receive hook declined", entry["why"])
+        self.assertNotIn("publishing", entry)
+        self.assertIsNone(mq.Queue(self.repo).held())
 
     def test_a_push_whose_connection_dropped_is_pushed_again(self):
         self.commit("a", "a")
@@ -9179,16 +9248,19 @@ class Refusals(Fixture):
         # The pass stays through the tries: one gate.
         self.assertEqual(self.gates(), 1)
 
-    def test_a_remote_that_refuses_a_push_holds_at_once_whatever_else_it_says(self):
+    def test_a_rejection_does_not_retry_even_if_the_hook_mentions_a_disconnect(self):
         """The remote answered: its hook's message is no dropped connection, which Git would print the same."""
         self.commit("a", "a")
         [identifier] = self.add("a")
         hook = self.origin / "hooks/pre-receive"
         hook.write_text('#!/bin/sh\necho "fatal: the remote end hung up unexpectedly" >&2\nexit 1\n')
         host_isolation.executable(hook)
-        with patch.object(mq, "pause") as slept: self.assertEqual(self.work(), 1)
-        self.assertEqual(self.state(identifier)["state"], "passed")
-        self.assertIn("refused", mq.Queue(self.repo).held())
+        with patch.object(mq, "pause") as slept: self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed")
+        self.assertIn("pre-receive hook declined", entry["why"])
+        self.assertIn("the remote end hung up unexpectedly", Path(entry["log"]).read_text())
+        self.assertIsNone(mq.Queue(self.repo).held())
         slept.assert_not_called()
 
     def test_a_removed_entry_does_not_land(self):
@@ -9343,6 +9415,52 @@ class Refusals(Fixture):
         self.work()
         self.assertEqual(self.state(after)["state"], "landed")
         self.assertIn("a", self.main_files())
+
+    def test_the_next_entry_can_create_main_after_a_definitive_rejection_of_the_first(self):
+        base = self.without_main()
+        (self.repo / "refused").write_text("x")
+        run(self.repo, "git", "add", "refused")
+        run(self.repo, "git", "commit", "-qm", "First candidate")
+        run(self.repo, "git", "branch", "second", base)
+        [first] = self.add("first")
+        hook = self.origin / "hooks/pre-receive"
+        hook.write_text('#!/bin/sh\nread old new ref\n'
+                        'if git show "$new:refused" >/dev/null 2>&1; then exit 1; fi\n')
+        host_isolation.executable(hook)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(first)["state"], "failed")
+        self.assertEqual(self.origin_main(), "")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        [second] = self.add("second")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(second)["state"], "landed")
+        self.assertEqual(self.origin_main(), base)
+
+    def test_a_rejected_first_main_retry_keeps_the_unanswered_push_for_reconciliation(self):
+        tip = self.without_main()
+        [identifier] = self.add("first")
+        real = mq.git
+        attempted = []
+
+        def git(directory, *arguments, **options):
+            if not arguments or arguments[0] != "push": return real(directory, *arguments, **options)
+            attempted.append(arguments)
+            said = UNREACHED["ssh dropped"] if len(attempted) == 1 else REFUSED["rejected"]
+            return subprocess.CompletedProcess(arguments, 1, "", said)
+
+        queue = mq.Queue(self.repo)
+        with patch.object(mq, "git", git), patch.object(mq, "pause"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 1)
+        self.assertIn("pushedBefore", self.state(identifier))
+        self.assertEqual(agent_results.lookup(queue, identifier)["publication"],
+                         {"status": "unverified", "heads": [tip]})
+        run(self.repo, "git", "push", "-q", "origin", f"{tip}:refs/heads/main")
+        queue.hold_file.unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["landedAs"], tip)
 
     def test_a_landing_that_would_create_main_and_fails_its_gate_leaves_origin_without_main(self):
         self.without_main()

@@ -62,13 +62,16 @@ def tracked_hooks(root, git=git_state.git):
     return None
 
 
-def unset(root, declared, git=git_state.git):
+def unset(root, declared, git=git_state.git, *, repair=True):
     """The warnings for a checkout with no core.hooksPath anywhere, as a fresh clone has, after setting the one
     declared, the project's gitHooks."""
     if declared:
         if not (root / declared).is_dir():
             return [f"{KEY} is unset and queuekeeper.json's gitHooks names {declared}, which does not exist here: "
                     "a push by hand from this checkout runs no hook and succeeds"]
+        if not repair:
+            return [f"{KEY} is unset, so a push by hand from this checkout runs no hook: "
+                    f"run `git config {KEY} {declared}`"]
         if git(root, "config", "--local", KEY, declared) is not None:
             return [f"repaired {KEY}: it was unset, so a push by hand from this checkout ran no hook, and is now "
                     f"{declared}, the folder queuekeeper.json's gitHooks names"]
@@ -89,13 +92,13 @@ def differs(effective, declared, root, checkouts):
             f"checkout runs no hook of the project's; run `git config {KEY} {declared}` if it should"]
 
 
-def check(root, declared=None, git=git_state.git):
+def check(root, declared=None, git=git_state.git, *, repair=True):
     """The warnings for the checkout at root, after repairing what can be repaired. Each repair is a warning too,
     so that the change is said, and begins with "repaired". declared is the project's gitHooks, the folder of its
     tracked hooks, or None."""
     root = Path(root).resolve()
     if git(root, "rev-parse", "--show-toplevel") is None: return []
-    if not git(root, "config", "--get", KEY): return unset(root, declared, git)
+    if not git(root, "config", "--get", KEY): return unset(root, declared, git, repair=repair)
     checkouts = [Path(entry["worktree"]) for entry in git_state.worktrees(root)]
     found = []
     # Without extensions.worktreeConfig, --worktree reads and writes the repository's own value: asking it there
@@ -108,7 +111,10 @@ def check(root, declared=None, git=git_state.git):
     if own is None and (shared is None or wanted is None):
         return differs(git(root, "config", "--get", KEY), declared, root, checkouts)
     if shared and Path(shared).is_absolute() and wanted is not None:
-        if (root / wanted).is_dir() and git(root, "config", "--local", KEY, str(wanted)) is not None:
+        if not repair:
+            found.append(f"{KEY} is the absolute {shared}, so every worktree runs that one checkout's hooks: "
+                         f"use the relative path {wanted} to run each worktree's own hooks")
+        elif (root / wanted).is_dir() and git(root, "config", "--local", KEY, str(wanted)) is not None:
             found.append(f"repaired {KEY}: the repository's value was the absolute {shared}, which ran one "
                          f"checkout's hooks for every worktree, and is now {wanted}, each worktree's own")
             shared = str(wanted)
@@ -118,7 +124,7 @@ def check(root, declared=None, git=git_state.git):
     if own is not None:
         mine = relative(own, root, checkouts)
         target = mine if shared is None else wanted
-        if target is not None and (shared is None or mine == wanted) and (root / target).is_dir():
+        if repair and target is not None and (shared is None or mine == wanted) and (root / target).is_dir():
             # The override names the same folder, in another checkout or as an absolute path.
             if shared is None: git(root, "config", "--local", KEY, str(target))
             if git(root, "config", "--worktree", "--unset-all", KEY) is not None:

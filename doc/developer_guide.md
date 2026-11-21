@@ -478,7 +478,7 @@ and says whether `main` fails it too.
 Exits 3 (unmeasured), 69 (a worker without Local Network access), 75 (no admission) and 78 (a
 misconfigured Mac) blame no commit. The worker retries the batch until `queue.noVerdictRuns`
 (3) runs in a row have given no verdict or the settle wait expires. It then sends back the
-batch with its reason and the read-only `qk queue doctor` log, emits the usual send-back
+batch with its reason and the read-only `qk doctor --check-only` and `qk queue doctor` logs, emits the usual send-back
 events, and goes on to later entries. Newly arrived entries have their own retry budget.
 
 - **Tests that all passed.** A failed `qk unittest` gate whose last summary says `OK` names no
@@ -519,9 +519,9 @@ A lane may take `LANE_LIMIT` (6 hours: the default 2-hour lane limit and two mor
 **An unreachable remote** (a name that did not resolve, a connection refused, timed out, reset or
 dropped) is retried after `BACKOFF` (10, 30, 90, 270 s); after the fifth failure the round runs
 again after `CLEARING_WAITS` (1, 5, 15 minutes), keeping every entry and any pass, and holds for a
-session only when the last of those fails too, about an hour in. Git's message decides: a remote
-that answered and refused (authentication, a 4xx status, a refused key, a missing repository, a
-rejected push) holds at once for the owner, and any other error holds at once for a session.
+session only when the last of those fails too, about an hour in. Repository access errors such
+as an invalid key, an HTTP 4xx status or a missing repository hold for the owner. Git's explicit
+rejection of the proposed update follows the send-back rule below.
 
 **A push refused for its credentials** while the fetch just before it succeeded from the same URL is
 retried through `BACKOFF`. On GitHub the worker then reads githubstatus.com and, while Git Operations
@@ -533,6 +533,13 @@ hook held an SSH connection until GitHub dropped it. The worker instead runs the
 `git hook run`, logging to `queuekeeper-queue/logs`, then pushes with `--no-verify`. A push that
 races or drops is retried without rerunning the hook; a carried-over commit is new and runs it
 again. `queue.hookCoveredBy` skips the hook, and a docs-only batch always does.
+
+A definitive hook refusal or exhaustion of its retry sends back the tested batch. An explicit
+rejection of the `main` update sends it back too when every attempt is accounted for. The
+worker refetches `main` before settling a rejection and keeps any unanswered earlier push in
+reconciliation. Send-backs record read-only setup and queue doctor reports. A send-back settles only the entries
+the push would have published. Repository-wide access refusals keep the batch's tested result in a
+hold, and unanswered pushes keep the publication record for reconciliation.
 
 **Main moving under a passed batch.** If `main` moved only by unread paths the batch does not touch,
 the worker checks that the batch's patch is unchanged on the new `main`, runs `qk docs check` when a
@@ -705,6 +712,10 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   `qk queue status` and `qk admissions now`; a copy expires 15 seconds after its last observation.
   Stopping rechecks output and CPU, uses the supervisor's TERM and KILL, and reports `Stalled` as
   unmeasured only after the owned tree has ended.
+
+`qk doctor --check-only` skips repairs and invokes only plugin callbacks that opt in through
+`plugins.DOCTOR_WITHOUT_REPAIRS`. A read-only callback maps to itself. A normal callback that
+repairs state maps to an alternate callback with the same inputs and no repairs.
 
 ## The build farm inside
 
@@ -915,7 +926,7 @@ by main's copy, as `qk land` judges an entry by main's `queue.preflight` and the
 pre-push hook an absolute `core.hooksPath` names. None of them loads from the candidate. Instead the
 refusal says so and names the two landings (vocaro/queuekeeper#186): `preflight_staged` for a lane
 the entry drops or changes, `main_copies` in a rejection's facts, and `hooks_elsewhere` in the
-hook's hold.
+hook's send-back reason.
 
 ### Local Network detection
 

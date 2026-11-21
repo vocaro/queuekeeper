@@ -231,3 +231,4 @@ def register():
     if required_commands not in plugins.REQUIRED_COMMANDS: plugins.REQUIRED_COMMANDS.append(required_commands)
     if fix_hosts not in plugins.HOST_FIXES: plugins.HOST_FIXES.append(fix_hosts)
     if simulator_warnings not in plugins.DOCTOR: plugins.DOCTOR.append(simulator_warnings)
+    plugins.DOCTOR_WITHOUT_REPAIRS[simulator_warnings] = simulator_warnings
