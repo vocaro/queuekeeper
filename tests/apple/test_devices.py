@@ -1782,32 +1782,60 @@ class NotificationWatchTests(unittest.TestCase):
         self.assertEqual(seen, {"watched": False, "presented": 0,
                                 "detail": f"{device_notifications.WATCH} is off"})
 
-    def relaying(self, *texts):
-        """A watch whose relays print texts, over USB and the network in turn, and then wait to be ended. A text may
-        be (text, after, ends): printed after that many seconds or once the Path after exists; the relay then ends if ends. Ended by
-        SIGTERM, each prints `[disconnected:UDID]` first, as idevicesyslog 1.4.0 did on the owner's iPhone and iPad
-        (2026-11-06, vocaro-engineering#194)."""
-        printed = iter(texts)
+    def relaying(self, usb=None, network=None, *, ready=None):
+        """Launch the real guard with a fake relay for each route, optionally gated by a test-owned file."""
+        def after_file(path):
+            return ("from pathlib import Path\n"
+                    f"deadline = time.monotonic() + {stretched(60)}\n"
+                    f"while not Path({str(path)!r}).exists():\n"
+                    "    if time.monotonic() >= deadline: sys.exit('relay release never arrived')\n"
+                    "    time.sleep(0.01)\n")
 
-        def relay(udid, network):
-            text, after, ends = (lambda given: given if isinstance(given, tuple) else (given, 0, False))(next(printed))
-            waiting = (f"time.sleep({after})\n" if not isinstance(after, Path) else
-                       "from pathlib import Path\n"
-                       f"deadline = time.monotonic() + {stretched(60)}\n"
-                       f"while not Path({str(after)!r}).exists():\n"
-                       "    if time.monotonic() >= deadline: sys.exit('relay release never arrived')\n"
-                       "    time.sleep(0.01)\n")
-            return [sys.executable, "-c", "import signal, sys, time\n"
-                    "def end(*_): sys.stdout.write(sys.argv[2]); sys.stdout.flush(); sys.exit(0)\n"
-                    "signal.signal(signal.SIGTERM, end)\n"
-                    + waiting + "sys.stdout.write(sys.argv[1]); "
-                    f"sys.stdout.flush(); time.sleep({0 if ends else stretched(60)})", text,
-                    device_notifications.DISCONNECTED.format(udid) + "\n"]
+        def command(udid, text="", *, after=None, lose_after=None, exits=False):
+            # idevicesyslog prints the disconnect marker on SIGTERM too.
+            marker = device_notifications.DISCONNECTED.format(udid)
+            script = ("import signal, sys, time\n"
+                      f"marker = {marker!r}\n"
+                      "def end(*_): print(marker, flush=True); sys.exit(0)\n"
+                      "signal.signal(signal.SIGTERM, end)\n")
+            if isinstance(after, Path):
+                script += after_file(after)
+            elif after is not None:
+                script += f"time.sleep({after})\n"
+            script += "print(sys.argv[1], end='', flush=True)\n"
+            if lose_after is not None:
+                script += after_file(lose_after)
+                if not exits:
+                    script += "print(marker, flush=True)\n"
+            if not exits:
+                script += f"time.sleep({stretched(60)})\n"
+            return [sys.executable, "-c", script, text]
+
+        def relay(udid, use_network):
+            fixture = network if use_network else usb
+            if fixture is None:
+                return command(udid, exits=True)
+            if isinstance(fixture, str):
+                return command(udid, fixture)
+            return command(udid, **fixture)
+
+        # The child and its guard may take time to start on a loaded test host.
+        # A test specifically exercising late attachment supplies its own bound.
+        if ready is None:
+            ready = stretched(30)
         for patcher in (patch.dict(os.environ, {device_notifications.WATCH: ""}),
                         patch.object(device_notifications, "relay", relay),
-                        patch.object(device_notifications.shutil, "which", return_value="/usr/bin/true")):
+                        patch.object(device_notifications.shutil, "which", return_value="/usr/bin/true"),
+                        patch.object(device_notifications, "READY", ready)):
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def await_relay_output(self, watch, path, predicate):
+        deadline = time.monotonic() + stretched(30)
+        while not predicate(watch._read(path)):
+            if time.monotonic() >= deadline:
+                self.fail(f"{Path(path).name} relay never produced the expected output")
+            time.sleep(0.02)
 
     def test_a_watch_reads_its_relays_once_says_nothing_of_what_they_said_and_deletes_it(self):
         banner = (LOGS / "springboard-banner.log").read_text()
@@ -1823,49 +1851,51 @@ class NotificationWatchTests(unittest.TestCase):
         self.assertTrue(all(process.poll() is not None for _path, process in watch.relays))
 
     def test_a_watch_that_reached_the_device_by_neither_route_says_so(self):
-        self.relaying("[connected]\n", "")
+        self.relaying({"text": "[connected]\n", "exits": True})
         self.assertEqual(device_notifications.Watch(TABLET).stop(),
                          {"watched": False, "presented": 0, "detail": f"{device_notifications.RELAY} relayed no line "
                                                                       f"of {TABLET}'s log over USB or the network"})
         quiet = (LOGS / "springboard-quiet.log").read_text()
-        self.relaying("", quiet)
+        self.relaying(network=quiet)
         self.assertEqual(device_notifications.Watch(TABLET).stop(),
                          {"watched": True, "presented": 0, "transport": "network"})
 
     def test_a_relay_that_ends_or_loses_the_device_during_the_run_leaves_it_unwatched(self):
         quiet = (LOGS / "springboard-quiet.log").read_text()
-        cases = [
-            # The relay ended before the command did, as -x ends it when the cable comes out.
-            ((quiet, 0, True), "", "its usb relay lost"),
-            # It stayed up but said it lost the device.
-            ("", f"{quiet}[disconnected:{TABLET}]\n", "its network relay lost"),
-        ]
-        for usb, network, said in cases:
-            with self.subTest(said=said):
-                self.relaying(usb, network)
+        for transport, exits in (("usb", True), ("network", False)):
+            with self.subTest(transport=transport):
+                release = self.root / f"lose-{transport}"
+                self.relaying(**{transport: {"text": quiet, "lose_after": release, "exits": exits}})
                 watch = device_notifications.Watch(TABLET)
-                time.sleep(stretched(1))
-                seen = watch.stop()
+                path, process = watch.relays[int(transport == "network")]
+                try:
+                    self.assertIn(path, watch.ready)
+                    release.touch()
+                    if exits:
+                        # -x ends the relay when the cable comes out.
+                        process.wait(stretched(30))
+                    else:
+                        # The relay can stay up but report losing the device.
+                        marker = device_notifications.DISCONNECTED.format(TABLET)
+                        self.await_relay_output(watch, path, lambda text: marker in text)
+                finally:
+                    seen = watch.stop()
                 self.assertEqual((seen["watched"], seen["presented"]), (False, 0), seen)
-                self.assertIn(said, seen["detail"])
+                self.assertIn(f"its {transport} relay lost", seen["detail"])
                 self.assertNotIn("transport", seen)
 
     def test_a_relay_that_reaches_the_device_only_after_the_run_started_leaves_it_unwatched(self):
         quiet = (LOGS / "springboard-quiet.log").read_text()
         release = Path(self.enterContext(tempfile.TemporaryDirectory())) / "release"
-        with patch.object(device_notifications, "READY", 0.5):
-            self.relaying((quiet, release, False), "")
-            watch = device_notifications.Watch(TABLET)
-            try:
-                # The log reaches USB strictly after the watch took its initial ready snapshot.
-                release.touch()
-                usb, _ = watch.relays[0]
-                deadline = time.monotonic() + stretched(30)
-                while not device_notifications.lines(watch._read(usb)) and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                self.assertTrue(device_notifications.lines(watch._read(usb)), "USB relay never produced its log")
-            finally:
-                seen = watch.stop()
+        self.relaying({"text": quiet, "after": release}, ready=0.5)
+        watch = device_notifications.Watch(TABLET)
+        try:
+            # The log reaches USB strictly after the watch took its initial ready snapshot.
+            release.touch()
+            usb, _ = watch.relays[0]
+            self.await_relay_output(watch, usb, device_notifications.lines)
+        finally:
+            seen = watch.stop()
         self.assertEqual((seen["watched"], seen["presented"]), (False, 0), seen)
         self.assertIn("its usb relay reached", seen["detail"])
         self.assertIn("only after the run had started", seen["detail"])
@@ -1875,19 +1905,25 @@ class NotificationWatchTests(unittest.TestCase):
         # whole run, and the relays ended at stop() said they disconnected, which is not losing the device.
         # The gap stays fixed, the behavior under test; READY, its bound, stretches with the load (host_isolation).
         quiet = (LOGS / "springboard-quiet.log").read_text()
-        with patch.object(device_notifications, "READY", stretched(10)):
-            self.relaying(f"[connected:{TABLET}]\n{quiet}", (f"[connected:{TABLET}]\n{quiet}", 0.5, False))
-            watch = device_notifications.Watch(TABLET)
-        time.sleep(stretched(1))
+        connected = f"[connected:{TABLET}]\n{quiet}"
+        self.relaying(connected, {"text": connected, "after": 0.5})
+        watch = device_notifications.Watch(TABLET)
         self.assertEqual(watch.stop(), {"watched": True, "presented": 0, "transport": "usb+network"})
 
     def test_one_relay_that_watched_the_whole_run_is_enough_and_is_named(self):
         # The negative control for the two above: the network relay lost the device, but USB read the whole run.
         quiet = (LOGS / "springboard-quiet.log").read_text()
-        self.relaying(f"[connected:{TABLET}]\n{quiet}", (quiet, 0, True))
+        release = self.root / "lose-network"
+        self.relaying(f"[connected:{TABLET}]\n{quiet}", {"text": quiet, "lose_after": release, "exits": True})
         watch = device_notifications.Watch(TABLET)
-        time.sleep(stretched(1))
-        self.assertEqual(watch.stop(), {"watched": True, "presented": 0, "transport": "usb"})
+        network, process = watch.relays[1]
+        try:
+            self.assertIn(network, watch.ready)
+            release.touch()
+            process.wait(stretched(30))
+        finally:
+            seen = watch.stop()
+        self.assertEqual(seen, {"watched": True, "presented": 0, "transport": "usb"})
 
     def test_a_relay_whose_starter_dies_ends_and_deletes_what_it_relayed(self):
         script = (f"import sys, time; sys.path.insert(0, {str(Path(__file__).resolve().parents[2] / 'src/python')!r})\n"
