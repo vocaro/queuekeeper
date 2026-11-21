@@ -145,6 +145,10 @@ first.
 
 ### A round
 
+When changing how the worker handles an entry, add a test for each route in the
+[merge queue integration tests](../tests/integration/test_merge_queue.py). Cover a regular batch,
+a stacked gate, each half of a bisect, an entry tested alone, and an entry put first with `--front`.
+
 The worker fetches, takes everything waiting, oldest first, cherry-picks each entry onto
 `origin/main` in its checkout, and runs, through `qk run`:
 
