@@ -9320,6 +9320,27 @@ class Refusals(Fixture):
         run(self.repo, "git", "checkout", "-q", "HEAD~1", "--", "queuekeeper.json")
         run(self.repo, "git", "commit", "-qm", "Add Queuekeeper")
 
+    def test_commands_explain_how_to_adopt_when_the_project_has_no_configuration(self):
+        self.without_configuration()
+        run(self.repo, "git", "checkout", "-q", "--detach", "origin/main")
+        project = [sys.executable, str(ROOT / "scripts/qk"), "--project", str(self.repo)]
+        for words in (["run", "gate"], ["admit", "--", "true"], ["doctor", "--check-only"]):
+            with self.subTest(words=words):
+                done = subprocess.run([*project, *words], cwd=self.repo, capture_output=True, text=True)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("has no queuekeeper.json in its working tree", done.stderr)
+                self.assertIn("'Configure a project' in the user guide", done.stderr)
+                self.assertNotIn("No such file or directory", done.stderr)
+
+        done = subprocess.run([*project, "python-path", "queuekeeper"], cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+        (self.repo / "queuekeeper.json").write_text("{")
+        done = subprocess.run([*project, "run", "gate"], cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("Expecting property name", done.stderr)
+        self.assertNotIn("has no queuekeeper.json", done.stderr)
+
     def test_the_commit_that_adds_the_configuration_lands_and_main_decides_after(self):
         """#10: the queue read main's queuekeeper.json alone, so it refused a project's first landing."""
         self.without_configuration()
