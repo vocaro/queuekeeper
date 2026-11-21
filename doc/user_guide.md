@@ -1285,6 +1285,12 @@ NAME is already in this run's results. `--activity-timing-prefix PREFIX` also ke
 activities titled `PREFIX N s`. Keep a system trace in the results when a test reports a long wait,
 since the next run on that Mac replaces the logs.
 
+Use `qk results history LANE TEST` to see one exact test ID across that lane's retained Xcode
+results. Use the ID printed by `qk results keep` or in the kept JSON. Each observation names its
+commit and result file, so results from different shards or simulators can be distinguished.
+These observations come from the latest whole run kept at each commit and reflect the results
+still on disk. The merge queue records proven flakes separately.
+
 #### A pytest lane
 
 Run pytest with `-rs --no-fold-skipped`, so each skip's reason, including an `Unmeasured:` one, is

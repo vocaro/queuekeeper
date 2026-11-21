@@ -123,6 +123,47 @@ class KeepTests(unittest.TestCase):
         self.assertFalse(list(self.results.rglob("*.xcresult")))
         self.assertEqual(len(list(self.results.rglob("*"))), 3)
 
+    def test_history_reads_the_latest_retained_results_for_an_exact_test_and_lane(self):
+        store = self.root / "store"
+        older, newer = "a" * 40, "b" * 40
+
+        def kept(commit, lane, name, outcome, by="qk simulator-tests"):
+            folder = store / commit / f"{lane}.results" / name / matrix.KEPT
+            folder.mkdir(parents=True)
+            path = folder / "iPhone.json"
+            path.write_text(json.dumps({"run": "iPhone", "keptBy": by, "bundleUnread": None, "tests": [
+                {"test": "Smoke/testOpens()", "outcome": outcome, "seconds": 2},
+                {"test": "Smoke/testOpensAgain()", "outcome": "failed", "seconds": 3},
+            ]}))
+            return path
+
+        kept(older, "ios-tests", "old", "failed")
+        kept(newer, "ios-tests", "new", "passed", run_results.KEPT_BY)
+        kept(newer, "ios-tests", "optional", "skipped")
+        kept(newer, "ios-tests", "foreign", "failed", "another command")
+        kept(newer, "other", "other-lane", "failed")
+        kept(newer, "ios-tests", "broken", "failed").write_text("[")
+        sound = StringIO()
+        with patch.object(run_results.remote, "store", return_value=store) as lookup, contextlib.redirect_stdout(sound):
+            self.assertEqual(cli.main(["--project", str(self.root), "results", "history", "ios-tests",
+                                       "Smoke/testOpens()"]), 0)
+
+        lookup.assert_called_once_with(self.root)
+        output = sound.getvalue()
+        self.assertIn(f"{older[:12]} old/simulator-tests/iPhone.json: failed 2.000s Smoke/testOpens()", output)
+        self.assertIn(f"{newer[:12]} new/simulator-tests/iPhone.json: passed 2.000s Smoke/testOpens()", output)
+        self.assertIn(f"{newer[:12]} optional/simulator-tests/iPhone.json: skipped 2.000s Smoke/testOpens()", output)
+        self.assertIn("1 passed, 1 failed, 1 skipped", output)
+        self.assertIn("could not be read", output)
+        for excluded in ("testOpensAgain", "foreign", "other-lane"):
+            self.assertNotIn(excluded, output)
+
+    def test_history_distinguishes_no_retained_observations(self):
+        lines = []
+        with patch.object(run_results.remote, "store", return_value=self.root):
+            self.assertEqual(run_results.history(self.root, "ios-tests", "Smoke/testOpens()", lines.append), 0)
+        self.assertIn("ios-tests: no retained result names Smoke/testOpens()", lines)
+
     def test_a_failed_run_keeps_the_same_record_with_its_status(self):
         self.fixture([case("testBroken", "Failed", 0.5)], "Failed")
         status, output = self.keep("--results", str(self.results), status="65")
