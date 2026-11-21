@@ -129,6 +129,39 @@ class KeepTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertEqual((self.record()["status"], self.record()["tests"][0]["outcome"]), (65, "failed"))
 
+    def test_keeps_every_parameterized_issue_and_counts_only_the_test(self):
+        location = {"filePath": "/Tests/Smoke.swift", "lineNumber": 12}
+        first = {"name": "Expectation failed: value == 0", "nodeType": "Failure Message", "sourceLocation": location}
+        second = {"name": "First measured value\nSecond line", "nodeType": "Failure Message"}
+        third = {"name": "Another measured value", "nodeType": "Failure Message"}
+        arguments = [{"name": f"value: {value}", "nodeType": "Arguments", "children": list(issues)}
+                     for value, issues in ((1, (first, second)), (2, (third, second)))]
+        self.fixture([case("measure", "Failed", 0.5, *arguments), case("testOpens", "Passed", 1.25)], "Failed")
+
+        status, output = self.keep("--results", str(self.results), status="65")
+        self.assertEqual(status, 0, output)
+        self.assertIn("1 passed, 1 failed, 0 skipped", output)
+        failed, passed = self.record()["tests"]
+        self.assertEqual(failed["issues"], [{"message": first["name"], "sourceLocation": location},
+                                           {"message": second["name"]}, {"message": third["name"]},
+                                           {"message": second["name"]}])
+        self.assertNotIn("issues", passed)
+
+    def test_keeps_swift_issue_comments_that_the_bundle_can_omit(self):
+        scope = {"name": "Known issue scope", "nodeType": "Expected Failure"}
+        self.fixture([case("testKnown", "Expected Failure", 0.1, scope)])
+        known_issue = "━ Test testKnown() recorded a known issue at SmokeTests.swift:24:21: Issue recorded"
+        known_outcome = "━ Test testKnown() passed after 0.001 seconds with 1 known issue."
+        self.log.write_text(f"{known_issue}\n↳ First line\n  Second line\n↳ Known issue scope\n"
+                            f"other console output\n  unrelated indented output\n{known_outcome}\n")
+        status, output = self.keep("--results", str(self.results))
+        self.assertEqual(status, 0, output)
+        self.assertEqual((self.kept / "iPhone-17-Pro.log").read_text().splitlines(),
+                         [known_issue, "↳ First line", "  Second line", "↳ Known issue scope", known_outcome])
+        recorded = self.record()["tests"][0]
+        self.assertEqual(recorded["outcome"], "expected failure")
+        self.assertEqual(recorded["issues"], [{"message": scope["name"], "expected": True}])
+
     def test_keeps_selected_timed_activities_under_their_test(self):
         identifier_url = "test://com.apple.xcode/Example/UI/Smoke/testOpens"
         opens = {**case("testOpens", "Passed", 10), "nodeIdentifierURL": identifier_url}

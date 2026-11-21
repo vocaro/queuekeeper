@@ -42,7 +42,7 @@ build while its earlier stages run, and the full run that follows finds the buil
 
 Under a lane, whose command finds its results/ in QUEUEKEEPER_RESULTS_DIR, each test run, a shard or a device,
 also keeps there, in simulator-tests/, the lines of its log that give each test's and suite's outcome and
-seconds, KIND.log, and its result bundle's summary and each class's or suite's seconds, KIND.json: they
+seconds, KIND.log, and its result bundle's summary, timings and per-test issue messages, KIND.json. They
 come back from another Mac with the lane's dispatch, and are kept by commit beside its receipt, where
 the logs folder's are overwritten by the next run (vocaro-engineering#218). `qk results keep` writes the
 same two files for a script that runs xcodebuild itself (vocaro-engineering#260).
@@ -252,6 +252,7 @@ KEPT = "simulator-tests"
 # `Test Case '-[B.C t]' passed (0.7 seconds).`, `Test Suite 'C' passed at ...` and `Executed N tests`.
 RESULT_LINE = re.compile(r"^(?:\S+ (?:Test|Suite) |Test [Cc]ase '|Test Suite '|\s*Executed \d+ tests?\b|.*: error: -\[)")
 STARTED_LINE = re.compile(r"(?: started\.| started at [-0-9: .]+)$")
+SWIFT_ISSUE = re.compile(r"^\S+ Test .* recorded (?:an issue|a known issue)\b")
 # Each result a bundle's test tree gives a test case, as a kept record names it. Anything else is unmeasured.
 OUTCOMES = {"Passed": "passed", "Failed": "failed", "Skipped": "skipped", "Expected Failure": "expected failure"}
 # What a test that could not measure its subject begins its skip message with.
@@ -310,10 +311,25 @@ def suite_seconds(bundle, record=None):
     return seconds
 
 
+def issue_messages(node):
+    """Each issue message in a test's result tree, including parameterized cases and repeated runs."""
+    kind = node.get("nodeType")
+    if kind in ("Failure Message", "Expected Failure"):
+        issue = {"message": node["name"]}
+        if kind == "Expected Failure":
+            issue["expected"] = True
+        if location := node.get("sourceLocation"):
+            issue["sourceLocation"] = location
+        yield issue
+    for child in node.get("children", []):
+        yield from issue_messages(child)
+
+
 def test_cases(record, activity_timings=None):
     """Each test case in a bundle's test tree (bundle_record), as {test, outcome, seconds}. outcome is passed,
     failed, skipped, expected failure or unmeasured, the last with its reason: a skip that says it could not
-    measure, or a result this does not know. seconds is None when the bundle gives none.
+    measure, or a result this does not know. seconds is None when the bundle gives none. The record keeps
+    every issue message the tree gives, separately from the case's outcome and count.
     An optional activity reader gets the case's identifier and supplies its selected timings."""
     found = []
     def skip_reason(node):
@@ -332,6 +348,8 @@ def test_cases(record, activity_timings=None):
         reason = skip_reason(node) if case["outcome"] == "skipped" else None
         if reason is not None: case["outcome"] = "unmeasured"
         if case["outcome"] == "unmeasured": case["reason"] = reason or f"the bundle gives its result as {node.get('result')!r}"
+        if issues := list(issue_messages(node)):
+            case["issues"] = issues
         if activity_timings is not None:
             case["activities"] = activity_timings(node.get("nodeIdentifierURL") or case["test"])
         found.append(case)
@@ -339,11 +357,23 @@ def test_cases(record, activity_timings=None):
     return found
 
 
+def result_lines(text):
+    """Keep result lines and Swift Testing's issue comments, which can span several lines."""
+    in_issue = False
+    for line in text.splitlines():
+        if in_issue and line.startswith(("↳ ", "  ")):
+            yield line
+            continue
+        in_issue = bool(SWIFT_ISSUE.match(line))
+        if RESULT_LINE.match(line) and not STARTED_LINE.search(line):
+            yield line
+
+
 def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk simulator-tests", *, cases=None):
     """Keep what a reader cites of one test run in its lane's results/, KEPT/KIND.log and KIND.json, and
     return that folder, or None outside a lane (no RESULTS_VARIABLE): the log's lines that give each test's
-    and suite's outcome and seconds (RESULT_LINE), and the result bundle's summary, as xcresulttool prints
-    it, with each class's or suite's seconds and each test case's outcome and seconds (test_cases). record is
+    and suite's outcome and seconds, including Swift Testing issue comments (result_lines), and the result
+    bundle's summary, with each class's or suite's seconds and each test's outcome, seconds and issues. record is
     the bundle's (bundle_record), None when it could not be read, and then bundleUnread says why, as unread
     when given, as it does for a bundle with no test case; a log that is missing keeps no lines, and its JSON
     says so. status is None for a run stopped at its limit. by names the command that kept it.
@@ -356,8 +386,7 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
         folder.mkdir(parents=True, exist_ok=True)
         lines = None
         if log.exists():
-            lines = [line for line in log.read_text(errors="replace").splitlines()
-                     if RESULT_LINE.match(line) and not STARTED_LINE.search(line)]
+            lines = list(result_lines(log.read_text(errors="replace")))
             (folder / f"{kind}.log").write_text("".join(f"{line}\n" for line in lines))
         (folder / f"{kind}.json").write_text(json.dumps({
             "run": kind, "keptBy": by, "status": status, "seconds": seconds, "log": log.name if lines is not None else None,

@@ -1226,8 +1226,27 @@ qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
 - Two simulators at once can hold memory pressure at warning for the whole run, which stops
   admission from opening extra slots, so keep memory-ceiling measurements out of such a run.
 
-Each run keeps per-test outcomes and seconds in `simulator-tests/` of the lane's results. A script
-that runs `xcodebuild test` itself keeps the same record by calling, once per run, pass or fail:
+Each run keeps per-test outcomes, seconds and issue messages in `simulator-tests/` of the lane's
+results. The per-device or per-shard JSON records messages in each test's `issues` list, including
+any source location the result bundle gives. The kept log also includes Swift Testing's issue
+comments when Xcode prints them. For known issues the bundle can give just the
+`withKnownIssue` scope's message.
+
+To collect measurements from a simulator test, give it a local output directory through an
+Xcode test-runner variable:
+
+```sh
+measure_dir="$(mktemp -d)"
+TEST_RUNNER_MEASURE_DIR="$measure_dir" qk run --here ios-tests
+```
+
+In the test, read `MEASURE_DIR` from `ProcessInfo.processInfo.environment` and write the measurements
+there. Xcode strips `TEST_RUNNER_` before passing the name to the test process. Use a separate
+filename for each test and simulator if they write concurrently. A lane configured with
+`qk simulator-tests --forward-env PREFIX` also passes variables that start with `PREFIX` to
+its tests, with their original names.
+
+A script that runs `xcodebuild test` itself keeps the same record by calling, once per run, pass or fail:
 
 ```sh
 qk results keep --log "$log" --bundle "$bundle" --name "$device" --status "$status"
