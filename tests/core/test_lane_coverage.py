@@ -357,6 +357,24 @@ class Doctor(Project):
         self.assertEqual((status, shown["testLanes"]["result"]), (0, TESTS_WITHOUT_A_LANE))
         self.assertTrue(any("belong to no lane" in w and "Stale" in w for w in shown["warnings"]))
 
+    def test_doctor_notes_when_a_stock_launcher_copy_differs(self):
+        source = config.TOOLKIT_ROOT / "scripts/qk"
+        stock = source.read_text()
+        for name, launcher, should_note in (
+            ("older", stock + "\n# a difference\n", True),
+            ("current", stock, False),
+            ("custom", "#!/bin/sh\nexec qk \"$@\"\n", False),
+        ):
+            with self.subTest(name=name):
+                self.write("scripts/qk", launcher)
+                status, shown = self.doctor({"gate": {**lane("/usr/bin/true"), "timeout": 60}})
+                self.assertEqual(status, 0)
+                notes = [note for note in shown["notes"] if note.startswith("scripts/qk differs")]
+                self.assertEqual(bool(notes), should_note)
+                if should_note:
+                    self.assertIn(str(source), notes[0])
+                self.assertEqual((self.root / "scripts/qk").read_text(), launcher)
+
     def test_doctor_keeps_could_not_tell_apart_from_a_pass(self):
         self.package()
         self.write("Examples/UITests/Stale.swift", XCTEST.format(name="Stale"))

@@ -1736,12 +1736,14 @@ def perform(argv, report):
             test_lanes = lane_coverage.report(root, config)  # a warning at most, and never a failure (#289)
             warnings += lane_coverage.doctor_warnings(test_lanes)
             affected = lane_coverage.affected_paths(root, config)
+            launcher_note = checkout.launcher_note(root, TOOLKIT_ROOT)
             warnings += lane_coverage.affected_warnings(affected)
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "plugins": list(plugins.LOADED),
                 "missingCommands": missing, "errors": errors, "warnings": warnings,
                 "notes": list(dict.fromkeys([*(note for hosts in compared for note in remote.python_crash_notes(hosts)),
-                                             *lane_coverage.skipping_notes(affected)])),
+                                             *lane_coverage.skipping_notes(affected),
+                                             *([launcher_note] if launcher_note else [])])),
                 "testLanes": test_lanes, **({"affectedPaths": affected} if affected else {}),
                 "startFree": start_floors(config), "farm": compared},
                 indent=2))
