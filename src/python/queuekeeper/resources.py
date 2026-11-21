@@ -2527,7 +2527,9 @@ def now_lines(reading, at=None):
                 if waiter.get("position") is not None: kind += f", priority place {waiter['position']}"
                 waited = f"waited {duration(waiter['waitedSeconds'])}" if waiter.get("waitedSeconds") is not None \
                     else "waited for an unknown time"
-                if waiter.get("away"):
+                if sender := waiter.get("heldFor"):
+                    why = f"place held for work sent by {sender}"
+                elif waiter.get("away"):
                     asked = waiter.get("lastAskedSeconds")
                     why = ("place kept while away, last asked " + (f"{duration(asked)} ago" if asked is not None else "at an unknown time")
                            + ("; it holds later work back" if waiter.get("holdsBack")
