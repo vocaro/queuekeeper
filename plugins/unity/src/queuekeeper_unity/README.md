@@ -1,7 +1,7 @@
 # The Unity plugin
 
 The Unity plugin runs a Unity project's editor on a shared Mac without a person watching it. It
-builds on the [Mac desktop plugin](../mac_desktop/README.md), so a project that lists it gets that
+builds on the [Mac desktop plugin](../../../mac-desktop/src/queuekeeper_mac_desktop/README.md), so a project that lists it gets that
 one too.
 
 Switch it on in `queuekeeper.json`, and say where the Unity project is:
@@ -49,9 +49,15 @@ keeps simulating on the GPU while it is unfocused. So a `"unity": true` lane who
 `exclusive` also ends unmeasured while any editor on that Mac, on any project, is in Play mode.
 A paused editor, or one whose Play state cannot be read, does not stop it.
 
-A lane whose results differ by GPU, such as one that compares rendered images, also needs a label
-naming the chip, such as `"labels": ["apple-m5-max"]`, which keeps it on a Mac whose settings give
-that label (the user guide's What a Mac takes).
+For a lane that needs a licensed editor, add `"labels": ["unity-license"]` to the lane. Give that
+label only to Macs where an admitted Unity batch run has obtained a license in the same session
+context the lane uses. Set it in each Mac's `mac-settings.json` as described under
+[What a Mac takes](../../../../doc/user_guide.md#what-a-mac-takes). Placement leaves Macs without the
+label out. A lane whose results differ by GPU can require both `unity-license` and a chip label,
+such as `apple-m5-max`.
+
+A command under bare `qk admit` can go to another Mac without the lane's labels. For a one-off
+Unity command, use `qk admit --here -- COMMAND` on a Mac where licensing has been verified.
 
 ## Flaky tests
 
@@ -188,8 +194,9 @@ failed. `closed` and `run` otherwise exit with their command's own status.
   through that package. An editor on a project without it is never counted as playing. The reply's
   form was not read from a live editor when this was written (2026-11-12): the plugin looks for
   `playMode` anywhere in it.
-- **Another Mac's Hub sign-in is not checked.** Over SSH, Unity's command may not read the
-  keychain that holds the session. A run on a Mac that is not signed in ends unmeasured, by its log.
+- **Hub sign-in is advisory.** Over SSH, Unity's command may not read the keychain that holds
+  the Hub session. Use an admitted batch run to verify editor licensing. If `qk unity test` gets a
+  licensing initialization error in place of test results, it ends unmeasured.
 - **Running many gates in one editor** is not here. vocaro/mpm's shared gate runner needs a Unity
   package for its C# half, and stays there until a second Unity project needs it
   ([issue 6](https://github.com/vocaro/queuekeeper/issues/6)).
