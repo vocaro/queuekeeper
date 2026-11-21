@@ -67,6 +67,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from types import SimpleNamespace
@@ -378,6 +379,97 @@ def test_cases(record, activity_timings=None):
     return found
 
 
+TESTMANAGERD_DISCONNECT = "Lost connection to testmanagerd"
+TESTMANAGERD_CRASH = "the simulator's testmanagerd crashed during testing"
+DIAGNOSTIC_EVENT = re.compile(r"^(\d\d):(\d\d):(\d\d\.\d+) ([^\s\[]+)\[(\d+):\d+\] (.*)$")
+
+
+def recent_diagnostic_events(path, finish):
+    """Events in the final minute of this result's local clock, including runs crossing midnight."""
+    with path.open(errors="replace") as log:
+        for line in log:
+            if match := DIAGNOSTIC_EVENT.match(line):
+                hour, minute, second, process, pid, message = match.groups()
+                age = (finish - (int(hour) * 3600 + int(minute) * 60 + float(second))) % 86400
+                if age <= 60:
+                    yield age, process, pid, message
+
+
+def daemon_crashed(bundle, udid, finish_time):
+    """Corroborate a disconnect in this bundle's diagnostics, on its destination.
+
+    Xcode puts the daemon-control log under the simulator's ID, and the runner and
+    crash records in a session log in the same action folder (vocaro/AXVerify#6).
+    Check the sequence near the failed result and match the xcodebuild PID across
+    both logs. Normal XCTest diagnostics include these logs without a sysdiagnose.
+    """
+    try:
+        local = time.localtime(finish_time)
+        finish = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec + finish_time % 1
+        with tempfile.TemporaryDirectory(prefix="qk-xctest-") as directory:
+            output = Path(directory) / "diagnostics"
+            subprocess.run(["xcrun", "xcresulttool", "export", "diagnostics", "--path", str(bundle),
+                            "--output-path", str(output)], capture_output=True, timeout=30, check=True)
+            for control in output.glob("*/*/testmanagerd.log"):
+                if not control.parent.name.lower().endswith("_" + udid.lower()):
+                    continue
+                losses = [(age, pid) for age, process, pid, message in recent_diagnostic_events(control, finish)
+                          if process == "xcodebuild" and message.startswith("<XCTDaemonControlSession:")
+                          and message.endswith("lost connection to daemon")]
+                if not losses:
+                    continue
+                operations = []
+                for session in control.parent.parent.rglob("Session-*.log"):
+                    interrupted = None
+                    crashes = {}
+                    for age, process, pid, message in recent_diagnostic_events(session, finish):
+                        if process != "xcodebuild" and message.startswith("Connection to testmanagerd interrupted,"):
+                            interrupted = age
+                        elif process == "xcodebuild" and message.startswith("Handling Crash: testmanagerd at "):
+                            if interrupted is not None and any(other == pid and interrupted >= lost >= age
+                                                               for lost, other in losses):
+                                crashes[pid] = age
+                        elif process == "xcodebuild" and message.startswith("Test operation failure:"):
+                            crash = crashes.pop(pid, None)
+                            operations.append((age, crash is not None and crash >= age and
+                                               f'"{TESTMANAGERD_DISCONNECT}"' in message))
+                if operations and min(operations)[1]:
+                    return True
+    except (OSError, OverflowError, TypeError, ValueError, subprocess.SubprocessError):
+        pass
+    return False
+
+
+def daemon_interruption(bundle, udid, record, failed, console):
+    """The result's test cases with transport failures changed to unmeasured, or None."""
+    summary = record[0]
+    destinations = summary.get("devicesAndConfigurations", [])
+    if not destinations or any(item.get("device", {}).get("deviceId", "").lower() != udid.lower()
+                               for item in destinations):
+        return None
+    failures = summary.get("testFailures", [])
+    if not isinstance(failures, list) or len(failures) != failed or any(
+            not isinstance(issue, dict) or issue.get("failureText") != TESTMANAGERD_DISCONNECT for issue in failures):
+        return None
+    # The tree or console can carry an assertion that the summary omits.
+    cases = test_cases(record)
+    interrupted = [case for case in cases if case["outcome"] == "failed"]
+    if len(interrupted) != failed or lane_report.SWIFT_TESTING_ISSUE.search(console):
+        return None
+    if any(line[match.end():].strip() != TESTMANAGERD_DISCONNECT for line in console.splitlines()
+           if (match := lane_report.XCTEST_ISSUE.match(line))):
+        return None
+    for case in interrupted:
+        messages = [issue["message"] for issue in case.get("issues", []) if not issue.get("expected")]
+        if not messages or any(message != TESTMANAGERD_DISCONNECT for message in messages):
+            return None
+    if not daemon_crashed(bundle, udid, summary.get("finishTime")):
+        return None
+    for case in interrupted:
+        case.update(outcome="unmeasured", reason=TESTMANAGERD_CRASH)
+    return cases, [case["test"] for case in interrupted]
+
+
 def result_lines(text):
     """Keep result lines and Swift Testing's issue comments, which can span several lines."""
     in_issue = False
@@ -426,7 +518,8 @@ def keep_failures(kind, results, tests, text):
     (folder / "failures.json").write_text(json.dumps({"failedTests": failed}, indent=1) + "\n")
 
 
-def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk simulator-tests", *, cases=None):
+def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk simulator-tests", *,
+         cases=None, console_failures=True):
     """Keep what a reader cites of one test run in its lane's results/, KEPT/KIND.log and KIND.json, and
     return that folder, or None outside a lane (no RESULTS_VARIABLE): the log's lines that give each test's
     and suite's outcome and seconds, including Swift Testing issue comments (result_lines), and the result
@@ -434,7 +527,8 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
     the bundle's (bundle_record), None when it could not be read, and then bundleUnread says why, as unread
     when given, as it does for a bundle with no test case; a log that is missing keeps no lines, and its JSON
     says so. status is None for a run stopped at its limit. by names the command that kept it.
-    A caller can supply cases already read, including any selected activity timings."""
+    A caller can supply cases already read, including any selected activity timings. With console_failures off,
+    only the test cases supply failures, as when a daemon crash has already reclassified them."""
     results = results if results is not None else os.environ.get(RESULTS_VARIABLE)
     if not results: return None
     folder = Path(results) / KEPT
@@ -453,7 +547,7 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
             "suiteSeconds": suite_seconds(None, record) if record is not None else None,
             "tests": tests, "bundleUnread": unread or (UNREAD if tests is None else None if tests else NO_CASES)},
             indent=1) + "\n")
-        if status != 0: keep_failures(kind, Path(results), tests, text or "")
+        if status != 0: keep_failures(kind, Path(results), tests, (text or "") if console_failures else "")
     except OSError as error:
         print(f"queuekeeper simulator-tests: {kind}'s results were not kept in {folder}: {error}", file=sys.stderr, flush=True)
         return None
@@ -468,6 +562,7 @@ class Run:
         self.shards, self.listing, self.seconds, self.listing_lock = {}, None, {}, threading.Lock()
         # Each test run's own, for a series: what finished it, its seconds, its test counts and its loads.
         self.details, self.durations, self.tallies, self.loads = {}, {}, {}, {}
+        self.daemon_crashes = set()
 
     def say(self, *lines):
         with self.lock: print(*lines, sep="\n", flush=True)
@@ -554,10 +649,15 @@ class Run:
             done.set()
             watcher.join(timeout=30)
             problems = list(session.unmuted)
+            restored = None
             try:
                 if speech.state(device.udid, "voiceover")["enabled"]:
                     still = speech.state(device.udid, "voiceover", "--disable")["enabled"]
-                    problems.append(f"VoiceOver was left on; it {'is still on' if still else 'has been switched off'}")
+                    restored = f"VoiceOver was left on; it {'is still on' if still else 'has been switched off'}"
+                    # A daemon crash can prevent the probe's teardown; verified cleanup still leaves it unmeasured.
+                    if still or kind not in self.daemon_crashes:
+                        problems.append(restored)
+                        restored = None
                 volume = speech.state(device.udid, "audio")["volume"]
                 if volume != 0: problems.append(f"the volume read {volume} after the tests")
             except (RuntimeError, ValueError, KeyError) as error:
@@ -566,8 +666,9 @@ class Run:
             lines = [line for line in (log.read_text(errors="replace").splitlines() if log.exists() else [])
                      if line.startswith(("VOICEOVER_EVENT ", "VOICEOVER_TREE "))]
             unread = f"; {len(session.unread)} volume checks got no reading" if session.unread else ""
+            notes = problems + ([restored] if restored else [])
             self.say(*(f"{kind} {line}" for line in lines),
-                     f"VOICEOVER {kind}: {len(lines)} lines; " + ("; ".join(problems) if problems else
+                     f"VOICEOVER {kind}: {len(lines)} lines; " + ("; ".join(notes) if notes else
                                                                  "VoiceOver off and the volume 0 after the tests") + unread)
             if problems and kind in self.results:
                 self.finish(kind, 1, "the simulator was heard or left speaking: " + "; ".join(problems))
@@ -628,7 +729,7 @@ class Run:
         args, log = self.args, self.logs / f"{kind}.log"
         bundle = self.logs / f"{kind}.xcresult"
         # xcodebuild refuses a result bundle path that exists; each run's bundle is new.
-        shutil.rmtree(bundle, ignore_errors=True)
+        if bundle.exists(): shutil.rmtree(bundle)
         # Without a derived data folder of its own, test-without-building writes logs, test results and
         # coverage data to a new folder under ~/Library/Developer/Xcode/DerivedData on every run, which
         # records no workspace and nothing removes: 1850 of them, 15 GiB, on 2026-11-04
@@ -674,22 +775,33 @@ class Run:
         # Tests that skipped ran nothing, so they are reported beside the count, not in it. The result
         # bundle's record counts them; the console, with no bundle to read, is the fallback.
         record = bundle_record(bundle)
-        kept(kind, log, record, None if cleanup is not None else status, seconds)
         recorded = bundle_results(bundle, kind, record)
         if recorded is not None: executed, skipped, from_bundle = recorded
         else: executed, skipped, from_bundle = lane_results.executed_tests(text), lane_results.skipped_tests(text), []
         failed = failed_tests(record, text)
         unknown = cleanup is not None and executed is None and not failed
-        executed = max(executed or 0, failed)
-        # The failed tests are counted in this line, which is all a lane reads of the device's run: the device's own
-        # lines that name them are in its log alone (vocaro/queuekeeper#81).
-        counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "") + \
-            (f", {failed} failed" if failed else "")
         console = lane_results.unmeasured_tests(text)
         # The bundle names each skipped XCTest test once, so the console's lines for them would repeat it.
         if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
         unmeasured = [*console, *from_bundle]
-        self.tallies[kind] = tally(status, executed, skipped, len(unmeasured), failed)
+        cases, interruption = None, None
+        # Parallel XCTest workers use clones, so their destination is not one simulator.
+        if cleanup is None and status and failed and recorded is not None and executed >= failed and not args.workers:
+            interruption = daemon_interruption(bundle, device.udid, record, failed, text)
+        executed = max(executed or 0, failed)
+        kept_status = None if cleanup is not None else status
+        if interruption:
+            cases, tests = interruption
+            self.daemon_crashes.add(kind)
+            executed, skipped, failed = executed - failed, skipped + failed, 0
+            kept_status = lane_results.UNMEASURED
+            unmeasured.extend(f"{kind}: -[{test}] : {UNMEASURED_SKIP} {TESTMANAGERD_CRASH}" for test in tests)
+        kept(kind, log, record, kept_status, seconds, cases=cases, console_failures=interruption is None)
+        # The failed tests are counted in this line, which is all a lane reads of the device's run: the device's own
+        # lines that name them are in its log alone (vocaro/queuekeeper#81).
+        counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "") + \
+            (f", {failed} failed" if failed else "")
+        self.tallies[kind] = tally(0 if interruption else status, executed, skipped, len(unmeasured), failed)
         if cleanup is not None:
             detail = "cleanup was not confirmed" + (" and test counts are unavailable" if unknown else "")
             if selection is not None:
@@ -702,9 +814,15 @@ class Run:
             # Not "Executed N tests", which a lane would count beside the device's own total.
             self.say(f"SHARD {kind}: status {status}, ran {executed} tests" + (f", {skipped} skipped" if skipped else "")
                      + f" in {seconds}s; log: {log}")
+            if interruption:
+                return lane_results.UNMEASURED, executed, skipped, unmeasured, f"{kind}: {TESTMANAGERD_CRASH}"
             detail = f"{kind} failed with status {status}" if status != 0 else \
                 f"{kind} ran no tests" if executed == 0 and selection and not unmeasured else None
             return (1 if detail else 0), executed, skipped, unmeasured, detail
+        if interruption:
+            self.finish(kind, lane_results.UNMEASURED, f"{TESTMANAGERD_CRASH}, {counted}", log, seconds)
+            self.say(*unmeasured)
+            return
         if status != 0:
             return self.finish(kind, 1, f"the tests failed with status {status}, {counted}", log, seconds)
         if executed == 0 and not unmeasured:

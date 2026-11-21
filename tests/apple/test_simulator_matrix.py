@@ -71,12 +71,18 @@ class Followed:
 # started testing, or fails after FAKE_MEET_LIMIT seconds.
 XCRUN = textwrap.dedent("""\
     #!/usr/bin/env python3
-    import datetime, json, os, pathlib, sys, time, uuid
+    import datetime, json, os, pathlib, shutil, sys, time, uuid
     state = pathlib.Path(os.environ["FAKE_STATE"])
     devices = state / "devices"
     devices.mkdir(parents=True, exist_ok=True)
     tool, action, *rest = sys.argv[1:]
     if tool == "xcresulttool":
+        if action == "export":
+            bundle = pathlib.Path(rest[rest.index("--path") + 1])
+            output = pathlib.Path(rest[rest.index("--output-path") + 1])
+            if not (bundle / "diagnostics").is_dir(): sys.exit(1)
+            shutil.copytree(bundle / "diagnostics", output)
+            sys.exit(0)
         # The record the fake xcodebuild left in the bundle, as xcresulttool prints it; none, a failure.
         what, bundle = rest[1], pathlib.Path(rest[rest.index("--path") + 1])
         record = bundle / f"{what}.json"
@@ -231,6 +237,49 @@ XCODEBUILD = textwrap.dedent("""\
         if kind in os.environ.get("FAKE_UNMUTED", ""): value["volume"] = 60
         record.write_text(json.dumps(value))
         if kind in os.environ.get("FAKE_UNMUTED", ""): time.sleep(3)
+    if scenario := json.loads(os.environ.get("FAKE_XCTEST_INTERRUPTION", "{}")).get(kind):
+        disconnect = "Lost connection to testmanagerd"
+        failure = "XCTAssertEqual failed: 0 is not equal to 1"
+        failures = [failure] if scenario == "assertion" else [disconnect]
+        if scenario == "assertion-and-disconnect": failures.append(failure)
+        cases = [{"nodeType": "Test Case", "nodeIdentifier": f"T/test{number}()", "result": "Failed",
+                  "children": [{"nodeType": "Failure Message", "name": message}]}
+                 for number, message in enumerate(failures)]
+        if scenario == "assertion-in-tree":
+            cases[0]["children"].append({"nodeType": "Failure Message", "name": failure})
+        # The summary may record a failure that the console could not count.
+        finish = time.mktime((2026, 1, 1, 12, 2, 8, 0, 0, -1))
+        (bundle / "summary.json").write_text(json.dumps({
+            "result": "Failed", "totalTestCount": len(cases), "failedTests": len(cases), "skippedTests": 0,
+            "finishTime": finish, "devicesAndConfigurations": [{"device": {"deviceId": udid}}],
+            "testFailures": [{"failureText": message} for message in failures]}))
+        (bundle / "tests.json").write_text(json.dumps({"testNodes": cases}))
+        if scenario == "assertion-in-console":
+            print(f"/p/T.swift:5: error: -[T test0] : {failure}")
+        if scenario == "crash":
+            print("Test Case '-[T test0]' failed (0.1 seconds).")
+        if scenario != "bare":
+            action = bundle / "diagnostics/0_Test_Simulator_Diagnostics"
+            source = "another-device" if scenario == "other-device" else udid
+            control = action / f"Simulator_{source}"
+            control.mkdir(parents=True)
+            minute = "00" if scenario == "stale" else "02"
+            (control / "testmanagerd.log").write_text(
+                f"12:{minute}:01.260 xcodebuild[42:11] <XCTDaemonControlSession: 0x1> lost connection to daemon\\n")
+            session = action / "Probe-Configuration/Session-123"
+            session.mkdir(parents=True)
+            process = "Probe-Runner" if scenario == "other-process" else "testmanagerd"
+            pid = 66 if scenario == "other-xcodebuild" else 42
+            lines = [
+                f"12:{minute}:01.251 Probe-Runner[99:12] Connection to testmanagerd interrupted, will retry.",
+                f"12:{minute}:03.802 xcodebuild[{pid}:13] Handling Crash: {process} at -[XCTDDaemon run]",
+                f'12:{minute}:03.802 xcodebuild[{pid}:13] Test operation failure: Error Domain=XCTH Code=5 "{disconnect}"',
+            ]
+            if scenario == "later-disconnect":
+                lines.append(f'12:02:06.000 xcodebuild[42:13] Test operation failure: Error Domain=XCTH Code=5 "{disconnect}"')
+            (session / "Session-Probe.log").write_text("\\n".join(lines) + "\\n")
+        print("Executed 0 tests, with 0 failures (0 unexpected) in 0.1 (0.1) seconds")
+        sys.exit(65)
     skipped = os.environ.get("FAKE_SKIPPED", "0") if kind in os.environ.get("FAKE_SKIPPED_ON", "") else "0"
     unmeasured = kind in os.environ.get("FAKE_UNMEASURED", "") or at_run("FAKE_UNMEASURED_RUN")
     if captured := os.environ.get("FAKE_BUNDLE_RECORD"):
@@ -991,6 +1040,48 @@ class SimulatorMatrixTests(unittest.TestCase):
                 self.assertIn(ipad_outcome, output)
                 self.assertEqual(len(lane_results.unmeasured_tests(output)), int("FAKE_UNMEASURED" in environment), output)
                 self.assert_every_device_returned()
+
+    def test_a_corroborated_daemon_crash_leaves_measurement_missing_after_voiceover_cleanup(self):
+        ipad = self.add("Project iPad Air 13-inch (M4) 1", IPAD)
+        results = self.root / "lane-results"
+        status, output = self.run_matrix(
+            "--voiceover", wait_for_fake_boot=True, FAKE_VOICEOVER="1", FAKE_VOICEOVER_LEFT_ON="iPad-Air-13-inch-M4",
+            FAKE_XCTEST_INTERRUPTION=json.dumps({"iPad-Air-13-inch-M4": "crash"}), QUEUEKEEPER_RESULTS_DIR=str(results))
+        self.assertEqual(status, lane_results.UNMEASURED, output)
+        self.assertIn("UNMEASURED iPad-Air-13-inch-M4: the simulator's testmanagerd crashed during testing", output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
+        counts = lane_report.counts(output)
+        self.assertEqual((counts["passed"], counts["failed"], counts["unmeasured"]), (3, 0, 1))
+        kept = json.loads((results / "simulator-tests/iPad-Air-13-inch-M4.json").read_text())
+        self.assertEqual((kept["status"], kept["tests"][0]["outcome"]), (lane_results.UNMEASURED, "unmeasured"))
+        self.assertNotIn("failures", [entry.name for entry in results.iterdir()])
+        self.assertIn("VoiceOver was left on; it has been switched off", output)
+        self.assertIn(f"settings voiceover --device {ipad} --disable", self.devicectl(ipad))
+        self.assertFalse(self.devices()["Project iPad Air 13-inch (M4) 1"]["voiceover"])
+        self.assert_every_device_returned()
+
+    def test_an_uncorroborated_disconnect_or_assertion_still_fails_its_device(self):
+        for scenario in ("bare", "other-device", "other-process", "other-xcodebuild", "stale", "later-disconnect",
+                         "assertion-and-disconnect", "assertion-in-tree", "assertion-in-console"):
+            with self.subTest(scenario=scenario):
+                status, output = self.run_matrix(wait_for_fake_boot=True,
+                    FAKE_XCTEST_INTERRUPTION=json.dumps({"iPad-Air-13-inch-M4": scenario}))
+                self.assertEqual(status, 1, output)
+                self.assertIn("FAIL iPad-Air-13-inch-M4: the tests failed with status 65", output)
+                self.assertIn("PASS iPhone-17-Pro", output)
+                self.assertFalse(lane_results.unmeasured_tests(output), output)
+
+    def test_another_devices_assertion_failure_takes_precedence_over_a_daemon_crash(self):
+        results = self.root / "lane-results"
+        status, output = self.run_matrix(wait_for_fake_boot=True, QUEUEKEEPER_RESULTS_DIR=str(results),
+            FAKE_XCTEST_INTERRUPTION=json.dumps({"iPad-Air-13-inch-M4": "crash", "iPhone-17-Pro": "assertion"}))
+        self.assertEqual(status, 1, output)
+        self.assertIn("UNMEASURED iPad-Air-13-inch-M4: the simulator's testmanagerd crashed during testing", output)
+        self.assertIn("FAIL iPhone-17-Pro: the tests failed with status 65", output)
+        kept = list(results.rglob("failures.json"))
+        self.assertEqual([path.parent.name for path in kept], ["iPhone-17-Pro"])
+        self.assertIn("XCTAssertEqual failed", kept[0].read_text())
+        self.assert_every_device_returned()
 
     def test_a_stop_ends_every_device_run_and_returns_every_device_to_the_pool(self):
         command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
