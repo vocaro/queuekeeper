@@ -6220,9 +6220,9 @@ class Worker:
     def summary_words(self, entry, ended):
         """touched_words for a failed lane whose log has no qk unittest summary but ends with qk run's
         (lane_report.summary, ended), as a Swift gate's does (vocaro/queuekeeper#83): each failed test as the summary
-        names it, with the file and line it failed at, and whether entry's commits change that file. Only a Swift
-        test's file is compared, placed in the repository by placed_file; what it tests is not. A test named with no
-        such file, one not placed, and a failure the summary counts but does not name leave it unknown, as they say."""
+        names it, with the file and line it failed at, and whether entry's commits change that file. Swift and Python
+        files are placed in the repository by placed_file. A test named with no such file, one not placed, and a
+        failure the summary counts but does not name leave it unknown, as they say."""
         unknown = "so whether this entry changes their files is unknown"
         lane = self.failed_lane
         names = ended["names"]
@@ -6237,9 +6237,12 @@ class Worker:
         changed = self.changed_by(entry)
         tracked = set(text(self.checkout, "ls-files", "-z").split("\0")) - {""}
         reached, lost, other = set(), [], []
-        for (_name, place), words in zip(names, shown):
-            path = place.rsplit(":", 1)[0] if place else None
-            if not (path and path.endswith(".swift")):
+        for (name, place), words in zip(names, shown):
+            # A pytest node ID names the test's module. Its traceback can point to a helper instead.
+            node_path, separator, _ = name.partition("::")
+            if separator and node_path.endswith(".py"): path = node_path
+            else: path = place.rsplit(":", 1)[0] if place else None
+            if not (path and path.endswith((".swift", ".py"))):
                 other.append(words)
                 continue
             found = placed_file(path, tracked | changed)
@@ -6249,7 +6252,7 @@ class Worker:
                  if reached else None)
         missing = []
         if lost: missing.append(f"The file of {', '.join(lost[:REJECTION_SHOWN])} cannot be placed in the repository")
-        if other: missing.append(f"No Swift file, the only kind compared, is named for {', '.join(other[:REJECTION_SHOWN])}")
+        if other: missing.append(f"No Swift or Python file is named for {', '.join(other[:REJECTION_SHOWN])}")
         if unnamed: missing.append(f"{lane}'s summary does not name {unnamed} more failed "
                                    + ("test" if unnamed == 1 else "tests"))
         if missing:

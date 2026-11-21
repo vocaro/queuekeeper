@@ -58,8 +58,9 @@ UNITTEST_END = re.compile(r"^={70}$|^-{70}\nRan \d", re.M)
 FRAME = re.compile(r'^\s*File "([^"\n]+)", line (\d+)', re.M)
 # pytest's short summary line, the heading of a failure's report, and the location in that report.
 PYTEST_FAILED = re.compile(r"^[ \t]*(?:FAILED|ERROR) (\S+\.py(?:::\S+)?)(?: - .*)?$", re.M)
-PYTEST_HEADING = re.compile(r"^_{3,} (?:ERROR [a-z ]*at [a-z]+ of )?(.+?) _{3,}$", re.M)
-PYTEST_PLACE = re.compile(r"^(\S+\.py):(\d+): ", re.M)
+PYTEST_HEADING = re.compile(r"^([ \t]*)_{3,} (?:ERROR [a-z ]*at [a-z]+ of )?(.+?) _{3,}$", re.M)
+PYTEST_PLACE = re.compile(r"^([ \t]*)(\S+\.py):(\d+): ", re.M)
+PYTEST_SECTION = re.compile(r"^[ \t]*={3,} ", re.M)
 # pytest's folded skip line, which stands for the count it gives.
 FOLDED = re.compile(r"^SKIPPED \[(\d+)\]")
 # Signs that a test may have started though a log counts none: XCTest's and Swift Testing's lines for a suite, test or
@@ -146,6 +147,32 @@ def counts(text):
             "ran": ran + errors - skipped}
 
 
+def pytest_failing(text):
+    """Report pytest node IDs, or the displayed headings with unambiguous traceback locations."""
+    first = 0
+    for footer in [*lane_results.PYTEST_SUMMARY.finditer(text), None]:
+        output = text[first:footer.start() if footer else len(text)]
+        if footer: first = footer.end()
+        reports = list(PYTEST_HEADING.finditer(output))
+        places = {}
+        for report, following in zip(reports, [*reports[1:], None]):
+            end = following.start() if following else len(output)
+            section = PYTEST_SECTION.search(output, report.end(), end)
+            if section: end = section.start()
+            indent, name = report.groups()
+            locations = {f"{path}:{line}" for margin, path, line in
+                         PYTEST_PLACE.findall(output, report.end(), end) if margin == indent}
+            places.setdefault(name, set()).update(locations)
+        unique = {name: next(iter(locations)) for name, locations in places.items() if len(locations) == 1}
+        nodes = PYTEST_FAILED.findall(output)
+        if nodes:
+            for node in nodes:
+                yield node, unique.get(node.split("::", 1)[-1].replace("::", "."))
+        elif footer and re.search(r"\b[1-9]\d* (?:failed|errors?)\b", footer.group(1)):
+            # `-rN` suppresses the short report. A traceback heading gives the displayed name, not a node ID.
+            yield from unique.items()
+
+
 def failing(text):
     """Each failing test a log names, once, as (name, FILE:LINE or None), the device logs qk simulator-tests quotes
     among them (lane_results.unquoted)."""
@@ -159,13 +186,7 @@ def failing(text):
         end = UNITTEST_END.search(text, match.end())
         frames = FRAME.findall(text, match.end(), end.start() if end else len(text))
         found.setdefault(match.group(2) or match.group(1), ":".join(frames[-1]) if frames else None)
-    reports = list(PYTEST_HEADING.finditer(text))
-    places = {}
-    for report, following in zip(reports, [*reports[1:], None]):
-        place = PYTEST_PLACE.search(text, report.end(), following.start() if following else len(text))
-        if place: places.setdefault(report.group(1), f"{place.group(1)}:{place.group(2)}")
-    for name in PYTEST_FAILED.findall(text):
-        found.setdefault(name, places.get(name.split("::", 1)[-1].replace("::", ".")))
+    for name, place in pytest_failing(text): found.setdefault(name, place)
     return list(found.items())
 
 

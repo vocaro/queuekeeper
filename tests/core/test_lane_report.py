@@ -111,6 +111,22 @@ class Parsing(unittest.TestCase):
         self.assertEqual(lane_report.failing(PYTEST_FAILED),
                          [("tests/test_reader.py::Reader::test_page[1]", "tests/test_reader.py:15")])
 
+    def test_pytest_failure_without_a_short_summary_uses_its_indented_report(self):
+        report = PYTEST_FAILED.split("=========== short test summary info", 1)[0]
+        text = ("  ✗ pytest                                         569s\n" + textwrap.indent(report, "      ")
+                + "      ========= 1 failed, 4 passed, 2 skipped in 0.51s =========\n")
+        self.assert_counts(text, 4, 1, 2)
+        self.assertEqual(lane_report.failing(text + PYTEST_FAILED),
+                         [("Reader.test_page[1]", "tests/test_reader.py:15"),
+                          ("tests/test_reader.py::Reader::test_page[1]", "tests/test_reader.py:15")])
+
+    def test_pytest_failure_without_a_short_summary_does_not_guess_a_location(self):
+        text = ("____________ test_page ____________\n"
+                "tests/test_reader.py:15: in test_page\n"
+                "reader.py:32: AssertionError\n"
+                "========= 1 failed, 4 passed in 0.51s =========\n")
+        self.assertEqual(lane_report.failing(text), [])
+
     def test_pytest_errors_count_as_failed_though_pytest_counts_them_apart_from_its_tests(self):
         self.assert_counts("=== 2 passed, 1 error in 0.1s ===\n", 2, 1, 0)
 

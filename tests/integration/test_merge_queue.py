@@ -9823,7 +9823,7 @@ class MainCheckoutCopies(Fixture):
 
 class SummaryFacts(Fixture):
     """A rejection of a lane whose log has no qk unittest summary names the failed tests from the summary qk run ends
-    with, and compares the Swift files they failed in with the entry's (vocaro/queuekeeper#83)."""
+    with, and compares the Swift or Python files they failed in with the entry's (vocaro/queuekeeper#83)."""
     CELLS = '"testCellsTheReaderGoesToHaveTheirHighlightAndSelection"'
     RANGES = '"testHighlightsOnCellRangesReachOnlyTheirCells"'
     # Swift Testing's lines for two failed tests, as EPUBLib's gate printed them on 2026-11-11.
@@ -9834,14 +9834,21 @@ class SummaryFacts(Fixture):
              "✘ Test run with 30 tests in 4 suites failed after 1.000 seconds with 2 issues.\n")
     CELLS_FILE = "Tests/EPUBLibTests/TableScrolledCellTests.swift"
     NAMED = (f"{CELLS} at TableScrolledCellTests.swift:298, {RANGES} at TableCoverageInteractionTests.swift:749")
+    PYTEST_FILE = "pipeline/tests/test_warm_push.py"
+    PYTEST_NAME = "test_a_push_is_one_heavy_job_beside_other_admitted_work"
+    PYTEST = ("  ✗ pytest                                         569s\n"
+              f"      ____________ {PYTEST_NAME} ____________\n"
+              "      E           AssertionError: Previous HEAD position was not preserved\n"
+              "      tests/test_warm_push.py:606: AssertionError\n"
+              "      ========= 1 failed, 24 passed in 569s =========\n")
 
     def setUp(self):
         super().setUp()
-        for path in (self.CELLS_FILE, "Tests/EPUBLibTests/TableCoverageInteractionTests.swift"):
+        for path in (self.CELLS_FILE, "Tests/EPUBLibTests/TableCoverageInteractionTests.swift", self.PYTEST_FILE):
             (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
-            (self.repo / path).write_text("import Testing\n")
+            (self.repo / path).write_text("import Testing\n" if path.endswith(".swift") else "# pytest fixture\n")
         run(self.repo, "git", "add", ".")
-        run(self.repo, "git", "commit", "-qm", "Add the Swift tests")
+        run(self.repo, "git", "commit", "-qm", "Add the tests")
         run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
 
     def rejected(self, printed, path, content="changed\n", status=1):
@@ -9877,8 +9884,31 @@ class SummaryFacts(Fixture):
         printed = self.SWIFT + '✘ Test "testAlone" failed after 0.100 seconds with 1 issue.\n'
         why = self.rejected(printed, self.CELLS_FILE, "import Testing\n// changed\n")
         self.assertIn(f"This entry changes {self.CELLS_FILE}, a file of the failed tests {self.NAMED}", why)
-        self.assertIn('No Swift file, the only kind compared, is named for "testAlone", so whether this entry changes '
+        self.assertIn('No Swift or Python file is named for "testAlone", so whether this entry changes '
                       "their files is unknown", why)
+
+    def test_a_nested_pytest_report_without_a_short_summary_names_the_test_and_its_file(self):
+        why = self.rejected(self.PYTEST, "elsewhere")
+        self.assertIn(f"This entry changes no file of the failed tests {self.PYTEST_NAME} at "
+                      "tests/test_warm_push.py:606", why)
+        self.assertNotIn("could not be determined", why)
+
+    def test_a_pytest_short_summary_can_name_the_changed_file_without_a_line_number(self):
+        node = f"{self.PYTEST_FILE}::{self.PYTEST_NAME}"
+        why = self.rejected(f"FAILED {node} - AssertionError: no\n========= 1 failed in 1s =========\n",
+                            self.PYTEST_FILE)
+        self.assertIn(f"This entry changes {self.PYTEST_FILE}, a file of the failed tests {node}", why)
+
+    def test_a_pytest_node_id_names_the_test_file_even_if_the_assertion_is_in_a_helper(self):
+        node = f"{self.PYTEST_FILE}::{self.PYTEST_NAME}"
+        printed = (f"____________ {self.PYTEST_NAME} ____________\n"
+                   "tests/helpers.py:90: AssertionError\n"
+                   "=========== short test summary info ===========\n"
+                   f"FAILED {node} - AssertionError: no\n"
+                   "========= 1 failed in 1s =========\n")
+        why = self.rejected(printed, self.PYTEST_FILE)
+        self.assertIn(f"This entry changes {self.PYTEST_FILE}, a file of the failed tests {node} at "
+                      "tests/helpers.py:90", why)
 
     def test_a_failed_lane_whose_summary_names_no_test_says_so(self):
         # As in vocaro/vocaro-engineering#406: devices failed, yet the counts the gate read say none did.
