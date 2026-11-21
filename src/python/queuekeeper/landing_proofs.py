@@ -7,10 +7,11 @@ method in the toolkit's landed.sh (vocaro/vocaro-engineering#403)."""
 import re
 
 ANCESTOR, PATCH_EQUIVALENT, CONTENT_MERGED, RESOLVED = "ancestor", "patch-equivalent", "content-merged", "resolved"
-# A closing keyword GitHub acts on when a commit reaches the default branch: close, fix or resolve,
-# in any tense, before an issue here (#N), in another repository (owner/name#N) or its URL.
-CLAIM = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+"
-                   r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b", re.I)
+# An issue here (#N), one qualified by repository (owner/name#N), or its GitHub URL.
+ISSUE_REFERENCE = re.compile(
+    r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b", re.I)
+# A closing keyword GitHub acts on when a commit reaches the default branch: close, fix or resolve, in any tense.
+CLAIM = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+" + ISSUE_REFERENCE.pattern, re.I)
 # A claim GitHub acts on although its sentence denies it (vocaro-engineering#286): one of these within NEGATED_WITHIN
 # words before the keyword, in the same clause. "not only fixes #N" asserts the fix, so it is no negation.
 NEGATION = re.compile(r"\b(?:(?:can)?not\b(?!\s+(?:only|just|merely|simply)\b)|never\b|without\b|no\s+longer\b)"

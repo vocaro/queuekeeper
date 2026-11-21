@@ -593,9 +593,20 @@ def main_commit(directory):
     return found.stdout.strip() if found.returncode == 0 else None
 
 
+GITHUB_REMOTE_PREFIX = re.compile(r"(?:ssh://)?git@github\.com[:/]|https://(?:[^@/]+@)?github\.com/")
+
+
 def on_github(url):
     """Whether a remote's URL is GitHub's, whose status page can say whether a refusal is its own."""
-    return bool(re.match(r"(?:ssh://)?git@github\.com[:/]|https://(?:[^@/]+@)?github\.com/", url))
+    return bool(GITHUB_REMOTE_PREFIX.match(url))
+
+
+def github_repository(url):
+    """The lowercased owner/name of a GitHub remote, if known from its URL."""
+    prefix = GITHUB_REMOTE_PREFIX.match(url)
+    if not prefix: return None
+    name = url[prefix.end():].rstrip("/").removesuffix(".git")
+    return name.lower() if re.fullmatch(r"[\w.-]+/[\w.-]+", name) else None
 
 
 def git_operations():
@@ -2344,21 +2355,40 @@ def warn(root):
         print(f"warning: {warning}", flush=True)
 
 
-def entry_slug(branch, subject, message=""):
-    """A short ref-safe name from the branch (or subject for detached/main commits), with an issue when named.
-    Issue references are labels only; this does not infer or change GitHub closing claims.
-    """
-    name = re.sub(r"^(?:refs/heads/)?(?:(?:codex|agent|feature|fix|bugfix)/)?", "", branch or "")
+def entry_issue(branch, subject, message, repository):
+    """Name a local issue a commit closes first, falling back to any local mention."""
+    for pattern, sources in ((landing_proofs.CLAIM, (subject, message)),
+                             (landing_proofs.ISSUE_REFERENCE, (branch, subject, message))):
+        for url_repo, named_repo, number in pattern.findall("\0".join(sources)):
+            qualified = url_repo or named_repo
+            if (not qualified or qualified.lower() == repository) and re.fullmatch(r"[1-9][0-9]*", number):
+                return number
+    return None
+
+
+def entry_branch_name(branch):
+    return re.sub(r"^(?:refs/heads/)?(?:(?:codex|agent|feature|fix|bugfix)/)?", "", branch or "")
+
+
+def format_entry_slug(name, subject, issue):
     if name in ("", "HEAD", "main", "master") or re.fullmatch(r"[0-9a-f]{7,40}", name): name = subject
-    issue = re.search(r"#([1-9][0-9]*)\b", f"{branch or ''} {subject} {message}")
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
     name = re.sub(r"[^a-z0-9]+", "-", name).strip("-")[:56].rstrip("-") or "change"
-    return f"issue-{issue[1]}-{name}" if issue else name
+    return f"issue-{issue}-{name}" if issue else name
+
+
+def entry_slug(branch, subject, message=""):
+    """A short ref-safe name for an admission, whose label can mention issues from any repository."""
+    issue = re.search(r"#([1-9][0-9]*)\b", f"{branch or ''} {subject} {message}")
+    return format_entry_slug(entry_branch_name(branch), subject, issue[1] if issue else None)
 
 
 def entry_identifier(queue, branch, subject, message=""):
     """Called under the queue lock: never reuse a name, including one belonging to a settled entry."""
-    slug = entry_slug(branch, subject, message)
+    origin = git(queue.root, "remote", "get-url", "--push", "origin")
+    repository = github_repository(origin.stdout.strip()) if origin.returncode == 0 else None
+    name = entry_branch_name(branch)
+    slug = format_entry_slug(name, subject, entry_issue(name, subject, message, repository))
     # Four digits normally suffice. Expand if repeated collisions exhaust that space for a popular name.
     for digits in (4, 6, 8):
         for _ in range(100):
@@ -2477,7 +2507,8 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         if entry["state"] == TESTING: print(f"queue: {stopping(queue, entry)}", file=sys.stderr)
     now = time.time()
     subject = text(root, "log", "-1", "--format=%s", tip)
-    message = text(root, "log", "--format=%B", f"{base}..{tip}" if present else tip)
+    # A closing keyword cannot refer to an issue number in the next commit's message.
+    message = text(root, "log", "-z", "--format=%B", f"{base}..{tip}" if present else tip)
     entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": subject, "submitted": now, "state": QUEUED,
              "directory": str(root), **resources.coding_agent(), **({"replays": replays} if merges else {}), **flags}
