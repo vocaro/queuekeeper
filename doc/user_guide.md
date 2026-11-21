@@ -1545,6 +1545,10 @@ session and Mac; for each waiter, its wait and reason. A Mac it can't read withi
 shown as unknown, never idle. A holder whose process has ended is shown as ended; admission frees
 it at its next attempt.
 
+A held slot from an `eng checkpoint` names the project, commit, current lane and its position
+when the report can match the slot to the checkpoint's dedicated worktree. This also works for
+a lane sent to another Mac when the report reads both Macs.
+
 `qk admissions` summarizes each kind and label over a period: requests admitted and withdrawn,
 their waits and what they waited behind, the loads seen and how admissions ended. Each Mac keeps
 its own log in `~/Library/Application Support/queuekeeper/admissions.jsonl`; to read another

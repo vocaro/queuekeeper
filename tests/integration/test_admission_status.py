@@ -99,6 +99,33 @@ class HoldersTests(Namespace):
         self.assertTrue(any(line.startswith("    Gamma model: heavy with the model, slot 2 (beyond the guaranteed)")
                             for line in lines))
 
+    def test_held_slots_show_a_live_checkpoint_by_its_dedicated_worktree(self):
+        tree = str(self.directory.parent / "eng-checkpoint-fixture" / "Alpha")
+        origin = {"repository": "Alpha", "worktree": tree}
+        self.holders({"a": self.owner("Alpha build", origin=origin),
+                      "b": self.owner("Alpha elsewhere", origin={**origin, "worktree": "/another/Alpha"}),
+                      "dead": self.owner("Previous lane", origin=origin, start="Thu Jan  1 00:00:00 1970")},
+                     slots=[(0, "a"), (1, "b"), (2, "dead")])
+        directory = self.directory / "checkpoints"
+        directory.mkdir()
+        record = {"project": "Alpha", "commit": "0123456789abcdef", "runsIn": tree,
+                  "lane": "build", "index": 2, "count": 4}
+        (directory / "Alpha.json").write_text(json.dumps({**record, "origin": "private details left out"}))
+        with (directory / "Alpha.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            reading = resources.admissions_now(here_only=True)
+            host, = reading["hosts"]
+            self.assertEqual(host["checkpoints"], [record])
+            found = {holder["identity"]: holder for holder in host["holders"]}
+            self.assertEqual(found["a"]["checkpoint"], {**record, "host": host["name"]})
+            self.assertNotIn("checkpoint", found["b"])
+            self.assertNotIn("checkpoint", found["dead"])
+            self.assertIn(f"      checkpoint: Alpha at 0123456789ab, build (2 of 4) from {host['name']}",
+                          resources.now_lines(reading))
+        reading = resources.admissions_now(here_only=True)["hosts"][0]
+        self.assertEqual(reading["checkpoints"], [])
+        self.assertTrue(all("checkpoint" not in holder for holder in reading["holders"]))
+
     def test_each_running_holder_says_how_much_cpu_it_and_what_it_started_use(self):
         # What `qk queue doctor` names beside a gate the holder holds back on an idle Mac (vocaro/queuekeeper#89).
         self.holders({"a": self.owner("Alpha"), "dead": self.owner("Gone", start="Thu Jan  1 00:00:00 1970")},
@@ -664,6 +691,16 @@ class CommandTests(unittest.TestCase):
         return {"schemaVersion": 1, "mac": "m", "observedAt": time.time(), "state": state, "reasons": [],
                 "namespace": {"shared": True}, "limits": {"slots": 3, "slotsMax": 4}, "slots": [], "model": {"holder": None},
                 "holders": [], "unattributed": [], "waiters": [], **fields}
+
+    def test_a_lane_sent_to_a_farm_mac_names_its_checkpoint_on_the_sending_mac(self):
+        checkpoint = {"project": "Alpha", "commit": "0123456789abcdef", "runsIn": "/tmp/eng-checkpoint-a/Alpha",
+                      "lane": "build", "index": 2, "count": 4}
+        holder = {"origin": {"worktree": checkpoint["runsIn"]}, "process": "running"}
+        entries = {"mini": self.reading(holders=[holder]), "studio": self.reading(checkpoints=[checkpoint])}
+        macs = [farm_fixture.mac("mini"), farm_fixture.mac("studio")]
+        found = resources.admissions_now(read_here=self.reading, read_there=lambda host, _: entries[host],
+                                         macs=lambda: macs)
+        self.assertEqual(found["hosts"][1]["holders"][0]["checkpoint"], {**checkpoint, "host": "studio"})
 
     def test_an_unreachable_farm_mac_is_unknown_beside_this_macs_reading(self):
         def unreachable(host, budget):
