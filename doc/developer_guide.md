@@ -379,6 +379,13 @@ this Mac was declined then, so it waits there instead.
 When no Mac admits a stack's next lane, the worker waits two minutes before trying another. A stack settles nothing: an
 entry that conflicts with the batch below waits for its own round.
 
+When a project declares inputs for every gate lane (#4), the worker can divide entries already waiting into an
+older prefix and a newer suffix. Their changed paths and selected gate lanes, including members of a parallel lane
+group, must be disjoint. Both must fit on this Mac and on another Mac when the worker checks capacity. The suffix
+uses the same stacked gate on the prefix's tip as entries arriving during a gate, and runs only the group's
+selected members. The worker only adopts the result after the prefix lands, using the ordinary rules for a changed
+base or a failed prefix. Projects with a provision lane keep their ordinary batches.
+
 While a bisect runs one gate with no companion probe, or a joint-failure search runs one probe,
 a stack can offer the entries behind all its suspects to an available Mac other than the one
 running that gate. It uses `origin/main` without the suspects' commits and does not wait for

@@ -3611,6 +3611,85 @@ class MemberInputs(PathLanes, Fixture):
         said = self.landed("src/a.py", (1, 0))
         self.assertIn("gate: only unit of its lanes, which main's lane inputs select for the batch's paths", said)
 
+    def test_disjoint_entries_already_waiting_gate_together_and_land_the_tested_heads_in_order(self):
+        self.commit("src/a.py", "a")
+        self.commit("app/b.py", "b")
+        first, second = self.add("a", "b")
+        original = mq.Worker.gate
+        stacked_started = threading.Event()
+        tested_heads = {}
+        def gate(worker, lanes, name, **options):
+            if worker.role == "batch":
+                tested_heads[first] = worker.head()
+                if not stacked_started.wait(stretched(20)):
+                    raise AssertionError("the second gate did not start beside the first")
+            elif worker.role == "stacked":
+                tested_heads[second] = worker.head()
+                stacked_started.set()
+            return original(worker, lanes, name, **options)
+        with (contextlib.redirect_stdout(io.StringIO()) as said,
+              patch.object(mq.Worker, "gate", gate), patch.object(mq, "apart", BOTH_HERE),
+              patch.object(mq, "STACK_POLL", 0.05),
+              patch.object(mq.Worker, "stack_room", return_value=None),
+              patch.object(mq.Worker, "admitted_mac", return_value=mq.HERE_MAC),
+              patch.object(mq.farm, "destinations", return_value=("other-mac",))):
+            self.assertEqual(self.work(), 0, said.getvalue())
+        for identifier in [first, second]:
+            entry = self.state(identifier)
+            self.assertEqual((entry["state"], entry["landedAs"]), ("landed", tested_heads[identifier]))
+        self.assertEqual(self.state(second)["gatedOn"], tested_heads[first])
+        self.assertEqual((self.gates(), self.app_gates()), (1, 1), said.getvalue())
+        self.assertIn("their paths and gate lanes are disjoint", said.getvalue())
+        self.assertIn("gate: only app of its lanes", said.getvalue())
+
+    def test_entries_with_different_paths_that_select_the_same_member_stay_in_one_batch(self):
+        self.commit("src/a.py", "a")
+        self.commit("src/b.py", "b")
+        first, second = self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        waiting = queue.waiting()
+        with (patch.object(mq.farm, "destinations", return_value=("other-mac",)),
+              patch.object(mq.Worker, "stack_room", return_value=None)):
+            self.assertEqual(mq.Worker(queue).disjoint_batch(waiting, self.config()), (waiting, ()))
+        self.assertEqual([entry["id"] for entry in waiting], [first, second])
+
+    def test_a_disjoint_prefix_is_not_split_again_until_it_settles(self):
+        self.commit("src/a.py", "a")
+        self.commit("app/b.py", "b")
+        first, second = self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        waiting = queue.waiting()
+        worker = mq.Worker(queue)
+        with patch.object(mq.farm, "destinations", return_value=("other-mac",)):
+            prefix, suffix = worker.disjoint_batch(waiting, self.config())
+            self.assertEqual(([entry["id"] for entry in prefix], suffix), ([first], (second,)))
+            self.assertEqual(worker.disjoint_batch(waiting, self.config()), (waiting, ()))
+
+    def test_a_rename_counts_both_its_old_and_new_gate_lanes(self):
+        self.commit("src/old.py", "source")
+        self.commit("src/stays.py", "source-anchor", content="stays", start="source")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit("src/a.py", "a")
+        run(self.repo, "git", "checkout", "-q", "-B", "move", "origin/main")
+        (self.repo / "app").mkdir()
+        run(self.repo, "git", "mv", "src/old.py", "app/new.py")
+        run(self.repo, "git", "commit", "-qm", "Move an input from the unit lane to the app lane")
+        self.add("a", "move")
+        queue = mq.Queue(self.repo)
+        waiting = queue.waiting()
+        with patch.object(mq.farm, "destinations", return_value=("other-mac",)):
+            self.assertEqual(mq.Worker(queue).disjoint_batch(waiting, self.config()), (waiting, ()))
+
+    def test_a_disjoint_pair_stays_in_one_batch_without_room_for_two_gates(self):
+        self.commit("src/a.py", "a")
+        self.commit("app/b.py", "b")
+        self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        waiting = queue.waiting()
+        with (patch.object(mq.farm, "destinations", return_value=("other-mac",)),
+              patch.object(mq.Worker, "stack_room", return_value="no capacity")):
+            self.assertEqual(mq.Worker(queue).disjoint_batch(waiting, self.config()), (waiting, ()))
+
     def test_a_path_of_both_lanes_runs_the_whole_group(self):
         self.assertNotIn("of its lanes", self.landed("shared/b.py", (1, 1)))
 
@@ -7421,7 +7500,7 @@ class ToolkitCopy(Fixture):
                               f"gate stacked on {head[:12]} with the toolkit at {'0' * 12} that gated it", said.getvalue())
                 # The adopted round gates the stack with nothing stacked on it.
                 worker.stacked = SimpleNamespace(base=head, tip=head, entries=[], paths=set(), lanes=["gate"],
-                                                 name="n", runner=worker, wait=None, drop=Mock(), isolating=False,
+                                                 name="n", runner=worker, wait=None, drop=Mock(), isolating=False, members=None,
                                                  not_admitted=lambda: True, void=lambda: "no verdict")
                 with patch.object(mq, "config_at", return_value={"lanes": {"gate": {}}}), \
                         patch.object(mq, "lanes_of", return_value=["gate"]), patch.object(worker, "begun"), \
@@ -11642,6 +11721,14 @@ class PooledStack(Fixture):
                 self.assertEqual(stack.call_args.args[5], where)
                 self.assertEqual(runner.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
             worker.pending = None
+
+    def test_an_older_entry_blocks_adoption_of_a_disjoint_stack(self):
+        older = {"id": "older", "state": mq.QUEUED}
+        newer = {"id": "newer", "state": mq.TESTING}
+        worker = mq.Worker(mq.Queue(self.repo))
+        stack = mq.Stack(worker, Mock(), [newer], "base", ["gate"], (), parallel_config={"lanes": {}})
+        self.assertEqual(stack.stale([older, newer]), "an entry ahead of the disjoint stack still waits")
+        self.assertIsNone(stack.stale([newer, older]))
 
     def test_an_isolation_stack_uses_main_and_leaves_every_suspect_to_the_bisect(self):
         worker = mq.Worker(mq.Queue(self.repo))

@@ -2593,6 +2593,16 @@ def group_members(config, lanes, changed):
     return {name: chosen for name, chosen in found.items() if chosen}
 
 
+def gate_footprint(config, changed):
+    """The actual gate lanes selected by changed paths, listing a group's members individually."""
+    settings = config.get("lanes", {})
+    footprint = set()
+    for lane in affected_lanes(config, changed):
+        members = settings.get(lane, {}).get("parallel")
+        footprint.update((selected_members(config, lane, changed) or members) if members else (lane,))
+    return footprint
+
+
 def lane_inputs_all(config):
     """Whether every gate lane of main gives inputs, so that a path none of them names skips the gate."""
     return bool(gate_lanes(config)) and len(lane_inputs(config)) == len(gate_lanes(config))
@@ -3834,6 +3844,7 @@ class Worker:
         self.lagging = None
         self.jumped = {}  # by docs entry of a round of docs entries, the older entries it went ahead of (docs_ahead)
         self.stack_retry_after = 0  # monotonic time before which this round does not retry a declined stack
+        self.parallel_prefix = set()  # a split whose older entries still need to settle before splitting again
         self.gating = ()  # the IDs of the entries integrate last put on top, which the gate tests (Removal)
         self.withdrawn = []  # those of them that left the queue, which stopped the last gate (gate)
         self.role = "batch"  # what its gate is in the round's account (GateWatch): the batch, or a bisect's older half
@@ -6302,7 +6313,14 @@ class Worker:
         if passed: return self.push_passed(passed)
         base = text(queue.main_checkout, "rev-parse", MAIN)
         self.jumped = {}
-        if not self.alone: batch = self.docs_ahead(waiting, batch, base)
+        parallel = ()
+        if not self.alone:
+            try: main_settings = config_at(queue.main_checkout, base)
+            except ValueError: main_settings = None
+            if main_settings is not None:
+                batch = self.docs_ahead(waiting, batch, main_settings)
+                if not self.alone and not self.limit and batch == waiting:
+                    batch, parallel = self.disjoint_batch(batch, main_settings)
         applied = self.integrate(batch, base)
         if not applied:
             if not self.alone: self.limit, self.suspects = None, 0
@@ -6371,8 +6389,9 @@ class Worker:
                                     **({} if ungated or docs else only))
         else:
             self.lane_now = None
+            split = {"parallel": parallel} if parallel else {}
             result, log = self.watched(self, config, lanes, base, head, applied,
-                                       lambda: self.gate(lanes, round_name, **only))
+                                       lambda: self.gate(lanes, round_name, **only), **split)
         self.prune()
         if not beside:
             if self.back_in_line(applied, result):
@@ -6497,14 +6516,12 @@ class Worker:
                                f"{len(BACKOFF) + 1} tries: {said}")
         raise Hold(OWNER, f"the push of {tip[:12]}, which would create main, was refused: {said or 'no output'}")
 
-    def docs_ahead(self, waiting, batch, base):
+    def docs_ahead(self, waiting, batch, config):
         """This round's batch, once docs-only entries are kept out of code batches (vocaro-engineering#394): the
         docs-only entries that can go ahead (docs_first), in a round of their own on the docs lanes, when batch holds
         any other entry; else batch less the docs-only entries, which wait for a round of their own (without_docs),
         unless a bisect is going on; else batch. A round of docs entries is alone, so that its outcome leaves a bisect
         where it was, and jumped holds, by entry, the older entries each goes ahead of (back_in_line)."""
-        try: config = config_at(self.queue.main_checkout, base)
-        except ValueError: return batch
         docs = docs_first(waiting, config, self.own_paths)
         ids = {entry["id"] for entry in docs}
         if docs and any(entry["id"] not in ids for entry in batch):
@@ -6524,6 +6541,50 @@ class Worker:
                      "the same paths")
             return code
         return batch
+
+    def disjoint_batch(self, batch, config):
+        """Leave a disjoint suffix to run as a stack on the prefix, if both can go to different Macs.
+
+        Keep queue order, and split only when the prefix and suffix share neither a changed path nor an actual
+        gate lane. A gate still tests the exact tree that it would push if its prefix lands. The ordinary stack
+        handles an unavailable Mac, a failed prefix, or a changed base without a second publication path.
+        """
+        if len(batch) < 2 or self.no_verdicts or self.locked_screens or getattr(self, "retrying", ()): return batch, ()
+        if any(entry.get("waitsFor") or entry["state"] != QUEUED
+                                 or entry["id"] in self.parallel_prefix for entry in batch):
+            return batch, ()
+        if not lane_inputs_all(config) or configured(config, PROVISION): return batch, ()
+        hosts = farm.destinations()
+        if not hosts: return batch, ()
+        paths = [self.own_paths(entry) for entry in batch]
+        if any(not files or docs_lanes(config, files) for files in paths): return batch, ()
+        footprints = [gate_footprint(config, files) for files in paths]
+        settings = config.get("lanes", {})
+        last_path = {path: i for i, files in enumerate(paths) for path in files}
+        last_lane = {lane: i for i, lanes in enumerate(footprints) for lane in lanes}
+        older_paths, last_overlap = set(), 0
+        for split, (files, footprint) in enumerate(zip(paths[:-1], footprints), start=1):
+            older_paths.update(files)
+            last_overlap = max(last_overlap, *(last_path[path] for path in files),
+                               *(last_lane[lane] for lane in footprint))
+            if last_overlap >= split: continue
+            newer_paths = set().union(*paths[split:])
+            older, newer = lanes_of(config, older_paths), lanes_of(config, newer_paths)
+            if offerable(config, older) or offerable(config, newer): continue
+            if any(settings.get(lane, {}).get("foreground")
+                   or lane in settings and plugins.placement(settings, lane) for lane in [*older, *newer]):
+                continue
+            final = {older[-1], newer[-1]}
+            # The first gate will choose its own Mac. Check both orders before deferring part of its batch.
+            if any(self.stack_room((), None, (), settings, lane)
+                   or self.stack_room(hosts, None, ("--offload-only",), settings, lane) for lane in final):
+                continue
+            prefix, suffix = batch[:split], batch[split:]
+            self.parallel_prefix = {entry["id"] for entry in prefix}
+            self.say(f"gating the oldest {len(prefix)} first, with the other {len(suffix)} eligible to stack: "
+                     "their paths and gate lanes are disjoint")
+            return prefix, tuple(entry["id"] for entry in suffix)
+        return batch, ()
 
     def back_in_line(self, applied, result):
         """Whether a round of docs entries that went ahead of older entries (jumped), and failed its docs lanes, was
@@ -6856,6 +6917,9 @@ class Worker:
         if lanes != stacked.lanes:
             stacked.drop(f"main at {base[:12]} names the lanes {', '.join(lanes)}, not those it ran")
             return True
+        if stacked.members is not None and group_members(config, lanes, stacked.paths) != stacked.members:
+            stacked.drop(f"main at {base[:12]} selects different members of a gate lane group")
+            return True
         # What the gate ran on, which the push carries over the documents main has gained since (Worker.carry).
         base = stacked.base
         applied = [self.queue.read(entry["id"]) or entry for entry in stacked.entries]
@@ -6879,7 +6943,8 @@ class Worker:
         self.after_stack(outcome, stacked.runner, config)
         return True
 
-    def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True, isolating=False, docs=True):
+    def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True, isolating=False,
+                docs=True, parallel=()):
         """gate(), the lanes of applied at head in runner's checkout, while a thread looks every STACK_POLL for
         entries that arrive behind them: docs-only entries it lands beside the gate (docs_beside), and, unless stacks
         is false, the others it gates stacked on head in the other checkout, on another Mac (stack). During a
@@ -6891,7 +6956,7 @@ class Worker:
         stop, said = threading.Event(), set()
         def stacker():
             nonlocal docs, stacks
-            while (docs or stacks) and not stop.wait(STACK_POLL):
+            while (docs or stacks) and not stop.wait(min(STACK_POLL, REMOVAL_POLL) if parallel else STACK_POLL):
                 # Docs entries first, as they land on main and a stacked gate keeps its result over them (after_stack).
                 if docs:
                     try: self.docs_beside(config, applied)
@@ -6900,7 +6965,7 @@ class Worker:
                         docs = False
                 if stacks:
                     try: self.stack(runner, config, lanes, base if isolating else head, applied, stop, said,
-                                    isolating=isolating)
+                                    isolating=isolating, parallel=parallel)
                     except Exception as error:  # a stacked gate is a saving, never the round's verdict
                         self.say(f"no gate stacked on {head[:12]}: {error}")
                         stacks = False
@@ -6913,7 +6978,7 @@ class Worker:
             if isolating and self.pending is not None and not self.pending.done():
                 self.drop_stacked("the bisect's gate ended and its next checks take precedence")
 
-    def stack(self, runner, config, lanes, head, applied, stop, said, *, isolating=False):
+    def stack(self, runner, config, lanes, head, applied, stop, said, *, isolating=False, parallel=()):
         """Start self.pending, the waiting entries not in applied, the batch at head, gated stacked on head, when
         there are any and none is pending: on any Mac but the one running the primary's final lane (admitted_mac,
         apart), in the other checkout. One that gave no verdict or stopped when an entry left the queue is thrown
@@ -6935,6 +7000,9 @@ class Worker:
         fresh = [entry for entry in waiting if entry["id"] not in ids]
         if not fresh or any(entry.get("front") or entry.get("noGate") or entry["state"] != QUEUED for entry in fresh):
             return
+        if parallel:
+            fresh = fresh[:len(parallel)]
+            if tuple(entry["id"] for entry in fresh) != parallel: return
         # A docs-only entry lands beside the gate or in a round of its own, never on a stacked code gate (#394).
         fresh = without_docs(fresh, config, self.own_paths)
         if not fresh: return
@@ -6952,8 +7020,8 @@ class Worker:
             # A plugin can choose its own hosts before qk run applies the queue's exclusion. Quick checks run here.
             if any(lane in settings and plugins.placement(settings, lane) for lane in lanes): return
             if mac == HERE_MAC and checks.intersection(lanes): return
-        # Any Mac but the batch's, this Mac among them. Isolation never waits for admission.
-        placed = apart(mac, hosts, waits=not isolating)
+        # Any Mac but the batch's, this Mac among them. Isolation and a disjoint split only use capacity free now.
+        placed = apart(mac, hosts, waits=not (isolating or parallel))
         if placed is None: return
         where, excluded, said_where = placed
         # A lane that runs only on this Mac cannot leave it, and the batch gates here.
@@ -6976,8 +7044,10 @@ class Worker:
         if excluded is not None: other.environment = {**other.environment, remote.QUEUE_GATE_EXCLUDE: excluded}
         other.checks = checks
         stacked = Stack(self, other, fresh, head, lanes, where, below=() if isolating else applied, paths=paths,
-                        said_where=said_where, isolating=isolating)
-        if not stop.is_set() and stacked.begin(): self.pending = stacked
+                        said_where=said_where, isolating=isolating, parallel_config=config if parallel else None)
+        if not stop.is_set():
+            if stacked.begin(): self.pending = stacked
+            elif parallel: self.stack_retry_after = time.monotonic() + STACK_ADMISSION_BACKOFF
 
     def stack_room(self, hosts, excluded, where, lanes, lane):
         """None when a Mac a stacked gate may go to (apart: hosts but excluded, and this Mac unless where keeps it
@@ -8121,7 +8191,8 @@ class Stack:
     without moving main and the stack has already finished. Otherwise it is thrown away (drop), with its entries
     queued again. It settles nothing itself."""
     def __init__(self, worker, runner, entries, base, lanes, where, below=(), paths=(),
-                 said_where="on another Mac if it can start them now", isolating=False):
+                 said_where="on another Mac if it can start them now", isolating=False, parallel_config=None):
+        self.parallel_config, self.members = parallel_config, None
         self.worker, self.runner, self.entries, self.base, self.lanes = worker, runner, entries, base, lanes
         self.paths = set(paths)  # what entries change, by which lanes_of chose lanes and adopted checks them
         self.where, self.said_where, self.tip, self.name = where, said_where, None, None
@@ -8135,13 +8206,23 @@ class Stack:
         applied = self.runner.integrate(self.entries, self.base, below=self.below)
         if not applied: return False
         self.entries, self.tip = applied, self.runner.head()
+        if self.parallel_config is not None:
+            # Confirm the plan against the integrated tree: conflicts or canceled-out edits can change its footprint.
+            actual = set(text(self.runner.checkout, "diff", "--name-only", "--no-renames", self.base,
+                              self.tip).splitlines())
+            if actual != self.paths: return False
+            self.members = group_members(self.parallel_config, self.lanes, actual)
         self.name = f"{time.strftime('%Y%m%d-%H%M%S')}-{self.tip[:8]}"
         self.worker.queue.mark(applied, TESTING)
-        self.worker.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} that arrived during the gate, "
+        kind = (" with disjoint paths and gate lanes" if self.parallel_config is not None
+                else " that arrived during the gate")
+        self.worker.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'}{kind}, "
                         f"at {self.tip[:12]}, stacked on {self.base[:12]}, {self.said_where}")
         def gate():
             try:
-                self.box["result"] = self.runner.gate(self.lanes, self.name, where=self.where, cancel=self.cancel)
+                selected = {"members": self.members} if self.members else {}
+                self.box["result"] = self.runner.gate(self.lanes, self.name, where=self.where, cancel=self.cancel,
+                                                       **selected)
                 _, log = self.box["result"]
                 if log is not None and self.not_admitted():
                     with contextlib.suppress(OSError), log.open("a") as kept:
@@ -8180,6 +8261,9 @@ class Stack:
         ids = {entry["id"] for entry in waiting}
         gone = [entry["id"] for entry in self.entries if entry["id"] not in ids]
         if gone: return f"{', '.join(gone)} left the queue"
+        if self.parallel_config is not None and [entry["id"] for entry in waiting[:len(self.entries)]] != [
+                entry["id"] for entry in self.entries]:
+            return "an entry ahead of the disjoint stack still waits"
         first = next((entry for entry in waiting if entry["id"] not in {e["id"] for e in self.entries}
                       and (entry.get("front") or entry.get("noGate") or entry["state"] == PASSED)), None)
         if first: return f"{first['id']} goes first"
