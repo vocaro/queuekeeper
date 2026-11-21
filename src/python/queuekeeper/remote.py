@@ -1380,6 +1380,82 @@ def held_to_history(root, lane, receipt):
     inner.update(outcome="failed", error=why)
 
 
+def hand_up_group(group, receipt, serial):
+    """Send a nested group's receipt with the enclosing dispatch's results, even when its commands wrote no results."""
+    outer = os.environ.get(parallel.RESULTS_VARIABLE)
+    if not outer: return
+    try:
+        directory = Path(outer) / group
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{count_history.GROUP_RECEIPT_PREFIX}{uuid.uuid4().hex}.json"
+        path.write_text(json.dumps({"serial": serial, "receipt": receipt}) + "\n")
+    except OSError as error:
+        print(f"remote: {group}'s receipt could not be copied into {outer}: {error}", file=sys.stderr, flush=True)
+
+
+def group_held_to_history(root, config, store_path, group, inner, commit):
+    """Judge the passed members of a group that ran for this Mac. Return the names whose counts fell."""
+    failed = []
+    members = inner.get("lanes") or {}
+    lanes = config["lanes"]
+    for name in lanes[group]["parallel"]:
+        member = members.get(name, {})
+        if member.get("status") != 0 or member.get("outcome") != "passed" or lanes[name].get("exactTests"):
+            continue
+        why = count_history.dropped(root, store_path, name, {
+            "mac": inner.get("mac"), "project": {"revision": commit}, "tests": count_history.member_tests(member)
+        }, HERE, say=lambda words: print(f"remote: {words}", file=sys.stderr, flush=True), group=group)
+        if why is not None:
+            print(f"queuekeeper: {group}: {why}", file=sys.stderr, flush=True)
+            member.update(status=2, outcome="failed", error=why)
+            failed.append(name)
+    if failed:
+        inner.update(exitStatus=1, outcome="failed", error=members[failed[0]]["error"])
+    return failed
+
+
+def dispatched_groups(root, config, store_path, receipt, staging, returned):
+    """Judge a dispatch's group and any groups it invoked. Return the nested passes eligible to keep by commit."""
+    result = receipt["result"]
+    inner = count_history.lane_receipt(receipt)
+    if result.get("exitStatus") != 0 or result.get("stopped") or result.get("stage", "work") != "work" or not inner:
+        return []
+    group = receipt["lane"]
+    commit = receipt["commit"]
+    lanes = config.get("lanes", {})
+    if lanes.get(group, {}).get("parallel"):
+        failed = group_held_to_history(root, config, store_path, group, inner, commit)
+        for member in failed:
+            path = staging / "lanes" / f"{member}.json"
+            if path.is_file():
+                saved = json.loads(path.read_text())
+                saved.update({key: inner["lanes"][member][key] for key in ("status", "outcome", "error")})
+                path.write_text(json.dumps(saved, indent=2) + "\n")
+        if failed: result["exitStatus"] = 1
+
+    passes = []
+    for file in returned:
+        relative = Path(file)
+        if not file.startswith(RESULTS) or not relative.name.startswith(count_history.GROUP_RECEIPT_PREFIX):
+            continue
+        nested_group = relative.parent.name
+        if not lanes.get(nested_group, {}).get("parallel"): continue
+        path = staging / relative
+        try: nested = json.loads(path.read_text())
+        except (OSError, ValueError): continue
+        nested_inner = nested.get("receipt") if isinstance(nested, dict) else None
+        if not isinstance(nested_inner, dict) or (nested_inner.get("project") or {}).get("revision") != commit:
+            continue
+        if group_held_to_history(root, config, store_path, nested_group, nested_inner, commit):
+            path.write_text(json.dumps(nested) + "\n")
+            result["exitStatus"] = 1
+            inner.update(outcome="failed", error=nested_inner["error"])
+        elif not nested.get("serial") and not nested_inner.get("checkoutChanged") and \
+                nested_inner["project"].get("workingChangesSHA256") == CLEAN:
+            passes.append((nested_group, nested_inner, relative.parent))
+    return passes
+
+
 def ran_where(receipt):
     """Where a kept receipt's run ran, as eng release and `qk remote passed` say it."""
     if receipt.get("ranOn") == HERE:
@@ -2197,8 +2273,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                                    "waitSeconds": wait}
     # A whole lane's pass is held to its count's history here, where the repository's kept runs are: the Mac that ran
     # it holds none of this repository's (count_history).
-    if lane is not None and not arguments and expect is None and commit == head and not serial and not members:
-        held_to_history(root, lane, receipt)
+    nested_passes = []
+    if lane is not None and not arguments and expect is None:
+        nested_passes = dispatched_groups(root, config, kept.parent, receipt, staging, returned)
+        if commit == head and not serial and not members:
+            held_to_history(root, lane, receipt)
     own = file_results(base, name, dispatch, staging, receipt)
     if sent is not None:
         sent["ran"] = {"mac": farm.named(host), "results": str(own), "checkout": result.get("checkout"), "changes": result.get("changes"),
@@ -2208,6 +2287,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     if lane is not None and not arguments and expect is None and commit == head and not serial \
             and not kit_snapshot(kit):
         keep(kept, lane, receipt, own / RESULTS)
+        if result["exitStatus"] == 0:
+            for group, inner, results_path in nested_passes:
+                group_result = {"exitStatus": 0, "outcome": "passed", "stopped": False, "receipt": inner}
+                keep(kept, group, {**receipt, "lane": group, "outerLane": lane, "result": group_result},
+                     own / results_path)
     if slot is not None and result.get("slot") is not None:
         print(f"remote: checkout slot {slot}, as requested, at {result.get('checkout')}, after {wait}s waiting for it",
               file=sys.stderr, flush=True)

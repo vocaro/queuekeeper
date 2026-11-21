@@ -678,7 +678,10 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   recorded its executed and skipped counts: the tests that run selected (executed plus skipped),
   less those this run skipped, so a test that skips on one Mac and not the other is no fall, and
   the message names that Mac and commit. Only runs on `main` set the count, so a branch cannot
-  lower it. A `Tests-Removed:` trailer counts only in a commit after the run compared with.
+  lower it. Members use the counts under their own name in the group's kept receipt. An offloaded
+  group is judged by the dispatching Mac, including groups whose receipts come back in an outer
+  lane's results. A serial reference is checked but does not set the baseline. A `Tests-Removed:`
+  trailer names the member and counts only in a commit after the run compared with.
   `exactTests` lanes are held to their own count instead.
 - **Outcome details.** A failure before any test (exit 4, `lane_report.before_tests`) quotes the
   log's last error under `beforeTests`. A run that failed or was unmeasured without counting or

@@ -990,14 +990,21 @@ floor. With no number in `queuekeeper.json`:
   Mac.** A Mac with no such run is held to the newest on any Mac, by the tests it selected (executed
   plus skipped), so tests that skip on only one of the two Macs do not count against it. A run that
   falls short fails with exit 2, naming the count, the Mac, the commit and the receipt to compare
-  with. A count that rises needs nothing. A run with arguments, and each member of a
-  group, is held only to the first rule.
+  with. A count that rises needs nothing. When no eligible receipt exists on any Mac, the run has
+  no history floor. Runs with arguments skip the history check.
+- **A whole lane group checks each member's count independently.** Each member reads its counts
+  from passing whole runs of that group on `main`. The same checks apply with `--serial` and
+  when an outer gate invokes the group. The group's whole, passing parallel runs supply baselines.
+  A run with member-selection arguments or `--serial` leaves those baselines in place.
 - **Removing tests on purpose** takes a trailer in any commit of the change, naming each lane whose
   count falls, or `*` for every lane:
 
   ```text
   Tests-Removed: gate, unit
   ```
+
+  For a group, name the member whose count fell. If an outer gate also checks its own aggregate
+  count and that count fell, name the outer gate too.
 
   In the merge queue, a gate that falls short sends back the entry that removes tests without
   this trailer, and the rest of the batch gates again without it.

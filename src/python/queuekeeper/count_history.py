@@ -25,6 +25,8 @@ EVERY_LANE = "*"
 DEPTH = 200
 # The branch a run's history is read on, as the merge queue lands it: origin's first, else the local one.
 MAINS = ("refs/remotes/origin/main", "refs/heads/main")
+# A nested group on another Mac sends its verdict back through the outer lane's results.
+GROUP_RECEIPT_PREFIX = ".queuekeeper-group-"
 
 
 def counts(log_counts):
@@ -86,20 +88,33 @@ def count(value):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def baseline(root, store, lane, mac, commit, here):
+def member_tests(member):
+    """Read a member's tests in the same shape as a standalone lane's counts."""
+    return {"executed": member.get("executedTests"), "skipped": member.get("skippedTests")}
+
+
+def baseline(root, store, lane, mac, commit, here, group=None):
     """The newest passing whole run of the lane at a commit of main at or below commit, on the Mac named mac, that
     recorded its count, as a Baseline; else the newest on any Mac that recorded both its executed and its skipped
     count, as a Baseline that is not its own; or None. A kept run written before counts were recorded is passed
-    over."""
+    over. A group member reads the named member of the group's kept receipt, with the same eligibility rules."""
     if not mac or not commit: return None
     other = None
+    recorded_lane = group or lane
     for older in below(root, commit):
-        path = Path(store) / older / f"{lane}.json"
+        path = Path(store) / older / f"{recorded_lane}.json"
         try: kept = json.loads(path.read_text())
         except (OSError, ValueError): continue
-        if not passing(kept, older, lane, here): continue
+        if not passing(kept, older, recorded_lane, here): continue
         inner = lane_receipt(kept)
         tests = inner.get("tests") if isinstance(inner.get("tests"), dict) else {}
+        if group is not None:
+            members = inner.get("lanes")
+            member = members.get(lane) if isinstance(members, dict) else None
+            if inner.get("notSelected") or not isinstance(member, dict) or member.get("outcome") != "passed" \
+                    or member.get("status") != 0:
+                continue
+            tests = member_tests(member)
         executed, skipped = count(tests.get("executed")), count(tests.get("skipped"))
         if executed is None: continue
         if inner.get("mac") == mac: return Baseline(older, executed, skipped, mac, path)
@@ -115,7 +130,7 @@ def acknowledged(root, since, commit, lane):
     return lane in named or EVERY_LANE in named
 
 
-def dropped(root, store, lane, receipt, here, say=None):
+def dropped(root, store, lane, receipt, here, say=None, group=None):
     """Why a whole run of the lane whose own receipt is receipt failed, having executed fewer tests than its last
     passing whole run on main on the same Mac, or None when it did not, or no run on main recorded a count. A Mac with
     no such run is held to the newest on any Mac: the tests that run selected, executed and skipped together, less
@@ -125,7 +140,7 @@ def dropped(root, store, lane, receipt, here, say=None):
     executed = count(tests.get("executed")) or 0
     skipped = count(tests.get("skipped")) or 0
     commit = (receipt.get("project") or {}).get("revision")
-    found = baseline(root, store, lane, receipt.get("mac"), commit, here)
+    found = baseline(root, store, lane, receipt.get("mac"), commit, here, group=group)
     if found is None: return None
     # Another Mac's tests may skip apart from this one's: what it selected is what this Mac should select.
     expected = found.executed if found.own else max(found.executed + found.skipped - skipped, 0)

@@ -3303,6 +3303,36 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, output + error)
         self.assertIn("which a commit since says with Tests-Removed: gate", error)
 
+    def test_dispatched_groups_hold_their_members_to_history_even_inside_a_gate(self):
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        for name in ("ios", "mac"):
+            settings["lanes"][name] = {"command": [sys.executable, "-c",
+                f"from pathlib import Path; print('Ran', Path({name!r}).read_text(), 'tests')"]}
+        settings["lanes"]["suites"] = {"parallel": ["ios", "mac"]}
+        settings["lanes"]["outer"] = {"command": ["sh", "-c",
+            '"$0" "$QUEUEKEEPER_ROOT/bin/qk" --project . run --here suites', sys.executable]}
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
+        def landed(ios, mac):
+            (self.project / "ios").write_text(str(ios))
+            (self.project / "mac").write_text(str(mac))
+            commit = commit_all(self.project)
+            git(self.project, "update-ref", "refs/heads/main", commit)
+            return commit
+        first = landed(5, 3)
+        status, output, error = self.qk("remote", "run", "outer")
+        self.assertEqual(status, 0, output + error)
+        kept = json.loads((remote.store(self.project) / first / "suites.json").read_text())
+        self.assertEqual(kept["result"]["receipt"]["lanes"]["ios"]["executedTests"], 5)
+        landed(4, 4)
+        for command in (("suites",), ("--serial", "suites"), ("outer",)):
+            with self.subTest(command=command):
+                status, output, error = self.qk("remote", "run", *command)
+                self.assertEqual(status, 1, output + error)
+                self.assertIn("suites: ios executed 4 tests, 1 fewer than the 5", error)
+                self.assertIn("Tests-Removed: ios", error)
+        member = self.lane_files("suites", "ios")[1]
+        self.assertEqual((member["outcome"], member["executedTests"]), ("failed", 4))
+
     def test_a_receipt_from_before_the_rename_counts_as_one_of_now(self):
         # Receipts written before vocaro-engineering#58 say another Mac's run ran on the build host.
         self.assertEqual(self.run_here("gate")[0], 0)

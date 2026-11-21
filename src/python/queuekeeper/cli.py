@@ -399,7 +399,7 @@ def judge(lane, result, log, extra=(), expect=None):
     return result, []
 
 
-def held_to_history(root, name, lane, receipt):
+def held_to_history(root, name, lane, receipt, group=None):
     """Raise ValueError when a passing whole run of the lane name executed fewer tests than its last passing whole run
     on main on this Mac, or on any Mac where this one has none (count_history.dropped). A lane that says "exactTests": true is held to its own count instead,
     and work run here for another Mac is held to the history of the Mac that sent it (remote.held_to_history)."""
@@ -407,7 +407,7 @@ def held_to_history(root, name, lane, receipt):
     try: store = remote.store(root)
     except (OSError, RuntimeError, subprocess.SubprocessError): return
     why = count_history.dropped(root, store, name, receipt, remote.HERE,
-                                say=lambda words: print(f"queuekeeper: {words}", file=sys.stderr, flush=True))
+                                say=lambda words: print(f"queuekeeper: {words}", file=sys.stderr, flush=True), group=group)
     if why is not None: raise ValueError(why)
 
 
@@ -1963,6 +1963,8 @@ def perform(argv, report):
                 counts = whole and not (tree != root and offered.sent["commit"] != offered.sent.get("head")) \
                     and not receipt.get("checkoutMoved") and not receipt.get("checkoutChanged")
                 remote.keep_here(root, args.lane, receipt, status, counts, results=directory / "results")
+                if group is not None and not extra and status == 0 and os.environ.get(remote.DISPATCHER):
+                    remote.hand_up_group(args.lane, receipt, args.serial)
                 # A lane's output goes to its log; the Mac that sent a dispatch prints these once they are back.
                 if not os.environ.get(remote.DISPATCHER): plugins.report_results(directory / "results")
             def prepared(work):
@@ -2063,14 +2065,19 @@ def perform(argv, report):
                         def pace(name, member):
                             return lane_timing.Pace(name, member, project, live=live, commit=commit, group=args.lane) \
                                 if whole else None
-                        def judged(member, status, log):
+                        def judged(name, member, status, log):
                             # Said as soon as one of the group's lanes ends after the checkout moved, not only at its end.
                             moving = checkout_moved(root, args.lane, began) if not said_moved else None
                             if moving is not None and moving[2]:
                                 said_moved.append(moving[0])
                                 print(f"queuekeeper: {moving[0]}; the group runs on, and its result will be unmeasured",
                                       file=sys.stderr, flush=True)
-                            return judge(member, status, log)[0]
+                            status, _ = judge(member, status, log)
+                            if status == 0 and not extra:
+                                held_to_history(root, name, member,
+                                                {**receipt, "tests": count_history.counts(lane_results.counted(log))},
+                                                group=args.lane)
+                            return status
                         return parallel.lanes(tree, wrapped, directory / "lanes", jobs, judged, receipt, on_stop,
                                               results_directory=directory / "results", fail_fast=fail_fast, pace=pace,
                                               unselected=unselected)

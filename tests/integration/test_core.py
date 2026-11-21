@@ -684,6 +684,70 @@ class ConfigurationTests(unittest.TestCase):
             self.assertRegex(said, r"test executed 4 tests, \d+ fewer than the (9|5) its last passing whole run on .*"
                                    r"/test\.json\), which a commit since says with Tests-Removed: test")
 
+    def test_whole_parallel_and_serial_groups_hold_each_member_to_its_own_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*arguments):
+                return subprocess.run(["git", "-C", directory, "-c", "user.name=Test", "-c", "user.email=t@example.com",
+                                       *arguments], check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q", "-b", "main")
+            (root / ".gitignore").write_text(".build/\n")
+            def counter(name):
+                return {"command": [sys.executable, "-c",
+                                    f"from pathlib import Path; print('Ran', Path({name!r}).read_text(), 'tests')"]}
+            (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Lanes", "lanes": {
+                "ios": counter("ios"), "mac": counter("mac"), "suites": {"parallel": ["ios", "mac"]},
+                "gate": {"command": ["sh", "-c", '"$0" "$1" --project . run --here suites; status=$?; '
+                                     'cat .build/queuekeeper/suites/lanes/ios.log .build/queuekeeper/suites/lanes/mac.log; '
+                                     'exit "$status"', sys.executable, str(config.TOOLKIT_ROOT / "bin/qk")]}}}))
+            def landed(ios, mac, message="state"):
+                (root / "ios").write_text(str(ios))
+                (root / "mac").write_text(str(mac))
+                git("add", "-A")
+                git("commit", "-q", "--allow-empty", "-m", message)
+                return git("rev-parse", "HEAD")
+            def identity(path):
+                value = config.source_identity(path)
+                if path == config.TOOLKIT_ROOT: value["workingChangesSHA256"] = remote.CLEAN
+                return value
+            def run(*arguments):
+                with patch.object(cli, "source_identity", side_effect=identity), \
+                        patch.object(cli, "refresh_policy", return_value="policy"), \
+                        contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+                    status = cli.main(["--project", directory, "run", "--here", *arguments])
+                return status, output.getvalue() + error.getvalue()
+            first = landed(5, 3)
+            baseline = remote.store(root) / first / "suites.json"
+            self.assertEqual(run("suites", "--", "ios")[0], 0)
+            self.assertFalse(baseline.exists())
+            self.assertEqual(run("--serial", "suites")[0], 0)
+            self.assertFalse(baseline.exists())
+            self.assertEqual(run("suites")[0], 0)
+            saved = json.loads(baseline.read_text())
+            self.assertEqual(saved["result"]["receipt"]["lanes"]["ios"]["executedTests"], 5)
+
+            # A new Mac uses the selected count from the other Mac's receipt.
+            saved["result"]["receipt"]["mac"] = "Other Mac"
+            baseline.write_text(json.dumps(saved))
+            fell = landed(4, 4, "Wrong name\n\nTests-Removed: suites")
+            self.assertEqual(run("suites", "--", "ios")[0], 0)
+            self.assertFalse((remote.store(root) / fell / "suites.json").exists())
+            for command in (("suites",), ("--serial", "suites"), ("gate",)):
+                with self.subTest(command=command):
+                    status, said = run(*command)
+                    if command == ("gate",):
+                        said += (root / ".build/queuekeeper/gate/run.log").read_text()
+                    self.assertEqual(status, 1, said)
+                    self.assertIn("ios executed 4 tests, 1 fewer than the 5", said)
+                    self.assertIn("held to Other Mac's", said)
+                    self.assertIn("Tests-Removed: ios", said)
+            member = json.loads((root / ".build/queuekeeper/suites/lanes/ios.json").read_text())
+            self.assertEqual((member["outcome"], member["executedTests"]), ("failed", 4))
+            landed(4, 4, "Remove an iOS test\n\nTests-Removed: ios")
+            status, said = run("suites")
+            self.assertEqual(status, 0, said)
+            self.assertIn("which a commit since says with Tests-Removed: ios", said)
+
     def test_a_run_whose_checkout_moves_while_it_runs_is_no_commits_pass(self):
         """BreezEPUB, 2026-11-19: a session ran `git switch` in the worktree an hour into a local run, which built and
         tested the switched files with no word of it (vocaro/queuekeeper#310). A run on another commit by its end is

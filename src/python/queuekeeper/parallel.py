@@ -131,7 +131,7 @@ def hand_up(results, lane, environment=None):
 def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None, fail_fast=False,
           pace=None, unselected=()):
     """Run members, (name, lane) pairs, jobs at a time, each with its log at directory/NAME.log and
-    its receipt at directory/NAME.json, and return the combined status. judge(lane, status, log) is
+    its receipt at directory/NAME.json, and return the combined status. judge(name, lane, status, log) is
     a lane's status from its command's and its log, raising ValueError for a run that executed too
     few tests. With results_directory, the group's results/, each lane's command finds results/NAME/ in
     RESULTS_VARIABLE, so that what it writes there comes back with the group's from another Mac.
@@ -205,7 +205,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
                                       if "stall" in lane else {}),
                                    env=shims.environment(results_environment(results_directory / name)
                                        if results_directory is not None else os.environ, root))
-            status = judge(lane, status, log.read_text(errors="replace"))
+            status = judge(name, lane, status, log.read_text(errors="replace"))
         except processes.Canceled:
             # Only the group's first failure cancels a lane.
             return cut_short(name, lane, log, began)
