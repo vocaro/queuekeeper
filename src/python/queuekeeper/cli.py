@@ -1717,6 +1717,7 @@ def perform(argv, report):
             # is an error, and a Mac that cannot be reached is unchecked. A farm with none compares this Mac with none.
             compared = [fix_hosts(root, remote.compare_hosts(host)) for host in farm.destinations()] \
                 or [fix_hosts(root, remote.compare_hosts())]
+            for check in plugins.HOST_CHECKS: check(root, config, compared)
             if trial.active(): warnings.append(f"{trial.refusal('the fixes')}; its state is under {trial.folder()}")
             # Each lane no Mac of the farm takes by its own settings: its labels or its kind (vocaro/queuekeeper#224).
             warnings += remote.unplaceable_lanes(config)

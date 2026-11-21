@@ -4083,8 +4083,8 @@ def settings_here():
             "settingsIgnored": found["ignored"]}
 
 
-def read_macs(hosts, read_there, limit):
-    """Each of hosts read by read_there all at once, by its name (farm.named): its reading, or why it could not be
+def read_macs(hosts, read_there, limit, *, name=farm.named):
+    """Each of hosts read by read_there all at once, keyed by name: its reading, or why it could not be
     read, as Unavailable's problem says it or that it did not answer within limit seconds. The whole takes about
     the slowest read, bounded by limit, never their sum (vocaro/queuekeeper#224). Any other failure is raised."""
     found, failed = {}, []
@@ -4100,7 +4100,7 @@ def read_macs(hosts, read_there, limit):
     deadline = time.monotonic() + limit
     for thread in threads: thread.join(max(0, deadline - time.monotonic()))
     if failed: raise failed[0]
-    return {farm.named(host): found[host] if host in found else f"it did not answer in {limit:g}s"
+    return {name(host): found[host] if host in found else f"it did not answer in {limit:g}s"
             for host in hosts}
 
 
