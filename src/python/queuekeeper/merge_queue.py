@@ -7997,22 +7997,6 @@ def landed_words(partners, before):
             f"again.")
 
 
-class YieldAdmissionWait:
-    """Withdraw an unadmitted newer lane once its older companion has finished."""
-
-    def __init__(self, runner, older_ended):
-        self.runner, self.older_ended = runner, older_ended
-        self.canceled = False
-
-    def is_set(self):
-        if self.canceled: return True
-        if not self.older_ended.is_set() or self.runner.lane_now is None: return False
-        lane, began, _ = self.runner.lane_now
-        record = lane_wait.current(lane_wait.path_of(self.runner.checkout, lane), began)
-        self.canceled = bool(record and record.get("kind") and record.get("admitted") is False)
-        return self.canceled
-
-
 class Beside(Worker):
     """A bisect's newer half, gated in a checkout beside the worker's, waiting for admission on a Mac other than
     the older half's (owner's decision of 2026-11-20, vocaro/queuekeeper#293). Both halves run on the same
@@ -8059,37 +8043,43 @@ class Beside(Worker):
         super().noted(entry, **fields)
 
     def both(self, worker, lanes, round_name):
-        """Gate the newer half in this checkout while worker gates the older half, the two on different Macs, and
-        return the older half's (status, log). The older half is offered as any gate is, to whichever Mac has room
-        for it or admits it first. Once a Mac has admitted the older half's final lane, the newer half waits for
-        admission using the remaining Macs (apart), including this Mac if it is eligible. Once the older half is
-        done, a newer lane that is still known to be waiting gives up that wait (YieldAdmissionWait), so it can
-        gate in its normal turn on any eligible Mac. A lane already running continues. Weigh queues a newer half
-        that gives no verdict. Until #293, the newer half made only one attempt at immediate admission."""
+        """Gate both halves on different Macs. A waiting newer lane may also use its companion's Mac once the
+        older gate has ended with a verdict. The newer lane owns placement throughout, and can offer elsewhere
+        only after a pre-start refusal, never by stopping a dispatch based on its reported wait (#293)."""
         box, ended = {}, threading.Event()
-        cancel = YieldAdmissionWait(self, ended)
         name = f"{time.strftime('%Y%m%d-%H%M%S')}-{self.tip[:8]}"
         self.round_name = name
         # What an earlier round's gate ran is not this one's (apart_from).
         worker.lane_now = None
-        def gate():
+        with tempfile.TemporaryDirectory(prefix="queuekeeper-bisect-") as directory:
+            release = Path(directory) / "older-finished"
+            def gate():
+                previous = self.environment
+                try:
+                    placed = self.apart_from(worker, lanes[-1], ended, waits=True)
+                    if placed is None: return
+                    where, excluded, _ = placed
+                    companion = remote.HERE if where == ("--offload-wait",) else excluded
+                    if companion is not None:
+                        self.environment = {**previous, remote.QUEUE_GATE_EXCLUDE: companion,
+                                            remote.QUEUE_GATE_RELEASE: str(release)}
+                    self.say("its lanes wait for admission on a Mac other than the older half's until that half ends")
+                    box["result"] = self.gate(lanes, name, where=where)
+                except BaseException as error: box["error"] = error
+                finally: self.environment = previous
+            thread = threading.Thread(target=gate, name="newer half", daemon=True)
+            thread.start()
             try:
-                placed = self.apart_from(worker, lanes[-1], ended, waits=True)
-                if placed is None: return
-                where, excluded, _ = placed
-                # Its own environment from here on: the worker's is the older half's too.
-                if excluded is not None: self.environment = {**self.environment, remote.QUEUE_GATE_EXCLUDE: excluded}
-                self.say("its lanes wait for admission on a Mac other than the older half's")
-                box["result"] = self.gate(lanes, name, where=where, cancel=cancel)
-                if cancel.canceled and box["result"][0] == lane_results.UNMEASURED:
-                    self.say("the older half finished while its companion still waited for admission")
-            except BaseException as error: box["error"] = error
-        thread = threading.Thread(target=gate, name="newer half", daemon=True)
-        thread.start()
-        try: older = worker.gate(lanes, round_name)
-        finally:
-            ended.set()
-            thread.join()
+                older = worker.gate(lanes, round_name)
+                # In particular a lost remote dispatch may still be running on its Mac.
+                if older[0] not in NO_VERDICT and older[0] != WITHDRAWN:
+                    release.touch()
+            finally:
+                try:
+                    if not release.is_file(): release.with_suffix(".aborted").touch()
+                finally:
+                    ended.set()
+                    thread.join()
         error = box.get("error")
         if isinstance(error, processes.Interrupted):
             self.queue.mark(self.newer, QUEUED)

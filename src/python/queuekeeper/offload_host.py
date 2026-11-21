@@ -272,8 +272,20 @@ class Refusal(RuntimeError):
 # The variable naming the file into which a declining admission writes why (cli.admitted_here), and that file's
 # place in the checkout. remote.DECLINED names the same variable.
 DECLINED, DECLINED_NOTE = "QUEUEKEEPER_DECLINED_FILE", ".build/queuekeeper/declined.txt"
+ADMISSION_OFFER = "QUEUEKEEPER_ADMISSION_OFFER"
+ADMISSION_OFFER_DEADLINE = "QUEUEKEEPER_ADMISSION_OFFER_DEADLINE"
 # Characters of a declining admission's reason kept: it names the request ahead and the holders of every slot.
 DECLINED_LIMIT = 600
+
+
+def declined_offer(path, identifier):
+    """The reason explicitly recorded before admission, for this dispatch only."""
+    if path is None: return None
+    try: value = json.loads(path.read_text())
+    except (OSError, ValueError): return None
+    if not isinstance(value, dict) or value.get("offer") != identifier: return None
+    reason = value.get("reason")
+    return (" ".join(reason.split())[:DECLINED_LIMIT] or None) if isinstance(reason, str) else None
 
 
 def declined_reason(path):
@@ -4632,6 +4644,8 @@ def watch(silence=None):
 
 def main(plan):
     global _journal
+    offer_seconds = plan.get("admissionOfferSeconds")
+    offer_deadline = time.monotonic() + offer_seconds if offer_seconds is not None else None
     for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, lambda *_: _stop.set())
     # sshd's hangup when the connection goes, which is no stop of a run that keeps a journal.
@@ -4734,6 +4748,8 @@ def main(plan):
         declined = checkout / DECLINED_NOTE if plan.get("decline") else None
         if declined is not None:
             environment[DECLINED] = str(declined)
+            if plan.get("admissionOffer"): environment[ADMISSION_OFFER] = plan["admissionOffer"]
+            if offer_deadline is not None: environment[ADMISSION_OFFER_DEADLINE] = str(offer_deadline)
         returns = plan.get("returns")
         if returns:
             back = checkout / returns["directory"], returns["paths"]
@@ -4774,12 +4790,21 @@ def main(plan):
         # `qk run --if-free` declined the lane, or its provision lane, before running it, and wrote no receipt.
         if plan.get("decline") and result.get("stage") in ("provision", "work") and result["exitStatus"] == plan["busy"] \
                 and not fresh:
-            result.update(refused=declined_reason(declined), busy=True)
+            if offer := plan.get("admissionOffer"):
+                if reason := declined_offer(declined, offer):
+                    result.update(refused=f"its heavy-work queue cannot take the lane now: {reason}",
+                                  busy=True, notStarted=offer)
+                else:
+                    result.update(refused="no confirmed admission outcome", busy=True)
+            else:
+                result.update(refused=declined_reason(declined), busy=True)
     except Refusal as refusal:
         result.update(refused=str(refusal), busy=refusal.busy, fix=refusal.fix)
     except (OSError, RuntimeError, ValueError) as error:
         result["error" if begun else "refused"] = str(error)
     finally:
+        if not begun and result.get("refused") and plan.get("admissionOffer"):
+            result["notStarted"] = plan["admissionOffer"]
         result["finished"] = time.time()
         if _detached_at is not None:
             result["detached"] = {"seconds": round(time.monotonic() - _detached_at, 3), "limit": detach["seconds"],

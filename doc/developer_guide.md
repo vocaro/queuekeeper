@@ -319,11 +319,13 @@ another project's worker for as long as its gates take (vocaro/queuekeeper#285).
 
 **A bisect's two halves can gate at once.** The older half is offered as any gate is. Once a Mac
 admits its final lane, the newer half waits for admission in the `-beside` checkout using the other
-Macs (`qk run --offload-wait` when the older half is on this Mac, otherwise the usual placement
-with the older half's Mac left out). When the older half ends, the newer half gives up any lane
-that still reports a wait to start and can gate again with the usual placement. A lane already
-admitted runs to its verdict. Whichever half passes lands. When both fail, the older is bisected
-first.
+Macs. Once the older half ends with a verdict, its Mac becomes eligible within the same admission
+wait. The newer lane offers to one Mac at a time. It can try another after a dispatch-specific
+confirmation that the earlier offer was declined before the lane started. If the remote launch's
+result is unknown, the offer is unmeasured and retained for recovery. A lane that started keeps
+running through a change in eligibility. When the older half ends without a verdict, the newer
+half stops looking for a Mac between offers. Whichever half passes lands. When both fail, the
+older is bisected first.
 
 **When both halves pass,** no entry fails alone: the entries fail together. A half counts as
 passed when its failed tests all pass alone on rerun, as a batch with flakes does; the newer half's

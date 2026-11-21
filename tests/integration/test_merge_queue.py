@@ -10918,7 +10918,7 @@ class FlakyReruns(Fixture):
                       "src/python/fixturelib/helper.py, which it imports: bisecting", log)
         self.assertIn("2 commits fail together: next the oldest 1", log)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
-        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS + 2)
+        self.assertEqual(self.runs_of_the_test(), 1 + mq.RERUNS + 2, log)
         [tracked] = self.tracked
         self.assertIn("bisected", tracked["outcome"])
         self.assertTrue(all(self.state(identifier)["flakes"][0]["test"] == self.TEST for identifier in ids))
@@ -10944,7 +10944,7 @@ class FlakyReruns(Fixture):
         self.assertIn("2 commits fail together", said.getvalue())
         self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
-        self.assertEqual(self.runs_of_the_test(), 3)
+        self.assertEqual(self.runs_of_the_test(), 3, said.getvalue())
         self.assertEqual(self.tracked, [])
 
     def test_more_failed_tests_than_a_flake_would_bisect_at_once(self):
@@ -11706,51 +11706,48 @@ class BothHalves(Fixture):
     def test_the_newer_half_waits_for_admission_off_the_older_halfs_mac(self):
         queue = mq.Queue(self.repo)
         worker = mq.Worker(queue)
-        for mac, where, excluded in [
-            (mq.HERE_MAC, ("--offload-wait",), None),
-            (mq.lane_wait.farm_mac("build-host"), (), "build-host"),
+        for mac, where, excluded, result in [
+            (mq.HERE_MAC, ("--offload-wait",), mq.remote.HERE, 1),
+            (mq.lane_wait.farm_mac("build-host"), (), "build-host", 0),
+            (mq.lane_wait.farm_mac("build-host"), (), "build-host", mq.lane_results.UNMEASURED),
         ]:
-            with self.subTest(mac=mac), farm_fixture.only("build-host", "gate-03"), patch.object(mq, "apart", APART):
+            with self.subTest(mac=mac, result=result), farm_fixture.only("build-host", "gate-03"), \
+                    patch.object(mq, "apart", APART):
                 newer = mq.Beside(worker)
                 newer.tip = "newer-tip"
-                waiting = threading.Event()
+                waiting, older_returning = threading.Event(), threading.Event()
+                marks = []
 
                 def older_gate(lanes, round_name):
                     self.assertTrue(waiting.wait(stretched(10)))
-                    return 1, None
+                    older_returning.set()
+                    return result, None
 
-                def newer_gate(lanes, round_name, *, where, cancel):
-                    self.assertFalse(cancel.is_set())
+                def newer_gate(lanes, round_name, *, where):
+                    self.assertEqual(newer.environment[mq.remote.QUEUE_GATE_EXCLUDE], excluded)
+                    mark = Path(newer.environment[mq.remote.QUEUE_GATE_RELEASE])
+                    self.assertFalse(mark.exists())
+                    marks.append(mark)
                     waiting.set()
+                    self.assertTrue(older_returning.wait(stretched(10)))
+                    if result not in mq.NO_VERDICT:
+                        until = time.monotonic() + stretched(10)
+                        while not mark.exists() and time.monotonic() < until:
+                            time.sleep(0.02)
+                        self.assertTrue(mark.exists())
+                    else:
+                        self.assertFalse(mark.exists())
                     return 0, None
 
                 with patch.object(worker, "admitted_mac", return_value=mac), \
                         patch.object(worker, "gate", side_effect=older_gate), \
                         patch.object(newer, "gate", side_effect=newer_gate) as gate:
-                    self.assertEqual(newer.both(worker, ["gate"], "older"), (1, None))
-                gate.assert_called_once_with(["gate"], newer.round_name, where=where, cancel=unittest.mock.ANY)
-                self.assertEqual(newer.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
+                    self.assertEqual(newer.both(worker, ["gate"], "older"), (result, None))
+                gate.assert_called_once_with(["gate"], newer.round_name, where=where)
                 self.assertEqual(newer.result, (0, None))
-
-    def test_only_a_newer_lane_known_to_be_waiting_yields_when_its_companion_finishes(self):
-        worker = mq.Worker(mq.Queue(self.repo))
-        newer = mq.Beside(worker)
-        newer.lane_now = ("gate", time.time(), ("--offload-wait",))
-        ended = threading.Event()
-        waiting = {"kind": mq.lane_wait.ADMISSION, "admitted": False}
-        give_way = mq.YieldAdmissionWait(newer, ended)
-        with patch.object(mq.lane_wait, "current", return_value=waiting) as read:
-            self.assertFalse(give_way.is_set())
-            read.assert_not_called()
-            ended.set()
-            for record in [None, {"kind": None, "admitted": False}, {"kind": None, "admitted": True}]:
-                read.return_value = record
-                self.assertFalse(give_way.is_set())
-            read.return_value = waiting
-            self.assertTrue(give_way.is_set())
-            read.assert_called_with(mq.lane_wait.path_of(newer.checkout, "gate"), newer.lane_now[1])
-            read.return_value = None
-            self.assertTrue(give_way.is_set())
+                self.assertEqual(len(marks), 1)
+                self.assertFalse(marks[0].parent.exists())
+                self.assertNotIn(mq.remote.QUEUE_GATE_RELEASE, newer.environment)
 
     def test_a_lane_that_runs_only_here_keeps_one_half_at_a_time(self):
         """Negative control: a lane that runs only on this Mac (offerable, whose own cases the test below covers)

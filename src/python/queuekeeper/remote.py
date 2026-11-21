@@ -164,6 +164,7 @@ LOST_ACCESS = 69
 # takes it out of its environment, so that no lane it runs here, nor what that lane starts, stops for it.
 QUEUE_GATE = "QUEUEKEEPER_QUEUE_GATE"
 QUEUE_GATE_EXCLUDE = "QUEUEKEEPER_QUEUE_GATE_EXCLUDE"
+QUEUE_GATE_RELEASE = "QUEUEKEEPER_QUEUE_GATE_RELEASE"
 # Seconds the check before a dispatch gives each address of another Mac's name to answer on its ssh
 # port, and then `ssh true` to finish there, login shell included: an offline Mac costs a few
 # seconds, where ssh's ConnectTimeout would take ten for each address.
@@ -1950,7 +1951,8 @@ def timing_marks(root, config):
 
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
-            serial=False, subdirectory=None, sent=None, changes=False, slot=None, slot_wait=None, says_load=False):
+            serial=False, subdirectory=None, sent=None, changes=False, slot=None, slot_wait=None, says_load=False,
+            strict_offer=False, admission_deadline=None):
     """Run queuekeeper's work on another Mac and return its exit status, with the log and receipt kept here.
 
     work is another Mac's queuekeeper arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
@@ -2054,6 +2056,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     detached = detached_seconds(config, lane, work) if lease is None else None
     journal = f"{dispatch}-{uuid.uuid4().hex[:8]}"
     if detached is not None: plan["detach"] = {"id": journal, "seconds": detached}
+    if strict_offer: plan["admissionOffer"] = journal
 
     at = commit[:12] if commit == head else f"{commit[:12]}, a snapshot of the working tree on {head[:12]},"
     if kit_snapshot(kit):
@@ -2148,6 +2151,12 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         plan["requestStarted"] = sent["requestStarted"]
     # The place the work holds in that Mac's queue while it waits (Places), which its admissions there pass.
     if resources.request_place(): plan["heldPlace"] = resources.request_place()
+    if admission_deadline is not None:
+        left = admission_deadline - time.monotonic()
+        if left <= 0:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise Busy("the admission wait expired before sending the lane")
+        plan["admissionOfferSeconds"] = left
     command = [*SSH, *moved(host), host, login(host_command(source, json.dumps(plan)))]
     stopping = None
     record = remember_dispatch(journal, host) if detached is not None else None
@@ -2230,11 +2239,14 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         lost_at, reconnections = time.time(), None
         if frames.result is None and frames.journaled: reconnections = collect()
         frames.close()
-    # A run this dispatch could neither collect nor learn the end of stays recorded, for a later one to stop.
-    if record is not None and (frames.result is not None or frames.gone or not frames.journaled):
-        with contextlib.suppress(OSError): record.unlink()
     result, framed, returned = frames.result, frames.framed, frames.returned
-    if result is None and not framed and stopping is None:
+    # Only a receiver's explicit pre-start refusal of this offer lets the bisect try another Mac.
+    if strict_offer and result is not None and result.get("refused") and result.get("notStarted") != journal:
+        result = None
+    # Keep even a frameless strict dispatch for recovery: the child may have started before its first frame was lost.
+    if record is not None and (result is not None or (not strict_offer and (frames.gone or not frames.journaled))):
+        with contextlib.suppress(OSError): record.unlink()
+    if result is None and not strict_offer and not framed and stopping is None:
         # offload_host.py never said it started, so nothing ran there unless its first words were lost.
         shutil.rmtree(staging, ignore_errors=True)
         if ended == 255: raise ssh_failure(host, said, slept, sent=True)
@@ -2253,7 +2265,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         with contextlib.suppress(OSError):
             (staging / DISPATCH_HOST).write_text(host + "\n")
         own = file_results(base, name, dispatch, staging)
-        kept = f"~/{ROOT}/{offload_host.JOURNALS}/{journal}" if frames.journaled else None
+        kept = f"~/{ROOT}/{offload_host.JOURNALS}/{journal}" if (frames.journaled or strict_offer) else None
         raise Lost(lost(host, ended, said, started, slept, own / "output.log", journal=kept, gone=frames.gone))
     # commit is what ran there: HEAD, or a snapshot of the working tree on it. ranOn and mac say where, as
     # a run on this Mac's receipt does, so that the share of each Mac's work can be counted.
@@ -3167,7 +3179,7 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     return offered
 
 
-def lane_offer(root, config, lane, arguments, expect, fallback, queue_gate, exclude, hosts):
+def lane_offer(root, config, lane, arguments, expect, fallback, queue_gate, exclude, hosts, *, strict=False):
     """Build the offer for a lane that starts only when the receiving Mac can admit it."""
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
@@ -3176,11 +3188,15 @@ def lane_offer(root, config, lane, arguments, expect, fallback, queue_gate, excl
     refused = (f"its arguments name the physical device of {', '.join(named)}, which another Mac uses only under "
                "a reservation `qk remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
-    return Offer(lane, f"`qk run --here {lane}`", lambda host, sent: execute(
-        root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
-        whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
-        screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate, fallback=fallback,
-        exclude=exclude if queue_gate else None, hosts=hosts, **lane_needs(config.get("lanes", {}), lane))
+    def send(host, sent):
+        options = {"strict_offer": True, "admission_deadline": offered.deadline} if strict else {}
+        return execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent,
+                       **options)
+    offered = Offer(lane, f"`qk run --here {lane}`", send, refused,
+                    whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
+                    screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate, fallback=fallback,
+                    exclude=exclude if queue_gate else None, hosts=hosts, **lane_needs(config.get("lanes", {}), lane))
+    return offered
 
 
 # A simulator's identifier, a UUID, as a word of uppercased text: a member of this Mac's pool.
@@ -3464,7 +3480,7 @@ class Offer:
                     if not reached and self.away is not None and self.busy is not None:
                         lane_wait.waiting(lane_wait.OVERFLOW, self.busy)
                     reached = True
-                    if not (self.choosing or self.several()): return self.offer(host)
+                    if not (self.choosing or self.several() or skip_busy): return self.offer(host)
                     kept = self.sents.get(host, {})
                     reading = capacity_there(host, **({"started": kept["requestStarted"]} if "requestStarted" in kept else {}))
                     reason = self.room(reading, self.called(host))
@@ -3924,6 +3940,65 @@ def wait_on_farm(root, config, lane, arguments, expect, hosts, label, timeout=OV
                 bound = min(bound, PLACED_WAIT)
             time.sleep(min(left, bound))
             window = min(2 * window, OVERFLOW_WAIT_MAX)
+    finally:
+        if places is not None: places.leave()
+
+
+def wait_beside(offered, admit, timeout, companion, release):
+    """Wait as one placement owner. Add the companion's Mac only after its gate is known to have ended."""
+    hosts, home = (() if offered.refused else offered.hosts), offered.choosing
+    # With only the older half's Mac configured, the normal serial bisect gates the newer half on the
+    # updated main. Waiting beside it would gate once on the old base with no chance of running in parallel.
+    if not (home and companion != HERE) and not any(host != companion for host in hosts):
+        reason = offered.refused or ("no other eligible Mac for the bisect" if hosts else NO_MAC)
+        print(f"queuekeeper: {offered.name} not run: {reason}", file=sys.stderr, flush=True)
+        return BUSY
+    deadline = offered.deadline = time.monotonic() + timeout
+    places = places_for(offered, once=False) if hosts else None
+    window, said = FREE_WAIT, None
+    aborted = release.with_suffix(".aborted")
+    try:
+        while not aborted.is_file() and time.monotonic() < deadline:
+            if processes.requested() is not None:
+                raise processes.Interrupted(processes.requested(), "while waiting for a bisect gate")
+            blocked = None if release.is_file() else companion
+            offered.hosts = tuple(host for host in hosts if host != blocked)
+            offered.choosing = home and blocked != HERE
+            if places is not None:
+                places.hold({blocked, *offered.unreached(), *offered.unfit})
+            reason = "the other half is still using the only eligible Mac"
+            if offered.hosts:
+                try:
+                    with offered.place.kept(lambda: lane_wait.taken_there() is False), \
+                            places.offering() if places else contextlib.nullcontext():
+                        return offered.attempt(skip_busy=True)
+                except Misconfigured as error:
+                    can_expand = blocked in hosts or (home and blocked == HERE)
+                    if not can_expand or not all(host in offered.unfit for host in offered.hosts):
+                        return offered.stopped(error)
+                    reason = str(error)
+                except Unavailable as error:
+                    if offered.lost_access(error): return offered.status
+                    reason = offered.words(error)
+            if aborted.is_file(): break
+            if reason != said:
+                print(f"queuekeeper: {offered.name} waits for a Mac beside the bisect: {reason}",
+                      file=sys.stderr, flush=True)
+                said = reason
+            lane_wait.waiting(lane_wait.OVERFLOW, reason)
+            remaining = max(0, deadline - time.monotonic())
+            if offered.choosing and remaining:
+                offered.status = reason if offered.hosts else "no other eligible Mac is available beside the bisect"
+                admitted = admit(min(window, remaining))
+                if admitted is not None: return admitted
+            elif remaining:
+                # A release noticed between offers makes the newly free Mac eligible without resetting the wait.
+                time.sleep(min(FREE_WAIT, remaining))
+            window = min(PLACED_WAIT, 2 * window) if offered.choosing else FREE_WAIT
+        reason = ("the older half ended without a verdict" if aborted.is_file()
+                  else f"no eligible Mac admitted it in {timeout:g}s")
+        print(f"queuekeeper: {offered.name} not run: {reason}", file=sys.stderr, flush=True)
+        return BUSY
     finally:
         if places is not None: places.leave()
 

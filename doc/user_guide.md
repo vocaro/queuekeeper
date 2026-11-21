@@ -412,7 +412,9 @@ The worker tries the cheap explanations before the expensive one:
    by running those tests on the batch without that entry. If they pass, that entry is sent back
    and the rest gate again at once.
 3. **Bisect.** Otherwise the batch is halved until one entry fails alone. Both halves gate at the
-   same time on different Macs, and every entry that passes along the way lands.
+   same time on different Macs, and every entry that passes along the way lands. If the newer half
+   is still waiting when the older half finishes with a verdict, it can also use that Mac during
+   the same admission wait. An already started run stays where it is.
 4. **Entries that fail together.** When both halves pass, no entry fails alone: some of them break
    each other. The worker gates the whole set again, then smaller subsets of it one at a time,
    dropping entries while the rest still fail, until it has the fewest that fail together, and

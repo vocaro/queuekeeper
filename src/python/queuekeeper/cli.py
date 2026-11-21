@@ -577,7 +577,7 @@ def space_wait(name, seconds, paths, floor=None):
 
 
 def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False,
-                  screen=False, placement=None, space=None, floor=None):
+                  screen=False, placement=None, space=None, floor=None, *, beside=None, foreground=None):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
     instead: its status on another Mac when another Mac took it after all, MISCONFIGURED, or
     BUSY when no admission came, after saying so. Work another Mac did not take (offered), declined
@@ -598,7 +598,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
     # label names the places it takes in the other Macs' queues while it waits (remote.Places).
     if offered is not None: offered.place, offered.label = place, label
 
-    def admit(seconds):
+    def take_slots(seconds, destination):
         deadline = time.monotonic() + max(seconds, 0)
         while True:
             if space:
@@ -625,14 +625,29 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
                 return None
             locked = screen_relocked(name, context, said) if screen else None
             if locked is None:
-                stack.push(context)
+                destination.push(context)
                 return admission
             # The screen locked while the lane waited for its slots, which it gave back: it waits for the screen again
             # with its place's age, or declines once its time is up (vocaro/queuekeeper#217).
             if time.monotonic() >= deadline:
                 refused.append(locked)
                 return None
+
+    def admit(seconds):
+        if foreground is None: return take_slots(seconds, stack)
+        deadline = time.monotonic() + seconds
+        with contextlib.ExitStack() as attempt:
+            if foreground(attempt, seconds) is not None:
+                refused.append("the Mac's foreground did not become free")
+                return None
+            admission = take_slots(max(0, deadline - time.monotonic()), attempt)
+            if admission is not None: stack.enter_context(attempt.pop_all())
+            return admission
+
     try:
+        if beside is not None:
+            companion, release = beside
+            return remote.wait_beside(offered, admit, timeout, companion, release)
         if offered is not None and offered.busy is not None:
             return remote.overflow(offered, admit, timeout, once, refused)
         # A wait that runs out is BUSY, as with once: nothing ran, which the merge queue counts as no verdict.
@@ -640,7 +655,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         admission = admit(min(FREE_WAIT, timeout) if once else timeout)
         if admission is None:
             print(f"queuekeeper: {name} not run on {this_mac()}: {refused[-1]}", file=sys.stderr)
-            declined(refused[-1])
+            record_admission_decline(refused[-1])
             return BUSY
         return admission
     except resources.AdmissionRecordError as error:
@@ -688,14 +703,15 @@ def declined_everywhere(name, why):
     return remote.MISCONFIGURED
 
 
-def declined(reason):
+def record_admission_decline(reason):
     """Write why admission declined the work where the Mac that sent it reads it back, when it was sent here
     (offload_host.declined_reason); otherwise nothing. Nothing written stops the decline."""
     path = os.environ.get(offload_host.DECLINED)
     if not path: return
     with contextlib.suppress(OSError):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text(f"{reason}\n")
+        identifier = os.environ.get(offload_host.ADMISSION_OFFER)
+        Path(path).write_text(json.dumps({"offer": identifier, "reason": str(reason)}) if identifier else f"{reason}\n")
 
 
 def fell_back(name, offered):
@@ -1842,6 +1858,8 @@ def perform(argv, report):
             # Keep the queue's placement scope at the outer lane.
             queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
             exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
+            release = os.environ.pop(remote.QUEUE_GATE_RELEASE, None)
+            beside = (exclude, Path(release)) if queue_gate and exclude and release else None
             reason = stays(config["lanes"], args.lane)
             away = "--offload-wait" if args.offload_wait else "--offload-only"
             if args.lane == PROVISION and (args.offload_only or args.offload_wait):
@@ -1854,7 +1872,7 @@ def perform(argv, report):
             second = lane.get("foreground") and plugins.FOREGROUND.foreground_mac()
             # What keeps the lane from another Mac under this run's pin set, or None (--sibling).
             unsent = unsendable(args.lane)
-            if lane.get("foreground") and not second:
+            if lane.get("foreground") and not second and beside is None:
                 if args.lane != PROVISION and (args.offload_only or args.offload_wait or not (args.here or lane.get("here"))):
                     if unsent: raise ValueError(f"{args.lane} not run: it runs on another Mac, and {unsent}")
                     if exclude is not None:
@@ -1877,7 +1895,7 @@ def perform(argv, report):
             placed = plugins.placement(config["lanes"], args.lane) if reason is None else None
             # The farm's Macs that may run it, when a key says only some may: it is offered to no other.
             only = remote.eligible(placed[0]) if placed else None
-            if placed and plugins.HERE not in placed[0]:
+            if placed and plugins.HERE not in placed[0] and beside is None:
                 if args.here or args.serial or os.environ.get(resources.TOKEN):
                     raise ValueError(f"{args.lane} runs only on another Mac of the farm ({placed[1]}), so it cannot run here"
                                      + (" with --here" if args.here else ""))
@@ -1895,7 +1913,7 @@ def perform(argv, report):
                 # Not by foreground work, which this Mac runs only as its foreground allows, above.
                 declined = remote.here_unfit(bool(lane.get("wholeHost")), admission_of(lane) == "exclusive",
                                              **{**remote.lane_needs(config["lanes"], args.lane), "foreground": False})
-            if declined is not None and not (args.offload_only or args.offload_wait):
+            if declined is not None and not (args.offload_only or args.offload_wait) and beside is None:
                 if args.here or args.serial:
                     asked = "--here" if args.here else "--serial runs the serial reference here"
                     raise ValueError(f"{args.lane} not run: it runs on this Mac ({asked}), and {declined}")
@@ -1923,7 +1941,7 @@ def perform(argv, report):
                     return declined_everywhere(args.lane, str(error))
             if (args.offload_only or args.offload_wait) and unsent:
                 raise ValueError(f"{args.lane} not run: {away} never runs it here, and {unsent}")
-            if args.offload_only or args.offload_wait:
+            if (args.offload_only or args.offload_wait) and beside is None:
                 if reason is not None:
                     raise ValueError(f"{args.lane} stays on this Mac ({reason}), so {away} cannot offer it "
                                      "to another Mac")
@@ -1940,7 +1958,16 @@ def perform(argv, report):
                 reason = unsent
                 print(f"queuekeeper: {args.lane} runs on this Mac: {unsent}", file=sys.stderr, flush=True)
             offered = None
-            if reason is None:
+            if beside is not None:
+                if reason or unsent or unadmitted(lane):
+                    return declined_everywhere(args.lane, f"it cannot gate beside the other half: {reason or unsent}")
+                hosts = tuple(remote.farm.destinations() if only is None else only)
+                here = declined is None and (not placed or plugins.HERE in placed[0]) and (
+                    not lane.get("foreground") or second)
+                offered = remote.lane_offer(root, config, args.lane, extra, args.expect, here, True, None, hosts,
+                                            strict=True)
+                offered.choosing = here
+            elif reason is None:
                 # The Mac with spare capacity for the lane and the most headroom, and while none has,
                 # whichever admits the lane first (remote.first, admitted_here).
                 offered = remote.first(root, config, args.lane, extra, args.expect, queue_gate=queue_gate,
@@ -2133,24 +2160,47 @@ def perform(argv, report):
                             allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
                             closed = plugins.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
-                            # Another Mac's foreground first, so that a run waiting for it holds no slot.
-                            waited = plugins.FOREGROUND.foreground_held(stack, args.lane, lane_label(root, config, args.lane),
-                                                     allowed(remote.OVERFLOW_TIMEOUT),
-                                                     expected=lane.get("timeout"),
-                                                     again=f"qk run {args.lane}") if second else None
-                            if waited is not None: return plugins.DEVICES.not_admitted(args.lane, waiting, waited)
+                            # Take the foreground before the slots. A paired local attempt keeps both only once
+                            # it is admitted; meanwhile this lane can still try other Macs between local waits.
+                            def take_foreground(attempt, seconds):
+                                return plugins.FOREGROUND.foreground_held(
+                                    attempt, args.lane, lane_label(root, config, args.lane), seconds,
+                                    expected=lane.get("timeout"), again=f"qk run {args.lane}")
+                            offer_id = os.environ.get(offload_host.ADMISSION_OFFER)
+                            offer_deadline = os.environ.get(offload_host.ADMISSION_OFFER_DEADLINE)
+                            def available(seconds):
+                                if offer_deadline is not None:
+                                    seconds = min(seconds, max(0, float(offer_deadline) - time.monotonic()))
+                                return allowed(seconds)
+                            if second and beside is None:
+                                seconds = available(FREE_WAIT if offer_id else remote.OVERFLOW_TIMEOUT)
+                                waited = take_foreground(stack, seconds)
+                                if waited is not None:
+                                    if offer_id: record_admission_decline("the Mac's foreground did not become free")
+                                    return plugins.DEVICES.not_admitted(args.lane, waiting, waited)
                             closed = plugins.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed
+                            remaining = available(remote.OVERFLOW_TIMEOUT)
+                            if offer_deadline is not None and remaining <= 0:
+                                why = "the bisect admission wait expired before the lane started"
+                                record_admission_decline(why)
+                                print(f"queuekeeper: {args.lane} not run: {why}", file=sys.stderr, flush=True)
+                                return BUSY
                             admission = admitted_here(stack, args.lane, lane_label(root, config, args.lane),
-                                                      allowed(remote.OVERFLOW_TIMEOUT), offered, args.if_free,
+                                                      remaining, offered, args.if_free,
                                                       resource == "exclusive", lane.get("model", False),
                                                       lane.get("wholeHost", False),
                                                       needs and not os.environ.get(resources.TOKEN),
                                                       admission_placement(offered, reason),
                                                       (disk.DATA_VOLUME, str(root)) if fills_disk(lane, resource)
                                                       and not os.environ.get(resources.TOKEN) else None,
-                                                      start_free(config, args.lane, lane))
+                                                      start_free(config, args.lane, lane), beside=beside,
+                                                      foreground=take_foreground if second and beside is not None else None)
                             if isinstance(admission, int): return plugins.DEVICES.not_admitted(args.lane, waiting, admission)
+                            if offer_id:
+                                os.environ.pop(offload_host.ADMISSION_OFFER, None)
+                                os.environ.pop(offload_host.ADMISSION_OFFER_DEADLINE, None)
+                                os.environ.pop(offload_host.DECLINED, None)
                             tree = admitted_tree(stack, root, args.lane, offered, receipt)
                             if isinstance(tree, int): return tree
                             # The wait in the queue, apart from what came before it (remote.execute).

@@ -5452,6 +5452,249 @@ exec {shlex.quote(real)} "$@"
         receipt = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
         self.assertEqual(receipt["ranOn"], "fake")
 
+    def paired_gate(self, companion, release):
+        return patch.dict(os.environ, {remote.QUEUE_GATE: "1", remote.QUEUE_GATE_EXCLUDE: companion,
+                                       remote.QUEUE_GATE_RELEASE: str(release)})
+
+    def test_a_bisect_hands_off_to_this_mac_only_after_the_remote_refuses_admission(self):
+        released = self.project.parent / "older-finished"
+        real_execute, capacity = remote.execute, remote.capacity_there
+
+        def send(*args, **kwargs):
+            self.assertFalse(released.exists())
+            try:
+                return real_execute(*args, **kwargs)
+            except remote.Busy as error:
+                self.assertIn("its heavy-work queue cannot take the lane now:", str(error))
+                released.touch()
+                raise
+
+        # Let a stale room reading send an offer to a genuinely full host. This Mac stays ineligible
+        # until the older half finishes, while the remote command never passes admission.
+        roomy = {"slots": 3, "slotsMax": 3, "busy": [], "cpuBusy": 1, "busyLimit": 90, "memory": 1}
+        with self.busy_farm_mac(), self.paired_gate(remote.HERE, released), \
+                patch.object(remote, "FREE_WAIT", 0.1), patch.object(remote, "execute", side_effect=send) as offered, \
+                patch.object(remote, "capacity_there", side_effect=lambda host, **kw:
+                             capacity(host, **kw) if released.exists() else roomy):
+            status, output, error = self.run_here("--offload-wait", "gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertTrue(released.exists())
+        offered.assert_called_once()
+        self.assertEqual(self.ran_here()["ranOn"], "this Mac")
+        self.assertFalse((self.checkout(0) / ".build/queuekeeper/gate/source.json").exists())
+
+    def test_a_bisect_hands_off_to_the_released_remote_mac_after_local_admission_waits(self):
+        released = self.project.parent / "older-finished"
+        actual = resources.Admission.__enter__
+
+        def contend(admission):
+            try: return actual(admission)
+            except TimeoutError:
+                released.touch()
+                raise
+
+        with self.busy_here(), self.paired_gate("fake", released), patch.object(remote, "FREE_WAIT", 0.1), \
+                patch.object(resources.Admission, "__enter__", contend):
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertTrue(released.exists())
+        receipt = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "fake")
+        self.assertFalse((self.project / ".build/queuekeeper/gate/source.json").exists())
+
+    def test_a_bisect_keeps_an_admitted_remote_result_even_when_the_work_exits_busy(self):
+        released = self.project.parent / "older-finished"
+        config_path = self.project / "queuekeeper.json"
+        settings = json.loads(config_path.read_text())
+        settings["lanes"]["gate"]["command"] = [sys.executable, "-c",
+            f"import pathlib; pathlib.Path({str(released)!r}).touch(); print('Ran 2 tests'); raise SystemExit(75)"]
+        config_path.write_text(json.dumps(settings))
+        commit_all(self.project)
+        take = remote.Frames.take
+        def without_wait_updates(receiver, frame):
+            if not frame.startswith(b"W "): return take(receiver, frame)
+
+        with self.paired_gate(remote.HERE, released), patch.object(remote.Frames, "take", without_wait_updates), \
+                patch.object(remote, "execute", wraps=remote.execute) as offered:
+            status, output, error = self.run_here("--offload-wait", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertTrue(released.exists())
+        offered.assert_called_once()
+        receipt = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
+        self.assertEqual(receipt["result"]["exitStatus"], resources.BUSY)
+        self.assertNotIn("notStarted", receipt["result"])
+        self.assertFalse((self.project / ".build/queuekeeper/gate/source.json").exists())
+
+    def test_a_bisect_requires_the_current_offer_id_in_a_busy_receipt(self):
+        initial = set(self.records())
+        def remove_fixture_records():
+            for path in set(self.records()) - initial: path.unlink()
+        self.addCleanup(remove_fixture_records)
+        released = self.project.parent / "older-finished"
+        take = remote.Frames.take
+        roomy = {"slots": 3, "slotsMax": 3, "busy": [], "cpuBusy": 1, "busyLimit": 90, "memory": 1}
+
+        for identifier in (None, "another-dispatch"):
+            with self.subTest(identifier=identifier):
+                released.unlink(missing_ok=True)
+                altered = []
+                def reply(receiver, frame):
+                    if frame.startswith(b"R "):
+                        result = json.loads(frame[2:])
+                        self.assertTrue(result["notStarted"], result)
+                        if identifier is None: result.pop("notStarted")
+                        else: result["notStarted"] = identifier
+                        altered.append(result)
+                        released.touch()
+                        frame = b"R " + json.dumps(result).encode() + b"\n"
+                    return take(receiver, frame)
+                with self.busy_farm_mac(), self.paired_gate(remote.HERE, released), \
+                        patch.object(remote, "capacity_there", return_value=roomy), \
+                        patch.object(remote.Frames, "take", reply), \
+                        patch.object(remote, "execute", wraps=remote.execute) as offered:
+                    status, output, error = self.run_here("--offload-wait", "gate")
+                self.assertEqual(status, lane_results.UNMEASURED, output + error)
+                self.assertEqual(len(altered), 1)
+                offered.assert_called_once()
+                self.assertFalse((self.project / ".build/queuekeeper/gate/source.json").exists())
+
+    def test_a_bisect_keeps_its_admission_identity_and_deadline_at_handoff(self):
+        released = self.project.parent / "older-finished"
+        settings = {"lanes": {"gate": {}}}
+        offered = remote.lane_offer(self.project, settings, "gate", [], None, True, True, None, ("fake",),
+                                    strict=True)
+        offered.choosing = True
+        place = resources.Place()
+        offered.place, offered.label = place, "gate"
+        began, attempts = 100, []
+        clock = [began]
+        admitted = object()
+
+        def busy(**_options):
+            attempts.append((offered.choosing, offered.place.identity, offered.deadline))
+            raise remote.Busy("another Mac declined")
+
+        def release(seconds):
+            clock[0] += seconds
+            released.touch()
+
+        def admit(seconds):
+            self.assertEqual(seconds, 3)
+            return admitted
+
+        with patch.object(offered, "attempt", side_effect=busy), \
+                patch.object(remote.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(remote.time, "sleep", side_effect=release), patch.object(remote, "FREE_WAIT", 5), \
+                contextlib.redirect_stderr(StringIO()):
+            result = remote.wait_beside(offered, admit, 8, remote.HERE, released)
+        self.assertIs(result, admitted)
+        self.assertEqual(attempts, [(False, place.identity, began + 8), (True, place.identity, began + 8)])
+
+    def test_an_expired_bisect_offer_records_that_work_never_started(self):
+        marker = self.project.parent / "declined.json"
+        with patch.dict(os.environ, {offload_host.DECLINED: str(marker),
+                                    offload_host.ADMISSION_OFFER: "expired-offer",
+                                    offload_host.ADMISSION_OFFER_DEADLINE: str(time.monotonic() - 1)}):
+            status, output, error = self.run_here("--here", "--if-free", "gate")
+        self.assertEqual(status, resources.BUSY, output + error)
+        self.assertEqual(json.loads(marker.read_text()), {
+            "offer": "expired-offer", "reason": "the bisect admission wait expired before the lane started"})
+        self.assertFalse((self.project / ".build/queuekeeper/gate/source.json").exists())
+
+    def test_a_bisect_stops_looking_when_the_older_half_ends_unmeasured(self):
+        released = self.project.parent / "older-finished"
+        settings = {"lanes": {"gate": {}}}
+        offer = remote.lane_offer(self.project, settings, "gate", [], None, True, True, None, ("fake",),
+                                  strict=True)
+        offer.place, offer.label = resources.Place(), "gate"
+
+        def busy(**_options):
+            released.with_suffix(".aborted").touch()
+            raise remote.Busy("admission timed out")
+
+        with patch.object(offer, "attempt", side_effect=busy) as attempted, \
+                patch.object(remote.time, "sleep", side_effect=AssertionError("waited after companion ended")), \
+                contextlib.redirect_stderr(StringIO()):
+            status = remote.wait_beside(offer, lambda _: self.fail("admitted after companion ended"),
+                                        5400, remote.HERE, released)
+        self.assertEqual(status, resources.BUSY)
+        attempted.assert_called_once()
+        self.assertFalse(released.exists())
+
+    def test_a_bisect_stays_serial_when_there_is_no_other_mac(self):
+        released = self.project.parent / "older-finished"
+        for companion, here, hosts in ((remote.HERE, False, ()), (remote.HERE, True, ()),
+                                       ("fake", False, ("fake",))):
+            for finished in (False, True):
+                with self.subTest(companion=companion, here=here, finished=finished):
+                    released.unlink(missing_ok=True)
+                    if finished: released.touch()
+                    offer = remote.lane_offer(self.project, {"lanes": {"gate": {}}}, "gate", [], None, here, True,
+                                              None, hosts, strict=True)
+                    offer.choosing = here
+                    # The newer half gates in turn once the worker has handled its companion's verdict.
+                    with patch.object(remote, "places_for", side_effect=AssertionError("made a reservation")), \
+                            patch.object(offer, "attempt", side_effect=AssertionError("sent an offer")), \
+                            patch.object(remote.time, "sleep", side_effect=AssertionError("waited for an absent Mac")), \
+                            contextlib.redirect_stderr(StringIO()) as error:
+                        result = remote.wait_beside(offer, lambda _: self.fail("started a speculative gate"), 5400,
+                                                    companion, released)
+                    self.assertEqual(result, resources.BUSY)
+                    self.assertIn("no other eligible Mac for the bisect" if hosts else remote.NO_MAC,
+                                  error.getvalue())
+
+    def test_a_bisect_does_not_reoffer_a_launch_that_lost_its_first_frame(self):
+        initial = set(self.records())
+        released = self.project.parent / "older-finished"
+        end_input = released.with_suffix(".end-input")
+        keeper_pid = released.with_suffix(".keeper")
+        lane = runner = keeper = None
+        try:
+            with self.dropping(released, FAKE_END_INPUT=str(end_input), FAKE_KEEPER_PID=str(keeper_pid)):
+                # Discard every receiver frame and let the transport fail while the receiver still has an open
+                # input pipe. The placement owner cannot tell whether the command has run.
+                keep_input = ("import os, sys, time\n"
+                              "deadline = time.monotonic() + float(sys.argv[2])\n"
+                              "while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline: time.sleep(0.05)")
+                drop = DROPPER.replace("        sys.stdout.buffer.write(line)\n        sys.stdout.buffer.flush()",
+                                       "        pass")
+                drop = drop.replace("    child.stdin.close()", "\n".join([
+                    f"    keeper = subprocess.Popen([sys.executable, '-c', {keep_input!r},",
+                    f"                               os.environ['FAKE_END_INPUT'], {str(stretched(60))!r}],",
+                    "                              stdin=child.stdin, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
+                    "    with open(os.environ['FAKE_KEEPER_PID'], 'w') as log: log.write(str(keeper.pid))",
+                    "    child.stdin.close()",
+                ]))
+                (self.tools / "drop.py").write_text(drop)
+                config_path = self.project / "queuekeeper.json"
+                settings = json.loads(config_path.read_text())
+                settings["lanes"]["slow"]["command"] = [sys.executable, "-c",
+                    f"import os, pathlib, time; pathlib.Path('.build/slow.pid').write_text(str(os.getpid())); "
+                    f"pathlib.Path({str(released)!r}).touch(); time.sleep({stretched(60)})"]
+                config_path.write_text(json.dumps(settings))
+                commit_all(self.project)
+                with self.paired_gate(remote.HERE, released), \
+                        patch.object(remote, "execute", wraps=remote.execute) as offered:
+                    status, output, error = self.run_here("--offload-wait", "slow")
+            lane = int((self.checkout(0) / ".build/slow.pid").read_text())
+            runner = self.runner()
+            os.kill(lane, 0)
+            os.kill(runner, 0)
+            self.assertEqual(status, lane_results.UNMEASURED, output + error)
+            self.assertIn("No result from fake", error)
+            offered.assert_called_once()
+            self.assertFalse((self.project / ".build/queuekeeper/slow/source.json").exists())
+            self.assertEqual(len(set(self.records()) - initial), 1)
+        finally:
+            if keeper_pid.exists(): keeper = int(keeper_pid.read_text())
+            end_input.touch()
+            # With no attachment, end of input stops the receiver. Wait for the exact fixture processes before
+            # tearDown removes the fake farm and its journal.
+            try: self.all_ended(*(pid for pid in (keeper, runner, lane) if pid is not None))
+            finally:
+                self.reap(keeper, runner, lane)
+                for path in set(self.records()) - initial: path.unlink()
+
     def test_an_offload_wait_reconsiders_the_available_macs_while_never_admitting_here(self):
         # All eligible Macs are initially busy. The second one frees up while the first is still busy.
         hosts = ("fake", "second", "older-half")
