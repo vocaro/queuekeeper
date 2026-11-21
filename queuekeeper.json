@@ -34,8 +34,8 @@
         "why": "only test_plugin_lists reads it, for its plugin list (vocaro/queuekeeper#253)",
         "lanes": ["plugin-lists"]},
       "README.md": {
-        "why": "only test_plugin_lists reads it, for its Plugins section (vocaro/queuekeeper#253)",
-        "lanes": ["plugin-lists"]},
+        "why": "only test_setup_examples (its iOS configuration, vocaro/queuekeeper#321) and test_plugin_lists (its Plugins section) read it",
+        "lanes": ["setup-examples", "plugin-lists"]},
       "assets/": "README illustrations and screenshots checked by the docs lane (vocaro/queuekeeper#127)",
       "assets/overview.svg": {
         "why": "only test_plugin_lists reads it, for the platform plugin names (vocaro/queuekeeper#253)",

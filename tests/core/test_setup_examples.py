@@ -8,30 +8,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
 from queuekeeper import config
 
+ROOT = Path(__file__).resolve().parents[2]
+EXAMPLE_PLUGINS = {"doc/user_guide.md": [], "README.md": ["queuekeeper_apple"]}
+
 
 class SetupExamples(unittest.TestCase):
-    def test_setup_configurations_are_accepted_without_implicit_platform_plugins(self):
-        # The user guide holds the configuration agents copy; the README sends them there and has none of its own.
-        # Its whole configurations are the blocks fenced ```json queuekeeper.json; the fragments that show one
-        # setting, and the --json results that give schemaVersion too, are not configurations of their own
-        # (vocaro/queuekeeper#272).
-        name = "doc/user_guide.md"
-        root = Path(__file__).resolve().parents[2]
-        examples = re.findall(r"^```json queuekeeper\.json[ \t]*\n(.*?)^```", (root / name).read_text(), re.M | re.S)
-        self.assertTrue(examples, f"{name} has no JSON setup example")
-        for example in examples:
-            project = config.parse(example)
-            self.assertIn("gate", project["lanes"])
-            self.assertEqual(project["plugins"], [])
+    def test_setup_configurations_are_accepted_with_the_documented_plugins(self):
+        # The user guide demonstrates the core; the README demonstrates iOS with the Apple plugin.
+        # The json queuekeeper.json tag identifies whole configurations among fragments and --json results
+        # that may also give schemaVersion (vocaro/queuekeeper#272).
+        for name, plugins in EXAMPLE_PLUGINS.items():
+            with self.subTest(name=name):
+                examples = re.findall(r"^```json queuekeeper\.json[ \t]*\n(.*?)^```",
+                                      (ROOT / name).read_text(), re.M | re.S)
+                self.assertTrue(examples, f"{name} has no JSON setup example")
+                for index, example in enumerate(examples, start=1):
+                    with self.subTest(example=index):
+                        project = config.parse(example)
+                        self.assertIn("gate", project["lanes"])
+                        self.assertEqual(project["plugins"], plugins)
 
-    def test_a_docs_only_change_to_the_setup_guide_runs_this_module(self):
-        # A docs-only landing skips the gate, which runs this module; a change to the guide it reads must run it
-        # anyway, or the next code entry's gate fails on a document it did not touch (vocaro/queuekeeper#147).
-        project = config.load(Path(__file__).resolve().parents[2])
-        named = config.unread_named(project, ["doc/user_guide.md"])
-        self.assertTrue(named, "queue.unread names no lane for doc/user_guide.md")
-        self.assertTrue(any(__name__.rpartition(".")[2] in " ".join(project["lanes"][lane]["command"]) for lane in named),
-                        f"none of {sorted(named)} runs {__name__}")
+    def test_a_docs_only_change_to_a_setup_document_runs_this_module(self):
+        # A docs-only landing skips the gate, so each document this module reads must name its lane
+        # (vocaro/queuekeeper#147).
+        project = config.load(ROOT)
+        for name in EXAMPLE_PLUGINS:
+            with self.subTest(name=name):
+                named = config.unread_named(project, [name])
+                self.assertIn("setup-examples", named)
+                self.assertIn(__name__.rpartition(".")[2], " ".join(project["lanes"]["setup-examples"]["command"]))
 
 
 if __name__ == "__main__":

@@ -5093,7 +5093,7 @@ class DefaultDocsOnly(Fixture):
         checked = {
             "doc/user_guide.md": ["setup-examples", "plugin-lists"],
             "doc/developer_guide.md": ["plugin-lists"],
-            "README.md": ["plugin-lists"],
+            "README.md": ["setup-examples", "plugin-lists"],
             "assets/overview.svg": ["plugin-lists"],
             "tools/dashboard-screenshots.py": ["dashboard-screenshots"],
         }

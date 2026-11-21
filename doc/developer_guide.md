@@ -1879,12 +1879,12 @@ schema only grows, so readers ignore what they do not know.
   none before the gate. See [Spelling](#spelling), below.
 - **Docs check.** `python3 scripts/qk docs check` checks links, anchors and the `qk` commands a
   document tells a reader to type. See [Docs check](#docs-check), below.
-- **The setup example.** `tests/core/test_setup_examples.py` parses each complete
-  `queuekeeper.json` example in the [user guide](user_guide.md), since agents copy it. It reads
-  only the code blocks whose fence is tagged `json queuekeeper.json`, which GitHub still
-  highlights as JSON. Tag a whole configuration that way; tag any other JSON block, such as a
-  fragment showing one setting or a `--json` result with its `schemaVersion`, plain `json`. A
-  documentation-only change to the user guide runs that test through the `setup-examples` lane
+- **The setup examples.** `tests/core/test_setup_examples.py` parses each complete
+  `queuekeeper.json` example in the [user guide](user_guide.md) and [README](../README.md).
+  The user guide's examples use the core alone, and the README's iOS example uses the Apple plugin.
+  Tag a whole configuration `json queuekeeper.json` so the test reads it and GitHub highlights
+  it as JSON. Tag fragments and `--json` results plain `json`. A documentation-only change to
+  either document runs the test through the `setup-examples` lane
   (see `queue.unread` in [queuekeeper.json](../queuekeeper.json)).
 - **The plugin lists.** `tests/core/test_plugin_lists.py` fails when a platform plugin, a folder
   under `plugins/` not named `visibility-*`, is missing from `queuekeeper-workspace.json`, is not
