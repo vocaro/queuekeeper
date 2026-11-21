@@ -45,9 +45,8 @@ def register():
         "simulator-pool": ("list, take, release, prune, reap or check members of the project's simulator pool under "
                            "device-record reservations: qk simulator-pool list|take|release|prune|reap|check; "
                            "-h for the rest", simulator_pool.main),
-        "results": ("keep a test run's per-test outcomes and seconds in the lane's results/ and print them, for a "
-                    "script that runs xcodebuild itself: qk results keep; -h for the rest",
-                    lambda arguments, project: run_results.main(arguments)),
+        "results": ("keep a test run's per-test outcomes and seconds, or read a test's history from retained "
+                    "Xcode results: qk results keep|history; -h for the rest", run_results.main),
         "xctest": ("build a Swift package's tests once and run its XCTest classes in xctest processes of their own, "
                    "side by side, each reporting its skips: qk xctest [-j JOBS] [--filter REGEX]; "
                    "qk xctest -h for the rest", lambda arguments, project: xctest_shards.main(arguments)),

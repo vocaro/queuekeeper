@@ -1,6 +1,7 @@
 """Kept run results: each test's outcome and seconds, for a lane whose script runs xcodebuild itself.
 
     qk results keep --log LOG --bundle BUNDLE --name NAME --status STATUS [--results DIRECTORY]
+    qk results history LANE TEST
 
 A script calls `keep` once per run, on a pass as on a failure. It writes what `qk simulator-tests` keeps of
 a run (matrix.kept), simulator-tests/NAME.log and NAME.json, in DIRECTORY, or else the lane's results/ that
@@ -25,7 +26,7 @@ from pathlib import Path
 import re
 import sys
 
-from queuekeeper import lane_results
+from queuekeeper import lane_results, remote
 from queuekeeper.parallel import RESULTS_VARIABLE
 from .simulators import matrix
 
@@ -120,7 +121,36 @@ def keep(log, bundle, name, status, results=None, out=print, *, activity_prefixe
     return lane_results.UNMEASURED if unread is not None else 0
 
 
-def main(argv):
+def history(root, lane, test, out=print):
+    """Print the observations of an exact test ID in the retained results of one lane."""
+    try: folders = remote.all_kept_results(remote.store(root)).get(lane, [])
+    except (OSError, RuntimeError) as error:
+        print(f"queuekeeper results: cannot read the project's retained results: {error}", file=sys.stderr)
+        return 1
+    outcomes = Counter()
+    for folder in folders:
+        for path in sorted(folder.rglob(f"{matrix.KEPT}/*.json")):
+            try:
+                record = json.loads(path.read_text())
+                if not isinstance(record, dict): raise ValueError("expected a result record")
+                if record.get("keptBy") not in (KEPT_BY, "qk simulator-tests") or record.get("bundleUnread"): continue
+                found = [(case["outcome"], case_line(str(path.relative_to(folder)), case))
+                         for case in record["tests"] if case["test"] == test]
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                out(f"queuekeeper: {path} could not be read: {error!r}")
+                continue
+            for outcome, line in found:
+                outcomes[outcome] += 1
+                out(f"{folder.parent.name[:12]} {line}")
+    if outcomes:
+        out(f"{lane}: " + ", ".join(f"{outcomes[outcome]} {outcome}" for outcome in OUTCOMES))
+    else:
+        out(f"{lane}: no retained result names {test}")
+    out("Showing the latest kept results of each retained commit. The queue records proven flakes separately.")
+    return 0
+
+
+def main(argv, project=None):
     parser = argparse.ArgumentParser(prog="qk results", description=__doc__.split("\n")[0],
                                      epilog=__doc__.split("\n\n", 2)[2], formatter_class=argparse.RawDescriptionHelpFormatter)
     actions = parser.add_subparsers(dest="action", required=True)
@@ -132,7 +162,11 @@ def main(argv):
     keeping.add_argument("--results", type=Path, help=f"where to keep them (default: {RESULTS_VARIABLE}, the lane's results/)")
     keeping.add_argument("--activity-timing-prefix", action="append", default=[], metavar="PREFIX",
                          help='keep test activities titled "PREFIX N s" (repeatable)')
+    historical = actions.add_parser("history", help="show a test's outcomes in a lane's retained Xcode results")
+    historical.add_argument("lane", help="lane that kept the results")
+    historical.add_argument("test", help="exact test ID, as printed by qk results keep")
     args = parser.parse_args(argv)
+    if args.action == "history": return history(Path(project or ".").resolve(), args.lane, args.test)
     if not re.fullmatch(r"[\w.-]+", args.name): parser.error("--name must be a plain name")
     if any(not prefix.strip() for prefix in args.activity_timing_prefix):
         parser.error("--activity-timing-prefix must be nonempty")
