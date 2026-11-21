@@ -2403,10 +2403,20 @@ def admissions_now(at=None):
                 "wholeHost" if waiter.get("wholeHost") else "ordinary"
             if kind != "ordinary": position += 1
             record = observed.get(identity)
-            process = process_state(record or waiter, listed)
+            sender = waiter.get("heldFor") if kind == "wholeHost" else None
+            farm_place = isinstance(sender, str) and bool(sender)
+            # A farm place belongs to its keeper. An observation of the same arrival may name another process.
+            process = process_state(waiter if farm_place else record or waiter, listed)
             if process == "ended": continue
+            if farm_place:
+                renewed = waiter.get("seen")
+                if process != "running" or type(renewed) not in (int, float) or not at - renewed < hold:
+                    continue
+                if record and process_state(record, listed) != "running": record = None
+            row = waiter_reading(waiter, record, kind, position if kind != "ordinary" else None, process, at, hold)
+            if farm_place: row.update(heldFor=sender[:160], away=True, holdsBack=True)
+            waiting.append(row)
             seen.add(identity)
-            waiting.append(waiter_reading(waiter, record, kind, position if kind != "ordinary" else None, process, at, hold))
         for identity, record in observed.items():
             if identity in seen: continue
             process = process_state(record, listed)

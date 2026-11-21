@@ -20,7 +20,7 @@ import host_isolation
 from test_support import farm as farm_fixture
 from host_isolation import stretched
 
-from queuekeeper import config, offload_host, processes, remote, resources
+from queuekeeper import config, offload_host, place_holder, processes, remote, resources
 
 
 # cpu_use itself, which Namespace replaces for every reading so that the host's load cannot make one partial.
@@ -210,6 +210,57 @@ class HoldersTests(Namespace):
         waiter, = self.read()["waiters"]
         self.assertEqual((waiter["away"], waiter["holdsBack"]), (True, True))
         self.assertAlmostEqual(waiter["lastAskedSeconds"], 250, delta=5)
+
+    def test_a_farm_queue_place_names_its_sender_beside_its_observation_once(self):
+        identity = "f" * 32
+        place_holder.place_held(identity, {"identity": identity, "pid": os.getpid(), "start": self.start,
+                                           "label": "Farm gate", "queuedAt": time.time() - 15,
+                                           "wholeHost": True, "heldFor": "studio"})
+        place, = self.read()["waiters"]
+        self.assertEqual((place["heldFor"], place["reason"], place["holdsBack"]), ("studio", None, True))
+
+        folder = self.directory / resources.WAITS
+        folder.mkdir()
+        (folder / "observation.json").write_text(json.dumps({
+            "schemaVersion": 1, "identity": identity, "pid": os.getpid(), "start": self.start,
+            "request": "observed", "reason": "all guaranteed slots are busy", "sampledAt": time.time(),
+        }))
+        files = tree(self.temp.name)
+        words = []
+        self.assertEqual(resources.now_main(["--here"], out=words.append), 0)
+        self.assertEqual(sum("Farm gate:" in line for line in words), 1)
+        self.assertIn("place held for work sent by studio", "\n".join(words))
+        output = []
+        self.assertEqual(resources.now_main(["--here", "--json"], out=output.append), 0)
+        host, = json.loads(output[0])["hosts"]
+        waiter, = host["waiters"]
+        self.assertEqual((waiter["heldFor"], waiter["kind"], waiter["position"]), ("studio", "wholeHost", 1))
+        self.assertEqual((waiter["process"], waiter["away"], waiter["holdsBack"]), ("running", True, True))
+        self.assertEqual(waiter["reason"], "all guaranteed slots are busy")
+        self.assertEqual(host["holders"], [])
+        self.assertEqual(tree(self.temp.name), files)
+
+    def test_a_farm_place_requires_a_live_keeper_and_a_recent_renewal(self):
+        self.directory.mkdir()
+        queue = self.directory / resources.QUEUE
+        now = time.time()
+        for reason, changes, listed in [
+            ("expired", {"seen": now - 500}, {os.getpid(): self.start}),
+            ("no renewal", {"seen": None}, {os.getpid(): self.start}),
+            ("ended", {}, {}),
+            ("PID reused", {}, {os.getpid(): "another start"}),
+            ("unknown", {}, None),
+        ]:
+            with self.subTest(reason=reason):
+                queue.write_text(json.dumps({"waiters": [{
+                    "identity": "f" * 32, "pid": os.getpid(), "start": self.start, "label": "Farm gate",
+                    "queuedAt": now - 500, "seen": now - 5, "wholeHost": True, "heldFor": "studio", **changes,
+                }]}))
+                with patch.object(offload_host, "census", return_value=listed), \
+                        patch.dict(os.environ, {"HEAVY_PLACE_SECONDS": "180"}):
+                    reading = offload_host.admissions_now(at=now)
+                self.assertEqual(reading["waiters"], [])
+                self.assertEqual(reading["state"], "partial" if listed is None else "observed")
 
     def observation(self, identity, name, **changes):
         """A live progress observation a holder's leaf publishes under its admission (lane_progress.destinations)."""

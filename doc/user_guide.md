@@ -1654,7 +1654,8 @@ qk admissions waits [--since WHEN] [--kind screen]   # how often and how long la
 slots, kind, hold time, CPU, and where the work comes from: repository, branch, worktree, agent
 session and Mac; for each waiter, its wait and reason. A Mac it can't read within 10 seconds is
 shown as unknown, never idle. A holder whose process has ended is shown as ended; admission frees
-it at its next attempt.
+it at its next attempt. A live whole-host queue place held while its lane waits elsewhere names
+the sending Mac in the waiting list and as `heldFor` in JSON.
 
 `qk admissions --wait-breakdown` groups requests into whole-host, one-slot, and exclusive work.
 It estimates time by blocker in proportion to each request's refused attempts. Whole-host requests
