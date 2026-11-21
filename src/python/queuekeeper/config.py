@@ -1036,11 +1036,12 @@ def lane_to_run(config, name, root):
 
 def stays(lanes, name):
     """Why the lane name runs only on this Mac, as its configuration says, or None for a lane that goes to another
-    Mac first: a self lane runs where it starts, and a lane, or a lane of a group, says why with "here". A
-    group runs its lanes under its one admission on one Mac, so a lane of it that stays here keeps the group
-    here. A light lane is placed as every lane is (the owner's decision, 2026-11-07). A foreground lane goes to another
-    Mac too, and only there (foreground.py)."""
+    Mac first: provision prepares the checkout in hand, a self lane runs where it starts, and a lane or a lane
+    of a group may say why with "here". A group runs its lanes under its one admission on one Mac, so a lane
+    of it that stays here keeps the group here. A light lane is placed as every lane is (the owner's decision,
+    2026-11-07). Foreground lanes also follow their host's foreground settings (foreground.py)."""
     lane = lanes[name]
+    if name == PROVISION: return "the provision lane prepares this checkout"
     if unadmitted(lane): return "a self lane runs where it starts, and its script admits each of its parts"
     if lane.get("here"): return f"the lane says: {lane['here']}"
     for member in lane.get("parallel", []):

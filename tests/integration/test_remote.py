@@ -3163,6 +3163,30 @@ class RemoteTests(unittest.TestCase):
                                  ("this Mac", offload_host.mac_name(), because))
                 self.assertFalse((self.project / ".build/queuekeeper/remote" / lane).exists())
 
+    def test_a_direct_provision_run_prepares_the_checkout_that_called_it(self):
+        marker = self.project / ".build/provisioned"
+        # The fake farm has room, but only an explicit remote run prepares its checkout.
+        status, output, error = self.run_here("provision")
+        self.assertEqual(status, 0, output + error)
+        self.assertTrue(marker.exists())
+        receipt = json.loads((self.project / ".build/queuekeeper/provision/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]),
+                         ("this Mac", "the provision lane prepares this checkout"))
+        self.assertFalse(self.checkout(0).exists())
+        marker.unlink()
+        for option in ("--offload-only", "--offload-wait"):
+            with self.subTest(option=option):
+                status, output, error = self.run_here(option, "provision")
+                self.assertEqual(status, 2, output + error)
+                self.assertIn(f"{option} cannot offer it to another Mac", error)
+        self.assertFalse(marker.exists())
+        self.assertFalse(self.checkout(0).exists())
+
+        status, output, error = self.qk("remote", "run", "provision")
+        self.assertEqual(status, 0, output + error)
+        self.assertTrue((self.checkout(0) / ".build/provisioned").exists())
+        self.assertFalse(marker.exists())
+
     def test_a_lane_run_on_this_mac_runs_after_the_provision_lane_in_its_checkout(self):
         """vocaro/queuekeeper#19: check needs what the provision lane makes, and found it only on another Mac."""
         made = self.project / ".build/provisioned"
@@ -3179,7 +3203,7 @@ class RemoteTests(unittest.TestCase):
                 # The provision lane ran here as a lane of its own, with its own receipt, and said nothing.
                 provision = json.loads((self.project / ".build/queuekeeper/provision/source.json").read_text())
                 self.assertEqual((provision["exitStatus"], provision["ranOn"], provision["hereBecause"]),
-                                 (0, "this Mac", "--here"))
+                                 (0, "this Mac", "the provision lane prepares this checkout"))
                 self.assertEqual(error.count("queuekeeper: scroll bars: "), 1, error)
         # The provision lane itself runs once, and a self lane, which takes no admission, is provisioned too.
         made.unlink()

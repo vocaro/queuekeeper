@@ -18,7 +18,7 @@ import traceback
 
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
-from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
+from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
     self_lane_warnings, sibling_folders, sibling_variables, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -1820,6 +1820,10 @@ def perform(argv, report):
             # Keep the queue's placement scope at the outer lane.
             queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
             exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
+            reason = stays(config["lanes"], args.lane)
+            away = "--offload-wait" if args.offload_wait else "--offload-only"
+            if args.lane == PROVISION and (args.offload_only or args.offload_wait):
+                raise ValueError(f"{args.lane} stays on this Mac ({reason}), so {away} cannot offer it to another Mac")
             # A foreground lane takes a Mac's screen. A Mac whose own settings say it takes foreground work has its
             # foreground taken for the run, below, on whichever Mac that is (vocaro/queuekeeper#211). On any other, a
             # workstation, only the session holding mac-foreground within the owner's window runs it, with --here;
@@ -1829,7 +1833,7 @@ def perform(argv, report):
             # What keeps the lane from another Mac under this run's pin set, or None (--sibling).
             unsent = unsendable(args.lane)
             if lane.get("foreground") and not second:
-                if args.offload_only or args.offload_wait or not (args.here or lane.get("here")):
+                if args.lane != PROVISION and (args.offload_only or args.offload_wait or not (args.here or lane.get("here"))):
                     if unsent: raise ValueError(f"{args.lane} not run: it runs on another Mac, and {unsent}")
                     if exclude is not None:
                         return remote.foreground_lane(root, config, args.lane, extra, args.expect, exclude=exclude)
@@ -1846,8 +1850,6 @@ def perform(argv, report):
                                  f"({', '.join(group)}), and {strangers[0]} is none of them; pass a lane's own "
                                  "arguments to that lane")
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
-            # Why the lane runs only here, as its configuration says, or None: it goes to another Mac.
-            reason = stays(config["lanes"], args.lane)
             # Or why it runs only on another Mac, as a key a plugin added says. It waits there for its
             # admission and never falls back to this Mac, where its result would not be the one asked for.
             placed = plugins.placement(config["lanes"], args.lane) if reason is None else None
@@ -1897,7 +1899,6 @@ def perform(argv, report):
                     return remote.there_lane(root, config, args.lane, extra, args.expect, declined, hosts=others)
                 except remote.Declined as error:
                     return declined_everywhere(args.lane, str(error))
-            away = "--offload-wait" if args.offload_wait else "--offload-only"
             if (args.offload_only or args.offload_wait) and unsent:
                 raise ValueError(f"{args.lane} not run: {away} never runs it here, and {unsent}")
             if args.offload_only or args.offload_wait:
