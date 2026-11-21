@@ -1444,10 +1444,15 @@ qk admit -- xcodebuild test -scheme SCHEME -destination "platform=iOS Simulator,
 
 `qk admit` runs the command in the current directory with its output on the terminal, records a
 receipt in `.build/queuekeeper/admit/`, and may run it on another Mac unless you add `--here`.
-`--timeout SECONDS` bounds the wait (5,400 s by default). Queuekeeper's own runners, `qk unittest`,
-`qk xctest`, `qk simulator-tests` and `qk unity test`, take admission by themselves when started
-alone and reuse it when a lane or `qk admit` started them. Any other command, such as a bare
-`swift test`, takes no slot unless run with `qk admit`.
+`--timeout SECONDS` bounds the wait for admission (5,400 s by default). With `qk admit --here`,
+the command gets its full `--time-limit SECONDS` (2 hours by default) once it starts. If local
+admission times out, no command starts and `qk admit` exits 75. For a
+[bounded device run](#bounded-runs-on-a-device) that is already underway, waiting for admission
+still reduces the time left in the device reservation.
+
+Queuekeeper's own runners, `qk unittest`, `qk xctest`, `qk simulator-tests` and `qk unity test`,
+take admission by themselves when started alone and reuse it when a lane or `qk admit` started
+them. Any other command, such as a bare `swift test`, takes no slot unless run with `qk admit`.
 
 Don't wait for a quiet Mac before starting work, and don't poll `uptime`, `top` or the load
 average: on a busy Mac the load stays in the hundreds, so such a loop never fires. Admission waits
