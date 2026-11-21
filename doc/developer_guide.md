@@ -84,7 +84,7 @@ Tests set up host isolation first (`import host_isolation`); follow the neighbor
    documentation-only batch skips the code gate and runs the docs lanes instead.
 6. **On a failure**, the worker reruns failed tests alone, then looks for one culprit, then
    bisects, gating both halves at once on different Macs.
-7. **On no verdict**, it waits for the Mac to settle and runs again; three in a row hold the queue.
+7. **On no verdict**, it waits for the Mac to settle and runs again. Three in a row send back the batch.
 
 Every change of state is appended to [the event journal](#the-event-journal).
 [The merge queue](#the-merge-queue), below, has the worker's rules in full.
@@ -469,8 +469,10 @@ and says whether `main` fails it too.
 ### Runs with no verdict
 
 Exits 3 (unmeasured), 69 (a worker without Local Network access), 75 (no admission) and 78 (a
-misconfigured Mac) blame no commit. The worker runs the lanes again, and holds once
-`queue.noVerdictRuns` (3) runs in a row have given no verdict.
+misconfigured Mac) blame no commit. The worker retries the batch until `queue.noVerdictRuns`
+(3) runs in a row have given no verdict or the settle wait expires. It then sends back the
+batch with its reason and the read-only `qk queue doctor` log, emits the usual send-back
+events, and goes on to later entries. Newly arrived entries have their own retry budget.
 
 - **Tests that all passed.** A failed `qk unittest` gate whose last summary says `OK` names no
   test to rerun or bisect for (`Worker.weigh_passed`). When it ran too few tests (the count
@@ -487,7 +489,7 @@ misconfigured Mac) blame no commit. The worker runs the lanes again, and holds o
 - **Locked screens.** An exit 3, or a lane at its limit, whose last screen reading (receipt's
   `screenAfter`, else the log's last `screen:` line) shows a lock does not count; the lane runs next
   as `qk run --unlocked-screen LANE`. `LOCKED_SCREEN_RUNS` (5) runs in a row that started unlocked
-  and ended locked hold the queue.
+  and ended locked send the batch back.
 - **Could not start.** A lane's receipt with `outcome` `not-started` (exit 127) holds at once; the
   worker reads the receipt, since a lane's own command may exit 127. Exit 70 with no receipt of the
   lane means Queuekeeper could not start: the worker starts its own checkout with `--version`, with
@@ -498,10 +500,10 @@ misconfigured Mac) blame no commit. The worker runs the lanes again, and holds o
   battery does, ends unmeasured (exit 3), and its receipt's error and `sleptSeconds` say how long:
   a test's time limit runs on through the sleep while nothing runs. A pass through a sleep keeps its
   pass, and a failed `compileFirst` build stays failed (`cli.slept_since`).
-- **What the hold says.** How many runs, on which Mac, and why: the lane at its limit, the first
+- **What the result says.** How many runs, on which Mac, and why: the lane at its limit, the first
   unmeasured test and last screen reading, the receipt's error, no admission, or the Mac's
   configuration, else the project's last `Unmeasured:` line (cut at `UNMEASURED_SHOWN`, 300
-  characters). The hold is the owner's only when the last exit was 78.
+  characters).
 
 A lane may take `LANE_LIMIT` (6 hours: the default 2-hour lane limit and two more for its wait).
 
@@ -1394,8 +1396,8 @@ each uses.
     path.
 28. The worker runs preflight lanes and the docs check without admission; one that runs past a
     minute runs again admitted. *Checks that take seconds should not wait behind gates for slots.*
-29. A run with no verdict blames nobody and reruns once the Mac settles; three in a row hold the
-    queue, not counting up to five voided by a locked screen.
+29. A run with no verdict blames nobody and reruns once the Mac settles. Three in a row send
+    back the batch. Runs voided by a locked screen have a separate limit of five.
 30. `--front` and `--no-gate` are for emergencies, with the reason recorded.
 
 Rules 27, 28 and 30 are the only exceptions to rule 2, and none gives a class of work priority in

@@ -16,7 +16,7 @@ import sys
 VERSION = 1
 DEFAULT_LIMIT = 16384
 MAX_LIMIT = 1 << 20
-LOG_KINDS = ("run-log", "dispatch-log", "queue-log")
+LOG_KINDS = ("run-log", "dispatch-log", "queue-log", "queue-doctor-log")
 
 
 class LogError(ValueError):

@@ -799,7 +799,7 @@ def merge_queue(queue, lanes):
         raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
                          "checkout after each landing, for a checkout other projects read, such as a plugin's")
     if "noVerdictRuns" in queue and (type(queue["noVerdictRuns"]) is not int or queue["noVerdictRuns"] < 1):
-        raise ValueError("queue.noVerdictRuns is how many runs in a row may give no verdict before the queue holds, "
+        raise ValueError("queue.noVerdictRuns is how many runs in a row may give no verdict before the batch comes back, "
                          "a positive integer")
     named = queue.get("lanes", [])
     if not isinstance(named, list) or len(set(map(str, named))) != len(named) or any(name not in lanes for name in named):

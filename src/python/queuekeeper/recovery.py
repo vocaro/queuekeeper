@@ -113,6 +113,9 @@ def for_entry(entry, held=None, *, limit_reached=False, unverified=False):
                                              "and submit the result again.",
                          [["qk", "queue", "result", partner["id"], "--json"] for partner in partners]),
                 "conflictWith": partners}
+    if state == "failed" and entry.get("noVerdict"):
+        return advice("entry-no-verdict", "session", False, "inspect-no-verdict", entry["why"],
+                      [["qk", "queue", "result", identifier, "--json"]])
     if state == "failed":
         return advice("entry-failed", "session", False, "fix-failure",
                       entry.get("why") or "Inspect the result and fix the failure before submitting again.",
@@ -143,7 +146,10 @@ def next_action(entry, detail, root):
     out of `qk queue inbox`; one sent back is fixed first, as confirming it changes nothing about the fix."""
     state, identifier = entry.get("state"), entry["id"]
     found = None
-    if state == "failed":
+    if state == "failed" and entry.get("noVerdict"):
+        found = action(["qk", "queue", "logs", identifier, "--json"], "Read the gate and doctor logs, address the "
+                       "cause, and land again with `qk land --wait --json`.")
+    elif state == "failed":
         found = action(["qk", "queue", "logs", identifier, "--json"], "Read the failing run's log, fix the failure, "
                        "commit, and land again with `qk land --wait --json`.")
     elif state == "conflict":

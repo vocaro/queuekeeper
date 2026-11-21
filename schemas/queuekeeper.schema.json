@@ -668,7 +668,7 @@
           ]
         },
         "noVerdictRuns": {
-          "description": "How many runs in a row of a batch's gate may give no verdict (exit 3, 75 or 78) before the queue holds; 3 where it is unset. Read from main, never from a branch",
+          "description": "How many runs in a row of a batch's gate may give no verdict (exit 3, 75 or 78) before the batch comes back; 3 where it is unset. Read from main, never from a branch",
           "type": "integer",
           "minimum": 1
         },

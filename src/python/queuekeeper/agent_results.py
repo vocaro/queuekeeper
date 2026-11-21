@@ -61,6 +61,8 @@ def entry_artifacts(queue, entry):
     log = entry.get("log") or (entry.get("gate") or {}).get("log")
     if log:
         artifacts.append({**artifact("queue-log", log, host), "primary": True})
+    if entry.get("doctorLog"):
+        artifacts.append(artifact("queue-doctor-log", entry["doctorLog"]))
     for reference in entry.get("logs", []):
         if not reference.get("path"): continue
         item = artifact("queue-log", reference["path"], reference.get("mac"))
@@ -129,7 +131,9 @@ def entry_result(queue, entry):
     # The entries this one fails together with, though each passes alone (merge_queue.Worker.together).
     partners = [dict(partner) for partner in entry.get("conflictWith") or []]
     if state in ("failed", "conflict"):
-        failure = {"category": "conflict" if state == "conflict" else "fails-together" if partners else "gate-failed",
+        category = "conflict" if state == "conflict" else "fails-together" if partners else "gate-failed"
+        if entry.get("noVerdict"): category = "gate-no-verdict"
+        failure = {"category": category,
                    "message": entry.get("why"), "tests": [
                        {"name": name, "location": place} for name, place in list(failures.items())[:SHOWN]],
                    "moreTests": max(0, len(failures) - SHOWN) + unnamed, "testsTruncated": truncated,

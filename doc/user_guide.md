@@ -512,15 +512,17 @@ that test's issue before you land again, so the flake becomes somebody's to fix.
 A lane ends as **passed**, **failed** or **unmeasured**. A timeout, a lost connection, a Mac too
 busy to admit the lane, a misconfigured Mac, a screen that locked during a UI test or a build plan
 that names a Metal Toolchain mount macOS has since replaced (see [The simulator pool](#the-simulator-pool)) are all
-unmeasured: they say nothing about the commits, so nobody's entry is sent back. The worker waits
-for the Mac to settle (CPU under its busy limit and memory pressure normal, for up to an hour) and
-runs the lane again.
+unmeasured. The worker waits for a Mac to settle (CPU under its busy limit and memory pressure
+normal, for up to an hour) and runs the lanes again.
 
-- **Three runs in a row without a verdict** hold the queue, with every entry still waiting
-  ([Holds](#holds)). A project changes that bound on `main` with `"queue": {"noVerdictRuns": N}`.
-  A verdict or `qk queue resume` starts the count again.
-- **A screen that locked during the run** does not count toward that bound. The lane runs next only
-  on a Mac whose screen is unlocked; five such runs in a row hold the queue.
+- **Three runs in a row without a verdict** send back the batch with the reason and the gate
+  log. The worker records a `qk queue doctor` log in the result and continues with the queue.
+  With the [notify feature](#the-notify-feature) on, the usual send-back notice tells the owner.
+  A project changes the bound on `main` with `"queue": {"noVerdictRuns": N}`. A verdict or a
+  change in the batch starts the count again. If no eligible Mac settles within an hour, the
+  worker sends back the batch at that point.
+- **A screen that locked during the run** has a separate count. The lane next runs only on an
+  unlocked Mac. Five runs in a row that start unlocked and end locked send back the batch.
 - **A lane whose command could not start** (exit 127), and **a lane Queuekeeper itself could not
   start** in (exit 70, a plugin that did not load), hold the queue at once, since a
   rerun would fail the same way. If the batch's own commits break loading, that entry is found by
@@ -1915,8 +1917,7 @@ labels it needs. No lane names a Mac, and no Mac names a lane. The settings are
 - **Declining.** A Mac that declines a lane is not offered it and gives it no place in its queue,
   and the placement line says why, for example
   `studio lacks the label unity-license that the work needs`. When no Mac takes the lane, nothing
-  runs and it exits 78, naming each Mac's reason: no verdict, so the merge queue holds rather than
-  sending anything back.
+  runs and it exits 78, naming each Mac's reason. The merge queue counts it as a run without a verdict.
 
 `qk admissions limits` prints what a Mac takes, its labels and the file's path. `qk admissions usage`
 prints the same of every Mac beside its capacity, with the keys it passes over and where foreground
@@ -3235,8 +3236,8 @@ saying whom it is for:
 - **`for a session, not the owner`**: most holds. Any session that fixes the cause, or finds it
   gone, runs `qk queue resume` and says so in its report, without asking the owner. A cause a
   session cannot find is still a session's: say what was looked at.
-- **`for the owner, since nobody else can fix it`**: a Mac's configuration (exit 78), a push the
-  remote refused, a key or token a remote refused. Once the owner has fixed it, any session
+- **`for the owner, since nobody else can fix it`**: a push the remote refused, or a remote
+  that refused its key or token. Once the owner has fixed it, any session
   resumes. With the [notify feature](#the-notify-feature) on, you hear about these at once.
 
 `qk queue status`, `qk land` and `qk land --wait` print the reason. A batch that passed before a
@@ -3245,9 +3246,6 @@ changed.
 
 Common holds:
 
-- **No verdict three times in a row** ([No verdict is not a failure](#no-verdict-is-not-a-failure)).
-  The reason says on which Mac and why: the lane that timed out, the tests left unmeasured, the
-  project's last `Unmeasured:` line, no admission, or the Mac's configuration.
 - **Queuekeeper itself could not start** in a lane (exit 70). No commit was tested. Bring
   Queuekeeper and the folders the project's plugins load from to versions that work together.
   `qk queue resume` starts a worker from the current checkout, which is often the whole repair.

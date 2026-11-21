@@ -24,7 +24,8 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
-from queuekeeper import agent_results, cli, config as configuration, landing_proofs, lane_coverage, merge_queue as mq, offload_host
+from queuekeeper import agent_logs, agent_results, cli, config as configuration, landing_proofs, lane_coverage, \
+    merge_queue as mq, offload_host
 # What qk land runs before it queues, which Fixture leaves out but PreflightBeforeQueued puts back.
 PREFLIGHT_BEFORE_QUEUED = mq.preflight_before_queued
 import host_isolation
@@ -1717,7 +1718,7 @@ class PassingTestsFailedGate(Fixture):
         self.assertIn("No entry is sent back", held)
         self.assertNotIn(": bisecting", log)
 
-    def test_any_other_failure_after_passing_tests_is_no_verdict_and_holds_at_the_bound(self):
+    def test_any_other_failure_after_passing_tests_is_no_verdict_and_sends_back_at_the_bound(self):
         self.commit("c", "c")
         self.commit("teardown", "teardown")
         ids = self.queued("c", "teardown")
@@ -1726,11 +1727,12 @@ class PassingTestsFailedGate(Fixture):
         self.assertIn(f"run 1 of at most {mq.NO_VERDICT_RUNS}", log)
         self.assertNotIn(": bisecting", log)
         self.assertNotIn("fail together", log)
-        self.assertEqual([self.state(i)["state"] for i in ids], ["queued", "queued"], log)
+        self.assertEqual([self.state(i)["state"] for i in ids], ["failed", "failed"], log)
         self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS, log)
-        held = mq.Queue(self.repo).held()
-        self.assertIn(f"the lanes gave no verdict in {mq.NO_VERDICT_RUNS} runs in a row", held)
-        self.assertIn("gate failed though qk unittest's verdict was OK", held)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        why = self.state(ids[0])["why"]
+        self.assertIn(f"the lanes gave no verdict in {mq.NO_VERDICT_RUNS} runs in a row", why)
+        self.assertIn("gate failed though qk unittest's verdict was OK", why)
 
 
 class NoVerdict(Fixture):
@@ -1759,30 +1761,44 @@ class NoVerdict(Fixture):
         self.assertIn(f"no verdict (exit {mq.remote.LOST_ACCESS}), run 1 of at most {mq.NO_VERDICT_RUNS}", said.getvalue())
         self.assertNotIn("exits, holding nothing", said.getvalue())
 
-    def test_unmeasured_holds_after_the_bound_and_blames_nobody(self):
-        self.status.write_text("3")
+    def test_unmeasured_batch_comes_back_and_later_entries_still_land(self):
         self.commit("a", "a")
-        [identifier] = self.add("a")
-        with patch("builtins.print"): self.assertEqual(self.work(), 0)
-        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.commit("b", "b")
+        [first] = self.add("a")
+        real = mq.Worker.gate
+        attempted = []
+
+        def gate(worker, *arguments, **options):
+            attempted.append(worker.gating)
+            result = real(worker, *arguments, **options)
+            if self.gates() == 1:
+                later.extend(self.add("b"))
+            if self.gates() == mq.NO_VERDICT_RUNS:
+                self.status.unlink()
+            return result
+
+        later = []
+        self.status.write_text("3")
+        with patch.object(mq.Worker, "gate", gate), patch.object(mq.Worker, "stack"), patch("builtins.print"):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 1)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        entry = self.state(first)
+        self.assertEqual(entry["state"], "failed")
+        self.assertEqual(self.state(later[0])["state"], "landed")
         self.assertNotIn("a", self.main_files())
-        held = mq.Queue(self.repo).held()
-        # The hold names the Mac the gate ran on, from its receipt (vocaro-engineering#185).
+        self.assertIn("b", self.main_files())
+        self.assertEqual(attempted, [(first,)] * mq.NO_VERDICT_RUNS + [(later[0],)])
+        why = entry["why"]
         self.assertIn(f"the lanes gave no verdict in 3 runs in a row, the last with exit 3 on this Mac "
                       f"({offload_host.mac_name()}), unmeasured, with no test its log names, the most "
-                      "queue.noVerdictRuns allows (3); see ", held)
-        # The gate takes one shared slot, so the hold points a timed part at exclusive admission
-        # (vocaro/queuekeeper#28).
-        self.assertIn(". gate takes one shared slot of heavy-work admission, which other heavy work can join after it "
-                      "starts: if a timing in it needs a quiet Mac, run that part alone under `qk admit --here "
-                      "--exclusive` from a `self` lane", held)
-        self.assertIn("qk queue resume", held)
-        self.status.unlink()
-        with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
-        self.work()
-        self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS + 1)
+                      "queue.noVerdictRuns allows (3)", why)
+        self.assertIn("gate takes one shared slot of heavy-work admission", why)
+        out = agent_results.entry_result(mq.Queue(self.repo), entry)
+        self.assertEqual(out["failure"]["category"], "gate-no-verdict")
+        self.assertEqual(out["recovery"]["reasonCode"], "entry-no-verdict")
+        log = agent_logs.selected(out["artifacts"], "queue-doctor-log")
+        self.assertIn("qk queue doctor:", Path(log["path"]).read_text())
 
     def test_a_lane_that_ran_out_of_disk_space_holds_at_once_and_blames_nobody(self):
         """vocaro/queuekeeper#162: a run again would fill the same disk, so the first such run holds, for a session to
@@ -1816,7 +1832,7 @@ class NoVerdict(Fixture):
         self.assertEqual(worker.no_verdict_cause(75, log),
                          "not run: gate not run on this Mac (studio): this Mac (studio) is short of disk space: the volume "
                          "of / has 7.0 GiB free")
-        # An unmeasured run that did not run out of space holds as before.
+        # A wait for disk space is distinct from running out during execution.
         self.assertIsNone(worker.out_of_space(3, log))
         self.assertIsNone(worker.out_of_space(75, log))
 
@@ -1924,12 +1940,10 @@ class NoVerdict(Fixture):
                 with self.commands() as ran, contextlib.redirect_stdout(io.StringIO()) as said:
                     self.assertEqual(self.work(), 0)
                 self.assertEqual(self.gates() - start, mq.NO_VERDICT_RUNS)
-                self.assertEqual(self.state(identifier)["state"], "queued")
-                self.assertIn("the most queue.noVerdictRuns allows (3)", mq.Queue(self.repo).held())
+                self.assertEqual(self.state(identifier)["state"], "failed")
+                self.assertIn("the most queue.noVerdictRuns allows (3)", self.state(identifier)["why"])
                 self.assertNotIn("locked screen", said.getvalue())
                 self.assertTrue(all("--unlocked-screen" not in command for command in self.lane_runs(ran)))
-                mq.Queue(self.repo).hold_file.unlink()
-                for entry in mq.Queue(self.repo).all(): mq.remove(mq.Queue(self.repo), entry["id"], quiet=True)
         self.status.unlink()
 
     def test_the_receipts_screen_after_decides_over_the_log(self):
@@ -2100,8 +2114,8 @@ class NoVerdict(Fixture):
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.gates(), mq.NO_VERDICT_RUNS)
-        self.assertEqual(self.state(identifier)["state"], "queued")
-        self.assertIn("the most queue.noVerdictRuns allows (3)", mq.Queue(self.repo).held())
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertIn("the most queue.noVerdictRuns allows (3)", self.state(identifier)["why"])
         self.assertNotIn("locked screen", said.getvalue())
         self.assertTrue(all("--unlocked-screen" not in command for command in self.lane_runs(ran)))
         self.status.unlink()
@@ -2142,25 +2156,25 @@ class NoVerdict(Fixture):
                                      "FIXTURE_LOCK_DURING_RUN": str(during)}), patch.object(mq.Worker, "gate", gate):
             yield gated
 
-    def test_the_fifth_locked_run_in_a_row_holds_the_queue_for_a_session_and_the_fourth_does_not(self):
+    def test_the_fifth_locked_run_in_a_row_sends_back_the_batch(self):
         """vocaro-engineering#293, the owner's decision of 2026-11-09: the cap on the runs queue.noVerdictRuns does
-        not count. The hold is a session's, and names the lane, the screen reading and the Mac."""
+        not count. The send-back names the lane, the screen reading and the Mac."""
         self.assertEqual(mq.LOCKED_SCREEN_RUNS, 5)
         self.commit("a", "a")
         [identifier] = self.add("a")
         with self.gates_that(["locked"] * mq.LOCKED_SCREEN_RUNS), contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.gates(), 5)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertNotIn("a", self.main_files())
-        held = mq.Queue(self.repo).held()
-        self.assertTrue(held.startswith("for a session, not the owner: gate ended behind a screen that locked during "
+        held = self.state(identifier)["why"]
+        self.assertTrue(held.startswith("gate ended behind a screen that locked during "
                                         "the run in 5 runs in a row, the last reading screen: locked ("), held)
         self.assertRegex(held, r"the last reading screen: locked \(console user owner, CGSSessionScreenIsLocked "
                          r"yes, IOConsoleLocked no\) on this Mac \(\S+\) at \S+, the most LOCKED_SCREEN_RUNS allows "
                          r"\(5\); see ")
-        self.assertIn("runs `qk queue resume` itself", held)
-        self.assertIn("4 such runs in a row, and 5 hold the queue", said.getvalue())
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertIn("4 such runs in a row, and 5 send the batch back", said.getvalue())
         self.assertNotIn("the most queue.noVerdictRuns allows", held)
 
     def test_four_locked_runs_in_a_row_hold_nothing(self):
@@ -2182,9 +2196,9 @@ class NoVerdict(Fixture):
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.gates(), 6)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertIn("LOCKED_SCREEN_RUNS does not count it either", said.getvalue())
-        self.assertIn("in 5 runs in a row", mq.Queue(self.repo).held())
+        self.assertIn("in 5 runs in a row", self.state(identifier)["why"])
 
     def test_a_verdict_between_locked_runs_starts_the_cap_again(self):
         """A pass is a verdict: four locked runs on each side of it, eight in all, hold nothing. The second entry
@@ -2217,15 +2231,15 @@ class NoVerdict(Fixture):
 
     def test_a_run_that_waited_for_an_unlocked_mac_neither_adds_to_the_cap_nor_ends_it(self):
         """Exit 75 from a lane sent only to an unlocked Mac ran nothing: the row goes on across it, so three locked
-        runs, the wait and two more hold at the fifth locked run, the sixth gate. It counts toward noVerdictRuns."""
+        runs, the wait and two more send back at the fifth locked run, the sixth gate. The wait counts toward noVerdictRuns."""
         self.commit("a", "a")
         [identifier] = self.add("a")
         with self.gates_that(["locked"] * 3 + ["waited"] + ["locked"] * 2), \
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(self.work(), 0)
         self.assertEqual(self.gates(), 6)
-        self.assertEqual(self.state(identifier)["state"], "queued")
-        self.assertIn("in 5 runs in a row", mq.Queue(self.repo).held())
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertIn("in 5 runs in a row", self.state(identifier)["why"])
         self.assertIn("no verdict (exit 75), run 1 of at most 3", said.getvalue())
 
     def test_whether_a_run_began_unlocked_is_read_from_its_placement_or_its_first_reading(self):
@@ -2317,20 +2331,19 @@ class NoVerdict(Fixture):
                 config["queue"]["noVerdictRuns"] = runs
                 self.publish(config, f"Allow {runs} runs with no verdict")
                 self.assertEqual(mq.no_verdict_runs(self.config()), runs)
-                with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
                 start = self.gates()
                 self.status.write_text("3")
                 self.commit(f"a{runs}", f"a{runs}")
                 [identifier] = self.add(f"a{runs}")
                 with patch("builtins.print"): self.assertEqual(self.work(), 0)
                 self.assertEqual(self.gates() - start, runs)
-                self.assertEqual(self.state(identifier)["state"], "queued")
-                self.assertIn(f"in {runs} run{'' if runs == 1 else 's'} in a row, the last with exit 3", mq.Queue(self.repo).held())
-                self.assertIn(f"the most queue.noVerdictRuns allows ({runs})", mq.Queue(self.repo).held())
+                self.assertEqual(self.state(identifier)["state"], "failed")
+                self.assertIn(f"in {runs} run{'' if runs == 1 else 's'} in a row, the last with exit 3", self.state(identifier)["why"])
+                self.assertIn(f"the most queue.noVerdictRuns allows ({runs})", self.state(identifier)["why"])
                 mq.remove(mq.Queue(self.repo), identifier, quiet=True)
 
     def test_a_branch_cannot_raise_its_own_bound(self):
-        """Read from main, as every queue setting is: a batch that sets 5 still holds after main's 3."""
+        """Read from main, as every queue setting is: a batch that sets 5 still comes back after main's 3."""
         self.status.write_text("3")
         config = self.config()
         config["queue"]["noVerdictRuns"] = 5
@@ -2342,7 +2355,7 @@ class NoVerdict(Fixture):
         [identifier] = self.add("raise")
         with patch("builtins.print"): self.work()
         self.assertEqual(self.gates(), 3)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "failed")
 
     def test_the_setting_must_be_a_positive_integer(self):
         start = {"schemaVersion": 1, "name": "fixture", "integration": "direct-main",
@@ -2361,7 +2374,7 @@ class NoVerdict(Fixture):
         self.assertEqual(queue["properties"]["noVerdictRuns"]["type"], "integer")
         self.assertEqual(queue["properties"]["noVerdictRuns"]["minimum"], 1)
 
-    def test_the_hold_says_why_the_last_run_gave_no_verdict(self):
+    def test_the_reason_explains_why_the_last_run_gave_no_verdict(self):
         worker = mq.Worker(mq.Queue(self.repo))
         log = self.base / "gate.log"
         log.write_text("test_voices (m.Voices) ... skipped 'Unmeasured: the voices were not ready in 500 s'\n"
@@ -2414,7 +2427,7 @@ class NoVerdict(Fixture):
         if said is not None: (run / "source.json").write_text(said)
         return run
 
-    def test_a_no_verdict_hold_quotes_the_error_its_own_receipt_records(self):
+    def test_a_no_verdict_send_back_quotes_the_error_its_own_receipt_records(self):
         """A lane that reached its own limit: the real qk run, its real receipt, and a log that just stops (#288)."""
         config = self.config()
         config["lanes"]["gate"] = {"command": ["python3", "-c", "import time; time.sleep(120)"], "timeout": 2}
@@ -2423,8 +2436,8 @@ class NoVerdict(Fixture):
         self.commit("a", "a")
         [identifier] = self.add("a")
         with patch("builtins.print"): self.work()
-        self.assertEqual(self.state(identifier)["state"], "queued")
-        held = mq.Queue(self.repo).held()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        held = self.state(identifier)["why"]
         self.assertIn(f"the last with exit 3 on this Mac ({offload_host.mac_name()}), unmeasured: Owned command timed "
                       "out after 2s: python3", held)
         self.assertNotIn(self.NOTHING, held)
@@ -2517,8 +2530,8 @@ class NoVerdict(Fixture):
         log.write_text(self.VOIDED.replace("Unmeasured:", "NON-RUN:") + "\n")
         self.assertEqual(worker.no_verdict_cause(3, log), self.NOTHING)
 
-    def test_a_hold_and_the_worker_log_quote_the_projects_reason(self):
-        """A real qk run of a gate that says why in its own line and exits 3: the worker's no-verdict line, the hold's
+    def test_the_send_back_and_the_worker_log_quote_the_projects_reason(self):
+        """A real qk run of a gate that says why in its own line and exits 3: the worker's no-verdict line, the recorded
         reason and qk queue status quote it (vocaro/queuekeeper#30)."""
         config = self.config()
         config["lanes"]["gate"] = {"command": ["python3", "-c", f"print({self.VOIDED!r}); raise SystemExit(3)"]}
@@ -2529,10 +2542,10 @@ class NoVerdict(Fixture):
         with patch.object(mq.Worker, "settle", return_value=None), \
                 contextlib.redirect_stdout(io.StringIO()) as said:
             self.work()
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertIn(f"no verdict (exit 3), run 1 of at most 2: unmeasured, and its log says: {self.VOIDED}",
                       said.getvalue())
-        held = mq.Queue(self.repo).held()
+        held = self.state(identifier)["why"]
         self.assertIn(f"the last with exit 3 on this Mac ({offload_host.mac_name()}), unmeasured, and its log says: "
                       f"{self.VOIDED}, the most queue.noVerdictRuns allows (2)", held)
         snapshot, _ = mq.reading(self.repo)
@@ -2556,7 +2569,7 @@ class NoVerdict(Fixture):
         self.assertIn(f"the host settled after {3 * mq.SETTLE_POLL}s and 4 looks; one-minute load first 40, highest 40, "
                       "last 3: the lanes run again", log)
 
-    def test_a_retry_whose_host_stays_busy_past_the_bound_holds_and_says_why(self):
+    def test_a_retry_whose_host_stays_busy_past_the_bound_sends_back_and_says_why(self):
         self.status.write_text("3")
         self.commit("a", "a")
         [identifier] = self.add("a")
@@ -2564,21 +2577,21 @@ class NoVerdict(Fixture):
             self.assertEqual(self.work(), 0)
         self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
         self.assertEqual(len(slept), mq.SETTLE_LIMIT // mq.SETTLE_POLL)
-        # No second gate and nothing blamed: the entry waits for the owner, and the hold says why.
+        # No second gate: the entry comes back with the reason the Mac could not run it.
         self.assertEqual(self.gates(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
-        held = mq.Queue(self.repo).held()
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        held = self.state(identifier)["why"]
         self.assertIn(f"the lanes gave no verdict in 1 run in a row, the last with exit 3 on this Mac "
                       f"({offload_host.mac_name()}), unmeasured, with no test its log names, and the host did not settle in {mq.SETTLE_LIMIT}s (the CPU is 95% busy, at or above", held)
-        self.assertIn("qk queue resume", held)
+        self.assertIsNone(mq.Queue(self.repo).held())
         self.assertIn(f"the host did not settle in {mq.SETTLE_LIMIT}s and {len(slept) + 1} looks", said.getvalue())
         # A line every SETTLE_REPORT while it waited, not one per look.
         self.assertEqual(said.getvalue().count("still waiting"), mq.SETTLE_LIMIT // mq.SETTLE_REPORT)
         self.pressure.side_effect = None
         self.status.unlink()
-        with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
+        [retry] = self.add("a")
         self.work()
-        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.state(retry)["state"], "landed")
 
     def test_every_retry_waits_for_the_host_to_settle(self):
         """Each run after the first starts only once the host settled, never into the load that voided the last."""
@@ -2597,8 +2610,9 @@ class NoVerdict(Fixture):
         self.assertEqual(started, [0, 2, 5])
         self.assertEqual(slept, [mq.SETTLE_POLL] * 3)
         self.assertEqual(self.gates(), 3)
-        self.assertEqual(self.state(identifier)["state"], "queued")
-        self.assertIn("in 3 runs in a row", mq.Queue(self.repo).held())
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        self.assertIn("in 3 runs in a row", self.state(identifier)["why"])
+        self.assertIsNone(mq.Queue(self.repo).held())
         self.assertEqual(said.getvalue().count("settled after"), 2)
 
     def test_a_failure_comes_back_at_once_without_a_wait(self):
@@ -2796,21 +2810,24 @@ class HoldKinds(Fixture):
         run(self.repo, "git", "config", "core.hooksPath", str(self.repo / ".githooks"))
         self.assertEqual(mq.hooks_elsewhere(self.repo), "")
 
-    def test_no_verdict_from_a_misconfigured_host_is_the_owners_and_any_other_a_sessions(self):
-        for status, kind in (("78", self.FOR_OWNER), ("3", self.FOR_SESSION), ("75", self.FOR_SESSION)):
-            with self.subTest(status=status):
-                with contextlib.suppress(OSError): mq.Queue(self.repo).hold_file.unlink()
-                self.status.write_text(status)
-                self.commit(f"a{status}", f"a{status}")
-                [identifier] = self.add(f"a{status}")
-                with patch("builtins.print"): self.assertEqual(self.work(), 0)
-                held = mq.Queue(self.repo).held()
-                self.assertTrue(held.startswith(f"{kind}the lanes gave no verdict in {mq.NO_VERDICT_RUNS} runs in a row, "
-                                                f"the last with exit {status} on this Mac "
-                                                f"({offload_host.mac_name()}), "), held)
-                self.assertTrue(held.endswith(self.OWNER_FIXES if kind == self.FOR_OWNER else self.SESSION_RESUMES), held)
-                self.assertEqual(self.state(identifier)["state"], "queued")
-                mq.remove(mq.Queue(self.repo), identifier, quiet=True)
+    def test_a_failed_doctor_check_still_records_a_send_back_event(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        queue = mq.Queue(self.repo)
+        entry = queue.read(identifier)
+        worker = mq.Worker(queue)
+        with patch.object(mq.processes, "run", side_effect=OSError("doctor unavailable")) as doctor, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(worker.send_back_no_verdict([entry], queue.logs / "gate.log",
+                                                         "the Mac did not admit the gate", worker), mq.FAILED)
+        self.assertEqual(doctor.call_args.args[0][-2:], ["queue", "doctor"])
+        self.assertIsNone(queue.held())
+        settled = queue.read(identifier)
+        self.assertEqual(settled["state"], "failed")
+        self.assertIn("doctor unavailable", Path(settled["doctorLog"]).read_text())
+        [event] = mq.events.read(queue.directory, kinds={"entry.failed"})
+        self.assertEqual(event["entry"], identifier)
+        self.assertIn("the Mac did not admit the gate", event["why"])
 
     def test_the_kinds_are_told_apart_in_words(self):
         self.assertTrue(mq.worded(mq.OWNER, "x").startswith(self.FOR_OWNER + "x; "))
@@ -2903,7 +2920,7 @@ class FarmMacSettle(Fixture):
         self.assertIn(f"{self.HOST} settled after {2 * mq.SETTLE_POLL}s and 3 looks; one-minute load first 30, "
                       "highest 30, last 2: the lanes run again", log)
 
-    def test_a_farm_mac_that_stays_busy_holds_naming_it(self):
+    def test_a_farm_mac_that_stays_busy_is_named_in_the_send_back(self):
         self.status.write_text("3")
         self.ran_there()
         self.commit("a", "a")
@@ -2913,10 +2930,10 @@ class FarmMacSettle(Fixture):
             self.assertEqual(self.work(), 0)
         self.assertEqual(sum(slept), mq.SETTLE_LIMIT)
         self.assertEqual(self.gates(), 1)
-        self.assertEqual(self.state(identifier)["state"], "queued")
+        self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertEqual(self.pressure.call_count, 0)
         self.assertIn(f"{self.HOST} did not settle in {mq.SETTLE_LIMIT}s (on {self.HOST}, memory pressure is level 2 "
-                      "(warning), not 1 (normal))", mq.Queue(self.repo).held())
+                      "(warning), not 1 (normal))", self.state(identifier)["why"])
 
     def test_a_lane_that_ran_here_reads_only_this_mac(self):
         """Negative control: no dispatch record, so another Mac is never asked."""
@@ -5122,7 +5139,7 @@ class PreflightLaneInRounds(Fixture):
         self.assertEqual(self.gates(), 1)
         self.assertFalse(any(words.startswith(("spelling", "check")) for words in said), said)
 
-    def test_no_admission_or_no_measurement_is_no_verdict_and_rejects_nothing(self):
+    def test_no_admission_or_no_measurement_is_no_verdict_and_sends_back_at_the_limit(self):
         for status in (mq.resources.BUSY, mq.lane_results.UNMEASURED, mq.remote.MISCONFIGURED):
             with self.subTest(status=status):
                 self.commit(f"fix{status}", f"fix{status}", content=FLAGGED)
@@ -5130,14 +5147,14 @@ class PreflightLaneInRounds(Fixture):
                 # The admitted run, which alone can say so: the check did not end unadmitted in time.
                 with patch.object(mq.Worker, "quick", return_value=None), self.lanes_run(check=status) as started, \
                         patch("builtins.print"): self.rounds()
-                self.assertEqual(self.state(identifier)["state"], "queued")
+                self.assertEqual(self.state(identifier)["state"], "failed")
                 self.assertEqual(self.gates(), 0)
                 self.assertNotIn(f"fix{status}", self.main_files())
                 self.assertEqual(started.count(self.RUN), mq.NO_VERDICT_RUNS)
                 self.assertIn(f"the lanes gave no verdict in {mq.NO_VERDICT_RUNS} runs in a row, the last with exit "
-                              f"{status}", mq.Queue(self.repo).held())
+                              f"{status}", self.state(identifier)["why"])
                 mq.remove(mq.Queue(self.repo), identifier, quiet=True)
-                with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
+
 
     def test_a_clean_batch_passes_the_preflight_lane_and_then_the_gate(self):
         self.commit("fix", "fix", content="a clean point\n")
@@ -5652,9 +5669,9 @@ class LaneThatCannotStart(Fixture):
 class UnprovisionedWhereTheGateRuns(Fixture):
     """vocaro/queuekeeper#19: the queue places each lane by itself, so its provision lane can pass on one Mac while
     the gate runs on the other, in a checkout nothing provisioned. qk run provisions that checkout before the gate,
-    and a provision lane that fails there is that Mac's environment: the queue holds, and sends no entry back."""
+    and a provision lane that fails there is that Mac's environment: the entry comes back at the retry limit."""
 
-    def test_a_gate_whose_checkout_cannot_be_provisioned_holds_for_the_environment_and_blames_no_commit(self):
+    def test_a_gate_whose_checkout_cannot_be_provisioned_comes_back_identifying_the_missing_environment(self):
         config = self.config()
         # The provision lane passes as the queue's own lane, and fails before the gate, as it
         # does on a Mac that lacks its inputs: the lane it runs before names the wait record it shares (lane_wait).
@@ -5666,16 +5683,16 @@ class UnprovisionedWhereTheGateRuns(Fixture):
         self.commit("fix", "fix", content="a labeled point\n")
         [identifier] = self.add("fix")
         with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
-        # The gate's own command never ran, and the entry waits.
+        # The gate's own command never ran, and the result names the missing environment.
         self.assertEqual(self.gates(), 0, said.getvalue())
-        self.assertEqual(self.state(identifier)["state"], "queued", said.getvalue())
+        self.assertEqual(self.state(identifier)["state"], "failed", said.getvalue())
         self.assertNotIn("fix", self.main_files())
-        held = mq.Queue(self.repo).held()
+        held = self.state(identifier)["why"]
         checkout = mq.Queue(self.repo).checkout
         self.assertIn(f"the lanes gave no verdict in 1 run in a row, the last with exit {mq.remote.MISCONFIGURED}, this Mac "
                       f"({offload_host.mac_name()}) could not provision its checkout: the provision lane exited 4 in ", held)
         self.assertIn(f"so gate did not run here; its log is {checkout / '.build/queuekeeper/provision/run.log'}", held)
-        self.assertIn("for the owner", held)
+        self.assertIsNone(mq.Queue(self.repo).held())
         self.assertIn("3 required inputs missing", (checkout / ".build/queuekeeper/provision/run.log").read_text())
         self.assertNotIn("fail on this commit", held)
         self.assertNotIn("a shared host's configuration", held)
@@ -9543,15 +9560,16 @@ class RejectionFacts(Fixture):
         self.assertEqual(self.state(identifier)["state"], "landed")
         self.assertNotIn("why", self.state(identifier))
 
-    def test_a_lane_with_no_verdict_reads_no_load_and_rejects_nothing(self):
-        # Load is reported on a rejection only: a run left unmeasured stays as it was, and is queued again.
+    def test_a_lane_with_no_verdict_reads_no_load_and_blames_no_commit(self):
+        # A run left unmeasured comes back at the limit without load sampled for attributing a test failure.
         self.commit("a", "a")
         [identifier] = self.add("a")
         self.status.write_text(str(mq.lane_results.UNMEASURED))
         with self.sampled_while_running() as finish, contextlib.redirect_stdout(io.StringIO()): self.work()
         finish.assert_not_called()
         entry = self.state(identifier)
-        self.assertNotEqual(entry["state"], "failed")
+        self.assertEqual(entry["state"], "failed")
+        self.assertTrue(entry["noVerdict"])
         self.assertNotIn("While gate ran", entry.get("why", ""))
 
 

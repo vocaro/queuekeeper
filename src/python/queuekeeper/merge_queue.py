@@ -12,9 +12,8 @@ rest at once instead of bisecting, even beside flakes, which it files (Worker.bl
 does a failed test that passed alone but that one entry adds or whose body one entry alone changes
 (vocaro/queuekeeper#129). Only a lane's
 verdict blames a commit: a run the host left unmeasured runs again, each time once the host has settled,
-until queue.noVerdictRuns runs in a row (3 by default) have given none, and then holds the queue for the
-owner (a run a locked screen voided is not counted, and its lane runs next only on a Mac whose screen reads
-unlocked, until LOCKED_SCREEN_RUNS such runs in a row hold the queue for a session, vocaro-engineering#293), with every commit still waiting. A batch whose lanes
+until queue.noVerdictRuns runs in a row (3 by default) have given none and the batch is sent back. A run a
+locked screen voided has its own cap, and its lane runs next only on an unlocked Mac. A batch whose lanes
 passed is recorded as passed before its push, so a hold the push meets keeps that verdict, and
 `qk queue resume` pushes the commit that passed instead of gating it again. Each round the worker moves to
 the toolkit at origin/main, starting itself again from its copy, so that it judges main with the toolkit the
@@ -89,7 +88,7 @@ EVENT_FIELDS = ("tip", "why", "log", "landedAs", "landedTip", "landedCommits", "
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
-# shared host's configuration, which stops for the owner, and a worker that lost Local Network access (Worker.older).
+# shared host's configuration, and a worker that lost Local Network access (Worker.older).
 NO_VERDICT = {lane_results.UNMEASURED, resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
 # Of those, the exits of a lane that did not run: no Mac admitted it, a shared host's configuration stopped it, or this
 # worker can no longer reach another Mac.
@@ -102,20 +101,19 @@ OWNER, SESSION, CLEARS = "owner", "session", "clears"
 # Seconds a whole lane may take with its wait for admission: a lane's own limit is 2 h by default
 # (processes.DEFAULT_LIMIT), and this allows another two of them in the host's queue.
 LANE_LIMIT = 3 * processes.DEFAULT_LIMIT
-# How many runs in a row may give no verdict before the queue holds, unless main's queue.noVerdictRuns says
+# How many runs in a row may give no verdict before the batch comes back, unless main's queue.noVerdictRuns says
 # otherwise: a busy host clears, so each run after the first waits for it to settle. On 2026-11-04, 8 of 12 of
 # EPUBLib's gates on another Mac gave none, as the simulators' voices were not ready in time (EPUBLib#946),
 # and with one retry each pair held the queue until a person resumed it. A third run costs at most one gate and
-# one settle wait more, and still holds the queue for a cause that does not clear.
+# one settle wait more, and still bounds retries for a cause that does not clear.
 NO_VERDICT_RUNS = 3
-# How many runs in a row may end behind a screen that locked during them before the queue holds: the runs
+# How many runs in a row may end behind a screen that locked during them before the batch comes back: the runs
 # queue.noVerdictRuns does not count, which would otherwise retry without end a lane whose screen locks during every
 # run. The number is the owner's judgment, accepted on 2026-11-09, not a measurement (vocaro-engineering#293).
 LOCKED_SCREEN_RUNS = 5
 # Seconds each retry waits for the host to settle, by admission's load and memory test (resources.pressure), and
 # between its looks. A retry started at once met the load that voided the run it repeats, and each such run cost
-# mpm's queue a gate of about an hour (#124); a wait no longer than that run, past which the queue holds as
-# before, costs no more than the retry it saves.
+# mpm's queue a gate of about an hour (#124); a wait no longer than that run costs no more than the retry it saves.
 SETTLE_LIMIT = 3600
 SETTLE_POLL = 15
 # Seconds between the wait's lines in the worker's log while the host stays busy.
@@ -828,7 +826,7 @@ named = names_path
 
 
 def no_verdict_runs(config):
-    """How many runs in a row may give no verdict before the queue holds: main's queue.noVerdictRuns, or
+    """How many runs in a row may give no verdict before the batch comes back: main's queue.noVerdictRuns, or
     NO_VERDICT_RUNS."""
     return config.get("queue", {}).get("noVerdictRuns", NO_VERDICT_RUNS)
 
@@ -3480,7 +3478,7 @@ def diagnose(root):
     if len(blank) >= DOCTOR_NO_VERDICTS:
         found("no verdict", f"{len(blank)} gates since the last verdict gave none, each leaving tests unmeasured or "
               f"printing no qk unittest summary: {', '.join(blank)} (vocaro-engineering#253, #268, #282)",
-              f"the worker runs it again up to queue.noVerdictRuns times and then holds; read {blank[0]} for the "
+              f"the worker sends the batch back when it reaches queue.noVerdictRuns; read {blank[0]} for the "
               "cause: a lane that reached its limit, or another Mac out of reach")
     for identifier, own in refusing.items():
         found("refused before running", f"qk unittest refuses {identifier}'s tree before running anything: "
@@ -3775,8 +3773,9 @@ class Worker:
         self.checkout = queue.checkout
         self.limit = None  # how many of the oldest entries the next round takes, while bisecting
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
-        self.no_verdicts = 0  # the runs in a row that gave no verdict, held at no_verdict_runs
-        self.locked_screens = 0  # the runs in a row a screen locked during, held at LOCKED_SCREEN_RUNS (older)
+        self.no_verdicts = 0  # the runs in a row that gave no verdict
+        self.locked_screens = 0  # the runs in a row a screen locked during
+        self.retrying = tuple(progress.get("retrying", ())) if progress else ()  # the batch that gave no verdict
         # The commits whose gate --fail-fast cut short gated again once, as their failed tests all passed alone
         # (rerun), and whether the last rerun asked for that.
         self.regated, self.regate = set(), False
@@ -3851,6 +3850,7 @@ class Worker:
         progress = {"limit": self.limit, "suspects": self.suspects, "no_verdicts": self.no_verdicts}
         if self.unlocked: progress["unlocked"] = sorted(self.unlocked)
         if self.locked_screens: progress["locked_screens"] = self.locked_screens
+        if self.retrying: progress["retrying"] = list(self.retrying)
         return progress
 
     def look(self, host, said, here="the host"):
@@ -6276,6 +6276,9 @@ class Worker:
         if first is not None:
             self.alone = True
             return [first]
+        if self.retrying and tuple(entry["id"] for entry in batch[:len(self.retrying)]) == self.retrying:
+            # Entries that arrived after the gate belong to a later batch, with their own retry budget.
+            batch = batch[:len(self.retrying)]
         return batch[:next((index for index, entry in enumerate(batch) if entry.get("noGate")), len(batch))]
 
     def round(self):
@@ -6449,7 +6452,7 @@ class Worker:
                                        "never ran, so this says nothing of the commits that create main and none is "
                                        f"sent back: {self.start_fix()}; see {log}"))
             return True
-        self.no_verdicts = self.locked_screens = 0
+        self.reset_no_verdict()
         if result:
             why = "the queue's lanes fail on this commit, gated alone to create main: fix it and add it again."
             self.say(f"{entry['id']}: {why}")
@@ -6613,11 +6616,39 @@ class Worker:
         self.queue.emit("round.began", round=round_name, head=head, base=base, adopted=adopted or None,
                         entries=[entry["id"] for entry in applied], bisect=bisect)
 
+    def reset_no_verdict(self):
+        self.no_verdicts = self.locked_screens = 0
+        self.retrying = ()
+
+    def send_back_no_verdict(self, applied, log, reason, runner):
+        """Finish the affected entries without attributing a test failure, and preserve a read-only diagnosis."""
+        self.reset_no_verdict()
+        if not self.alone: self.limit, self.suspects = None, 0
+        doctor_log = log.with_name(f"{log.stem}-doctor.log")
+        self.say(f"sending back {', '.join(entry['id'] for entry in applied)}: {reason}; "
+                 f"see {log}. Recording queue doctor in {doctor_log}")
+        command = toolkit_command(self.checkout, ["queue", "doctor"], self.toolkit_root())
+        try:
+            processes.run(command, cwd=self.checkout, log_path=doctor_log, timeout=DOCS_CHECK_LIMIT,
+                          env=self.environment)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            message = f"could not finish queue doctor: {error}"
+            self.say(message)
+            with contextlib.suppress(OSError), doctor_log.open("a") as report:
+                report.write(message + "\n")
+        why = f"{reason}; see {log}. Address the cause before landing again."
+        for entry in applied:
+            self.settle_failure(entry, log, why, runner, noVerdict=True, doctorLog=str(doctor_log))
+        return FAILED
+
     def no_verdict(self, config, applied, result, log, runner):
-        """What becomes of applied after its lanes gave no verdict, exiting result: it waits and runs again, or the
-        queue holds (older)."""
+        """Retry a batch whose lanes gave no verdict until its limit, then send it back (older)."""
         queue = self.queue
         queue.mark(applied, QUEUED)
+        attempted = tuple(entry["id"] for entry in applied)
+        if attempted != self.retrying:
+            self.reset_no_verdict()
+            self.retrying = attempted
         # This worker exits, as before a round, so the run counts toward no bound (vocaro-engineering#300). The
         # worker's own answer decides, so that a lane that merely exits with this status cannot end worker after
         # worker.
@@ -6627,7 +6658,7 @@ class Worker:
             # A run again would fill the same disk, so the queue holds at once for a session to free space, and
             # the batch's commits are not blamed: on 2026-11-14 a gate that ran out of space hung for about 90
             # minutes, and on 2026-11-15 one whose log could not be written was sent back (vocaro/queuekeeper#162).
-            self.no_verdicts = self.locked_screens = 0
+            self.reset_no_verdict()
             queue.hold(worded(SESSION, f"a lane ran out of disk space{runner.ran_where}: {full}. That is the "
                                        "host's, not the batch's, and no entry is sent back: free space with "
                                        "`python3 scripts/qk disk --delete`, or by removing what `python3 "
@@ -6635,20 +6666,21 @@ class Worker:
             return NO_VERDICT_OUTCOME
         locked = runner.screen_locked(result, log)
         if locked:
-            # The owner's decision of 2026-11-08 (vocaro-engineering#293): a run a locked screen voided does not
-            # count toward the hold, and the lane's next run goes only to a Mac whose screen reads unlocked.
+            # A run a locked screen voided has its own limit, and the lane runs next only on an unlocked Mac
+            # (vocaro-engineering#293).
             lane, reading = locked
             self.unlocked.add(lane)
             self.say(f"no verdict (exit {result}){runner.ran_where}: {lane} ran behind a locked screen, the last "
                      f"reading {reading}, which queue.noVerdictRuns does not count; its next run goes only to a "
                      "Mac whose screen reads unlocked" + self.count_locked(runner, config, lane, log))
             if self.locked_screens >= LOCKED_SCREEN_RUNS:
-                queue.hold(worded(SESSION, f"{lane} ended behind a screen that locked during the run in "
-                                           f"{self.locked_screens} runs in a row, the last reading {reading}, the "
-                                           f"most LOCKED_SCREEN_RUNS allows ({LOCKED_SCREEN_RUNS}); see {log}"))
-                return NO_VERDICT_OUTCOME
+                return self.send_back_no_verdict(applied, log, f"{lane} ended behind a screen that locked during "
+                                                 f"the run in {self.locked_screens} runs in a row, the last reading "
+                                                 f"{reading}, the most LOCKED_SCREEN_RUNS allows "
+                                                 f"({LOCKED_SCREEN_RUNS})", runner)
             busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
-            if busy: queue.hold(worded(SESSION, f"{lane} ran behind a locked screen, and {busy}; see {log}"))
+            if busy:
+                return self.send_back_no_verdict(applied, log, f"{lane} ran behind a locked screen, and {busy}", runner)
             return NO_VERDICT_OUTCOME
         # A run that waited for an unlocked Mac and exited 75 ran nothing, so it says nothing of the row of locks;
         # any other cause ends the row.
@@ -6659,20 +6691,16 @@ class Worker:
         cause = runner.no_verdict_cause(result, log)
         gave = (f"the lanes gave no verdict in {self.no_verdicts} run{'' if self.no_verdicts == 1 else 's'} in a "
                 f"row, the last with exit {result}{runner.ran_where}, {cause}")
-        # A shared host's configuration is the owner's; a host that stays busy, or tests left unmeasured, a
-        # session reads, and resumes once the host has settled or the cause is gone.
-        kind = OWNER if result == remote.MISCONFIGURED else SESSION
         if self.no_verdicts >= runs:
-            queue.hold(worded(kind, f"{gave}, the most queue.noVerdictRuns allows ({runs}); see {log}"
-                                    + runner.shared_timing(result, config)))
-            return NO_VERDICT_OUTCOME
+            reason = f"{gave}, the most queue.noVerdictRuns allows ({runs})" + runner.shared_timing(result, config)
+            return self.send_back_no_verdict(applied, log, reason, runner)
         self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
                  + f", run {self.no_verdicts} of at most {runs}"
-                 # What an unmeasured run could not measure, so that the worker's log says it before any hold does.
+                 # Name what the run could not measure before its last attempt.
                  + (f": {cause}" if result == lane_results.UNMEASURED else ""))
         # Every retry waits, so that none starts into the load that voided the run before it, or another Mac's.
         busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
-        if busy: queue.hold(worded(kind, f"{gave}, and {busy}; see {log}"))
+        if busy: return self.send_back_no_verdict(applied, log, f"{gave}, and {busy}", runner)
         return NO_VERDICT_OUTCOME
 
     def voided_gate(self, config, applied, log, runner, cause, at_once):
@@ -6681,7 +6709,7 @@ class Worker:
         queue.noVerdictRuns (vocaro/queuekeeper#290)."""
         if at_once:
             self.queue.mark(applied, QUEUED)
-            self.no_verdicts = self.locked_screens = 0
+            self.reset_no_verdict()
             self.queue.hold(worded(SESSION, f"{cause}{runner.ran_where}. No entry is sent back: if tests were removed "
                                             "on purpose, add the trailer the line names to that entry's commit and "
                                             "land it again; otherwise find what stopped running, then resume the "
@@ -6740,7 +6768,7 @@ class Worker:
             # A gate whose tests all passed gives no verdict, counted with the runs before it (#290).
             voided, runner.voided = getattr(runner, "voided", None), None
             if voided: return self.voided_gate(config, applied, log, runner, *voided)
-        self.no_verdicts = self.locked_screens = 0
+        self.reset_no_verdict()
         if result:
             if not flakes and runner.regate:
                 queue.mark(applied, QUEUED)
@@ -6785,7 +6813,7 @@ class Worker:
             return "; it did not read unlocked at its start, so LOCKED_SCREEN_RUNS does not count it either"
         self.locked_screens += 1
         return (f"; {self.locked_screens} such run{'' if self.locked_screens == 1 else 's'} in a row, and "
-                f"{LOCKED_SCREEN_RUNS} hold the queue")
+                f"{LOCKED_SCREEN_RUNS} send the batch back")
 
     def refused_again(self, applied, line, other, log):
         """Hold the queue for a session, applied queued again, when qk unittest refused this gate before running
@@ -7318,7 +7346,7 @@ class Worker:
         return "a shared host's configuration stopped it"
 
     def shared_timing(self, result, config):
-        """What a hold after runs that gave no verdict adds when the last ended unmeasured (exit 3) in a lane that
+        """What a send-back after runs that gave no verdict adds when the last ended unmeasured (exit 3) in a lane that
         takes one slot of heavy-work admission and does not hold its Mac: admission looks only at the moment a run
         starts, so heavy work admitted or started beside it afterwards can void a timing in it, as mpm's gate's was
         on 2026-11-12 (vocaro/queuekeeper#28). The way to keep it off a timed part is exclusive admission of that
