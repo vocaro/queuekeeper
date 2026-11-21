@@ -13433,6 +13433,14 @@ class FailedGateEvidence(Fixture):
             (members / f"{name}.log").write_text(unittests if name == "tests" else "")
             (members / f"{name}.json").write_text(json.dumps({"status": status}))
         (dispatch / "run.log").write_text(output)
+        (dispatch / "output.log").write_text(report)
+        records = dispatch / "results/smoke-ipad/failures/simulator-tests/iPad"
+        records.mkdir(parents=True)
+        file, line = place.rsplit(":", 1)
+        assertion = "Expectation failed: restoredOffset == expected"
+        (records / "failures.json").write_text(json.dumps({"failedTests": [
+            {"test": test, "failures": [{"file": file, "line": int(line),
+                                         "message": assertion + "\nrestoredOffset → 0"}]}]}))
         run_command = mq.processes.run
 
         def run_gate(command, **options):
@@ -13453,6 +13461,10 @@ class FailedGateEvidence(Fixture):
         self.assertEqual(found["failure"]["tests"], [{"name": test, "location": place}])
         self.assertEqual(found["failure"]["moreTests"], 0)
         self.assertIn("smoke-ipad", found["failure"]["message"])
+        waited = self.wait_output(entry)
+        self.assertIn(f"{test} at {place}: {assertion} restoredOffset → 0", waited)
+        self.assertIn(f"remote dispatch run.log: {dispatch / 'run.log'}", waited)
+        self.assertIn(f"remote dispatch output.log: {dispatch / 'output.log'}", waited)
 
     def test_a_failed_remote_gate_reports_swift_testing_assertions_in_the_wait(self):
         self.assert_swift_failure_evidence(grouped=False)

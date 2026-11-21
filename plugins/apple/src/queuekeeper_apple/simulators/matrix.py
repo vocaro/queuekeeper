@@ -45,7 +45,8 @@ also keeps there, in simulator-tests/, the lines of its log that give each test'
 seconds, KIND.log, and its result bundle's summary, timings and per-test issue messages, KIND.json. They
 come back from another Mac with the lane's dispatch, and are kept by commit beside its receipt, where
 the logs folder's are overwritten by the next run (vocaro-engineering#218). `qk results keep` writes the
-same two files for a script that runs xcodebuild itself (vocaro-engineering#260).
+same two files for a script that runs xcodebuild itself (vocaro-engineering#260). A failed run's tests and
+issues also go into the lane's failure records, so the lane and queue summaries can name them.
 
 With --repeat N the tests are built once and run N times, each run on a member of each device's kind taken from the
 pool afresh, by the same take, and so the same reset, as any other run: erased with --erase, a copy of the warmed
@@ -389,6 +390,34 @@ def result_lines(text):
             yield line
 
 
+def keep_failures(kind, results, tests):
+    """Write failure evidence the lane summary can read even when the parent log has only shard totals."""
+    failed = []
+    lines = []
+    for case in tests:
+        if case["outcome"] != "failed": continue
+        failures = []
+        lines.append(case["test"])
+        for issue in case.get("issues", ()):
+            if issue.get("expected"): continue
+            location = issue.get("sourceLocation")
+            failure = {"message": issue["message"]}
+            where = ""
+            if isinstance(location, dict):
+                file, line = location.get("filePath"), location.get("lineNumber")
+                if isinstance(file, str) and file and type(line) is int:
+                    failure.update(file=file, line=line)
+                    where = f"{file}:{line}: "
+            failures.append(failure)
+            lines.extend(f"  {part}" for part in (where + issue["message"]).splitlines())
+        failed.append({"test": case["test"], "failures": failures})
+    if not failed: return
+    folder = results / "failures" / KEPT / kind
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "failures.txt").write_text("\n".join(lines) + "\n")
+    (folder / "failures.json").write_text(json.dumps({"failedTests": failed}, indent=1) + "\n")
+
+
 def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk simulator-tests", *, cases=None):
     """Keep what a reader cites of one test run in its lane's results/, KEPT/KIND.log and KIND.json, and
     return that folder, or None outside a lane (no RESULTS_VARIABLE): the log's lines that give each test's
@@ -415,6 +444,7 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
             "suiteSeconds": suite_seconds(None, record) if record is not None else None,
             "tests": tests, "bundleUnread": unread or (UNREAD if tests is None else None if tests else NO_CASES)},
             indent=1) + "\n")
+        if status and tests: keep_failures(kind, Path(results), tests)
     except OSError as error:
         print(f"queuekeeper simulator-tests: {kind}'s results were not kept in {folder}: {error}", file=sys.stderr, flush=True)
         return None

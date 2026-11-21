@@ -4604,11 +4604,14 @@ class Worker:
                     self.failed_load = loads.finish(self.ran_on)
                     if remote_failure:
                         swift_assertions = swift_test_assertions(lane_text) if member_log is None else group_assertions
+                        # A sharded simulator run can name its failures only in the returned results.
+                        recorded = lane_report.recorded_assertions(lane_report.records(self.failed_results))
+                        swift_assertions = list(dict.fromkeys([*swift_assertions, *recorded]))
                         excerpt = failed_lane_excerpt(lane_text if member_log is None else member_log,
                                                       dispatch_output, lane, swift_assertions)
                         self.failed_dispatch = (log, {"directory": str(ran), "excerpt": excerpt})
                         with contextlib.suppress(OSError), log.open("a") as kept:
-                            kept.write("\n" + "\n".join([*group_assertions, *dispatch_logs(ran)]) + "\n")
+                            kept.write("\n" + "\n".join([*group_assertions, *recorded, *dispatch_logs(ran)]) + "\n")
                 return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):

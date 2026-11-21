@@ -216,6 +216,26 @@ def recorded_failing(kept):
     return list(found.values())
 
 
+def recorded_assertions(kept):
+    """Assertion messages in a lane's kept failure records, suitable for a one-line queue excerpt."""
+    lines = []
+    for _path, record in kept:
+        tests = record.get("failedTests")
+        if not isinstance(tests, list): continue
+        for test in tests:
+            if not isinstance(test, dict) or not isinstance(test.get("test"), str): continue
+            failures = test.get("failures")
+            if not isinstance(failures, list): continue
+            for failure in failures:
+                if not isinstance(failure, dict) or not isinstance(failure.get("message"), str): continue
+                words = failure["message"].strip()
+                if not words.startswith(("Expectation failed", "Requirement failed")): continue
+                file, line = failure.get("file"), failure.get("line")
+                where = f" at {file}:{line}" if isinstance(file, str) and type(line) is int else ""
+                lines.append(" ".join(f"{test['test']}{where}: {words}".split()))
+    return list(dict.fromkeys(lines))
+
+
 def recorded_counts(kept):
     """The counts the records' result bundles hold, summed, or None when none holds any: a log can lack them."""
     bundles = [record["counts"] for _path, record in kept if isinstance(record.get("counts"), dict)]
@@ -485,12 +505,15 @@ class Report:
         ran, host = remote.dispatch(self.root, self.lane, self.began, os.getpid())
         return (f"on {host}", ran) if ran is not None else (None, None)
 
-    def lanes_line(self, directory):
+    def lane_outcomes(self, directory):
         outcomes = {"passed": [], "failed": [], "unmeasured": []}
         for name in self.group:
             try: outcome = json.loads((directory / "lanes" / f"{name}.json").read_text()).get("outcome") or "no outcome"
             except (OSError, ValueError, AttributeError): outcome = "no receipt"
             outcomes.setdefault(outcome, []).append(name)
+        return outcomes
+
+    def lanes_line(self, outcomes):
         parts = [f"{len(names)} {outcome}" + (f" ({', '.join(names)})" if names and outcome != "passed" else "")
                  for outcome, names in outcomes.items() if names or outcome in ("passed", "failed", "unmeasured")]
         return "  lanes: " + ", ".join(parts)
@@ -534,11 +557,21 @@ class Report:
             lines.append(f"  tests: {said_tests(found, sum(map(unmeasured_count, texts.values())), absent)}")
         else:
             lines.append("  tests: no counts, as the run did not finish and its log is incomplete")
-        if self.group is not None: lines.append(self.lanes_line(directory))
+        outcomes = self.lane_outcomes(directory) if self.group is not None else None
+        if outcomes is not None: lines.append(self.lanes_line(outcomes))
         load = load_line(lane_receipt(directory), verdict)
         if load: lines.append(load)
         if why: lines.append(f"  why: {why}")
-        names = (recorded_failing(kept) or failing(joined)) if verdict != "passed" else []
+        names = []
+        if verdict != "passed":
+            names = recorded_failing(kept)
+            if outcomes is not None and names:
+                # A simulator member's kept results say nothing about the group's other failed members.
+                recorded_members = {path.relative_to(directory / "results").parts[0] for path, _ in kept}
+                for name in outcomes["failed"]:
+                    if name not in recorded_members: names.extend(failing(texts[name]))
+                names = list(dict.fromkeys(names))
+            if not names: names = failing(joined)
         lines += [failed_line(name, place) for name, place in names[:SHOWN]]
         if len(names) > SHOWN: lines.append(f"  ... and {len(names) - SHOWN} more")
         if quoted is not None:

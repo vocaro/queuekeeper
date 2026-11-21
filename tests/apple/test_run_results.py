@@ -146,6 +146,13 @@ class KeepTests(unittest.TestCase):
                                            {"message": second["name"]}, {"message": third["name"]},
                                            {"message": second["name"]}])
         self.assertNotIn("issues", passed)
+        evidence = self.results / "failures/simulator-tests/iPhone-17-Pro"
+        kept = json.loads((evidence / "failures.json").read_text())["failedTests"]
+        self.assertEqual(kept, [{"test": "Smoke/measure()", "failures": [
+            {"message": first["name"], "file": "/Tests/Smoke.swift", "line": 12},
+            {"message": second["name"]}, {"message": third["name"]}, {"message": second["name"]}]}])
+        self.assertIn("/Tests/Smoke.swift:12: Expectation failed", (evidence / "failures.txt").read_text())
+        self.assertIn("  Second line", (evidence / "failures.txt").read_text())
 
     def test_keeps_swift_issue_comments_that_the_bundle_can_omit(self):
         scope = {"name": "Known issue scope", "nodeType": "Expected Failure"}

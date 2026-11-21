@@ -436,6 +436,43 @@ class Summary(unittest.TestCase):
                                       "  failed: Pages/testTurn() at /P.swift:9",
                                       f"  details: {self.lane_dir / 'results/failures/one/failures.txt'}"])
 
+    def test_a_remote_sharded_lane_names_failures_recorded_outside_its_log(self):
+        directory = self.root / "dispatch"
+        results = directory / "results"
+        detail = record(results, "simulator-tests/iPhone-17-Pro-1", failedTests=[
+            {"test": "Pages/testTurn()", "failures": [{"file": "PageTests.swift", "line": 42,
+                                                       "message": "Expectation failed: width > 0\nwidth → 0"}]}])
+        (directory / "run.log").write_text("FAIL iPhone-17-Pro: Executed 1 tests, 1 failed in 2 shards\n")
+        report = lane_report.Report()
+        report.root, report.lane = self.root, "ios-tests"
+        with patch.object(lane_report.remote, "dispatch", return_value=(directory, "build-host")):
+            lines = report.lines(1, None)
+        self.assertEqual(lines[:2], ["qk run ios-tests: failed (exit 1), on build-host",
+                                    "  tests: 0 passed, 1 failed, 0 skipped, 0 unmeasured"])
+        self.assertIn("  failed: Pages/testTurn() at PageTests.swift:42", lines)
+        self.assertIn(f"  details: {detail}", lines)
+        self.assertEqual(lane_report.recorded_assertions(lane_report.records(results)),
+                         ["Pages/testTurn() at PageTests.swift:42: Expectation failed: width > 0 width → 0"])
+
+    def test_a_failed_simulator_members_records_do_not_hide_other_members_failures(self):
+        directory = self.root / "dispatch"
+        record(directory / "results/ios", "simulator-tests/iPhone-17-Pro-1",
+               failingTests=["Pages/testTurn()"])
+        lanes = directory / "lanes"
+        lanes.mkdir()
+        for name, log, outcome in (("ios", "FAIL iPhone: Executed 1 tests, 1 failed\n", "failed"),
+                                   ("mac", SWIFT_TESTING_FAILED, "failed"),
+                                   ("other", SWIFT_TESTING_FAILED.replace("page()", "fixture()"), "passed")):
+            (lanes / f"{name}.log").write_text(log)
+            (lanes / f"{name}.json").write_text(json.dumps({"outcome": outcome}))
+        report = lane_report.Report()
+        report.root, report.lane, report.group = self.root, "gate", ["ios", "mac", "other"]
+        with patch.object(lane_report.remote, "dispatch", return_value=(directory, "build-host")):
+            lines = report.lines(1, None)
+        self.assertIn("  failed: Pages/testTurn()", lines)
+        self.assertIn("  failed: page() at PageTests.swift:9", lines)
+        self.assertFalse(any("fixture()" in line for line in lines))
+
     def test_an_earlier_runs_record_is_not_this_runs(self):
         self.configure(lane=self.printing("Ran 1 test in 0.1s\n\nOK"))
         record(self.lane_dir / "results", "old", failedTests=[{"test": "Old/testOld()", "failures": []}])
