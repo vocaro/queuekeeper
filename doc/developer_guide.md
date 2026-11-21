@@ -1453,6 +1453,16 @@ For D2 and D3, older records combine ordinary work queued ahead with requests sh
 `qk admissions --wait-breakdown` distinguishes the two on new records and shows the CPU readings
 when guaranteed slots kept a whole-host request out.
 
+On Friday, November 20, whole-host occupancy was 17% on the workstation and 25% on build-host.
+Mean concurrent admissions were 0.7 and 0.8, and admitted one-slot waits reached 179 s and 206 s
+at the 95th percentile. From 20:28 to midnight Pacific, the detailed records charged 9m25s of
+the workstation's whole-host wait time to one-slot work queued ahead, 7m58s to busy guaranteed
+slots with CPU below the limit, and 5m10s to busy guaranteed slots at or above the CPU limit.
+Use this interval as an additional reading for D2 and D3. It covers detailed refusals for
+BreezEPUB and EPUBLib gates. Detailed blocker records began around 20:27 on both Macs and cover
+about 24% and 22% of Friday requests with recorded refusals. A complete working day of detailed
+records on both Macs is still needed ([#232](https://github.com/vocaro/queuekeeper/issues/232)).
+
 ### Weighing a change
 
 A proposal to change a rule says which goal it serves, which it costs, what bounds the cost, and
