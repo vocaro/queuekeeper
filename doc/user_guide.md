@@ -2079,6 +2079,26 @@ Mac's environment.
 
 The receipt names both Macs' model, macOS and Xcode, and `ranOn` says where the lane ran.
 
+#### Following a direct run on another Mac
+
+For a long `qk run` or `qk remote run`, save both streams to a file of its own
+(`qk run LANE > run.log 2>&1`) and read that file from another shell. The sending Mac writes
+`remote: clock`, `remote: progress` and `remote: heartbeat` lines to stderr. The clock gives the
+effective lane timeout and, for a direct simulator-tests command when known, its default XCTest
+test allowance. Progress lines report stages the lane logs, such as the device it started
+testing. A heartbeat comes about every five minutes during quiet output and reports whether
+the log grew and how long ago the last recognized stage arrived. A heartbeat without log
+growth only reports silence. A parallel group's member logs arrive when the group ends, so its
+heartbeat cannot report a member's current stage.
+
+From the project checkout, `qk admissions now` shows which Mac is holding or waiting for
+admission and why. `qk progress FOLDER` reads a runner's record when its output announced a
+progress folder. For a direct lane without a runner record, follow the saved output. Once a
+dispatch files its result, `.build/queuekeeper/remote/.dispatches/LANE/ID/` holds its own log
+and receipt. The shorter `.build/queuekeeper/remote/LANE/` path can still show an earlier
+dispatch while yours runs. Check the receipt's commit and arguments before using it as a
+verdict.
+
 Once the sender has acknowledged a run's journal, a run without a device lease can continue on
 the other Mac if your Mac sleeps or the connection drops. The sender reconnects to collect the
 same run's result. Stopping a run here asks the other Mac to stop it, including on reconnection.
