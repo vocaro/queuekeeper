@@ -933,6 +933,19 @@ def accessibility_trusted():
         return False
 
 
+def system_events_accessibility(path="/Library/Application Support/com.apple.TCC/TCC.db"):
+    """True when System Events may post events, False when the grant is missing, None when it cannot be read.
+    Read only its Accessibility entry. In particular, do not ask System Events to do anything."""
+    found = output(["/usr/bin/sqlite3", "-batch", "-init", "/dev/null", "-readonly", str(path),
+                    "SELECT DISTINCT auth_value FROM access WHERE service = 'kTCCServiceAccessibility' "
+                    "AND client = 'com.apple.systemevents'"])
+    if found == "2":
+        return True
+    if found in ("", "0"):
+        return False
+    return None
+
+
 def screen_capture_allowed():
     """Whether this process, and with it the command that started it, may capture the screen, asked without a
     prompt (CGPreflightScreenCaptureAccess)."""
@@ -944,7 +957,7 @@ def screen_capture_allowed():
         return False
 
 
-def foreground_problems():
+def foreground_problems(system_events=...):
     """What this Mac lacks for foreground work, a Mac VoiceOver session among it, run by a command started
     over SSH, as [problem, the owner's fix] pairs; none when it is ready. Each is a setting of the owner's
     Mac, which the owner changes, never a run.
@@ -966,6 +979,15 @@ def foreground_problems():
                       "in System Settings, Privacy & Security, Device Control and Data Access (macOS 27.2's name for "
                       "Accessibility), add /usr/libexec/sshd-keygen-wrapper, which runs Remote Login's commands, and "
                       "turn it on"])
+    if system_events is ...:
+        system_events = system_events_accessibility()
+    if system_events is False:
+        found.append(["System Events lacks its own Accessibility grant to post keys",
+                      "in System Settings, Privacy & Security, Device Control and Data Access (Accessibility), "
+                      "turn on System Events; if it is not listed, add /System/Library/CoreServices/System Events.app"])
+    elif system_events is None:
+        found.append(["System Events' Accessibility grant could not be read from the system TCC database",
+                      "check that the system TCC database is readable by Remote Login's commands on this Mac"])
     if not screen_capture_allowed():
         found.append(["a command started over SSH may not capture the screen (CGPreflightScreenCaptureAccess is "
                       "false), so a run's screenshots can fail or raise a permission prompt that takes the focus",
@@ -1109,14 +1131,14 @@ JSON.stringify(list.filter(function (w) { return !(w.kCGWindowAlpha === 0); }).m
 ORDER = ["osascript", "-l", "JavaScript", "-e", ORDER_SCRIPT]
 
 
-def crash_dialogs():
+def crash_dialogs(*, read_alerts=True):
     """DialogType, the record a run that has it off keeps, and the system alerts on the screen, for
     `qk remote foreground`."""
     path = crash_dialog_record()
     try: kept = json.loads(path.read_text())
     except FileNotFoundError: kept = None
     except (OSError, ValueError) as error: kept = {"error": f"{path} cannot be read: {error}"}
-    alerts = system_alerts()
+    alerts = system_alerts() if read_alerts else None
     return {"value": crash_dialog(), "record": kept, "alerts": alerts, "windows": alerts and output(ORDER)}
 
 
@@ -1129,8 +1151,10 @@ def foreground():
     except (OSError, ValueError, AttributeError) as error: entry = {"error": f"the device record cannot be read: {error}"}
     # VoiceOver may belong to the current holder. Even its baseline is read only after a
     # run acquires the lease; on is a valid baseline, preserved by the foreground state guard.
-    return {"mac": mac_name(), "problems": foreground_problems(), "voiceoverManagedUnderLease": True, "entry": entry,
-            "crashDialogs": crash_dialogs(), "captureApprovals": screen_capture_approvals()}
+    system_events = system_events_accessibility()
+    return {"mac": mac_name(), "problems": foreground_problems(system_events), "voiceoverManagedUnderLease": True,
+            "entry": entry, "crashDialogs": crash_dialogs(read_alerts=system_events is True),
+            "captureApprovals": screen_capture_approvals()}
 
 
 def python_crash_reports(directory=None, now=None):

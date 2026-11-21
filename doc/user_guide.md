@@ -2739,8 +2739,8 @@ them first and stops with exit 78 while one is missing.
    with no password after either.
 3. **Accessibility for commands over SSH.** In Privacy & Security, Accessibility, add and turn on
    `/usr/libexec/sshd-keygen-wrapper`, and System Events (`/System/Library/CoreServices/System Events.app`)
-   too, since it posts the keys a run sends. `qk remote foreground` does not yet check System Events'
-   grant.
+   too, since it posts the keys a run sends. `qk remote foreground` checks both grants. If it cannot
+   read the System Events grant, check that Remote Login's commands can read the system TCC database.
 4. **Screen recording for commands over SSH.** Add `sshd-keygen-wrapper` to the Screen Recording list.
    macOS also asks separately, per app path, to let an app "bypass the system private window picker",
    and asks again 30 days after each approval. So launch capturing runners from one stable path per Mac,

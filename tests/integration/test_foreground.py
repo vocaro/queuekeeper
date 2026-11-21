@@ -6,6 +6,7 @@ import json
 import os
 import re
 import signal
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -808,7 +809,7 @@ class DeadlineTests(unittest.TestCase):
 
 
 class ReadinessTests(unittest.TestCase):
-    def problems(self, console="trevor", trusted=True, capture=True, settings=None):
+    def problems(self, console="trevor", trusted=True, capture=True, settings=None, system_events=True):
         settings = {"lsappinfo front": "ASN:0x0-0x2:", "lsappinfo info -only name ASN:0x0-0x2:": '"Safari" ASN',
                     "automationmodetool": "This device DOES NOT REQUIRE user authentication",
                     "defaults read com.apple.VoiceOverTraining doNotShowSplashScreen": "1",
@@ -816,6 +817,7 @@ class ReadinessTests(unittest.TestCase):
         user = type("User", (), {"pw_name": "trevor"})
         with patch.object(offload_host, "console_user", return_value=console), \
              patch.object(offload_host, "accessibility_trusted", return_value=trusted), \
+             patch.object(offload_host, "system_events_accessibility", return_value=system_events), \
              patch.object(offload_host, "screen_capture_allowed", return_value=capture), \
              patch.object(offload_host.pwd, "getpwuid", return_value=user), \
              patch.object(offload_host, "output", side_effect=lambda command, *_: settings.get(" ".join(command))):
@@ -826,6 +828,8 @@ class ReadinessTests(unittest.TestCase):
         cases = {"logged in on the screen": dict(console="root"),
                  "screen is locked": dict(settings={"lsappinfo info -only name ASN:0x0-0x2:": '"loginwindow" ASN'}),
                  "not trusted for accessibility": dict(trusted=False),
+                 "System Events lacks its own Accessibility grant": dict(system_events=False),
+                 "System Events' Accessibility grant could not be read": dict(system_events=None),
                  "may not capture the screen": dict(capture=False),
                  "automation mode asks for authentication": dict(settings={"automationmodetool": "REQUIRES"}),
                  "welcome dialog": dict(settings={"defaults read com.apple.VoiceOverTraining doNotShowSplashScreen": None}),
@@ -835,6 +839,43 @@ class ReadinessTests(unittest.TestCase):
                 found = self.problems(**case)
                 self.assertEqual(len(found), 1, found)
                 self.assertIn(words, found[0])
+
+    def test_system_events_checks_only_its_own_accessibility_grant_in_a_read_only_database(self):
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "TCC.db"
+        self.assertIsNone(offload_host.system_events_accessibility(path))
+        self.assertFalse(path.exists())
+        with contextlib.closing(sqlite3.connect(path)) as database:
+            database.execute("CREATE TABLE access (service TEXT, client TEXT, auth_value INTEGER)")
+            database.executemany("INSERT INTO access VALUES (?, ?, 2)",
+                                 [("kTCCServiceAccessibility", "/usr/libexec/sshd-keygen-wrapper"),
+                                  ("kTCCServiceAppleEvents", "com.apple.systemevents")])
+            database.commit()
+            self.assertIs(offload_host.system_events_accessibility(path), False)
+            database.execute("INSERT INTO access VALUES ('kTCCServiceAccessibility', 'com.apple.systemevents', 0)")
+            database.commit()
+            self.assertIs(offload_host.system_events_accessibility(path), False)
+            database.execute("UPDATE access SET auth_value = 2 WHERE service = 'kTCCServiceAccessibility' "
+                             "AND client = 'com.apple.systemevents'")
+            database.commit()
+            self.assertIs(offload_host.system_events_accessibility(path), True)
+            database.execute("DROP TABLE access")
+            database.commit()
+            self.assertIsNone(offload_host.system_events_accessibility(path))
+
+    def test_remote_foreground_only_queries_system_events_when_its_grant_is_confirmed(self):
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "missing"
+        for grant in (None, False, True):
+            with self.subTest(grant), patch.object(offload_host, "system_events_accessibility", return_value=grant), \
+                    patch.object(offload_host, "foreground_problems", return_value=[]) as problems, \
+                    patch.object(offload_host, "record_path", return_value=path), \
+                    patch.object(offload_host, "crash_dialog_record", return_value=path), \
+                    patch.object(offload_host, "crash_dialog", return_value="basic"), \
+                    patch.object(offload_host, "screen_capture_approvals", return_value=[]), \
+                    patch.object(offload_host, "system_alerts", return_value=[]) as alerts:
+                report = offload_host.foreground()
+            problems.assert_called_once_with(grant)
+            self.assertEqual(alerts.call_count, int(grant is True))
+            self.assertEqual(report["crashDialogs"]["alerts"], [] if grant is True else None)
 
     def test_eng_remote_foreground_reports_the_owner_fixes_and_the_holder(self):
         answers = [{"mac": "Second", "problems": [["the screen is locked", "unlock it"]], "voiceover": True,
