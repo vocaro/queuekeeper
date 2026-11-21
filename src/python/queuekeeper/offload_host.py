@@ -2204,6 +2204,47 @@ def slot_names(directory, count):
     return found
 
 
+def checkpoint_readings(directory, reasons):
+    """Read the running lanes of release checkpoints whose writers still hold their project locks.
+
+    The toolkit gives each checkpoint a dedicated worktree in `runsIn` (vocaro-engineering#501).
+    Older records without one cannot identify which admissions belong to the checkpoint.
+    """
+    folder = directory / "checkpoints"
+    try: names = sorted(name for name in os.listdir(folder) if name.endswith(".json") and not name.startswith("."))
+    except FileNotFoundError: return []
+    except OSError as error:
+        reasons.append(f"the checkpoint records in {folder} cannot be listed: {error}")
+        return None
+    if len(names) > NOW_RECORDS:
+        reasons.append(f"{len(names)} checkpoint records, of which only {NOW_RECORDS} were read")
+    found = []
+    for name in names[:NOW_RECORDS]:
+        record = folder / name
+        lock = record.with_suffix(".lock")
+        try:
+            fd = os.open(lock, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode): continue
+                try: fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError: checkpoint = read_json(record, 64 << 10)
+                else: continue
+            finally: os.close(fd)
+        except FileNotFoundError: continue  # the checkpoint ended as it was read
+        except (OSError, ValueError) as error:
+            reasons.append(f"the checkpoint record {record} cannot be read: {error}")
+            continue
+        if not isinstance(checkpoint, dict): continue
+        project, commit, tree, lane = (checkpoint.get(key) for key in ("project", "commit", "runsIn", "lane"))
+        index, count = checkpoint.get("index"), checkpoint.get("count")
+        if (all(isinstance(value, str) and value for value in (project, commit, tree, lane))
+                and len(tree) <= 300 and os.path.isabs(tree)
+                and type(index) is int and type(count) is int and 1 <= index <= count):
+            found.append({"project": project[:160], "commit": commit[:64], "runsIn": tree, "lane": lane[:160],
+                          "index": index, "count": count})
+    return found
+
+
 def admissions_now(at=None):
     """Who holds and who waits for heavy-work admission on this Mac now, for `qk admissions now` here and on the second
     Mac (vocaro-engineering#342). It changes nothing: it reads the guard, the queue, the slot files' names and the
@@ -2217,7 +2258,8 @@ def admissions_now(at=None):
     guard = Path(os.environ.get("QUEUEKEEPER_GATE_LOCK_FILE", GATE_LOCK) + ".warm-push-guard")
     reading = {"schemaVersion": NOW_SCHEMA, "mac": mac_name(), "observedAt": at, "state": "observed", "reasons": reasons,
                "namespace": {"shared": not isolated, **isolated, "guard": str(guard)}, "limits": None, "slots": None,
-               "model": None, "holders": None, "unattributed": None, "waiters": None, "reclaimed": None}
+               "model": None, "holders": None, "unattributed": None, "waiters": None, "reclaimed": None,
+               "checkpoints": None}
     try: directory = slot_directory()
     except RuntimeError as error:
         return {**reading, "state": "unknown", "reasons": [str(error)]}
@@ -2371,6 +2413,7 @@ def admissions_now(at=None):
             if process == "ended": continue
             waiting.append(waiter_reading({}, record, record.get("queueKind") or "ordinary", None, process, at, hold))
         reading["waiters"] = sorted(waiting, key=lambda waiter: -(waiter["waitedSeconds"] or 0))
+    reading["checkpoints"] = checkpoint_readings(directory, reasons)
     if reasons: reading["state"] = "partial"
     return bounded(reading)
 
@@ -2417,7 +2460,7 @@ def origin_of(found):
 def bounded(reading):
     """The reading, cut to NOW_BYTES of JSON by leaving out the longest waits' and the oldest holders' tails, partial."""
     if len(json.dumps(reading)) <= NOW_BYTES: return reading
-    for key in ("waiters", "holders", "slots"):
+    for key in ("waiters", "holders", "slots", "checkpoints"):
         while reading.get(key) and len(json.dumps(reading)) > NOW_BYTES:
             reading[key] = reading[key][:len(reading[key]) // 2]
     reading["state"] = "partial"

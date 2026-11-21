@@ -2290,7 +2290,8 @@ def farm_mac_name(mac, count):
 def unknown_host(name, role, why, state="unknown"):
     """A host `qk admissions now` could not read: unknown, never idle; or notConfigured, a farm with no other Mac."""
     return {"name": name, "role": role, "state": state, "reasons": [why], "observedAt": None, "limits": None,
-            "slots": None, "model": None, "holders": None, "unattributed": None, "waiters": None, "reclaimed": None}
+            "slots": None, "model": None, "holders": None, "unattributed": None, "waiters": None, "reclaimed": None,
+            "checkpoints": None}
 
 
 def farm_role(mac, count):
@@ -2298,12 +2299,28 @@ def farm_role(mac, count):
     return mac["name"]
 
 
+def admission_report(hosts):
+    """Match running holders to the checkpoint's dedicated worktree, even when the lane was sent to another Mac."""
+    by_tree = {}
+    for host in hosts:
+        for checkpoint in host.get("checkpoints") or []:
+            tree = checkpoint["runsIn"]
+            by_tree[tree] = None if tree in by_tree else {**checkpoint, "host": host["name"]}
+    for host in hosts:
+        for holder in host.get("holders") or []:
+            tree = (holder.get("origin") or {}).get("worktree")
+            if holder.get("process") == "running" and (checkpoint := by_tree.get(tree)):
+                holder["checkpoint"] = checkpoint
+    return {"schemaVersion": 1, "hosts": hosts}
+
+
 def admissions_now(here_only=False, read_here=None, read_there=None, macs=None):
     """{"schemaVersion": 1, "hosts": [...]}: this Mac's reading (offload_host.admissions_now) and, unless here_only,
     that of each of the farm's Macs that take work now (macs(), farm.active), in the farm's order, all asked at once
     over ssh, each within remote.ADMISSIONS_BUDGET seconds. Each of them carries its name in the farm (mac), its
     hardware UUID (id) and its SSH destination (ssh), and its role is its key among the hosts (farm_role). A Mac
-    that cannot be read is unknown with why, and this Mac's reading stands beside it."""
+    that cannot be read is unknown with why, and this Mac's reading stands beside it. A holder's originating
+    worktree can associate it with a checkpoint on any of the Macs that answered."""
     from queuekeeper import farm, offload_host, remote
     read_here = read_here or offload_host.admissions_now
     read_there = read_there or remote.admissions_there
@@ -2311,12 +2328,12 @@ def admissions_now(here_only=False, read_here=None, read_there=None, macs=None):
     except Exception as error:  # noqa: BLE001 - a reading that fails is unknown, never idle
         here = unknown_host("this Mac", "here", f"its reading failed: {type(error).__name__}: {error}")
     hosts = [here]
-    if here_only: return {"schemaVersion": 1, "hosts": hosts}
+    if here_only: return admission_report(hosts)
     try: found = (macs or farm.active)()
-    except ValueError as error: return {"schemaVersion": 1, "hosts": [*hosts, unknown_host("the farm's other Macs", "farm", str(error))]}
+    except ValueError as error: return admission_report([*hosts, unknown_host("the farm's other Macs", "farm", str(error))])
     if not found:
         hosts.append(unknown_host("the farm's other Macs", "farm", "the farm has no other Mac that takes work now", "notConfigured"))
-        return {"schemaVersion": 1, "hosts": hosts}
+        return admission_report(hosts)
     def ask(mac):
         name, role = farm_mac_name(mac, len(found)), farm_role(mac, len(found))
         try: reading = {"name": name, "role": role, **read_there(mac["ssh"], remote.ADMISSIONS_BUDGET)}
@@ -2330,7 +2347,7 @@ def admissions_now(here_only=False, read_here=None, read_there=None, macs=None):
     for thread in threads: thread.start()
     one(0)
     for thread in threads: thread.join()
-    return {"schemaVersion": 1, "hosts": hosts + readings}
+    return admission_report(hosts + readings)
 
 
 def progress_lines(holder):
@@ -2435,6 +2452,10 @@ def now_lines(reading, at=None):
                           if holder.get("stranded") else "")
                 lines.append(f"    {holder['label']}: {kind}, {where}, PID {holder['pid']}, {held}{status}")
                 if whence(holder.get("origin")): lines.append(f"      from {whence(holder['origin'])}")
+                if checkpoint := holder.get("checkpoint"):
+                    lines.append(f"      checkpoint: {checkpoint['project']} at {checkpoint['commit'][:12]}, "
+                                 f"{checkpoint['lane']} ({checkpoint['index']} of {checkpoint['count']}) "
+                                 f"from {checkpoint['host']}")
                 lines += progress_lines(holder)
         lines += reclaimed_lines(host.get("reclaimed"))
         waiters = host.get("waiters")
