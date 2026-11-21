@@ -3467,13 +3467,15 @@ class ExclusiveSettleTests(unittest.TestCase):
         # The first reading is the attempt's, which takes the slots; the settle reads the rest, a poll apart, long
         # enough that the seconds it waited round to more than none.
         os.environ["HEAVY_POLL_SECONDS"] = "0.05"
-        told, said, ended = self.admit([(90.0, 15.0), (90.0, 15.0), (None, 2.0), (60.0, 15.0), (12.0, 15.0)])
+        with patch.object(resources, "one_minute_load", return_value=25.9):
+            told, said, ended = self.admit([(90.0, 15.0), (90.0, 15.0), (None, 2.0), (60.0, 15.0), (12.0, 15.0)])
         self.assertIn("heavy: waiting for the Mac to settle: the CPU is 90% busy, at or above HEAVY_QUIET_LIMIT=25%; "
                       "it starts within HEAVY_QUIET_SECONDS=60 either way", said)
         self.assertEqual(said.count("waiting for the Mac to settle"), 1)
         self.assertRegex(said, r"heavy: the Mac settled after [0-9.]+s: the CPU is 12% busy")
         self.assertEqual((told[resources.HOST_BUSY], told[resources.HOST_BUSY_SECONDS], told[resources.HOST_QUIET]),
                          ("12", "15", "1"))
+        self.assertEqual(told[resources.HOST_LOAD], "25.9")
         self.assertGreater(float(told[resources.HOST_SETTLED]), 0)
         self.assertEqual((ended["event"], ended["outcome"], ended["settled"]["busy"], ended["settled"]["quiet"]),
                          ("ended", "released", 12.0, True))
@@ -3491,6 +3493,20 @@ class ExclusiveSettleTests(unittest.TestCase):
                                r"above HEAVY_QUIET_LIMIT=25%")
         self.assertEqual((told[resources.HOST_BUSY], told[resources.HOST_QUIET]), ("90", "0"))
         self.assertEqual((ended["settled"]["busy"], ended["settled"]["quiet"]), (90.0, False))
+
+    def test_the_final_poll_uses_only_the_time_left_to_settle(self):
+        now, sleeps = 0.0, []
+
+        def sleep(seconds):
+            nonlocal now
+            sleeps.append(seconds)
+            now += seconds
+
+        with patch.object(resources, "time", wraps=time, monotonic=lambda: now, sleep=sleep), \
+                patch.dict(os.environ, {"HEAVY_POLL_SECONDS": "1"}):
+            told, _, _ = self.admit([(90.0, 15.0)], quiet_seconds="1.25")
+        self.assertEqual(sleeps, [1.0, 0.25])
+        self.assertEqual(told[resources.HOST_QUIET], "0")
 
     def test_a_busy_share_that_cannot_be_read_starts_at_once_unsettled(self):
         told, said, ended = self.admit([(None, None)])
@@ -3531,9 +3547,10 @@ class ExclusiveSettleTests(unittest.TestCase):
 
     def test_invalid_settle_limits_are_refused(self):
         for variable in ["HEAVY_QUIET_SECONDS", "HEAVY_QUIET_LIMIT"]:
-            with self.subTest(variable), patch.dict(os.environ, {variable: "-1"}), \
-                    self.assertRaisesRegex(ValueError, "Invalid resource limits"):
-                resources.Admission("timed", exclusive=True)
+            for value in ["-1", "inf", "nan"]:
+                with self.subTest(variable=variable, value=value), patch.dict(os.environ, {variable: value}), \
+                        self.assertRaisesRegex(ValueError, "Invalid resource limits"):
+                    resources.Admission("timed", exclusive=True)
 
 
 class SlowAttempts:

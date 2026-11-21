@@ -1013,7 +1013,8 @@ class Admission:
         # What the settle found, for the ended line, and the reading variables it replaced, for the end to restore.
         self.settled, self.told = None, None
         if self.slots < 1 or self.maximum < self.slots or self.settle < 0 or self.poll <= 0 or timeout < 0 \
-                or self.recheck < 0 or self.hold < 0 or self.quiet_limit < 0 or self.quiet_seconds < 0:
+                or self.recheck < 0 or self.hold < 0 or not math.isfinite(self.quiet_limit) or self.quiet_limit < 0 \
+                or not math.isfinite(self.quiet_seconds) or self.quiet_seconds < 0:
             raise ValueError("Invalid resource limits")
         # Why the latest attempt was refused: its kind, which the log counts (#49), and the waiting message,
         # which names the limit that refused it and its value beside what the attempt read.
@@ -1681,11 +1682,12 @@ class Admission:
         nothing, though the command is still told the reading."""
         from queuekeeper.processes import Interrupted, requested
         began, said = time.monotonic(), False
+        deadline = began + self.quiet_seconds
         while True:
             busy, seconds = cpu_busy(self.directory)
-            waited = round(time.monotonic() - began, 1)
+            now = time.monotonic()
             quiet = None if busy is None and seconds is None else busy is not None and busy < self.quiet_limit
-            if quiet is None or quiet or waited >= self.quiet_seconds:
+            if quiet is None or quiet or now >= deadline:
                 break
             if requested() is not None:
                 raise Interrupted(requested(), "while the Mac settled for exclusive work")
@@ -1695,7 +1697,8 @@ class Admission:
                       f"{self.quiet_limit:g}%; it starts within HEAVY_QUIET_SECONDS={self.quiet_seconds:g} either way",
                       file=sys.stderr, flush=True)
                 said = True
-            time.sleep(self.poll)
+            time.sleep(max(0, min(deadline - time.monotonic(), self.poll)))
+        waited = round(now - began, 1)
         load = one_minute_load()
         if self.quiet_seconds > 0:
             self.settled = {"seconds": waited, "busy": busy, "quiet": bool(quiet)}
