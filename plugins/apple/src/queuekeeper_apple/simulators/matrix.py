@@ -257,6 +257,8 @@ SWIFT_ISSUE = re.compile(r"^\S+ Test .* recorded (?:an issue|a known issue)\b")
 OUTCOMES = {"Passed": "passed", "Failed": "failed", "Skipped": "skipped", "Expected Failure": "expected failure"}
 # What a test that could not measure its subject begins its skip message with.
 UNMEASURED_SKIP = "Test skipped - Unmeasured:"
+# Xcode 27.2 writes this skip message under an Arguments node, even when its test is reported Passed.
+CASE_CANCELLATION = "Test case cancelled"
 # Why a kept record has no test's outcome, though its run may have passed.
 UNREAD = "xcresulttool could not read the result bundle's test results"
 NO_CASES = "the result bundle records no test case"
@@ -325,6 +327,22 @@ def issue_messages(node):
         yield from issue_messages(child)
 
 
+def case_cancellations(node):
+    """(whether cases canceled themselves, the first unmeasured reason) for a passing or skipped test."""
+    if node.get("result") not in ("Passed", "Skipped"): return False, None
+    reasons = []
+
+    def walk(child):
+        if child.get("nodeType") == "Skip Message":
+            label, _, reason = child.get("name", "").partition(":")
+            if label == CASE_CANCELLATION: reasons.append(reason.strip())
+        for descendant in child.get("children", []): walk(descendant)
+
+    walk(node)
+    return bool(reasons), next((reason.removeprefix("Unmeasured:").strip() for reason in reasons
+                               if reason.startswith("Unmeasured:")), None)
+
+
 def test_cases(record, activity_timings=None):
     """Each test case in a bundle's test tree (bundle_record), as {test, outcome, seconds}. outcome is passed,
     failed, skipped, expected failure or unmeasured, the last with its reason: a skip that says it could not
@@ -345,7 +363,9 @@ def test_cases(record, activity_timings=None):
         except (KeyError, TypeError, ValueError): seconds = None
         case = {"test": node.get("nodeIdentifier") or "/".join([*path, name]),
                 "outcome": OUTCOMES.get(node.get("result"), "unmeasured"), "seconds": seconds}
-        reason = skip_reason(node) if case["outcome"] == "skipped" else None
+        canceled, reason = case_cancellations(node)
+        if canceled: case["outcome"] = "skipped"
+        if case["outcome"] == "skipped": reason = skip_reason(node) or reason
         if reason is not None: case["outcome"] = "unmeasured"
         if case["outcome"] == "unmeasured": case["reason"] = reason or f"the bundle gives its result as {node.get('result')!r}"
         if issues := list(issue_messages(node)):
@@ -623,21 +643,21 @@ class Run:
         console = lane_results.unmeasured_tests(text)
         # The bundle names each skipped XCTest test once, so the console's lines for them would repeat it.
         if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
-        self.tallies[kind] = tally(status, executed, skipped, len(console) + len(from_bundle), failed)
+        unmeasured = [*console, *from_bundle]
+        self.tallies[kind] = tally(status, executed, skipped, len(unmeasured), failed)
         if selection is not None:
             with self.lock: self.seconds.update(suite_seconds(bundle, record))
             # Not "Executed N tests", which a lane would count beside the device's own total.
             self.say(f"SHARD {kind}: status {status}, ran {executed} tests" + (f", {skipped} skipped" if skipped else "")
                      + f" in {seconds}s; log: {log}")
             detail = f"{kind} failed with status {status}" if status != 0 else \
-                f"{kind} ran no tests" if executed == 0 and selection else None
-            return (1 if detail else 0), executed, skipped, [*console, *from_bundle], detail
+                f"{kind} ran no tests" if executed == 0 and selection and not unmeasured else None
+            return (1 if detail else 0), executed, skipped, unmeasured, detail
         if status != 0:
             return self.finish(kind, 1, f"the tests failed with status {status}, {counted}", log, seconds)
-        if executed == 0:
-            # A filter that selects nothing, or only tests that skip, passes xcodebuild and establishes nothing.
+        if executed == 0 and not unmeasured:
+            # A filter that selects nothing, or only ordinary skips, passes xcodebuild and establishes nothing.
             return self.finish(kind, 1, f"no tests ran ({counted})", log, seconds)
-        unmeasured = [*console, *from_bundle]
         # The wrapper's "Executed N tests" is what a lane counts: the device's own totals are in its log.
         self.finish(kind, lane_results.UNMEASURED if unmeasured else 0, counted, log, seconds)
         if unmeasured: self.say(*unmeasured)
@@ -753,20 +773,26 @@ def bundle_results(bundle, kind, record=None):
     """(executed, skipped, unmeasured lines) as a result bundle records them, or None when xcresulttool
     cannot read it. Once parallel testing is on, xcodebuild's console prints each test's outcome but
     no totals and no skip reason (Xcode 27.2, 2026-10-31), so the bundle is what counts, either way.
-    Each skip whose message begins "Test skipped - Unmeasured:" is a line lane_results.UNMEASURED_TEST
-    reads, naming the device and the test. record is the bundle's (bundle_record) when read already."""
+    A passing Swift Testing test with canceled cases is counted as one skip even though the bundle
+    summary considers it a pass. Unmeasured skips produce the lines lane_results.UNMEASURED_TEST
+    reads, naming the device and test. record is the bundle's (bundle_record) when read already."""
     record = record if record is not None else bundle_record(bundle)
     if record is None: return None
     summary, tests = record
+    try: total, skipped = int(summary["totalTestCount"]), int(summary["skippedTests"])
+    except (KeyError, TypeError, ValueError): return None
     unmeasured = []
     def walk(node, test=None):
-        if node.get("nodeType") == "Test Case": test = node.get("nodeIdentifier") or node.get("name")
+        nonlocal skipped
+        if node.get("nodeType") == "Test Case":
+            test = node.get("nodeIdentifier") or node.get("name")
+            canceled, reason = case_cancellations(node)
+            if canceled and node.get("result") == "Passed": skipped += 1
+            if reason is not None: unmeasured.append(f"{kind}: -[{test}] : {UNMEASURED_SKIP} {reason}")
         if node.get("nodeType") == "Skip Message" and UNMEASURED_SKIP in node.get("name", ""):
             unmeasured.append(f"{kind}: -[{test}] : {node['name'][node['name'].index('Test skipped'):]}")
         for child in node.get("children", []): walk(child, test)
     for node in tests.get("testNodes", []): walk(node)
-    try: total, skipped = int(summary["totalTestCount"]), int(summary["skippedTests"])
-    except (KeyError, TypeError, ValueError): return None
     return total - skipped, skipped, list(dict.fromkeys(unmeasured))
 
 

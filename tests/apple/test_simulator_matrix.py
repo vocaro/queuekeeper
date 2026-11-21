@@ -232,7 +232,10 @@ XCODEBUILD = textwrap.dedent("""\
         if kind in os.environ.get("FAKE_UNMUTED", ""): time.sleep(3)
     skipped = os.environ.get("FAKE_SKIPPED", "0") if kind in os.environ.get("FAKE_SKIPPED_ON", "") else "0"
     unmeasured = kind in os.environ.get("FAKE_UNMEASURED", "") or at_run("FAKE_UNMEASURED_RUN")
-    if os.environ.get("FAKE_BUNDLE"):
+    if captured := os.environ.get("FAKE_BUNDLE_RECORD"):
+        for view, record in zip(("summary", "tests"), json.loads(captured)):
+            (bundle / f"{view}.json").write_text(json.dumps(record))
+    elif os.environ.get("FAKE_BUNDLE"):
         # The bundle's own record: three tests, testA skipped, unmeasured when asked.
         skip = {"name": "Test skipped - Unmeasured: the host was busy" if unmeasured else "Test skipped - planted",
                 "nodeType": "Skip Message"}
@@ -1120,6 +1123,43 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(lane_results.unmeasured_tests(output),
                          ["iPad-Air-13-inch-M4: -[T/testA()] : Test skipped - Unmeasured: the host was busy"])
         self.assertIn("PASS iPhone-17-Pro", output)
+
+    def test_parameterized_cancellations_count_once_per_test_even_when_no_tests_ran(self):
+        # Xcode 27.2 keeps each cancellation as a Skip Message under an Arguments node. Its
+        # top-level total omits partial skips even though those cases have a Skipped result.
+        def case(name, result, *messages):
+            children = [{"nodeType": "Arguments", "result": "Skipped",
+                         "children": [{"nodeType": "Skip Message", "name": message}]} for message in messages]
+            return {"nodeType": "Test Case", "nodeIdentifier": name, "result": result, "children": children}
+
+        busy = case("partlyBusy(n:)", "Passed", "Test case cancelled: Unmeasured: first case",
+                    "Test case cancelled: Unmeasured: second case")
+        optional = case("partlyOptional(n:)", "Passed", "Test case cancelled")
+        all_canceled = case("allCanceled(n:)", "Skipped", "Test case cancelled: Unmeasured: all cases")
+        failure = case("failed(n:)", "Failed", "Test case cancelled: Unmeasured: a case in a failed test")
+        summary = {"totalTestCount": 4, "skippedTests": 1, "failedTests": 1}
+        record = (summary, {"testNodes": [busy, optional, all_canceled, failure]})
+        outcomes = matrix.test_cases(record)
+        self.assertEqual([test["outcome"] for test in outcomes], ["unmeasured", "skipped", "unmeasured", "failed"])
+        self.assertEqual(matrix.bundle_results(None, "device", record), (1, 3, [
+            "device: -[partlyBusy(n:)] : Test skipped - Unmeasured: first case",
+            "device: -[allCanceled(n:)] : Test skipped - Unmeasured: all cases",
+        ]))
+
+        results = self.root / "lane-results"
+        status, output = self.run_series("--workers", "2", FAKE_BUNDLE_RECORD=json.dumps((
+            {"totalTestCount": 3, "skippedTests": 1, "failedTests": 0},
+            {"testNodes": [busy, optional, all_canceled]})), QUEUEKEEPER_RESULTS_DIR=str(results))
+        self.assertEqual(status, lane_results.UNMEASURED, output)
+        self.assertIn("UNMEASURED iPhone-17-Pro: Executed 0 tests, 3 skipped", output)
+        self.assertEqual(lane_results.executed_tests(output), 0, output)
+        self.assertEqual(lane_results.skipped_tests(output), 3, output)
+        self.assertEqual(lane_results.unmeasured_tests(output), [
+            "iPhone-17-Pro: -[partlyBusy(n:)] : Test skipped - Unmeasured: first case",
+            "iPhone-17-Pro: -[allCanceled(n:)] : Test skipped - Unmeasured: all cases",
+        ])
+        kept = json.loads((results / matrix.KEPT / "iPhone-17-Pro.json").read_text())
+        self.assertEqual([test["outcome"] for test in kept["tests"]], ["unmeasured", "skipped", "unmeasured"])
 
     def test_with_parallel_workers_and_no_readable_bundle_no_test_counts(self):
         # The console's per-test lines are not a count: a run whose bundle cannot be read establishes nothing.

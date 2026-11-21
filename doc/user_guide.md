@@ -1195,8 +1195,9 @@ test too; only its event stream records the cancellation. `qk xctest` reads each
 process's event stream and prints, after its output, a line for each test with a canceled case,
 `➜ Test NAME was cancelled after S seconds in K of its N test cases: "REASON"`, with a line for each
 case under it. The test counts once as skipped, however many of its cases were canceled, and as
-unmeasured when a case's reason begins `Unmeasured:`. A bare `swift test` lane has no such line,
-so it counts a canceled case as passed.
+unmeasured when a case's reason begins `Unmeasured:`. Use `qk xctest` for Swift package lanes
+that rely on parameterized cancellations. A lane that runs `swift test` directly only has its
+console output for counting, which reports those cases as passed.
 
 #### `qk simulator-tests`
 
@@ -1216,8 +1217,10 @@ qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
   its command with `--`, so `qk run LANE -- -only-testing:T/C` lands there.
 - `-C DIRECTORY`, `--xcode-project` or `--workspace` say where the scheme is; `--setting NAME=VALUE`
   adds a build setting. `--build-only` builds and tests nothing, to warm a build a later run reuses.
-- Counts come from each device's result bundle. A device that ran no test, or whose every test
-  skipped, fails. Read or copy the bundles before the next run with the same `--logs` folder.
+- Counts come from each device's result bundle. A passing Swift Testing test with canceled
+  parameterized cases counts once as skipped, or as unmeasured if a case's reason begins
+  `Unmeasured:`. A device that ran no test or reported only ordinary skips fails. Read or copy
+  the bundles before the next run with the same `--logs` folder.
 - One run at a time uses a `--derived-data` and `--logs` folder; another waits and prints `WAIT:`.
 - `--jobs N` tests N devices at a time. `--workers N` turns on xcodebuild's parallel testing on
   each device; leave it off until a suite has been shown to pass with it. `--shards N` instead
