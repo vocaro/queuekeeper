@@ -3312,6 +3312,13 @@ Common holds:
 
 ### A queue that looks stuck
 
+After a crash or restart, run `qk queue status` from the project. If entries are waiting or
+still marked `testing` and there is no worker, check for a hold. If there is no hold, run
+`qk queue resume`. It can say `worker not needed` before the new worker takes the lock, so check
+`qk queue status` again. The worker recovers interrupted entries from the saved queue, and
+`qk queue wait ID` follows the original entry to its result. See [State and
+recovery](developer_guide.md#state-and-recovery) for how the worker handles each saved state.
+
 - **`qk queue doctor`** reads the queue's records and says whether it is testing or stuck, and
   what would unstick it. It names a gate that has waited 15 minutes for admission and what holds
   the slots, and any Mac short of memory with its largest processes. It stops nothing itself.
