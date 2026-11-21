@@ -2106,10 +2106,11 @@ Other commands, such as `qk doctor` and `qk admit`, load the folder as it stands
 - **Testing a newer commit of the folder.** `qk run --sibling FOLDER=WHERE LANE` pins it at a
   commit or a checkout's path instead. A commit no branch of the origin holds runs on this Mac
   only. A change that needs an unlanded folder change is two landings, the folder's first.
-- **Another Mac needs its own checkout** of each folder, a `git clone` of the same origin into
-  `~/Development/FOLDER` there; `qk doctor` and `qk remote setup` name the clone. Without it, or
-  when that Mac cannot fetch the commit, the lane ends with exit 70, `queuekeeper: could not
-  start:`, and the queue holds for the owner.
+- **Another Mac needs its own checkout** of each folder before you list the plugin in
+  `queuekeeper.json`. Clone the same origin into `~/Development/FOLDER` on that Mac.
+  `qk doctor` and `qk remote setup` name the clone. Without that checkout, or when the Mac
+  cannot fetch the commit, the lane ends with exit 70, `queuekeeper: could not start:`, and the
+  queue holds for the owner.
 - **A pin set that does not start** in the project is not adopted: the queue keeps the last set
   that worked, and with none it holds.
 
