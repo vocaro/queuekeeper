@@ -480,6 +480,21 @@ class Waits(Named):
                 self.assertEqual(remote.overflow(offered, admit, timeout=60), "admitted here")
             self.assertEqual(renewed, expected)
 
+    def test_a_waiting_whole_host_lane_dispatches_only_when_a_mac_has_room(self):
+        send = Mock(side_effect=[remote.Busy("no room"), 0])
+        offered = remote.Offer("gate", "`qk run --here gate`", send, whole_host=True, hosts=("fake",))
+        places = Mock()
+        places.offering = contextlib.nullcontext
+        with self.choosing(True), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=[{"free": False}, {"free": False}, {"free": True}]) as probe, \
+                patch.object(remote.offload_host, "capacity", return_value={"free": False}), \
+                patch.object(remote, "places_for", return_value=places), contextlib.redirect_stderr(StringIO()):
+            offered.make()
+            self.assertEqual(send.call_count, 1)
+            self.assertEqual(remote.overflow(offered, lambda seconds: None), 0)
+        self.assertEqual(probe.call_count, 3, "a still-busy reading must not dispatch the work")
+        self.assertEqual(send.call_count, 2)
+
     def test_a_place_held_on_a_mac_a_probe_then_missed_is_given_up(self):
         places = remote.Places("gate", "test", "Example gate", time.time(), ("mini", "studio"), every=0)
         holders = {"mini": Mock(), "studio": Mock()}

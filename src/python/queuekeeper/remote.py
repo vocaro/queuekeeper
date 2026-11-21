@@ -3326,7 +3326,7 @@ class Offer:
         return spare(reading, mac, self.whole_host, self.exclusive, self.screen, self.model, self.labels,
                      self.foreground)
 
-    def attempt(self):
+    def attempt(self, *, skip_busy=False):
         """Offer the work once: its status on the Mac that took it, or Busy, Unreachable or Unavailable raised when
         none did.
 
@@ -3338,7 +3338,9 @@ class Offer:
         is passed over for the next. This took the place of "another Mac first, this Mac when no other has room"
         (the owner's decision, 2026-11-17, vocaro/queuekeeper#211): each Mac's limit says how much it is to be loaded,
         and no rule names a Mac. When no Mac has spare capacity, the work goes to whichever admits it first, the
-        first Mac reached asked first, as before the choice existed. Every Mac is for work: a session uses one with
+        first Mac reached asked first, as before the choice existed. With skip_busy, the work already has the right
+        to wait on other Macs through Places, so rechecking capacity sends nothing to a Mac that reads full.
+        Every Mac is for work: a session uses one with
         capacity and never asks the owner which (vocaro-engineering#168). A Mac whose configuration stops the work
         stops it (Misconfigured), and so does this process's loss of the local network. An offer that never runs here,
         to a farm of one Mac, reads no capacity."""
@@ -3420,6 +3422,7 @@ class Offer:
                     said.append(self.words(error))
             if full:
                 if self.choosing: said.append(here)
+                if skip_busy: raise Loaded("; ".join(said))
                 host = full[0]
                 if self.neither != tuple(said):
                     print(f"queuekeeper: no Mac has spare capacity for {self.name} "
@@ -3507,7 +3510,7 @@ class Offer:
         self.busy, self.status = None, MISCONFIGURED
         return MISCONFIGURED
 
-    def again(self):
+    def again(self, *, skip_busy=False):
         """Offer the work to another Mac once more, while it was busy: its status when it ran there,
         MISCONFIGURED when another Mac's configuration stopped it, or None while another Mac is
         still busy or cannot be reached, and from then on when it can no longer take the work. A second
@@ -3519,7 +3522,7 @@ class Offer:
         meanwhile (lost_access)."""
         if self.busy is None: return None
         try:
-            self.status = self.attempt()
+            self.status = self.attempt(skip_busy=skip_busy)
             self.busy = self.away = None
             self.failed, self.failed_at = 0, None
             return self.status
@@ -3864,7 +3867,7 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
             place = getattr(offered, "place", None)
             with place.kept(lambda: lane_wait.taken_there() is False) if place is not None else contextlib.nullcontext(), \
                     places.offering() if places is not None else contextlib.nullcontext():
-                status = offered.again()
+                status = offered.again(skip_busy=places is not None)
             if status is not None: return status
             window = min(max(2 * window, OVERFLOW_WAIT), OVERFLOW_WAIT_MAX)
     finally:
