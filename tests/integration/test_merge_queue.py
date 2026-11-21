@@ -7268,7 +7268,7 @@ class ToolkitCopy(Fixture):
                               f"gate stacked on {head[:12]} with the toolkit at {'0' * 12} that gated it", said.getvalue())
                 # The adopted round gates the stack with nothing stacked on it.
                 worker.stacked = SimpleNamespace(base=head, tip=head, entries=[], paths=set(), lanes=["gate"],
-                                                 name="n", runner=worker, wait=None, drop=Mock(),
+                                                 name="n", runner=worker, wait=None, drop=Mock(), isolating=False,
                                                  not_admitted=lambda: True, void=lambda: "no verdict")
                 with patch.object(mq, "config_at", return_value={"lanes": {"gate": {}}}), \
                         patch.object(mq, "lanes_of", return_value=["gate"]), patch.object(worker, "begun"), \
@@ -11438,6 +11438,72 @@ class PooledStack(Fixture):
                 self.assertEqual(runner.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
             worker.pending = None
 
+    def test_an_isolation_stack_uses_main_and_leaves_every_suspect_to_the_bisect(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.suspects = 2
+        worker.lane_now = ("gate", time.time(), ())
+        waiting = [{"id": "older", "state": mq.TESTING}, {"id": "newer", "state": mq.QUEUED},
+                   {"id": "fresh", "state": mq.QUEUED}]
+        config = {"lanes": {"gate": {"resource": "heavy"}}}
+        for mac, where, excluded in [
+            (mq.lane_wait.HERE, ("--offload-only",), None),
+            (mq.lane_wait.farm_mac("build-host"), ("--if-free",), "build-host"),
+        ]:
+            record = {"mac": mac, "kind": None, "pid": os.getpid(), "admitted": True}
+            with self.subTest(mac=mac), farm_fixture.only("build-host"), \
+                    patch.object(worker.queue, "waiting", return_value=waiting), \
+                    patch.object(mq.lane_wait, "current", return_value=record), \
+                    patch.object(mq.remote, "capacity_there", return_value=ROOMY), \
+                    patch.object(mq.offload_host, "capacity", return_value=ROOMY), patch.object(mq, "Stack") as stack:
+                worker.stack(worker, config, ["gate"], "base", waiting[:1], threading.Event(), set(), isolating=True)
+                stack.assert_called_once()
+                _, runner, entries, base, _lanes, options = stack.call_args.args
+                self.assertEqual((entries, base, options), (waiting[2:], "base", where))
+                self.assertEqual(stack.call_args.kwargs["below"], ())
+                self.assertTrue(stack.call_args.kwargs["isolating"])
+                self.assertEqual(runner.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
+            worker.pending = None
+
+    def test_a_finished_isolation_stack_can_only_be_adopted_on_the_same_base_with_nothing_older(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        base = mq.text(self.repo, "rev-parse", mq.MAIN)
+        fresh = {"id": "new", "state": mq.QUEUED}
+        for limit, waiting, stacked_base, kept in [
+            (1, [fresh], base, False),
+            (None, [{"id": "older", "state": mq.QUEUED}, fresh], base, False),
+            (None, [fresh], "old-base", False),
+            (None, [{**fresh, "state": mq.TESTING}], base, True),
+        ]:
+            with self.subTest(limit=limit, waiting=waiting, stacked_base=stacked_base), \
+                    patch.object(worker.queue, "waiting", return_value=waiting):
+                stack = Mock(entries=[fresh], base=stacked_base)
+                stack.void.return_value = stack.stale.return_value = None
+                worker.limit, worker.pending, worker.stacked = limit, stack, None
+                worker.after_isolation_stack()
+                self.assertIsNone(worker.pending)
+                self.assertIs(worker.stacked, stack if kept else None)
+                self.assertEqual(stack.drop.call_count, 0 if kept else 1)
+
+    def test_the_next_isolation_check_does_not_wait_for_the_stacks_verdict(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        stack, started = Mock(), threading.Event()
+        stack.done.return_value = False
+
+        def start(*args, **kwargs):
+            worker.pending = stack
+            started.set()
+
+        def gate():
+            self.assertTrue(started.wait(stretched(5)))
+            return 1, None
+
+        with patch.object(worker, "stack", side_effect=start), patch.object(worker, "docs_beside"), \
+                patch.object(mq, "STACK_POLL", 0.01):
+            self.assertEqual(worker.watched(worker, {}, ["gate"], "main", "bisect-tip", [], gate, isolating=True),
+                             (1, None))
+        self.assertIsNone(worker.pending)
+        stack.drop.assert_called_once_with("the bisect's gate ended and its next checks take precedence")
+
     def stacked(self, mac, busy, said=None, clock=100):
         """(Stack's mock, the worker's log, its stack_retry_after) of one look at a stack, the batch admitted on mac,
         the farm build-host, gate-03 and gate-04, and busy the farm Macs and this Mac (None) that have no room."""
@@ -11624,6 +11690,32 @@ class Stacked(Fixture):
         self.assertEqual(run(self.repo, "git", "rev-parse", f"{b['landedAs']}^"), self.state(first)["landedAs"])
         self.assertEqual(b["gatedOn"], self.state(first)["landedAs"])
         self.assertLessEqual({"hold", "b"}, self.main_files())
+
+    def test_a_stack_beside_a_serial_bisect_can_land_after_the_last_suspect_is_sent_back(self):
+        self.commit("bad-a", "a")
+        (self.repo / "hold").touch()
+        run(self.repo, "git", "add", "hold")
+        run(self.repo, "git", "commit", "-qm", "Hold the suspect gate until the stack finishes")
+        self.commit("b", "b")
+        [first] = self.add("a")
+        base = mq.text(self.repo, "rev-parse", mq.MAIN)
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.limit = worker.suspects = 1
+
+        def work():
+            self.assertTrue(worker.round())
+            self.assertIsNotNone(worker.stacked, "the stack should be ready after the last suspect fails")
+            self.assertTrue(worker.round())
+            return 0
+
+        with patch.object(self, "work", side_effect=work):
+            log = self.worked("b", lambda _log: worker.pending is not None and worker.pending.done())
+        b = self.added("b")
+        self.assertEqual((self.state(first)["state"], b["state"]), (mq.FAILED, mq.LANDED), log)
+        self.assertEqual((self.gates(), b["gatedOn"]), (2, base), log)
+        self.assertIn("whose gate began while the prior batch was being isolated", log)
+        self.assertIn("b", self.main_files())
+        self.assertNotIn("hold", self.main_files())
 
     def test_a_stacked_gate_lands_what_arrived_before_the_queue_closed_and_a_later_entry_is_refused(self):
         """vocaro/queuekeeper#32: closing the queue while a stacked gate runs leaves that gate and its entry as they

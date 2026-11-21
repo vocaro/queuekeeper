@@ -6235,8 +6235,9 @@ class Worker:
         self.checks = quick_lanes(config, code=not docs)
         if beside: beside.checks = self.checks
         self.begun(round_name, head, base, applied, beside)
-        # A bisect's gates, and the gate of an entry qk land --front put on its own, stack nothing, but docs entries
-        # still land beside them (docs_beside, #394).
+        # Docs entries can land beside these gates (docs_beside, #394). A bisect with only one gate can also test
+        # later entries against main while that gate runs, provided no companion probe needs the other checkout.
+        isolating = False
         if beside:
             result, log = self.watched(self, config, lanes, base, head, [*applied, *beside.newer],
                                        lambda: beside.both(self, lanes, round_name), stacks=False)
@@ -6244,8 +6245,11 @@ class Worker:
             # A bisect's lone entry gates on the main before the bisect's landings too, beside its own gate, for
             # whether it fails only with them (vocaro/queuekeeper#263).
             self.early = self.beforehand(config, applied, base, lanes)
+            isolating = bool(self.limit and not self.alone and not self.early)
+            self.lane_now = None
             try: result, log = self.watched(self, config, lanes, base, head, applied,
-                                            lambda: self.gate(lanes, round_name, **only), stacks=False)
+                                            lambda: self.gate(lanes, round_name, **only), stacks=isolating,
+                                            isolating=isolating)
             except BaseException:
                 if self.early: self.early.finish(False)
                 raise
@@ -6261,7 +6265,8 @@ class Worker:
         if not beside:
             if self.back_in_line(applied, result): return True
             outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name)
-            self.after_stack(outcome, self, config)
+            if isolating: self.after_isolation_stack()
+            else: self.after_stack(outcome, self, config)
             return True
         flakes, searched = None, False
         # The flakes either half's rerun finds before the round knows whether the search runs say what became of the
@@ -6699,10 +6704,11 @@ class Worker:
         except ValueError as error:
             stacked.drop(f"main's configuration at {base[:12]} cannot be read: {error}")
             return True
-        # Docs entries that landed beside the gates since leave its result standing, which its push carries over.
-        if base != stacked.base and not self.docs_between(config, stacked.entries, stacked.base, base):
-            stacked.drop(f"origin/main is {base[:12]}, not the tip {stacked.base[:12]} it was gated on")
-            return True
+        if base != stacked.base:
+            # An ordinary stack can carry docs entries over. One started during isolation needs the same base.
+            if stacked.isolating or not self.docs_between(config, stacked.entries, stacked.base, base):
+                stacked.drop(f"origin/main is {base[:12]}, not the tip {stacked.base[:12]} it was gated on")
+                return True
         if lanes != stacked.lanes:
             stacked.drop(f"main at {base[:12]} names the lanes {', '.join(lanes)}, not those it ran")
             return True
@@ -6710,8 +6716,10 @@ class Worker:
         base = stacked.base
         applied = [self.queue.read(entry["id"]) or entry for entry in stacked.entries]
         self.alone = self.ungating = False
+        started = ("while the prior batch was being isolated" if stacked.isolating else
+                   "on top of the batch that just landed")
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {stacked.tip[:12]} on "
-                 f"{base[:12]}, whose gate began on top of the batch that just landed")
+                 f"{base[:12]}, whose gate began {started}")
         self.begun(stacked.name, stacked.tip, base, applied, adopted=True)
         # A worker that put off its move (lagging) stacks nothing, so that the next round moves with nothing to drop.
         result, log = self.watched(stacked.runner, config, lanes, base, stacked.tip, applied, stacked.wait,
@@ -6727,11 +6735,11 @@ class Worker:
         self.after_stack(outcome, stacked.runner, config)
         return True
 
-    def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True):
+    def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True, isolating=False):
         """gate(), the lanes of applied at head in runner's checkout, while a thread looks every STACK_POLL for
         entries that arrive behind them: docs-only entries it lands beside the gate (docs_beside), and, unless stacks
-        is false, as for a bisect's gates, the others it gates stacked on head in the other checkout, on another Mac
-        (stack), which after_stack keeps or throws away."""
+        is false, the others it gates stacked on head in the other checkout, on another Mac (stack). During a
+        serial bisect the stack runs on base and is stopped before it can compete with a rerun or the next probe."""
         self.pending = None
         self.stack_retry_after = 0
         stop, said = threading.Event(), set()
@@ -6746,7 +6754,8 @@ class Worker:
                         self.say(f"no docs entry lands beside the gate of {head[:12]}: {error}")
                         docs = False
                 if stacks:
-                    try: self.stack(runner, config, lanes, head, applied, stop, said)
+                    try: self.stack(runner, config, lanes, base if isolating else head, applied, stop, said,
+                                    isolating=isolating)
                     except Exception as error:  # a stacked gate is a saving, never the round's verdict
                         self.say(f"no gate stacked on {head[:12]}: {error}")
                         stacks = False
@@ -6756,8 +6765,10 @@ class Worker:
         finally:
             stop.set()
             thread.join()
+            if isolating and self.pending is not None and not self.pending.done():
+                self.drop_stacked("the bisect's gate ended and its next checks take precedence")
 
-    def stack(self, runner, config, lanes, head, applied, stop, said):
+    def stack(self, runner, config, lanes, head, applied, stop, said, *, isolating=False):
         """Start self.pending, the waiting entries not in applied, the batch at head, gated stacked on head, when
         there are any and none is pending: on any Mac but the one running the primary's final lane (admitted_mac,
         apart), in the other checkout. One that gave no verdict or stopped when an entry left the queue is thrown
@@ -6775,6 +6786,7 @@ class Worker:
         ids = {entry["id"] for entry in applied}
         waiting = self.queue.waiting()
         if not ids <= {entry["id"] for entry in waiting}: return
+        if isolating: ids.update(entry["id"] for entry in waiting[:self.suspects])
         fresh = [entry for entry in waiting if entry["id"] not in ids]
         if not fresh or any(entry.get("front") or entry.get("noGate") or entry["state"] != QUEUED for entry in fresh):
             return
@@ -6788,9 +6800,15 @@ class Worker:
         lanes = lanes_of(config, paths)
         hosts = farm.destinations()
         # A foreground lane goes to a Mac marked for it, outside this placement, once the farm has Macs to choose among.
-        if len(hosts) > 1 and any(config.get("lanes", {}).get(lane, {}).get("foreground") for lane in lanes): return
-        # Any Mac but the batch's, this Mac among them, waiting for one as any gate does (apart).
-        placed = apart(mac, hosts, waits=True)
+        settings = config.get("lanes", {})
+        if (isolating or len(hosts) > 1) and any(settings.get(lane, {}).get("foreground") for lane in lanes): return
+        checks = quick_lanes(config, code=True)
+        if isolating:
+            # A plugin can choose its own hosts before qk run applies the queue's exclusion. Quick checks run here.
+            if any(lane in settings and plugins.placement(settings, lane) for lane in lanes): return
+            if mac == HERE_MAC and checks.intersection(lanes): return
+        # Any Mac but the batch's, this Mac among them. Isolation never waits for admission.
+        placed = apart(mac, hosts, waits=not isolating)
         if placed is None: return
         where, excluded, said_where = placed
         # A lane that runs only on this Mac cannot leave it, and the batch gates here.
@@ -6810,8 +6828,9 @@ class Worker:
         other = Beside(self, self.queue.checkout if runner.checkout != self.queue.checkout else None, "stacked",
                        settles=False)
         if excluded is not None: other.environment = {**other.environment, remote.QUEUE_GATE_EXCLUDE: excluded}
-        other.checks = quick_lanes(config, code=True)
-        stacked = Stack(self, other, fresh, head, lanes, where, below=applied, paths=paths, said_where=said_where)
+        other.checks = checks
+        stacked = Stack(self, other, fresh, head, lanes, where, below=() if isolating else applied, paths=paths,
+                        said_where=said_where, isolating=isolating)
         if not stop.is_set() and stacked.begin(): self.pending = stacked
 
     def stack_room(self, hosts, excluded, where, lanes, lane):
@@ -6866,6 +6885,23 @@ class Worker:
             self.stacked = pending
         else:
             pending.drop("the batch below it did not land at the tip it was stacked on")
+
+    def after_isolation_stack(self):
+        """Keep a finished stack only on unchanged main once every older suspect has settled."""
+        pending, self.pending = self.pending, None
+        if pending is None: return
+        waiting = self.queue.waiting()
+        ids = [entry["id"] for entry in pending.entries]
+        first = [entry["id"] for entry in waiting[:len(ids)]]
+        if why := pending.void() or pending.stale(waiting):
+            pending.drop(why)
+        elif self.limit or self.queue.held() or first != ids:
+            pending.drop("older entries still have to settle")
+        elif text(self.queue.main_checkout, "rev-parse", MAIN) != pending.base:
+            pending.drop("origin/main moved during the bisect")
+        else:
+            self.say(f"the gate stacked on {pending.base[:12]} goes on as the next round, as the bisect left main there")
+            self.stacked = pending
 
     def drop_stacked(self, why):
         """Throw away every stacked gate, its entries queued again: before the worker moves or stops."""
@@ -7911,14 +7947,17 @@ class Stack:
     """Entries that arrived while a batch gates, gated stacked on its tip, head, in runner's checkout, on a Mac other
     than the batch's (where, with said_where its words; apart), in a thread of their own (owner's decision of
     2026-11-07, vocaro-engineering#241). The batch's push
-    makes head origin/main, and then the next round adopts the stacked gate as its own (Worker.adopted); any other
-    outcome throws it away (drop), canceling its lanes, with its entries queued again. It settles nothing itself."""
+    makes head origin/main, and then the next round adopts the stacked gate as its own (Worker.adopted). During a
+    serial bisect it gates on origin/main itself and survives only when the bisect ends without moving main and
+    the stack has already finished. Otherwise it is thrown away (drop), with its entries queued again. It settles
+    nothing itself."""
     def __init__(self, worker, runner, entries, base, lanes, where, below=(), paths=(),
-                 said_where="on another Mac if it can start them now"):
+                 said_where="on another Mac if it can start them now", isolating=False):
         self.worker, self.runner, self.entries, self.base, self.lanes = worker, runner, entries, base, lanes
         self.paths = set(paths)  # what entries change, by which lanes_of chose lanes and adopted checks them
         self.where, self.said_where, self.tip, self.name = where, said_where, None, None
         self.below = list(below)  # the batch whose tip base is, which a conflict names (Worker.conflict)
+        self.isolating = isolating
         self.cancel, self.box, self.thread = threading.Event(), {}, None
 
     def begin(self):
