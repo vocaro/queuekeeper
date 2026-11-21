@@ -57,8 +57,9 @@ takes it out again.
 
 ### Configure a project
 
-Queuekeeper reads `queuekeeper.json` at the root of each project. The smallest useful file names
-one lane, `gate`, the command every change must pass:
+Queuekeeper reads `queuekeeper.json` at the root of each project. Add `.build/queuekeeper/` to
+`.gitignore` to keep Queuekeeper's logs and receipts out of version control. The smallest useful
+configuration names one lane, `gate`, the command every change must pass:
 
 ```json queuekeeper.json
 {

@@ -7,8 +7,8 @@ and permissions that stop a test run on a Mac nobody is watching.
 It is optional, and the core runs without it. It builds on the
 [mobile plugin](../../../mobile/src/queuekeeper_mobile/README.md), which holds the device record, bounded runs and
 the device pass it shares with the [Android plugin](../../../android/src/queuekeeper_android/README.md), and on the
-[Mac desktop plugin](../mac_desktop/README.md). A project that lists the Apple plugin gets both. It was
-developed against Xcode 27.2, iOS 27 simulators
+[Mac desktop plugin](../../../mac-desktop/src/queuekeeper_mac_desktop/README.md). A project that
+lists the Apple plugin gets both. The plugin was developed against Xcode 27.2, iOS 27 simulators
 and macOS 27, and parts of it depend on behavior Apple does not document, which a new release can
 break.
 
@@ -21,10 +21,11 @@ one another agent is using. The pool gives each run its own.
   reserves a free member of that kind, or creates one, and prints its identifier. Reservations go
   through one locked record per Mac, so two agents cannot take the same simulator. `check` refuses
   any simulator outside the pool.
-- **Warmed templates.** A new simulator's first boot is slow, and its first query for system voices
-  took 285 to 344 seconds in measurements, and far longer under load. The pool warms one template
-  per kind and resets each member by copying the template's data with APFS clones. Copying a 2.2 GB
-  template took 0.24 seconds, and clones answered the voice query in 11 to 13 seconds.
+- **Warmed templates.** The pool warms one template per kind and resets each member by copying the
+  template's data with APFS clones. In earlier measurements, the first system voice query in an
+  Xcode clone of a freshly erased simulator took 285 to 344 seconds on a quiet Mac and far longer
+  under load. Clones of a warmed template answered in 11 to 13 seconds. In a November 2026
+  measurement, cloning a 2.2 GB template on APFS took 0.24 seconds.
 - **Cleaning up.** A simulator left booted with no live reservation is shut down after two hours.
   Members unused for an hour are deleted, except the first of each kind.
 
@@ -112,9 +113,9 @@ they are idle.
 ## Unattended Macs
 
 A UI test on a Mac nobody is watching fails for reasons unrelated to the code. The
-[Mac desktop plugin](../mac_desktop/README.md) handles the ones that have nothing to do with Xcode: it
-reserves the Mac's foreground for one run at a time, clears crash alerts and notification banners,
-keeps the login keychain unlocked, and tracks screen-capture approvals.
+[Mac desktop plugin](../../../mac-desktop/src/queuekeeper_mac_desktop/README.md) handles failures
+outside Xcode. It reserves the Mac's foreground for one run at a time, clears crash alerts and
+notification banners, keeps the login keychain unlocked, and tracks screen-capture approvals.
 
 The Apple plugin adds two of its own:
 
