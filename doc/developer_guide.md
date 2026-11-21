@@ -1968,10 +1968,11 @@ it off: a project fixes its own hits before turning it on.
 
 ### Changing Queuekeeper while work runs
 
-- **Edit only in a linked worktree.** Do not edit, commit in or move the main checkout while a lane
-  is dispatched from it. A dispatch sends a snapshot of the checkout's tree, and a run that finds
-  the tree changed since does not run. Land through Queuekeeper's own queue, which moves the main
-  checkout only when nothing runs from it.
+- **Edit only in a linked worktree.** A dispatch to another Mac sends its selected toolkit commit
+  or snapshot. If the sending Mac takes the lane after the toolkit tree moves, it reconstructs the
+  toolkit in a temporary worktree at the recorded revision. The message and receipt identify the
+  revision and changed paths. Land through Queuekeeper's own queue, which moves the main checkout
+  only when nothing runs from it.
 - **Keep the main checkout on `main`.** Every project's launcher loads Queuekeeper from it, so a
   branch there runs that branch's code for every `qk`. When the loaded Queuekeeper is a main
   checkout on another branch, or detached at a commit `main` lacks, every command warns first on
