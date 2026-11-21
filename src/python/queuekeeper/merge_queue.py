@@ -210,6 +210,8 @@ UNGATED = "Landed-without-gate"
 # (`qk run --here`) and the newer never on it (`--offload-only`). The second checkout sits beside the worker's, with
 # this suffix (Beside), and the newer half looks this often for the Mac that admitted the older.
 BESIDE_SUFFIX = "-beside"
+# A completed isolation stack keeps its tree here while later probes reuse both other checkouts.
+ISOLATION_STACK_SUFFIX = "-isolation-stack"
 BESIDE_POLL = 2
 # When both halves of a bisect pass outright, though together they failed, no entry fails alone: the worker gates
 # subsets of them, one at a time in the newer half's checkout, each subset's verdict kept, and drops entries greedily
@@ -6372,9 +6374,13 @@ class Worker:
                                        lambda: self.gate(lanes, round_name, **only))
         self.prune()
         if not beside:
-            if self.back_in_line(applied, result): return True
+            if self.back_in_line(applied, result):
+                self.drop_stacked("an older entry goes first")
+                return True
             outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name)
-            if isolating: self.after_isolation_stack()
+            if self.pending is not None and self.pending.isolating:
+                if result == WITHDRAWN: self.drop_stacked("the gate during isolation was withdrawn")
+                else: self.after_isolation_stack()
             else: self.after_stack(outcome, self, config)
             return True
         flakes, searched = None, False
@@ -6393,13 +6399,16 @@ class Worker:
         finally:
             # together released them already, with what it did, if it ran: these are the flakes of halves that land.
             for half in (self, beside): half.release()
-        if searched: return True
+        if searched:
+            self.after_isolation_stack()
+            return True
         # What passed beside lands at once while the older half bisects on; after the older half's push when both
         # passed, since the older go first when both can (Beside.weigh).
         if not older_passes: beside.weigh(config, base, older_landed=False)
         outcome = self.older(config, applied, base, head, docs, ungated, result, log, round_name, flakes, reran=True)
         if older_passes: beside.weigh(config, base, older_landed=outcome == LANDED)
         self.after_beside(beside, applied, outcome)
+        self.after_isolation_stack()
         return True
 
     def first_landing(self, entry):
@@ -6844,17 +6853,18 @@ class Worker:
         self.after_stack(outcome, stacked.runner, config)
         return True
 
-    def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True, isolating=False):
+    def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True, isolating=False, docs=True):
         """gate(), the lanes of applied at head in runner's checkout, while a thread looks every STACK_POLL for
         entries that arrive behind them: docs-only entries it lands beside the gate (docs_beside), and, unless stacks
         is false, the others it gates stacked on head in the other checkout, on another Mac (stack). During a
-        serial bisect the stack runs on base and is stopped before it can compete with a rerun or the next probe."""
-        self.pending = None
-        self.stack_retry_after = 0
+        serial bisect or joint-failure probe the stack runs on base and is stopped before it can compete with a rerun
+        or the next probe. A finished isolation stack stays pending across probes."""
+        if not isolating:
+            self.pending = None
+            self.stack_retry_after = 0
         stop, said = threading.Event(), set()
         def stacker():
-            nonlocal stacks
-            docs = True
+            nonlocal docs, stacks
             while (docs or stacks) and not stop.wait(STACK_POLL):
                 # Docs entries first, as they land on main and a stacked gate keeps its result over them (after_stack).
                 if docs:
@@ -6934,8 +6944,9 @@ class Worker:
             self.stack_retry_after = time.monotonic() + STACK_ADMISSION_BACKOFF
             return
         said.discard(STACK_ROOMLESS)
-        other = Beside(self, self.queue.checkout if runner.checkout != self.queue.checkout else None, "stacked",
-                       settles=False)
+        checkout = self.queue.checkout if runner.checkout != self.queue.checkout else None
+        if isolating: checkout = self.queue.home / f"{self.queue.main_checkout.name}{ISOLATION_STACK_SUFFIX}"
+        other = Beside(self, checkout, "stacked", settles=False)
         if excluded is not None: other.environment = {**other.environment, remote.QUEUE_GATE_EXCLUDE: excluded}
         other.checks = checks
         stacked = Stack(self, other, fresh, head, lanes, where, below=() if isolating else applied, paths=paths,
@@ -7080,7 +7091,7 @@ class Worker:
         entries = [*older, *beside.newer]
         current = [self.queue.read(entry["id"]) for entry in entries]
         if any(entry is None or entry["state"] not in WAITING for entry in current): return False
-        search = Joint(self, config, base, lanes, entries)
+        search = Joint(self, config, base, lanes, entries, stack_on=base)
         search.known[search.key(older)] = (False, None, {}, None)
         search.known[search.key(beside.newer)] = (False, beside.result[1], {}, None)
         known_flakes = sorted({flake["test"] for flake in [*flakes, *(beside.flakes or [])]})
@@ -7163,7 +7174,8 @@ class Worker:
         except ValueError as error:
             self.say(f"the lanes for {entry['id']} and the entries landed before it cannot be chosen: {error}")
             return None
-        return partners, landed["base"], Joint(self, config, landed["base"], lanes, members, watched=[entry["id"]])
+        return partners, landed["base"], Joint(self, config, landed["base"], lanes, members, watched=[entry["id"]],
+                                               stack_on=base)
 
     def beforehand(self, config, applied, base, lanes):
         """A Beforehand gating applied, a bisect's lone entry, on the main before the bisect's landings, beside the
@@ -7594,11 +7606,13 @@ class Joint:
     bisect's halves are (apart, vocaro/queuekeeper#262); once no other Mac can start the second, the rest go one at a
     time. A probe with no verdict, or stopped, raises Unsettled. account records the search's gates and wall time in
     the round's account, and its events."""
-    def __init__(self, worker, config, base, lanes, entries, watched=None):
+    def __init__(self, worker, config, base, lanes, entries, *, stack_on, watched=None):
         self.worker, self.config, self.base, self.lanes = worker, config, base, lanes
+        self.stack_on = stack_on
         self.order = {entry["id"]: index for index, entry in enumerate(entries)}
         # The entries whose removal from the queue stops a probe (Removal): all of them, but those already landed.
         self.watched = set(self.order) if watched is None else set(watched)
+        self.suspects = [entry for entry in entries if entry["id"] in self.watched]
         # Each subset's verdict, by its entries' IDs: (True when it failed, False when it passed, None when it is no
         # proof; its log; what rejection_facts reads of its gate; the Probe that gated it).
         self.known = {}
@@ -7652,7 +7666,11 @@ class Joint:
                     pending.insert(0, placed[1][1])
                     placed, results = placed[:1], results[:1]
                 else: self.paired += 1
-            else: results = [placed[0][0].gate(self.lanes, names[0])]
+            else:
+                runner, _, head = placed[0]
+                runner.lane_now = None
+                results = [self.worker.watched(runner, self.config, self.lanes, self.stack_on, head, self.suspects,
+                                               lambda: runner.gate(self.lanes, names[0]), isolating=True, docs=False)]
             for (runner, members, head), (result, log), name in zip(placed, results, names):
                 self.probes += 1
                 self.judge(runner, members, head, result, log, name)
@@ -8057,9 +8075,9 @@ class Stack:
     than the batch's (where, with said_where its words; apart), in a thread of their own (owner's decision of
     2026-11-07, vocaro-engineering#241). The batch's push
     makes head origin/main, and then the next round adopts the stacked gate as its own (Worker.adopted). During a
-    serial bisect it gates on origin/main itself and survives only when the bisect ends without moving main and
-    the stack has already finished. Otherwise it is thrown away (drop), with its entries queued again. It settles
-    nothing itself."""
+    serial bisect or joint-failure probe it gates on origin/main itself and survives only when isolation ends
+    without moving main and the stack has already finished. Otherwise it is thrown away (drop), with its entries
+    queued again. It settles nothing itself."""
     def __init__(self, worker, runner, entries, base, lanes, where, below=(), paths=(),
                  said_where="on another Mac if it can start them now", isolating=False):
         self.worker, self.runner, self.entries, self.base, self.lanes = worker, runner, entries, base, lanes

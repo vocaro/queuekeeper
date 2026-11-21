@@ -11591,6 +11591,7 @@ class PooledStack(Fixture):
                 stack.assert_called_once()
                 _, runner, entries, base, _lanes, options = stack.call_args.args
                 self.assertEqual((entries, base, options), (waiting[2:], "base", where))
+                self.assertEqual(runner.checkout, worker.queue.home / f"{self.repo.name}{mq.ISOLATION_STACK_SUFFIX}")
                 self.assertEqual(stack.call_args.kwargs["below"], ())
                 self.assertTrue(stack.call_args.kwargs["isolating"])
                 self.assertEqual(runner.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
@@ -11615,6 +11616,21 @@ class PooledStack(Fixture):
                 self.assertIsNone(worker.pending)
                 self.assertIs(worker.stacked, stack if kept else None)
                 self.assertEqual(stack.drop.call_count, 0 if kept else 1)
+
+    def test_a_kept_isolation_stack_is_discarded_if_main_moves_before_the_next_round(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        base = mq.text(self.repo, "rev-parse", mq.MAIN)
+        fresh = {"id": "new", "state": mq.TESTING}
+        stack = Mock(entries=[fresh], paths={"code"}, base=base, isolating=True)
+        stack.stale.return_value = None
+        worker.stacked = stack
+        moved = self.commit("README.md", "move-main", "# Updated\n")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        with patch.object(worker.queue, "waiting", return_value=[fresh]):
+            self.assertTrue(worker.round())
+        self.assertIsNone(worker.stacked)
+        stack.drop.assert_called_once_with(f"origin/main is {moved[:12]}, not the tip {base[:12]} it was gated on")
+        stack.wait.assert_not_called()
 
     def test_the_next_isolation_check_does_not_wait_for_the_stacks_verdict(self):
         worker = mq.Worker(mq.Queue(self.repo))
@@ -11718,8 +11734,8 @@ class Stacked(Fixture):
         """The lanes of these gates, counted from 1 in the order they started, may end (hold, in LANE)."""
         for number in runs: Path(f"{self.counter}.release.{number}").touch()
 
-    def worked(self, branch, then, *more, checked=True, ends=EVERY_RUN):
-        """The log of a worker whose first gate's lane holds until branch has arrived, as a session's qk land adds
+    def worked(self, branch, then, *more, checked=True, ends=EVERY_RUN, after=1):
+        """The log of a worker whose gate numbered after holds until branch has arrived, as a session's qk land adds
         it, unchecked with no trial integration, as when the batch ahead changes after it (Fixture.add), and then(log)
         is true: only then may the gates numbered in ends finish. No wall-clock wait decides what the round sees, so
         a stalled host only makes it slower (vocaro-engineering#250); PATIENCE ends what a regression would hold."""
@@ -11732,7 +11748,7 @@ class Stacked(Fixture):
                 time.sleep(0.02)
         def drive():
             try:
-                until(lambda: self.gates() >= 1, "first gate's lane started")
+                until(lambda: self.gates() >= after, f"gate {after}'s lane started")
                 with patch.object(mq, "check") if not checked else contextlib.nullcontext():
                     mq.add(self.repo, branch)
                 until(lambda: then(said.getvalue()), f"sign that the worker had looked at {branch}")
@@ -11848,6 +11864,34 @@ class Stacked(Fixture):
         self.assertIn("whose gate began while the prior batch was being isolated", log)
         self.assertIn("b", self.main_files())
         self.assertNotIn("hold", self.main_files())
+
+    def test_a_stack_beside_a_joint_failure_probe_can_land_after_both_suspects_are_sent_back(self):
+        self.commit("left", "left")
+        (self.repo / "hold").touch()
+        run(self.repo, "git", "add", "hold")
+        run(self.repo, "git", "commit", "-qm", "Hold the joint probe until the stack finishes")
+        self.commit("right", "right")
+        self.commit("later", "later")
+        suspects = self.add("left", "right")
+        base = mq.text(self.repo, "rev-parse", mq.MAIN)
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.limit, worker.suspects = 1, 2
+        self.release((1, 2))  # only the probe, after both halves pass, waits for the stack
+
+        def work():
+            self.assertTrue(worker.round())
+            self.assertIsNotNone(worker.stacked, "the stack should be ready after the joint search")
+            self.assertTrue(worker.round())
+            return 0
+
+        with patch.object(self, "work", side_effect=work):
+            log = self.worked("later", lambda _log: worker.pending is not None and worker.pending.done(), after=3)
+        later = self.added("later")
+        self.assertEqual([self.state(entry)["state"] for entry in suspects], [mq.FAILED, mq.FAILED], log)
+        self.assertEqual((later["state"], later["gatedOn"], self.gates()), (mq.LANDED, base, 4), log)
+        self.assertIn("whose gate began while the prior batch was being isolated", log)
+        self.assertIn("later", self.main_files())
+        self.assertTrue({"left", "right", "hold"}.isdisjoint(self.main_files()))
 
     def test_a_stacked_gate_lands_what_arrived_before_the_queue_closed_and_a_later_entry_is_refused(self):
         """vocaro/queuekeeper#32: closing the queue while a stacked gate runs leaves that gate and its entry as they

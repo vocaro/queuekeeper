@@ -376,13 +376,14 @@ this Mac was declined then, so it waits there instead.
 When no Mac admits a stack's next lane, the worker waits two minutes before trying another. A stack settles nothing: an
 entry that conflicts with the batch below waits for its own round.
 
-While a bisect runs one gate with no companion probe, a stack can offer the entries behind all
-its suspects to an available Mac other than the one running that gate. It uses `origin/main`
-without the suspects' commits and does not wait for admission. The worker cancels unfinished
-stacks before starting any further failure checks. A finished stack can become the next round
-once the bisect has settled all older entries and left `origin/main` unchanged. When the base
-moves, the entries run again on the new base. Paired halves and joint-failure probes still
-run without a stack.
+While a bisect runs one gate with no companion probe, or a joint-failure search runs one probe,
+a stack can offer the entries behind all its suspects to an available Mac other than the one
+running that gate. It uses `origin/main` without the suspects' commits and does not wait for
+admission. The worker cancels unfinished stacks before starting any further failure checks. A
+finished stack keeps its tested tree in the `-isolation-stack` checkout while the failure checks
+reuse the other checkouts. It can become the next round once all older entries have settled and
+`origin/main` is still at its tested base. When the base moves, the entries run again on the new
+base. Paired halves and paired probes use both Macs on a two-Mac farm and run without a stack.
 
 **Removal.** The worker looks every `REMOVAL_POLL` (5 s) for an entry that has left a running gate,
 stops that gate's lanes on whichever Mac, freeing admission, and gates the rest with no verdict
