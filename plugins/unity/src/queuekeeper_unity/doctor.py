@@ -4,7 +4,8 @@ the editor without a graphics device.
 
 The sign-in is read with Unity's own command (unity_cli.signed_in), on this Mac only: over SSH the command may not
 read the keychain that holds the session, so another Mac's is not asked. A sign-in that cannot be read is not
-warned of. A run on a Mac that is not signed in ends unmeasured, by its log (licensing.never_started)."""
+warned of. Hub sign-in is advisory. A run whose editor reports a licensing initialization error in place of
+results ends unmeasured (licensing.never_started)."""
 import shlex
 
 from queuekeeper import plugins, farm, remote
@@ -46,8 +47,8 @@ def warnings(root, config):
         found.append(f"Unity {want}, which {project.name} pins, is not installed on this Mac ({editor.HUB / want}): a "
                      "run here takes the newest editor instead, which reimports the Library and rewrites the pin")
     if unity_cli.signed_in() is False:
-        found.append("Unity Hub is not signed in on this Mac, so an editor started here has no license and its run "
-                     "ends unmeasured: sign in with Unity Hub, or `unity auth login`")
+        found.append("Unity Hub is not signed in on this Mac. If the editor gets its license through Hub, sign in "
+                     "with Unity Hub or `unity auth login` before running it")
     for host in farm_macs():
         if installed_there(host, pinned) is not False: continue
         found.append(f"Unity {want}, which {project.name} pins, is not installed on {host} ({editor.HUB / want}): a "
