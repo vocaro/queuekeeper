@@ -651,20 +651,23 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
         if place is not None: place.leave()
 
 
-def offload_wait(root, config, name, extra, expect, exclude, only):
+def offload_wait(root, config, name, extra, expect, exclude, only, *, why="--offload-wait never runs it here"):
     """`qk run --offload-wait`: run lane name on another Mac of the farm, waiting in its queue for admission as a
     lane placed only there does (remote.there_lane), never here. The merge queue's stacked gate runs so while the
     batch below it gates on this Mac: --offload-only gave it one try at another Mac and no wait, and the Mac read
     free when the stack started was often busy a minute later, when its final lane asked (vocaro/queuekeeper#274).
-    Only hosts in only, when given, and never exclude. No Mac to send it to, or none reached, is BUSY: no verdict,
-    which the queue tries again later."""
+    A newer bisect half also uses this mode (#293). With multiple eligible Macs, the lane is offered again while
+    they are busy instead of waiting on a single Mac. Only hosts in only, when given, and never exclude.
+    No Mac to send it to, none reached, or no admission within the bound is BUSY."""
     others = tuple(host for host in (only if only is not None else remote.farm.destinations()) if host != exclude)
     if not others:
-        print(f"queuekeeper: {name} not run: --offload-wait never runs it here, and {remote.NO_MAC}", file=sys.stderr,
+        print(f"queuekeeper: {name} not run: {why}, and {remote.NO_MAC}", file=sys.stderr,
               flush=True)
         return BUSY
     try:
-        return remote.there_lane(root, config, name, extra, expect, "--offload-wait never runs it here", hosts=others)
+        if len(others) > 1:
+            return remote.wait_on_farm(root, config, name, extra, expect, others, lane_label(root, config, name))
+        return remote.there_lane(root, config, name, extra, expect, why, hosts=others)
     except remote.Declined as error:
         return declined_everywhere(name, str(error))
     except remote.Misconfigured as error:
@@ -1412,10 +1415,10 @@ def perform(argv, report):
         f"only if it can start it now, and never run it here: exit {BUSY} when another Mac declines it, cannot be "
         f"reached or none is configured, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status "
         "there; for a caller that holds or will take its own admission here")
-    where.add_argument("--offload-wait", action="store_true", help="send the lane to another Mac and wait there for "
-        f"its admission, as a lane placed only there does, and never run it here: exit {BUSY} when no other Mac can "
+    where.add_argument("--offload-wait", action="store_true", help="wait for another Mac to admit the lane, and "
+        f"never run it here: exit {BUSY} when no other Mac can "
         f"be reached or none is configured, {remote.MISCONFIGURED} when it is misconfigured, else the lane's status "
-        "there; for the merge queue's stacked gate while the batch below it gates on this Mac")
+        "there; for a stacked gate or newer bisect half whose companion gates on this Mac")
     # Its name until vocaro-engineering#58, which main refuses, naming the new one, beside --here too.
     run.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("--if-free", action="store_true", help=f"run only if another Mac's heavy-work admission, or "
@@ -1813,6 +1816,9 @@ def perform(argv, report):
             # A series' lane runs N times inside its one admission, within N times its limit.
             limit = parallel.lane_timeout(lane, extra)
             lane_wait.begin(root, args.lane, project_name(root, config), bool(lane.get("wholeHost")))
+            # Keep the queue's placement scope at the outer lane.
+            queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
+            exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
             # A foreground lane takes a Mac's screen. A Mac whose own settings say it takes foreground work has its
             # foreground taken for the run, below, on whichever Mac that is (vocaro/queuekeeper#211). On any other, a
             # workstation, only the session holding mac-foreground within the owner's window runs it, with --here;
@@ -1824,6 +1830,8 @@ def perform(argv, report):
             if lane.get("foreground") and not second:
                 if args.offload_only or args.offload_wait or not (args.here or lane.get("here")):
                     if unsent: raise ValueError(f"{args.lane} not run: it runs on another Mac, and {unsent}")
+                    if exclude is not None:
+                        return remote.foreground_lane(root, config, args.lane, extra, args.expect, exclude=exclude)
                     return remote.foreground_lane(root, config, args.lane, extra, args.expect)
                 plugins.FOREGROUND.require_foreground()
             group = report.group = lane.get("parallel")
@@ -1850,10 +1858,9 @@ def perform(argv, report):
                                      + (" with --here" if args.here else ""))
                 if unsent:
                     raise ValueError(f"{args.lane} not run: it runs only on another Mac of the farm ({placed[1]}), and {unsent}")
+                if exclude is not None:
+                    return offload_wait(root, config, args.lane, extra, args.expect, exclude, only, why=placed[1])
                 return remote.there_lane(root, config, args.lane, extra, args.expect, placed[1], hosts=only)
-            # Keep the queue's placement scope at the outer lane.
-            queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
-            exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
             # What this Mac's own settings decline: a kind of work, or a lane whose labels it lacks (remote.here_unfit;
             # the owner's decision, 2026-11-17, vocaro/queuekeeper#211). Such a lane runs only on the farm's other Macs,
             # each judged by its own settings as it is read. Work nested in an admission runs inside it, and work
@@ -1883,6 +1890,8 @@ def perform(argv, report):
                           "the batch below it", file=sys.stderr, flush=True)
                     return BUSY
                 if not others: return declined_everywhere(args.lane, f"{declined}, and {remote.NO_MAC}")
+                if exclude is not None:
+                    return offload_wait(root, config, args.lane, extra, args.expect, exclude, others, why=declined)
                 try:
                     return remote.there_lane(root, config, args.lane, extra, args.expect, declined, hosts=others)
                 except remote.Declined as error:

@@ -2432,14 +2432,18 @@ def main(root, config, args):
             "qk admit --foreground -- COMMAND", send) if args.foreground else send())
 
 
-def foreground_lane(root, config, lane, arguments, expect):
+def foreground_lane(root, config, lane, arguments, expect, *, exclude=None):
     """Run a foreground lane on a Mac of the farm that takes foreground work (foreground_hosts), as `qk remote run`
     does, where queuekeeper waits for its foreground and holds it for the run (foreground.slot): for a lane started
     on a Mac that takes none by its own settings, a workstation, whose foreground needs its owner's window first
     and then `qk run --here`. It never falls back to that Mac: a Mac of the farm that is not configured or cannot
     be reached stops the lane."""
     away = []
-    hosts = foreground_hosts(away)
+    hosts = foreground_hosts(away, exclude=exclude) if exclude is not None else foreground_hosts(away)
+    if not hosts and exclude is not None:
+        print(f"queuekeeper: {lane} not run: no other Mac can take foreground work beside {called(exclude)}",
+              file=sys.stderr, flush=True)
+        return BUSY
     if not hosts and away:
         # A Mac that may take it could not be asked: its failure says why, and what to do meanwhile.
         def unreached(): raise away[0]
@@ -2461,7 +2465,7 @@ def foreground_lane(root, config, lane, arguments, expect):
                              lambda: execute(root, config, host, work, lane=lane, arguments=arguments, expect=expect))
 
 
-def foreground_hosts(away=None):
+def foreground_hosts(away=None, *, exclude=None):
     """The SSH destinations of the farm's Macs a foreground lane may go to, in the farm's order: each that takes
     work now and whose own settings say it takes foreground work (takes.foreground in its mac-settings.json, as its
     capacity reading gives it), and no other: the foreground mark alone, on any Mac (the owner's decision,
@@ -2471,6 +2475,7 @@ def foreground_hosts(away=None):
     why each such Mac could not be asked."""
     hosts = []
     for host in farm.destinations():
+        if host == exclude: continue
         try:
             reachable(host)
             reading = capacity_there(host)
@@ -3073,6 +3078,13 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     exclude, the Mac the active batch runs on, when stacking. hosts, when given, are the only Macs that may run the
     lane (eligible), in the farm's order.
     """
+    offered = lane_offer(root, config, lane, arguments, expect, fallback, queue_gate, exclude, hosts)
+    offered.make(fallback)
+    return offered
+
+
+def lane_offer(root, config, lane, arguments, expect, fallback, queue_gate, exclude, hosts):
+    """Build the offer for a lane that starts only when the receiving Mac can admit it."""
     work = ["run", "--here", "--if-free", *(["--expect", str(expect)] if expect else []), lane,
             *(["--", *arguments] if arguments else [])]
     # A run that names a physical device uses it here, or there only by `qk remote run --device`.
@@ -3080,13 +3092,11 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     refused = (f"its arguments name the physical device of {', '.join(named)}, which another Mac uses only under "
                "a reservation `qk remote run --device` carries from here") if named else None
     settings = config.get("lanes", {}).get(lane, {})
-    offered = Offer(lane, f"`qk run --here {lane}`", lambda host, sent: execute(
+    return Offer(lane, f"`qk run --here {lane}`", lambda host, sent: execute(
         root, config, host, work, lane=lane, arguments=arguments, expect=expect, decline=True, sent=sent), refused,
         whole_host=bool(settings.get("wholeHost")), exclusive=settings.get("resource") == "exclusive",
         screen=unlocked_screen(config.get("lanes", {}), lane), queue_gate=queue_gate, fallback=fallback,
         exclude=exclude if queue_gate else None, hosts=hosts, **lane_needs(config.get("lanes", {}), lane))
-    offered.make(fallback)
-    return offered
 
 
 # A simulator's identifier, a UUID, as a word of uppercased text: a member of this Mac's pool.
@@ -3796,6 +3806,42 @@ def places_for(offered, once):
     # No place on a Mac whose settings decline the lane (Offer.unfit): it would keep slots for work it never runs.
     hosts = tuple(host for host in offered.hosts or () if host not in getattr(offered, "unfit", {}))
     return Places(offered.name, place.identity, label, place.started, hosts, screen=offered.screen) if hosts else None
+
+
+def wait_on_farm(root, config, lane, arguments, expect, hosts, label, timeout=OVERFLOW_TIMEOUT):
+    """Run a lane on the first of several eligible remote Macs to admit it, never this Mac.
+
+    As in overflow, a whole-host lane keeps its place on each eligible Mac so their slots drain toward it,
+    but only one offer sends the work at a time. Other lanes keep their arrival order across offers.
+    """
+    offered = lane_offer(root, config, lane, arguments, expect, False, True, None, hosts)
+    offered.place, offered.label = resources.Place(), label
+    offered.place.started = offered.started
+    deadline, window, said = time.monotonic() + timeout, OVERFLOW_WAIT, None
+    places = None
+    try:
+        while True:
+            try:
+                with places.offering() if places else contextlib.nullcontext():
+                    return offered.attempt(skip_busy=places is not None)
+            except Busy as error:
+                left = deadline - time.monotonic()
+                if left <= 0: raise
+                reason = offered.declined(error)
+                lane_wait.waiting(lane_wait.OVERFLOW, reason)
+                if reason != said:
+                    print(f"queuekeeper: {lane} waits for another Mac to admit it: {reason}", file=sys.stderr,
+                          flush=True)
+                    said = reason
+            if places is None: places = places_for(offered, once=False)
+            bound = window
+            if places is not None:
+                places.hold(offered.unreached() | offered.unfit.keys())
+                bound = min(bound, PLACED_WAIT)
+            time.sleep(min(left, bound))
+            window = min(2 * window, OVERFLOW_WAIT_MAX)
+    finally:
+        if places is not None: places.leave()
 
 
 def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):

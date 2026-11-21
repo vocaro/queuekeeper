@@ -5354,6 +5354,60 @@ exec {shlex.quote(real)} "$@"
         with self.assertRaises(SystemExit):
             self.run_here("--offload-wait", "--offload-only", "gate")
 
+    def test_an_offload_wait_queues_on_a_busy_remote_mac_and_runs_after_admission(self):
+        record = remote.lane_wait.path_of(self.project, "gate")
+        log = Path(self.temp.name) / "offload-wait.log"
+        command = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
+                   "run", "--offload-wait", "gate"]
+        dispatcher = None
+        try:
+            with self.busy_farm_mac(), log.open("w") as output:
+                dispatcher = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
+                                              preexec_fn=host_isolation.default_signals)
+                self.until(lambda: (remote.lane_wait.current(record) or {}).get("kind") == "admission",
+                           "the remote admission wait was not reported")
+                self.assertEqual(remote.lane_wait.current(record)["mac"], "fake")
+                self.assertIsNone(dispatcher.poll(), log.read_text())
+            self.assertEqual(dispatcher.wait(timeout=stretched(120)), 0, log.read_text())
+        finally:
+            if dispatcher is not None and dispatcher.poll() is None:
+                dispatcher.terminate()
+                dispatcher.wait(timeout=stretched(60))
+        self.assertFalse((self.project / ".build/queuekeeper/gate").exists())
+        receipt = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "fake")
+
+    def test_an_offload_wait_reconsiders_the_available_macs_while_never_admitting_here(self):
+        # All eligible Macs are initially busy. The second one frees up while the first is still busy.
+        hosts = ("fake", "second", "older-half")
+        crowded = {"slots": 2, "slotsMax": 2, "busy": [0, 1], "cpuBusy": 98, "busyLimit": 90, "memory": 1}
+        roomy = {**crowded, "busy": [], "cpuBusy": 10}
+        capacities = {host: crowded for host in hosts}
+
+        def execute(root, settings, host, work, **keywords):
+            if host == "fake": raise remote.Busy("fixture admission refused")
+            self.assertEqual(host, "second")
+            self.assertEqual(work, ["run", "--here", "--if-free", "suites"])
+            return 9
+
+        def release(_seconds):
+            capacities["second"] = roomy
+
+        settings = {"lanes": {"suites": {"wholeHost": True}}}
+        with farm_fixture.only(*hosts), patch.object(remote, "reachable"), \
+                patch.object(remote, "capacity_there", side_effect=lambda host, **kw: capacities[host]) as capacity, \
+                patch.object(remote, "execute", side_effect=execute) as sent, \
+                patch.object(remote, "Places") as places, patch.object(remote.time, "sleep", side_effect=release), \
+                patch.object(offload_host, "capacity", side_effect=AssertionError("tried here")):
+            result = cli.offload_wait(self.project, settings, "suites", [], None, "older-half", None)
+
+        self.assertEqual(result, 9)
+        self.assertEqual([call.args[2] for call in sent.call_args_list], ["fake", "second"])
+        self.assertEqual({call.args[0] for call in capacity.call_args_list}, {"fake", "second"})
+        self.assertEqual(places.call_args.args[4], ("fake", "second"))
+        places.return_value.hold.assert_called_once()
+        places.return_value.leave.assert_called_once()
+
     def test_the_old_name_of_offload_only_is_refused_with_the_new_one_and_hidden_from_help(self):
         refused = ("queuekeeper: --build-host-only was --offload-only's name until vocaro-engineering#58, and is no longer "
                    "read: use --offload-only\n")
@@ -9680,6 +9734,10 @@ class MacSettingsPlacementTests(unittest.TestCase):
             with self.subTest(expected=expected), farm_fixture.only(*macs), patch.object(remote, "reachable"), \
                     patch.object(remote, "capacity_there", side_effect=lambda host, **options: readings[host]):
                 self.assertEqual(remote.foreground_hosts(), expected)
+        # A companion already gates on the only foreground Mac; a paired lane cannot be sent to it.
+        with farm_fixture.only("mini"), patch.object(remote, "reachable") as reached:
+            self.assertEqual(remote.foreground_lane(".", {}, "screen", [], None, exclude="mini"), resources.BUSY)
+            reached.assert_not_called()
         # A Mac that cannot be reached now is none, since a lane could not be sent to it either; the lane then says
         # why that Mac could not be asked, and what a session can do meanwhile, not that no Mac is marked.
         gone = remote.Unreachable("mini cannot be reached: Host is down", "wake mini")

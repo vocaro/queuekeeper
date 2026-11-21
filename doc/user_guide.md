@@ -1934,7 +1934,7 @@ wrong type, stops placement on that Mac rather than guess.
 qk run LANE [-- ARGUMENTS]               # the Mac with room and the most headroom
 qk run --here LANE                       # this Mac, for products the session uses here
 qk run --offload-only LANE               # another Mac if one can start it now, never here
-qk run --offload-wait LANE               # another Mac, waiting in its queue, never here
+qk run --offload-wait LANE               # wait for admission on another Mac, never here
 qk admit -- COMMAND                      # any other heavy command, placed as a lane is
 qk admit --here -- COMMAND               # this Mac, for a build whose output the session uses here
 qk remote run LANE [--host NAME]         # a lane, on another Mac
@@ -1948,9 +1948,10 @@ qk remote passed LANE [--commit REV]     # exit 0 if the whole lane passed at ex
 - **`--offload-only`** is for a caller that holds admission here already. It exits 75 when no
   other Mac is configured, reachable or free, so the caller runs the lane itself, and 78 when
   another Mac is misconfigured.
-- **`--offload-wait`** sends the lane to another Mac and waits there for admission, as the merge
-  queue's stacked gate does while the batch below it gates here. It exits 75 when no other Mac is
-  configured or reachable.
+- **`--offload-wait`** waits for another Mac to admit the lane. The merge queue uses it for a
+  newer bisect half or stacked gate whose companion gates here. With several eligible Macs, it
+  retries the offer while they are busy. It exits 75 when none is configured or reachable, or the
+  admission wait expires.
 - **`qk admit` stays here**, saying why, when another Mac could not run the command as it runs
   here: its directory is outside the checkout or ignored by Git; its arguments name a path only
   this Mac has (this checkout's absolute path, `/tmp`, a scratchpad, anything under `~`, an

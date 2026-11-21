@@ -3,7 +3,7 @@
 One worker per repository takes everything waiting, cherry-picks it onto origin/main in a checkout
 of its own, runs the project's queue lanes there once, and pushes on a pass. When the lanes fail on
 a batch it halves the batch until it finds the commit to send back, landing the rest, with each bisect's two halves
-gated at once, the newer on another Mac when it can start them (Beside), and the entries that arrive during a
+gated together, the newer waiting for admission on another Mac (Beside), and the entries that arrive during a
 gate gated stacked on its tip on another Mac, landing once it has (Stack, vocaro-engineering#241); first, when the lane is
 qk unittest, it reruns the failed tests alone, and a batch whose failed tests all pass alone and that changes none
 of the files they import lands, with the flakes recorded (vocaro-engineering#231), and a batch whose real failures
@@ -1800,11 +1800,9 @@ def apart(mac, hosts, waits):
     vocaro/queuekeeper#211); until then the first gate of a bisect's pair ran only on this Mac, the second never on
     it, and a stacked gate ran on this Mac whenever the farm had one other Mac and the batch gated there.
 
-    waits says whether the second gate may wait for a Mac. A stacked gate may, since the batch below it gates on
-    meanwhile; a bisect's newer half may not (--if-free, --offload-only), since the round ends only when both halves
-    have. A stacked gate kept off this Mac waits in another Mac's queue (--offload-wait), as a lane placed only there
-    does: with one try at another Mac and no wait (--offload-only), a stack the Mac's room let start was declined when
-    its final lane asked a minute later, that Mac busy by then with other projects' gates (vocaro/queuekeeper#274)."""
+    waits lets an ordinary stacked gate or the newer half of a bisect wait for a Mac (vocaro/queuekeeper#274 and
+    #293). When it must stay off this Mac, it uses --offload-wait. Speculative probes and stacks that must start
+    immediately use --if-free or --offload-only instead."""
     if mac == HERE_MAC:
         if waits: return ("--offload-wait",), None, "on another Mac, waiting there for one to admit them"
         return ("--offload-only",), None, "on another Mac if it can start them now"
@@ -7057,7 +7055,7 @@ class Worker:
         other.newer, other.tip, other.lanes = newer, other.head(), lanes
         self.queue.mark(newer, TESTING)
         self.say(f"testing the newer {len(newer)} entr{'y' if len(newer) == 1 else 'ies'} of the bisect at "
-                 f"{other.tip[:12]} on {base[:12]} beside them, on a Mac other than theirs if one can start them now")
+                 f"{other.tip[:12]} on {base[:12]} beside them, waiting for a Mac other than theirs")
         return other
 
     def after_beside(self, beside, applied, outcome):
@@ -7791,10 +7789,26 @@ def landed_words(partners, before):
             f"again.")
 
 
+class YieldAdmissionWait:
+    """Withdraw an unadmitted newer lane once its older companion has finished."""
+
+    def __init__(self, runner, older_ended):
+        self.runner, self.older_ended = runner, older_ended
+        self.canceled = False
+
+    def is_set(self):
+        if self.canceled: return True
+        if not self.older_ended.is_set() or self.runner.lane_now is None: return False
+        lane, began, _ = self.runner.lane_now
+        record = lane_wait.current(lane_wait.path_of(self.runner.checkout, lane), began)
+        self.canceled = bool(record and record.get("kind") and record.get("admitted") is False)
+        return self.canceled
+
+
 class Beside(Worker):
-    """A bisect's newer half, gated in a checkout beside the worker's, on a Mac other than the older half's when one
-    can start it now (owner's decision of 2026-11-07, vocaro-engineering#241; any two Macs since
-    vocaro/queuekeeper#211). Both halves run on the same origin/main. What passes beside lands while the older half bisects on; when both pass outright, the
+    """A bisect's newer half, gated in a checkout beside the worker's, waiting for admission on a Mac other than
+    the older half's (owner's decision of 2026-11-20, vocaro/queuekeeper#293). Both halves run on the same
+    origin/main. What passes beside lands while the older half bisects on; when both pass outright, the
     worker searches for the entries that fail together (Worker.together), and otherwise, as when one passed only by
     its flakes, the older lands first and the newer gates again on the main that made, unless its result carries
     over (Worker.carry)."""
@@ -7839,28 +7853,28 @@ class Beside(Worker):
     def both(self, worker, lanes, round_name):
         """Gate the newer half in this checkout while worker gates the older half, the two on different Macs, and
         return the older half's (status, log). The older half is offered as any gate is, to whichever Mac has room
-        for it or admits it first. The newer half starts once a Mac has admitted the older half's final lane, and
-        goes to any Mac but that one, this Mac among them, if one can start it now (apart). No such Mac, or an older
-        half that ended before any Mac admitted its final lane, leaves the newer half with no verdict
-        (resources.BUSY), which weigh queues again.
-
-        Until vocaro/queuekeeper#211 the older half ran only on this Mac and the newer only on another. The newer
-        half loses nothing by waiting for the older half's Mac: it runs the same lanes, so a Mac that could start
-        it sooner would have taken the older half."""
+        for it or admits it first. Once a Mac has admitted the older half's final lane, the newer half waits for
+        admission using the remaining Macs (apart), including this Mac if it is eligible. Once the older half is
+        done, a newer lane that is still known to be waiting gives up that wait (YieldAdmissionWait), so it can
+        gate in its normal turn on any eligible Mac. A lane already running continues. Weigh queues a newer half
+        that gives no verdict. Until #293, the newer half made only one attempt at immediate admission."""
         box, ended = {}, threading.Event()
+        cancel = YieldAdmissionWait(self, ended)
         name = f"{time.strftime('%Y%m%d-%H%M%S')}-{self.tip[:8]}"
         self.round_name = name
         # What an earlier round's gate ran is not this one's (apart_from).
         worker.lane_now = None
         def gate():
             try:
-                placed = self.apart_from(worker, lanes[-1], ended)
+                placed = self.apart_from(worker, lanes[-1], ended, waits=True)
                 if placed is None: return
-                where, excluded, said_where = placed
+                where, excluded, _ = placed
                 # Its own environment from here on: the worker's is the older half's too.
                 if excluded is not None: self.environment = {**self.environment, remote.QUEUE_GATE_EXCLUDE: excluded}
-                self.say(f"its lanes go {said_where.replace(' them ', ' it ')}")
-                box["result"] = self.gate(lanes, name, where=where)
+                self.say("its lanes wait for admission on a Mac other than the older half's")
+                box["result"] = self.gate(lanes, name, where=where, cancel=cancel)
+                if cancel.canceled and box["result"][0] == lane_results.UNMEASURED:
+                    self.say("the older half finished while its companion still waited for admission")
             except BaseException as error: box["error"] = error
         thread = threading.Thread(target=gate, name="newer half", daemon=True)
         thread.start()
@@ -7876,7 +7890,7 @@ class Beside(Worker):
         self.result = box.get("result") or (resources.BUSY, None)
         return older
 
-    def apart_from(self, worker, final_lane, ended):
+    def apart_from(self, worker, final_lane, ended, *, waits=False):
         """apart's answer for the Mac that admitted final_lane of worker's gate, the older half's, once one has, by
         that lane's wait record (admitted_mac), looked at every BESIDE_POLL seconds. Once ended is set, the older
         half's gate having ended, the Mac is the one that lane ran on, by the gate's own account (ran_on, ran_where),
@@ -7889,7 +7903,7 @@ class Beside(Worker):
             if mac is not None:
                 try: hosts = farm.destinations()
                 except (OSError, ValueError): hosts = ()
-                return apart(mac, hosts, waits=False)
+                return apart(mac, hosts, waits=waits)
             if ended.is_set(): return None
             ended.wait(BESIDE_POLL)
 

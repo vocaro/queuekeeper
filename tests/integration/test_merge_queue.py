@@ -2258,8 +2258,8 @@ class NoVerdict(Fixture):
         # The batch, then each older half, with no option; each newer half only where the older half's Mac is not.
         self.assertIn(["python3", "scripts/qk", "run", "gate"], runs)
         self.assertNotIn(["python3", "scripts/qk", "run", "--here", "gate"], runs)
-        self.assertIn(["python3", "scripts/qk", "run", "--offload-only", "gate"], runs)
-        self.assertIn("newer half: its lanes go on another Mac if it can start it now", said.getvalue())
+        self.assertIn(["python3", "scripts/qk", "run", "--offload-wait", "gate"], runs)
+        self.assertIn("newer half: its lanes wait for admission on a Mac other than the older half's", said.getvalue())
 
     def test_a_worker_that_takes_over_keeps_its_count_of_locked_runs(self):
         queue = mq.Queue(self.repo)
@@ -11413,13 +11413,12 @@ class BothHalves(Fixture):
         self.assertNotIn("conflictWith", self.state(ids[2]))
         self.assertNotIn(f"{ids[1]} fails alone", log)
 
-    def test_a_farm_mac_that_declines_leaves_the_bisect_as_before(self):
-        """Negative control: when another Mac cannot start the newer half now, it waits behind the older half,
-        and the bisect costs what it did, one half at a time: 5 gates in 5 rounds."""
+    def test_a_newer_half_whose_admission_wait_expires_goes_back_behind_the_older_half(self):
+        """If no other Mac admits the newer half within its wait, the bisect still falls back to serial gates."""
         for name in ("a", "bad", "c", "d"): self.commit(name, name)
         ids = self.add("a", "bad", "c", "d")
         real = mq.Beside.gate
-        def declined(worker, lanes, round_name, where=()):
+        def declined(worker, lanes, round_name, where=(), cancel=None):
             worker.ran_where = ""
             return mq.resources.BUSY, None
         with patch.object(mq.Beside, "gate", declined):
@@ -11429,6 +11428,55 @@ class BothHalves(Fixture):
         self.assertEqual(self.gates(), 5)
         self.assertEqual(self.rounds(log), 5, log)
         self.assertIn(f"newer half: no verdict (exit {mq.resources.BUSY}): queued again, behind the older half", log)
+
+    def test_the_newer_half_waits_for_admission_off_the_older_halfs_mac(self):
+        queue = mq.Queue(self.repo)
+        worker = mq.Worker(queue)
+        for mac, where, excluded in [
+            (mq.HERE_MAC, ("--offload-wait",), None),
+            (mq.lane_wait.farm_mac("build-host"), (), "build-host"),
+        ]:
+            with self.subTest(mac=mac), farm_fixture.only("build-host", "gate-03"), patch.object(mq, "apart", APART):
+                newer = mq.Beside(worker)
+                newer.tip = "newer-tip"
+                waiting = threading.Event()
+
+                def older_gate(lanes, round_name):
+                    self.assertTrue(waiting.wait(stretched(10)))
+                    return 1, None
+
+                def newer_gate(lanes, round_name, *, where, cancel):
+                    self.assertFalse(cancel.is_set())
+                    waiting.set()
+                    return 0, None
+
+                with patch.object(worker, "admitted_mac", return_value=mac), \
+                        patch.object(worker, "gate", side_effect=older_gate), \
+                        patch.object(newer, "gate", side_effect=newer_gate) as gate:
+                    self.assertEqual(newer.both(worker, ["gate"], "older"), (1, None))
+                gate.assert_called_once_with(["gate"], newer.round_name, where=where, cancel=unittest.mock.ANY)
+                self.assertEqual(newer.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
+                self.assertEqual(newer.result, (0, None))
+
+    def test_only_a_newer_lane_known_to_be_waiting_yields_when_its_companion_finishes(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        newer = mq.Beside(worker)
+        newer.lane_now = ("gate", time.time(), ("--offload-wait",))
+        ended = threading.Event()
+        waiting = {"kind": mq.lane_wait.ADMISSION, "admitted": False}
+        give_way = mq.YieldAdmissionWait(newer, ended)
+        with patch.object(mq.lane_wait, "current", return_value=waiting) as read:
+            self.assertFalse(give_way.is_set())
+            read.assert_not_called()
+            ended.set()
+            for record in [None, {"kind": None, "admitted": False}, {"kind": None, "admitted": True}]:
+                read.return_value = record
+                self.assertFalse(give_way.is_set())
+            read.return_value = waiting
+            self.assertTrue(give_way.is_set())
+            read.assert_called_with(mq.lane_wait.path_of(newer.checkout, "gate"), newer.lane_now[1])
+            read.return_value = None
+            self.assertTrue(give_way.is_set())
 
     def test_a_lane_that_runs_only_here_keeps_one_half_at_a_time(self):
         """Negative control: a lane that runs only on this Mac (offerable, whose own cases the test below covers)
@@ -11449,20 +11497,18 @@ class BothHalves(Fixture):
     def test_the_second_gate_of_a_pair_goes_to_any_mac_but_the_first_gates(self):
         """vocaro/queuekeeper#211: the first gate of a pair, a bisect's older half or a batch, is offered as any gate
         is, and the second is kept off whichever Mac admitted it, this Mac a candidate like every other. Until then
-        the older half ran with --here and the newer with --offload-only, and a stacked gate ran here whenever the
+        the older half ran with --here and the newer ran remotely, and a stacked gate ran here whenever the
         farm had one other Mac and the batch gated there."""
         self.assertFalse(hasattr(mq, "HERE") or hasattr(mq, "BESIDE"))
         near, far = mq.lane_wait.farm_mac("build-host"), mq.lane_wait.farm_mac("gate-03")
         for hosts in ((), ("build-host",), ("build-host", "gate-03")):
-            # The first gate on this Mac: any other. A stacked gate waits in another Mac's queue (vocaro/queuekeeper#274);
-            # a bisect's newer half starts there now or not at all.
+            # The first gate is on this Mac. Its companion waits elsewhere or makes an immediate offer.
             self.assertEqual(APART(mq.HERE_MAC, hosts, True),
                              (("--offload-wait",), None, "on another Mac, waiting there for one to admit them"))
             self.assertEqual(APART(mq.HERE_MAC, hosts, False),
                              (("--offload-only",), None, "on another Mac if it can start them now"))
         for hosts in (("build-host",), ("build-host", "gate-03")):
-            # On another Mac: every Mac but that one, this Mac among them. A stacked gate waits for one, as any gate
-            # does; a bisect's newer half starts now or not at all.
+            # The first gate is on another Mac. Its companion can use any Mac but that one.
             self.assertEqual(APART(near, hosts, True),
                              ((), "build-host", f"on a Mac other than {near}, which gates the batch below them"))
             self.assertEqual(APART(near, hosts, False),

@@ -317,11 +317,13 @@ another project's worker for as long as its gates take (vocaro/queuekeeper#285).
 
 ### Gates beside each other
 
-**A bisect's two halves gate at once.** The older half is offered as any gate is; once a Mac has
-admitted its last lane, the newer half runs in the `-beside` checkout on any other Mac that can
-start it now (`qk run --offload-only` when the older half is on this Mac, otherwise
-`qk run --if-free` with that Mac left out). Whichever half passes lands. When both fail, the older
-is bisected first.
+**A bisect's two halves can gate at once.** The older half is offered as any gate is. Once a Mac
+admits its final lane, the newer half waits for admission in the `-beside` checkout using the other
+Macs (`qk run --offload-wait` when the older half is on this Mac, otherwise the usual placement
+with the older half's Mac left out). When the older half ends, the newer half gives up any lane
+that still reports a wait to start and can gate again with the usual placement. A lane already
+admitted runs to its verdict. Whichever half passes lands. When both fail, the older is bisected
+first.
 
 **When both halves pass,** no entry fails alone: the entries fail together. A half counts as
 passed when its failed tests all pass alone on rerun, as a batch with flakes does; the newer half's
@@ -352,9 +354,10 @@ stacked gate's: in the entry's `logs` and the `gate.ended` event, not as unmeasu
 waits for it (`Worker.partners_landed`); if the entry passes on the earlier `main`, `fewest` finds the landed entries it fails with, and it comes back naming them in
 `conflictWith` with `state` `landed`, to rebase onto `origin/main`. With another Mac free the check
 costs Mac time, not wall time; when no other Mac can start it, or a lane runs only on this Mac, the
-probe gates after the entry fails, and several landed entries cost more gates to search. The search follows mergetrain's `minimize_joint_failure` (MIT; see `THIRD_PARTY_NOTICES.md`). The newer half waits behind the older instead when no other Mac can start it, a
-lane must run on this Mac, the round is docs-only, ungated or `--front`, or a newer entry applies
-only on top of an older one.
+probe gates after the entry fails, and several landed entries cost more gates to search. The search
+follows mergetrain's `minimize_joint_failure` (MIT; see `THIRD_PARTY_NOTICES.md`). The newer half
+goes behind the older if no other Mac admits it within the usual wait, a lane must run on this Mac,
+the round is docs-only, ungated or `--front`, or a newer entry applies only on top of an older one.
 
 **Stacked gates.** While a batch gates, the worker looks every `STACK_POLL` (30 s) for entries
 behind it, and once the batch's last lane is admitted, gates them stacked on the batch's tip in the
