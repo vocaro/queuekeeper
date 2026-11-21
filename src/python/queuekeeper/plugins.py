@@ -169,6 +169,8 @@ SLOTS = {"FOREGROUND": Foreground, "DEVICES": Devices}
 RECOVER = []
 # Each (commands, root) -> a context that holds for the run of commands in root.
 AROUND_RUN = []
+# Each (lane, names) -> names from this Mac's environment the lane could use but a dispatch did not send.
+REMOTE_ENVIRONMENT = []
 # Each (results): prints what a lane kept in its results folder.
 REPORT_RESULTS = []
 # Each (words) -> the seconds one test may run by default under the lane command words, or None when it sets no

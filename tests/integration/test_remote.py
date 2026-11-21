@@ -854,6 +854,53 @@ class RemoteTests(unittest.TestCase):
     def checkout(self, slot):
         return self.home / remote.ROOT / "checkouts/example" / str(slot) / "example"
 
+    def test_a_remote_xcode_lane_names_only_the_caller_variables_it_did_not_send(self):
+        variable = "TEST_RUNNER_QK_CONTROL"
+        sentinel = "caller-value-should-stay-here"
+        # A real SSH login does not inherit the invoking process's environment, but this stand-in does.
+        host_isolation.executable(self.tools / "ssh", FAKE_SSH.replace(
+            "exec env -u QUEUEKEEPER_SCREEN_IOREG", f"exec env -u {variable} -u QUEUEKEEPER_SCREEN_IOREG"))
+        runner = self.project / "xcodebuild"
+        host_isolation.executable(runner, f"#!/bin/sh\nprintf '%s\\n' \"${{{variable}:+has setting}}\"\n")
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"].update({
+            "ios": {"command": ["./xcodebuild", "test", "-derivedDataPath", ".build/derived"], "resource": "heavy"},
+            "version": {"command": ["./xcodebuild", "-version"], "resource": "heavy"},
+            "assigned": {"command": ["/usr/bin/env", f"{variable}=lane-choice", "./xcodebuild", "test",
+                                     "-derivedDataPath", ".build/derived"],
+                         "resource": "heavy"},
+            "apple-and-check": {"parallel": ["ios", "check"]},
+        })
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+        notice = "without sending this Mac's environment variables"
+        with patch.dict(os.environ, {variable: sentinel}):
+            status, output, error = self.qk("remote", "run", "ios")
+            self.assertEqual(status, 0, output + error)
+            self.assertEqual(error.count(notice), 1, error)
+            self.assertIn(f"{notice} {variable}", error)
+            self.assertIn("qk run --here ios", error)
+            self.assertNotIn(sentinel, output + error)
+            remote_run = self.project / ".build/queuekeeper/remote/ios"
+            self.assertNotIn("has setting", (remote_run / "run.log").read_text())
+            self.assertNotIn(sentinel, (remote_run / "source.json").read_text())
+
+            for words in [("--here", "ios"), ("ios",)]:
+                with self.subTest(words=words), patch.dict(os.environ, {"FAKE_BUSY_LIMIT": "0"}):
+                    status, output, error = self.run_here(*words)
+                    self.assertEqual(status, 0, output + error)
+                    self.assertNotIn(notice, error)
+                    self.assertNotIn("remote: sending", error)
+                    self.assertIn("has setting", (self.project / ".build/queuekeeper/ios/run.log").read_text())
+
+            for words, expected in [(("assigned",), 0), (("version",), 0), (("apple-and-check", "--", "check"), 0),
+                                    (("apple-and-check", "--", "ios"), 1)]:
+                with self.subTest(words=words):
+                    status, output, error = self.qk("remote", "run", *words)
+                    self.assertEqual(status, 0, output + error)
+                    self.assertEqual(error.count(notice), expected, error)
+        self.assertIn("has setting", (self.project / ".build/queuekeeper/remote/assigned/run.log").read_text())
+
     def test_a_lane_runs_at_the_commit_on_the_farm_mac_after_its_provision_lane(self):
         status, output, error = self.qk("remote", "run", "check")
         self.assertEqual(status, 0, output + error)
