@@ -8,7 +8,8 @@ REQUIRES = ("queuekeeper_mac_desktop", "queuekeeper_mobile")
 
 def register():
     """Add the plugin to the core (queuekeeper.plugins.load)."""
-    from . import doctor, lane, settings
+    from . import disk, doctor, lane, settings
     settings.register()
     doctor.register()
     lane.register()
+    disk.register()

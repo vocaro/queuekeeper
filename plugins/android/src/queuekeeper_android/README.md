@@ -40,6 +40,10 @@ emulator another agent is using. The pool gives each run its own.
 Members are AVDs named `POOL_LABEL_N`, such as `Pagepour_Pixel_8_API_36_2`. Each is keyed by that name in the
 [device record](../../../../doc/user_guide.md#taking-a-device). Each Mac has its own pool.
 
+From an Android-enabled checkout, `qk disk` measures the host's known pool members and templates, emulator test
+logs in the main project checkouts, and Gradle's caches and wrapper distributions. Pool rows show the recorded
+reservation or the time since release when available. These items are kept by `qk disk --delete`.
+
 ## Emulator tests
 
 ```sh

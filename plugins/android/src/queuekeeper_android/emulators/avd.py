@@ -29,12 +29,12 @@ HEADLESS = ("-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot-save")
 CONFIG_KEYS = ("avd.ini.displayname", "AvdId")
 
 
-def home(environ=None):
+def home(environ=None, *, account_home=None):
     """The folder AVDs are kept in: ANDROID_AVD_HOME, else ANDROID_USER_HOME's avd, else ~/.android/avd."""
     environ = os.environ if environ is None else environ
     if environ.get("ANDROID_AVD_HOME"): return Path(environ["ANDROID_AVD_HOME"]).expanduser()
     if environ.get("ANDROID_USER_HOME"): return Path(environ["ANDROID_USER_HOME"]).expanduser() / "avd"
-    return Path("~/.android/avd").expanduser()
+    return (Path.home() if account_home is None else Path(account_home)) / ".android/avd"
 
 
 def ini(path):
