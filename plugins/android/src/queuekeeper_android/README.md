@@ -106,3 +106,6 @@ Which event tags a given vendor's build logs for a heads-up banner is not yet ve
 
 - A JDK 17 or later for Gradle and `avdmanager`. Queuekeeper finds the SDK through `ANDROID_HOME`, then
   `ANDROID_SDK_ROOT`, then `~/Library/Android/sdk` and Homebrew's location. `qk doctor` says what is missing.
+- On a farm, `qk doctor` compares the installed revisions of platform-tools, the emulator and system images.
+  Differences are errors. A Mac whose SDK inventory could not be read is listed under `unchecked`. Use
+  `sdkmanager --list_installed` on the Macs to check which revisions need to be aligned.

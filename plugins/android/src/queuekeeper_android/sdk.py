@@ -24,6 +24,7 @@ TOOLS = {
 }
 # The JDK release Gradle's Android plugin and the command-line tools need at least (AGP 9, November 2026).
 JAVA_RELEASE = 17
+INVENTORY_TIMEOUT = 30
 
 
 class Missing(RuntimeError):
@@ -83,3 +84,43 @@ def environment(environ=None):
     java = java_home(environ)
     if java: environ["JAVA_HOME"] = java
     return environ
+
+
+def package_revisions(output):
+    """The platform-tools, emulator and system image revisions from sdkmanager's installed table."""
+    packages, installed, table = {}, False, False
+    for line in output.splitlines():
+        section = line.strip().casefold()
+        if section == "installed packages:":
+            installed = True
+            continue
+        if not installed:
+            continue
+        if section in ("available packages:", "available updates:"):
+            break
+        columns = [field.strip() for field in line.split("|")]
+        if columns[:2] == ["Path", "Version"]:
+            table = True
+            continue
+        if table and (columns[0] in ("platform-tools", "emulator") or columns[0].startswith("system-images;")):
+            if len(columns) < 2 or not columns[1]:
+                raise ValueError(f"sdkmanager did not report a version for {columns[0]}")
+            packages[columns[0]] = columns[1]
+    if not table:
+        raise ValueError("sdkmanager did not print an installed packages table")
+    return packages
+
+
+def inventory():
+    """A read-only SDK package report, or why it could not be read. Runs under either Mac's own login environment."""
+    try:
+        command = [tool("sdkmanager"), "--list_installed"]
+        if installed := root(): command.append(f"--sdk_root={installed}")
+        done = subprocess.run(command, env=environment(), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              errors="replace", timeout=INVENTORY_TIMEOUT)
+        if done.returncode:
+            said = (done.stderr.strip() or done.stdout.strip()).splitlines()
+            return {"error": f"sdkmanager exited {done.returncode}" + (f": {said[-1][-300:]}" if said else "")}
+        return {"packages": package_revisions(done.stdout)}
+    except (Missing, OSError, subprocess.SubprocessError, ValueError) as error:
+        return {"error": str(error)}
