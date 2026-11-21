@@ -901,7 +901,7 @@ def here_because(args, inherited):
     if lane: return f"a part of the self lane {lane}, whose parts share build products on the Mac where it runs"
     return None
 
-def provisioned_here(root, config, lane, receipt, inherited, on_stop=None, tree=None):
+def provisioned_here(root, config, lane, receipt, inherited, directory, on_stop=None, tree=None):
     """None once the project's provision lane, if it has one, has run in this checkout before lane runs on this Mac,
     as it runs in another Mac's checkout before a lane sent there (offload_host); otherwise the status lane ends
     with, after saying why it did not run. A bare `qk run gate` that stayed here ran only the gate, so it passed or
@@ -918,13 +918,13 @@ def provisioned_here(root, config, lane, receipt, inherited, on_stop=None, tree=
 
     tree is the worktree of what was sent, when lane runs from it (admitted_tree): the provision lane runs there, as
     it does before `qk admit`'s command (provision_sent). Its own log goes with the worktree, so what qk run said
-    of it, kept in root, is the log named."""
+    of it is kept in the lane's run directory, beside its own log and receipt."""
     if lane == "provision" or "provision" not in config.get("lanes", {}): return None
     if inherited or os.environ.get(SELF_LANE) or os.environ.get(remote.DISPATCHER): return None
     # With the toolkit the lane runs with: the one that was sent, once its checkout has moved (admitted_tree).
     toolkit = Path(receipt.get("sentTree", {}).get("toolkit") or receipt.get("sentToolkit", {}).get("toolkit")
                    or TOOLKIT_ROOT)
-    said = root / ".build/queuekeeper" / lane / "provision.log"
+    said = directory / "provision.log"
     sent, root = tree is not None, root if tree is None else tree
     with resources.child_requests():
         status = processes.run([sys.executable, str(toolkit / "bin/qk"), "--project", str(root), "run", "--here",
@@ -934,7 +934,8 @@ def provisioned_here(root, config, lane, receipt, inherited, on_stop=None, tree=
         # record is this process's again, whose start a stacked gate reads (merge_queue.Worker.admitted_mac).
         lane_wait.running()
         return None
-    log = said if sent else root / ".build/queuekeeper/provision/run.log"
+    separate_run = directory != root / ".build/queuekeeper" / lane
+    log = said if sent or separate_run else root / ".build/queuekeeper/provision/run.log"
     if status in (BUSY, lane_results.UNMEASURED):
         print(f"queuekeeper: {lane} not run on this Mac: its provision lane gave no verdict here (exit {status}); what "
               f"qk run said of it is in {said}", file=sys.stderr, flush=True)
@@ -2047,7 +2048,7 @@ def perform(argv, report):
                     if resource == "self":
                         if device_window is not None: plugins.DEVICES.report_window(device_window, 0)
                         scroll_bars_recorded(receipt, args.lane, inherited)
-                        unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited)
+                        unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited, directory)
                         if unprovisioned is not None: return unprovisioned
                         # Each part its script admits stays on this Mac, which holds what an earlier part built.
                         lane_wait.running()
@@ -2112,7 +2113,7 @@ def perform(argv, report):
                                       "release the outer admission before waiting for an unlocked screen and retry",
                                       file=sys.stderr, flush=True)
                                 return BUSY
-                            unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited,
+                            unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited, directory,
                                                              admission.interrupted, tree if tree != root else None)
                             if unprovisioned is not None: return unprovisioned
                             began = started_here(root, args.lane, receipt) if tree == root else None

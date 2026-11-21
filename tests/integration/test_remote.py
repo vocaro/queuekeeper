@@ -3127,6 +3127,7 @@ class RemoteTests(unittest.TestCase):
         from queuekeeper import lane_wait
         settings = json.loads((self.project / "queuekeeper.json").read_text())
         record, ran = self.project / ".build/queuekeeper/.waits/check.json", []
+        directory = self.project / ".build/queuekeeper/check"
         def child(command, **options):
             # As the nested `qk run --here provision` leaves the record it shares: started, by a process now gone.
             ran.append(command[-3:])
@@ -3135,14 +3136,14 @@ class RemoteTests(unittest.TestCase):
             return 0
         with patch.dict(os.environ, {lane_wait.VARIABLE: str(record)}), patch.object(processes, "run", child):
             # The negative controls: the provision lane itself, nested work, a self lane's part and dispatched work.
-            self.assertIsNone(cli.provisioned_here(self.project, settings, "provision", {}, False))
-            self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, True))
+            self.assertIsNone(cli.provisioned_here(self.project, settings, "provision", {}, False, directory))
+            self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, True, directory))
             for variable in (cli.SELF_LANE, remote.DISPATCHER):
                 with patch.dict(os.environ, {variable: "outer"}):
-                    self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, False))
-            self.assertIsNone(cli.provisioned_here(self.project, {"lanes": {"check": {}}}, "check", {}, False))
+                    self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, False, directory))
+            self.assertIsNone(cli.provisioned_here(self.project, {"lanes": {"check": {}}}, "check", {}, False, directory))
             self.assertEqual(ran, [])
-            self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, False))
+            self.assertIsNone(cli.provisioned_here(self.project, settings, "check", {}, False, directory))
             self.assertEqual(ran, [["run", "--here", "provision"]])
             found = lane_wait.read(record)
         self.assertEqual((found["pid"], found["admitted"], found["mac"]), (os.getpid(), True, lane_wait.HERE))
@@ -3165,10 +3166,11 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"qk run gate: not run (exit {remote.MISCONFIGURED})", error)
         # A provision lane that got no admission or ended unmeasured ran nothing to judge: the lane ends as it did.
         settings = json.loads((self.project / "queuekeeper.json").read_text())
+        directory = self.project / ".build/queuekeeper/gate"
         for status in (resources.BUSY, lane_results.UNMEASURED):
             with self.subTest(status=status), patch.object(processes, "run", return_value=status), \
                     contextlib.redirect_stderr(StringIO()) as said:
-                self.assertEqual(cli.provisioned_here(self.project, settings, "gate", {}, False), status)
+                self.assertEqual(cli.provisioned_here(self.project, settings, "gate", {}, False, directory), status)
                 self.assertIn(f"gate not run on this Mac: its provision lane gave no verdict here (exit {status})",
                               said.getvalue())
 
@@ -4673,6 +4675,31 @@ class RemoteTests(unittest.TestCase):
                 self.assertIn(f"Ran 2 tests in {ran}", (lane / "lanes" / f"{name}.log").read_text())
             self.assertFalse(ran.parent.exists())
             self.assertEqual(self.worktrees(self.project), [f"worktree {self.project.resolve()}"])
+
+    def test_a_concurrent_lane_using_its_sent_tree_keeps_all_results_in_its_run_directory(self):
+        self.work_in_progress()
+        with contextlib.ExitStack() as primary, contextlib.ExitStack() as here, self.busy_farm_mac():
+            main_directory = cli.lane_directory(primary, self.project, "noted")
+            here.enter_context(self.busy_here())
+
+            def change():
+                (self.project / "notes.txt").write_text("a session edited this meanwhile\n")
+                here.close()
+
+            status, output = self.waits_there("noted", "waits for whichever Mac admits it first", change)
+
+        self.assertEqual(status, 0, output)
+        runs = self.project / ".build/queuekeeper" / cli.RUNS / "noted"
+        directory, = (path for path in runs.iterdir() if path.is_dir())
+        receipt = json.loads((directory / "source.json").read_text())
+        self.assertEqual(receipt["sent"], receipt["project"]["revision"])
+        ran = Path(receipt["sentTree"]["checkout"])
+        self.assertFalse(ran.parent.exists())
+        self.assertFalse((self.project / ".build/provisioned").exists())
+        self.assertEqual((directory / "results/note.txt").read_text(), "noted")
+        self.assertIn("Ran 1 tests", (directory / "run.log").read_text())
+        self.assertTrue((directory / "provision.log").is_file(), output)
+        self.assertFalse(main_directory.exists())
 
     def test_a_lane_run_from_what_was_sent_does_not_run_when_its_provision_lane_fails_in_the_worktree(self):
         self.work_in_progress()
