@@ -6685,7 +6685,7 @@ class Worker:
         """Finish the affected entries without attributing a test failure, and preserve a read-only diagnosis."""
         self.reset_no_verdict()
         if not self.alone: self.limit, self.suspects = None, 0
-        doctor_log = log.with_name(f"{log.stem}-doctor.log")
+        doctor_log = log.with_name(f"queue-doctor-{log.name}")
         self.say(f"sending back {', '.join(entry['id'] for entry in applied)}: {reason}; "
                  f"see {log}. Recording queue doctor in {doctor_log}")
         command = toolkit_command(self.checkout, ["queue", "doctor"], self.toolkit_root())

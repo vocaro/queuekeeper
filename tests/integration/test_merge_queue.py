@@ -2816,10 +2816,14 @@ class HoldKinds(Fixture):
         queue = mq.Queue(self.repo)
         entry = queue.read(identifier)
         worker = mq.Worker(queue)
+        gate_log = queue.logs / "round-gate.log"
+        earlier_log = queue.logs / "round-gate-doctor.log"
+        earlier_log.write_text("Earlier lane passed.\n")
         with patch.object(mq.processes, "run", side_effect=OSError("doctor unavailable")) as doctor, \
                 contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(worker.send_back_no_verdict([entry], queue.logs / "gate.log",
+            self.assertEqual(worker.send_back_no_verdict([entry], gate_log,
                                                          "the Mac did not admit the gate", worker), mq.FAILED)
+        self.assertEqual(earlier_log.read_text(), "Earlier lane passed.\n")
         self.assertEqual(doctor.call_args.args[0][-2:], ["queue", "doctor"])
         self.assertIsNone(queue.held())
         settled = queue.read(identifier)
