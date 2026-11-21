@@ -589,6 +589,8 @@ class RecoverRestorationTests(unittest.TestCase):
                                                                 "hostProcessStart")}})
         self.enabled = False
         self.actions = []
+        # Public reads still check the real lease, but their state comes from this offline fixture.
+        self.enterContext(patch.object(state, "_read", self.read))
 
     def read(self):
         self.actions.append(("read", self.enabled))
@@ -649,8 +651,10 @@ class RecoverRestorationTests(unittest.TestCase):
                          (True, "the run's session runner", False))
         self.assertIsNotNone(devices.moment(restoration["at"]))
         self.assertIn("not verified", restoration["reason"])
-        # The next session reads and changes VoiceOver under the same lease.
+        # The next session can read the restored state under the same lease.
+        self.actions.clear()
         self.assertIs(state.read(self.owner, record=self.record), False)
+        self.assertEqual(self.actions, [("read", False)])
         # And the run's end releases as usual.
         entry = self.record.update(devices.FOREGROUND, owner=self.owner, revision=entry["revision"], activeRun=False)
         self.record.release(devices.FOREGROUND, owner=self.owner, revision=entry["revision"], outcome="ended",
