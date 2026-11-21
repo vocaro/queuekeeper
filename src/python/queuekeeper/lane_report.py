@@ -48,6 +48,10 @@ SWIFT_TESTING_ISSUE = re.compile(r"^\S+ Test (?!run with \d)(.+?) recorded an is
 # qk simulator-tests' line for a device, which counts the tests that failed on it apart, as the device's result bundle or
 # its console does: `Executed 5 tests, 1 skipped, 2 failed`. The lines that name them are in the device's log alone.
 DEVICE_FAILED = re.compile(r"Executed \d+ tests(?:, \d+ skipped)?, (\d+) failed\b")
+# A script that calls qk results keep can run each device in a separate xcodebuild. The kept totals include
+# every device whether or not the lane script echoed xcodebuild's own totals.
+KEPT_XCODE_TOTAL = re.compile(r"^\S[^\n]*: (\d+) passed, (\d+) failed, (\d+) skipped, "
+                              r"(\d+) expected failure, (\d+) unmeasured \(xcodebuild status \-?\d+\)$", re.M)
 # unittest's heading for a failure or error, what ends its traceback, and a traceback's frame.
 UNITTEST_FAILED = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^()\n]*)\)", re.M)
 UNITTEST_END = re.compile(r"^={70}$|^-{70}\nRan \d", re.M)
@@ -112,7 +116,11 @@ def failed_tests(text):
     cases, tests = XCTEST_FAILED.findall(text), set(SWIFT_TESTING_FAILED.findall(text))
     if not cases and any(int(n) for n in XCTEST_TOTAL.findall(text)): return None, errors
     if not tests and SWIFT_TESTING_FAILED_RUN.search(text): return None, errors
-    return total + len(cases) + len(tests), errors
+    failed = total + len(cases) + len(tests)
+    # A sibling simulator can have a total even if this device or shard left neither results nor a test count.
+    if not failed and re.search(r"^FAIL [^\n]*cleanup was not confirmed and test counts are unavailable", text, re.M):
+        return None, errors
+    return failed, errors
 
 
 def unmeasured_count(text):
@@ -122,6 +130,12 @@ def unmeasured_count(text):
 def counts(text):
     """A log's {passed, failed, skipped, unmeasured}, passed and failed None when it cannot tell them apart, or None
     when it counts no test. An unmeasured test is reported as a skip, so it comes out of the skipped."""
+    # The keep totals already count the xcodebuild runs a script may also have echoed.
+    kept = KEPT_XCODE_TOTAL.findall(lane_results.outside_unittest(lane_results.unquoted(text)))
+    if kept:
+        passed, failed, skipped, expected, unmeasured = map(sum, zip(*(map(int, total) for total in kept)))
+        return {"passed": passed + expected, "failed": failed, "skipped": skipped, "unmeasured": unmeasured,
+                "ran": passed + expected + failed}
     found = lane_results.counted(text)
     if found is None or found[0] == 0: return None
     ran, skipped = found

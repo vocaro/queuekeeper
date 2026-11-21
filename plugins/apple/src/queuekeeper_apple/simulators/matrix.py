@@ -390,11 +390,11 @@ def result_lines(text):
             yield line
 
 
-def keep_failures(kind, results, tests):
+def keep_failures(kind, results, tests, text):
     """Write failure evidence the lane summary can read even when the parent log has only shard totals."""
     failed = []
     lines = []
-    for case in tests:
+    for case in tests or ():
         if case["outcome"] != "failed": continue
         failures = []
         lines.append(case["test"])
@@ -411,6 +411,14 @@ def keep_failures(kind, results, tests):
             failures.append(failure)
             lines.extend(f"  {part}" for part in (where + issue["message"]).splitlines())
         failed.append({"test": case["test"], "failures": failures})
+    if not failed:
+        for name, place in lane_report.failing(text):
+            lines.append(name + (f" at {place}" if place else ""))
+            failures = []
+            if place:
+                file, line = place.rsplit(":", 1)
+                failures.append({"file": file, "line": int(line)})
+            failed.append({"test": name, "failures": failures})
     if not failed: return
     folder = results / "failures" / KEPT / kind
     folder.mkdir(parents=True, exist_ok=True)
@@ -433,9 +441,10 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
     tests = test_cases(record) if record is not None and cases is None else cases
     try:
         folder.mkdir(parents=True, exist_ok=True)
+        text = log.read_text(errors="replace") if log.is_file() else None
         lines = None
-        if log.exists():
-            lines = list(result_lines(log.read_text(errors="replace")))
+        if text is not None:
+            lines = list(result_lines(text))
             (folder / f"{kind}.log").write_text("".join(f"{line}\n" for line in lines))
         (folder / f"{kind}.json").write_text(json.dumps({
             "run": kind, "keptBy": by, "status": status, "seconds": seconds, "log": log.name if lines is not None else None,
@@ -444,7 +453,7 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
             "suiteSeconds": suite_seconds(None, record) if record is not None else None,
             "tests": tests, "bundleUnread": unread or (UNREAD if tests is None else None if tests else NO_CASES)},
             indent=1) + "\n")
-        if status and tests: keep_failures(kind, Path(results), tests)
+        if status != 0: keep_failures(kind, Path(results), tests, text or "")
     except OSError as error:
         print(f"queuekeeper simulator-tests: {kind}'s results were not kept in {folder}: {error}", file=sys.stderr, flush=True)
         return None
@@ -648,6 +657,7 @@ class Run:
                    "-derivedDataPath", str(scratch), *passed]
         self.say(f"TEST {kind} ({device.udid}); log: {log}")
         started = time.monotonic()
+        cleanup = None
         try:
             status = processes.run(command, cwd=Path.cwd(), log_path=log, timeout=args.test_timeout,
                                    env={**os.environ, **forwarded(args.forward_env, os.environ),
@@ -656,16 +666,21 @@ class Run:
             kept(kind, log, bundle_record(bundle), None, None)
             if selection is not None: return lane_results.UNMEASURED, 0, 0, [], f"{kind}'s tests exceeded {args.test_timeout}s"
             return self.finish(kind, lane_results.UNMEASURED, f"the tests exceeded {args.test_timeout}s", log)
+        except processes.Unconfirmed as error:
+            cleanup = error
+            status = 1
         seconds = round(time.monotonic() - started)
-        text = log.read_text(errors="replace")
+        text = log.read_text(errors="replace") if log.is_file() else ""
         # Tests that skipped ran nothing, so they are reported beside the count, not in it. The result
         # bundle's record counts them; the console, with no bundle to read, is the fallback.
         record = bundle_record(bundle)
-        kept(kind, log, record, status, seconds)
+        kept(kind, log, record, None if cleanup is not None else status, seconds)
         recorded = bundle_results(bundle, kind, record)
         if recorded is not None: executed, skipped, from_bundle = recorded
-        else: executed, skipped, from_bundle = lane_results.executed_tests(text) or 0, lane_results.skipped_tests(text), []
+        else: executed, skipped, from_bundle = lane_results.executed_tests(text), lane_results.skipped_tests(text), []
         failed = failed_tests(record, text)
+        unknown = cleanup is not None and executed is None and not failed
+        executed = max(executed or 0, failed)
         # The failed tests are counted in this line, which is all a lane reads of the device's run: the device's own
         # lines that name them are in its log alone (vocaro/queuekeeper#81).
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "") + \
@@ -675,6 +690,13 @@ class Run:
         if recorded is not None: console = [line for line in console if "Test skipped - Unmeasured:" not in line]
         unmeasured = [*console, *from_bundle]
         self.tallies[kind] = tally(status, executed, skipped, len(unmeasured), failed)
+        if cleanup is not None:
+            detail = "cleanup was not confirmed" + (" and test counts are unavailable" if unknown else "")
+            if selection is not None:
+                self.shards[kind] = (1, executed, skipped, unmeasured, f"{kind}'s {detail}; log: {log}")
+            else:
+                self.finish(kind, status, f"{counted}; {detail}", log, seconds)
+            raise cleanup
         if selection is not None:
             with self.lock: self.seconds.update(suite_seconds(bundle, record))
             # Not "Executed N tests", which a lane would count beside the device's own total.
@@ -738,9 +760,9 @@ class Run:
         if thread is not None: thread.join()
 
     def shard(self, kind, number, device, built):
-        """Run one member's share of a sharded device's tests; its outcome goes to self.shards[kind]."""
+        """Run one member's share of a sharded device's tests; its outcome goes to self.shards under the shard label."""
         label = f"{kind}-{number + 1}"
-        record = lambda result: self.shards.setdefault(kind, {}).__setitem__(number, result)
+        record = lambda result: self.shards.__setitem__(label, result)
         if not self.boot(label, device):
             return record((self.results.pop(label), 0, 0, [], f"{label} did not boot"))
         xctestrun = built.result()
@@ -754,7 +776,8 @@ class Run:
         record(self.test(label, device, xctestrun, shares[number]))
 
     def shards_finished(self, kind):
-        results = [self.shards.get(kind, {}).get(number, (1, 0, 0, [], "no result")) for number in range(self.args.shards)]
+        results = [self.shards.get(f"{kind}-{number + 1}", (1, 0, 0, [], "no result"))
+                   for number in range(self.args.shards)]
         executed, skipped = sum(r[1] for r in results), sum(r[2] for r in results)
         failed = sum((self.tallies.get(f"{kind}-{number + 1}") or {}).get("failed", 0) for number in range(self.args.shards))
         unmeasured = [line for r in results for line in r[3]]
@@ -889,7 +912,8 @@ def failed_tests(record, text):
     if record is not None:
         try: return int(record[0]["failedTests"])
         except (KeyError, TypeError, ValueError): pass
-    return max((int(found) for found in FAILURES.findall(text)), default=0) + \
+    xctest = max((int(found) for found in FAILURES.findall(text)), default=0)
+    return max(xctest, len(lane_report.XCTEST_FAILED.findall(text))) + \
         len(set(lane_report.SWIFT_TESTING_FAILED.findall(text)))
 
 

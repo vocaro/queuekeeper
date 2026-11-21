@@ -153,6 +153,26 @@ class Parsing(unittest.TestCase):
                 "PASS iPhone-17-Pro: Executed 3 tests, 1 skipped in 40s\n")
         self.assert_counts(text, 3, 2, 1)
 
+    def test_the_kept_totals_count_both_devices_even_when_only_one_xctest_total_is_echoed(self):
+        iphone = "iPhone: 14 passed, 0 failed, 0 skipped, 0 expected failure, 0 unmeasured (xcodebuild status 0)"
+        ipad = "iPad: 13 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured (xcodebuild status 65)"
+        for raw in ("", "Test Suite 'All tests' passed at noon.\nExecuted 14 tests, with 0 failures\n",
+                    "PASS iPad: Executed 16 tests\n"):
+            with self.subTest(raw=raw):
+                counts = lane_report.counts(f"{raw}{iphone}\n{ipad}\n")
+                self.assertEqual((counts["passed"], counts["failed"], counts["ran"]), (27, 1, 28))
+        counts = lane_report.counts(
+            "iPad: 7 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured (xcodebuild status 65)\n"
+            "iPhone: 7 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured (xcodebuild status 65)\n"
+        )
+        self.assertEqual((counts["passed"], counts["failed"]), (14, 2))
+
+    def test_a_shard_without_cleanup_or_counts_does_not_make_its_devices_zero_failures_known(self):
+        log = ("FAIL iPad: Executed 8 tests in 2 shards; iPad-2's cleanup was not confirmed and "
+               "test counts are unavailable; log: iPad-2.log\n")
+        counts = lane_report.counts(log)
+        self.assertEqual((counts["ran"], counts["passed"], counts["failed"]), (8, None, None))
+
     def test_a_device_logs_tail_quoted_under_its_fail_line_counts_no_more_tests_and_names_the_failure(self):
         # An unsharded `qk simulator-tests` run quotes the last lines of the device's log under its line. BreezEPUB's
         # one filtered Swift Testing test read `2 ran, and the log does not say how many of them failed` and named

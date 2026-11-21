@@ -3,6 +3,7 @@ import json
 import os
 import signal
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import sys
 import tempfile
@@ -1262,6 +1263,42 @@ class SimulatorMatrixTests(unittest.TestCase):
         status, output = self.run_matrix(FAKE_SWIFT_TESTING_FAIL="iPad-Air-13-inch-M4")
         self.assertEqual(status, 1, output)
         self.assertIn("FAIL iPad-Air-13-inch-M4: the tests failed with status 65, Executed 1 tests, 1 failed", output)
+
+    def test_a_shard_with_unconfirmed_cleanup_keeps_the_failures_its_console_names(self):
+        args = SimpleNamespace(logs=self.root, shards=2, workers=0, passed=[], test_allowance=30, test_timeout=60,
+                               forward_env=[], app_accessibility=False)
+        run = matrix.Run(args)
+        device = SimpleNamespace(udid="fake")
+        failures = (
+            "✘ Test testWeight() recorded an issue at InkTests.swift:12:5: Expectation failed\n"
+            "✘ Test testWeight() failed after 0.1 seconds with 1 issue.\n"
+            "✘ Test testHeight() failed after 0.1 seconds with 1 issue.\n"
+        )
+        results = self.root / "results"
+        lines = []
+        kind = "iPad-Air-13-inch-M4"
+        shard = f"{kind}-2"
+
+        def unconfirmed(command, *, log_path, **options):
+            log_path.write_text(failures)
+            raise matrix.processes.Unconfirmed("xcodebuild exited with status 65; reservation retained")
+
+        run.shards[f"{kind}-1"] = (0, 8, 0, [], None)
+        with mock.patch.object(run, "say", side_effect=lambda *parts: lines.extend(parts)), \
+                mock.patch.object(matrix.processes, "run", side_effect=unconfirmed), \
+                mock.patch.object(matrix, "bundle_record", return_value=None), \
+                mock.patch.dict(os.environ, {matrix.RESULTS_VARIABLE: str(results)}):
+            with self.assertRaisesRegex(matrix.processes.Unconfirmed, "reservation retained"):
+                run.test(shard, device, "fixture.xctestrun", ["selection"])
+            run.shards_finished(kind)
+        self.assertEqual(run.results[kind], 1)
+        output = "\n".join(lines)
+        found = lane_report.counts(output)
+        self.assertEqual((found["passed"], found["failed"]), (8, 2), output)
+        self.assertIn(f"{shard}'s cleanup was not confirmed", output)
+        kept = lane_report.records(results)
+        self.assertEqual(lane_report.recorded_failing(kept),
+                         [("testWeight()", "InkTests.swift:12"), ("testHeight()", None)])
 
     def test_a_listing_that_fails_runs_nothing_and_fails(self):
         status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED), FAKE_ENUMERATE_FAIL="1")
