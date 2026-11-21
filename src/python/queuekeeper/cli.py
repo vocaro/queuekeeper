@@ -1890,20 +1890,6 @@ def perform(argv, report):
                                  f"({', '.join(group)}), and {strangers[0]} is none of them; pass a lane's own "
                                  "arguments to that lane")
             if group is None and args.serial: raise ValueError(f"--serial runs a lane group, and {args.lane} is not one")
-            # Or why it runs only on another Mac, as a key a plugin added says. It waits there for its
-            # admission and never falls back to this Mac, where its result would not be the one asked for.
-            placed = plugins.placement(config["lanes"], args.lane) if reason is None else None
-            # The farm's Macs that may run it, when a key says only some may: it is offered to no other.
-            only = remote.eligible(placed[0]) if placed else None
-            if placed and plugins.HERE not in placed[0] and beside is None:
-                if args.here or args.serial or os.environ.get(resources.TOKEN):
-                    raise ValueError(f"{args.lane} runs only on another Mac of the farm ({placed[1]}), so it cannot run here"
-                                     + (" with --here" if args.here else ""))
-                if unsent:
-                    raise ValueError(f"{args.lane} not run: it runs only on another Mac of the farm ({placed[1]}), and {unsent}")
-                if exclude is not None:
-                    return offload_wait(root, config, args.lane, extra, args.expect, exclude, only, why=placed[1])
-                return remote.there_lane(root, config, args.lane, extra, args.expect, placed[1], hosts=only)
             # What this Mac's own settings decline: a kind of work, or a lane whose labels it lacks (remote.here_unfit;
             # the owner's decision, 2026-11-17, vocaro/queuekeeper#211). Such a lane runs only on the farm's other Macs,
             # each judged by its own settings as it is read. Work nested in an admission runs inside it, and work
@@ -1924,9 +1910,8 @@ def perform(argv, report):
                 # Asked to start now or not at all, as the second gate of a queue's pair is: on another Mac, once.
                 if args.if_free:
                     return remote.first(root, config, args.lane, extra, args.expect, fallback=False,
-                                        queue_gate=queue_gate, exclude=exclude, hosts=only).status
-                others = tuple(host for host in (only if only is not None else remote.farm.destinations())
-                               if host != exclude)
+                                        queue_gate=queue_gate, exclude=exclude).status
+                others = tuple(host for host in remote.farm.destinations() if host != exclude)
                 if not others and exclude:
                     # A queue's second gate, kept off the first gate's Mac, which is the only other that takes work.
                     print(f"queuekeeper: {args.lane} not run: {declined}, and the farm has no Mac but the one that gates "
@@ -1946,10 +1931,10 @@ def perform(argv, report):
                     raise ValueError(f"{args.lane} stays on this Mac ({reason}), so {away} cannot offer it "
                                      "to another Mac")
                 if args.serial: raise ValueError(f"--serial runs a lane group here, and {away} never does")
-                if args.offload_wait: return offload_wait(root, config, args.lane, extra, args.expect, exclude, only)
+                if args.offload_wait: return offload_wait(root, config, args.lane, extra, args.expect, exclude, None)
                 # The caller runs the lane under its own admission when another Mac declines it.
                 return remote.first(root, config, args.lane, extra, args.expect, fallback=False,
-                                    queue_gate=queue_gate, exclude=exclude, hosts=only).status
+                                    queue_gate=queue_gate, exclude=exclude).status
             # Nested work runs inside the admission it inherits, here. The serial reference runs here too.
             inherited = bool(os.environ.get(resources.TOKEN))
             reason = reason or ("--here" if args.here else "--serial runs the serial reference here" if args.serial
@@ -1961,9 +1946,8 @@ def perform(argv, report):
             if beside is not None:
                 if reason or unsent or unadmitted(lane):
                     return declined_everywhere(args.lane, f"it cannot gate beside the other half: {reason or unsent}")
-                hosts = tuple(remote.farm.destinations() if only is None else only)
-                here = declined is None and (not placed or plugins.HERE in placed[0]) and (
-                    not lane.get("foreground") or second)
+                hosts = tuple(remote.farm.destinations())
+                here = declined is None and (not lane.get("foreground") or second)
                 offered = remote.lane_offer(root, config, args.lane, extra, args.expect, here, True, None, hosts,
                                             strict=True)
                 offered.choosing = here
@@ -1971,7 +1955,7 @@ def perform(argv, report):
                 # The Mac with spare capacity for the lane and the most headroom, and while none has,
                 # whichever admits the lane first (remote.first, admitted_here).
                 offered = remote.first(root, config, args.lane, extra, args.expect, queue_gate=queue_gate,
-                                       exclude=exclude, hosts=only)
+                                       exclude=exclude)
                 if not isinstance(offered.status, str): return offered.status
                 reason = offered.status
             # Every lane is admitted, a light one as heavy work, except a self lane, whose script admits its parts.

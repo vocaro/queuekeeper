@@ -6662,8 +6662,7 @@ class Worker:
             newer_paths = set().union(*paths[split:])
             older, newer = lanes_of(config, older_paths), lanes_of(config, newer_paths)
             if offerable(config, older) or offerable(config, newer): continue
-            if any(settings.get(lane, {}).get("foreground")
-                   or lane in settings and plugins.placement(settings, lane) for lane in [*older, *newer]):
+            if any(settings.get(lane, {}).get("foreground") for lane in [*older, *newer]):
                 continue
             final = {older[-1], newer[-1]}
             # The first gate will choose its own Mac. Check both orders before deferring part of its batch.
@@ -7124,10 +7123,8 @@ class Worker:
         settings = config.get("lanes", {})
         if (isolating or len(hosts) > 1) and any(settings.get(lane, {}).get("foreground") for lane in lanes): return
         checks = quick_lanes(config, code=True)
-        if isolating:
-            # A plugin can choose its own hosts before qk run applies the queue's exclusion. Quick checks run here.
-            if any(lane in settings and plugins.placement(settings, lane) for lane in lanes): return
-            if mac == HERE_MAC and checks.intersection(lanes): return
+        # Quick checks run here.
+        if isolating and mac == HERE_MAC and checks.intersection(lanes): return
         # Any Mac but the batch's, this Mac among them. Isolation and a disjoint split only use capacity free now.
         placed = apart(mac, hosts, waits=not (isolating or parallel))
         if placed is None: return

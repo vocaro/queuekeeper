@@ -242,12 +242,6 @@ class LaneKey:
         """The command the lane runs, given the one it would run otherwise."""
         return command
 
-    def placement(self, lane):
-        """(the Macs that may run the lane, why) for a lane only some Macs may run, or None for one any may run. The
-        Macs are a set of HERE, for this Mac, and the SSH destinations of the farm's Macs that take work now.
-        ValueError says that no Mac can run it."""
-        return None
-
 
 # key -> LaneKey: the keys plugins add to a lane.
 LANE_KEYS = {}
@@ -285,30 +279,6 @@ def lane_command(lane, command):
     for key, added in LANE_KEYS.items():
         if key in lane: command = added.command(lane, command)
     return command
-
-
-# This Mac, among the Macs a key a plugin added says may run its lane (LaneKey.placement); the farm's other Macs
-# are there by their SSH destinations.
-HERE = "here"
-
-
-def placement(lanes, name):
-    """(the Macs that may run it, why) when a key a plugin added says only some Macs may run the lane name, or
-    a lane of its group, else None: a set of HERE and the SSH destinations of the farm's Macs. A group runs its
-    lanes on one Mac, so the Macs are those every lane of it may run on, and lanes that share none are refused."""
-    macs, said = None, []
-    for member in [name, *lanes[name].get("parallel", [])]:
-        for key, added in LANE_KEYS.items():
-            if key not in lanes[member]: continue
-            try: placed = added.placement(lanes[member])
-            except ValueError as error: raise ValueError(f"{member}.{key}: {error}") from None
-            if not placed: continue
-            macs = frozenset(placed[0]) if macs is None else macs & frozenset(placed[0])
-            said.append(f"{member}.{key}: {placed[1]}")
-    if macs is None: return None
-    if not macs:
-        raise ValueError(f"{name} runs its lanes on one Mac, and they must run apart ({'; '.join(said)})")
-    return macs, "; ".join(said)
 
 
 def reads_screen(lane):

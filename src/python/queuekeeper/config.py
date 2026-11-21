@@ -1046,9 +1046,7 @@ def stays(lanes, name):
     if lane.get("here"): return f"the lane says: {lane['here']}"
     for member in lane.get("parallel", []):
         if lanes[member].get("here"): return f"its lane {member} says: {lanes[member]['here']}"
-    # A key a plugin added may keep the lane here too.
-    placed = hooks.placement(lanes, name)
-    return placed[1] if placed and placed[0] == {hooks.HERE} else None
+    return None
 
 
 def model(name, lane):
