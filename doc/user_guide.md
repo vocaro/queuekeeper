@@ -1863,6 +1863,8 @@ its cause and where the Mac sets that limit.
 
 **Lanes that stay on this Mac:**
 
+- `qk run provision`, which prepares the checkout in hand. `qk remote run provision` explicitly
+  prepares a checkout on another Mac.
 - a lane that says `"here": "REASON"`, such as one needing a physical device or this Mac's GPU
   (the reason is required);
 - a `self` lane, and the `qk admit` commands its script runs, since its parts share build
