@@ -8206,14 +8206,22 @@ class Unreachable(Fixture):
             with self.subTest(name): self.assertFalse(mq.unreached(said))
 
     def test_a_fetch_that_did_not_reach_the_remote_is_tried_again(self):
+        # Exercise every transport error through the same fetch the worker uses. One round also
+        # checks that a recovered fetch lets the worker gate and land the entry.
         for name, said in UNREACHED.items():
-            with self.subTest(name):
-                self.commit(name.replace(" ", "-"), name.replace(" ", "-"))
-                [identifier] = self.add(name.replace(" ", "-"))
-                with patch("builtins.print"), self.remote_says(said, {1, 2}) as (fetches, slept): self.work()
-                self.assertEqual(self.state(identifier)["state"], "landed")
-                self.assertIsNone(mq.Queue(self.repo).held())
+            with self.subTest(name), self.remote_says(said, {1, 2}) as (fetches, slept):
+                self.assertTrue(mq.fetch_main(self.repo, say=lambda _: None))
+                self.assertEqual(len(fetches), 3)
                 self.assertEqual(slept, list(mq.BACKOFF[:2]))
+
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch("builtins.print"), self.remote_says(UNREACHED["ssh name"], {1, 2}) as (_, slept):
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIsNone(mq.Queue(self.repo).held())
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(slept, list(mq.BACKOFF[:2]))
 
     def test_a_passed_gate_survives_an_outage_at_the_fetch_before_the_push(self):
         """The case of 2026-11-02: the round's own fetch worked, the push's did not, for a while."""
