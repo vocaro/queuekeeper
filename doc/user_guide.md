@@ -2460,7 +2460,7 @@ qk simulator-pool list
   hold it. `qk doctor` and `qk disk --delete` delete Xcode's default simulators when they are shut down
   and unused.
 - **Before releasing**, copy evidence off: the next session resets the member.
-- Never delete or rename a member by hand; pruning does that.
+- Keep the names of a configured pool's members and leave their deletion to pruning.
 
 **Reset, keep or erase.** By default a take resets the member from its kind's *warmed template*, a
 simulator that has finished its first boot and first used VoiceOver and the system voices, so the member
@@ -2486,6 +2486,19 @@ for two hours that nothing accounts for; it also runs before work goes to anothe
 `qk doctor`. A member unused for an hour may be deleted, except each kind's lowest-numbered one, which
 goes only when you ask (`qk simulator-pool prune` or `qk disk`) and every member of the kind has been
 unused for 7 days. `qk simulator-pool list` shows each member and template and whether it may be pruned.
+
+**Renaming a pool.** Changing `simulatorPool` in `queuekeeper.json` leaves the old pool's members and
+warmed templates on each Mac. The project owner can remove them once the rename has landed, no
+project or script still selects the old pool, and all runs that used it have finished.
+
+1. On each Mac that hosted the old pool, run `qk simulator-pool list --pool "OLD POOL"`. Identify the
+   old pool's numbered members and its `OLD POOL LABEL template (RUNTIME)` templates by full name
+   and UDID. Check ownership carefully if other pools share the same name prefix.
+2. Check each device is `Shutdown`. Read that Mac's device record (`qk devices path` gives its path)
+   and check every entry keyed by the simulator's full name or naming its UDID has been released.
+   If a simulator is still held, have its holder finish and release it before continuing.
+3. The owner runs `xcrun simctl delete UDID` for each confirmed device on its Mac. Run the old
+   pool's list command again on each Mac and confirm that none of the old members or templates remain.
 
 **Stale explicit modules.** Derived data reused across a dependency change can fail with `has been
 modified since the module file`. `qk simulator-tests`, and any Apple lane's `xcodebuild` or `swift`
