@@ -3813,20 +3813,33 @@ class RemoteTests(unittest.TestCase):
     def busy_here(self):
         return self.busy_mac("HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE")
 
+    def quick_dispatcher(self, *arguments):
+        """Run the toolkit's launcher with shorter local admission waits and retry intervals.
+
+        The shorter intervals apply to this dispatcher process. Both Macs still use real admission,
+        and their holders stay busy until the test releases them.
+        """
+        launch = (
+            "from pathlib import Path\n"
+            "import runpy, sys\n"
+            "sys.argv = sys.argv[1:]\n"
+            "sys.path.insert(0, str(Path(sys.argv[0]).resolve().parents[1] / 'src/python'))\n"
+            "from queuekeeper import remote\n"
+            "remote.FREE_WAIT = 1\n"
+            "remote.OVERFLOW_WAIT = 2\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')"
+        )
+        return [sys.executable, "-c", launch, str(self.toolkit / "bin/qk"), "--project", str(self.project), *arguments]
+
     def waits_there(self, lane, phrase, release, hold=0):
         """Run `qk run LANE` from a dispatcher of its own, call release once its output has said phrase
         and the dispatcher has gone on waiting for hold seconds more, and return its status and output
         once it has ended."""
         log = Path(self.temp.name) / "dispatch.log"
         with log.open("w") as output:
-            dispatcher = subprocess.Popen([sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project),
-                                           "run", lane], stdout=output, stderr=subprocess.STDOUT)
+            dispatcher = subprocess.Popen(self.quick_dispatcher("run", lane), stdout=output, stderr=subprocess.STDOUT)
         try:
-            # A bound for a busy host, not a measure: the phrase ends the wait.
-            deadline = time.monotonic() + stretched(120)
-            while phrase not in log.read_text() and dispatcher.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.1)
-            self.assertIn(phrase, log.read_text())
+            self.until_said(log, phrase, dispatcher)
             time.sleep(hold)
             self.assertIsNone(dispatcher.poll(), log.read_text())
             self.assertFalse((self.project / ".build/queuekeeper" / lane).exists(), log.read_text())
@@ -6533,21 +6546,9 @@ exec {shlex.quote(real)} "$@"
     def admits_after_waiting(self, words, release, directory=None):
         """`qk admit -- WORDS` from directory, the checkout's pkg by default, in a process of its own: call release
         once it waits for whichever Mac admits it first, and return its status and output once it has ended."""
-        # One second is enough for the held local probe to decline and the overflow marker to appear.
-        # Patch the dispatcher process so the fake second Mac uses the original toolkit.
-        launch = (
-            "from pathlib import Path\n"
-            "import runpy, sys\n"
-            "sys.argv = sys.argv[1:]\n"
-            "sys.path.insert(0, str(Path(sys.argv[0]).resolve().parents[1] / 'src/python'))\n"
-            "from queuekeeper import remote\n"
-            "remote.FREE_WAIT = 1\n"
-            "runpy.run_path(sys.argv[0], run_name='__main__')"
-        )
         log = Path(self.temp.name) / "admit.log"
         with log.open("w") as output:
-            admitting = subprocess.Popen([sys.executable, "-c", launch, str(self.toolkit / "bin/qk"),
-                                          "--project", str(self.project), "admit", "--", *words],
+            admitting = subprocess.Popen(self.quick_dispatcher("admit", "--", *words),
                                          cwd=directory or self.project / "pkg",
                                          stdout=output, stderr=subprocess.STDOUT,
                                          env={key: value for key, value in os.environ.items()
