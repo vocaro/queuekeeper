@@ -2,10 +2,10 @@
 
 Read [the user guide's agent section](doc/user_guide.md#for-agents) for exit codes, verification, landing and recovery,
 and [the developer guide](doc/developer_guide.md) for how Queuekeeper works inside.
-Queuekeeper requires macOS and Python 3.14 or newer; its Python package has no runtime dependencies.
+Queuekeeper requires macOS and Python 3.14 or newer. Its Python package has no runtime dependencies.
 Use this checkout's launcher, `python3 scripts/qk`, to operate on this repository.
-Edit Queuekeeper only in a linked worktree; never switch branches or leave edits in the shared checkout,
-`~/Development/queuekeeper`, which every project's launcher runs from. `qk` and `qk doctor` say when it is off `main`.
+Edit Queuekeeper only in a linked worktree. Keep the shared Queuekeeper checkout clean and on `main`
+because other projects may load Queuekeeper from it. See [working on Queuekeeper while it is in use](doc/developer_guide.md#changing-queuekeeper-while-work-runs).
 
 ## Claim before you take work
 
@@ -33,8 +33,9 @@ Replace the example with the relevant module, class or test. Run the configured 
 use `python3 scripts/qk admit -- COMMAND` for other build commands. Do not run bare
 `python3 -m unittest`, `swift test` or `xcodebuild`. Use `--unadmitted` only when testing a runner
 itself, as described in [the user guide's admission section](doc/user_guide.md#admission).
-Run `python3 tools/dashboard-screenshots.py`, which retakes the README's screenshots with this Mac's Chrome,
-directly and not through admission ([why](doc/developer_guide.md#the-readmes-screenshots)).
+When a change affects how the dashboard looks, retake the README's screenshots by running
+`python3 tools/dashboard-screenshots.py` directly. The script uses local Chrome and writes to this
+checkout. See [the screenshot instructions](doc/developer_guide.md#the-readmes-screenshots).
 
 No hosted runner runs Queuekeeper's tests or builds: the merge queue's gate on the owner's Macs is its CI.
 Add no GitHub Actions or other hosted-runner workflow that runs them, not even for outside pull requests,
@@ -60,7 +61,8 @@ Interrupting the wait does not withdraw the entry. After interruption or settlem
 record with `python3 scripts/qk queue result ID --json`; use this record for the verdict, failures
 and artifact locations, since a terminal's last lines may omit them. To keep waiting, use
 `python3 scripts/qk queue wait ID --json`, or repeat the same `land --wait --json` to follow the
-existing entry. Omit `--json` for text output. Check the result before submitting replacement work.
+existing entry. Omit `--json` for text output. A successful `queue result` exit confirms the lookup.
+Check `state` and `terminal` in the result before submitting replacement work.
 For complete log output, use `python3 scripts/qk queue logs ID --json` and continue with its
 `nextCursor` through `--cursor CURSOR`. Retain each chunk; a terminal tail is not the full log.
 Use `queue status` and `queue doctor` to investigate holds; fix and resume a session's hold yourself,

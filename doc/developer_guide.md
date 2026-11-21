@@ -22,8 +22,8 @@ this guide assumes you know what a lane, a gate, admission and the farm are.
 
 [AGENTS.md](../AGENTS.md) has the rules every session follows. In short:
 
-- **Edit only in a linked worktree.** `~/Development/queuekeeper` is the shared checkout every
-  project's `qk` runs from, so it stays on `main`.
+- **Edit only in a linked worktree.** Keep the shared Queuekeeper checkout clean and on `main`
+  because other projects may load Queuekeeper from it.
 - **Every test and build goes through admission**, even a single test:
 
   ```sh
