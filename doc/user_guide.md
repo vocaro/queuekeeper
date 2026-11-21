@@ -615,6 +615,16 @@ one of `queue.lanes` or else `gate`, lists `inputs`: the globs of the paths that
   selected, `skipped`, the others, and for a lane group `members`, with the group's lanes that
   `ran` and were `skipped`. It is what the paths called for: a bisect's half or a stacked gate may
   have run more. The `entry.landed` event carries it too.
+- **A full run on `main` is the backstop.** Once the queue has drained, its worker gates
+  `origin/main` whole, every gate lane and every lane of a group, when landings with a partial
+  gate have had no whole gate since: five of them, or the oldest four hours old. A later landing
+  whose own gate ran every lane covers the ones before it, so a busy project rarely needs the run.
+  A pass records `fullRun` on each. A failure runs the failed lane at each of those landings in
+  turn, oldest first, and holds the queue, naming the first at which it fails: its paths skipped
+  that lane, so a lane's `inputs` leave out a path it reads. Land a fix, or the corrected `inputs`,
+  and resume the queue. `"queue": {"fullRun": {"landings": 2, "minutes": 60}}` on `main` changes
+  when it runs, and `"fullRun": false` turns it off, which leaves `qk doctor`'s list as the only
+  guard.
 - **`qk doctor` lists what skips.** Its `notes` count the tracked files that no gate lane's
   `inputs` and no `queue.unread` path names, and `affectedPaths.skipping` lists them all. A glob
   that matches no tracked file is a warning, listed in `affectedPaths.unmatched`.

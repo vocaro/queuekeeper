@@ -541,6 +541,18 @@ def matches(path, pattern):
 EVERY_LANE = ("queuekeeper.json", "queuekeeper-workspace.json")
 
 
+# When the queue's worker gates main whole for the landings whose gates their paths narrowed, where main's
+# queue.fullRun does not say: once this many of them are covered by no whole gate since, or the oldest has waited
+# this many minutes (vocaro/queuekeeper#289).
+FULL_RUN = {"landings": 5, "minutes": 240}
+
+
+def full_run(config):
+    """main's queue.fullRun as the worker reads it: {"landings": N, "minutes": M}, or None where it is false."""
+    declared = config.get("queue", {}).get("fullRun", {})
+    return None if declared is False else {**FULL_RUN, **declared}
+
+
 def lane_inputs(config):
     """{gate lane: its inputs} for the gate lanes (gate_lanes) of main that give inputs, the globs of the paths that
     affect each: a batch runs such a lane only when one of its changed paths matches one (vocaro/queuekeeper#289).
@@ -759,9 +771,18 @@ def merge_queue(queue, lanes):
     if isinstance(queue, dict) and "spelling" in queue: raise ValueError(f"queue.spelling {SPELLING_GONE}")
     if isinstance(queue, dict): unread_retired(queue)
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOverChecks", "hookCoveredBy", "unread",
-                                                    "noVerdictRuns", "followLandings", "preflight", "affected"}:
+                                                    "noVerdictRuns", "followLandings", "preflight", "affected",
+                                                    "fullRun"}:
         raise ValueError("queue supports only lanes, unread, affected, carryOverChecks, hookCoveredBy, noVerdictRuns, "
-                         "followLandings and preflight")
+                         "followLandings, preflight and fullRun")
+    if "fullRun" in queue:
+        declared = queue["fullRun"]
+        if declared is not False and (not isinstance(declared, dict) or not declared or set(declared) - set(FULL_RUN)
+                                      or any(type(value) is not int or value < 1 for value in declared.values())):
+            raise ValueError("queue.fullRun is false, never to gate main whole after landings whose gates their paths "
+                             "narrowed, or an object of landings, how many of them may wait for it, and minutes, how "
+                             f"long the oldest may, each a positive integer ({FULL_RUN['landings']} and "
+                             f"{FULL_RUN['minutes']} where unset)")
     if "unread" in queue:
         if queue["unread"] is not False and not unread_object(queue["unread"], lanes):
             raise ValueError("queue.unread is false to gate every batch and carry nothing over, or an object of "

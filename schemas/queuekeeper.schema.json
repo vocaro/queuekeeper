@@ -668,6 +668,29 @@
             }
           }
         },
+        "fullRun": {
+          "description": "When the queue's worker, once the queue has drained, gates main whole, every gate lane and every lane of a group, for the landings whose gates their paths narrowed by lane inputs or queue.affected and that no whole gate has covered since. A failure holds the queue and names the first such landing at which the failed lane fails. False never runs it. Read from main",
+          "oneOf": [
+            {"const": false},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "landings": {
+                  "description": "How many such landings may wait for the full run; 5 where unset",
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "minutes": {
+                  "description": "How many minutes the oldest such landing may wait for it; 240 where unset",
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          ]
+        },
         "noVerdictRuns": {
           "description": "How many runs in a row of a batch's gate may give no verdict (exit 3, 75 or 78) before the queue holds; 3 where it is unset. Read from main, never from a branch",
           "type": "integer",

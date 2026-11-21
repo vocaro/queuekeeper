@@ -198,7 +198,13 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   paths selected as the landing's `partialGate` (`partial_gate`), worked out from the paths so
   that a push that is reconciled or follows a kept verdict records the same, and
   `carried_by_rules` reads a group's chosen lanes, so a move of `main` by a path of a lane left
-  out carries the pass over. The push recomputes this to
+  out carries the pass over. `Worker.full_run`, which `run` calls between `drain` and `catch_up`,
+  is the backstop: for the landings `owed_full_run` finds, those with a `partialGate` that neither
+  a full run nor a later landing gated whole on a base holding them has covered, it gates
+  `origin/main` with `lanes_of(config)`, no paths, and so every lane. `Queue.note_landed` records
+  `fullRun` or `fullRunFailed`, the main it ran on, on those landed entries; a main that failed is
+  not run again until it moves. On a failure it runs the failed lane before the oldest of them and
+  at each `landedTip` in turn, and raises a session's `Hold` naming the first that fails. The push recomputes this to
   decide whether `queue.hookCoveredBy`'s lanes ran, and records it as the lanes a carry-over by path
   must avoid.
 - **Changelog conflicts.** A conflict made only of whole lines both sides added directly below one

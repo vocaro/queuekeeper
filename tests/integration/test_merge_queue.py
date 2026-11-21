@@ -3502,6 +3502,60 @@ class Inputs(Affected):
         self.work()
         self.assertNotIn("partialGate", self.state(whole))
 
+    def full_run_after(self, landings):
+        config = self.config()
+        config["queue"]["fullRun"] = {"landings": landings}
+        self.publish(config, f"A full run on main after {landings}")
+
+    def test_a_full_run_gates_main_whole_once_enough_partial_landings_are_owed_one(self):
+        self.full_run_after(2)
+        self.commit("src/a.py", "a")
+        [first] = self.add("a")
+        self.work()
+        self.assertEqual((self.gates(), self.app_gates()), (1, 0))
+        self.assertNotIn("fullRun", self.state(first))
+        self.commit("app/b.py", "b")
+        [second] = self.add("b")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        # The second landing's own gate, then every lane on main.
+        self.assertEqual((self.gates(), self.app_gates()), (2, 2), said.getvalue())
+        self.assertIn("full run on main at", said.getvalue())
+        head = run(self.repo, "git", "rev-parse", "origin/main")
+        self.assertEqual([self.state(identifier)["fullRun"] for identifier in (first, second)], [head, head])
+        self.assertEqual(mq.owed_full_run(self.repo, mq.Queue(self.repo).all()), [])
+        self.assertIsNone(mq.Queue(self.repo).held())
+
+    def test_a_landing_gated_whole_since_covers_the_partial_ones_before_it(self):
+        self.full_run_after(2)
+        for name, path in (("a", "src/a.py"), ("b", "shared/b.py"), ("c", "app/c.py")):
+            self.commit(path, name)
+            self.add(name)
+            self.work()
+        # a is covered by b's whole gate, which ran on a main that holds it, and c alone is owed a full run.
+        self.assertEqual([entry["subject"] for entry in mq.owed_full_run(self.repo, mq.Queue(self.repo).all())],
+                         ["Add app/c.py"])
+        self.assertEqual((self.gates(), self.app_gates()), (2, 2))
+
+    def test_a_full_run_that_fails_holds_the_queue_and_names_the_first_landing_that_breaks_the_lane(self):
+        """A path no lane's inputs name, which the lanes read all the same: the landing skips the gate, and only the
+        full run finds it."""
+        self.full_run_after(2)
+        self.commit("tools/fine.txt", "fine")
+        self.add("fine")
+        self.work()
+        self.commit("bad-input", "bad")
+        [bad] = self.add("bad")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        self.assertEqual(self.state(bad)["state"], "landed")
+        held = mq.Queue(self.repo).held()
+        self.assertIn("the full run on main at", held, said.getvalue())
+        self.assertIn(f"it first fails where {bad} landed", held)
+        self.assertIn("no gate lane ran", held)
+        # The whole gate, the lane before the oldest of them, at the first and at the second.
+        self.assertEqual(self.gates(), 4, said.getvalue())
+        head = run(self.repo, "git", "rev-parse", "origin/main")
+        self.assertEqual(self.state(bad)["fullRunFailed"], head)
+
     def test_a_lane_without_inputs_runs_for_every_change(self):
         config = self.config()
         del config["lanes"]["gate"]["inputs"]
@@ -3730,6 +3784,17 @@ class InputRules(unittest.TestCase):
         # A lane of the group that gives no inputs reads every path.
         loose = self.group({**self.GROUP, "unit": {"command": ["true"]}})
         self.assertFalse(mq.carried_by_rules("app/x.swift", loose, set(), ["gate"], {"gate": ["unit"]}))
+
+    def test_queue_full_run_is_false_or_positive_counts_and_only_mains(self):
+        self.assertEqual(configuration.full_run(self.config()), {"landings": 5, "minutes": 240})
+        self.assertEqual(configuration.full_run(self.config(fullRun={"minutes": 30})), {"landings": 5, "minutes": 30})
+        self.assertIsNone(configuration.full_run(self.config(fullRun=False)))
+        self.parsed(self.LANES, fullRun=False)
+        self.parsed(self.LANES, fullRun={"landings": 1, "minutes": 1})
+        for refused in (True, {}, {"landings": 0}, {"minutes": 1.5}, {"hours": 1}, 5):
+            with self.subTest(refused=refused), self.assertRaisesRegex(ValueError, "queue.fullRun"):
+                self.parsed(self.LANES, fullRun=refused)
+        self.assertIn("fullRun", mq.MAIN_ONLY)
 
     def test_only_main_may_give_inputs(self):
         own = mq.as_batch(json.loads(json.dumps(self.config())))

@@ -64,7 +64,7 @@ from . import events, landed_cleanup, pre_push, recovery, restartable, worktree_
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
-    siblings_in, stays, toolkit_command, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
+    siblings_in, stays, toolkit_command, full_run, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -748,7 +748,7 @@ def behind_main_config(root, tip, said):
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
 # paths that skip the gate, as each gate lane's inputs do too (as_batch), and the preflight lanes, which can be none. A batch whose lanes the queue runs, because main
 # names none yet, gives none of them (#10, vocaro/queuekeeper#69).
-MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "affected")
+MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "affected", "fullRun")
 
 
 def as_batch(config):
@@ -933,8 +933,8 @@ def partial_gate(config, changed):
 
 def partial_said(partial):
     """A landing's partial gate (partial_gate) as a line says it."""
-    parts = [f"of the gate lanes, {spoken(partial['lanes'])} ran and {spoken(partial['skipped'])} did not"] \
-        if partial.get("skipped") else []
+    parts = [(f"of the gate lanes, {spoken(partial['lanes'])} ran and {spoken(partial['skipped'])} did not"
+              if partial["lanes"] else "no gate lane ran")] if partial.get("skipped") else []
     parts += [f"of {name}'s lanes, {', '.join(found['ran'])} ran and {', '.join(found['skipped'])} did not"
               for name, found in partial.get("members", {}).items()]
     return "; ".join(parts) + ": no path it changes is among the inputs of what did not run"
@@ -1947,6 +1947,15 @@ class Queue:
                 current.update(fields)
                 self.save(current)
 
+    def note_landed(self, entries, **fields):
+        """Fields of landed entries' records: what a full run on main found of them (Worker.full_run)."""
+        with self.locked():
+            for entry in entries:
+                current = self.read(entry["id"])
+                if current and current["state"] == LANDED:
+                    current.update(fields)
+                    self.save(current)
+
     def mark_publishing(self, entries, marker):
         """Record marker, the push about to go (Worker.push), on each of entries still waiting."""
         for entry in entries: self.record(entry, publishing=marker)
@@ -2633,6 +2642,20 @@ def covered(root, entry, entries):
                for other in entries if other["state"] == LANDED)
 
 
+def owed_full_run(root, entries):
+    """The landings whose gates their paths narrowed (partialGate) that nothing has gated whole since, oldest first:
+    no full run of main (Worker.full_run, which records fullRun), and no later landing whose own gate ran every lane
+    on a base that holds them. A wrong lane input shows only in such a run (vocaro/queuekeeper#289)."""
+    def gated_whole(entry):
+        return any(other.get("gatedOn") and not other.get("partialGate")
+                   and other.get("settled", 0) >= entry.get("settled", 0)
+                   and git(root, "merge-base", "--is-ancestor", entry["landedAs"], other["gatedOn"]).returncode == 0
+                   for other in entries if other["state"] == LANDED)
+    return sorted((entry for entry in entries if entry["state"] == LANDED and entry.get("partialGate")
+                   and entry.get("landedAs") and not entry.get("fullRun") and not gated_whole(entry)),
+                  key=lambda entry: entry.get("settled", 0))
+
+
 def remove(queue, identifier, quiet=False, why=None):
     """Take an entry out. why, from `qk queue remove --why`, is recorded as removedWhy, which `qk queue result`, `wait`
     and `inbox` and the entry's recovery say. A removal by the session that submitted the entry confirms it (inbox), as
@@ -2688,7 +2711,11 @@ def describe(entry):
     if entry.get("docsOnly"):
         line += f"\n         docs lanes only ({', '.join(entry['docsOnly'])}): no gate of that commit"
         if entry.get("docsNamed"): line += f"; queue.unread.paths named {named_said(entry['docsNamed'])}"
-    if entry.get("partialGate"): line += f"\n         partial gate: {partial_said(entry['partialGate'])}"
+    if entry.get("partialGate"):
+        line += f"\n         partial gate: {partial_said(entry['partialGate'])}"
+        if entry.get("fullRun"): line += f"\n         covered since by the full run on main at {entry['fullRun'][:12]}"
+        elif entry.get("fullRunFailed"):
+            line += f"\n         the full run on main at {entry['fullRunFailed'][:12]} failed with it on main"
     if entry.get("ungated"):
         line += (f"\n         landed without the gate, on {', '.join(entry['ungated']['lanes']) or 'no lane'}, because "
                  f"{entry['ungated']['why']}; the next gate on main covers it")
@@ -4998,7 +5025,8 @@ class Worker:
         # The lanes the batch's own paths select, by which main moving under it may carry over (carried_by_rules).
         ran = None if docs or ungated or not selects_by(config) else lanes_of(config, changed)
         # What the landing's record says of a gate its paths narrowed (partial_gate).
-        partial = None if docs or ungated else partial_gate(config, changed)
+        partial = None if ungated else partial_gate(config, changed) if not docs else \
+            {"lanes": [], "skipped": gate_lanes(config)} if any(skips_by_inputs(config, path) for path in changed) else None
         unsure = False
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
@@ -7293,6 +7321,73 @@ class Worker:
             self.drop_stacked("the worker stops")
             with contextlib.suppress(OSError): self.queue.round_file.unlink()
 
+    def full_run(self):
+        """Gate origin/main whole, every gate lane and every lane of a group, once the queue has drained, when
+        landings whose gates their paths narrowed are owed it (owed_full_run) and main's queue.fullRun says it is
+        time (config.full_run): as many as its landings, or the oldest as old as its minutes. A pass records on each
+        the main it passed on, fullRun. A failure runs the failed lane at each owed landing in turn, oldest first,
+        for the first at which it fails, and holds the queue, naming it: its paths skipped that lane, so its inputs,
+        or another lane's, leave out a path the lane reads. A run without a verdict leaves them owed. A main that
+        failed is not run again until it moves (fullRunFailed)."""
+        queue = self.queue
+        if queue.held() or queue.waiting(): return
+        owed = owed_full_run(queue.root, queue.all())
+        if not owed or not fetch_main(queue.main_checkout, self.say): return
+        base = text(queue.main_checkout, "rev-parse", MAIN)
+        config = config_at(queue.main_checkout, MAIN)
+        wanted = full_run(config)
+        owed = [entry for entry in owed if entry.get("fullRunFailed") != base
+                and git(queue.root, "merge-base", "--is-ancestor", entry["landedAs"], base).returncode == 0]
+        if wanted is None or not owed: return
+        waited = time.time() - owed[0].get("settled", time.time())
+        if len(owed) < wanted["landings"] and waited < wanted["minutes"] * 60: return
+        named = ", ".join(entry["id"] for entry in owed[:5]) + (f" and {len(owed) - 5} more" if len(owed) > 5 else "")
+        self.say(f"full run on main at {base[:12]}: {len(owed)} landing{'s' if len(owed) != 1 else ''} whose gate "
+                 f"{'their' if len(owed) != 1 else 'its'} paths narrowed {'have' if len(owed) != 1 else 'has'} had no "
+                 f"whole gate since ({named}), so every gate lane runs on main")
+        self.prepare()
+        self.toolkit()
+        self.pin()
+        self.reset(base)
+        self.gating = ()
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        status_, log = self.gate(lanes_of(config), f"{stamp}-{base[:8]}-main", quick=quick_lanes(config, code=True))
+        if not status_:
+            queue.note_landed(owed, fullRun=base)
+            self.say(f"full run on main at {base[:12]} passed: it covers {named}")
+            return
+        if status_ in NO_VERDICT or status_ == WITHDRAWN:
+            self.say(f"full run on main at {base[:12]} gave no verdict (exit {status_}): the landings stay owed one; "
+                     f"see {log}")
+            return
+        lane = self.failed_lane
+        queue.note_landed(owed, fullRunFailed=base)
+        first, before = None, None
+        if lane:
+            # Whether it failed already before the oldest of them, and then at each in turn.
+            start = git(queue.root, "rev-parse", "--verify", "-q",
+                        f"{owed[0]['landedAs']}~{owed[0].get('landedCommits', 1)}")
+            places = [(None, start.stdout.strip())] if start.returncode == 0 and start.stdout.strip() else []
+            places += [(entry, entry.get("landedTip") or entry["landedAs"]) for entry in owed]
+            for entry, commit in places:
+                self.say(f"full run: {lane} on main as of {commit[:12]}"
+                         + (f", where {entry['id']} landed" if entry else ", before the oldest of them"))
+                self.reset(commit)
+                found, _ = self.gate([lane], f"{stamp}-{commit[:8]}-main-search", quick=[])
+                if found in NO_VERDICT or found == WITHDRAWN: break
+                if found:
+                    first, before = entry, entry is None
+                    break
+            self.reset(base)
+        blamed = (f"{lane} already failed before the oldest of them, so none of them broke it" if before else
+                  f"it first fails where {first['id']} landed ({first['landedAs'][:12]}, {first.get('subject', '')!r}), "
+                  f"whose gate left out {partial_said(first['partialGate']).split(':')[0]}: a lane's inputs leave "
+                  "out a path it reads" if first else
+                  "the failed lane did not fail at any of those landings alone, or gave no verdict there")
+        raise Hold(SESSION, f"the full run on main at {base[:12]} failed {lane or 'a lane'} with no entry on it, after "
+                            f"landings whose gates their paths narrowed ({named}); {blamed}. Land a fix, or a "
+                            f"correction to the lanes' inputs in queuekeeper.json, and resume the queue; see {log}")
+
     def connected(self):
         """Raise NoLocalNetwork, before a round, when another Mac is configured and macOS denies this process the
         local network, as it does once the Claude session that started the worker ends: every gate would then go to
@@ -8136,6 +8231,7 @@ def run(root, *, if_waiting=False):
             try:
                 with processes.forwarding_signals():
                     worker.drain()
+                    worker.full_run()
                     worker.catch_up()
             except NoLocalNetwork as lost:
                 # Holding nothing: the next `qk land`, `qk queue wait` or `qk queue resume` starts a worker of its
