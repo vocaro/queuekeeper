@@ -53,7 +53,10 @@ TOOL_SECONDS = 30
 # one. It only catches a hang: in gates on 2026-11-10, beside the Swift lanes at a gate's start, listings took
 # tens of seconds, and once over this (#361, #362).
 LISTING_SECONDS = 60
-PROCESSES = ["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="]
+# The optional probe must leave the sweep's census a chance to run when a host is slow.
+OWNER_PROBE_SECONDS = 1
+IDENTITY_FIELDS = "pid=,ppid=,uid=,lstart="
+PROCESSES = ["ps", "-axww", "-o", f"{IDENTITY_FIELDS},args="]
 # What a derived-data folder holds besides builds: much to walk, and no app anyone registers.
 UNBUILT = {"Index.noindex", "ModuleCache.noindex", "SourcePackages", "Logs", "CompilationCache.noindex",
            "SDKStatCaches.noindex"}
@@ -253,13 +256,24 @@ def settle(path, entry, tally, table=None):
 def sweep(tally):
     """Settle the journals whose runs have gone, which a SIGKILL or a put-off cleanup left, from one listing of
     the processes: one each would take as long again for every journal, and each could fail on its own (#362)."""
-    journals = read_journals()
+    journals = [(path, entry) for path, entry in read_journals() if entry is not None]
     if not journals: return
+    # When other runs still own every journal, there is nothing to clean up and no need to read every
+    # process's arguments. Only a matching PID and start can skip the full census for a recorded owner.
+    pids = sorted({entry["pid"] for _, entry in journals
+                   if type(entry.get("pid")) is int and entry["pid"] > 0})
+    if pids:
+        owners = offload_host.process_table(offload_host.listing(
+            ["ps", "-p", ",".join(map(str, pids)), "-o", IDENTITY_FIELDS], OWNER_PROBE_SECONDS))
+        if all(type(entry.get("pid")) is int and entry["pid"] in owners
+               and isinstance(entry.get("start"), str) and live(entry, owners)
+               for _, entry in journals):
+            return
     listed = offload_host.listing(PROCESSES, LISTING_SECONDS)
     if listed is None: return
     table = offload_host.process_table(listed)
     for path, entry in journals:
-        if entry is not None and not live(entry, table): settle(path, entry, tally, table)
+        if not live(entry, table): settle(path, entry, tally, table)
 
 
 class Watch:
@@ -349,7 +363,7 @@ def nested():
     """Whether a run outside this one will do the work: its PID is this process's ancestor."""
     owner = os.environ.get(RUN)
     if not owner or not owner.isdigit(): return False
-    listed = offload_host.listing(PROCESSES, timeout=10)
+    listed = offload_host.listing(["ps", "-ax", "-o", IDENTITY_FIELDS], timeout=10)
     return listed is not None and int(owner) in offload_host.lineage(offload_host.process_table(listed), os.getpid())
 
 

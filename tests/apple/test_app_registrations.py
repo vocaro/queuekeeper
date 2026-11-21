@@ -376,6 +376,18 @@ exec /bin/ps "$@"
         self.assertEqual(sum("failed for a real reason" in line for line in details), 2)
         self.assertEqual(len(self.journals()), 5, "a tool that failed for another reason keeps its journal")
 
+    def test_a_sweep_skips_the_full_listing_when_all_journal_owners_still_run(self):
+        pid, start = 42, "Thu Jan 1 00:00:00 1970"
+        journal = self.journal(pid, start)
+        tally = registrations.Tally(lambda text: None)
+        with patch.object(registrations.offload_host, "listing",
+                          return_value=f"{pid} 1 {os.getuid()} {start}\n") as listing:
+            registrations.sweep(tally)
+        listing.assert_called_once_with(["ps", "-p", str(pid), "-o", registrations.IDENTITY_FIELDS],
+                                        registrations.OWNER_PROBE_SECONDS)
+        self.assertTrue(journal.exists())
+        self.assertEqual(self.calls(), [])
+
     def test_a_sweep_lists_the_processes_once_for_all_the_journals_it_settles(self):
         # One listing each made a sweep of five journals list every process six times, each able to fail alone (#362).
         for number in range(1, 6):
@@ -383,6 +395,7 @@ exec /bin/ps "$@"
         listings = []
         real = registrations.offload_host.listing
         def listing(command, *arguments, **options):
+            if command[:2] == ["ps", "-p"]: return None
             if command == registrations.PROCESSES: listings.append(command)
             return real(command, *arguments, **options)
         tally = registrations.Tally(lambda text: None)
