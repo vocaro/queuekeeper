@@ -1365,8 +1365,11 @@ pytest-xdist's main process, so its polling cannot hide stuck workers.
 admission to the end, not the wait for admission. When the median of the last 10 passing runs on an
 unloaded Mac (at least 3) passes the budget, `qk land` and `qk doctor` warn after each landing,
 naming the slowest parts and, beside them, the median wait. Runs on a Mac past its busy limit are
-left out, except whole-host gates. The warning repeats while the median stays over; add to the
-project's existing issue about the gate's budget rather than opening a new one each time.
+left out, except whole-host gates. When the warning appears, look for an open budget proposal on
+the project's issue tracker. If none exists, open one naming which check could move to
+`release.lanes`. Add a reading to an existing proposal only if it adds materially different
+evidence, such as a much higher median or fewer runs left out for load. The owner approves a move
+or a higher budget.
 
 `qk doctor` also warns of a `gate` with no budget, and of a `gate` that takes a physical device.
 
