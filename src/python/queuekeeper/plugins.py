@@ -177,9 +177,11 @@ AROUND_RUN = []
 REMOTE_ENVIRONMENT = []
 # Each (results): prints what a lane kept in its results folder.
 REPORT_RESULTS = []
-# Each (words) -> the seconds one test may run by default under the lane command words, or None when it sets no
-# such limit. The first that sets one is the allowance.
+# Each (words) -> the default allowance in seconds for one simulator test, or None, from the runner's arguments.
 TEST_ALLOWANCE = []
+# Each (command, arguments) -> the default allowance in seconds for one test, or None. command is the lane's
+# configured argv and arguments are the caller's appended words.
+LANE_TEST_ALLOWANCE = []
 
 
 def provide(slot, provider):
@@ -223,6 +225,13 @@ def host_fault(results):
 def test_allowance(words):
     for allowance in TEST_ALLOWANCE:
         seconds = allowance(words)
+        if seconds is not None: return seconds
+    return None
+
+
+def lane_test_allowance(command, arguments):
+    for allowance in LANE_TEST_ALLOWANCE:
+        seconds = allowance(command, arguments)
         if seconds is not None: return seconds
     return None
 

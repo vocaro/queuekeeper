@@ -34,7 +34,8 @@ def register():
     platforms.register(apple_platform.PLATFORM)
     if preserved_voiceover not in foreground.GUARDS: foreground.GUARDS.append(preserved_voiceover)
     for hooks, hook in ((plugins.AROUND_RUN, app_registrations.around_run), (plugins.REPORT_RESULTS, run_results.report),
-                        (plugins.TEST_ALLOWANCE, matrix.default_test_allowance)):
+                        (plugins.TEST_ALLOWANCE, matrix.default_test_allowance),
+                        (plugins.LANE_TEST_ALLOWANCE, matrix.lane_test_allowance)):
         if hook not in hooks: hooks.append(hook)
     # Each runs tests itself, so one started outside an admission is admitted first (cli.bare_runner).
     plugins.RUNNERS.update({("simulator-tests",), ("xctest",)})

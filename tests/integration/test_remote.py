@@ -1037,6 +1037,23 @@ class RemoteTests(unittest.TestCase):
             self.assertIn("its timeout is 900s;", said("pool", "--test-allowance"))
             self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s;", said("forwarded", "--repeat", "invalid"))
         self.assertEqual(output.getvalue() + error.getvalue(), "")
+        with patch.object(plugins, "TEST_ALLOWANCE", [lambda words: 90 if words == command[3:] + ["--flag"] else None]):
+            self.assertIn("the default test allowance is set to 90s;", said("pool", "--flag"))
+
+    def test_the_clock_line_asks_plugins_which_runner_sets_a_test_allowance(self):
+        command, arguments = ["other-runner", "tests"], ("--limit", "45")
+        config = {"lanes": {"tests": {"command": command, "timeout": 900}}}
+        with patch.object(plugins, "LANE_TEST_ALLOWANCE", []):
+            self.assertNotIn("allowance", remote.clock_line(config, "tests", arguments))
+
+        def allowance(words, extra):
+            self.assertEqual(words, command)
+            self.assertEqual(extra, arguments)
+            return 45
+
+        with patch.object(plugins, "LANE_TEST_ALLOWANCE", [allowance]):
+            self.assertIn("its timeout is 900s and the default test allowance is set to 45s;",
+                          remote.clock_line(config, "tests", arguments))
 
     def test_the_remote_clock_reports_the_scaled_limit_and_appended_simulator_allowance(self):
         launcher = self.project / "scripts/qk"

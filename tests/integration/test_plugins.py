@@ -163,11 +163,11 @@ class SharedHookTests(unittest.TestCase):
         from queuekeeper_apple import lane
         from queuekeeper_mac_desktop import lane as desktop_lane
         before = [list(hooks) for hooks in (plugins.RECOVER, plugins.AROUND_RUN, plugins.REPORT_RESULTS,
-                                            plugins.TEST_ALLOWANCE)]
+                                            plugins.TEST_ALLOWANCE, plugins.LANE_TEST_ALLOWANCE)]
         desktop_lane.register()
         lane.register()
         after = [list(hooks) for hooks in (plugins.RECOVER, plugins.AROUND_RUN, plugins.REPORT_RESULTS,
-                                           plugins.TEST_ALLOWANCE)]
+                                           plugins.TEST_ALLOWANCE, plugins.LANE_TEST_ALLOWANCE)]
         self.assertEqual(before, after)
         # Their own hooks, one in each list; another plugin loaded beside them, as Unity's, may add its own.
         theirs = [[hook for hook in hooks if getattr(hook, "__module__", "").startswith(("queuekeeper_apple", "queuekeeper_mac_desktop"))]
