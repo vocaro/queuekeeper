@@ -15,6 +15,7 @@ def prepare(root, config):
 def register():
     platforms.register(android_platform.PLATFORM)
     if prepare not in plugins.PREPARE_LANE: plugins.PREPARE_LANE.append(prepare)
+    if emulator_tests.report not in plugins.REPORT_RESULTS: plugins.REPORT_RESULTS.append(emulator_tests.report)
     # It runs tests itself, so one started outside an admission is admitted first (cli.bare_runner).
     plugins.RUNNERS.add(("emulator-tests",))
     plugins.COMMANDS.update({

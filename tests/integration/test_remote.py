@@ -3332,6 +3332,32 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual((self.project / ".build/queuekeeper/remote/noted/results/note.txt").read_text(), "noted")
         self.assertNotIn(", from ", error)
 
+    def test_an_android_lane_reports_its_returned_emulator_test_results(self):
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["plugins"].append("queuekeeper_android")
+        record = {"run": "pixel_8", "keptBy": "qk emulator-tests", "status": 0, "seconds": 3,
+                  "crashed": None, "tests": [
+                      {"test": "example.Tests#open", "outcome": "failed", "seconds": 0.5, "reason": "AssertionError"},
+                      {"test": "example.Tests#close", "outcome": "skipped", "seconds": None}]}
+        command = ("import os, pathlib; folder = pathlib.Path(os.environ['QUEUEKEEPER_RESULTS_DIR']) / 'emulator-tests'; "
+                   "folder.mkdir(); "
+                   f"(folder / 'pixel_8.json').write_text({json.dumps(record)!r}); "
+                   "print('FAIL pixel_8: Executed 2 tests, with 1 tests skipped'); "
+                   "print('    FAILED example.Tests#open'); raise SystemExit(1)")
+        settings["lanes"]["instrumented"] = {"command": [sys.executable, "-c", command], "resource": "heavy"}
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+
+        status, output, error = self.qk("run", "instrumented")
+        self.assertEqual(status, 1, output + error)
+        self.assertEqual(output.count("pixel_8: failed 0.500s example.Tests#open (AssertionError)"), 1, output + error)
+        self.assertEqual(output.count("pixel_8: skipped no time example.Tests#close"), 1, output + error)
+        results = self.project / ".build/queuekeeper/remote/instrumented"
+        self.assertEqual(json.loads((results / "results/emulator-tests/pixel_8.json").read_text()), record)
+        receipt = json.loads((results / "source.json").read_text())
+        self.assertEqual(receipt["returned"], ["results/emulator-tests/pixel_8.json"])
+        self.assertEqual(receipt["result"]["exitStatus"], 1)
+
     def test_a_lane_nested_in_a_dispatched_lane_brings_its_results_back_and_they_are_kept_by_commit(self):
         # The gate at a commit keeps its suites' per-test results, which the slot's next run would overwrite (#218).
         results = self.project / ".build/queuekeeper/remote/nesting"
