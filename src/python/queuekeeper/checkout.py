@@ -18,6 +18,24 @@ def components(root=ROOT):
     return json.loads(path.read_text()) if path.is_file() else {}
 
 
+def launcher_note(project, root=ROOT):
+    """Name a differing copy of the stock project launcher without judging custom wrappers."""
+    relative = Path("scripts/qk")
+    source, copy = Path(root) / relative, Path(project) / relative
+    if source == copy or copy.is_symlink() or not source.is_file() or not copy.is_file(): return None
+    try:
+        expected = source.read_bytes()
+        with copy.open("rb") as read:
+            actual = read.read(len(expected) + 1)
+    except OSError:
+        return None
+    stock = b"""A project's launcher for Queuekeeper:"""
+    if actual != expected and any(stock in line for line in actual.splitlines()[:2]):
+        return (f"{relative} differs from the stock launcher at {source}; compare them and refresh the copy "
+                "if it should use this Queuekeeper's launcher")
+    return None
+
+
 def source_paths(root=ROOT):
     root = Path(root)
     return [root / "src/python", *(root / item["source"] for item in components(root).values())]

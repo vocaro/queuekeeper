@@ -2021,10 +2021,18 @@ project sees.
 
 ### Copies in each project
 
-Every project carries copies of two files: `scripts/qk`, from this repository, and, in projects that
-use the vocaro-engineering toolkit, its `scripts/_engineering.py`. A fix to either reaches a project only by a
-landing there, a full gate each, so collect changes to them into one change and expect one landing
-per project.
+Some projects copy `scripts/qk` so their commands can find Queuekeeper without relying on PATH.
+Projects that use the vocaro-engineering toolkit may also carry its `scripts/_engineering.py`.
+Without `scripts/qk`, the worker uses this checkout's `bin/qk`. Before removing a copy, check
+the project's lane commands, hooks and scripts for direct references to it.
+
+When `qk doctor` loads Queuekeeper from a checkout, its `notes` identify a differing stock
+`scripts/qk` copy and name the source it compared. Review the diff before replacing the copy,
+especially if the project has local changes. Use the installed `qk doctor` if the copied launcher
+can no longer start. After refreshing the copy, run `python3 scripts/qk --version` to check that
+the launcher starts with the project's Python. Combine launcher updates where practical and land
+them through the project's existing gate. Include the launcher in the `inputs` of lanes that
+read it, including lanes the worker starts through that copy.
 
 ### The README's screenshots
 
