@@ -1338,13 +1338,18 @@ def unsendable(lane):
 
 def working_configuration(root):
     """The queuekeeper.json of the working tree at root, which every command but land's and the queue's reads, as they
-    run what that tree holds. A checkout behind the commit that added the file is told so, and not only that the file
-    is missing: land and the queue, which read origin/main, take such a checkout as it stands (#188, #204)."""
+    run what that tree holds. When the file is missing, explain how to adopt Queuekeeper or update a checkout that is
+    behind adoption. Land and the queue take such a checkout as it stands (#188, #204)."""
     if not (root / CONFIG_FILE).is_file() and merge_queue.has_config(root, merge_queue.MAIN):
         raise ValueError(f"{root} has no {CONFIG_FILE} in its working tree, but its origin/main has one: the checkout "
                          "is behind the commit that added it, and this command runs what the working tree holds. "
                          "Update the checkout to origin/main, or give a checkout that is up to date")
-    return load(root)
+    try:
+        return load(root)
+    except FileNotFoundError as error:
+        raise ValueError(f"{root} has no {CONFIG_FILE} in its working tree: set up this project for Queuekeeper as "
+                         "described in 'Configure a project' in the user guide, or run from its existing setup "
+                         "checkout") from error
 
 
 # Run in a process of its own, so that registering every plugin leaves this one's registries as the project has them.
