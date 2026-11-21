@@ -1024,7 +1024,7 @@ class Admission:
         # CPU's busy share or memory pressure withholds a slot beyond the guaranteed ones; an older toolkit's
         # load, the load average that once did. An older toolkit's log
         # lines also count legacy, a gate holding StudyWright's former host lock, which no longer refuses (#25).
-        self.refusal = self.waiting = None
+        self.refusal = self.waiting = self.blocker = None
         # The dead or uncertain entries recovery left, by identity: when they were checked, and why they stayed.
         self.unrecovered = {}
         # The identities of the entries this request's attempts freed, their owners ended or unknown (free_holder).
@@ -1036,7 +1036,8 @@ class Admission:
         # when it asked; the first, last and highest one-minute load its attempts read, and so of the CPU's busy
         # share; the latest attempt's busy share and the seconds it spans; and the highest memory pressure level
         # read beside its refusals.
-        self.refusals, self.holders, self.loads, self.memory = Counter(), None, None, None
+        self.refusals, self.blockers = Counter(), Counter()
+        self.holders = self.loads = self.memory = None
         self.busies, self.busy = None, (None, None)
         self.guard = guard_path(os.environ)
         # All requests waiting for admission, first come first.
@@ -1253,7 +1254,8 @@ class Admission:
         if self.refusals:
             last, peak = self.loads[1:] if self.loads else (None, None)
             busy_last, busy_peak = self.busies[1:] if self.busies else (None, None)
-            fields["wait"] = {"refusals": dict(self.refusals), "first": next(iter(self.refusals)), "last": self.refusal,
+            fields["wait"] = {"refusals": dict(self.refusals), "blockers": dict(self.blockers),
+                              "first": next(iter(self.refusals)), "last": self.refusal,
                               "load": {"last": last, "max": peak}, "busy": {"last": busy_last, "max": busy_peak},
                               "memory": self.memory}
         return fields
@@ -1261,6 +1263,14 @@ class Admission:
     def _count(self):
         """Count the refusal of the attempt just made by its kind, and read the memory pressure beside it."""
         self.refusals[self.refusal] += 1
+        blocker = self.refusal if self.refusal == "stranded" else self.blocker or self.refusal
+        if blocker == "guaranteedSlots":
+            busy = self.busy[0]
+            if busy is None:
+                blocker += "CpuUnknown"
+            else:
+                blocker += "CpuUnder" if busy < self.busy_limit else "CpuAtLimit"
+        self.blockers[blocker] += 1
         level = memory_level()
         if level is not None: self.memory = max(level, self.memory or 0)
 
@@ -1274,7 +1284,8 @@ class Admission:
             # A request whose wait timed out keeps its place, if it has one, for its next wait; its caller leaves it.
             if self.queued and not (self.place is not None and outcome == "timed-out"):
                 self._record([waiter for waiter in self._waiters() if waiter["identity"] != self.queued_as])
-            self._log("withdrawn", outcome=outcome, waited=round(time.monotonic() - self.started, 3), **self._seen())
+            self._log("withdrawn", outcome=outcome, waited=round(time.monotonic() - self.started, 3),
+                      wholeHost=self.whole_host, **self._seen())
         self.queued = False
 
     def _extra_refusal(self):
@@ -1368,6 +1379,7 @@ class Admission:
             free = take_slot(self.directory, self.slots, skip=reserved)
             if free is not None: os.close(free[1])
         if free is not None:
+            self.blocker = "wholeHostAhead"
             self.refusal, self.waiting = "wholeHost", (f"a guaranteed slot is free but kept for a whole-host lane queued "
                                                        f"ahead of it: {kept['label']}; and {reason}")
         else:
@@ -1385,14 +1397,18 @@ class Admission:
         heavy work behind a running whole-host lane, which holds the slots beyond the guaranteed ones too (#196)."""
         holder = next((owner for identity, owner in state["owners"].items()
                        if owner.get("exclusive") and identity not in self.stranded), None)
-        lane = None if holder is not None or self.exclusive or self.whole_host else self._whole_host_holder(state)
+        lane = self._whole_host_holder(state) if holder is None else None
         if holder is not None:
+            self.blocker = "exclusiveHolding"
             self.refusal, self.waiting = "exclusive", ("it waits behind exclusive work holding the host: "
                                                        f"{str(holder.get('label') or 'an unnamed owner')[:LABEL_LIMIT]}")
-        elif lane is not None:
+        elif lane is not None and not (self.exclusive or self.whole_host):
+            self.blocker = "wholeHostHolding"
             self.refusal, self.waiting = "wholeHost", ("it waits behind a whole-host lane holding the host: "
                                                        f"{str(lane.get('label') or 'an unnamed owner')[:LABEL_LIMIT]}")
         else:
+            if lane is not None:
+                self.blocker = "wholeHostHolding"
             self._refused_beside_stranded()
         return False
 
@@ -1446,6 +1462,7 @@ class Admission:
 
     def _attempt(self):
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.blocker = None
         with (self.directory / "coordination.lock").open("a+") as bridge:
             fcntl.flock(bridge, fcntl.LOCK_EX)
             load = one_minute_load()
@@ -1501,10 +1518,13 @@ class Admission:
             if ahead is not None and kept is None:
                 # Work already admitted runs on; nothing new starts before the request queued ahead.
                 if ahead.get("ordinary"):
+                    self.blocker = "ordinaryAhead"
                     self.refusal, self.waiting = "slots", f"it waits behind ordinary work queued ahead of it: {ahead['label']}"
                 elif ahead.get("wholeHost"):
+                    self.blocker = "wholeHostAhead"
                     self.refusal, self.waiting = "wholeHost", f"it waits behind a whole-host lane queued ahead of it: {ahead['label']}"
                 else:
+                    self.blocker = "exclusiveAhead"
                     self.refusal, self.waiting = "exclusive", f"it waits behind exclusive work queued ahead of it: {ahead['label']}"
                 return False
             # The model first, so that a request it refuses names the model's holder.
@@ -1530,6 +1550,7 @@ class Admission:
                                                                f"{self.said['slotsMax']} free, and {busy} "
                                                                f"{'is' if busy == 1 else 'are'} busy")
                     elif self.whole_host:
+                        self.blocker = "guaranteedSlots"
                         self.refusal, self.waiting = "slots", (f"a whole-host lane needs every guaranteed slot "
                                                                f"(HEAVY_SLOTS={self.slots}) free, and {busy} "
                                                                f"{'is' if busy == 1 else 'are'} busy")
@@ -1901,7 +1922,30 @@ def duration(seconds):
     return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
 
 
-def summarize(entries, since=None, until=None):
+BLOCKER_WORDS = {
+    "ordinaryAhead": "one-slot work queued ahead",
+    "wholeHostAhead": "whole-host work queued ahead",
+    "wholeHostHolding": "whole-host work holding the Mac",
+    "exclusiveAhead": "exclusive work queued ahead",
+    "exclusiveHolding": "exclusive work holding the Mac",
+    "guaranteedSlotsCpuUnder": "guaranteed slots busy (CPU under limit)",
+    "guaranteedSlotsCpuAtLimit": "guaranteed slots busy (CPU at or over limit)",
+    "guaranteedSlotsCpuUnknown": "guaranteed slots busy (CPU unread)",
+}
+LEGACY_BLOCKERS = {"slots": "slots (detail unrecorded)",
+                   "wholeHost": "whole-host work (queued or running)",
+                   "exclusive": "exclusive work (queued or running)"}
+
+
+def wait_scope(entry):
+    """The scope a request's log establishes, including withdrawals written before scope was recorded."""
+    if entry["kind"] == "exclusive": return "exclusive"
+    if entry.get("wholeHost") is True: return "whole-host"
+    if entry["event"] == "admitted" or entry.get("wholeHost") is False: return "one-slot"
+    return "scope unrecorded"
+
+
+def summarize(entries, since=None, until=None, *, wait_breakdown=False):
     """Lines that summarize the requests made in the period, for each kind and each label within it.
 
     A request counts in the period when its admitted or withdrawn line falls in it; its end may come
@@ -1909,7 +1953,8 @@ def summarize(entries, since=None, until=None):
 
     A request that waited counts behind each kind that refused it, and its wait is divided among those
     kinds in proportion to their refusals (#49). Where the log also has requests that say what they saw,
-    those an older toolkit logged count as unrecorded.
+    those an older toolkit logged count as unrecorded. With wait_breakdown, group by slot scope rather than by
+    kind or label, and use the more specific blocker counts when the log records them.
     """
     requests = {}
     for entry in entries:
@@ -1927,10 +1972,19 @@ def summarize(entries, since=None, until=None):
         if isinstance(first.get("busy"), (int, float)): group["busies"].append(first["busy"])
         wait = first.get("wait")
         if wait is None: return
-        refusals = sum(wait["refusals"].values())
-        for kind, count in wait["refusals"].items():
-            group["behind"][kind] += 1
-            group["queued"][kind] += first["waited"] * count / refusals
+        refusals = wait["refusals"]
+        blockers = wait.get("blockers")
+        if (wait_breakdown and isinstance(blockers, dict) and blockers
+                and all(type(count) is int and count > 0 for count in blockers.values())
+                and sum(blockers.values()) == sum(refusals.values())):
+            counted, words = blockers, BLOCKER_WORDS
+        else:
+            counted, words = refusals, LEGACY_BLOCKERS if wait_breakdown else {}
+        total = sum(counted.values())
+        for kind, count in counted.items():
+            name = words.get(kind, kind)
+            group["behind"][name] += 1
+            group["queued"][name] += first["waited"] * count / total
         if wait["load"]["max"] is not None: group["peaks"].append(wait["load"]["max"])
         busy = (wait.get("busy") or {}).get("max")
         if isinstance(busy, (int, float)): group["busyPeaks"].append(busy)
@@ -1939,8 +1993,9 @@ def summarize(entries, since=None, until=None):
         first, end = lines.get("admitted") or lines.get("withdrawn"), lines.get("ended")
         if first is None or (since and first["time"] < since) or (until and first["time"] >= until):
             continue
-        # Keyed by kind and label, and by kind and None for the kind as a whole.
-        for key in [(first["kind"], None), (first["kind"], first["label"])]:
+        keys = ([(wait_scope(first), None)] if wait_breakdown
+                else [(first["kind"], None), (first["kind"], first["label"])])
+        for key in keys:
             group = groups.setdefault(key, {"admitted": 0, "withdrawn": Counter(), "ends": Counter(),
                                             "waited": [], "held": [], "recorded": 0, "behind": Counter(),
                                             "queued": Counter(), "loads": [], "peaks": [], "busies": [],
@@ -1982,6 +2037,7 @@ def summarize(entries, since=None, until=None):
         return text
 
     order = {"exclusive": 0, "model": 1, "heavy": 2}
+    if wait_breakdown: order = {"whole-host": 0, "one-slot": 1, "exclusive": 2}
     summary = []
     for kind in sorted({kind for kind, _label in groups}, key=lambda kind: (order.get(kind, 3), kind)):
         summary.append(f"{kind}: {describe(groups[kind, None])}")
@@ -1997,7 +2053,7 @@ def local_time(text):
     return moment if moment.tzinfo else moment.astimezone()
 
 
-def report(paths=None, since=None, until=None, out=print):
+def report(paths=None, since=None, until=None, out=print, *, wait_breakdown=False):
     """Print a summary of the admission log, this host's or the copies named, and return 0."""
     entries, unreadable = read_log(paths)
     source = ", ".join(map(str, paths)) if paths else str(log_path())
@@ -2010,9 +2066,11 @@ def report(paths=None, since=None, until=None, out=print):
         if since and since < oldest:
             out(f"The period begins before the log does: requests made before {shown(oldest)} are no longer in it.")
         period = " ".join(([f"from {shown(since)}"] if since else []) + ([f"until {shown(until)}"] if until else []))
-        summary = summarize(entries, since, until)
+        summary = summarize(entries, since, until, wait_breakdown=wait_breakdown)
         out(f"Requests made {period or 'at any time the log covers'}:" if summary else
             f"No requests were made {period or 'at any time the log covers'}.")
+        if summary and wait_breakdown:
+            out("Wait time by blocker is estimated from the share of refused attempts.")
         for line in summary: out(line)
     if unreadable: out(f"{unreadable} line(s) could not be read.")
     return 0

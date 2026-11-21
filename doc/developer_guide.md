@@ -1156,10 +1156,11 @@ admission.
 | `identity`, `pid` | every line | The request's nonce, pairing admission and end; the admitting process |
 | `kind`, `label` | every line | `heavy`, `model` or `exclusive`; up to 160 characters |
 | `slots` | `admitted`, `ended` | The slots held |
+| `wholeHost` | `admitted`, newer `withdrawn` | True for a whole-host request. New withdrawals also record false explicitly. |
 | `waited`, `held` | `admitted`/`withdrawn`, `ended` | Seconds to admission; seconds held |
 | `settled` | exclusive `ended` | The settle wait's `seconds`, last `busy` and whether it read `quiet` |
 | `holders`, `load`, `busy` | `admitted`, `withdrawn` | Admissions in the guard, load and busy share when asked |
-| `wait` | a refused request's `admitted` or `withdrawn` | `refusals` by kind, `first` and `last` kinds, `load`, `busy` and peak `memory` |
+| `wait` | a refused request's `admitted` or `withdrawn` | `refusals` by kind, `first` and `last` kinds, `load`, `busy` and peak `memory`. New lines also record `blockers`, distinguishing queued work, holders, and the CPU samples while a whole-host request lacked guaranteed slots. |
 | `stranded` | when one was counted | Each stranded entry counted |
 | `outcome` | `ended`, `withdrawn` | `released`, `not-started`, `stopped`, `timed-out`, `uncertain`; or `timed-out`, `stopped`, `failed` |
 | recovery fields | `recovered`, `reclaimed` | Census counts, `automatic` or `byHand` with `why`; what was signaled, survived and replaced, and `by` |
@@ -1425,6 +1426,15 @@ The rules above cite these by their labels.
   it, and kinds plus labels in each Mac's `mac-settings.json`. Devices are declared with
   `qk devices declare` (their `reach`, in order, and whether being `absent` is an error or
   offline) and read by `qk devices status`.
+
+The November 19 follow-up ([#232](https://github.com/vocaro/queuekeeper/issues/232)) measured 8%
+whole-host occupancy on the workstation and 15% on build-host, against 40% and 11% on November 15.
+Mean concurrent admissions were 1.7 and 1.4, against 1.4 and 2.2. One-slot admissions had 95th
+percentile waits of 120 s and 5 s on November 19, and 1,571 s and 621 s on November 18. Use both
+days when weighing D4 through D6. Workloads and gate configurations also changed over this period.
+For D2 and D3, older records combine ordinary work queued ahead with requests short of free slots.
+`qk admissions --wait-breakdown` distinguishes the two on new records and shows the CPU readings
+when guaranteed slots kept a whole-host request out.
 
 ### Weighing a change
 
