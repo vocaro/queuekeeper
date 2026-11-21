@@ -1930,10 +1930,15 @@ project on that Mac the moment its checkout updates, whatever its queue holds (#
   no forwarder, and when a forwarder does not stand for its module or does not warn. Add a new module to
   `modules` there so that it is held too; a module not yet listed is no failure, since entries gated together
   often each add one.
-- **A renamed function keeps its old name** the same way: a function under the old name that warns and calls the
-  new one, as `foreground.second_mac` calls `farm_mac`.
-- **Search the projects** for the old name, as an import and as a string, and land their changes while the
-  forwarder stands. Once `until` passes and no project uses the old name, remove the forwarder and its entry.
+- **Keep a function's old name during a migration.** When renaming a function another project calls
+  or patches, leave a wrapper with the old signature that calls the replacement. Give it a
+  `DeprecationWarning` that names the replacement and gives the retirement date, as
+  `foreground.second_mac` does for `farm_mac`. If there is no replacement, warn and keep the
+  old function working while its consumers move off it.
+- **Search consumer projects' `origin/main`** for the old module or function name, including
+  attribute calls, `mock.patch` targets, and module strings passed to `python3 -m` from shell or
+  Swift. Land each consumer's changes while the old name works. Once the retirement date passes
+  and a fresh search finds no uses, remove the old name and its `forwarded` entry if it has one.
 
 A forwarder may only import what its own component may (see `test_queuekeeper_imports.py`), so the old
 `queuekeeper.apple` and `queuekeeper.mac_desktop` names, which became plugins of their own, cannot have one.
