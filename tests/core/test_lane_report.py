@@ -346,6 +346,23 @@ class Summary(unittest.TestCase):
                                       "  failed: tests.test_x.X.test_c at /project/tests/test_x.py:20",
                                       f"  receipt: {self.lane_dir / 'source.json'}"])
 
+    def test_a_nested_groups_failed_member_tail_does_not_count_beside_the_full_log(self):
+        member_log = ('➜ Test disabled() skipped: "off"\n'
+                      '✔ Test run with 150 tests in 1 suite passed after 1.0 seconds.\n')
+        diagnostic = 'FAIL gate-macos-debug (2s, status 1): /Example/lanes/gate-macos-debug.log'
+        group_output = (f'{diagnostic}\n' + textwrap.indent(member_log, '    ') +
+                        'Lane times (wall-clock 2s, 2 at a time):\n'
+                        '  gate-macos-debug  2s  FAIL\n'
+                        '  gate-macos-release  2s  PASS\nFAIL\n')
+        self.configure(lane=self.printing(group_output + member_log * 2, 1))
+        status, lines = self.qk('lane')
+        self.assertEqual(status, 1)
+        self.assertIn('qk run lane: failed (exit 1), on this Mac', lines)
+        self.assertIn('  tests: 298 passed, 0 failed, 2 skipped, 0 unmeasured', lines)
+        log = (self.lane_dir / "run.log").read_text()
+        self.assertIn(diagnostic, log)
+        self.assertIn('    ✔ Test run with 150 tests in 1 suite passed after 1.0 seconds.', log)
+
     def test_a_passing_lane_is_passed_and_names_no_failure(self):
         self.configure(lane=self.printing("Ran 2 tests in 0.1s\n\nOK"))
         status, lines = self.qk("lane")

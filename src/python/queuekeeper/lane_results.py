@@ -19,6 +19,10 @@ SERIES_RUN_RECAP = re.compile(r"^[ \t]*SERIES \S+ run \d+ of \d+:[^\n]*$", re.M)
 # the quoted Swift Testing run line made one filtered test that failed `2 ran, and the log does not say how many of
 # them failed` (vocaro/queuekeeper#81).
 QUOTED_TAIL = re.compile(r"^(FAIL [^\n]*; log: [^\n]*\n)((?:    [^\n]*(?:\n|$))+)", re.M)
+# A lane group quotes a failed member's log tail this way. An outer command can also print the full member
+# log, so the tail is diagnostic output only (vocaro/queuekeeper#324).
+GROUP_TAIL = re.compile(r"^((?:FAIL|UNMEASURED|NOT RUN) [^\n]+ \(\d+s, status -?\d+\): [^\n]+\.log\n)"
+                        r"(?:    [^\n]*(?:\n|$))+", re.M)
 # Swift Testing's total counts a test it skipped or that canceled itself, and names neither: each
 # has a line of its own instead (Swift 6.4, October 2026). A case of a parameterized test that canceled
 # itself has none, and is printed as passed: qk xctest's Apple plugin writes its test such a line from the
@@ -58,9 +62,8 @@ def outside_unittest(text):
 
 
 def unquoted(text, keep=False):
-    """text without the log tails qk simulator-tests quotes under a FAIL line (QUOTED_TAIL), which count no test, or
-    with keep, with them unindented, as what names a failed test reads them."""
-    if not keep: return QUOTED_TAIL.sub(r"\1", text)
+    """Discard diagnostic tails for test counts. With keep, unindent simulator tails to name failed tests."""
+    if not keep: return QUOTED_TAIL.sub(r"\1", GROUP_TAIL.sub(r"\1", text))
     return QUOTED_TAIL.sub(lambda match: match.group(1) + re.sub(r"^    ", "", match.group(2), flags=re.M), text)
 
 
