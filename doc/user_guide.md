@@ -1497,7 +1497,14 @@ all work on that Mac with an error naming the file. To load a Mac more, raise `s
   count of admitted jobs and under a whole-host lane.
 
 An environment variable named for a limit, such as `HEAVY_BUSY_LIMIT`, overrides the file for one
-process. Set it for every session or none.
+process. On the shared queue, set it for every session or none.
+
+Tests of admission can use a private slot directory with `HEAVY_SLOT_DIR`. The private queue still
+measures the Mac's real CPU busy share. Once one slot is held, a busy Mac can keep a second job
+waiting even when the private queue has a free guaranteed slot. To keep host CPU load from
+blocking that slot, set `HEAVY_BUSY_LIMIT=101` in the test fixture's environment, or put
+`{"busyLimit": 101}` in the private directory's `admission-limits.json`. The CPU busy share can
+reach 100%, so it stays below that test limit.
 
 #### Waiting
 
