@@ -1,0 +1,47 @@
+[
+  {
+    "result": "Failed",
+    "totalTestCount": 1,
+    "passedTests": 0,
+    "failedTests": 1,
+    "expectedFailures": 0,
+    "skippedTests": 0,
+    "testFailures": [
+      {
+        "failureText": "The test runner timed out while preparing to run tests.",
+        "targetName": "EPUBViewingTests",
+        "testIdentifier": 1,
+        "testIdentifierString": "xctest (40891) encountered an error",
+        "testName": "xctest (40891) encountered an error"
+      }
+    ]
+  },
+  {
+    "testNodes": [
+      {
+        "name": "EPUBLib-Package",
+        "nodeType": "Test Plan",
+        "children": [
+          {
+            "name": "EPUBViewingTests",
+            "nodeType": "Unit test bundle",
+            "children": [
+              {
+                "name": "System Failures",
+                "nodeType": "Test Suite",
+                "children": [
+                  {
+                    "name": "xctest (40891) encountered an error",
+                    "nodeIdentifier": "xctest (40891) encountered an error",
+                    "nodeType": "Test Case",
+                    "result": "Failed"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

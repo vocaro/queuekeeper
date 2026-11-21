@@ -280,9 +280,15 @@ XCODEBUILD = textwrap.dedent("""\
         sys.exit(65)
     skipped = os.environ.get("FAKE_SKIPPED", "0") if kind in os.environ.get("FAKE_SKIPPED_ON", "") else "0"
     unmeasured = kind in os.environ.get("FAKE_UNMEASURED", "") or at_run("FAKE_UNMEASURED_RUN")
-    if captured := os.environ.get("FAKE_BUNDLE_RECORD"):
+    captured = os.environ.get("FAKE_BUNDLE_RECORD")
+    record_on = os.environ.get("FAKE_BUNDLE_RECORD_ON")
+    if captured and (not record_on or kind == record_on):
         for view, record in zip(("summary", "tests"), json.loads(captured)):
             (bundle / f"{view}.json").write_text(json.dumps(record))
+        if record_on:
+            if console := os.environ.get("FAKE_BUNDLE_CONSOLE"):
+                print(console)
+            sys.exit(65)
     elif os.environ.get("FAKE_BUNDLE"):
         # The bundle's own record: three tests, testA skipped, unmeasured when asked.
         skip = {"name": "Test skipped - Unmeasured: the host was busy" if unmeasured else "Test skipped - planted",
@@ -1342,6 +1348,68 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(status, 1, output)
         self.assertIn("FAIL iPad-Air-13-inch-M4: Executed 5 tests in 2 shards", output)
         self.assertIn("PASS iPhone-17-Pro", output)
+
+    def runner_timeout_record(self):
+        # Project the retained EPUBLib dispatch 20261119T062213Z-19786 shard JSON back onto the two
+        # xcresulttool views. The summary has the diagnostic; the synthetic test case has no issue child.
+        fixture = Path(__file__).with_name("fixtures") / "XCTestRunnerPreparationTimeout.json"
+        return json.loads(fixture.read_text())
+
+    def run_ipad_bundle(self, record, *, console=""):
+        return self.run_matrix("--shards", "1", wait_for_fake_boot=True, FAKE_TESTS='["T/A/testA()"]',
+                               FAKE_BUNDLE_RECORD_ON="iPad-Air-13-inch-M4", FAKE_BUNDLE_RECORD=json.dumps(record),
+                               FAKE_BUNDLE_CONSOLE=console, QUEUEKEEPER_RESULTS_DIR=str(self.root / "lane-results"))
+
+    def test_a_runner_preparation_timeout_is_an_unmeasured_shard_with_zero_tests(self):
+        record = self.runner_timeout_record()
+        status, output = self.run_ipad_bundle(record)
+        message = "The test runner timed out while preparing to run tests."
+        self.assertEqual(status, 3, output)
+        self.assertIn("UNMEASURED iPad-Air-13-inch-M4: Executed 0 tests in 1 shards", output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 1 tests in 1 shards", output)
+        self.assertIn(message, output)
+        counts = lane_report.counts(output)
+        self.assertEqual((counts["passed"], counts["failed"], counts["skipped"], counts["unmeasured"]), (1, 0, 0, 0))
+        self.assertEqual(len(self.shard_runs()), 2)
+        results = self.root / "lane-results"
+        kept = results / "simulator-tests/iPad-Air-13-inch-M4-1"
+        artifact = json.loads(kept.with_suffix(".json").read_text())
+        self.assertEqual((artifact["status"], artifact["tests"], artifact["summary"]), (3, [], record[0]))
+        self.assertEqual((artifact["suiteSeconds"], artifact["bundleUnread"]), ({}, message))
+        self.assertEqual(kept.with_suffix(".log").read_text(), "")
+        self.assertTrue((self.root / ".build/simulator-tests/logs/iPad-Air-13-inch-M4-1.xcresult").is_dir())
+        self.assertFalse(lane_report.records(results))
+        self.assert_every_device_returned()
+
+    def test_a_runner_timeout_with_test_activity_or_a_different_failure_still_fails(self):
+        named_case = {"nodeType": "Test Case", "name": "testRendering()", "result": "Failed"}
+        for scenario, counted in (("named failure", "1 tests, 1 failed"), ("partial run", "2 tests, 1 failed"),
+                                  ("test in tree only", "1 tests, 1 failed"), ("skipped test", "1 tests, 1 skipped, 1 failed"),
+                                  ("console start", "1 tests, 1 failed"), ("different system failure", "1 tests, 1 failed")):
+            with self.subTest(scenario):
+                summary, tree = self.runner_timeout_record()
+                suites = tree["testNodes"][0]["children"][0]["children"]
+                console = ""
+                if scenario == "named failure":
+                    failure = summary["testFailures"][0]
+                    failure.update(testName="testRendering()", testIdentifierString="testRendering()")
+                    suites[:] = [{"nodeType": "Test Suite", "name": "RenderingTests", "children": [named_case]}]
+                elif scenario in ("partial run", "test in tree only", "skipped test"):
+                    case_result = "Skipped" if scenario == "skipped test" else "Passed"
+                    suites.append({"nodeType": "Test Suite", "name": "RenderingTests",
+                                   "children": [{**named_case, "result": case_result}]})
+                    if scenario == "partial run":
+                        summary.update(totalTestCount=2, passedTests=1)
+                    elif scenario == "skipped test":
+                        summary.update(totalTestCount=2, skippedTests=1)
+                elif scenario == "console start":
+                    console = "Test Case '-[RenderingTests testRendering]' started."
+                else:
+                    summary["testFailures"][0]["failureText"] = "The test runner exited unexpectedly."
+                status, output = self.run_ipad_bundle((summary, tree), console=console)
+                self.assertEqual(status, 1, output)
+                self.assertIn(f"FAIL iPad-Air-13-inch-M4: Executed {counted}", output)
+                self.assertIn("PASS iPhone-17-Pro", output)
 
     def test_a_failed_swift_testing_test_is_counted_failed_in_its_devices_line(self):
         # Its bundle's XCTest run is empty and passes; the lane reads only the devices' lines (vocaro/queuekeeper#81).

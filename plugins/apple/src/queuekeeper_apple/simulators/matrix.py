@@ -379,6 +379,50 @@ def test_cases(record, activity_timings=None):
     return found
 
 
+RUNNER_PREPARATION_TIMEOUT = "The test runner timed out while preparing to run tests."
+RUNNER_ERROR = re.compile(r"xctest \([0-9]+\) encountered an error")
+TEST_ACTIVITY = re.compile(r"^(?:Test [Cc]ase |\S+ Test (?!run\b))", re.M)
+
+
+def runner_preparation_timed_out(record, console):
+    """The bundle records only XCTest's synthetic startup failure (vocaro/queuekeeper#325)."""
+    if record is None:
+        return False
+    summary, tree = record
+    counts = ("totalTestCount", "passedTests", "failedTests", "expectedFailures", "skippedTests")
+    if summary.get("result") != "Failed" or tuple(summary.get(key) for key in counts) != (1, 0, 1, 0, 0):
+        return False
+    failures = summary.get("testFailures")
+    if not isinstance(failures, list) or len(failures) != 1 or not isinstance(failures[0], dict):
+        return False
+    failure = failures[0]
+    name = failure.get("testName")
+    target = failure.get("targetName")
+    if (failure.get("failureText") != RUNNER_PREPARATION_TIMEOUT or not target or
+            not isinstance(name, str) or not RUNNER_ERROR.fullmatch(name) or
+            failure.get("testIdentifierString") != name):
+        return False
+
+    def cases(node, path):
+        kind = node.get("nodeType")
+        if kind == "Test Case":
+            yield path, node.get("name"), node.get("result")
+        if kind in ("Unit test bundle", "UI test bundle", "Test Suite"):
+            path = (*path, node.get("name"))
+        for child in node.get("children", []):
+            yield from cases(child, path)
+
+    nodes = tree.get("testNodes", [])
+    if [case for node in nodes for case in cases(node, ())] != [((target, "System Failures"), name, "Failed")]:
+        return False
+    if any(issue.get("expected") or issue["message"] != RUNNER_PREPARATION_TIMEOUT
+           for node in nodes for issue in issue_messages(node)):
+        return False
+    # A partial run may leave named test activity only in the console.
+    return not (TEST_ACTIVITY.search(console) or lane_report.XCTEST_ISSUE.search(console)
+                or lane_results.executed_tests(console) or lane_results.skipped_tests(console))
+
+
 TESTMANAGERD_DISCONNECT = "Lost connection to testmanagerd"
 TESTMANAGERD_CRASH = "the simulator's testmanagerd crashed during testing"
 DIAGNOSTIC_EVENT = re.compile(r"^(\d\d):(\d\d):(\d\d\.\d+) ([^\s\[]+)\[(\d+):\d+\] (.*)$")
@@ -533,6 +577,9 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
     if not results: return None
     folder = Path(results) / KEPT
     tests = test_cases(record) if record is not None and cases is None else cases
+    timings = None
+    if record is not None:
+        timings = suite_seconds(None, record) if tests else {}
     try:
         folder.mkdir(parents=True, exist_ok=True)
         text = log.read_text(errors="replace") if log.is_file() else None
@@ -544,7 +591,7 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
             "run": kind, "keptBy": by, "status": status, "seconds": seconds, "log": log.name if lines is not None else None,
             "resultLines": None if lines is None else len(lines),
             "summary": record[0] if record is not None else None,
-            "suiteSeconds": suite_seconds(None, record) if record is not None else None,
+            "suiteSeconds": timings,
             "tests": tests, "bundleUnread": unread or (UNREAD if tests is None else None if tests else NO_CASES)},
             indent=1) + "\n")
         if status != 0: keep_failures(kind, Path(results), tests, (text or "") if console_failures else "")
@@ -775,6 +822,15 @@ class Run:
         # Tests that skipped ran nothing, so they are reported beside the count, not in it. The result
         # bundle's record counts them; the console, with no bundle to read, is the fallback.
         record = bundle_record(bundle)
+        if status == 65 and runner_preparation_timed_out(record, text):
+            detail = f"{RUNNER_PREPARATION_TIMEOUT} (xcodebuild status {status})"
+            kept(kind, log, record, lane_results.UNMEASURED, seconds, unread=RUNNER_PREPARATION_TIMEOUT,
+                 cases=[], console_failures=False)
+            self.tallies[kind] = tally(0, 0, 0, 0, 0)
+            if selection is not None:
+                self.say(f"SHARD {kind}: status {status}, ran 0 tests in {seconds}s; log: {log}")
+                return lane_results.UNMEASURED, 0, 0, [], f"{kind}: {detail}"
+            return self.finish(kind, lane_results.UNMEASURED, f"{detail}, Executed 0 tests", log, seconds)
         recorded = bundle_results(bundle, kind, record)
         if recorded is not None: executed, skipped, from_bundle = recorded
         else: executed, skipped, from_bundle = lane_results.executed_tests(text), lane_results.skipped_tests(text), []
