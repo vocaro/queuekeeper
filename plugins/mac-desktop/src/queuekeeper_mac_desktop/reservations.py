@@ -55,7 +55,7 @@ DEFERRED = "physicalDevicesRecordedOn"
 # Written only by the record's own operations, which say who changed ownership and why.
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
            "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost",
-           "launchedApps", "appsQuit", "notifications", "runRecoveries", "runRecoveryFailed"}
+           "launchedApps", "appsQuit", "notifications", "runRecoveries", "runRecoveryFailed", offload_host.PHYSICAL_DEVICE}
 # Sessions waiting in line for an entry, by its key, kept beside the entries.
 QUEUES = "queues"
 # Seconds between looks at an entry while `take` waits for it.

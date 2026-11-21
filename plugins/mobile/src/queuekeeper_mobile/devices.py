@@ -245,7 +245,8 @@ def _latest(entry):
 
 def _content(entry):
     return {key: value for key, value in entry.items()
-            if key not in ("revision", "importedFrom", "importedVersions", "uncertain", "uncertainReason")}
+            if key not in ("revision", "importedFrom", "importedVersions", "uncertain", "uncertainReason",
+                           offload_host.PHYSICAL_DEVICE)}
 
 
 def _merge(current, incoming):
@@ -283,8 +284,26 @@ class Record(reservations.Record):
                              "tools print it, never a name, 'booted' or a default")
 
     def _placed(self, key, identifier, record):
-        if record.get(DEFERRED) and physical(identifier):
-            raise deferred_refusal(record[DEFERRED], key)
+        deferred = record.get(DEFERRED)
+        if deferred:
+            current = record["devices"].get(key) or {}
+            if physical(identifier) or (identifier == current.get("device") and
+                                        offload_host.physical_device_entry(current)):
+                raise deferred_refusal(deferred, key)
+
+    def _change(self, key, revision, change):
+        """Classify the device as part of the same write that changes its entry."""
+        def classify(current, record):
+            entry = change(current, record)
+            identifier = entry.get("device")
+            previous = current or {}
+            marker = offload_host.PHYSICAL_DEVICE
+            if physical(identifier) or (identifier == previous.get("device") and previous.get(marker) is True):
+                entry[marker] = True
+            else:
+                entry.pop(marker, None)
+            return entry
+        return super()._change(key, revision, classify)
 
     def take(self, key, *, owner, purpose, release_by, timeout, title=None, details=None, poll=POLL, said=None):
         """Reserve key in turn, first come first served, waiting up to timeout seconds in its line.
@@ -442,7 +461,8 @@ class Record(reservations.Record):
                 raise Refused(f"this record defers physical devices to {current}, not {mac}; which Mac's record holds "
                               "them is the owner's decision (`devices defer MAC --replace`). Nothing was changed")
             held = [key for key, entry in record["devices"].items()
-                    if physical(entry.get("device")) and condition(entry) != "released"]
+                    if (offload_host.physical_device_entry(entry) or physical(entry.get("device")))
+                    and condition(entry) != "released"]
             if mac is not None and held:
                 raise Refused(f"{', '.join(held)} holds a physical device in this record; release or recover it "
                               f"before deferring physical devices to {mac}. Nothing was changed")
@@ -489,6 +509,8 @@ class Record(reservations.Record):
                         counts["already present"] += 1
                         continue
                     counts["added" if current is None else "merged"] += 1
+                    if physical(merged.get("device")):
+                        merged[offload_host.PHYSICAL_DEVICE] = True
                     record["devices"][key] = merged
                 imports.append({"path": str(path), "sha256": digest, "bytes": len(data),
                                 "modifiedAt": datetime.fromtimestamp(modified, timezone.utc).isoformat(),

@@ -117,10 +117,11 @@ LABEL = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 DEVICES = "Library/Developer/CoreSimulator/Devices"
 DEVICE = re.compile(r"[0-9A-F]{8}-(?:[0-9A-F]{4}-){3}[0-9A-F]{12}", re.IGNORECASE)
 # The device record, relative to the home, as devices.py finds it, which QUEUEKEEPER_DEVICE_RECORD
-# overrides for a test's; its key for the Mac it defers physical devices to; and a physical
-# device's hardware UDID, as devices.PHYSICAL matches it.
+# overrides for a test's; its key for the Mac it defers physical devices to; and the marker mobile
+# writers put on physical-device entries, which this standalone reader can read without a plugin.
 DEVICE_RECORD = "Library/Application Support/queuekeeper/device-handoff.json"
 DEFERRED = "physicalDevicesRecordedOn"
+PHYSICAL_DEVICE = "physicalDevice"
 # Device records older toolkits left, which devices.LEGACY names and disk still reads.
 LEGACY_RECORDS = "/private/tmp/*device-handoff*.json"
 # The setting that shows an app's "quit unexpectedly" alert, and where a foreground run that has it off
@@ -131,6 +132,7 @@ CRASH_DIALOG_RECORD = "Library/Application Support/queuekeeper/crash-dialog.json
 # other user notification alerts, and the password, keychain and permission prompts that stay the owner's.
 ALERT_PROCESSES = ("UserNotificationCenter", "Problem Reporter", "CrashReporter", "SecurityAgent", "coreautha",
                    "universalAccessAuthWarn", "CoreServicesUIAgent")
+# Legacy Apple records do not mark their physical devices.
 PHYSICAL = re.compile(r"[0-9A-F]{8}-[0-9A-F]{16}|[0-9A-F]{40}")
 # Where a Mac keeps its users' keychain files, relative to the home, and its login keychain's file there.
 KEYCHAINS = "Library/Keychains"
@@ -760,6 +762,13 @@ def record_path():
     return Path(os.environ.get("QUEUEKEEPER_DEVICE_RECORD") or Path(pwd.getpwuid(os.getuid()).pw_dir) / DEVICE_RECORD)
 
 
+def physical_device_entry(entry):
+    """Whether the entry records a physical device, including older records of Apple hardware."""
+    device = entry.get("device")
+    return isinstance(device, str) and bool(device) and (
+        entry.get(PHYSICAL_DEVICE) is True or PHYSICAL.fullmatch(device.upper()) is not None)
+
+
 def device_record():
     """The Mac its device record defers physical devices to, and the entries that hold a physical
     device, which `qk doctor` compares. It reads without the record's lock: every change replaces
@@ -775,7 +784,7 @@ def device_record():
     if not isinstance(entries, dict):
         return {"path": str(path), "error": "it is no device record"}
     held = sorted(key for key, entry in entries.items() if isinstance(entry, dict) and entry.get("state") != "released"
-                  and PHYSICAL.fullmatch(str(entry.get("device") or "").upper()))
+                  and physical_device_entry(entry))
     return {"path": str(path), "deferredTo": record.get(DEFERRED), "physical": held}
 
 
@@ -3136,7 +3145,7 @@ def release_hold(item, entries, table, simulators, pools, stopping=(), *, discov
     the devices it would shut down first, which it judges as if they were Shutdown."""
     key, entry = item["key"], entries[item["key"]]
     udid = str(entry.get("device") or "").upper()
-    if not DEVICE.fullmatch(udid) or PHYSICAL.fullmatch(udid):
+    if not DEVICE.fullmatch(udid) or physical_device_entry(entry):
         return "it records no simulator, and reap releases only a simulator pool's reservations"
     run = entry.get("run")
     if isinstance(run, dict) and run.get("host"):

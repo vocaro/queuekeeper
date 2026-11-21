@@ -118,8 +118,9 @@ exec /bin/sh "$@"
 """
 # Recorded `ioreg -n Root -d1 -a` of each Mac's unlocked screens (tests/test_screen.py).
 SCREENS = Path(__file__).resolve().parents[1] / "mac_desktop/fixtures/ScreenState"
-# Well-formed, invented identifiers: a hardware UDID and a simulator UUID.
+# Well-formed, invented identifiers: a hardware UDID, an adb serial and a simulator UUID.
 PHONE = "00008130-001A2C3E0C38001C"
+ANDROID_PHONE = "33041FDH2000QK"
 DUO = "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"
 # An invented code-signing identity's SHA-1, forty hex digits as an older device's UDID is.
 IDENTITY = "96DAB4C8A3D308C37BCC5C7E987AB6FE05F16008"
@@ -1274,6 +1275,7 @@ class RemoteTests(unittest.TestCase):
         self.assertIsNone(there.entry("iPhone"))
 
     def test_a_farm_mac_record_that_defers_elsewhere_or_holds_a_physical_device_stops_the_run(self):
+        devices.platforms.discover()
         there = devices.Record(self.record_there)
         there.defer("another-mac")
         status, _output, error = self.qk("remote", "run", "check")
@@ -1282,12 +1284,15 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("defers physical devices to another-mac", error)
         self.assertFalse((self.checkout(0) / ".build/provisioned").exists())
         there.defer(None)
-        there.reserve("iPhone", owner="there", revision=0, purpose="p", release_by="2099-01-01T00:00:00Z",
-                      device=PHONE)
-        status, _output, error = self.qk("remote", "run", "check")
-        self.assertEqual(status, 2)
-        self.assertIn("iPhone holds a physical device", error)
-        self.assertNotIn(devices.DEFERRED, there.load())
+        for key, identifier in (("iPhone", PHONE), ("AndroidPhone", ANDROID_PHONE)):
+            with self.subTest(key=key):
+                entry = there.reserve(key, owner="there", revision=0, purpose="p",
+                                      release_by="2099-01-01T00:00:00Z", device=identifier)
+                status, _output, error = self.qk("remote", "run", "check")
+                self.assertEqual(status, 2)
+                self.assertIn(f"{key} holds a physical device", error)
+                self.assertNotIn(devices.DEFERRED, there.load())
+                there.release(key, owner="there", revision=entry["revision"], outcome="o", restoration="r")
 
     def test_a_toolkit_without_the_senders_device_setup_module_is_refused_as_a_version_mismatch(self):
         # vocaro/queuekeeper#155: a sender from before the plugins left the core ran this module in a toolkit that
@@ -7297,6 +7302,7 @@ class FarmMacDoctorTests(unittest.TestCase):
             self.assertNotIn("runtimesDiffer", found)
 
     def test_device_records_that_do_not_keep_physical_devices_here_alone_are_errors(self):
+        devices.platforms.discover()
         name = offload_host.mac_name()
         self.assertEqual(self.doctor()[1]["remote"]["deviceRecord"]["deferredTo"], name)
         release_by = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
@@ -7309,10 +7315,33 @@ class FarmMacDoctorTests(unittest.TestCase):
         with self.subTest("held there"):
             self.record_there.reserve("iPhone", owner="there", revision=0, purpose="p", release_by=release_by,
                                       device=PHONE)
+            self.record_there.reserve("AndroidPhone", owner="there", revision=0, purpose="p", release_by=release_by,
+                                      device=ANDROID_PHONE)
+            self.record_there.reserve("Pool 1", owner="there", revision=0, purpose="p", release_by=release_by,
+                                      device="avd:Pool_1")
+            # The farm still recognizes an Apple entry written before the record marked physical devices.
+            record = self.record_there.load()
+            del record["devices"]["iPhone"][offload_host.PHYSICAL_DEVICE]
+            self.record_there.path.write_text(json.dumps(record))
             status, found = self.doctor()
             self.assertEqual(status, 1)
-            self.assertIn("fake's device record holds the physical device of iPhone", found["errors"][0])
+            self.assertEqual(found["remote"]["deviceRecord"]["physical"], ["AndroidPhone", "iPhone"])
+            self.assertIn("fake's device record holds the physical device of AndroidPhone, iPhone", found["errors"][0])
             self.record_there.release("iPhone", owner="there", revision=1, outcome="o", restoration="r")
+            self.record_there.release("AndroidPhone", owner="there", revision=1, outcome="o", restoration="r")
+        with self.subTest("physical device stays marked without its plugin"), \
+                patch.object(devices.platforms, "PLATFORMS", []):
+            entry = self.record_there.reserve("AndroidPhone", owner="there", revision=2, purpose="p",
+                                              release_by=release_by)
+            self.assertIs(entry[offload_host.PHYSICAL_DEVICE], True)
+            with self.assertRaisesRegex(devices.Refused, "AndroidPhone holds a physical device"):
+                self.record_there.defer(name)
+            self.record_there.release("AndroidPhone", owner="there", revision=3, outcome="o", restoration="r")
+            self.record_there.defer(name)
+            with self.assertRaisesRegex(devices.Refused, "reserved in .+'s device record"):
+                self.record_there.reserve("AndroidPhone", owner="there", revision=4, purpose="p",
+                                          release_by=release_by)
+            self.record_there.defer(None)
         with self.subTest("deferred elsewhere"):
             self.record_there.defer("another-mac")
             status, found = self.doctor()

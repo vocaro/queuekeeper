@@ -87,15 +87,18 @@ class DeviceConnections(unittest.TestCase):
             "iphone": {"device": "00000000-0000000000000001", "state": "reserved", "ownerChatID": "session",
                        "purpose": "release tests", "expectedReleaseBy": "2026-11-14T10:00:00Z"},
             "ipad": {"device": "00000000-0000000000000002", "state": "released"},
+            "AndroidPhone": {"device": "33041FDH2000QK", "physicalDevice": True, "state": "reserved"},
+            "emulator": {"device": "avd:Pool_1", "state": "reserved"},
             "simulator": {"device": "00000000-0000-0000-0000-000000000003", "state": "reserved"},
             "mac-foreground": {"state": "reserved"}}, "queues": {"iphone": [{"owner": "next"}]}}
         with patch.object(farm.offload_host, "device_record_whole", return_value=record):
             found = READ_DEVICES()
-        self.assertEqual([device["name"] for device in found["devices"]], ["ipad", "iphone"])
-        self.assertEqual(found["devices"][1]["waiting"], 1)
-        self.assertEqual(found["devices"][1]["owner"], "session")
-        self.assertIsNone(found["devices"][0]["owner"])
-        self.assertEqual(found["devices"][0]["connection"], "notDetected")
+        named = {device["name"]: device for device in found["devices"]}
+        self.assertEqual(set(named), {"AndroidPhone", "ipad", "iphone"})
+        self.assertEqual(named["iphone"]["waiting"], 1)
+        self.assertEqual(named["iphone"]["owner"], "session")
+        self.assertIsNone(named["ipad"]["owner"])
+        self.assertEqual(named["ipad"]["connection"], "notDetected")
         with patch.object(farm.offload_host, "device_record_whole", return_value={"devices": {}, farm.offload_host.DEFERRED: "studio"}):
             self.assertEqual(READ_DEVICES()["deferredTo"], "studio")
         with patch.object(farm.offload_host, "device_record_whole", side_effect=ValueError("broken record")):

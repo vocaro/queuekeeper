@@ -1446,6 +1446,10 @@ device identifiers or live session details.
   whether a run is active and the process whose end ends it (`hostProcessIdentifier` and start time),
   the purpose and expected release, original settings and what to preserve, launched apps, and at
   handoff the outcome, restoration and release time. A released entry's apps move to `previousLease`.
+  The mobile record marks physical devices with `physicalDevice: true` when their entries are written,
+  so the standalone farm census can classify them without loading a platform plugin. Older Apple
+  entries are also recognized by their hardware UDIDs. An existing Android entry gains the marker
+  the next time the mobile record changes it with the Android platform loaded.
 - **Beside the entries** it keeps `mac-foreground`, the owner's notification setup, the `queues` that
   `take` waits in (so joining a line never changes the holder's revision; a place whose `take` process
   is gone drops out), and `declarations`. Reach readings go in `device-reach.json` beside it, never in

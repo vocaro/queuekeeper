@@ -29,7 +29,8 @@ def read_devices():
                 connection_error = str(error)
         found = []
         for key, entry in record["devices"].items():
-            if not isinstance(entry, dict) or not platforms.physical(str(entry.get("device") or "")):
+            if not isinstance(entry, dict) or not (
+                    offload_host.physical_device_entry(entry) or platforms.physical(entry.get("device"))):
                 continue
             state = entry.get("state") or "held"
             if entry.get("uncertain") or state == "restoration-unverified": state = "needs recovery"
