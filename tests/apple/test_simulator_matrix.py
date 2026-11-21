@@ -66,12 +66,12 @@ class Followed:
 
 # Stand-ins for xcrun simctl and xcodebuild that record what they were asked to do in FAKE_STATE,
 # where each simulator is a file of its name, type, runtime, state and last use. A device type
-# named in FAKE_SLOW_BOOT, FAKE_TEST_FAIL, FAKE_UNMEASURED or FAKE_NO_TESTS boots slowly, fails its
-# tests, reports an unmeasured test or runs none. Each test run waits until FAKE_MEET devices have
-# started testing, or fails after FAKE_MEET_LIMIT seconds.
+# named in FAKE_TEST_FAIL, FAKE_UNMEASURED or FAKE_NO_TESTS fails its tests, reports an unmeasured
+# test or runs none. Each test run waits until FAKE_MEET devices have started testing,
+# or fails after FAKE_MEET_LIMIT seconds.
 XCRUN = textwrap.dedent("""\
     #!/usr/bin/env python3
-    import datetime, json, os, pathlib, shutil, sys, time, uuid
+    import datetime, json, os, pathlib, shutil, sys, uuid
     state = pathlib.Path(os.environ["FAKE_STATE"])
     devices = state / "devices"
     devices.mkdir(parents=True, exist_ok=True)
@@ -114,8 +114,6 @@ XCRUN = textwrap.dedent("""\
     elif action == "boot":
         if device(rest[0])["state"] != "Shutdown": sys.exit("Unable to boot device in current state: Booted")
         change(rest[0], state="Booted", lastUsedAt=datetime.datetime.now(datetime.timezone.utc).isoformat())
-    elif action == "bootstatus" and kind(rest[0]) in os.environ.get("FAKE_SLOW_BOOT", ""):
-        time.sleep(60)
     elif action == "shutdown":
         change(rest[0], state="Shutdown")
     elif action == "erase":
@@ -354,26 +352,28 @@ class SimulatorMatrixTests(unittest.TestCase):
                             # Devices that should meet wait for each other this long, stretched by load.
                             "FAKE_MEET_LIMIT": str(stretched(60))}
 
-    def run_matrix(self, *arguments, wait_for_fake_boot=False, **environment):
+    def run_matrix(self, *arguments, wait_for_fake_boot=False, timed_out_boot=None, **environment):
         command = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                    "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4", "--pool", "Project", *arguments]
-        if wait_for_fake_boot:
-            # In the outcome test, wait for the stand-in itself. The enclosing unittest run
-            # bounds a stall. The separate boot-timeout test still exercises the real deadlines.
+        if wait_for_fake_boot or timed_out_boot is not None:
+            # Wait for the stand-in itself, bounded by the enclosing unittest run. The timeout
+            # outcome is injected for one bootstatus so its sibling cannot time out under load.
             driver = textwrap.dedent("""\
                 from pathlib import Path
                 import runpy
                 import sys
                 from unittest.mock import patch
 
-                fake_xcrun = sys.argv[1]
-                sys.argv = sys.argv[2:]
+                fake_xcrun, timed_out_boot = sys.argv[1:3]
+                sys.argv = sys.argv[3:]
                 queuekeeper = Path(sys.argv[0])
                 sys.path.insert(0, str(queuekeeper.parents[1] / "src/python"))
                 from queuekeeper import processes
                 supervise = processes.supervise
 
                 def wait_for_boot(command, **options):
+                    if command[:4] == ["xcrun", "simctl", "bootstatus", timed_out_boot]:
+                        raise processes.TimedOut("simulated bootstatus timeout")
                     if command[:3] in (["xcrun", "simctl", "boot"], ["xcrun", "simctl", "bootstatus"]):
                         command = [fake_xcrun, *command[1:]]
                         options["timeout"] = None
@@ -382,7 +382,7 @@ class SimulatorMatrixTests(unittest.TestCase):
                 with patch.object(processes, "supervise", wait_for_boot):
                     runpy.run_path(str(queuekeeper), run_name="__main__")
             """)
-            command[1:1] = ["-c", driver, str(self.root / "bin/xcrun")]
+            command[1:1] = ["-c", driver, str(self.root / "bin/xcrun"), timed_out_boot or ""]
         finished = subprocess.run(command, cwd=self.root, capture_output=True, text=True,
                                   env={**self.environment, **environment})
         return finished.returncode, finished.stdout + finished.stderr
@@ -978,12 +978,14 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertIn("--xcodegen generates an Xcode project: name it with --xcode-project", output)
 
     def test_a_boot_past_its_limit_leaves_only_that_device_unmeasured(self):
-        # Fixed: the 1 s boot timeout is the behavior under test, and the slow boot's 60 s outlasts it.
-        status, output = self.run_matrix("--boot-timeout", "1", FAKE_SLOW_BOOT="iPad-Air-13-inch-M4")
-        self.assertEqual(status, 3, output)
+        iphone = self.add("Project iPhone 17 Pro 1")
+        ipad = self.add("Project iPad Air 13-inch (M4) 1", IPAD)
+        status, output = self.run_matrix(timed_out_boot=ipad)
+        self.assertEqual(status, lane_results.UNMEASURED, output)
         self.assertIn("UNMEASURED iPad-Air-13-inch-M4: the boot exceeded its limit", output)
         self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
-        self.assertEqual(len([call for call in self.calls() if call[0] == "test-without-building"]), 1)
+        [call] = self.ran_tests()
+        self.assertEqual(call[call.index("-destination") + 1], f"platform=iOS Simulator,id={iphone}")
         self.assert_every_device_returned()
 
     def test_a_failed_build_tests_no_device(self):
