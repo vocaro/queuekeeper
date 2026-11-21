@@ -82,9 +82,12 @@ async function preparePage(scratch) {
 async function render(scratch, destination) {
   const url = await preparePage(scratch);
   const chrome = spawn(chromePath, [
-    '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--remote-debugging-pipe',
+    '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run',
+    '--disable-background-networking', '--remote-debugging-pipe',
     `--user-data-dir=${join(scratch, 'chrome')}`, 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'inherit', 'pipe', 'pipe'] });
+  // Wait for Chrome to release its profile before the caller removes it.
+  const chromeClosed = new Promise(resolve => chrome.once('close', resolve));
   const call = devTools(chrome);
   let encoder;
   try {
@@ -135,6 +138,7 @@ async function render(scratch, destination) {
   } finally {
     encoder?.kill();
     chrome.kill();
+    await chromeClosed;
   }
 }
 
@@ -149,5 +153,5 @@ try {
   console.log(output);
 } finally {
   if (staging) await rm(staging, { recursive: true, force: true });
-  await rm(scratch, { recursive: true, force: true });
+  await rm(scratch, { recursive: true, force: true, maxRetries: 5 });
 }
