@@ -15,8 +15,8 @@ this guide assumes you know what a lane, a gate, admission and the farm are.
   platform plugins' records and rules
 - [Visibility features](#visibility-features): the event journal, and writing a feature
 - [Checks this repository runs](#checks-this-repository-runs): spelling and the docs check
-- [Maintenance](#maintenance): changing Queuekeeper while work runs, moving a module, renaming a
-  setting, the README's screenshots and the dashboard reel
+- [Maintenance](#maintenance): changing Queuekeeper while work runs, moving a module,
+  checking consumers, renaming a setting, the README's screenshots and the dashboard reel
 
 ## Working on Queuekeeper
 
@@ -2011,13 +2011,36 @@ project on that Mac the moment its checkout updates, whatever its queue holds (#
   `DeprecationWarning` that names the replacement and gives the retirement date, as
   `foreground.second_mac` does for `farm_mac`. If there is no replacement, warn and keep the
   old function working while its consumers move off it.
-- **Search consumer projects' `origin/main`** for the old module or function name, including
+- **Search consumer projects' `origin/main`** for the old module or function name. Include
   attribute calls, `mock.patch` targets, and module strings passed to `python3 -m` from shell or
   Swift. Land each consumer's changes while the old name works. Once the retirement date passes
   and a fresh search finds no uses, remove the old name and its `forwarded` entry if it has one.
 
 A forwarder may only import what its own component may (see `test_queuekeeper_imports.py`), so the old
 `queuekeeper.apple` and `queuekeeper.mac_desktop` names, which became plugins of their own, cannot have one.
+When the component boundary prevents a forwarder, provide the replacement while the old API still
+works, then coordinate each consumer's migration before removing the old one. Each migration lands
+from a session in its own repository. The module inventory protects existing names. Treat a name
+used by another project's scripts, commands or tests as a compatibility dependency even when it is
+undocumented.
+
+### Checking consumers before landing
+
+When a public helper changes behavior, including a CLI command or lane output that callers parse,
+search each consumer's `origin/main` for the helper and its observable output in `scripts/tests`.
+The [project inventory](#renaming-or-retiring-a-setting) gives a starting list. Search the tracked
+tree as well when moving a module or changing shared test isolation. Include split imports such
+as `from package import module` and references to shared fixtures such as `tests/host_isolation.py`.
+Use fixed strings with `git grep` and read the matches for actual dependencies. For example, in a
+consumer checkout, look for tests that name the simulator pool command or check its boot message.
+
+```sh
+git grep -n -F -e 'simulator-pool' -e 'did not finish booting' origin/main -- scripts/tests
+```
+
+List the matching projects and their file paths in the landing report. Say which expectation or
+import may need updating and identify any consumer whose main you could not inspect. The source
+search completes the pre-landing consumer check.
 
 ### Renaming or retiring a setting
 
