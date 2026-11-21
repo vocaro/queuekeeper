@@ -30,8 +30,10 @@ UDID_LIKE = re.compile(r"[0-9A-Fa-f]{40}")
 LISTING = "QUEUEKEEPER_ADB_LISTING"
 # What lists another Mac's devices over SSH, in its login shell: its SDK's adb wherever that Mac keeps it, and an
 # empty listing from a Mac with none, which reaches no Android device.
-THERE = ('for a in "${ANDROID_HOME:-/nonexistent}/platform-tools/adb" "$HOME/Library/Android/sdk/platform-tools/adb" '
-         '/opt/homebrew/share/android-commandlinetools/platform-tools/adb "$(command -v adb)"; do '
+THERE = ('for a in "${ANDROID_HOME:-/nonexistent}/platform-tools/adb" '
+         '"${ANDROID_SDK_ROOT:-/nonexistent}/platform-tools/adb" "$HOME/Library/Android/sdk/platform-tools/adb" '
+         '/opt/homebrew/share/android-commandlinetools/platform-tools/adb '
+         '/usr/local/share/android-commandlinetools/platform-tools/adb "$(command -v adb)"; do '
          '[ -x "$a" ] && exec "$a" devices -l; done; exit 0')
 TIMEOUT = 30
 

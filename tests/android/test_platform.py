@@ -3,12 +3,14 @@ device_notifications), read from recorded adb output with no device attached."""
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import host_isolation  # noqa: F401
-from queuekeeper_android import adb, android_platform, device_notifications, settings
+from queuekeeper import remote
+from queuekeeper_android import adb, android_platform, device_notifications, sdk, settings
 from queuekeeper_mobile import devices, platforms
 
 PIXEL = "33041FDH2000QK"
@@ -63,6 +65,33 @@ class Names(unittest.TestCase):
             with patch.dict(os.environ, {android_platform.LISTING: listing.name}):
                 self.assertIn(PIXEL, android_platform.PLATFORM.listing_here())
                 self.assertEqual(android_platform.PLATFORM.connections()["R3CT40ABCDE"]["connection"], "unavailable")
+
+    def test_a_farm_mac_lists_devices_using_its_sdk_root_or_intel_homebrew_sdk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            tool = root / "platform-tools/adb"
+            tool.parent.mkdir()
+            (root / "listing.txt").write_text(LISTING)
+            host_isolation.executable(tool, '#!/bin/sh\n[ "$*" = "devices -l" ] && exec /bin/cat "${0%/*}/../listing.txt"\n')
+
+            for intel_sdk in (False, True):
+                with self.subTest(intel_sdk=intel_sdk):
+                    empty = str(root / "absent")
+                    defaults = {"$HOME/Library/Android/sdk": empty, sdk.DEFAULTS[1]: empty,
+                                sdk.DEFAULTS[2]: folder if intel_sdk else empty}
+                    environment = {"PATH": ""}
+                    if not intel_sdk:
+                        environment["ANDROID_SDK_ROOT"] = folder
+
+                    def ssh(host, command, **options):
+                        self.assertEqual(host, "farm-mac")
+                        for default, path in defaults.items():
+                            command = command.replace(default, path)
+                        return subprocess.run(["/bin/sh", "-c", command], env=environment, **options)
+
+                    with patch.object(remote, "ssh", side_effect=ssh):
+                        self.assertEqual(android_platform.PLATFORM.listing_there("farm-mac"),
+                                         android_platform.reached(LISTING))
 
     def test_health_names_a_device_adb_does_not_list_or_that_has_not_authorized_the_mac(self):
         health = android_platform.PLATFORM.health
