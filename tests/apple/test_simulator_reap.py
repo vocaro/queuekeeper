@@ -156,7 +156,8 @@ class ReapTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in report["recoverable"]], [key], report)
         self.assertEqual(report["released"], [], report)
         if hold: self.assertRegex(report["recoverable"][0]["hold"], hold)
-        command = ("python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover "
+        command = (f"python3 {shlex.quote(str(remote.TOOLKIT_ROOT / 'bin/qk'))} "
+                   f"--project {shlex.quote(str(remote.TOOLKIT_ROOT))} devices recover "
                    f"'{key}' --by SESSION --revision 7 --verified 'WHAT YOU CHECKED'")
         line = next(line for line in remote.reap_lines(remote.HERE, report) if "stays held" in line)
         self.assertIn("owner session", line)
@@ -348,7 +349,11 @@ class ReapTests(unittest.TestCase):
         self.simctl_fails = True
         self.reserve(**self.held_entry())
         before = self.record.read_bytes()
-        named = self.assertNamed(self.reap(), hold="simctl did not list its devices")
+        # The emitting checkout is outside the home convention, with whitespace in its path.
+        toolkit = self.home / "a Queuekeeper checkout"
+        toolkit.symlink_to(remote.TOOLKIT_ROOT, target_is_directory=True)
+        with patch.object(remote, "TOOLKIT_ROOT", toolkit):
+            named = self.assertNamed(self.reap(), hold="simctl did not list its devices")
         self.assertEqual(self.record.read_bytes(), before)
         # Each command runs as printed, where no import path names the plugins: on 2026-11-15 no Mac found the
         # module the line named, and four reservations had no recovery (vocaro/queuekeeper#167). Here, its --help
@@ -365,6 +370,16 @@ class ReapTests(unittest.TestCase):
         ran = run_printed(f"ssh build-host {shlex.quote(here)}")
         self.assertIn("older than qk needs", ran.stderr)
         self.assertNotIn("read it again", ran.stderr)
+
+    def test_a_wheel_without_a_checkout_keeps_the_standard_recovery_launcher(self):
+        with patch.object(remote, "TOOLKIT_ROOT", self.home):
+            line = remote.reap_lines(remote.HERE, {"recoverable": [{"key": NAME, "revision": 7,
+                                     "owner": "session", "pids": [HOLDER], "due": self.DUE}]})[0]
+        command = line.partition("recovers it: ")[2]
+        self.assertIn("python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover ", command)
+        ran = run_printed(f"{command} --help")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertIn("usage: qk devices recover", ran.stdout)
 
     def test_a_reap_with_a_problem_or_no_pool_releases_nothing(self):
         self.states[UDID] = "Shutdown"

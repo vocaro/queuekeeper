@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[2] / "src/python"
 sys.path.insert(0, str(SOURCE))
-from queuekeeper import cli, resources
+from queuekeeper import cli, config, resources
 from queuekeeper_apple import device_notifications
 from queuekeeper_mobile import devices
 from queuekeeper_mac_desktop import reservations
@@ -531,7 +532,8 @@ class DeviceRecordTests(unittest.TestCase):
         output = self.cli("status")[1]
         self.assertIn(f"Recoverable: Pool iPhone 1 stays held for owner session-a, though its process {gone.pid} is gone",
                       output)
-        self.assertIn("python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover "
+        self.assertIn(f"python3 {shlex.quote(str(config.TOOLKIT_ROOT / 'bin/qk'))} "
+                      f"--project {shlex.quote(str(config.TOOLKIT_ROOT))} devices recover "
                       f"'Pool iPhone 1' --by SESSION --revision {entry['revision']} --verified 'WHAT YOU CHECKED'", output)
         self.assertEqual(self.path.read_bytes(), before, "status changes nothing")
 

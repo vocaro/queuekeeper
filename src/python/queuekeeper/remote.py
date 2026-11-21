@@ -4797,7 +4797,7 @@ def reap_lines(where, report, listing=True, held=False):
     # Before a dispatch, only an entry whose simulator this reap stopped; a listing names every one.
     stopped = {item["udid"] for item in report.get("stopped", [])}
     # One not yet due is named only by a listing: most are a take's, which its session still holds.
-    lines += [f"on {where}, {offload_host.recoverable_line(item, None if where == HERE else where)}"
+    lines += [f"on {where}, {offload_host.recoverable_line(item, None if where == HERE else where, toolkit=TOOLKIT_ROOT)}"
               for item in report.get("recoverable", [])
               if listing or not item.get("early") and (held or str(item.get("device") or "").upper() in stopped)]
     return lines

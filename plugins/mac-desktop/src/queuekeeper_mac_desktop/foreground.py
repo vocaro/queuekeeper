@@ -26,6 +26,7 @@ import warnings
 
 from . import opened_apps, reservations
 from queuekeeper import lane_wait, offload_host, processes
+from queuekeeper.config import TOOLKIT_ROOT
 
 # Seconds between looks at another Mac's mac-foreground entry while another run holds it.
 POLL = 10
@@ -132,11 +133,12 @@ def slot(purpose, *, timeout, expected=EXPECTED, record=None, poll=POLL, ready=N
             except reservations.Stale:
                 continue
         if state in ("orphan", "uncertain"):
+            command = offload_host.recover_command(reservations.FOREGROUND, entry.get("revision"), "WHAT",
+                                                   toolkit=TOOLKIT_ROOT)
             raise reservations.Refused(f"{offload_host.mac_name()}'s {reservations.FOREGROUND} is {state}, held by {entry.get('ownerChatID')} "
                                   f"for {entry.get('purpose')}; it needs attended recovery first, on that Mac: "
-                                  f"`{offload_host.recover_command(reservations.FOREGROUND, entry.get('revision'), 'WHAT')}`, "
-                                  "or from another Mac the same with `--host` and that Mac's SSH name after "
-                                  "`recover`, never as a command given to ssh")
+                                  f"`{command}`. To recover it remotely, run `qk devices recover --host HOST` "
+                                  "on the calling Mac with the same recovery arguments and the holding Mac's SSH name")
         holder, due = entry.get("ownerChatID"), entry.get("expectedReleaseBy")
         lane_wait.waiting(lane_wait.FOREGROUND, f"held by {holder} for {entry.get('purpose')}, expected release {due}")
         now = time.monotonic()

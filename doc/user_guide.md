@@ -2777,8 +2777,14 @@ number of times. Builds signed ad hoc are unmeasured there; signing with a team 
   never touches a password or permission prompt. An alert it may not clear stops the run unmeasured
   (exit 3), naming it and where it sits. A failed run is unmeasured when a cleared alert for another
   process stood longer than one look; a crash of the app under test stays a failure. A driver can look
-  between its own steps with `python3 -m queuekeeper_mac_desktop.crash_alerts check`. If crash dialogs
-  are off with no run holding the screen, the owner puts them back with
+  between its own steps by running the desktop plugin from Queuekeeper's import path.
+
+  ```sh
+  PYTHONPATH="$(qk python-path queuekeeper_mac_desktop.crash_alerts)" \
+    python3 -m queuekeeper_mac_desktop.crash_alerts check
+  ```
+
+  If crash dialogs are off with no run holding the screen, the owner puts them back with
   `defaults delete com.apple.CrashReporter DialogType`.
 - **Notification Center windows** sit over every app. Under the foreground lease on another Mac,
   Queuekeeper closes each banner or alert with its own Close action before the run starts, never pressing
@@ -3557,14 +3563,12 @@ It releases an entry only when every process the entry records is gone; the rele
 certain and its run stayed on this Mac; and simctl shows the simulator shut down. Each release is
 logged and printed (`released KEY (UDID), held for owner …`). An entry that is due but not provably
 dead stays held, and reap, `qk doctor` and `qk devices status` name it with its exact recovery
-command, which runs from any folder:
-
-```sh
-python3 ~/Development/queuekeeper/bin/qk --project ~/Development/queuekeeper devices recover …
-```
+command. It names the launcher of the Queuekeeper checkout that printed it, or the standard checkout
+if Queuekeeper is running without one. It uses the checkout as its project so the device commands
+load from any folder.
 
 For another Mac's entry the command adds `--host HOST`, which runs the recovery through that Mac's
-`qk` (a plain `ssh HOST` finds a Python too old to start it).
+own Queuekeeper checkout under `~/Development/queuekeeper`, using its login shell.
 
 ### Cleaning up after a landing
 

@@ -44,6 +44,7 @@ import tempfile
 import time
 
 from queuekeeper import offload_host
+from queuekeeper.config import TOOLKIT_ROOT
 from queuekeeper.resources import process_start
 
 SCHEMA = 1
@@ -585,7 +586,7 @@ def recoverable_lines(entries):
     processes cannot be listed, nothing can be said of any entry, and it says that."""
     listed = offload_host.listing(["ps", "-axww", "-o", "pid=,ppid=,uid=,lstart=,args="])
     if listed is None: return ["The processes could not be listed, so no held entry that nothing keeps can be named"]
-    return [f"Recoverable: {offload_host.recoverable_line(item)}"
+    return [f"Recoverable: {offload_host.recoverable_line(item, toolkit=TOOLKIT_ROOT)}"
             for item in offload_host.recoverable(entries, offload_host.process_table(listed))]
 
 
