@@ -8,7 +8,7 @@ A project's pre-push hook is then one line, and holds no second copy of what its
 Git gives the hook the remote's name and URL, and on standard input a line per ref pushed. The paths the push
 changes pick the lanes, as they do for a landing: a push that changes only paths no code lane reads, by
 queue.unread and its Markdown defaults, runs the docs lanes, and any other runs the lanes of queue.lanes, or gate,
-that queue.affected selects for its paths: every one when a path no rule covers changed. The lanes run with
+that the lanes' inputs select for its paths. The lanes run with
 `qk run` in this checkout, so they are admitted and placed as always. Unlike the queue, which reads main's,
 the hook reads this checkout's queuekeeper.json, as it does queue.unread: it is a check before a push, which
 --no-verify skips, not the gate.
@@ -66,7 +66,7 @@ def pushed(root, lines, remote="origin", git=git_state.git):
 
 def lanes_for(config, changed):
     """The lanes a push that changes these paths runs: the docs lanes for a docs-only one, else the gate lanes its
-    paths select by queue.affected or the lanes' inputs (affected_lanes), with the docs lanes first for one that changes documents too, as
+    paths select by the lanes' inputs (affected_lanes), with the docs lanes first for one that changes documents too, as
     the queue runs them (merge_queue.docs_also)."""
     from . import merge_queue
     docs = merge_queue.docs_lanes(config, changed)

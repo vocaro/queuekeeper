@@ -531,7 +531,7 @@ def gate_lanes(config):
 
 
 def matches(path, pattern):
-    """Whether pattern, a glob of queue.affected, matches the whole of path: * and ? stay within one directory and **
+    """Whether pattern, a glob of a lane's inputs, matches the whole of path: * and ? stay within one directory and **
     spans any number of them."""
     return PurePosixPath(path).full_match(pattern)
 
@@ -602,37 +602,28 @@ def unselected(config, path):
 
 
 def selects_by(config):
-    """What of main's settings narrows a batch's gate lanes by its paths, as a line says it after "main's": "queue.affected", "lane
+    """What of main's settings narrows a batch's gate lanes by its paths, as a line says it after "main's": "lane
     inputs", or None when every batch runs every gate lane."""
-    return "queue.affected" if config.get("queue", {}).get("affected") else \
-        "lane inputs" if lane_inputs(config) else None
+    return "lane inputs" if lane_inputs(config) else None
 
 
 def affected_by(config, path):
-    """The gate lanes main selects for path, a changed path, or None for every one. By queue.affected: those of every
-    rule that matches it, none for a path queue.unread takes, which no gate lane reads, and None for a path no rule
-    covers (fail closed). By the lanes' inputs (lane_inputs): the lanes whose inputs match it and those that give
-    none, which every change runs; none for a path queue.unread takes or no lane's inputs name (unselected); and None
-    for one every lane reads (EVERY_LANE), or that queue.unread excludes or is false for while no lane's inputs name
-    it, since that says code reads it. None too where main gives neither."""
+    """The gate lanes main selects for path, a changed path, by the lanes' inputs (lane_inputs), or None for every
+    one: the lanes whose inputs match it and those that give none, which every change runs; none for a path
+    queue.unread takes or no lane's inputs name (unselected); and None for one every lane reads (EVERY_LANE), or
+    that queue.unread excludes or is false for while no lane's inputs name it, since that says code reads it. None
+    too where no gate lane gives inputs."""
     inputs = lane_inputs(config)
-    if inputs:
-        if path in EVERY_LANE: return None
-        if unread(config, path): return set()
-        named = gate_lanes(config)
-        found = {name for name, patterns in inputs.items() if any(matches(path, pattern) for pattern in patterns)}
-        return (found | set(named) - set(inputs)) or None
-    rules = config.get("queue", {}).get("affected")
-    if not rules: return None
+    if not inputs or path in EVERY_LANE: return None
     if unread(config, path): return set()
-    found = [rule for rule in rules if any(matches(path, pattern) for pattern in rule["paths"])]
-    return set().union(*(rule["lanes"] for rule in found)) if found else None
+    found = {name for name, patterns in inputs.items() if any(matches(path, pattern) for pattern in patterns)}
+    return (found | set(gate_lanes(config)) - set(inputs)) or None
 
 
 def affected_lanes(config, changed):
     """The gate lanes (gate_lanes) a batch changing the paths changed runs, in their order: those its paths select by
-    main's queue.affected or its gate lanes' inputs (affected_by), every one when a path that selects every lane
-    changed, when main gives neither, or when no path selects any, as a batch of unread paths alone, which runs the
+    main's gate lanes' inputs (affected_by), every one when a path that selects every lane changed, when no lane
+    gives inputs, or when no path selects any, as a batch of unread paths alone, which runs the
     docs lanes instead."""
     named = gate_lanes(config)
     selected = set()
@@ -769,11 +760,12 @@ def merge_queue(queue, lanes):
     many runs in a row may give no verdict before the queue holds.
     unread, the paths no code lane reads, replaced docsOnly and carryOver, which are refused (unread_retired)."""
     if isinstance(queue, dict) and "spelling" in queue: raise ValueError(f"queue.spelling {SPELLING_GONE}")
-    if isinstance(queue, dict): unread_retired(queue)
+    if isinstance(queue, dict):
+        unread_retired(queue)
+        affected_retired(queue)
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOverChecks", "hookCoveredBy", "unread",
-                                                    "noVerdictRuns", "followLandings", "preflight", "affected",
-                                                    "fullRun"}:
-        raise ValueError("queue supports only lanes, unread, affected, carryOverChecks, hookCoveredBy, noVerdictRuns, "
+                                                    "noVerdictRuns", "followLandings", "preflight", "fullRun"}:
+        raise ValueError("queue supports only lanes, unread, carryOverChecks, hookCoveredBy, noVerdictRuns, "
                          "followLandings, preflight and fullRun")
     if "fullRun" in queue:
         declared = queue["fullRun"]
@@ -793,7 +785,6 @@ def merge_queue(queue, lanes):
                              "why; lanes, the distinct configured lanes a batch of unread paths runs instead, never "
                              "gate; and defaults, false to drop the Markdown defaults")
     if "preflight" in queue: preflight_lanes(queue, lanes)
-    if "affected" in queue: affected_rules(queue, lanes)
     if "followLandings" in queue and queue["followLandings"] is not True:
         raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
                          "checkout after each landing, for a checkout other projects read, such as a plugin's")
@@ -836,32 +827,30 @@ def preflight_lanes(queue, lanes):
                              f"{'it has ' + ', '.join(keys) if keys else 'it is a self lane'}")
 
 
-def affected_rules(queue, lanes):
-    """queue.affected, checked: a nonempty list of rules, each of paths, distinct globs, and lanes, distinct gate lanes
-    (gate_lanes) that read the paths those globs match."""
-    rules, named = queue["affected"], gate_lanes({"lanes": lanes, "queue": queue})
-    def distinct(items): return isinstance(items, list) and items and len(set(map(str, items))) == len(items) \
-        and all(isinstance(item, str) and item.strip() for item in items)
-    if not isinstance(rules, list) or not rules or any(not isinstance(rule, dict) or set(rule) != {"paths", "lanes"}
-                                                       or not distinct(rule["paths"]) or not distinct(rule["lanes"])
-                                                       for rule in rules):
-        raise ValueError("queue.affected lists rules, each an object of paths, distinct globs of the paths a few gate "
-                         "lanes read (* within one directory, ** across them), and lanes, those gate lanes: a batch "
-                         "runs the gate lanes its changed paths select, and every one for a path no rule covers")
-    for rule in rules:
-        for name in rule["lanes"]:
-            if name not in named:
-                raise ValueError(f"queue.affected names {name}, which is not one of the gate lanes "
-                                 f"({', '.join(named) or 'none'}), queue.lanes or else gate")
-        for pattern in rule["paths"]:
-            if pattern.startswith("/") or not PurePosixPath(pattern).parts:
-                raise ValueError(f"queue.affected's glob {pattern} is no path relative to the repository")
+def affected_retired(queue):
+    """Refuse queue.affected, which each gate lane's inputs replaced (vocaro/queuekeeper#289). It mapped globs to the
+    gate lanes that read them, the same map written from the paths, with one rule the other way: a path no rule
+    covered ran every gate lane. No project's main gave it when it went (read from GitHub, 2026-11-20), so a checkout
+    that gives it is no project's main. The refusal says the inputs that select the same lanes for the same paths."""
+    if "affected" not in queue: return
+    went = "queuekeeper.json gives queue.affected, which each gate lane's inputs replaced (vocaro/queuekeeper#289)"
+    rules, inputs = queue["affected"], {}
+    try:
+        for rule in rules:
+            for name in rule["lanes"]:
+                for pattern in rule["paths"]:
+                    if pattern not in inputs.setdefault(name, []): inputs[name].append(pattern)
+    except (TypeError, KeyError):
+        raise ValueError(f"{went}: give each gate lane \"inputs\", the globs of the paths that affect it") from None
+    said = ", ".join(f"{json.dumps(name)}: {json.dumps(patterns)}" for name, patterns in inputs.items())
+    raise ValueError(f"{went}: delete it and give each gate lane its \"inputs\" in its place, {said}. A path none of "
+                     "them names then runs no gate lane, where under queue.affected it ran every one, so add what "
+                     "each lane reads besides, and read qk doctor's affectedPaths.skipping")
 
 
 def lane_inputs_checked(queue, lanes):
     """Each lane's inputs, checked: distinct globs of the paths that affect a gate lane (gate_lanes) or a lane of a
-    gate lane group, which no other lane takes, never both for a group and for one of its lanes, and never beside
-    queue.affected, the same map written from the paths."""
+    gate lane group, which no other lane takes, and never both for a group and for one of its lanes."""
     given = [name for name, lane in lanes.items() if isinstance(lane, dict) and "inputs" in lane]
     if not given: return
     queue = queue if isinstance(queue, dict) else {}
@@ -886,9 +875,6 @@ def lane_inputs_checked(queue, lanes):
             raise ValueError(f"{both}.inputs and {name}.inputs are both given, for a lane group and for one of its "
                              f"lanes: give the group's to run all of its lanes or none, or its lanes' to choose "
                              "among them")
-    if "affected" in queue:
-        raise ValueError(f"queuekeeper.json gives queue.affected and {given[0]}.inputs, two ways to write which paths "
-                         "select which gate lanes: give one of them")
 
 
 def unread_object(declared, lanes):

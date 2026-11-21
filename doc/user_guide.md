@@ -102,8 +102,7 @@ Two defaults to know about:
 - **Documentation-only changes** skip the gate and run the documentation lanes instead
   ([Documentation changes](#documentation-changes)). Set `"queue": {"unread": false}` to gate
   every change.
-- **Every gate lane runs for every code change** unless the gate lanes list their `inputs`, or
-  `queue.affected` maps paths to lanes
+- **Every gate lane runs for every code change** unless the gate lanes list their `inputs`
   ([Gate lanes chosen by changed paths](#gate-lanes-chosen-by-changed-paths)).
 
 [Lanes and admission](#lanes-and-admission) describes the other lane settings.
@@ -656,41 +655,17 @@ the globs.
   that the batch's paths did not choose, the batch's pass still stands.
 - **By hand**, `qk run gate -- unit` runs only the lanes named after `--`, as the queue does.
 
-`queue.affected` is the older way to write the same map, from the paths to the lanes. It differs in
-one rule: a path no rule covers runs every gate lane, not none. A project gives one or the other,
-and both together are refused. `queue.affected`, read only from `main`, lists rules that map globs
-to gate lanes, the lanes of `queue.lanes`:
+**`queue.hookCoveredBy` skips the pre-push hook only when every lane it names ran**, and whole.
+`qk pre-push` selects gate lanes by the same `inputs`.
 
-```json
-"queue": {
-  "lanes": ["unit", "app"],
-  "affected": [
-    {"paths": ["src/python/**", "tests/**"], "lanes": ["unit"]},
-    {"paths": ["apple/**", "*.xcconfig"], "lanes": ["app"]},
-    {"paths": ["schemas/*.json"], "lanes": ["unit", "app"]}
-  ]
-}
-```
+`queue.affected`, the older way to write the same map from the paths to the lanes, is refused: the
+refusal gives the `inputs` that select the same lanes. Under it a path no rule covered ran every gate
+lane, where a path no lane's `inputs` name now runs none.
 
-- **A glob matches the whole path** from the repository root. `*` and `?` stay within one
-  directory, and `**` spans any number of them.
-- **A changed path selects the lanes of every rule that matches it.** A batch runs its preflight,
-  provision and documentation lanes as usual, then the gate lanes its paths select, in
-  `queue.lanes` order. `qk land` and the round's log say which lanes were selected.
-- **A path no rule covers selects every gate lane**, so a file nobody thought of is gated, not
-  skipped. Paths `queue.unread` takes select no gate lane; they run the documentation lanes.
-- **`queue.hookCoveredBy` skips the pre-push hook only when every lane it names ran.** `qk pre-push`
-  selects lanes by the same rules.
-- **`qk doctor` lists tracked files no rule covers**, which gate everything, and globs that match
-  no tracked file, as warnings. Its JSON's `affectedPaths` holds the full lists.
-
-List a lane for a path only after checking that no other gate lane reads that path: a path wrongly
-mapped lands untested by the lanes that read it.
-
-Lane `inputs` and path rules also extend carry-over. When `main` moved only by paths that the batch
-does not touch, that `inputs` or rules cover, and that select none of the gate lanes the batch's own
-paths selected, its pass still stands: the lanes it ran do not read what `main` gained, and `main` gated those paths with
-their own lanes. The batch is pushed without gating again, after the project's preflight lanes,
+Lane `inputs` also extend carry-over. When `main` moved only by paths that the batch does not
+touch, that `inputs` name, and that select none of the gate lanes the batch's own paths selected,
+its pass still stands: the lanes it ran do not read what `main` gained, and `main` gated those
+paths with their own lanes. The batch is pushed without gating again, after the project's preflight lanes,
 `qk docs check` and any `queue.carryOverChecks` pass on the rebased tree. A project with a
 `provision` lane carries over only unread paths, since provisioning sets up every gate lane.
 
@@ -703,7 +678,7 @@ status it got rather than 1.
 
 **A hook that only repeats the lanes** can be one line, which runs the right lanes for the paths a
 push changes: the docs lanes for documents, `queue.lanes` or `gate` for anything else, narrowed by
-the lanes' `inputs` or `queue.affected` as the queue narrows them, nothing for a push that changes
+the lanes' `inputs` as the queue narrows them, nothing for a push that changes
 no path. It reads the checkout's own `queuekeeper.json`, not `main`'s. It exits 0 on a pass, 1 on a
 failure and 3 when a lane was unmeasured, which refuses the push. Under the queue's worker it runs nothing, since the lanes just ran.
 `QUEUEKEEPER_PREPUSH=skip git push` skips it and says nothing was verified.

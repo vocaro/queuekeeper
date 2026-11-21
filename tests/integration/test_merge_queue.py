@@ -3351,20 +3351,9 @@ class MainMoves(Fixture):
         self.assertEqual(self.gates(), 1)
 
 
-class Affected(Fixture):
-    """queue.affected: a batch runs only the gate lanes its changed paths select, every one for a path no rule covers,
-    and main moving only by paths that select none of them carries its pass over."""
-
-    def setUp(self):
-        super().setUp()
-        self.app = self.base / "app-gates"
-        config = self.config()
-        config["lanes"]["app"] = {"command": ["python3", "lane.py", str(self.app), str(self.base / "app-status")]}
-        config["queue"]["lanes"] = ["gate", "app"]
-        config["queue"]["affected"] = [{"paths": ["src/**"], "lanes": ["gate"]}, {"paths": ["app/**"], "lanes": ["app"]},
-                                       {"paths": ["shared/*.py"], "lanes": ["gate", "app"]}]
-        self.publish(config, "Select lanes by path")
-        self.ran = self.base / "hook-runs"
+class PathLanes:
+    """What a queue whose gate lanes are chosen by a batch's paths does whatever chooses them: the tests Inputs and
+    MemberInputs share, each of which publishes its own lanes in setUp."""
 
     during_gate = MainMoves.during_gate
 
@@ -3388,17 +3377,6 @@ class Affected(Fixture):
         self.work()
         self.assertEqual((self.gates(), self.app_gates()), (2, 1))
 
-    def test_a_path_no_rule_covers_runs_every_lane(self):
-        self.commit("src/a.py", "a")
-        run(self.repo, "git", "fetch", "-q", "origin")
-        (self.repo / "Makefile").write_text("x")
-        run(self.repo, "git", "add", "Makefile")
-        run(self.repo, "git", "commit", "-qm", "Add a Makefile")
-        [identifier] = self.add("a")
-        self.work()
-        self.assertEqual(self.state(identifier)["state"], "landed")
-        self.assertEqual((self.gates(), self.app_gates()), (1, 1))
-
     def test_main_moving_by_paths_of_other_lanes_carries_the_pass_over(self):
         self.commit("src/a.py", "a")
         [identifier] = self.add("a")
@@ -3419,9 +3397,6 @@ class Affected(Fixture):
 
     def test_main_moving_by_a_path_of_both_lanes_gates_again(self):
         self.gates_again_after("shared/c.py")
-
-    def test_main_moving_by_a_path_no_rule_covers_gates_again(self):
-        self.gates_again_after("Makefile")
 
     def test_a_lane_covers_the_pre_push_hook_only_when_its_paths_selected_it(self):
         config = self.config()
@@ -3450,7 +3425,7 @@ class Affected(Fixture):
         self.assertEqual(checked.call_args_list[0].args[0][-1][-1], "preflight")
 
 
-class Inputs(Affected):
+class Inputs(PathLanes, Fixture):
     """Lane inputs (vocaro/queuekeeper#289): a batch runs only the gate lanes whose inputs one of its paths matches,
     skips the gate when it matches none, and a pass carries over main moving by paths of other lanes or of none."""
 
@@ -3568,7 +3543,7 @@ class Inputs(Affected):
         self.assertEqual((self.gates() - gates, self.app_gates() - apps), (1, 0))
 
 
-class MemberInputs(Affected):
+class MemberInputs(PathLanes, Fixture):
     """Inputs on the lanes of a gate lane group (vocaro/queuekeeper#289): a batch runs the group with only the lanes
     its paths select, skips the gate when it selects none, and runs them all for a path every lane reads."""
 
@@ -3722,8 +3697,21 @@ class InputRules(unittest.TestCase):
                 self.parsed({**self.LANES, "gate": {"command": ["true"], "inputs": inputs}})
         with self.assertRaisesRegex(ValueError, "provision.inputs is given for a lane that is not one of the gate"):
             self.parsed({**self.LANES, "provision": {"command": ["true"], "inputs": ["src/**"]}})
-        with self.assertRaisesRegex(ValueError, "queue.affected and gate.inputs"):
-            self.parsed(self.LANES, affected=[{"paths": ["src/**"], "lanes": ["gate"]}])
+
+    def test_queue_affected_is_refused_with_the_inputs_that_read_the_same(self):
+        """vocaro/queuekeeper#289 retired it: no project's main gave it, and lane inputs say the same from the lanes."""
+        plain = {"gate": {"command": ["true"]}, "app": {"command": ["true"]}}
+        rules = [{"paths": ["src/**"], "lanes": ["gate"]}, {"paths": ["app/**", "shared/*.py"], "lanes": ["app"]},
+                 {"paths": ["shared/*.py"], "lanes": ["gate", "app"]}]
+        with self.assertRaises(ValueError) as refused: self.parsed(plain, affected=rules)
+        said = str(refused.exception)
+        self.assertIn("queue.affected, which each gate lane's inputs replaced (vocaro/queuekeeper#289)", said)
+        self.assertIn('"gate": ["src/**", "shared/*.py"]', said)
+        self.assertIn('"app": ["app/**", "shared/*.py"]', said)
+        self.assertIn("runs no gate lane, where under queue.affected it ran every one", said)
+        with self.assertRaisesRegex(ValueError, "queue.affected, which each gate lane's inputs replaced"):
+            self.parsed(plain, affected="x")
+        self.assertNotIn("affected", mq.MAIN_ONLY)
 
     GROUP = {"gate": {"parallel": ["unit", "app"]}, "unit": {"command": ["true"], "inputs": ["src/**", "shared/*.py"]},
              "app": {"command": ["true"], "inputs": ["app/**", "shared/*.py"]}}
@@ -3819,75 +3807,10 @@ class InputRules(unittest.TestCase):
         self.assertIn("Makefile, tools/x.py", note)
         [warning] = lane_coverage.affected_warnings(found)
         self.assertIn("gate: tests/**, app: *.xcconfig", warning)
-        self.assertEqual(lane_coverage.skipping_notes(lane_coverage.affected_paths(
-            Path("."), {"lanes": {}, "queue": {"affected": AffectedRules.RULES, "lanes": []}}, tracked)), [])
+        self.assertIsNone(lane_coverage.affected_paths(Path("."), {"lanes": {}, "queue": {}}, tracked))
         grouped = lane_coverage.affected_paths(Path("."), self.group(), tracked)
         self.assertEqual((grouped["skipping"], grouped["unmatched"]),
                          (["Makefile", "tools/x.py"], ["gate: shared/*.py"]))
-
-
-class AffectedRules(unittest.TestCase):
-    """queue.affected read without a queue: the lanes each path selects, the parser's checks and qk doctor's report."""
-    LANES = {"gate": {"command": ["true"]}, "app": {"command": ["true"]}, "provision": {"command": ["true"]}}
-    RULES = [{"paths": ["src/**"], "lanes": ["gate"]}, {"paths": ["app/**", "*.xcconfig"], "lanes": ["app"]}]
-
-    def config(self, **queue):
-        return {"lanes": self.LANES, "queue": {"lanes": ["gate", "app"], "affected": self.RULES, **queue}}
-
-    def parsed(self, queue):
-        return configuration.parse(json.dumps({"schemaVersion": 1, "name": "demo", "lanes": self.LANES,
-                                               "queue": {"lanes": ["gate", "app"], **queue}}))
-
-    def test_each_path_selects_the_lanes_of_every_rule_that_matches_it(self):
-        config = self.config()
-        cases = [(["src/a/b.py"], ["gate"]), (["app/x.swift"], ["app"]), (["Base.xcconfig"], ["app"]),
-                 (["src/a.py", "app/b.swift"], ["gate", "app"]), (["src/a.py", "Makefile"], ["gate", "app"]),
-                 (["doc/a.md"], ["gate", "app"]), (["src/a.py", "doc/a.md"], ["gate", "app"][:1]),
-                 (["sub/Base.xcconfig"], ["gate", "app"]), ([], ["gate", "app"])]
-        for changed, expected in cases:
-            with self.subTest(changed=changed):
-                self.assertEqual(configuration.affected_lanes(config, changed), expected)
-        self.assertEqual(mq.lanes_of(config, ["app/x.swift"]), ["provision", "app"])
-        self.assertEqual(configuration.affected_lanes({"lanes": self.LANES, "queue": {"lanes": ["gate", "app"]}},
-                                                      ["src/a.py"]), ["gate", "app"])
-
-    def test_carrying_over_by_path_needs_a_covered_path_of_none_of_the_lanes_ran(self):
-        config = self.config()
-        self.assertTrue(mq.carried_by_rules("app/x.swift", config, set(), ["gate"]))
-        self.assertFalse(mq.carried_by_rules("app/x.swift", config, set(), ["gate", "app"]))
-        self.assertFalse(mq.carried_by_rules("app/x.swift", config, {"app/x.swift"}, ["gate"]))
-        self.assertFalse(mq.carried_by_rules("Makefile", config, set(), ["gate"]))
-        self.assertFalse(mq.carried_by_rules("app/x.swift", config, set(), None))
-        self.assertFalse(mq.carried_by_rules("app/x.swift", config, set(), ["provision", "gate"]))
-        # Unread paths are carried_over's to decide, so that a path naming lanes stays gated.
-        self.assertFalse(mq.carried_by_rules("README.md", config, set(), ["gate"]))
-
-    def test_the_parser_takes_rules_of_gate_lanes_only(self):
-        self.parsed({"affected": self.RULES})
-        refused = [[], {}, [{"paths": ["src/**"]}], [{"paths": [], "lanes": ["gate"]}],
-                   [{"paths": ["src/**"], "lanes": ["docs"]}], [{"paths": ["src/**"], "lanes": ["provision"]}],
-                   [{"paths": ["src/**", "src/**"], "lanes": ["gate"]}], [{"paths": ["/src/**"], "lanes": ["gate"]}],
-                   [{"paths": ["src/**"], "lanes": ["gate"], "why": "x"}]]
-        for rules in refused:
-            with self.subTest(rules=rules), self.assertRaisesRegex(ValueError, "queue.affected"):
-                self.parsed({"affected": rules})
-        # Only main may say which lanes a path selects.
-        self.assertIn("affected", mq.MAIN_ONLY)
-
-    def test_rides_names_the_lanes_selected(self):
-        self.assertEqual(mq.rides(self.config(), {"app/x.swift"}),
-                         "rides the code gate: app/x.swift is not documentation; of the gate lanes, only the app "
-                         "lane, which main's queue.affected selects for its paths")
-
-    def test_doctor_lists_tracked_files_no_rule_covers_and_globs_that_match_nothing(self):
-        config = self.config()
-        tracked = ["src/a.py", "app/b.swift", "README.md", "Makefile", "tools/x.py"]
-        found = lane_coverage.affected_paths(Path("."), config, tracked)
-        self.assertEqual(found, {"uncovered": ["Makefile", "tools/x.py"], "unmatched": ["*.xcconfig"], "problems": []})
-        warnings = lane_coverage.affected_warnings(found)
-        self.assertEqual(len(warnings), 2)
-        self.assertIn("Makefile, tools/x.py", warnings[0])
-        self.assertIsNone(lane_coverage.affected_paths(Path("."), {"queue": {}}, tracked))
 
 
 class PrePushHooks(Fixture):

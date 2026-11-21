@@ -1734,7 +1734,7 @@ def perform(argv, report):
                 elif "remote" in hosts: warnings += host_health.warnings(hosts["remote"]["hostHealth"], hosts["host"])
             test_lanes = lane_coverage.report(root, config)  # a warning at most, and never a failure (#289)
             warnings += lane_coverage.doctor_warnings(test_lanes)
-            affected = lane_coverage.affected_paths(root, config)  # warnings only: an uncovered file gates everything
+            affected = lane_coverage.affected_paths(root, config)
             warnings += lane_coverage.affected_warnings(affected)
             print(json.dumps({"project": config["name"], "queuekeeper": str(TOOLKIT_ROOT),
                 "source": source_identity(TOOLKIT_ROOT), "plugins": list(plugins.LOADED),

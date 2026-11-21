@@ -349,27 +349,20 @@ def doctor_warnings(result):
 
 
 def affected_paths(root, config, tracked=None):
-    """qk doctor's affectedPaths, for a project whose main gives queue.affected, else None: uncovered, the tracked
-    files that neither queue.unread nor a rule covers, each of which selects every gate lane when a batch changes it
-    (fail closed), and unmatched, each rule's globs that match no tracked file, as a rule for a moved folder would."""
-    from .config import affected_by, lane_inputs, matches, skips_by_inputs
-    rules, inputs = config.get("queue", {}).get("affected"), lane_inputs(config)
-    if not rules and not inputs: return None
+    """qk doctor's affectedPaths, for a project whose gate lanes give inputs, else None: skipping, the tracked files
+    that no gate lane's inputs and no queue.unread path name, a batch of which skips the gate, and unmatched, each
+    lane's globs that match no tracked file, as those for a moved folder would."""
+    from .config import lane_inputs, matches, skips_by_inputs
+    inputs = lane_inputs(config)
+    if not inputs: return None
     problems = []
     if tracked is None:
         try: tracked = tracked_files(root)
         except (OSError, subprocess.SubprocessError) as error:
             tracked = []
             problems.append(f"the project's files could not be listed: {error}")
-    if inputs:
-        # skipping: the tracked files no gate lane's inputs name, a batch of which skips the gate; those queue.unread
-        # declares are left out, as they skip it without the inputs.
-        return {"skipping": [path for path in tracked if skips_by_inputs(config, path)],
-                "unmatched": [f"{name}: {pattern}" for name, patterns in inputs.items() for pattern in patterns
-                              if not any(matches(path, pattern) for path in tracked)],
-                "problems": problems}
-    return {"uncovered": [path for path in tracked if affected_by(config, path) is None],
-            "unmatched": [pattern for rule in rules for pattern in rule["paths"]
+    return {"skipping": [path for path in tracked if skips_by_inputs(config, path)],
+            "unmatched": [f"{name}: {pattern}" for name, patterns in inputs.items() for pattern in patterns
                           if not any(matches(path, pattern) for path in tracked)],
             "problems": problems}
 
@@ -384,18 +377,9 @@ def skipping_notes(result):
 
 
 def affected_warnings(result):
-    """qk doctor's words for affectedPaths (affected_paths): warnings, since an uncovered file gates every lane."""
+    """qk doctor's warnings for affectedPaths (affected_paths): the files that could not be listed, and the globs
+    that match none."""
     if not result: return []
-    if "skipping" in result:
-        return [f"could not tell which files the gate lanes' inputs name: {problem}" for problem in result["problems"]] \
-            + ([f"the inputs glob(s) {named(result['unmatched'])} match no tracked file: correct or remove each"]
-               if result["unmatched"] else [])
-    warnings = [f"could not tell which files queue.affected covers: {problem}" for problem in result["problems"]]
-    if result["uncovered"]:
-        warnings.append(f"{len(result['uncovered'])} tracked file(s) are covered by no queue.affected rule nor by "
-                        f"queue.unread, so a batch changing one runs every gate lane: {named(result['uncovered'])}; "
-                        "give each a rule, or leave it to gate everything; qk doctor's affectedPaths lists them all")
-    if result["unmatched"]:
-        warnings.append(f"queue.affected's glob(s) {named(result['unmatched'])} match no tracked file: correct or "
-                        "remove each")
-    return warnings
+    return [f"could not tell which files the gate lanes' inputs name: {problem}" for problem in result["problems"]] \
+        + ([f"the inputs glob(s) {named(result['unmatched'])} match no tracked file: correct or remove each"]
+           if result["unmatched"] else [])

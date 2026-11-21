@@ -178,9 +178,7 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   goes ahead of an older entry only when they share no path. One that fails its docs lanes ahead of
   older entries may need one of them, so it records them as `waitsFor` and goes back in line
   behind them.
-- **Gate lanes by path.** `lanes_of` runs only the gate lanes `config.affected_lanes` selects. By
-  `queue.affected`: the union of the rules matching each changed path, every gate lane when one
-  path is covered by no rule nor `queue.unread`, and every one when nothing is selected. By the
+- **Gate lanes by path.** `lanes_of` runs only the gate lanes `config.affected_lanes` selects, by the
   lanes' `inputs` (`config.lane_inputs`, #289): the lanes whose globs match a changed path and the
   lanes that give none. A path no lane's `inputs` name, once every gate lane gives them, is unread
   (`config.unselected`, which `config.unread` includes), so a batch of such paths takes the
@@ -236,7 +234,7 @@ second is short for any branch cut from a recent `main`.
 
 **A project's first landing** reads the entry's `queuekeeper.json`, and the batch's in a round,
 only while `origin/main` has none that names lanes. The settings that loosen checking
-(`hookCoveredBy`, `unread`, `preflight`, `affected`, and each lane's `inputs`) count only
+(`hookCoveredBy`, `unread`, `preflight`, `fullRun`, and each lane's `inputs`) count only
 from `main` even then.
 
 **A `main` whose configuration does not parse.** `add` reads `origin/main`'s file through
@@ -512,7 +510,7 @@ again. `queue.hookCoveredBy` skips the hook, and a docs-only batch always does.
 **Main moving under a passed batch.** If `main` moved only by unread paths the batch does not touch,
 the worker checks that the batch's patch is unchanged on the new `main`, runs `qk docs check` when a
 document moved and then `queue.carryOverChecks` (supervised, with `LANE_LIMIT`), and pushes. Any
-other move, or a failing check, gates again with no blame. A moved path that `queue.affected` or the lanes' `inputs` cover
+other move, or a failing check, gates again with no blame. A moved path that the lanes' `inputs` cover
 and whose lanes are none the batch's own paths selected (`carried_by_rules`) carries over too, after
 `qk preflight` passes on the rebased tree; a batch that ran a `provision` lane, a docs-only batch
 and an ungated landing carry over this way never.
@@ -1989,8 +1987,8 @@ above, or with `qk doctor` in a checkout at `origin/main`.
 
 **A project the scan missed is not stranded, but it is stopped.** When `parse` refuses `origin/main`'s file,
 `main_config` names that file as the fault, and an entry whose own `queuekeeper.json` reads is gated by its own
-file instead, less what only `main` may say (`as_batch`: `hookCoveredBy`, `unread`, `preflight` and
-`affected`); `Worker.settings` reads the round's batch the same way (#295). So the fix lands through the queue,
+file instead, less what only `main` may say (`as_batch`: `hookCoveredBy`, `unread`, `preflight`, `fullRun` and
+each lane's `inputs`); `Worker.settings` reads the round's batch the same way (#295). So the fix lands through the queue,
 not by a hand push. Until it does, every other entry of that project is refused; the fix's gate runs without
 those settings, so every gate lane runs; and the fix must clear every key the release refuses, or its own file
 does not read either. Step 1 and the scan stay the way to retire a key: this only keeps a missed project from
