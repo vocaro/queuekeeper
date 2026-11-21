@@ -223,7 +223,8 @@ OUTLAST = ("import os, pathlib, sys, time; print('before the drop', flush=True);
            "print('after the drop'); print('Ran 2 tests'); raise SystemExit(int(sys.argv[1]))")
 # A connection whose far end went silent without closing, as a Mac's crash or power loss leaves one: once the file
 # FAKE_DROP names exists, nothing more of the dispatcher's standard input passes, and another Mac's end stays open
-# until the run there ends. It stands in for DROPPER.
+# until the run there ends. In the attached case, forward the acknowledgement first, then drop only heartbeats so
+# the final result can still be acknowledged. It stands in for DROPPER.
 SILENT = """import os, subprocess, sys, threading
 arguments = sys.argv[1:]
 while arguments[0].startswith("-"):
@@ -234,13 +235,19 @@ environment = {**os.environ, "HOME": os.environ["FAKE_HOME"], "SHELL": os.enviro
                "QUEUEKEEPER_DEVICE_RECORD": os.environ.get("FAKE_DEVICE_RECORD") or os.environ["FAKE_HOME"] + "/device-handoff.json"}
 child = subprocess.Popen(["/bin/sh", "-c", " ".join(arguments[1:])], cwd=os.environ["FAKE_HOME"], env=environment,
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-silent = lambda: os.path.exists(os.environ["FAKE_DROP"])
+marker = os.environ["FAKE_DROP"]
+after_attached = os.environ.get("FAKE_SILENT_AFTER_ATTACHED")
 def inward():
     while True:
-        chunk = os.read(0, 4096)
-        if silent() or not chunk: return
-        child.stdin.write(chunk)
+        data = sys.stdin.buffer.readline() if after_attached else os.read(0, 4096)
+        if not data: return
+        if os.path.exists(marker):
+            if not after_attached: return
+            if data == b"\\n": continue
+        child.stdin.write(data)
         child.stdin.flush()
+        if after_attached and data == b"attached\\n":
+            with open(marker, "w"): pass
 def outward():
     for line in iter(child.stdout.readline, b""):
         try:
@@ -601,9 +608,6 @@ class RemoteTests(unittest.TestCase):
             "resident": {"command": [python, "-c", "import os, pathlib, time; "
                                      "pathlib.Path('.build/resident.pid').write_text(str(os.getpid())); time.sleep(3600)"],
                          "resource": "heavy"},
-            # Lasts as long as the test says, in FAKE_OUTLAST.
-            "outlasting": {"command": [python, "-c", "import os, time; time.sleep(float(os.environ['FAKE_OUTLAST'])); "
-                                       "print('Ran 1 tests')"], "resource": "heavy", "minimumTests": 1},
             "outlast": {"command": [python, "-c", OUTLAST, "0"], "resource": "self", "minimumTests": 2},
             "outlast-failing": {"command": [python, "-c", OUTLAST, "5"], "resource": "self", "minimumTests": 2},
             # Hangs past its own timeout once its connection is lost, as a wedged test does.
@@ -2885,12 +2889,28 @@ class RemoteTests(unittest.TestCase):
         if pid.exists(): self.all_ended(int(pid.read_text()))
 
     def test_a_journaled_run_after_attached_survives_silence(self):
-        # One heartbeat an hour: nothing but `attached` crosses the silence, which the lane outlasts twice over.
-        silence = stretched(4)
-        with patch.dict(os.environ, {"FAKE_OUTLAST": str(silence * 2)}), patch.object(remote, "HEARTBEAT_SECONDS", 3600), \
+        # Keep heartbeats until `attached` reaches the host's input. After that the lane outlasts two fixed
+        # silence windows. Only the guard for a missing acknowledgement or a hung command stretches with load.
+        silence = 4
+        marker = Path(self.temp.name) / "outlasting-attached"
+        command = ("import pathlib, time\n"
+                   f"attached = pathlib.Path({str(marker)!r})\n"
+                   f"deadline = time.monotonic() + {stretched(30)}\n"
+                   "while not attached.exists():\n"
+                   "    if time.monotonic() >= deadline: raise SystemExit('attachment did not arrive')\n"
+                   "    time.sleep(0.05)\n"
+                   f"time.sleep({2 * silence})\n"
+                   "print('Ran 1 tests')")
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"]["outlasting"] = {"command": [sys.executable, "-c", command], "resource": "heavy",
+                                           "timeout": int(stretched(45)) + 2 * silence, "minimumTests": 1}
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+        with self.silent_connection(marker, FAKE_SILENT_AFTER_ATTACHED="1"), patch.object(remote, "HEARTBEAT_SECONDS", 0.2), \
                 patch.object(remote, "HEARTBEAT_SILENCE", silence):
             status, output, error = self.qk("remote", "run", "outlasting")
         self.assertEqual(status, 0, output + error)
+        self.assertTrue(marker.exists())
         self.assertNotIn("nothing from the dispatcher", output + error)
         receipt = json.loads((self.project / ".build/queuekeeper/remote/outlasting/source.json").read_text())
         self.assertFalse(receipt["result"]["stopped"])
