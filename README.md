@@ -58,6 +58,60 @@ later if builds need it. You can do each step below yourself, following the
 5. **Follow the work** in the [dashboard](#dashboard), through
    [notifications](doc/user_guide.md#the-notify-feature), or with `qk queue status`.
 
+## Project configuration
+
+`queuekeeper.json` is a project’s Queuekeeper configuration file. It lives at the root of a
+repository and defines the project’s plugins, named checks called *lanes*, and the lanes the merge
+queue runs.
+
+In this iOS example, `queue.preflight` runs a quick lint check before an entry joins the queue.
+`queue.lanes` names the two checks a batch must pass before landing a code change. The `gate` lane
+runs unit tests, and `ui-smoke` runs a small set of UI tests for critical flows on an iPhone
+simulator. Each lane’s timeout is in seconds.
+
+```json queuekeeper.json
+{
+  "schemaVersion": 1,
+  "name": "MyApp",
+  "plugins": ["queuekeeper_apple"],
+  "lanes": {
+    "lint": {
+      "command": ["scripts/lint.sh"],
+      "timeout": 30
+    },
+    "gate": {
+      "command": [
+        "xcodebuild", "test",
+        "-project", "MyApp.xcodeproj",
+        "-scheme", "MyApp",
+        "-destination", "platform=iOS Simulator,name=iPhone 17 Pro",
+        "-only-testing:MyAppTests"
+      ],
+      "timeout": 1800
+    },
+    "ui-smoke": {
+      "command": [
+        "xcodebuild", "test",
+        "-project", "MyApp.xcodeproj",
+        "-scheme", "MyApp",
+        "-destination", "platform=iOS Simulator,name=iPhone 17 Pro",
+        "-only-testing:MyAppUITests/SmokeTests"
+      ],
+      "timeout": 900
+    }
+  },
+  "queue": {
+    "preflight": ["lint"],
+    "lanes": ["gate", "ui-smoke"]
+  }
+}
+```
+
+An agent can set up `queuekeeper.json` for you using the build and test commands your project
+already runs.
+
+For more details, see the [project configuration guide](doc/user_guide.md#configure-a-project).
+
 ## Dashboard
 
 The dashboard is a web page of the queue and the build farm, served from your own Mac. It shows
