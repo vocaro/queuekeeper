@@ -547,6 +547,17 @@
             "minLength": 1
           }
         },
+        "addOnlyJson": {
+          "description": "Literal repository-relative JSON files whose conflicts the queue may settle when both sides only add keys to the selected object. Each value lists the object keys from the root to that object. An empty array selects the file's root object. Only main's setting applies",
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(?![.]{1,2}(?:/|$))(?:[^/\\\\:\\x00-\\x1f]+/(?!(?:[.]{1,2})(?:/|$)))*[^/\\\\:\\x00-\\x1f]*[.]json$"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
         "hookCoveredBy": {
           "description": "The queue lanes that cover the pre-push hook, each with what of the hook it runs. With it, the queue pushes without running the hook",
           "type": "object",

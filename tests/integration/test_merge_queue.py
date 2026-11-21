@@ -6629,6 +6629,138 @@ class LaggingCheckout(Fixture):
         self.assertIn("fix", self.main_files())
 
 
+class AddOnlyJson(Fixture):
+    land = CheckedWhenQueued.land
+    PATH = "scripts/test-classes.json"
+    START = '{"classes": {"old": "model"}, "version": 1}\n'
+
+    def configure(self, path=None, keys=("classes",)):
+        config = self.config()
+        config["queue"]["addOnlyJson"] = {path or self.PATH: list(keys)}
+        self.publish(config)
+        return config
+
+    def main_json(self):
+        run(self.repo, "git", "fetch", "-q", "origin")
+        return run(self.repo, "git", "show", f"origin/main:{self.PATH}")
+
+    def variants(self, one, two, *, configured=True):
+        if configured:
+            self.configure()
+        self.commit(self.PATH, "start", self.START)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        for name, contents in (("one", one), ("two", two)):
+            self.commit(self.PATH, name, contents)
+        return self.add("one")[0]
+
+    def test_trial_and_round_settle_distinct_new_keys_in_one_gate(self):
+        first = self.variants(self.START.replace('"old"', '"new-one": "ui", "old"'),
+                              self.START.replace('"old"', '"new-two": "model", "old"'))
+        second, said, error = self.land("two")
+        self.assertIsNone(error)
+        self.assertIn(f"kept JSON key additions from both sides of {self.PATH}", said)
+        self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(entry)["state"] for entry in (first, second)], ["landed"] * 2)
+        self.assertEqual(self.gates(), 1)
+        self.assertEqual(json.loads(self.main_json()),
+                         {"classes": {"old": "model", "new-one": "ui", "new-two": "model"}, "version": 1})
+        self.assertIn(self.PATH, self.state(second)["kept"][0])
+
+    def test_different_values_for_one_new_key_name_it_in_trial_and_send_back(self):
+        first = self.variants(self.START.replace('"old"', '"new": "ui", "old"'),
+                              self.START.replace('"old"', '"new": "model", "old"'))
+        second, _, error = self.land("two")
+        self.assertIsNone(second)
+        self.assertIn(f'{self.PATH} (both sides add JSON key "new" with different values)', error)
+        second, = self.add("two", checked=False)
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(first)["state"], "landed")
+        self.assertEqual(self.state(second)["state"], "conflict")
+        self.assertIn('JSON key "new" with different values', self.state(second)["why"])
+
+    def test_the_same_new_key_on_two_unrelated_lines_is_checked_after_git_merges(self):
+        self.configure()
+        start = """{
+  "classes": {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4
+  }
+}
+"""
+        self.commit(self.PATH, "start", start)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit(self.PATH, "one", start.replace('    "one"', '    "new": 5,\n    "one"'))
+        self.commit(self.PATH, "dispute", start.replace('    "four"', '    "new": 6,\n    "four"'))
+        self.commit(self.PATH, "same", start.replace('    "four"', '    "new": 5,\n    "four"'))
+        first, = self.add("one")
+        refused, _, error = self.land("dispute")
+        self.assertIsNone(refused)
+        self.assertIn(f"conflicts with {first}", error)
+        self.assertIn('JSON key "new" with different values', error)
+        second, _, error = self.land("same")
+        self.assertIsNone(error)
+        self.assertEqual(self.work(), 0)
+        self.assertEqual([self.state(entry)["state"] for entry in (first, second)], ["landed"] * 2)
+        self.assertEqual(self.main_json().count('"new": 5'), 1)
+
+    def test_a_branch_cannot_declare_a_path_to_settle_its_own_conflict(self):
+        first = self.variants(self.START.replace('"old"', '"new-one": "ui", "old"'),
+                              self.START.replace('"old"', '"new-two": "model", "old"'), configured=False)
+        config = self.config()
+        config["queue"]["addOnlyJson"] = {self.PATH: ["classes"]}
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "add", "queuekeeper.json")
+        run(self.repo, "git", "commit", "--amend", "--no-edit")
+        refused, _, error = self.land("two")
+        self.assertIsNone(refused)
+        self.assertIn(f"conflicts with {first}", error)
+        self.assertNotIn("JSON key", error)
+
+    def test_additions_do_not_settle_edits_removals_or_malformed_objects(self):
+        self.configure()
+        self.commit(self.PATH, "start", self.START)
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        self.commit(self.PATH, "one", self.START.replace('"old"', '"new": "ui", "old"'))
+        first, = self.add("one")
+        for index, contents in enumerate((
+                self.START.replace('"old": "model"', '"old": "edited"'),
+                self.START.replace('"old": "model"', ''),
+                self.START.replace('"old"', '"duplicate": 1, "duplicate": 2, "old"'),
+                self.START.replace('"old"', '"invalid": Infinity, "old"'),
+                self.START.replace('"version": 1', '"version": 2').replace('"old"', '"other": 0, "old"'),
+                self.START.removesuffix('}\n'))):
+            with self.subTest(contents=contents):
+                name = f"branch-{index}"
+                self.commit(self.PATH, name, contents)
+                refused, _, error = self.land(name)
+                self.assertIsNone(refused)
+                self.assertIn(f"conflicts with {first}", error)
+
+    def test_root_objects_keep_numbers_and_the_ahead_files_format(self):
+        base = b'{"old":-1.0000000000000000001e-1000}\r\n'
+        ahead = b'{"one":null,"old":-1.0000000000000000001e-1000}\r\n'
+        edited = b'{"old":-1.0000000000000000002e-1000,"two":true}\r\n'
+        incoming = b'{"old":-1.0000000000000000001e-1000,"two":0.10000000000000001}\r\n'
+        self.assertEqual(mq.add_only_json.merge(base, ahead, edited, []), (None, None))
+        self.assertEqual(mq.add_only_json.merge(base, ahead, incoming, []),
+                         (b'{"one":null,"old":-1.0000000000000000001e-1000,"two":0.10000000000000001}\r\n', None))
+
+    def test_setting_paths_and_object_keys_agree_with_the_schema(self):
+        schema = json.loads((ROOT / "schemas/queuekeeper.schema.json").read_text())
+        setting = schema["properties"]["queue"]["properties"]["addOnlyJson"]
+        self.assertEqual(setting["propertyNames"]["pattern"], "^" + configuration.ADD_ONLY_JSON_PATH.pattern + "$")
+        self.assertEqual(setting["additionalProperties"]["items"]["type"], "string")
+        config = self.configure(keys=())
+        self.assertEqual(configuration.parse(json.dumps(config))["queue"]["addOnlyJson"], {self.PATH: []})
+        for added in ([], {"../test.json": []}, {"folder//test.json": []}, {"/tmp/test.json": []},
+                      {"folder/./test.json": []}, {"test": []}, {"test.json": "classes"}, {"test.json": [1]}):
+            config["queue"]["addOnlyJson"] = added
+            with self.subTest(added=added), self.assertRaisesRegex(ValueError, "queue.addOnlyJson"):
+                configuration.parse(json.dumps(config))
+
+
 class Changelogs(Fixture):
     """Branches that each add a line at the top of a section conflict in turn (#101)."""
     START = "# Release notes\n\n## Unreleased\n\n- old\n\n## 1.0\n\n- first\n"

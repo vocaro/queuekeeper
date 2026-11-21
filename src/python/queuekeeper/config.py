@@ -752,6 +752,10 @@ def budget(name, lane):
         raise ValueError("gate.budgetMinutes must be a positive integer")
 
 
+# A literal repository-relative file name with no empty, dot or parent components.
+ADD_ONLY_JSON_PATH = re.compile(r"(?![.]{1,2}(?:/|$))(?:[^/\\:\x00-\x1f]+/(?!(?:[.]{1,2})(?:/|$)))*[^/\\:\x00-\x1f]*[.]json")
+
+
 def merge_queue(queue, lanes):
     """The lanes a commit passes in the merge queue, what main may change under a passed result,
     each path with why no such lane reads it, the commands that main's change must pass first, and
@@ -764,9 +768,15 @@ def merge_queue(queue, lanes):
         unread_retired(queue)
         affected_retired(queue)
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOverChecks", "hookCoveredBy", "unread",
-                                                    "noVerdictRuns", "followLandings", "preflight", "fullRun"}:
+                                                    "noVerdictRuns", "followLandings", "preflight", "fullRun", "addOnlyJson"}:
         raise ValueError("queue supports only lanes, unread, carryOverChecks, hookCoveredBy, noVerdictRuns, "
-                         "followLandings, preflight and fullRun")
+                         "followLandings, preflight, fullRun and addOnlyJson")
+    added = queue.get("addOnlyJson", {})
+    if not isinstance(added, dict) or any(not isinstance(path, str) or not ADD_ONLY_JSON_PATH.fullmatch(path)
+                                         or not isinstance(keys, list) or any(not isinstance(key, str) for key in keys)
+                                         for path, keys in added.items()):
+        raise ValueError("queue.addOnlyJson maps repository-relative .json files to arrays of object keys, "
+                         "an empty array for the file's root object")
     if "fullRun" in queue:
         declared = queue["fullRun"]
         if declared is not False and (not isinstance(declared, dict) or not declared or set(declared) - set(FULL_RUN)

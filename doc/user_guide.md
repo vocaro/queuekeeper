@@ -322,6 +322,30 @@ A refusal is one line, `COMMIT is not queued: REASON`, with exit status 1. A che
 made queues the entry anyway and says so; the round checks again. A branch refreshed by merging
 `main` is not refused; the queue lands its own commits.
 
+### Add-only JSON objects
+
+A project can let the queue combine independent key additions to a JSON object. Set
+`queue.addOnlyJson` in `queuekeeper.json` and land that setting first. Each entry names a literal
+repository-relative JSON file and the object keys leading to the selected object. An empty array
+selects the root object of the file.
+
+```json
+{
+  "queue": {
+    "addOnlyJson": {
+      "scripts/test-classes.json": ["classes"],
+      "data/ids.json": []
+    }
+  }
+}
+```
+
+Both sides must preserve existing keys and values and leave everything outside the selected object
+unchanged. New keys from both sides are kept, and a key with identical new values is kept once.
+When two entries add the same key with different values, the conflict names the key, even if the
+additions appear on different lines. Git conflicts involving edits, removals or malformed JSON
+still need a manual resolution. This setting does not change which gate lanes run.
+
 ### Branches after a conflict or a landing
 
 - **The first commit that conflicts is the one to fix.** The queue picks an entry's commits one at

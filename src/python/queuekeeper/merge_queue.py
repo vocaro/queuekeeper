@@ -60,7 +60,7 @@ from xml.etree import ElementTree
 
 from . import budgets, disk, plugins, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
-from . import events, landed_cleanup, pre_push, recovery, restartable, worktree_ownership
+from . import add_only_json, events, landed_cleanup, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
@@ -758,7 +758,7 @@ def behind_main_config(root, tip, said):
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
 # paths that skip the gate, as each gate lane's inputs do too (as_batch), and the preflight lanes, which can be none. A batch whose lanes the queue runs, because main
 # names none yet, gives none of them (#10, vocaro/queuekeeper#69).
-MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "fullRun")
+MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "fullRun", "addOnlyJson")
 
 
 def as_batch(config):
@@ -4320,31 +4320,52 @@ class Worker:
     def head(self):
         return text(self.checkout, "rev-parse", "HEAD")
 
-    def pick(self, entry, ahead=()):
+    def pick(self, entry, ahead=(), add_only=None):
         """Cherry-pick entry's commits onto HEAD. None when they apply, else why, with HEAD as it was. ahead
         holds the entries applied before it, which a conflict names too, so that its author knows what to wait
         for before rebasing (#130, conflict)."""
         before = self.head()
-        self.kept = []  # each changelog conflict it settled, which integrate records on the entry
+        if add_only is None:
+            add_only = self.add_only_objects()
+        self.kept = []  # each conflict it settled, which integrate records on the entry
         for commit in entry["commits"]:
+            previous = self.head() if add_only else None
             picked = git(self.checkout, "cherry-pick", commit, hooks=False)
-            if picked.returncode == 0: continue
-            conflicted = text(self.checkout, "diff", "--name-only", "--diff-filter=U").split()
-            if not conflicted and not git(self.checkout, "status", "--porcelain").stdout.strip():
-                # main already has this commit's change, as another route may have landed it.
-                git(self.checkout, "cherry-pick", "--skip", hooks=False, check=True)
-                continue
-            if conflicted and self.keep_changelogs(conflicted, f"{entry['commits'][0]}^", before, commit):
-                # -C, for the commit's own message and author, without Git's note of the conflict.
-                git(self.checkout, "commit", "--no-verify", "-C", commit, hooks=False, check=True)
-                self.kept.append(f"{commit[:12]}: kept both sides of {', '.join(conflicted)}, the new lines first")
-                self.say(self.kept[-1])
-                continue
+            if picked.returncode == 0:
+                dispute = self.check_json_merge(commit, previous, add_only) if add_only else None
+                if not dispute:
+                    continue
+                conflicted = [dispute[0]]
+            else:
+                try:
+                    diff = git(self.checkout, "diff", "--name-only", "--diff-filter=U", "-z", check=True)
+                    conflicted = diff.stdout.split("\0")[:-1]
+                except UnicodeDecodeError:
+                    # Git's quoted names still let a non-UTF-8 conflict come back.
+                    conflicted = text(self.checkout, "diff", "--name-only", "--diff-filter=U").splitlines()
+                if not conflicted and not git(self.checkout, "status", "--porcelain").stdout.strip():
+                    # main already has this commit's change, as another route may have landed it.
+                    git(self.checkout, "cherry-pick", "--skip", hooks=False, check=True)
+                    continue
+                kept, dispute = self.keep_conflicts(conflicted, f"{entry['commits'][0]}^", before, commit, add_only)
+                if kept:
+                    if git(self.checkout, "diff", "--cached", "--quiet").returncode == 0:
+                        # Both sides may have added the same JSON keys with the same values.
+                        git(self.checkout, "cherry-pick", "--skip", hooks=False, check=True)
+                    else:
+                        # -C keeps the commit's message and author without Git's conflict note.
+                        git(self.checkout, "commit", "--no-verify", "-C", commit, hooks=False, check=True)
+                    for description in kept:
+                        self.kept.append(f"{commit[:12]}: {description}")
+                        self.say(self.kept[-1])
+                    continue
             hunks = self.hunks_of(conflicted)
             self.reset(before)
             self.conflicted = conflicted  # which Trial reads, to name the entries ahead that change those files
             self.hunks = hunks
-            return self.conflict(commit, conflicted, ", ".join(conflicted) or picked.stderr.strip(), ahead)
+            files = ", ".join(f"{path} ({dispute[1]})" if dispute and path == dispute[0] else path
+                              for path in conflicted)
+            return self.conflict(commit, conflicted, files or picked.stderr.strip(), ahead)
         return None
 
     def conflict(self, commit, conflicted, files, ahead):
@@ -4376,33 +4397,117 @@ class Worker:
         return subprocess.run(["git", "-C", str(self.checkout), "cat-file", "blob", identifier], capture_output=True,
                               check=True, stdin=subprocess.DEVNULL, env=environment(), timeout=GIT_TIMEOUT).stdout
 
-    def keep_changelogs(self, conflicted, start, before, commit):
-        """Settle the cherry-pick of commit in progress when every file in conflict is a changelog whose
-        conflicts keep_both settles, and say whether it did; otherwise change nothing. keep_both merges the
-        entry's whole change to the file, from start, its first commit's parent, to commit, onto before, what
-        is ahead of the entry: so a later commit that rewords the line an earlier one added is that line
-        added, not a change to a line ahead of it (#130)."""
-        settled = {}
+    def add_only_objects(self):
+        """A branch cannot opt into settling its own conflicts."""
+        with contextlib.suppress(ValueError):
+            return config_at(self.checkout, MAIN).get("queue", {}).get("addOnlyJson", {})
+        return {}
+
+    def path_blobs(self, path, revisions):
+        return [git(self.checkout, "rev-parse", "--verify", "-q", f"{rev}:{path}").stdout.strip()
+                for rev in revisions]
+
+    def regular_blobs(self, path, revisions):
+        blobs = []
+        for revision in revisions:
+            listed = git(self.checkout, "--literal-pathspecs", "ls-tree", "-z", revision, "--", path).stdout
+            meta, _, named = listed.partition("\t")
+            if named != path + "\0" or not meta.startswith("100"):
+                return None
+            blobs.append(meta.split()[2])
+        return blobs
+
+    def stage_resolution(self, path, content):
+        (self.checkout / path).write_bytes(content)
+        git(self.checkout, "--literal-pathspecs", "add", "--", path, hooks=False, check=True)
+
+    def json_dispute(self, path, key):
+        return path, f"both sides add JSON key {json.dumps(key)} with different values"
+
+    def check_json_merge(self, commit, previous, add_only):
+        """Git may put additions on separate lines without noticing that their keys overlap."""
+        try:
+            changed = git(self.checkout, "--literal-pathspecs", "diff", "--name-only", "--no-renames", "-z",
+                          f"{commit}^", commit, "--", *add_only, check=True).stdout
+        except UnicodeDecodeError:
+            return None
+        corrected = []
+        for path in (path for path in changed.split("\0") if path in add_only):
+            blobs = self.regular_blobs(path, (f"{commit}^", previous, commit, "HEAD"))
+            if blobs is None:
+                continue
+            base, ahead, incoming, combined = blobs
+            if base == ahead or base == incoming:
+                continue
+            content, key = add_only_json.merge(*map(self.blob, (base, ahead, incoming)), add_only[path])
+            if key is not None:
+                return self.json_dispute(path, key)
+            if content is not None and not add_only_json.same(content, self.blob(combined)):
+                corrected.append((path, content))
+        if corrected:
+            for path, content in corrected:
+                self.stage_resolution(path, content)
+            if git(self.checkout, "diff", "--cached", "--quiet", previous).returncode == 0:
+                self.reset(previous)
+            else:
+                git(self.checkout, "commit", "--no-verify", "--amend", "--no-edit", hooks=False, check=True)
+            paths = ", ".join(path for path, _ in corrected)
+            self.kept.append(f"{commit[:12]}: kept JSON key additions from both sides of {paths}")
+            self.say(self.kept[-1])
+        return None
+
+    def conflict_stages(self, path):
+        """Index blobs when all three sides are the same kind of regular file."""
+        stages = {}
+        listed = git(self.checkout, "--literal-pathspecs", "ls-files", "-uz", "--", path, check=True)
+        for line in listed.stdout.split("\0"):
+            if line:
+                mode, identifier, stage = line.split("\t", 1)[0].split()
+                stages[stage] = mode, identifier
+        if (set(stages) == {"1", "2", "3"} and len({mode for mode, _ in stages.values()}) == 1
+                and stages["1"][0].startswith("100")):
+            return [stages[stage][1] for stage in ("1", "2", "3")]
+        return None
+
+    def keep_conflicts(self, conflicted, start, before, commit, add_only):
+        """Settle the whole cherry-pick only if every conflicted file can be resolved.
+
+        Changelogs merge an entry's entire edit so a follow-up can reword its added line (#130).
+        Configured JSON objects merge only key additions from the three current Git stages.
+        """
+        settled, changelogs, objects = {}, [], []
         for path in conflicted:
-            if Path(path).name.lower() != CHANGELOG: return False
-            stages = {}
-            for line in text(self.checkout, "ls-files", "-u", "--", path).splitlines():
-                mode, identifier, stage = line.split("\t")[0].split()
-                stages[stage] = (mode, identifier)
-            # Three stages of one ordinary file: a rename, a deletion or a change of mode is no added line.
-            if set(stages) != {"1", "2", "3"} or len({mode for mode, _ in stages.values()}) != 1 \
-                    or not stages["1"][0].startswith("100"):
-                return False
-            sides = [git(self.checkout, "rev-parse", "--verify", "-q", f"{revision}:{path}").stdout.strip()
-                     for revision in (start, before, commit)]
-            if not all(sides): return False
-            base, ours, theirs = map(self.blob, sides)
-            settled[path] = keep_both(base, ours, theirs)
-            if settled[path] is None: return False
+            stages = self.conflict_stages(path)
+            if not stages:
+                return [], None
+            if path in add_only:
+                # All three blobs must name this path in their original trees as well.
+                versions = (f"{commit}^", "HEAD", commit)
+                if self.path_blobs(path, versions) != stages:
+                    return [], None
+                settled[path], disputed = add_only_json.merge(*map(self.blob, stages), add_only[path])
+                if disputed is not None:
+                    return [], self.json_dispute(path, disputed)
+                objects.append(path)
+            elif Path(path).name.lower() == CHANGELOG:
+                sides = [git(self.checkout, "rev-parse", "--verify", "-q", f"{rev}:{path}").stdout.strip()
+                         for rev in (start, before, commit)]
+                if not all(sides):
+                    return [], None
+                settled[path] = keep_both(*map(self.blob, sides))
+                changelogs.append(path)
+            else:
+                return [], None
+            if settled[path] is None:
+                return [], None
         for path, content in settled.items():
-            (self.checkout / path).write_bytes(content)
-            git(self.checkout, "add", "--", path, hooks=False, check=True)
-        return True
+            self.stage_resolution(path, content)
+        kept = []
+        if changelogs:
+            kept.append(f"kept both sides of {', '.join(changelogs)}, the new lines first")
+        if objects:
+            kept.append(f"kept JSON key additions from both sides of {', '.join(objects)}")
+        return kept, None
 
     def integrate(self, batch, base, below=()):
         """The entries of batch that are now on top of base, in order; the rest are settled (left_out). below holds
@@ -4412,12 +4517,13 @@ class Worker:
         self.reset(base)
         self.gating = ()
         applied = []
+        add_only = self.add_only_objects()
         for entry in batch:
             how = landing_proofs.contained(lambda *words: git(self.checkout, *words), base, entry["tip"])
             if how:
                 self.left_out(entry, LANDED, landedAs=base, why=f"origin/main already holds it ({how})")
                 continue
-            why = self.pick(entry, [*below, *applied])
+            why = self.pick(entry, [*below, *applied], add_only)
             if not why and self.kept: self.noted(entry, kept=self.kept)
             if why:
                 self.say(f"{entry['id']}: {why}")
@@ -4432,7 +4538,7 @@ class Worker:
         self.queue.settle(entry, state, **fields)
 
     def noted(self, entry, **fields):
-        """What integrate records of an entry it put on top, the changelog conflicts it settled: in the queue."""
+        """What integrate records of an entry it put on top, the conflicts it settled: in the queue."""
         self.queue.record(entry, **fields)
 
     def gate_ended(self, lane, round_name, status_, log, seconds=None):
@@ -7683,7 +7789,7 @@ class Beside(Worker):
         self.unlocked = worker.unlocked  # the worker's own, which a lock either half meets adds to (screen_locked)
         self.regated = worker.regated  # the worker's own, so that each commit gates again at most once (rerun)
         self.unreachable = []  # the newer entries that apply to origin/main only after the older half (left_out)
-        self.kept_for = []  # the entries whose changelog resolutions it recorded (noted)
+        self.kept_for = []  # the entries whose resolutions it recorded (noted)
         self.newer, self.tip = [], None  # the newer half on top of origin/main, and its commit (Worker.beside)
         self.lanes = None  # the lanes both halves run (Worker.beside)
         self.result = None  # (status, log) of its lanes (both)
@@ -7707,7 +7813,7 @@ class Beside(Worker):
         else: super().left_out(entry, state, **fields)
 
     def noted(self, entry, **fields):
-        """Record the changelog conflicts it settled, as the round's integrate does, and which entries it did so
+        """Record the conflicts it settled, as the round's integrate does, and which entries it did so
         for, which a stacked gate thrown away clears again (Stack.drop)."""
         self.kept_for.append(entry["id"])
         super().noted(entry, **fields)
@@ -8042,7 +8148,7 @@ class Stack:
 
 
 class Trial(Worker):
-    """qk land's trial integration of a new entry (trial): the worker's own integrate, pick and changelog
+    """qk land's trial integration of a new entry (trial): the worker's own integrate, pick and conflict
     resolution, so that the trial and the round cannot disagree on what conflicts, in a scratch checkout, settling,
     recording and saying nothing."""
     def __init__(self, queue, checkout):
@@ -8102,7 +8208,7 @@ def trial(queue, entry, ahead, base):
     checkout, which goes when it ends (vocaro-engineering#178). A dict: why, why entry does not apply, or None when
     it applies or main holds it already; against, the entries ahead that went on top; left, those ahead that a round
     would itself leave out, with why; touching, those of against that change a file in conflict; kept, the
-    changelog conflicts of entry that a round would settle; waits, the entries ahead it conflicts with alone, not
+    conflicts of entry that a round would settle; waits, the entries ahead it conflicts with alone, not
     with origin/main (Worker.conflict); hunks, its conflict blocks (conflict_hunks)."""
     with scratch(queue, base, "trial") as path:
         worker = Trial(queue, path)

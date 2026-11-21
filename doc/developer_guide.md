@@ -154,7 +154,13 @@ The worker fetches, takes everything waiting, oldest first, cherry-picks each en
 4. `gate`, or the lanes `queue.lanes` names.
 
 Settings are read from `origin/main` in the worker's own checkout, never from a working tree; the
-lanes' own definitions come from the batch. A project without `queue.preflight` has no preflight
+lanes' own definitions come from the batch. The submission trial and the worker use
+`queue.addOnlyJson` from main to settle independent key additions to a selected JSON object.
+Changelog settlement looks at the entry's change across its commits. JSON settlement compares
+the three versions for each cherry-pick, preserving existing values and the rest of the
+document. The worker checks for conflicting additions even after Git reports a clean cherry-pick.
+
+A project without `queue.preflight` has no preflight
 lanes, and no lane runs first because of its name. Where the
 checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
 
@@ -234,7 +240,7 @@ second is short for any branch cut from a recent `main`.
 
 **A project's first landing** reads the entry's `queuekeeper.json`, and the batch's in a round,
 only while `origin/main` has none that names lanes. The settings that loosen checking
-(`hookCoveredBy`, `unread`, `preflight`, `fullRun`, and each lane's `inputs`) count only
+(`hookCoveredBy`, `unread`, `preflight`, `fullRun`, `addOnlyJson`, and each lane's `inputs`) count only
 from `main` even then.
 
 **A `main` whose configuration does not parse.** `add` reads `origin/main`'s file through
