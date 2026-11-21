@@ -2854,7 +2854,8 @@ class RemoteTests(unittest.TestCase):
 
     def test_a_leased_run_stops_on_silence_and_reports_unmeasured(self):
         self.hold()
-        marker, silence = self.checkout(0) / ".build/leased.pid", stretched(6)
+        # The leased run must stop after this fixed silence. Its stand-in can outlast it under load.
+        marker, silence = self.checkout(0) / ".build/leased.pid", 6
         command = ("import os, pathlib, time; pathlib.Path('.build').mkdir(exist_ok=True); "
                    "part = pathlib.Path('.build/leased.part'); part.write_text(str(os.getpid())); "
                    "part.rename('.build/leased.pid'); time.sleep(" + str(stretched(30)) + ")")
@@ -2874,8 +2875,8 @@ class RemoteTests(unittest.TestCase):
             self.reap(lane)
 
     def test_a_run_before_attached_stops_on_silence(self):
-        # The marker is there from the start: the dispatcher's `attached` never arrives.
-        marker, silence = Path(self.temp.name) / "silent-from-the-start", stretched(6)
+        # `attached` never arrives; the watcher still stops once the fixed silence limit elapses.
+        marker, silence = Path(self.temp.name) / "silent-from-the-start", 6
         marker.touch()
         pid = self.checkout(0) / ".build/slow.pid"
         with self.silent_connection(marker), patch.object(remote, "HEARTBEAT_SECONDS", 0.2), \
