@@ -73,7 +73,7 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from queuekeeper import lane_report, lane_results, processes, resources
+from queuekeeper import lane_report, lane_results, plugins, processes, resources
 from queuekeeper.parallel import RESULTS_VARIABLE, TAIL, combined, outcome
 from queuekeeper_mobile import shards
 from .. import stale_modules
@@ -102,6 +102,15 @@ class _ClockArguments(argparse.ArgumentParser):
 
     def error(self, message):
         raise ValueError(message)
+
+
+def lane_test_allowance(command, arguments):
+    """Supply this runner's allowance when the lane directly calls it."""
+    if command and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(command[0]).name):
+        command = command[1:]
+    if len(command) >= 2 and Path(command[0]).name == "qk" and command[1] == "simulator-tests":
+        return plugins.test_allowance([*command[2:], *arguments])
+    return None
 
 
 def default_test_allowance(argv):

@@ -1871,17 +1871,14 @@ def spelled_seconds(seconds):
 
 
 def clock_line(config, lane, arguments=()):
-    """The direct lane's timeout, the simulator default test allowance when known, and the heartbeat cadence."""
+    """The direct lane's timeout, its test allowance when supplied by a plugin, and the heartbeat cadence."""
     settings = config.get("lanes", {}).get(lane, {})
     limits = f"its timeout is {parallel.lane_timeout(settings, arguments):g}s"
     words = settings.get("command")
     if not isinstance(words, list): words = []
-    if words and re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name):
-        words = words[1:]
-    if len(words) >= 2 and Path(words[0]).name == "qk" and words[1] == "simulator-tests":
-        allowance = plugins.test_allowance([*words[2:], *arguments])
-        if allowance is not None:
-            limits += f" and the default test allowance is set to {allowance}s"
+    allowance = plugins.lane_test_allowance(words, arguments)
+    if allowance is not None:
+        limits += f" and the default test allowance is set to {allowance}s"
     return f"{lane}'s log is arriving: {limits}; a heartbeat every {PROGRESS_INTERVAL:g}s says whether the log has grown"
 
 
