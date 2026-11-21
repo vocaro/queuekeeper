@@ -1564,6 +1564,7 @@ reason and this Mac's.
 ```sh
 qk admissions now [--json] [--here]            # every Mac now: holders, waiters, reasons
 qk admissions [--since WHEN] [--until WHEN]    # summarize this Mac's admission log
+qk admissions --wait-breakdown [--since WHEN]  # wait estimates by slot scope and blocker
 qk admissions waits [--since WHEN] [--kind screen]   # how often and how long lanes waited
 ```
 
@@ -1572,6 +1573,11 @@ slots, kind, hold time, CPU, and where the work comes from: repository, branch, 
 session and Mac; for each waiter, its wait and reason. A Mac it can't read within 10 seconds is
 shown as unknown, never idle. A holder whose process has ended is shown as ended; admission frees
 it at its next attempt.
+
+`qk admissions --wait-breakdown` groups requests into whole-host, one-slot, and exclusive work.
+It estimates time by blocker in proportion to each request's refused attempts. Whole-host requests
+record whether the CPU was under its limit when all guaranteed slots were required and at least one
+was busy. Older records can leave a withdrawal's scope or a blocker's details unrecorded.
 
 A held slot from an `eng checkpoint` names the project, commit, current lane and its position
 when the report can match the slot to the checkpoint's dedicated worktree. This also works for

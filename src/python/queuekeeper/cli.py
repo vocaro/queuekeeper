@@ -1479,7 +1479,7 @@ def perform(argv, report):
         f"{lane_results.UNMEASURED}, unmeasured (default {processes.DEFAULT_LIMIT}); a backstop for a hang")
     admission.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --; "
         "it runs in the current directory")
-    logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [log ...]\n"
+    logged = commands.add_parser("admissions", usage="%(prog)s [-h] [--since WHEN] [--until WHEN] [--wait-breakdown] [log ...]\n"
         "       %(prog)s recover [--host HOST] [OWNER]\n       %(prog)s remove OWNER --why TEXT\n       %(prog)s limits\n"
         "       %(prog)s usage [--since WHEN] [--until WHEN] [--there LOG ...]\n"
         "       %(prog)s waits [--since WHEN] [--until WHEN] [--kind KIND ...] [--there LOG ...]\n"
@@ -1502,6 +1502,8 @@ def perform(argv, report):
     logged.add_argument("--since", type=resources.local_time, metavar="WHEN", help="count requests made from WHEN, "
                         "an ISO 8601 date or time, local unless it names a zone")
     logged.add_argument("--until", type=resources.local_time, metavar="WHEN", help="count requests made before WHEN")
+    logged.add_argument("--wait-breakdown", action="store_true", help="show waits by slot scope and estimated time "
+                        "by blocker, including CPU readings when guaranteed slots kept a whole-host request out")
     logged.add_argument("logs", nargs="*", type=Path, metavar="log", help="a copy of a log, such as another Mac's, "
                         "to read instead of this host's; name the previous generation first")
     distant = commands.add_parser("remote", help="run a lane or other heavy command on another Mac of the farm over "
@@ -1670,7 +1672,8 @@ def perform(argv, report):
         if args.action == "host" and args.operation in plugins.HOST_READS:
             return plugins.HOST_READS[args.operation][2](args)
         if args.action == "host": return host_screen(args)
-        if args.action == "admissions": return resources.report(args.logs or None, args.since, args.until)
+        if args.action == "admissions":
+            return resources.report(args.logs or None, args.since, args.until, wait_breakdown=args.wait_breakdown)
         # The queue reads a project's settings from its commits, and never from this working tree,
         # which for its worker is a main checkout that may lag.
         if args.action == "land": return merge_queue.land(root, args, Path.cwd())

@@ -3736,7 +3736,8 @@ class AdmissionLogTests(unittest.TestCase):
         def write(path, value):
             def setup(stack):
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(value if isinstance(value, str) else json.dumps(value))
+                contents = value() if callable(value) else value
+                path.write_text(contents if isinstance(contents, str) else json.dumps(contents))
                 stack.callback(path.unlink, missing_ok=True)
             return setup
 
@@ -3761,6 +3762,20 @@ class AdmissionLogTests(unittest.TestCase):
              f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 1 is busy"),
             ("slots", [hold(0, 2)], {"exclusive": True}, 10.0, 1, {}, 0,
              f"exclusive work needs every slot up to {mine('HEAVY_SLOTS_MAX=3')} free, and 2 are busy"),
+            ("slots", [hold(0)], {"whole_host": True}, 10.0, 1, {}, 0,
+             "a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=2) free, and 1 is busy"),
+            ("slots", [hold(0)], {"whole_host": True}, 40.0, 1, {}, 0,
+             "a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=2) free, and 1 is busy"),
+            ("slots", [hold(0)], {"whole_host": True}, None, 1, {}, 0,
+             "a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=2) free, and 1 is busy"),
+            ("slots", [holding("whole", whole_host=True)], {"whole_host": True}, 10.0, 1, {}, 1,
+             "a whole-host lane needs every guaranteed slot (HEAVY_SLOTS=2) free, and 2 are busy"),
+            ("slots", [write(queue, lambda: {"vocaroEngineering": 1, "waiters": [{"identity": "ahead", "pid": os.getpid(),
+             "start": born, "label": "tests", "ordinary": True, "seen": time.time()}]})], {"whole_host": True}, 10.0, 1, {}, 0,
+             "it waits behind ordinary work queued ahead of it: tests"),
+            ("wholeHost", [write(queue, lambda: {"vocaroEngineering": 1, "waiters": [{"identity": "ahead",
+             "pid": os.getpid(), "start": born, "label": "whole", "wholeHost": True, "seen": time.time()}]})],
+             {"whole_host": True}, 10.0, 1, {}, 0, "it waits behind a whole-host lane queued ahead of it: whole"),
             # A stranded entry recovery leaves is counted as the slot it held, here the lowest, since no slot file names
             # it, so that only work beyond the free slots waits (#89).
             ("stranded", [write(guard, {"vocaroEngineering": 1, "owners": {"stuck": {"pid": os.getpid(), "start": born,
@@ -3809,7 +3824,10 @@ class AdmissionLogTests(unittest.TestCase):
                 # The seconds since the last admission, and the wait, are the parts a slow host may change.
                 pattern = re.escape(message).replace(re.escape("{seconds}"), r"\d+")
                 self.assertRegex(error.getvalue(), rf"heavy: waiting \([1-9]\d*s\): {pattern}\n")
-                if kind in ("exclusive", "wholeHost", "model"):
+                if message.startswith("a whole-host lane needs") and holders:
+                    self.assertRegex(str(raised.exception), rf"^Resource queue busy on \S+: {pattern}; held by "
+                                     r"whole \(slot0, slot1\); waited \d+s; nothing ran$")
+                elif kind in ("exclusive", "wholeHost", "model") or message.startswith("it waits behind ordinary"):
                     # Work known to be running or queued only made it wait (#270).
                     self.assertRegex(str(raised.exception), rf"^Resource queue busy on \S+: {pattern}; waited \d+s; nothing ran$")
                     self.assertNotIn("orphan", str(raised.exception))
@@ -3820,7 +3838,22 @@ class AdmissionLogTests(unittest.TestCase):
                 (line,) = [line for line in self.lines() if line["identity"] == admission.identity]
                 self.assertEqual((line["event"], line["holders"], line["load"], line["busy"]),
                                  ("withdrawn", holders, 3.0, busy_read))
+                self.assertEqual(line["wholeHost"], options.get("whole_host", False))
+                blocker = kind
+                if message.startswith("a whole-host lane needs"):
+                    if holders:
+                        blocker = "wholeHostHolding"
+                    else:
+                        blocker = {None: "guaranteedSlotsCpuUnknown", 10.0: "guaranteedSlotsCpuUnder",
+                                   40.0: "guaranteedSlotsCpuAtLimit"}[busy_read]
+                elif message.startswith("it waits behind ordinary"):
+                    blocker = "ordinaryAhead"
+                elif message.startswith("it waits behind a whole-host"):
+                    blocker = "wholeHostAhead"
+                elif message.startswith("it waits behind exclusive"):
+                    blocker = "exclusiveHolding" if holders else "exclusiveAhead"
                 self.assertEqual(line["wait"], {"refusals": {kind: 1}, "first": kind, "last": kind,
+                                                "blockers": {blocker: 1},
                                                 "load": {"last": 3.0, "max": 3.0},
                                                 "busy": {"last": busy_read, "max": busy_read}, "memory": level})
 
@@ -3964,6 +3997,7 @@ class AdmissionLogTests(unittest.TestCase):
         self.assertEqual(set(line), base | {"holders", "load", "busy", "wait"})
         self.assertEqual((line["holders"], line["load"], line["busy"]), (1, 2.0, 90.0))
         self.assertEqual(line["wait"], {"refusals": {"cpu": 1, "memory": 2}, "first": "cpu", "last": "memory",
+                                        "blockers": {"cpu": 1, "memory": 2},
                                         "load": {"last": 2.0, "max": 2.0}, "busy": {"last": 15.0, "max": 90.0},
                                         "memory": 4})
 
@@ -4051,6 +4085,29 @@ class AdmissionLogTests(unittest.TestCase):
                    "mean 2.0, max 2.0, while waiting max 3.0; held mean 5m00s, max 5m00s, total 5m00s; ends released 1")
         self.assertEqual(output.getvalue().splitlines()[1:], ["Requests made at any time the log covers:",
                                                               f"heavy: {summary}", f"  EPUBLib gate: {summary}"])
+
+    def test_admissions_wait_breakdown_reports_scope_and_nested_blockers_without_guessing_historical_data(self):
+        log = Path(self.temp.name) / "copy.jsonl"
+        common = {"time": "2026-11-20T10:00:00+00:00", "kind": "heavy", "label": "gate",
+                  "pid": 1, "holders": 1, "event": "withdrawn", "outcome": "timed-out"}
+        historical = {"refusals": {"slots": 1}, "load": {"max": None}}
+        measured = {"refusals": {"slots": 4, "cpu": 1}, "load": {"max": None},
+                    "blockers": {"ordinaryAhead": 1, "guaranteedSlotsCpuAtLimit": 2,
+                                 "wholeHostHolding": 1, "cpu": 1}}
+        lines = [{**common, "identity": "older", "waited": 60, "wait": historical},
+                 {**common, "identity": "whole", "waited": 100, "wholeHost": True, "wait": measured},
+                 {**common, "identity": "ordinary", "waited": 20, "wholeHost": False, "wait": historical}]
+        log.write_text("".join(json.dumps(line) + "\n" for line in lines))
+        with contextlib.redirect_stdout(StringIO()) as output:
+            self.assertEqual(cli.main(["admissions", "--wait-breakdown", str(log)]), 0)
+        self.assertIn("Wait time by blocker is estimated", output.getvalue())
+        self.assertIn("whole-host: 0 admitted, 1 withdrawn (timed-out 1); waited mean 1m40s, max 1m40s; "
+                      "waited behind cpu 1 (20s), guaranteed slots busy (CPU at or over limit) 1 (40s), "
+                      "one-slot work queued ahead 1 (20s), whole-host work holding the Mac 1 (20s)", output.getvalue())
+        self.assertIn("one-slot: 0 admitted, 1 withdrawn (timed-out 1); waited mean 20s, max 20s; "
+                      "waited behind slots (detail unrecorded) 1 (20s)", output.getvalue())
+        self.assertIn("scope unrecorded: 0 admitted, 1 withdrawn (timed-out 1); waited mean 1m00s, max 1m00s; "
+                      "waited behind slots (detail unrecorded) 1 (1m00s)", output.getvalue())
 
 
 class UsageTests(unittest.TestCase):
