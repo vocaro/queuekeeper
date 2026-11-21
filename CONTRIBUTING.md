@@ -14,6 +14,10 @@ python3 scripts/qk unittest -s tests integration.test_merge_queue.Landing
 python3 scripts/qk run gate
 ```
 
+When a change intentionally lowers a lane's test count, include the corresponding
+[`Tests-Removed` trailer](doc/user_guide.md#test-counts) in the commit that removes the tests.
+Include it even if the change skips the code gate, because the next full gate checks the count.
+
 ## Pull requests
 
 This repository lands on `main` through its own merge queue, not by merging pull requests. Open a
