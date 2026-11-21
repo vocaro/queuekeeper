@@ -7540,6 +7540,19 @@ class SharedCheckout(Fixture):
         """A Python left running in cwd, which may import the toolkit from it as `python3 -c` does."""
         return self.held([sys.executable, "-c", "import time; time.sleep(300)"], cwd)
 
+    @contextlib.contextmanager
+    def follow_clock(self):
+        """Move the worker's monotonic clock past a follow deadline without making the host wait."""
+        offset = 0
+
+        def advance(seconds):
+            nonlocal offset
+            offset += seconds
+
+        with patch.object(mq, "time", wraps=time) as clock:
+            clock.monotonic.side_effect = lambda: time.monotonic() + offset
+            yield advance
+
     def land(self, prepare=lambda: None):
         """Land one commit while the shared checkout is on main at the old origin/main, as prepare leaves it,
         and return (its HEAD before, after, origin/main, what the worker said)."""
@@ -7721,10 +7734,13 @@ class SharedCheckout(Fixture):
             before, after, main, said = self.land(elsewhere)
         self.assertEqual((after, tries), (before, []))
         run(self.repo, "git", "checkout", "-q", "main")
-        with patch.object(mq, "FOLLOW_LIMIT", 0.5), patch.object(mq, "pause", lambda seconds: time.sleep(0.3)):
+        limit = mq.FOLLOW_POLL // 2
+        with self.follow_clock() as advance, patch.object(mq, "FOLLOW_LIMIT", limit), \
+                patch.object(mq, "pause", side_effect=advance) as paused:
             before, after, main, said = self.land(started)
+        paused.assert_called_once_with(mq.FOLLOW_POLL)
         self.assertEqual(after, before)
-        self.assertIn(f"left {self.repo} behind after 0.5s of tries: {mq.IN_USE}", said)
+        self.assertIn(f"left {self.repo} behind after {limit}s of tries: {mq.IN_USE}", said)
 
     def held_back(self, during):
         """Land one commit while a Python runs from the checkout, as the census shows it, with no bound on the
@@ -7743,18 +7759,22 @@ class SharedCheckout(Fixture):
         """vocaro-engineering#384, owner's decision of 2026-11-11: the tries go on until the checkout moves, past
         the hour they once stopped at, saying the deferral once while the same run holds it and again when another
         does, and the round's account says what the worker waits for."""
-        hour = 3600 // mq.FOLLOW_POLL
         waits = []
+
         def during(tried, holders):
             if tried == 1:
                 state = mq.Queue(self.repo).round_state()
                 waits.append((state.get("waiting"), state.get("catchingUp"), mq.snapshot(self.repo)["idle"]))
-            if tried == hour: holders[:] = [mq.disk.Process(pid=43, command="Python", cwd=str(self.repo / "scripts"))]
-            if tried == hour + 2: holders.clear()
-        before, after, main, said, tries = self.held_back(during)
+                advance(3600 + mq.FOLLOW_POLL)
+            if tried == 3:
+                holders[:] = [mq.disk.Process(pid=43, command="Python", cwd=str(self.repo / "scripts"))]
+            if tried == 5:
+                holders.clear()
+
+        with self.follow_clock() as advance:
+            before, after, main, said, tries = self.held_back(during)
         self.assertEqual(after, main)
-        self.assertEqual(len(tries), hour + 2)
-        self.assertGreater(sum(tries), 3600)
+        self.assertEqual(tries, [mq.FOLLOW_POLL] * 5)
         self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
         told = f"left {self.repo} behind for now, trying again every {mq.FOLLOW_POLL}s until it moves: {mq.IN_USE}: "
         self.assertEqual(said.count(told), 2)
