@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -887,6 +888,18 @@ def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=No
     return status
 
 
+def redirected_stdin():
+    """Whether the command would lose this Mac's redirected input if it ran on another Mac."""
+    try:
+        source = os.fstat(0)
+    except OSError as error:
+        if error.errno == errno.EBADF: return False  # Closed stdin carries no input.
+        raise
+    if not stat.S_ISCHR(source.st_mode): return True
+    # A terminal keeps existing placement; /dev/null supplies the same EOF on either Mac.
+    return not os.isatty(0) and source.st_rdev != os.stat(os.devnull).st_rdev
+
+
 def here_because(args, inherited):
     """Why `qk admit` runs its command on this Mac without offering it to another Mac, or None to offer it there
     first, as a lane is (the owner's decision, 2026-11-07)."""
@@ -994,6 +1007,10 @@ def admit(root, args, config=None, *, device_window=None):
     # Nested work runs inside the admission it inherits, here.
     inherited = bool(os.environ.get(resources.TOKEN))
     reason = here_because(args, inherited)
+    # The built-in runners consume their arguments, so an inherited stream does not pin their admission.
+    if reason is None and RUN_AGAIN is None and redirected_stdin():
+        reason = "its standard input is redirected"
+        print(f"queuekeeper: keeping the command on {this_mac()}: {reason}", file=sys.stderr, flush=True)
     # What this Mac's own settings decline of exclusive work and model runs (remote.here_unfit, vocaro/queuekeeper#211):
     # such a command runs only on another Mac, if one can start it now. Nested work runs inside its admission, a
     # self lane's parts run where the lane started, and work another Mac sent here was placed by this Mac's reading

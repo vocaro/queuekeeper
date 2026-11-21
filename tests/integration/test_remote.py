@@ -5738,6 +5738,38 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "qk admit --here"))
         self.assertNotIn("remote: sending", error)
 
+    def test_admit_keeps_redirected_stdin_here_when_the_farm_has_room(self):
+        launcher = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project), "admit", "--",
+                    sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"]
+        options = {
+            "cwd": self.project,
+            "env": {key: value for key, value in os.environ.items() if key != "QUEUEKEEPER_ROOT"},
+            "capture_output": True,
+            "timeout": stretched(120),
+        }
+        build = self.project / ".build/queuekeeper"
+        for source, payload in [("pipe", b"pipe input\n\x00second line\n"), ("file", b"file input\n")]:
+            with self.subTest(source):
+                if source == "pipe":
+                    result = subprocess.run(launcher, input=payload, **options)
+                else:
+                    source_file = Path(self.temp.name) / "stdin"
+                    source_file.write_bytes(payload)
+                    with source_file.open("rb") as stream:
+                        result = subprocess.run(launcher, stdin=stream, **options)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertEqual(result.stdout, payload)
+                reason = "its standard input is redirected"
+                self.assertIn(reason, result.stderr.decode())
+                receipt = json.loads((build / "admit/source.json").read_text())
+                self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", reason))
+        self.assertFalse((build / "remote/admit").exists())
+        # /dev/null supplies no payload, so the same command can still take the ready farm Mac.
+        result = subprocess.run(launcher, stdin=subprocess.DEVNULL, **options)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        receipt = json.loads((build / "remote/admit/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "fake")
+
     def test_admit_verify_sends_a_command_whose_paths_hold_a_uuid_to_the_farm_mac(self):
         # A session's scratchpad path holds its UUID (#116), which names no simulator, nor does one in another word.
         probe = self.probe()

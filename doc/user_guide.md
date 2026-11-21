@@ -1957,6 +1957,10 @@ qk remote passed LANE [--commit REV]     # exit 0 if the whole lane passed at ex
   existing ignored file such as a scratch script, a pool simulator or a physical device); or the
   environment sets `DEVELOPER_DIR` or a `TEST_RUNNER_` variable. System paths such as `/usr` and
   `/opt/homebrew` do not count.
+- **Redirected standard input.** `qk admit` keeps commands fed by a pipe, a here-document or an
+  input file on this Mac and passes that input to the command. Closed input and `/dev/null` still
+  allow offloading. A command explicitly sent with `qk remote admit` gets no caller input. To use
+  a file on the other Mac, include it in the checkout and redirect from it inside the command.
 - **A named checkout.** `qk remote run LANE --checkout-slot N` (0 to 3) runs in that checkout and
   no other, for a check that depends on its path or warm products. It waits for that checkout,
   up to `--checkout-wait SECONDS` (default 5400), and exits 75 having run nothing if it runs out.
