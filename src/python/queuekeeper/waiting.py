@@ -1,9 +1,8 @@
 """Waits for script tests that a busy host slows but does not fail (#284).
 
-A test that waits on a child process waits for the state it checks, and fails only once that state's progress
-has stood still for a bound stretched by the host's load. A fixed wall-clock bound on the whole run fails on a
-loaded host: on 2026-11-07, at load averages of 70 to 112, a BreezEPUB script test whose run takes 2 s on an
-idle Mac outlived a 30 s `communicate` while it was still working (vocaro/BreezEPUB 5ffdf3d5).
+Use a progress-bounded wait for work of variable length and a stretched timeout for a short command's hang
+guard. On 2026-11-07, at load averages of 70 to 112, a BreezEPUB script test whose run takes 2 s on an idle Mac
+outlived a fixed 30 s `communicate` while it was still working (vocaro/BreezEPUB 5ffdf3d5).
 """
 import ast
 import functools
@@ -201,16 +200,48 @@ def literal(node, least=0):
     return isinstance(node, ast.Constant) and type(node.value) in (int, float) and node.value >= least
 
 
+def wait_timeout(node):
+    """The timeout expression on a recognized wait call, if present."""
+    if not isinstance(node, ast.Call):
+        return None
+    called = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
+    if called in WAITS:
+        return next((word.value for word in node.keywords if word.arg == "timeout"), None)
+
+
+def forwarded_default(function):
+    """A fixed timeout default forwarded directly to a wait in the function's own scope."""
+    args = function.args
+    positional = args.posonlyargs + args.args
+    defaults = list(zip(positional[len(positional) - len(args.defaults):], args.defaults, strict=True))
+    defaults.extend(zip(args.kwonlyargs, args.kw_defaults, strict=True))
+    default = next((value for arg, value in defaults if arg.arg == "timeout" and literal(value, FIXED_LEAST)), None)
+    if default is None:
+        return None
+    pending = list(function.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(timeout := wait_timeout(node), ast.Name) and timeout.id == "timeout":
+            return default
+        pending.extend(ast.iter_child_nodes(node))
+    return None
+
+
 def wait_lines(tree, lines):
-    """The line numbers of this parsed source's fixed waits: a `timeout=` of FIXED_LEAST or more literal seconds on
-    a call in WAITS, or a `monotonic() + N` deadline of any literal length. A call or deadline with a
-    `# wall-clock: REASON` comment on one of its lines is left out."""
+    """The line numbers of literal wait timeouts, their forwarded defaults, and literal monotonic deadlines."""
     found = set()
     for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            default = forwarded_default(node)
+            if default is not None:
+                signature_end = max(node.lineno, node.body[0].lineno - 1, default.lineno)
+                if not any(EXEMPT in line for line in lines[node.lineno - 1:signature_end]):
+                    found.add(default.lineno)
+            continue
         if isinstance(node, ast.Call):
-            called = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
-            fixed = called in WAITS and any(word.arg == "timeout" and literal(word.value, FIXED_LEAST)
-                                            for word in node.keywords)
+            fixed = literal(wait_timeout(node), FIXED_LEAST)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and isinstance(node.left, ast.Call):
             clock = node.left.func
             fixed = (getattr(clock, "attr", None) or getattr(clock, "id", None)) == "monotonic" and literal(node.right)
@@ -254,8 +285,9 @@ def fixed_in(text):
 
 def fixed_waits(root):
     """Each tracked test file's fixed wall-clock wait, as (path, line number), as fixed_in finds them. A bound written
-    with `stretched(...)` or a name is not literal. A short `timeout=` is left alone, since short cleanup timeouts are
-    common; a deadline rarely is one, and one that is says so with `# wall-clock: REASON` (#308)."""
+    with `stretched(...)` or a name is not literal. A literal default passed straight to a wait counts too.
+    A short `timeout=` is left alone, since short cleanup timeouts are common. A deliberately fixed deadline or
+    timeout can carry a `# wall-clock: REASON` comment (#308)."""
     listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "*.py"], capture_output=True,
                             stdin=subprocess.DEVNULL)
     if listed.returncode:
@@ -282,7 +314,7 @@ def doctor_warnings(root):
     shown = ", ".join(f"{name}:{number}" for name, number in found[:SHOWN])
     more = f" and {len(found) - SHOWN} more" if len(found) > SHOWN else ""
     return [f"{len(found)} test line(s) bound a wait by fixed wall-clock time, a `monotonic() + N` deadline or a "
-            f"`timeout=` of {FIXED_LEAST} s or more, which a busy host can use up while the work still progresses: "
-            f"{shown}{more}. Wait on the state the test checks with queuekeeper.waiting.wait_until and a "
-            "progress probe, or stretch the bound with waiting.stretched; a bound that is the behavior under test, "
-            f"or a cleanup's grace period, says so with `# {EXEMPT} REASON`"]
+            f"`timeout=` of {FIXED_LEAST} s or more (including defaults passed to a wait), which a busy host can "
+            f"use up while the work still progresses: {shown}{more}. Use queuekeeper.waiting.wait_until with a "
+            "progress probe for long or variable work. Use waiting.stretched for a short command's hang guard. "
+            f"A bound that is the behavior under test or a cleanup's grace period says so with `# {EXEMPT} REASON`"]

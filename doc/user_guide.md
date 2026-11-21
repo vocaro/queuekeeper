@@ -1430,6 +1430,34 @@ Mac where you ran the command, which is also where the queue's worker runs. `qk 
 `--json`) lists each lane's baseline, fail threshold and latest stale mark. The [dashboard](#the-dashboard)'s Trends tab
 draws them over each lane's recent passing runs.
 
+### Waits in script tests
+
+Use `queuekeeper.waiting.wait_until` with a progress probe for work whose duration varies, such
+as a build or a simulator run. Set the stall bound for the longest expected gap between signs of
+progress. For a command that normally finishes in seconds and only needs protection from a hang,
+use a timeout such as `timeout=waiting.stretched(30)`. Process probes that call `ps` can add
+substantial overhead on a busy Mac.
+
+In [BreezEPUB's purchase preparation test](https://github.com/vocaro/BreezEPUB/issues/67), the
+fake lane normally took about 2 seconds. The same admitted runs alternated a `ps`-based
+progress wait with `subprocess.run(..., timeout=30)`.
+
+| Mac and one-minute load | Progress wait | Subprocess timeout |
+|---|---:|---:|
+| Workstation, about 40 | 7.7 s | 9.9 s |
+| Workstation, rising to about 195 | 98.4 s | 16.2 s |
+| Build host, about 400 falling to 275 | 93 s | 12.9 s |
+
+A separate `ps -A` listing took 5 seconds on the workstation at a load of 180, so repeated
+process listings may have contributed to the slowdown. The 93 s and 98.4 s measurements cover
+whole runs. The test switched to a stretched subprocess timeout.
+See [#92](https://github.com/vocaro/queuekeeper/issues/92) for the measurements.
+
+`qk doctor` flags fixed waits in tracked Python tests and their fixture source, including a
+literal `timeout` default of 20 seconds or more passed directly to a recognized wait.
+Use `# wall-clock: REASON` on a bound that measures the behavior under test or specifies a
+cleanup grace period.
+
 ### Every test has a lane
 
 `qk doctor` reports `testLanes`: whether every XCTest class, Swift Testing suite and Python test

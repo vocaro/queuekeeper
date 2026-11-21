@@ -322,8 +322,8 @@ subprocess.check_output(["true"],  # wall-clock: says why on its first line
                                             "tests/test_broken.py": "process.wait(timeout=30\n",
                                             "evidence/run/originals/tests/test_fixture.py": self.SOURCE,
                                             "scripts/run.py": self.SOURCE})
-            # A call that spans lines is found at its first; defaults, option strings, other calls and names are not,
-            # nor a file that does not parse, recorded evidence or a file outside the tests.
+            # A call that spans lines appears at its first. Fake defaults, option strings, other calls, names,
+            # files with syntax errors, recorded evidence and files outside tests are left out.
             self.assertEqual(waiting.fixed_waits(root), [("scripts/tests/test_fixture.py", 2),
                 ("scripts/tests/test_fixture.py", 4), ("scripts/tests/test_fixture.py", 8), ("tests/helpers.py", 1)])
             [warning] = waiting.doctor_warnings(root)
@@ -331,6 +331,8 @@ subprocess.check_output(["true"],  # wall-clock: says why on its first line
             self.assertIn("scripts/tests/test_fixture.py:2", warning)
             self.assertTrue(warning.endswith(f"says so with `# {waiting.EXEMPT} REASON`"), warning)
             self.assertIn("`monotonic() + N` deadline", warning)
+            self.assertIn("progress probe for long or variable work", warning)
+            self.assertIn("waiting.stretched for a short command's hang guard", warning)
 
     def found(self, text):
         """The line numbers fixed_waits lists for a test file holding this text."""
@@ -350,6 +352,31 @@ later = started + 5
 process.wait(timeout=5)
 process.communicate(timeout=19.9)
 """), [1, 2])
+
+    def test_literal_defaults_forwarded_to_waits_are_found(self):
+        self.assertEqual(self.found("""def command(words, name, timeout=60):
+    return processes.run(words, timeout=timeout)
+async def read(process, *, timeout: float = 20):
+    return await process.wait(timeout=timeout)
+def finish(timeout=30, /):
+    child.communicate(timeout=timeout)
+def fake(*words, timeout=60):
+    return timeout
+def short(timeout=19.9):
+    child.wait(timeout=timeout)
+def stretched_bound(timeout=stretched(30)):
+    child.wait(timeout=timeout)
+def other(timeout=40):
+    report(timeout=timeout)
+def outer(timeout=45):
+    def inner(timeout):
+        child.wait(timeout=timeout)
+    return inner
+def exempt(
+    timeout=60,  # wall-clock: the bound under test
+):
+    child.wait(timeout=timeout)
+"""), [1, 3, 5])
 
     def test_a_fixed_wait_in_a_fixtures_source_is_found_on_its_line_in_the_file(self):
         self.assertEqual(self.found("""import time
