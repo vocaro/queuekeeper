@@ -49,22 +49,26 @@ sys.exit(1 if found else 0)
 """
 # Fails when any tracked file is named bad*, passes otherwise; touches a counter so a test can count gates.
 LANE = """import os, pathlib, shutil, sys, time
+if len(sys.argv) > 1:
+    counter_path, status = map(pathlib.Path, sys.argv[1:3])
+else:
+    base = pathlib.Path(os.environ["QUEUEKEEPER_FIXTURE_BASE"])
+    counter_path, status = base / "gates", base / "status"
 # Appended, so that two gates at once, a bisect's halves (mq.Beside), count as two.
-with open(sys.argv[1], "a") as counter:
+with counter_path.open("a") as counter:
     counter.write("x")
     counter.flush()
     run = counter.tell()  # which gate this is, however many start after it
-status = pathlib.Path(sys.argv[2])
 # The screen readings queuekeeper would log for the run, which a test writes beside the status (#293).
-screen = pathlib.Path(sys.argv[2] + ".screen")
+screen = pathlib.Path(f"{status}.screen")
 if screen.exists(): print(screen.read_text(), flush=True)
 # A screen that locks during the run: the reading queuekeeper takes once the lane ends (#293).
 if os.environ.get("FIXTURE_LOCK_DURING_RUN"):
     shutil.copy(os.environ["FIXTURE_LOCK_DURING_RUN"], os.environ["QUEUEKEEPER_SCREEN_IOREG"])
 if status.exists(): sys.exit(int(status.read_text()))
 # A tree with a file named hold gates until the test releases this run, or has gone (Stacked).
-released = pathlib.Path(f"{sys.argv[1]}.release.{run}")
-while pathlib.Path("hold").exists() and not released.exists() and pathlib.Path(sys.argv[1]).exists(): time.sleep(0.02)
+released = pathlib.Path(f"{counter_path}.release.{run}")
+while pathlib.Path("hold").exists() and not released.exists() and counter_path.exists(): time.sleep(0.02)
 # A tree with a file named slow gates for that many seconds, so that an entry can arrive meanwhile (mq.Stack).
 if pathlib.Path("slow").exists(): time.sleep(float(pathlib.Path("slow").read_text()))
 bad = sorted(path.name for path in pathlib.Path(".").glob("bad*"))
@@ -115,6 +119,30 @@ def local_toolkit():
     return checkout, origin
 
 
+@functools.cache
+def project_seed():
+    """Create the fixture's starting repository once. Tests copy the bare origin before cloning it."""
+    base = Path(tempfile.mkdtemp()).resolve()
+    atexit.register(shutil.rmtree, base, ignore_errors=True)
+    origin, repo = base / "origin.git", base / "project"
+    run(base, "git", "init", "-q", "--bare", "-b", "main", str(origin))
+    run(base, "git", "clone", "-q", str(origin), str(repo))
+    (repo / "scripts").mkdir()
+    shutil.copy(ROOT / "scripts/qk", repo / "scripts/qk")
+    (repo / "lane.py").write_text(LANE)
+    # The agent entry a direct-main project keeps, which `qk docs check` reads.
+    (repo / "AGENTS.md").write_text("# Fixture\n")
+    (repo / "CLAUDE.md").write_text("@AGENTS.md\n")
+    (repo / "queuekeeper.json").write_text(json.dumps({
+        "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
+        "queue": {"unread": {"paths": {"records/": "no lane reads it"}}},
+        "lanes": {"gate": {"command": ["python3", "lane.py"]}}}))
+    run(repo, "git", "add", ".")
+    run(repo, "git", "commit", "-qm", "start")
+    run(repo, "git", "push", "-q", "origin", "HEAD:main")
+    return origin
+
+
 def never_exec(command, env):
     """What a test's worker must never do: replace the test process (merge_queue.execute)."""
     raise AssertionError(f"the worker would exec {shlex.join(command)}")
@@ -136,7 +164,7 @@ class Fixture(unittest.TestCase):
         guard = patch.object(mq, "execute", never_exec)
         guard.start()
         self.addCleanup(guard.stop)
-        patcher = patch.dict(os.environ, {**GIT_ALONE,
+        patcher = patch.dict(os.environ, {**GIT_ALONE, "QUEUEKEEPER_FIXTURE_BASE": str(self.base),
                                           "QUEUEKEEPER_ROOT": str(local_toolkit()[0])})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -172,22 +200,9 @@ class Fixture(unittest.TestCase):
         self.addCleanup(unchecked.stop)
         self.counter, self.status = self.base / "gates", self.base / "status"
         self.origin = self.base / "origin.git"
-        run(self.base, "git", "init", "-q", "--bare", "-b", "main", str(self.origin))
         self.repo = self.base / "project"
+        shutil.copytree(project_seed(), self.origin)
         run(self.base, "git", "clone", "-q", str(self.origin), str(self.repo))
-        (self.repo / "scripts").mkdir()
-        shutil.copy(ROOT / "scripts/qk", self.repo / "scripts/qk")
-        (self.repo / "lane.py").write_text(LANE)
-        # The agent entry a direct-main project keeps, which `qk docs check` reads.
-        (self.repo / "AGENTS.md").write_text("# Fixture\n")
-        (self.repo / "CLAUDE.md").write_text("@AGENTS.md\n")
-        (self.repo / "queuekeeper.json").write_text(json.dumps({
-            "schemaVersion": 1, "name": "fixture", "integration": "direct-main",
-            "queue": {"unread": {"paths": {"records/": "no lane reads it"}}},
-            "lanes": {"gate": {"command": ["python3", "lane.py", str(self.counter), str(self.status)]}}}))
-        run(self.repo, "git", "add", ".")
-        run(self.repo, "git", "commit", "-qm", "start")
-        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
 
     def config(self):
         return configuration.load(self.repo)

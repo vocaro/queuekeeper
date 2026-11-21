@@ -9781,9 +9781,13 @@ class FlakyReruns(Fixture):
     alone and that reaches none of their files lands, with the flake recorded (owner's decision of 2026-11-07, #231)."""
     BUSY = ("cpu", "the CPU is 95% busy, at or above HEAVY_BUSY_LIMIT=75%")
     TEST = "test_flaky.Flaky.test_sometimes"
+    PRODUCTION_RERUNS = mq.RERUNS
 
     def setUp(self):
         super().setUp()
+        # A pass followed by a failure still exercises the retry loop. Most cases cover what the
+        # worker does with the result, so they need only two attempts instead of the production cap.
+        self.enterContext(patch.object(mq, "RERUNS", 2))
         self.runs, self.plan = self.base / "runs", self.base / "plan"
         (self.repo / "tests").mkdir()
         (self.repo / "tests/test_flaky.py").write_text(FLAKY_MODULE.format(runs=str(self.runs), plan=str(self.plan)))
@@ -9823,6 +9827,7 @@ class FlakyReruns(Fixture):
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")
+        self.enterContext(patch.object(mq, "RERUNS", self.PRODUCTION_RERUNS))
         with self.host([self.BUSY, None]) as (slept, said):
             self.assertEqual(self.work(), 0)
         log = said.getvalue()
