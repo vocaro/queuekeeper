@@ -40,11 +40,12 @@ class Quiet:
     """Consecutive, observable quiet samples. A new process or changed output counts as progress."""
     def __init__(self):
         self.previous, self.since, self.wall, self.monotonic = None, None, None, None
+        self.gap = False
 
     def sample(self, now, wall, state):
-        gap = self.wall is not None and (wall - self.wall > 3 * INTERVAL or now - self.monotonic > 3 * INTERVAL
-                                        or wall < self.wall or now < self.monotonic)
-        if state is None or gap:
+        self.gap = self.wall is not None and (wall - self.wall > 3 * INTERVAL or now - self.monotonic > 3 * INTERVAL
+                                              or wall < self.wall or now < self.monotonic)
+        if state is None or self.gap:
             self.previous, self.since = None, None
         elif state != self.previous:
             self.previous, self.since = state, now
@@ -60,6 +61,7 @@ class Monitor:
         self.run = f"{os.getpid()}-{time.time_ns()}"
         self.began = time.time()
         self.maximum, self.samples, self.unobservable = 0, 0, 0
+        self.sampling_gaps = 0
         self.write_error = None
         from . import lane_progress
         self.live_paths = lane_progress.destinations(self.run, self.status)
@@ -80,6 +82,8 @@ class Monitor:
         except OSError:
             output = None
         quiet = self.quiet.sample(now, wall, (readings, output) if readings is not None and output is not None else None)
+        if self.quiet.gap:
+            self.sampling_gaps += 1
         added_coverage = 0
         if self.observed_previous is not None:
             gap = now - self.observed_previous
@@ -136,7 +140,8 @@ class Monitor:
         self.status.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.status.with_name(self.status.name + ".tmp-" + self.run)
         try:
-            temporary.write_text(json.dumps(self.last, indent=2) + "\n")
+            retained = {**self.last, "samplingGapSamples": self.sampling_gaps}
+            temporary.write_text(json.dumps(retained, indent=2) + "\n")
             temporary.replace(self.status)
         except OSError:
             try: temporary.unlink()
