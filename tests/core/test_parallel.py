@@ -807,6 +807,17 @@ class UnittestRunnerTests(unittest.TestCase):
         self.assertNotIn("failed to import in discovery", output)
         self.assertIn("No module named 'no_such_module'", output)
 
+    def test_a_nested_module_that_failed_to_import_reports_its_dependency(self):
+        root = self.suite()
+        package = root / "nested"
+        package.mkdir()
+        (package / "__init__.py").touch()
+        (package / "test_broken.py").write_text("import missing_nested_dependency\n")
+        status, output = self.run_suite(root, "--split", "test")
+        self.assertEqual(status, 1, output)
+        self.assertIn("== nested.test_broken: FAILED", output)
+        self.assertIn("No module named 'missing_nested_dependency'", output)
+
     def test_a_module_imports_from_and_runs_in_the_directory_eng_runs_in(self):
         root = self.suite(module("test_invoked", """
             from helpers import VALUE

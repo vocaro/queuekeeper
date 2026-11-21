@@ -366,8 +366,8 @@ def shards(suite, split, origins=None, members=None, *, batch_size=None):
         cls = type(test)
         module = sys.modules.get(cls.__module__)
         if cls.__module__ == "unittest.loader":
-            # A _FailedTest's name is the module or package that failed to load.
-            name = test.id().rsplit(".", 1)[-1]
+            # A _FailedTest's name includes the full import path of the module or package.
+            name = test.id().removeprefix(f"{cls.__module__}.{cls.__qualname__}.")
             add(name, name, test)
             continue
         origin = origins.get(id(test))
