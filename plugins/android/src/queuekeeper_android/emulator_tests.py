@@ -15,7 +15,7 @@ there and runs `am instrument -r -w`, reading each test's outcome as it streams 
   died with a test running, or a run that ran no test measures nothing.
 
 Each kind's tests and their outcomes and seconds are kept in the lane's results/, as emulator-tests/KIND.json, beside
-the log, so that a run on another Mac brings them back.
+the log. A lane reports the per-test outcomes when it finishes, after bringing its results back from another Mac.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -35,6 +35,7 @@ from . import adb, android_platform, instrumentation, sdk, settings  # noqa: F40
 from .emulators import pool as emulator_pool
 
 KEPT = "emulator-tests"
+KEPT_BY = "qk emulator-tests"
 TIMINGS = "timings.json"
 BUILD_TIMEOUT = 3600
 TEST_TIMEOUT = 3600
@@ -224,7 +225,7 @@ class Run:
         try:
             folder.mkdir(parents=True, exist_ok=True)
             (folder / f"{kind}.json").write_text(json.dumps({
-                "run": kind, "keptBy": "qk emulator-tests", "status": status, "seconds": seconds,
+                "run": kind, "keptBy": KEPT_BY, "status": status, "seconds": seconds,
                 "crashed": run.crashed, "tests": run.tests}, indent=1) + "\n")
         except OSError as error:
             self.say(f"queuekeeper emulator-tests: {kind}'s results were not kept in {folder}: {error}")
@@ -233,6 +234,30 @@ class Run:
         self.statuses[kind] = status
         timing = f" in {seconds}s" if seconds is not None else ""
         self.say(f"{outcome(status)} {kind}: {detail}{timing}" + (f"; log: {log}" if log else ""))
+
+
+def case_line(kind, case):
+    seconds = "no time" if case["seconds"] is None else f"{case['seconds']:.3f}s"
+    reason = f" ({case['reason']})" if case.get("reason") else ""
+    return f"{kind}: {case['outcome']} {seconds} {case['test']}{reason}"
+
+
+def report(results, out=print):
+    """Print emulator-test records from this lane's returned results, including a group's members."""
+    for path in sorted(Path(results).rglob(f"{KEPT}/*.json")):
+        try:
+            record = json.loads(path.read_text())
+            if not isinstance(record, dict): raise ValueError("expected a result record")
+            if record.get("keptBy") != KEPT_BY: continue
+            kind = record["run"]
+            lines = [case_line(kind, case) for case in record["tests"]]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            out(f"queuekeeper: {path} could not be read: {error!r}")
+            continue
+        out(f"queuekeeper: per-test results in {path}:")
+        for line in lines: out(line)
+        if not lines: out(f"{kind}: no test outcomes recorded")
+        if crashed := record.get("crashed"): out(f"{kind}: {crashed}")
 
 
 def parse(argv, project):

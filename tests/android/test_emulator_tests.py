@@ -54,6 +54,27 @@ class Judging(unittest.TestCase):
             with self.subTest(run=[case["outcome"] for case in run.tests], status=status):
                 self.assertEqual(self.judged(run, status)[0], lane_results.UNMEASURED)
 
+    def test_the_report_replays_only_this_runners_records_without_adding_a_test_count(self):
+        self.judged(run_of("passed", "skipped", "unmeasured", crashed="Process crashed."))
+        root = Path(self.temp.name)
+        original = root / emulator_tests.KEPT
+        other = original / "other.json"
+        other.write_text(json.dumps({"keptBy": "another command"}))
+        (original / "broken.json").write_text("[")
+        grouped = root / "instrumented"
+        grouped.mkdir()
+        original.rename(grouped / emulator_tests.KEPT)
+
+        lines = []
+        emulator_tests.report(root, lines.append)
+        self.assertIn("could not be read", lines[0])
+        self.assertIn("pixel_8: passed 1.000s a.B#t0", lines)
+        self.assertIn("pixel_8: skipped 1.000s a.B#t1", lines)
+        self.assertIn("pixel_8: unmeasured 1.000s a.B#t2", lines)
+        self.assertIn("pixel_8: Process crashed.", lines)
+        self.assertNotIn("other.json", "\n".join(lines))
+        self.assertIsNone(lane_results.counted("\n".join(lines)))
+
 
 if __name__ == "__main__":
     unittest.main()

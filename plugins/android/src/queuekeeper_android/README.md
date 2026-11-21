@@ -60,6 +60,7 @@ reading each test's outcome as it streams.
   instrumentation that crashed mid-test, or a run in which no test ran.
 
 Each kind's per-test outcomes and seconds are kept in the lane's `results/emulator-tests/KIND.json`.
+`qk run` prints them when the lane finishes, after bringing the results back if it ran on another Mac.
 
 ## Physical devices
 
