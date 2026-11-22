@@ -577,6 +577,7 @@ class RemoteTests(unittest.TestCase):
                                      "    time.sleep(0.05)\n"
                                      "raise SystemExit(0 if release.exists() else 9)"],
                          "resource": "heavy", "timeout": 1234},
+            "narrated-pair": {"parallel": ["left", "narrated"], "jobs": 1, "resource": "heavy"},
             "transcripts": {"command": [python, "-c", "import pathlib, sys\nif 'skip' not in sys.argv[1:]:\n"
                                         "    folder = pathlib.Path('.build/queuekeeper/transcripts/results/session-1')\n"
                                         "    folder.mkdir(parents=True, exist_ok=True)\n"
@@ -926,8 +927,8 @@ class RemoteTests(unittest.TestCase):
                          f"{offload_host.CACHE}{self.commit}")
         self.assertEqual(self.qk("remote", "passed", "check")[0], 0)
 
-    def narrated(self, ready, *arguments):
-        """Dispatch the narrated lane with a heartbeat every moment, releasing it once ready(stderr so far) holds:
+    def narrated(self, ready, *arguments, lane="narrated"):
+        """Dispatch a fixture with frequent heartbeats, releasing it once ready(stderr so far) holds:
         (status, stderr while the lane still ran, the whole stderr). A lane that is never released exits 9."""
         error, during = StringIO(), []
         release = Path(self.temp.name) / "narrated-release"
@@ -940,7 +941,7 @@ class RemoteTests(unittest.TestCase):
         watcher.start()
         with patch.object(remote, "PROGRESS_INTERVAL", 0.2), contextlib.redirect_stdout(StringIO()), \
                 contextlib.redirect_stderr(error):
-            status = cli.main(["--project", str(self.project), "remote", "run", "narrated", *arguments])
+            status = cli.main(["--project", str(self.project), "remote", "run", lane, *arguments])
         watcher.join()
         return status, during[0], error.getvalue()
 
@@ -984,6 +985,19 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(len(relayed), 4, during)
         self.assertNotIn("an ordinary line", during)
 
+    def test_a_group_heartbeat_names_the_member_whose_end_has_not_arrived(self):
+        active = "members reported started, with no end yet: narrated"
+        status, during, error = self.narrated(lambda said: active in said, lane="narrated-pair")
+        self.assertEqual(status, 0, error)
+        self.assertRegex(during, rf"(?m)^remote: heartbeat .* narrated-pair on fake, .*{active} \([^\n]+ ago\)$")
+        # With one job, left must have finished before narrated can start. Its own log and narrated's are
+        # still separate, and the heartbeat does not read narrated's device stage or count its tests.
+        self.assertNotIn("Testing: iPad", during)
+        self.assertIsNone(lane_results.counted(during))
+        files = self.project / ".build/queuekeeper/remote/narrated-pair/lanes"
+        self.assertIn("Ran 2 tests", (files / "left.log").read_text())
+        self.assertIn("Testing: iPad", (files / "narrated.log").read_text())
+
     def test_a_group_or_a_log_not_begun_gets_a_heartbeat_that_says_so(self):
         now = [0.0]
         def said(group, *lines):
@@ -996,9 +1010,9 @@ class RemoteTests(unittest.TestCase):
                 now[0] += 1
                 progress.beat()
             return error.getvalue()
-        self.assertIn("no line of its log yet", said(False))
-        group = said(True, b"Taking: not a group's own\n")
-        self.assertIn("so this cannot say whether they advance", group)
+        self.assertIn("no line of its log yet", said(()))
+        group = said(("member",), b"Taking: not a group's own\n")
+        self.assertIn("no member starts without an end report", group)
         self.assertNotIn("clock", group)
         self.assertNotIn("grew", group)
 
@@ -1077,7 +1091,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_progress_output_is_bounded_and_counts_for_no_reader_of_a_log(self):
         with patch.object(remote, "PROGRESS_LINES", 3), contextlib.redirect_stderr(StringIO()) as error:
-            progress = remote.Progress("lane", "fake", False, "its clock")
+            progress = remote.Progress("lane", "fake", (), "its clock")
             for index in range(10): progress.arrived(f"Testing: {index} ".encode() + b"x" * 2000 + b"\n")
         lines = error.getvalue().splitlines()
         # The clock, three lines, and the one that says they stop.
@@ -1106,7 +1120,7 @@ class RemoteTests(unittest.TestCase):
             def write(self, text): raise BrokenPipeError
             def flush(self): pass
         with contextlib.redirect_stderr(Closed()):
-            progress = remote.Progress("lane", "fake", False, "its clock")
+            progress = remote.Progress("lane", "fake", (), "its clock")
             progress.arrived(b"Testing: iPad\n")
             progress.arrived(b"Testing: iPhone\n")
         self.assertTrue(progress.closed)

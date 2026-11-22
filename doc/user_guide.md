@@ -2142,8 +2142,9 @@ effective lane timeout and, for a direct simulator-tests command when known, its
 test allowance. Progress lines report stages the lane logs, such as the device it started
 testing. A heartbeat comes about every five minutes during quiet output and reports whether
 the log grew and how long ago the last recognized stage arrived. A heartbeat without log
-growth only reports silence. A parallel group's member logs arrive when the group ends, so its
-heartbeat cannot report a member's current stage.
+growth only reports silence. A parallel group's heartbeat names the members whose starts have been
+reported and whose endings have yet to arrive, with the elapsed time since each reported start.
+A member's current stage is in its own log, which comes back after the group ends.
 
 From the project checkout, `qk admissions now` shows which Mac is holding or waiting for
 admission and why. `qk progress FOLDER` reads a runner's record when its output announced a

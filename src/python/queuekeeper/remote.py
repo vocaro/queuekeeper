@@ -1833,6 +1833,7 @@ class Frames:
         elif kind == b"O " or not self.again:
             if kind != b"O ": self.stray = last_line(line.decode(errors="replace")) or self.stray
             data = self.once("output", data if kind == b"O " else line)
+            if data and kind == b"O " and self.progress is not None: self.progress.group_output(data)
             self.output.write(data)
             write(sys.stdout, data)
         return kind
@@ -1850,6 +1851,9 @@ PROGRESS_WIDTH = 300
 # and the toolkit's own simulator pool's and qk simulator-tests's.
 PROGRESS_LINE = re.compile(r"(?:Taking: |TOOK |Testing: |Passed: |Failed: |Unmeasured: |BUILD |BUILT |TEST |SHARD "
                            r"|PASS |FAIL |UNMEASURED )")
+# The group launcher writes these member endings to stdout (parallel.lanes); member commands log to separate files.
+GROUP_MEMBER_END = re.compile(r"(?:PASS|FAIL|UNMEASURED|NOT RUN|CUT SHORT|STOPPED|UNCERTAIN) "
+                              r"(.+?) \(\d+s(?:, status -?\d+)?\): .+")
 # What evidence.py counts wherever a log holds it, written in lower case in the copy a progress line shows, since a
 # lane nested in another or the merge queue's gate log holds this output too: "Executed 6 tests" there is a second count.
 COUNTED_PHRASE = re.compile(r"Executed (?=\d)|Test run with (?=\d)|Test skipped - Unmeasured:")
@@ -1886,11 +1890,12 @@ class Progress:
     """A lane's run on another Mac, as this Mac sees it arrive: its progress lines relayed with the time they came,
     and a heartbeat that says only what is known, whether its log grew. An open connection is no progress, so a heartbeat
     never says a run is working: a reader compares its numbers. Nothing here can end the run: a stderr that has closed
-    ends these lines, not the lane (a redirect's reader that left, say). A group's lanes log apart, and those logs come
-    back when it ends (group_files), so the heartbeat says it cannot tell. Nothing judges a stall yet: that needs each
+    ends these lines, not the lane (a redirect's reader that left, say). A group's launcher reports member starts
+    and ends; the member logs come back when it ends (group_files). Nothing judges a stall yet: that needs each
     lane's slowest measured step, which leaves part of #320 open."""
-    def __init__(self, lane, host, group, clock_said, clock=time.monotonic):
-        self.lane, self.host, self.group, self.clock_said, self.clock = lane, host, group, clock_said, clock
+    def __init__(self, lane, host, members, clock_said, clock=time.monotonic):
+        self.lane, self.host, self.clock_said, self.clock = lane, host, clock_said, clock
+        self.members, self.started = frozenset(members), {}
         self.began = self.beaten = clock()
         self.lines, self.lines_at_beat, self.latest = 0, 0, None
         self.relayed, self.last, self.closed = 0, None, False
@@ -1904,7 +1909,7 @@ class Progress:
     def arrived(self, data):
         """Note a line of the lane's log (bytes), and relay it if it is a progress line."""
         moment = self.clock()
-        if not self.lines and not self.group: self.tell("clock", self.clock_said)
+        if not self.lines and not self.members: self.tell("clock", self.clock_said)
         self.lines, self.latest = self.lines + 1, moment
         text = progress_text(data)
         if not PROGRESS_LINE.match(text): return
@@ -1916,6 +1921,15 @@ class Progress:
                                   "and the run's log holds them all")
         self.relayed += 1
 
+    def group_output(self, data):
+        """Track the group launcher's reports for declared members, without interpreting their command output."""
+        if not self.members: return
+        line = data.decode(errors="replace").rstrip("\r\n")
+        if line.startswith("RUN ") and line[4:] in self.members:
+            self.started[line[4:]] = self.clock()
+        elif ending := GROUP_MEMBER_END.fullmatch(line):
+            self.started.pop(ending[1], None)
+
     def beat(self):
         """Say what has arrived since the last heartbeat, when one is due. Called only when no line is arriving, so
         that a heartbeat does not fall inside a block of the run's own output, such as the lanes' times."""
@@ -1923,8 +1937,16 @@ class Progress:
         if moment - self.beaten < PROGRESS_INTERVAL: return
         self.beaten, grew, self.lines_at_beat = moment, self.lines - self.lines_at_beat, self.lines
         since = spelled_seconds(moment - self.began)
-        if self.group:
-            said = "its lanes log apart and those logs come back when it ends, so this cannot say whether they advance"
+        if self.members:
+            said = "its member logs come back when it ends"
+            if self.started:
+                active = list(self.started.items())
+                shown = ", ".join(f"{progress_text(name.encode())[:45]} ({spelled_seconds(moment - began)} ago)"
+                                  for name, began in active[:4])
+                more = f" and {len(active) - 4} more" if len(active) > 4 else ""
+                said += f"; members reported started, with no end yet: {shown}{more}"
+            else:
+                said += "; no member starts without an end report"
         elif self.latest is None:
             said = "no line of its log yet, so it has not started or has written nothing"
         elif grew:
@@ -2158,7 +2180,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     stopping = None
     record = remember_dispatch(journal, host) if detached is not None else None
     # A lane's log comes as it grows. An `qk admit` command's output comes on stdout, live, already.
-    progress = Progress(name, host, bool(members), clock_line(config, lane, arguments)) if lane is not None else None
+    group = config.get("lanes", {}).get(lane, {}).get("parallel") or ()
+    progress = Progress(name, host, group, clock_line(config, lane, arguments)) if lane is not None else None
     lane_wait.sent(host)
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
         frames = Frames(staging, log, output, returns, host, progress)
