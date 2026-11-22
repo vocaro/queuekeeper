@@ -623,9 +623,10 @@ one of `queue.lanes` or else `gate`, lists `inputs`: the globs of the paths that
 
 - **A glob matches the whole path** from the repository root. `*` and `?` stay within one
   directory, and `**` spans any number of them. A moved file counts by both its old and new path.
-- **A lane runs when a changed path matches one of its `inputs`.** A batch runs its preflight,
-  provision and documentation lanes as usual, then the gate lanes its paths select, in
-  `queue.lanes` order. `qk land` and the round's log say which lanes were selected.
+- **A lane runs when a changed path matches one of its `inputs`.** A batch runs its preflight
+  and documentation checks, then the gate lanes its paths select, in `queue.lanes` order.
+  Each gate lane provisions the checkout it runs in when the project defines `provision`.
+  `qk land` and the round's log say which lanes were selected.
 - **A gate lane without `inputs` runs for every change.** A project can narrow one lane at a time,
   and nothing skips the gate until every gate lane lists its inputs.
 - **A batch that selects no gate lane skips the gate.** It lands as a batch of unread paths does

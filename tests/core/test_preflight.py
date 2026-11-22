@@ -86,10 +86,10 @@ class QueueLanes(unittest.TestCase):
         self.lanes = {"lint": check(["true"]), "format": check(["true"]), "provision": check(["true"]),
                       "docs": check(["true"])}
 
-    def test_a_round_runs_the_preflight_lanes_then_provision_then_the_gate(self):
+    def test_a_code_round_runs_the_preflight_lanes_then_the_gate(self):
         given = project(self.lanes, {"preflight": ["format", "lint"]})
-        self.assertEqual(mq.lanes_of(given), ["format", "lint", "provision", "gate"])
-        self.assertEqual(mq.lanes_of(project(self.lanes, {"preflight": []})), ["provision", "gate"])
+        self.assertEqual(mq.lanes_of(given, ["src/a.py"]), ["format", "lint", "gate"])
+        self.assertEqual(mq.lanes_of(project(self.lanes, {"preflight": []})), ["gate"])
 
     def test_an_ungated_landing_runs_only_the_preflight_lanes(self):
         self.assertEqual(mq.ungated_lanes(project(self.lanes, {"preflight": ["lint"]})), ["lint"])

@@ -153,7 +153,8 @@ The worker fetches, takes everything waiting, oldest first, cherry-picks each en
 `origin/main` in its checkout, and runs, through `qk run`:
 
 1. the preflight lanes, `queue.preflight`;
-2. the `provision` lane, when the project has one;
+2. a separate `provision` step, if defined, when the round adds docs checks, changes the
+   project's lane configuration, or needs it for gate reuse or explicit queue policy;
 3. the docs lanes, when the batch changes documentation beside code;
 4. `gate`, or the lanes `queue.lanes` names.
 
@@ -177,9 +178,9 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   [Reusing a passing local gate](user_guide.md#reusing-a-passing-local-gate) describes opt-in.
 - **Short checks skip admission.** The preflight lanes and `qk docs check` run in the worker's
   checkout without admission, so seconds of checking never wait behind a whole-host gate. One that
-  passes `DOCS_CHECK_LIMIT` (60 s) runs again admitted. Everything else is admitted and placed as
-  any lane is, so `provision` and the gate may run on different Macs; `qk run` runs `provision`
-  first on whichever Mac runs a lane.
+  passes `DOCS_CHECK_LIMIT` (60 s) runs again admitted. `qk run` provisions the checkout that
+  runs each admitted lane. An ordinary code round needs no separate provision pass in the
+  worker checkout, which may be on a different Mac from the gate.
 - **Pushing.** On a pass the worker pushes exactly the commits it tested, each with its own message
   and author, after the pre-push hook (below). A project with `app` then starts
   `qk app keep --after-landing` in the background.

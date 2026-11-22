@@ -666,16 +666,25 @@ def preflighted(config):
 
 
 def lanes_of(config, changed=()):
-    """The lanes a batch must pass, in order: the project's preflight lanes (preflighted), and its provision lane
-    when it has one, the cheap checks and setup that a gate assumes, then the docs lanes of a batch whose changed
+    """The lanes a batch must pass, in order: the project's preflight lanes (preflighted), then an independent
+    provision step when needed, then the docs lanes of a batch whose changed
     paths hold documents beside code (docs_also), and then `queue.lanes` or its gate lane: those of them that main's
     gate lanes' inputs select for the paths changed (affected_lanes), every one where no lane gives inputs."""
     named = affected_lanes(config, changed)
     if not named:
         raise ValueError(f"{config.get('name')} has no gate lane, so the queue has nothing to run: name the lane "
                          "holding what a commit must pass before it lands gate")
-    first = [name for name in [*preflighted(config), PROVISION] if configured(config, name) and name not in named]
-    return first + [lane for lane in docs_also(config, changed, named) if lane not in first] + named
+    first = [name for name in preflighted(config) if name not in named]
+    docs = docs_also(config, changed, named)
+    policy = config.get("queue", {})
+    # qk run provisions the checkout that actually runs a lane. Keep the separate step for quick docs checks,
+    # reuse probes, explicit policy, or when the batch could have changed the provision lane's definition.
+    if configured(config, PROVISION) and PROVISION not in named and (
+        docs or policy.get("reuseGate") or PROVISION in policy.get("hookCoveredBy", {})
+        or PROVISION in gate_lanes(config) or "queuekeeper.json" in changed
+    ):
+        first.append(PROVISION)
+    return first + [lane for lane in docs if lane not in first] + named
 
 
 def docs_also(config, changed, named):
@@ -961,7 +970,8 @@ def carried_by_rules(path, config, batch_files, ran, members=None):
     they read, so main's own gate of path still holds with the batch on top, and the batch's of its lanes with path
     beneath. A provision lane, which sets up every gate, counts as reading every path. ran None, as for a docs-only or
     ungated landing, carries nothing over this way."""
-    if ran is None or path in batch_files or PROVISION in ran or unread(config, path): return False
+    if ran is None or path in batch_files or PROVISION in ran or configured(config, PROVISION) or unread(config, path):
+        return False
     selected = affected_by(config, path)
     if selected is None: return False
     # A lane group the batch's paths chose only some lanes of, members (group_members), read path only by those.
@@ -2590,7 +2600,7 @@ def rides(config, changed):
     elif lane_inputs_all(config):
         why = f"{next(path for path in changed if not docs_lanes(config, [path]))} is a path a gate lane reads"
     else: why = f"{next(path for path in changed if not docs_lanes(config, [path]))} is not documentation"
-    also = [lane for lane in lanes_of(config, changed) if lane not in lanes_of(config)]
+    also = [lane for lane in lanes_of(config, changed) if lane != PROVISION and lane not in lanes_of(config)]
     selected, named = affected_lanes(config, changed), gate_lanes(config)
     narrowed = (f"; of the gate lanes, only {spoken(selected)}, which main's {selects_by(config)} select for its paths"
                 if selected != named else "")
@@ -6494,7 +6504,7 @@ class Worker:
         beside = self.beside(waiting, batch, base, config, docs, ungated, changed)
         # A batch that changes documents and code runs main's docs lanes too, both halves of a bisect alike (#122).
         lanes = beside.lanes if beside else None if docs or ungated else lanes_of(config, changed)
-        also = [lane for lane in lanes if lane not in lanes_of(config)] if lanes else []
+        also = [lane for lane in lanes if lane != PROVISION and lane not in lanes_of(config)] if lanes else []
         if also:
             self.say(f"the batch changes documents beside code: running {', '.join(also)} as well as the gate, for "
                      "what only the docs lanes check")

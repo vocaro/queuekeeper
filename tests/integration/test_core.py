@@ -412,15 +412,18 @@ class ConfigurationTests(unittest.TestCase):
                     write(lanes, queue, named)
                     self.assertEqual(config.load(root)["release"], {"lanes": [named]})
 
-    def test_the_landing_lanes_before_the_gate_are_the_merge_queues(self):
+    def test_landing_lanes_accounts_for_provision_even_when_the_gate_runs_it(self):
         from queuekeeper import merge_queue
         lanes = {name: {"command": ["true"], "timeout": 60} for name in ("lint", "format", "provision", "gate")}
         for queue in ({"preflight": ["format", "lint"]}, {"preflight": []}):
             with self.subTest(queue=queue):
                 project = {"name": "p", "lanes": lanes, "queue": queue}
-                # What follows the gate is what a docs-only batch runs, which lanes_of leaves out.
                 landing = list(config.landing_lanes(lanes, queue))
-                self.assertEqual(landing[:landing.index("gate") + 1], merge_queue.lanes_of(project))
+                # Validation counts every lane a landing can run. A normal gate provisions its own checkout.
+                before_docs = landing[:landing.index("gate") + 1]
+                self.assertEqual([lane for lane in before_docs if lane != "provision"],
+                                 merge_queue.lanes_of(project, ["src/app.py"]))
+                self.assertEqual(before_docs, merge_queue.lanes_of(project, ["queuekeeper.json"]))
 
     def test_doctor_warns_of_a_self_lane_that_calls_eng_admit_nowhere(self):
         # BreezEPUB's script and PDFReflowLib's calibration admit their parts as these do (#200).

@@ -3919,7 +3919,7 @@ class InputRules(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(configuration.affected_by(config, path), expected)
         self.assertEqual(configuration.affected_lanes(config, ["src/a.py", "Makefile"]), ["gate"])
-        self.assertEqual(mq.lanes_of(config, ["app/x.swift"]), ["provision", "app"])
+        self.assertEqual(mq.lanes_of(config, ["app/x.swift"]), ["app"])
 
     def test_a_batch_of_paths_no_lane_names_skips_the_gate_as_unread_paths_do(self):
         config = self.config()
@@ -3928,7 +3928,9 @@ class InputRules(unittest.TestCase):
         self.assertIsNone(mq.docs_lanes(config, ["Makefile", "queuekeeper.json"]))
         self.assertTrue(mq.carried_over("Makefile", config, set()))
         self.assertFalse(mq.carried_over("src/a.py", config, set()))
-        self.assertTrue(mq.carried_by_rules("app/x.swift", config, set(), ["gate"]))
+        self.assertFalse(mq.carried_by_rules("app/x.swift", config, set(), ["gate"]))
+        without_provision = self.config({name: lane for name, lane in self.LANES.items() if name != "provision"})
+        self.assertTrue(mq.carried_by_rules("app/x.swift", without_provision, set(), ["gate"]))
         self.assertFalse(mq.carried_by_rules("queuekeeper.json", config, set(), ["gate"]))
 
     def test_a_lane_without_inputs_runs_for_every_change_and_nothing_skips_the_gate(self):
@@ -5896,17 +5898,29 @@ class LaneThatCannotStart(Fixture):
 
 
 class UnprovisionedWhereTheGateRuns(Fixture):
-    """vocaro/queuekeeper#19: the queue places each lane by itself, so its provision lane can pass on one Mac while
-    the gate runs on the other, in a checkout nothing provisioned. qk run provisions that checkout before the gate,
-    and a provision lane that fails there is that Mac's environment: the entry comes back at the retry limit."""
+    """A queue gate provisions its own checkout, and a provision failure there is the Mac's environment (#19)."""
+
+    def test_a_code_batch_provisions_the_gate_checkout_only_once(self):
+        config = self.config()
+        (self.repo / ".git/info/exclude").write_text(".build/\n")
+        steps = self.base / "steps"
+        # The gate checks the input in its own checkout, and the shared trace counts provision runs.
+        config["lanes"]["provision"] = {"command": ["python3", "-c", (
+            "from pathlib import Path; Path('.build/provisioned').touch(); "
+            f"Path({str(steps)!r}).open('a').write('provision\\n')")]}
+        config["lanes"]["gate"] = {"command": ["python3", "-c", (
+            "from pathlib import Path; assert Path('.build/provisioned').exists(); "
+            f"Path({str(steps)!r}).open('a').write('gate\\n')")], "here": "test runs in the worker checkout"}
+        self.publish(config, "Add a provision lane")
+        self.commit("fix", "fix", content="a labeled point\n")
+        [identifier] = self.add("fix")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed", said.getvalue())
+        self.assertEqual(steps.read_text(), "provision\ngate\n")
 
     def test_a_gate_whose_checkout_cannot_be_provisioned_comes_back_identifying_the_missing_environment(self):
         config = self.config()
-        # The provision lane passes as the queue's own lane, and fails before the gate, as it
-        # does on a Mac that lacks its inputs: the lane it runs before names the wait record it shares (lane_wait).
-        config["lanes"]["provision"] = {"command": ["python3", "-c", (
-            "import os, sys; print('3 required inputs missing'); "
-            "sys.exit(4 if os.environ.get('QUEUEKEEPER_LANE_WAIT', '').endswith('gate.json') else 0)")]}
+        config["lanes"]["provision"] = {"command": ["python3", "-c", "print('3 required inputs missing'); exit(4)"]}
         config["queue"]["noVerdictRuns"] = 1
         self.publish(config, "Add a provision lane")
         self.commit("fix", "fix", content="a labeled point\n")
@@ -9372,7 +9386,19 @@ class Refusals(Fixture):
         self.assertEqual(mq.lanes_of({"queue": {"lanes": ["a"]}, "lanes": {"a": {}, "gate": {}}}), ["a"])
         self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}), ["gate"])
         self.assertEqual(mq.lanes_of({"lanes": {"gate": {}, "provision": {}, "lint": {}, "docs": {}},
-                                      "queue": {"preflight": ["lint"]}}), ["lint", "provision", "gate"])
+                                      "queue": {"preflight": ["lint"]}}), ["lint", "gate"])
+
+    def test_separate_provision_stays_when_another_queue_step_can_need_it(self):
+        lanes = {"gate": {}, "provision": {}, "lint": {}, "docs": {}}
+        config = {"lanes": lanes, "queue": {"preflight": ["lint"]}}
+        self.assertEqual(mq.lanes_of(config, ["a.py", "README.md"]), ["lint", "provision", "docs", "gate"])
+        self.assertEqual(mq.lanes_of(config, ["queuekeeper.json"]), ["lint", "provision", "gate"])
+        self.assertIsNone(mq.offerable(config, mq.lanes_of(config, ["a.py"])))
+        for policy in ({"hookCoveredBy": {"provision": "checks the hook's inputs"}},
+                       {"reuseGate": {"gate": ["true"]}}, {"lanes": ["provision", "gate"]}):
+            with self.subTest(policy):
+                self.assertEqual(mq.lanes_of({**config, "queue": {**config["queue"], **policy}}, ["a.py"]),
+                                 ["lint", "provision", "gate"])
 
     def test_a_lane_named_spelling_is_no_preflight_lane_unless_listed(self):
         """vocaro/queuekeeper#69: Queuekeeper has no spelling check of its own, and a lane's name says nothing of when
@@ -9380,8 +9406,8 @@ class Refusals(Fixture):
         batch."""
         own = {"gate": {}, "provision": {}, "spelling": {}}
         self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}), ["gate"])
-        self.assertEqual(mq.lanes_of({"lanes": own}), ["provision", "gate"])
-        self.assertEqual(mq.lanes_of({"lanes": own, "queue": {"preflight": ["spelling"]}}), ["spelling", "provision", "gate"])
+        self.assertEqual(mq.lanes_of({"lanes": own}), ["gate"])
+        self.assertEqual(mq.lanes_of({"lanes": own, "queue": {"preflight": ["spelling"]}}), ["spelling", "gate"])
         self.assertEqual(mq.ungated_lanes({"lanes": own}), [])
         self.assertEqual(mq.ungated_lanes({"lanes": own, "queue": {"preflight": ["spelling"]}}), ["spelling"])
         declared = {"paths": {"doc/": "no code lane reads it"}, "defaults": False}
