@@ -728,6 +728,9 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   `qk queue status` and `qk admissions now`; a copy expires 15 seconds after its last observation.
   The retained receipt's `samplingGapSamples` counts samples invalidated by either clock moving
   backward or advancing by more than three sampling intervals, even if the sample was also unreadable.
+  The receipt also counts unavailable CPU readings by cause under `cpuUnavailableSamples` and
+  keeps the latest failure under `lastCpuUnavailable`, with the requested identities, elapsed time
+  and bounded process-list evidence. The live observation leaves these diagnostics in the receipt.
   Stopping rechecks output and CPU, uses the supervisor's TERM and KILL, and reports `Stalled` as
   unmeasured only after the owned tree has ended.
 

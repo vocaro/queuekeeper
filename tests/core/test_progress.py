@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import host_isolation
 from host_isolation import stretched
-from queuekeeper import cli, config, lane_results, parallel, processes, progress, resources
+from queuekeeper import cli, config, lane_progress, lane_results, parallel, processes, progress, resources
 
 
 class QuietTests(unittest.TestCase):
@@ -59,6 +59,27 @@ class CpuTests(unittest.TestCase):
                 self.assertIsNone(progress.cpu({123: "birth"}))
         self.assertIsNone(progress.cpu({}))
 
+    def test_unavailable_cpu_distinguishes_missing_processes_from_bad_listings(self):
+        birth = "Tue Nov 10 12:30:00 2026"
+        row = f"123 {birth} 00:01.25\n"
+        cases = (
+            ({}, None, "no-identities"),
+            ({123: birth}, subprocess.CompletedProcess([], 1, "", ""), "missing-identity"),
+            ({123: birth, 124: birth}, subprocess.CompletedProcess([], 0, row, ""), "missing-identity"),
+            ({123: "old birth"}, subprocess.CompletedProcess([], 0, row, ""), "changed-identity"),
+            ({123: birth}, subprocess.CompletedProcess([], 0, row.replace("00:01.25", "bad"), ""), "malformed-output"),
+            ({123: birth}, subprocess.CompletedProcess([], 1, "", "denied"), "process-list-failed"),
+            ({123: birth}, OSError("ps unavailable"), "process-list-failed"),
+            ({123: birth}, subprocess.TimeoutExpired("ps", 1), "process-list-timeout"),
+        )
+        for identities, result, expected in cases:
+            options = {"side_effect": result} if isinstance(result, Exception) else {"return_value": result}
+            reasons = []
+            with self.subTest(result=result), patch.object(progress.subprocess, "run", **options) as run:
+                self.assertIsNone(progress.cpu(identities, unavailable=lambda reason, _evidence: reasons.append(reason)))
+                self.assertEqual(reasons, [expected])
+                self.assertEqual(run.call_count, bool(identities))
+
     def test_real_ps_has_an_independent_positive_control(self):
         birth = processes.snapshot()[os.getpid()][2]
         found = progress.cpu({os.getpid(): " ".join(birth.split())})
@@ -77,7 +98,7 @@ class MonitorTests(unittest.TestCase):
                 monitor = progress.Monitor({"seconds": 1200, "action": "stop", "primaryControl": True},
                                            log, Path(directory) / "progress.json")
                 used = [0]
-                def readings(identities):
+                def readings(identities, *, unavailable=None):
                     self.assertEqual(identities, {2: "worker-start"})
                     return {2: ("worker-start", used[0])}
                 with patch.object(progress, "cpu", side_effect=readings), \
@@ -103,7 +124,7 @@ class MonitorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             log, status, sibling = [Path(directory) / name for name in ("run.log", "progress.json", "sibling.log")]
             log.touch()
-            readings = lambda ids: {pid: (start, 0) for pid, start in ids.items()} if ids else None
+            readings = lambda ids, **_: {pid: (start, 0) for pid, start in ids.items()} if ids else None
             for action in (None, "stop"):
                 settings = {"seconds": 2, **({"action": action} if action else {})}
                 monitor = progress.Monitor(settings, log, status)
@@ -132,6 +153,37 @@ class MonitorTests(unittest.TestCase):
                             patch.object(progress.time, "time", return_value=moment):
                         self.assertIsNone(monitor.observe({1: "birth"}))
             self.assertEqual(monitor.last["state"], "unobservable")
+
+    def test_cpu_failures_reset_coverage_and_retain_bounded_evidence_only_in_the_receipt(self):
+        birth = "Tue Nov 10 12:30:00 2026"
+        read = subprocess.CompletedProcess([], 0, f"123 {birth} 00:01.25\n", "")
+        denied = subprocess.CompletedProcess([], 1, "", "permission denied")
+        timeout = subprocess.TimeoutExpired("ps", 1, stderr=b"x" * 2048 + b"private tail")
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "run.log"
+            log.touch()
+            live = Path(directory) / "live.json"
+            monitor = progress.Monitor({"seconds": 1, "action": "stop"}, log, None)
+            monitor.live_paths = [live]
+            with patch.object(progress.subprocess, "run", side_effect=[read, denied, timeout, read]), \
+                    patch.object(lane_progress, "publish") as publish:
+                for moment in range(4):
+                    with patch.object(progress.time, "monotonic", return_value=moment), \
+                            patch.object(progress.time, "time", return_value=moment):
+                        identities = {123: birth, 124: birth} if moment == 2 else {123: birth}
+                        self.assertIsNone(monitor.observe(identities))
+                monitor.finish("exit-0")
+                for args in publish.call_args_list:
+                    self.assertNotIn("cpuUnavailableSamples", args.args[0])
+                    self.assertNotIn("lastCpuUnavailable", args.args[0])
+            retained = json.loads(monitor.status.read_text())
+            self.assertEqual(retained["cpuUnavailableSamples"], {"process-list-failed": 1, "process-list-timeout": 1})
+            self.assertEqual(retained["unobservableSamples"], 2)
+            self.assertEqual(retained["observedSeconds"], 0)
+            evidence = retained["lastCpuUnavailable"]
+            self.assertEqual(evidence["reason"], "process-list-timeout")
+            self.assertEqual(evidence["requested"], [{"pid": 123, "start": birth}, {"pid": 124, "start": birth}])
+            self.assertEqual(evidence["stderr"], "x" * progress.CPU_DIAGNOSTIC_LIMIT + " [truncated]")
 
     def test_the_final_recheck_can_observe_progress_and_withdraw_a_stop(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -218,7 +270,7 @@ class LaneTests(unittest.TestCase):
             quick = {"command": [sys.executable, "-c", "print('Ran 1 test')"]}
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "test", "lanes": {
                 "hung": hung, "quick": quick, "both": {"parallel": ["hung", "quick"]}}}))
-            readings = lambda ids: {pid: (start, 0) for pid, start in ids.items()} if ids else None
+            readings = lambda ids, **_: {pid: (start, 0) for pid, start in ids.items()} if ids else None
             with patch.object(progress, "cpu", side_effect=readings), patch.object(cli, "source_identity", return_value={}), \
                     contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
                 for lane in ("hung", "both"):
@@ -244,7 +296,7 @@ class LaneTests(unittest.TestCase):
             scripts = [("import time; time.sleep(2); print('done')", settings),
                        ("import time\nfor i in range(5): print(i, flush=True); time.sleep(.4)",
                         {**settings, "action": "stop"})]
-            readings = lambda ids: {pid: (start, 0) for pid, start in ids.items()} if ids else None
+            readings = lambda ids, **_: {pid: (start, 0) for pid, start in ids.items()} if ids else None
             with patch.object(progress, "cpu", side_effect=readings), contextlib.redirect_stderr(StringIO()):
                 for script, settings in scripts:
                     self.assertEqual(processes.run([sys.executable, "-c", script], cwd=root, log_path=root / "run.log",

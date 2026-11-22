@@ -608,7 +608,7 @@ class ProcessTests(unittest.TestCase):
             self.addCleanup(processes.stop, unrelated)
             # Fixed: the one-second quiet interval and SIGTERM grace are tested. Only begin
             # observing once the root's own handshake proves the supervisor saw both descendants.
-            def readings(identities):
+            def readings(identities, *, unavailable=None):
                 if not (here / "adopted").exists(): return None
                 return {pid: (start, 0) for pid, start in identities.items()}
             with patch.object(progress, "cpu", side_effect=readings):
@@ -641,7 +641,7 @@ class ProcessTests(unittest.TestCase):
                 monitor = progress.Monitor({"seconds": 1, "action": "stop", "primaryControl": primary},
                                            log, here / "progress.json")
                 seen, ticks = [], [0]
-                def readings(identities):
+                def readings(identities, *, unavailable=None):
                     if not (here / "adopted").exists(): return None
                     ticks[0] += 1
                     root, descendant, *_ = map(int, (here / "children").read_text().split())

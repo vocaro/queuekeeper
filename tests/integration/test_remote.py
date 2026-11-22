@@ -3658,7 +3658,8 @@ class RemoteTests(unittest.TestCase):
         # remote config forwarding, stopping, admission settlement and copying back typed results.
         sampler = self.toolkit / "src/python/queuekeeper/progress.py"
         with sampler.open("a") as output:
-            output.write("\ndef cpu(identities):\n    return {pid: (start, 0) for pid, start in identities.items()} "
+            output.write("\ndef cpu(identities, *, unavailable=None):\n"
+                         "    return {pid: (start, 0) for pid, start in identities.items()} "
                          "if identities else None\n")
         commit_all(self.toolkit)
         settings = json.loads((self.project / "queuekeeper.json").read_text())

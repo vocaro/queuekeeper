@@ -9,31 +9,65 @@ import time
 # A cadence, not a stopping bound. Three missed cadences invalidate the quiet interval; no
 # conclusion about idleness is made across a host sleep or a delayed/unavailable observation.
 INTERVAL = 1.0
+CPU_DIAGNOSTIC_LIMIT = 1024
 
 
-def cpu(identities):
+def diagnostic_text(value):
+    if not value: return ""
+    prefix = value[:CPU_DIAGNOSTIC_LIMIT]
+    if isinstance(prefix, bytes): prefix = prefix.decode(errors="replace")
+    return prefix + (" [truncated]" if len(value) > CPU_DIAGNOSTIC_LIMIT else "")
+
+
+def cpu(identities, *, unavailable=None):
     """Cumulative CPU readings only for these exact PID/start identities; None if any is unreadable."""
-    if not identities: return None
+    began = time.monotonic() if unavailable is not None else None
+
+    def failed(reason, **evidence):
+        if unavailable is not None:
+            unavailable(reason, {"elapsedSeconds": time.monotonic() - began,
+                                 "requested": [{"pid": pid, "start": start} for pid, start in sorted(identities.items())],
+                                 **evidence})
+        return None
+
+    if not identities: return failed("no-identities")
     try:
         listed = subprocess.run(["ps", "-o", "pid=,lstart=,time=", "-p", ",".join(map(str, sorted(identities)))],
                                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=INTERVAL)
-        if listed.returncode: return None
-        found = {}
-        for line in listed.stdout.splitlines():
-            parts = line.split()
-            if len(parts) != 7: return None
-            pid, start, used = int(parts[0]), " ".join(parts[1:6]), parts[6]
-            if identities.get(pid) != start: return None
+    except subprocess.TimeoutExpired as error:
+        return failed("process-list-timeout", stdout=diagnostic_text(error.stdout), stderr=diagnostic_text(error.stderr))
+    except OSError as error:
+        return failed("process-list-failed", error=diagnostic_text(str(error)))
+    except ValueError as error:
+        return failed("malformed-output", error=diagnostic_text(str(error)))
+    if listed.returncode:
+        # On macOS a valid selection with no live PIDs exits 1 without output on either stream.
+        reason = ("missing-identity" if listed.returncode == 1 and not listed.stdout and not listed.stderr
+                  else "process-list-failed")
+        return failed(reason, returncode=listed.returncode, stdout=diagnostic_text(listed.stdout),
+                      stderr=diagnostic_text(listed.stderr))
+    found = {}
+    for line in listed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 7: return failed("malformed-output", row=diagnostic_text(line))
+        try:
+            pid = int(parts[0])
+            start = " ".join(parts[1:6])
+            if pid not in identities: return failed("malformed-output", row=diagnostic_text(line))
+            if identities[pid] != start:
+                return failed("changed-identity", pid=pid, observedStart=diagnostic_text(start))
             # ps uses MM:SS.hh, HH:MM:SS, and optionally a leading day count.
-            days, separator, clock = used.partition("-")
+            days, separator, clock = parts[6].partition("-")
             seconds = 0
-            for component in (clock if separator else used).split(":"):
+            for component in (clock if separator else parts[6]).split(":"):
                 seconds = seconds * 60 + float(component)
             if separator: seconds += float(days) * 86400
             found[pid] = (start, seconds)
-        return found if found.keys() == identities.keys() else None
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return None
+        except ValueError:
+            return failed("malformed-output", row=diagnostic_text(line))
+    if found.keys() != identities.keys():
+        return failed("missing-identity", missingPids=sorted(identities.keys() - found.keys()))
+    return found
 
 
 class Quiet:
@@ -62,6 +96,7 @@ class Monitor:
         self.began = time.time()
         self.maximum, self.samples, self.unobservable = 0, 0, 0
         self.sampling_gaps = 0
+        self.cpu_unavailable_samples, self.last_cpu_unavailable = {}, None
         self.write_error = None
         from . import lane_progress
         self.live_paths = lane_progress.destinations(self.run, self.status)
@@ -75,7 +110,7 @@ class Monitor:
         if not force and now < self.next: return None
         self.next = now + INTERVAL
         work = {pid: " ".join(start.split()) for pid, start in identities.items() if pid not in excluded}
-        readings = cpu(work)
+        readings = cpu(work, unavailable=self.record_cpu_unavailable)
         try:
             stat = self.log.stat()
             output = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
@@ -136,11 +171,17 @@ class Monitor:
             self.warned = True
         return detail if self.last["action"] == "stop" else None
 
+    def record_cpu_unavailable(self, reason, evidence):
+        self.cpu_unavailable_samples[reason] = self.cpu_unavailable_samples.get(reason, 0) + 1
+        self.last_cpu_unavailable = {"reason": reason, "observedAt": time.time(), **evidence}
+
     def write(self):
         self.status.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.status.with_name(self.status.name + ".tmp-" + self.run)
         try:
-            retained = {**self.last, "samplingGapSamples": self.sampling_gaps}
+            retained = {**self.last, "samplingGapSamples": self.sampling_gaps,
+                        "cpuUnavailableSamples": self.cpu_unavailable_samples}
+            if self.last_cpu_unavailable is not None: retained["lastCpuUnavailable"] = self.last_cpu_unavailable
             temporary.write_text(json.dumps(retained, indent=2) + "\n")
             temporary.replace(self.status)
         except OSError:
