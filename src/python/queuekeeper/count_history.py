@@ -103,8 +103,15 @@ def baseline(root, store, lane, mac, commit, here, group=None):
     recorded_lane = group or lane
     for older in below(root, commit):
         path = Path(store) / older / f"{recorded_lane}.json"
-        try: kept = json.loads(path.read_text())
-        except (OSError, ValueError): continue
+        try:
+            try:
+                kept = json.loads(path.read_text())
+            except FileNotFoundError:
+                # A verified local pass may have satisfied the lane on this exact landing tree.
+                path = path.parent / "reused" / path.name
+                kept = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
         if not passing(kept, older, recorded_lane, here): continue
         inner = lane_receipt(kept)
         tests = inner.get("tests") if isinstance(inner.get("tests"), dict) else {}

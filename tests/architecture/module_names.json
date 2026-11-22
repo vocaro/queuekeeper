@@ -14,6 +14,7 @@
     "queuekeeper.events",
     "queuekeeper.farm",
     "queuekeeper.forwarding",
+    "queuekeeper.gate_reuse",
     "queuekeeper.git_hooks",
     "queuekeeper.git_state",
     "queuekeeper.health",

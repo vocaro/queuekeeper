@@ -16,7 +16,7 @@ import sys
 import time
 import traceback
 
-from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
+from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, gate_reuse, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
@@ -2030,7 +2030,17 @@ def perform(argv, report):
                     sandbox.settings(name, config["lanes"][name]) for name in group) else None
                 try:
                     with resources.child_requests(), plugins.around_run(commands, tree), sandbox.watching(watch):
-                        try: return work()
+                        reusable = (whole and receipt["project"].get("workingChangesSHA256") == remote.CLEAN
+                                    and receipt["toolkit"].get("workingChangesSHA256") == remote.CLEAN
+                                    and not (receipt.get("siblings") or receipt.get("policy")
+                                             or os.environ.get(remote.DISPATCHER)))
+                        evidence = gate_reuse.inputs(tree, config, args.lane, os.environ) if reusable else None
+                        try:
+                            status = work()
+                            if status == 0 and evidence and evidence == gate_reuse.inputs(tree, config, args.lane,
+                                                                                        os.environ):
+                                receipt["gateInputs"] = evidence
+                            return status
                         finally:
                             if watch is not None: sandbox.observed_group(receipt, watch, directory / "lanes")
                 finally:

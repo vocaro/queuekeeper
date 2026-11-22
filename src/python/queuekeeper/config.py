@@ -798,9 +798,9 @@ def merge_queue(queue, lanes):
         unread_retired(queue)
         affected_retired(queue)
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOverChecks", "hookCoveredBy", "unread",
-                                                    "noVerdictRuns", "followLandings", "preflight", "fullRun", "addOnlyJson"}:
+                                                    "noVerdictRuns", "followLandings", "preflight", "fullRun", "addOnlyJson", "reuseGate"}:
         raise ValueError("queue supports only lanes, unread, carryOverChecks, hookCoveredBy, noVerdictRuns, "
-                         "followLandings, preflight, fullRun and addOnlyJson")
+                         "followLandings, preflight, fullRun, addOnlyJson and reuseGate")
     added = queue.get("addOnlyJson", {})
     if not isinstance(added, dict) or any(not isinstance(path, str) or not ADD_ONLY_JSON_PATH.fullmatch(path)
                                          or not isinstance(keys, list) or any(not isinstance(key, str) for key in keys)
@@ -834,6 +834,13 @@ def merge_queue(queue, lanes):
     named = queue.get("lanes", [])
     if not isinstance(named, list) or len(set(map(str, named))) != len(named) or any(name not in lanes for name in named):
         raise ValueError("queue.lanes must list distinct configured lanes")
+    reuse = queue.get("reuseGate", {})
+    if not isinstance(reuse, dict) or any(
+        lane not in lanes or lane not in (named or ["gate"]) or lane == PROVISION
+        or not isinstance(probe, list) or not probe or any(not isinstance(word, str) or not word for word in probe)
+        for lane, probe in reuse.items()
+    ):
+        raise ValueError("queue.reuseGate maps configured gate lanes to nonempty input-probe commands (argv lists)")
     if "hookCoveredBy" in queue:
         covering = queue["hookCoveredBy"]
         passed = {*preflight({"lanes": lanes, "queue": queue}), PROVISION, *(named or ["gate"])} & set(lanes)

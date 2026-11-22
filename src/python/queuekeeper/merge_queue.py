@@ -59,7 +59,7 @@ from xml.etree import ElementTree
 
 from . import budgets, disk, plugins, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
-from . import add_only_json, events, landed_cleanup, pre_push, recovery, restartable, worktree_ownership
+from . import add_only_json, events, gate_reuse, landed_cleanup, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
@@ -84,7 +84,7 @@ PUBLICATION_UNVERIFIED = "publication-unverified"
 # What an entry's record gives the event of its final state (Queue.settle), where it has them. The tip lets a reader,
 # such as health.came_back, count one commit added again as one (vocaro/queuekeeper#219).
 EVENT_FIELDS = ("tip", "why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated",
-                "partialGate", "conflictWith")
+                "partialGate", "reusedGates", "conflictWith")
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
@@ -762,7 +762,7 @@ def behind_main_config(root, tip, said):
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
 # paths that skip the gate, as each gate lane's inputs do too (as_batch), and the preflight lanes, which can be none. A batch whose lanes the queue runs, because main
 # names none yet, gives none of them (#10, vocaro/queuekeeper#69).
-MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "fullRun", "addOnlyJson")
+MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "fullRun", "addOnlyJson", "reuseGate")
 
 
 def as_batch(config):
@@ -2424,6 +2424,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     queue = Queue(root)
     present = fetch_main(root, say=lambda words: print(f"queue: {words}", file=sys.stderr))
     tip = text(root, "rev-parse", "--verify", f"{reference}^{{commit}}")
+    submitted_tip = tip
     if not present:
         config = first_config(root, tip, no_gate)
         print(f"queue: origin has no main yet, so this landing creates it from {tip[:12]}, gated alone by its own "
@@ -2519,6 +2520,8 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": subject, "submitted": now, "state": QUEUED,
              "directory": str(root), **resources.coding_agent(), **({"replays": replays} if merges else {}), **flags}
+    if not no_gate and (candidates := gate_reuse.candidates(root, config, submitted_tip)):
+        entry["gateCandidates"] = candidates
     with queue.locked():
         # Closed since the check above: Queue.close takes this lock, so no entry is saved once it has returned.
         closure = queue.closed()
@@ -3855,6 +3858,7 @@ class Worker:
         self.jumped = {}  # by docs entry of a round of docs entries, the older entries it went ahead of (docs_ahead)
         self.stack_retry_after = 0  # monotonic time before which this round does not retry a declined stack
         self.parallel_prefix = set()  # a split whose older entries still need to settle before splitting again
+        self.reused_gates = {}
         self.gating = ()  # the IDs of the entries integrate last put on top, which the gate tests (Removal)
         self.withdrawn = []  # those of them that left the queue, which stopped the last gate (gate)
         self.role = "batch"  # what its gate is in the round's account (GateWatch): the batch, or a bisect's older half
@@ -4605,7 +4609,7 @@ class Worker:
                         mac=self.ran_where.removeprefix(" on ") or None,
                         seconds=None if seconds is None else round(seconds))
 
-    def gate(self, lanes, round_name, where=(), cancel=None, quick=None, members=None):
+    def gate(self, lanes, round_name, where=(), cancel=None, quick=None, members=None, reuse=None):
         """(status of the first of lanes that did not pass or 0, its log). ran_on is another Mac that ran
         that lane, by its dispatch's record (remote.dispatched), or None when it ran here or nowhere. A pass of
         the gate lane leaves its wall time, its own work and its wait for admission apart (budgets.timed), and the
@@ -4619,7 +4623,8 @@ class Worker:
         an entry qk land --front --no-gate put first (first_ungated), and the gate returns WITHDRAWN with self.ahead
         naming it (vocaro/queuekeeper#26). lane_now is (the lane running, when it began, where), by which a gate
         stacked on this one goes to another Mac (Worker.admitted_mac). quick names the lanes run unadmitted first
-        (quick_lanes, Worker.quick): self.checks, which the round sets for its batch, unless given."""
+        (quick_lanes, Worker.quick): self.checks, which the round sets for its batch, unless given. Reuse holds the
+        main policy and submitted entries of an ordinary batch whose candidates may satisfy a whole lane."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
         self.failed_results = None
@@ -4666,6 +4671,26 @@ class Worker:
                     # The check is Queuekeeper's own command, so its exit is Queuekeeper's and leaves no receipt.
                     if status_ == lane_results.TOOL_NOT_STARTED: self.tooling = self.tool_said(log, False)
                     return status_, log
+            if (reuse and lane in reuse[0].get("queue", {}).get("reuseGate", {})
+                    and lane not in quick and lane not in (members or {})):
+                config, entries = reuse
+                toolkit = env.get(TOOLKIT_VARIABLE) or (
+                    self.checkout if (self.checkout / "src/python/queuekeeper/cli.py").is_file() else TOOLKIT_ROOT)
+                source = gate_reuse.reusable(self.checkout, config, lane, entries, tested, toolkit,
+                                             {**env, remote.QUEUE_GATE: "1",
+                                              PROJECT_CHECKOUT_VARIABLE: project_checkout(self.checkout)})
+                if source:
+                    line = f"{lane}: reused the passing local run at {source['commit'][:12]}"
+                    log.write_text(line + "\n")
+                    if status_ := self.unaltered(lane, tested, log):
+                        self.failed_lane = lane
+                        self.gate_ended(lane, round_name, status_, log)
+                        return status_, log
+                    self.ran_where = ""
+                    self.reused_gates[lane] = source
+                    self.say(line)
+                    self.gate_ended(lane, round_name, 0, log)
+                    continue
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
             placed = tuple(where)
@@ -5221,6 +5246,7 @@ class Worker:
         unsure = False
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
+        if covered and self.reused_gates.keys() & covered.keys(): covered = None
         # A lane that covers the hook covers it only when it ran: the lanes' inputs may have left it out.
         # Nor does a lane group cover it of which only some lanes ran.
         partly = group_members(config, lanes_of(config, changed), changed) if covered and not docs and not ungated else {}
@@ -5236,7 +5262,7 @@ class Worker:
             if landed:
                 self.say(f"origin/main holds {landed['head'][:12]}, pushed before its answer came: it landed")
                 self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated, self.measured,
-                                   partial=partial)
+                                   partial=partial, reused=self.reused_gates)
                 return LANDED
             # An earlier push of some of the batch, whose answer never came, may have landed since (reconcile).
             kept = [current for entry in batch if (current := self.queue.read(entry["id"])) and current.get("pushedBefore")]
@@ -5244,6 +5270,9 @@ class Worker:
                 self.say("an earlier push of part of the batch landed before this one: the rest gate again")
                 return QUEUED
             if git(self.checkout, "merge-base", "--is-ancestor", MAIN, head).returncode:
+                if self.reused_gates:
+                    self.say("main moved after receipt reuse: gating the new landing candidate")
+                    return QUEUED
                 carried = self.carry(config, batch, base, head, ran, group_members(config, ran, changed))
                 if carried is None: return QUEUED
                 base, head = carried
@@ -5276,7 +5305,8 @@ class Worker:
                 "batch": [entry["id"] for entry in batch], "attempts": attempts, "gatedOn": gated_on,
                 **({"docsOnly": docs} if docs else {}), **({"docsNamed": named} if named else {}),
                 **({"ungated": ungated} if ungated else {}), **({"gate": self.measured} if self.measured else {}),
-                **({"partialGate": partial} if partial else {})}
+                **({"partialGate": partial} if partial else {}),
+                **({"reusedGates": self.reused_gates} if self.reused_gates else {})}
             started, retrying = self.publication_callbacks(batch, marker)
             # A connection that dropped pushes again here, without running the hook again.
             try:
@@ -5291,7 +5321,8 @@ class Worker:
                 git(self.checkout, *FETCH)
                 self.say(f"pushed {head[:12]}" + (", landed without the gate, which the next gate on main covers"
                                                   if ungated else ""))
-                self.settle_pushed(batch, base, head, gated_on, docs, named, ungated, self.measured, partial=partial)
+                self.settle_pushed(batch, base, head, gated_on, docs, named, ungated, self.measured,
+                                   partial=partial, reused=self.reused_gates)
                 return LANDED
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
@@ -5307,7 +5338,7 @@ class Worker:
                                        f"rejected the push: {error}") from error
                 if landed := self.landed_attempt(attempts):
                     self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated,
-                                       self.measured, reconciled=True, partial=partial)
+                                       self.measured, reconciled=True, partial=partial, reused=self.reused_gates)
                     return LANDED
                 if kept and self.settle_kept(kept): return QUEUED
                 return self.rejected_push(batch, head, pushed)
@@ -5319,7 +5350,7 @@ class Worker:
                                f"answer: {said or 'no output'}")
         return QUEUED
 
-    def settle_pushed(self, batch, base, head, gated_on, docs, named, ungated, gate, reconciled=False, partial=None):
+    def settle_pushed(self, batch, base, head, gated_on, docs, named, ungated, gate, reconciled=False, partial=None, reused=None):
         """Settle batch as landed by head, pushed on base: each entry its own commit (landed), the push's event,
         the app kept and the shared checkout followed, as after any landing. reconciled says the push's answer
         never came, and a later fetch found head on origin/main (reconcile)."""
@@ -5334,6 +5365,7 @@ class Worker:
                               **({"docsNamed": named} if named else {}),
                               **({"ungated": ungated} if ungated else {}),
                               **({"partialGate": partial} if partial else {}),
+                              **({"reusedGates": reused} if reused else {}),
                               **({"gate": gate} if gate and not docs else {}),
                               **({} if docs or ungated else {"gatedOn": gated_on}))
         if not docs and not ungated: self.keep_app(head)
@@ -5431,7 +5463,7 @@ class Worker:
                      f"{ids} landed")
             self.settle_pushed(group, attempt["base"], attempt["head"], marker.get("gatedOn"), marker.get("docsOnly"),
                       marker.get("docsNamed"), marker.get("ungated"), marker.get("gate"), reconciled=True,
-                      partial=marker.get("partialGate"))
+                      partial=marker.get("partialGate"), reused=marker.get("reusedGates"))
             landed = True
         return landed
 
@@ -6416,6 +6448,7 @@ class Worker:
         if not batch: return False
         if not self.limit: self.bisect_landed = None
         self.early = None
+        self.reused_gates = {}
         passed = [entry for entry in batch if entry["state"] == PASSED] if not self.stacked else []
         if not fetch_main(queue.main_checkout, self.say): return self.first_landing(batch[0])
         self.prepare()
@@ -6502,8 +6535,9 @@ class Worker:
         else:
             self.lane_now = None
             split = {"parallel": parallel} if parallel else {}
+            reuse = {"reuse": (config, applied)} if any(entry.get("gateCandidates") for entry in applied) else {}
             result, log = self.watched(self, config, lanes, base, head, applied,
-                                       lambda: self.gate(lanes, round_name, **only), **split)
+                                       lambda: self.gate(lanes, round_name, **reuse, **only), **split)
         self.prune()
         if not beside:
             if self.back_in_line(applied, result):
@@ -7010,6 +7044,11 @@ class Worker:
         current = [queue.read(entry["id"]) for entry in applied]
         if any(entry is None or entry["state"] not in WAITING for entry in current):
             self.say("an entry was removed during the run: gating what is left")
+            queue.mark(applied, QUEUED)
+            return QUEUED
+        if flakes and runner.reused_gates:
+            # A recorded flake can change commit metadata. Rerun the whole gate before using this recovery path.
+            for entry in applied: queue.record(entry, gateCandidates={})
             queue.mark(applied, QUEUED)
             return QUEUED
         if ungated: head = runner.mark_ungated(ungated, base)
@@ -7713,6 +7752,7 @@ class Worker:
         if flakes: verdict["flakes"] = flakes
         if self.alone: verdict["alone"] = True
         if self.measured: verdict["gate"] = self.measured
+        if self.reused_gates: verdict["reusedGates"] = self.reused_gates
         for entry in batch: self.queue.record(entry, state=PASSED, passed=verdict)
         self.queue.emit("batch.passed", head=head, base=base, entries=verdict["batch"])
 
@@ -7734,6 +7774,7 @@ class Worker:
         flakes = verdict.get("flakes")
         config = self.settings(base, head)
         self.measured = verdict.get("gate")
+        self.reused_gates = verdict.get("reusedGates", {})
         self.alone = bool(verdict.get("alone"))
         self.say(f"{len(batch)} entr{'y' if len(batch) == 1 else 'ies'} passed at {head[:12]} on {base[:12]}: "
                  "pushing without gating again")

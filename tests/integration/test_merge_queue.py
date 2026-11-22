@@ -107,6 +107,147 @@ class EntryIdentifiers(Fixture):
         self.assertNotIn("agent", self.state(second))
 
 
+class GateReceiptReuse(Fixture):
+    def setUp(self):
+        super().setUp()
+        (self.repo / ".git/info/exclude").write_text(".build/\n")
+        self.inputs = self.base / "gate-inputs"
+        self.inputs.write_text("toolchain 1")
+        self.landing_config = self.config()
+        self.landing_config["queue"]["reuseGate"] = {"gate": ["/bin/cat", str(self.inputs)]}
+        self.publish(self.landing_config)
+
+    def local_pass(self, *arguments):
+        return run(self.repo, sys.executable, "scripts/qk", "run", "--here", "gate", *arguments)
+
+    def receipt_path(self, commit):
+        return mq.remote.store(self.repo) / commit / "gate.json"
+
+    def land(self, branch):
+        identifier, = self.add(branch)
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        state = self.state(identifier)
+        self.assertEqual(state["state"], "landed", said.getvalue())
+        return state, said.getvalue()
+
+    def test_a_verified_lane_is_found_by_tip_and_only_the_other_lane_runs(self):
+        other = self.base / "other-gates"
+        self.landing_config["lanes"]["integration"] = {
+            "command": ["python3", "lane.py", str(other), str(self.base / "other-status")]}
+        self.landing_config["queue"]["lanes"] = ["gate", "integration"]
+        self.publish(self.landing_config)
+        commit = self.commit("feature", "feature")
+        self.local_pass()
+        with patch.dict(os.environ, {"GIT_COMMITTER_DATE": "2025-01-02T00:00:00+0000"}):
+            state, said = self.land("feature")
+        self.assertNotEqual(state["landedAs"], commit)
+        self.assertEqual(state["gateCandidates"]["gate"]["commit"], commit)
+        self.assertEqual(state["reusedGates"], state["gateCandidates"])
+        self.assertEqual(agent_results.entry_result(mq.Queue(self.repo), state)["reusedGates"], state["reusedGates"])
+        self.assertIn("gate: reused the passing local run", said)
+        self.assertEqual((self.gates(), other.read_text()), (1, "x"))
+
+    def test_changed_execution_inputs_run_the_gate_normally(self):
+        self.commit("feature", "feature")
+        self.local_pass()
+        self.inputs.write_text("toolchain 2")
+        state, _ = self.land("feature")
+        self.assertIn("gateCandidates", state)
+        self.assertNotIn("reusedGates", state)
+        self.assertEqual(self.gates(), 2)
+
+    def test_missing_probe_does_not_stop_normal_gate(self):
+        self.commit("feature", "feature")
+        self.local_pass()
+        self.inputs.unlink()
+        state, _ = self.land("feature")
+        self.assertNotIn("reusedGates", state)
+        self.assertEqual(self.gates(), 2)
+
+    def test_receipt_replaced_after_submission_runs_the_gate_normally(self):
+        commit = self.commit("feature", "feature")
+        self.local_pass()
+        identifier, = self.add("feature")
+        path = self.receipt_path(commit)
+        saved = json.loads(path.read_text())
+        saved["checkout"] = "a different run"
+        path.write_text(json.dumps(saved))
+        self.work()
+        state = self.state(identifier)
+        self.assertEqual(state["state"], "landed")
+        self.assertNotIn("reusedGates", state)
+        self.assertEqual(self.gates(), 2)
+
+    def test_a_different_batch_tree_runs_the_gate_normally(self):
+        self.commit("feature", "feature")
+        self.local_pass()
+        self.commit("another", "another")
+        run(self.repo, "git", "push", "origin", "HEAD:main")
+        state, _ = self.land("feature")
+        self.assertIn("gateCandidates", state)
+        self.assertNotIn("reusedGates", state)
+        self.assertEqual(self.gates(), 2)
+
+    def test_a_whole_group_can_reuse_its_member_passes(self):
+        self.landing_config["lanes"]["member"] = self.landing_config["lanes"]["gate"]
+        self.landing_config["lanes"]["gate"] = {"parallel": ["member"]}
+        self.publish(self.landing_config)
+        self.commit("feature", "feature")
+        self.local_pass()
+        state, _ = self.land("feature")
+        self.assertIn("gate", state["reusedGates"])
+        self.assertEqual(self.gates(), 1)
+
+    def test_a_reused_pass_at_a_new_commit_supplies_counts_to_future_runs(self):
+        self.landing_config["lanes"]["gate"]["command"] = [
+            "python3", "-c", 'print("Ran 3 tests in 0.001s\\n\\nOK")']
+        self.publish(self.landing_config)
+        commit = self.commit("feature", "feature")
+        self.local_pass()
+        with patch.dict(os.environ, {"GIT_COMMITTER_DATE": "2025-01-02T00:00:00+0000"}):
+            state, _ = self.land("feature")
+        landed = state["landedAs"]
+        self.assertNotEqual(landed, commit)
+        self.assertIn("gate", state["reusedGates"])
+        baseline = cli.count_history.baseline(self.repo, mq.remote.store(self.repo), "gate",
+                                              offload_host.mac_name(), landed, mq.remote.HERE)
+        self.assertEqual((baseline.commit, baseline.executed), (landed, 3))
+        self.assertFalse(self.receipt_path(landed).exists())
+
+    def test_the_current_count_floor_can_reject_a_passing_receipt(self):
+        command = self.landing_config["lanes"]["gate"]["command"]
+        command[:] = ["python3", "-c", 'import os; print("Ran %s tests in 0.001s\\n\\nOK" % os.environ["FIXTURE_COUNT"])']
+        self.publish(self.landing_config)
+        self.commit("feature", "feature")
+        with patch.dict(os.environ, {"FIXTURE_COUNT": "1"}):
+            self.local_pass()
+        run(self.repo, "git", "checkout", "-q", "main")
+        with patch.dict(os.environ, {"FIXTURE_COUNT": "2"}):
+            self.local_pass()
+            state, _ = self.land("feature")
+        self.assertIn("gateCandidates", state)
+        self.assertNotIn("reusedGates", state)
+
+    def test_opt_in_must_come_from_main(self):
+        self.landing_config["queue"].pop("reuseGate")
+        self.publish(self.landing_config)
+        self.landing_config["queue"]["reuseGate"] = {"gate": ["/bin/cat", str(self.inputs)]}
+        self.commit("queuekeeper.json", "feature", json.dumps(self.landing_config))
+        self.local_pass()
+        state, _ = self.land("feature")
+        self.assertNotIn("gateCandidates", state)
+        self.assertEqual(self.gates(), 2)
+
+    def test_a_partial_run_is_not_a_candidate(self):
+        self.commit("feature", "feature")
+        self.local_pass("--", str(self.base / "partial"), str(self.status))
+        state, _ = self.land("feature")
+        self.assertNotIn("gateCandidates", state)
+        self.assertNotIn("reusedGates", state)
+        self.assertEqual(self.gates(), 1)
+
+
 class Landing(Fixture):
     def test_advisory_queue_read_error_preserves_wait_status(self):
         parser = argparse.ArgumentParser()

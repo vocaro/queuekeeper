@@ -698,6 +698,38 @@ paths with their own lanes. The batch is pushed without gating again, after the 
 `qk docs check` and any `queue.carryOverChecks` pass on the rebased tree. A project with a
 `provision` lane carries over only unread paths, since provisioning sets up every gate lane.
 
+### Reusing a passing local gate
+
+A project can opt in on `main` with `queue.reuseGate`. It maps each eligible gate lane to an
+argument list for a short, read-only command that identifies that lane's execution inputs.
+For example, for a pure Python lane whose only input outside the tree is the Python installation,
+this project uses a script to identify the interpreter and its runtime:
+
+```json
+"queue": {"reuseGate": {"gate": ["python3", "tools/gate-inputs.py"]}}
+```
+
+The script prints a stable, nonempty description of the relevant inputs and exits zero. It
+runs from the project checkout, without a shell, with a ten-second limit. Include the toolchain,
+resolved dependencies, generated or ignored files, relevant environment settings, and Git
+metadata if the lane uses them. Do not print secrets or perform builds, tests, or writes. A
+probe's output is hashed in the receipt. Queuekeeper measures it before and after a local run
+and keeps the evidence only if the measurements agree.
+
+`qk land` finds whole local passes in the shared receipt store by the submitted commit. In a
+regular batch the worker can reuse a pass on the same Mac when the tested tree, Queuekeeper
+revision, lane definition and input digest match, and the recorded counts satisfy the landing
+candidate's current rules. A cherry-pick may change the commit ID while leaving the tree identical.
+The worker checks each required gate lane and runs any lane it cannot verify. This also applies
+to a missing or replaced receipt, unavailable inputs, or a group selected in part. Lanes with
+timing rules, host labels, or live screen or device requirements run normally, as do receipts
+from a run with sibling pins or a separate policy revision.
+
+Only opt in when you trust the local Queuekeeper runner and the shared Git directory it writes.
+The worker runs the other required checks normally. A reused lane does not stand in for the
+pre-push hook. If main moves and the batch needs to be prepared again, the worker gates the new
+candidate. The queue log and JSON landing result identify each reuse and its source commit.
+
 ### The pre-push hook
 
 After a gate passes, the worker runs the project's pre-push hook itself, as Git would for a push to

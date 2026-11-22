@@ -156,6 +156,7 @@ def entry_result(queue, entry):
             "resultsSummary": (entry.get("gate") or {}).get("results"),
             "docsOnly": entry.get("docsOnly"), "docsNamed": entry.get("docsNamed"), "ungated": entry.get("ungated"),
             "partialGate": entry.get("partialGate"),
+            "reusedGates": entry.get("reusedGates"),
             "publication": publication(queue, entry) if pending else None,
             "removedWhy": entry.get("removedWhy"), "confirmed": entry.get("confirmed"),
             "recovery": recovery.in_project(
@@ -215,6 +216,8 @@ def result(root, identifier, as_json=False):
     else:
         print(f"{found['state']:8} {found['id']}  {found['subject'] or ''}")
         if found["landedAs"]: print(f"landed: {found['landedAs']}")
+        for lane, source in (found["reusedGates"] or {}).items():
+            print(f"{lane}: reused the passing local run at {source['commit'][:12]}")
         if found["removedWhy"]: print(f"removed: {found['removedWhy']}")
         if found["failure"]:
             print(found["failure"]["message"] or found["failure"]["category"])

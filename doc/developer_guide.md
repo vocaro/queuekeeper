@@ -168,6 +168,13 @@ A project without `queue.preflight` has no preflight
 lanes, and no lane runs first because of its name. Where the
 checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
 
+- **Local gate receipts.** In a regular round, opted-in lanes can use a pass discovered by
+  `qk land` in the existing commit receipt store. `gate_reuse` checks that the same receipt is
+  still there, compares the landing tree and declared execution inputs, and rechecks the count
+  rules. The selected lanes run as usual whenever the worker cannot establish a match. A pass
+  reused at a new commit supplies a test-count baseline there, in a separate file beside actual
+  runs. The passed verdict and publication marker preserve the source through push recovery.
+  [Reusing a passing local gate](user_guide.md#reusing-a-passing-local-gate) describes opt-in.
 - **Short checks skip admission.** The preflight lanes and `qk docs check` run in the worker's
   checkout without admission, so seconds of checking never wait behind a whole-host gate. One that
   passes `DOCS_CHECK_LIMIT` (60 s) runs again admitted. Everything else is admitted and placed as
