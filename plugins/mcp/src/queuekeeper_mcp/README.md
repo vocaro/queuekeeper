@@ -78,11 +78,16 @@ Without `default_tools_approval_mode = "approve"`, Codex asks before each tool c
 `codex exec` under `approval_policy = "never"` fails every call with "MCP tool call requires
 approval".
 
-`tool_timeout_sec` is a hard limit, and `queue_wait`'s progress does not extend it. Codex sends
-the progress token, but when the limit passes it fails the call without cancelling it, and the
-command runs on until it finishes or the server stops. Keep `tool_timeout_sec` above the `limit`
-your agents pass to `queue_wait`, which is 600 seconds by default. Without the setting, Codex
-0.151.0 let a silent 75-second call finish.
+In Codex 0.151.0, the [default MCP tool timeout](https://github.com/openai/codex/blob/rust-v0.151.0/codex-rs/codex-mcp/src/rmcp_client.rs#L97-L98)
+is 300 seconds. Keep `tool_timeout_sec` above the `limit` your agents pass to `queue_wait`,
+which is 600 seconds by default. `queue_wait`'s progress does not extend the timeout.
+
+In `codex exec` 0.151.0, a tool timeout failed the call without sending
+`notifications/cancelled`. In the interactive terminal UI of the same version, pressing Escape
+interrupted the turn while a synthetic `queue_wait` was running. The server received neither a
+cancellation notification nor a signal, and the launcher ran to completion. A wait can therefore
+keep running until its own limit or until the server stops. The queue continues processing the
+entry independently. Call `queue_wait` with the same ID to follow it again.
 
 ## Install it as a package
 
