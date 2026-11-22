@@ -1857,20 +1857,21 @@ class NoVerdict(Fixture):
         self.assertEqual(worker.shared_timing(3, lanes({})), "")
 
     def test_no_verdict_is_retried_up_to_the_bound_and_lands_when_a_retry_passes(self):
-        for status in ("3", "75", "78"):
+        # Keep the default bound for an unmeasured lane. The other exit statuses need one
+        # no-verdict run each to prove they also retry and land on the last allowed run.
+        for status, bound in (("3", mq.NO_VERDICT_RUNS), ("75", 2), ("78", 2)):
             with self.subTest(status=status):
                 start = self.gates()
                 self.commit(f"a{status}", f"a{status}")
                 [identifier] = self.add(f"a{status}")
-                # The bound's last run passes: two runs with no verdict, and the third lands it.
-                with self.no_verdict_for(start + mq.NO_VERDICT_RUNS - 1, status), \
+                with patch.object(mq, "NO_VERDICT_RUNS", bound), self.no_verdict_for(start + bound - 1, status), \
                         contextlib.redirect_stdout(io.StringIO()) as said:
                     self.assertEqual(self.work(), 0)
-                self.assertEqual(self.gates() - start, mq.NO_VERDICT_RUNS)
+                self.assertEqual(self.gates() - start, bound)
                 self.assertEqual(self.state(identifier)["state"], "landed")
                 self.assertIsNone(mq.Queue(self.repo).held())
-                self.assertIn(f"no verdict (exit {status}), run 1 of at most 3", said.getvalue())
-                self.assertIn(f"no verdict (exit {status}), run 2 of at most 3", said.getvalue())
+                for attempt in range(1, bound):
+                    self.assertIn(f"no verdict (exit {status}), run {attempt} of at most {bound}", said.getvalue())
 
     LOCKED = ("queuekeeper: screen: locked (console user t, CGSSessionScreenIsLocked yes, IOConsoleLocked no) on this Mac "
               "(Fixture-Mac) at 01:58:02")
@@ -1928,23 +1929,23 @@ class NoVerdict(Fixture):
     def test_a_run_whose_last_reading_is_unlocked_or_that_ran_nothing_still_counts(self):
         """The negative controls: an unmeasured run whose last reading is unlocked, and a run that exits 75 or 78
         with a lock in its log, as one that waited out the overflow for an unlocked Mac does, count as before."""
+        # A bound of one distinguishes a counted run from a screen-related exemption immediately.
         screen = Path(f"{self.status}.screen")
         for status, said_screen in (("3", f"{self.LOCKED}\n{self.UNLOCKED}\n"), ("75", f"{self.LOCKED}\n"),
                                     ("78", f"{self.LOCKED}\n")):
             with self.subTest(status=status):
                 start = self.gates()
                 screen.write_text(said_screen)
-                self.status.write_text(status)
                 self.commit(f"a{status}", f"a{status}")
                 [identifier] = self.add(f"a{status}")
-                with self.commands() as ran, contextlib.redirect_stdout(io.StringIO()) as said:
+                with patch.object(mq, "NO_VERDICT_RUNS", 1), self.no_verdict_for(start + 1, status), \
+                        self.commands() as ran, contextlib.redirect_stdout(io.StringIO()) as said:
                     self.assertEqual(self.work(), 0)
-                self.assertEqual(self.gates() - start, mq.NO_VERDICT_RUNS)
+                self.assertEqual(self.gates() - start, 1)
                 self.assertEqual(self.state(identifier)["state"], "failed")
-                self.assertIn("the most queue.noVerdictRuns allows (3)", self.state(identifier)["why"])
+                self.assertIn("the most queue.noVerdictRuns allows (1)", self.state(identifier)["why"])
                 self.assertNotIn("locked screen", said.getvalue())
                 self.assertTrue(all("--unlocked-screen" not in command for command in self.lane_runs(ran)))
-        self.status.unlink()
 
     def test_the_receipts_screen_after_decides_over_the_log(self):
         """The last reading: a fresh receipt's screenAfter, which queuekeeper writes once a lane that depends on the screen
@@ -10113,9 +10114,9 @@ class FlakyReruns(Fixture):
 
     def setUp(self):
         super().setUp()
-        # A pass followed by a failure still exercises the retry loop. Most cases cover what the
-        # worker does with the result, so they need only two attempts instead of the production cap.
-        self.enterContext(patch.object(mq, "RERUNS", 2))
+        # Most cases cover what the worker does with the rerun's verdict. Tests that exercise
+        # successive attempts set their own limit.
+        self.enterContext(patch.object(mq, "RERUNS", 1))
         self.runs, self.plan = self.base / "runs", self.base / "plan"
         (self.repo / "tests").mkdir()
         (self.repo / "tests/test_flaky.py").write_text(FLAKY_MODULE.format(runs=str(self.runs), plan=str(self.plan)))
@@ -10218,6 +10219,7 @@ class FlakyReruns(Fixture):
 
     def test_the_rounds_account_names_the_failure_and_each_rerun_until_the_verdict(self):
         # A wait read the round's empty gates during reruns as a gate that had not started (vocaro/queuekeeper#41).
+        self.enterContext(patch.object(mq, "RERUNS", 2))
         self.plan.write_text("F")
         self.commit("a", "a"); self.commit("b", "b")
         self.add("a", "b")
@@ -10477,6 +10479,7 @@ class FlakyReruns(Fixture):
 
     def test_a_test_that_fails_again_alone_is_real_and_the_batch_bisects_with_nothing_recorded(self):
         # The gate fails, the first rerun passes and the second fails: real. Every run after passes.
+        self.enterContext(patch.object(mq, "RERUNS", 2))
         self.plan.write_text("F.F")
         self.commit("a", "a"); self.commit("b", "b")
         ids = self.add("a", "b")
@@ -10860,6 +10863,7 @@ class FlakyReruns(Fixture):
         self.assertEqual(tracked["test"], self.TEST)
 
     def test_a_lone_entry_whose_failure_is_real_stops_at_the_first_real_rerun(self):
+        self.enterContext(patch.object(mq, "RERUNS", 2))
         self.plan.write_text("FF")
         self.commit("docs/a.md", "a", "The wrongword\n")
         [identifier] = self.add("a")
