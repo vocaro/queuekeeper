@@ -122,14 +122,32 @@ class StretchTests(unittest.TestCase):
                 self.assertAlmostEqual(state.stretched(5), expected)
                 self.assertEqual(state.stretch_reading()["factor"], expected / 5)
 
-    def test_a_failed_transition_says_the_reading_its_bounds_used(self):
-        def timed_out(): raise subprocess.TimeoutExpired("osascript", state.WAIT)
+    def test_a_command_f5_timeout_reports_the_reading_taken_when_the_key_was_sent(self):
+        def timed_out(command, *, timeout, **_):
+            self.assertEqual(timeout, 120)
+            raise subprocess.TimeoutExpired(command, timeout)
+        lease = type("Lease", (), {"check": lambda self, restoring=False: None, "scopes": [[]]})()
+        with patch.object(state.os, "getloadavg", side_effect=[(1,) * 3, (7.45,) * 3]), \
+                patch.object(state.os, "cpu_count", return_value=10), \
+                patch.object(state.waiting, "busy_now", side_effect=[50.0, 100.0]), \
+                patch.object(state.subprocess, "run", side_effect=timed_out), \
+                self.assertRaises(state.TransitionFailed) as failed:
+            state._set(lease, False, lambda: True, state._toggle)
+        evidence = ("Command-F5 exceeded its 120s bound (stretched 24 times, by a one-minute load of 7.45 on 10 cores "
+                    "with the CPU 100% busy)")
+        self.assertIn(evidence, str(failed.exception))
+        self.assertIn(evidence, lease.scopes[-1][0])
+        self.assertNotIn("load of 1 on", str(failed.exception))
+
+    def test_a_verification_timeout_reports_its_own_reading(self):
         lease = type("Lease", (), {"check": lambda self, restoring=False: None, "scopes": [[]]})()
         with patch.object(state.os, "getloadavg", return_value=(7.45,) * 3), \
                 patch.object(state.os, "cpu_count", return_value=10), \
                 patch.object(state.waiting, "busy_now", return_value=100.0), \
+                patch.object(state.time, "monotonic", side_effect=[0, 120]), \
                 self.assertRaises(state.TransitionFailed) as failed:
-            state._set(lease, False, lambda: True, timed_out)
+            state._set(lease, False, lambda: True, lambda: None)
+        self.assertIn("VoiceOver did not reach off within 120s", str(failed.exception))
         self.assertIn("(stretched 24 times, by a one-minute load of 7.45 on 10 cores with the CPU 100% busy)",
                       str(failed.exception))
         self.assertIn("stretched 24 times", lease.scopes[-1][0])

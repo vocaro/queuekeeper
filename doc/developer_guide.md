@@ -1774,7 +1774,8 @@ Code: `queuekeeper_apple/simulators/pool.py` and `template.py`.
   Events only when the state differs, and before an ON key waits up to 20 seconds for a quitting
   VoiceOver to finish. Every bound stretches with the one-minute load per core, up to
   `state.STRETCH_LIMIT` (24) times; a load under one per core with the CPU 95% or more busy is doubted and
-  stretched fully. Errors end with the reading used, from `state.stretch_reading()`.
+  stretched fully. A Command-F5 timeout reports the reading taken just before the command. A timeout
+  waiting for VoiceOver to reach the requested state reports the reading used for that verification bound.
 - **`preserved(owner, target=None, settle=False)`** captures the state under the checked lease and
   restores it on every exit. A failed transition inside it raises `TransitionFailed`, restores under the
   same lease, and watches for `state.SETTLE` (5 seconds, stretched) so a late key is seen and undone, up

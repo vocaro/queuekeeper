@@ -132,8 +132,13 @@ def _read(public=None, running=None, *, wait=None, poll=POLL):
 
 def _toggle():
     # Stretched: on a loaded Mac a fixed 5 s timed out and System Events delivered the key later (#137).
-    subprocess.run(["osascript", "-e", 'tell application "System Events" to key code 96 using {command down}'],
-                   check=True, capture_output=True, text=True, timeout=stretched(WAIT))
+    reading = stretch_reading()
+    timeout = stretched(WAIT, reading)
+    try:
+        subprocess.run(["osascript", "-e", 'tell application "System Events" to key code 96 using {command down}'],
+                       check=True, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise UnknownState(f"Command-F5 exceeded its {timeout:g}s bound ({waiting.stretch_words(reading)})") from error
 
 
 class _Lease:
@@ -268,10 +273,9 @@ def _set(lease, desired, reader, toggle, *, restoring=False, wait=None, poll=POL
     """Reach desired with one checked Command-F5. A failure inside a preserved() scope, or while restoring,
     is the scope's to restore; only one with no scope to restore it marks the lease uncertain at once."""
     if type(desired) is not bool: raise ValueError("VoiceOver target must be on or off")
-    # The reading its bounds stretch by, taken as the transition begins, goes into its failure as the run's evidence
-    # of it (vocaro/queuekeeper#43).
-    reading = stretch_reading()
-    wait = stretched(WAIT, reading) if wait is None else wait
+    # The verification wait has its own reading. The key command takes a fresh reading when it runs (#43).
+    reading = stretch_reading() if wait is None else None
+    if reading is not None: wait = stretched(WAIT, reading)
     if _known(lease, reader, restoring=restoring) == desired: return
     if desired:
         _wait_to_enable(lease, ready or _ready_to_enable, restoring=restoring, wait=ready_wait, poll=poll)
@@ -288,10 +292,11 @@ def _set(lease, desired, reader, toggle, *, restoring=False, wait=None, poll=POL
                 # A temporary query failure while the known transition settles is bounded.
                 pass
             if time.monotonic() >= deadline:
-                raise UnknownState(f"VoiceOver did not reach {'on' if desired else 'off'} within {wait:g}s")
+                evidence = f" ({waiting.stretch_words(reading)})" if reading is not None else ""
+                raise UnknownState(f"VoiceOver did not reach {'on' if desired else 'off'} within {wait:g}s{evidence}")
             time.sleep(poll)
     except Exception as error:
-        said = f"{error} ({waiting.stretch_words(reading)})"
+        said = str(error)
         reason = f"VoiceOver transition to {'on' if desired else 'off'} was not verified: {said}"
         if restoring or lease.scopes:
             if not restoring: lease.scopes[-1].append(reason)
