@@ -1064,6 +1064,24 @@ the count to set. `qk run --expect N LANE` requires exactly N of one run ([Verif
 A gate that writes each step's output to a separate log leaves no count in its own; print the
 steps' output to the lane's output too, or the lane is held to no count.
 
+#### Correcting a group member's baseline
+
+When the owner has reviewed a count discrepancy, a passing whole standalone run of the member
+can correct the group's baseline on the Mac that ran it. Use the checkout that kept both
+receipts, with an up-to-date `origin/main`. The receipts must be for the same clean published
+revision and execution Mac. The standalone command must match the configured group member at
+that revision and select the same total, with the difference in execution accounted for by skips.
+
+```sh
+qk test-count correct GROUP MEMBER --baseline FULL_SHA --mac EXECUTION_MAC --reason "Reviewed evidence reference" --dry-run
+```
+
+Review the displayed counts and receipt paths, then repeat without `--dry-run` to record the
+correction. Queuekeeper keeps both original receipts and writes a separate audit record with
+their snapshots, hashes and the reason. The next whole gate checks the corrected count for that
+member on that Mac. A further shortfall still fails. A newer eligible group receipt takes
+precedence through the normal history lookup.
+
 ### Compiling before the tests
 
 A lane whose tests need a build first names that build in `compileFirst`:

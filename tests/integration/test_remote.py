@@ -3389,6 +3389,52 @@ class RemoteTests(unittest.TestCase):
         member = self.lane_files("suites", "ios")[1]
         self.assertEqual((member["outcome"], member["executedTests"]), ("failed", 4))
 
+    def test_a_reviewed_correction_changes_only_the_nested_groups_execution_floor(self):
+        skips = Path(self.temp.name) / "skips"
+        skips.write_text("0")
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["lanes"].update({
+            "unit": {"command": [sys.executable, "-c",
+                      f"from pathlib import Path; print('Executed 5 tests, with', Path({str(skips)!r}).read_text(), "
+                      "'tests skipped')"]},
+            "suites": {"parallel": ["unit"]},
+            "gate": {"command": ["sh", "-c", '"$0" "$QUEUEKEEPER_ROOT/bin/qk" --project . run --here suites',
+                                 sys.executable]},
+        })
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
+        first = commit_all(self.project)
+        git(self.project, "update-ref", "refs/remotes/origin/main", first)
+        status, output, error = self.qk("remote", "run", "gate")
+        self.assertEqual(status, 0, output + error)
+        store = remote.store(self.project)
+        historical = store / first / "suites.json"
+        original = historical.read_bytes()
+        mac = json.loads(original)["mac"]
+        skips.write_text("1")
+        status, output, error = self.qk("remote", "run", "unit")
+        self.assertEqual(status, 0, output + error)
+        git(self.project, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty",
+            "-m", "Candidate")
+        status, output, error = self.qk("remote", "run", "gate")
+        self.assertEqual(status, 1, output + error)
+        self.assertIn("unit executed 4 tests, 1 fewer than the 5", error)
+        command = ("test-count", "correct", "suites", "unit", "--baseline", first, "--mac", mac,
+                   "--reason", "Reviewed whole member control")
+        status, output, error = self.qk(*command, "--dry-run")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("Would record correction", output)
+        self.assertFalse((store / "count-corrections").exists())
+        status, output, error = self.qk(*command)
+        self.assertEqual(status, 0, output + error)
+        status, output, error = self.qk("remote", "run", "gate")
+        self.assertEqual(status, 0, output + error)
+        skips.write_text("2")
+        status, output, error = self.qk("remote", "run", "gate")
+        self.assertEqual(status, 1, output + error)
+        self.assertIn("unit executed 3 tests, 1 fewer than the 4", error)
+        self.assertIn("as corrected in", error)
+        self.assertEqual(historical.read_bytes(), original)
+
     def test_a_receipt_from_before_the_rename_counts_as_one_of_now(self):
         # Receipts written before vocaro-engineering#58 say another Mac's run ran on the build host.
         self.assertEqual(self.run_here("gate")[0], 0)

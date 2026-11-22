@@ -18,7 +18,7 @@ import traceback
 
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, gate_reuse, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
-from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, \
+from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, parse as parse_configuration, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
     project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -423,6 +423,34 @@ def lane_command(lane, extra=()):
     """The command a lane runs, with extra appended, as the keys plugins add to a lane make it
     (plugins.lane_command), such as the Mac desktop plugin's "display". The receipt records it so."""
     return plugins.lane_command(lane, [*lane["command"], *extra])
+
+
+def correct_test_count(root, args):
+    def member_command(revision, group, member):
+        source = count_history.git(root, "show", f"{revision}:{CONFIG_FILE}")
+        if source is None:
+            raise ValueError(f"cannot read {CONFIG_FILE} at {revision}")
+        lanes = parse_configuration(source).get("lanes", {})
+        members = lanes.get(group, {}).get("parallel", [])
+        if member not in members:
+            raise ValueError(f"{member} is not a member of {group} at {revision}")
+        lane = lanes[member]
+        if lane.get("exactTests") or lane.get("compileFirst"):
+            raise ValueError(f"{member} must use count history and run the same command alone and in {group}")
+        return members, lane_command(lane)
+
+    path, record = count_history.correction_plan(root, remote.store(root), args.group, args.member, args.baseline,
+                                                 args.mac, remote.HERE, args.reason, member_command, remote.CLEAN)
+    if not args.dry_run:
+        count_history.record_correction(path, record)
+    before, after = record["before"], record["after"]
+    print(f"{'Would record' if args.dry_run else 'Recorded'} correction for "
+          f"{args.group}/{args.member} on {args.mac} at {args.baseline}: "
+          f"{before['executed']} executed and {before['skipped']} skipped -> "
+          f"{after['executed']} executed and {after['skipped']} skipped\n"
+          f"Baseline: {record['baseline']['path']}\nEvidence: {record['evidence']['path']}\n"
+          f"Audit record: {path}\nReason: {record['reason']}")
+    return 0
 
 
 def lane_label(root, config, lane):
@@ -1488,6 +1516,15 @@ def perform(argv, report):
         "qk unittest [-s START] [-p PATTERN] [-j JOBS] [-k PATTERN] [-v] [NAME ...]; qk unittest -h for the rest. "
         "Started outside an admission it is admitted and placed first, as qk admit would run it; --unadmitted "
         "runs it with none, on this Mac")
+    test_count = commands.add_parser("test-count", help="record a reviewed correction to a group member's test count")
+    correction = test_count.add_subparsers(dest="operation", required=True).add_parser(
+        "correct", help="correct the current group member baseline using a kept whole standalone run")
+    correction.add_argument("group")
+    correction.add_argument("member")
+    correction.add_argument("--baseline", required=True, help="full published main revision of both kept receipts")
+    correction.add_argument("--mac", required=True, help="execution Mac name as written in both receipts")
+    correction.add_argument("--reason", required=True, help="reviewed reason and evidence reference")
+    correction.add_argument("--dry-run", action="store_true", help="validate and show the correction without recording it")
     commands.add_parser("timing", help="each lane's timing baseline on this Mac, its p90 over its recent passing "
         "runs, which a run warns past live, and its fail threshold: qk timing show [--json]; and qk timing stale "
         "LANE ... | --all --reason WHY, after a deliberate change to a lane's work")
@@ -1715,7 +1752,7 @@ def perform(argv, report):
         for started in plugins.HOST_COMMAND: started()
     root = args.project.resolve()
     # What a run that died left changed on this Mac, the next repairing command puts back.
-    if not (check_only or diagnosing_queue): plugins.recover()
+    if not (check_only or diagnosing_queue or args.action == "test-count"): plugins.recover()
     # What a lane's run holds until it ends, however it ends: its directory (lane_directory).
     held = contextlib.ExitStack()
     try:
@@ -1737,6 +1774,7 @@ def perform(argv, report):
         # which for its worker is a main checkout that may lag.
         if args.action == "land": return merge_queue.land(root, args, Path.cwd())
         if args.action == "queue": return merge_queue.main(root, args)
+        if args.action == "test-count": return correct_test_count(root, args)
         # The store is the repository's, named by any checkout of it, and qk disk runs this for every project.
         if args.action == "remote" and args.operation == "prune-results":
             return remote.prune_results_main(args.checkout or root, args.dry_run)

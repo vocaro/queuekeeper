@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
-from queuekeeper import count_history
+from queuekeeper import count_history, remote
 
 HERE = "this Mac"
 
@@ -178,6 +178,109 @@ class CountHistoryTests(unittest.TestCase):
     def test_counts_record_the_executed_apart_from_the_skipped(self):
         self.assertEqual(count_history.counts((10, 3)), {"executed": 7, "skipped": 3})
         self.assertIsNone(count_history.counts(None))
+
+    def correction_receipts(self, revision, ran_on="mac-a", mac="mac-a", executed=4232, skipped=92):
+        for name in ("gate", "unit"):
+            self.keep(revision, None, mac=mac, lane=name, ran_on=ran_on)
+            path = self.store / revision / f"{name}.json"
+            data = json.loads(path.read_text())
+            receipt = count_history.lane_receipt(data)
+            receipt["project"]["workingChangesSHA256"] = remote.CLEAN
+            receipt.update(toolkit={"workingChangesSHA256": remote.CLEAN}, exitStatus=0)
+            if name == "gate":
+                member = {"status": 0, "outcome": "passed", "executedTests": executed, "skippedTests": skipped}
+                receipt.update(parallel=["unit", "other"], lanes={"unit": member, "other": member})
+            else:
+                receipt.update(command=["test"], arguments=[], tests={"executed": 4226, "skipped": 98})
+            path.write_text(json.dumps(data))
+
+    def plan_correction(self, revision, mac="mac-a"):
+        return count_history.correction_plan(self.root, self.store, "gate", "unit", revision, mac, HERE,
+                                             "Reviewed evidence", lambda *_: (["unit", "other"], ["test"]),
+                                             remote.CLEAN)
+
+    def test_correction_applies_to_the_exact_member_and_mac_via_the_normal_group_judge(self):
+        first = self.commit()
+        git(self.root, "update-ref", "refs/remotes/origin/main", first)
+        self.correction_receipts(first)
+        historical = self.store / first / "gate.json"
+        original = historical.read_bytes()
+        path, record = self.plan_correction(first)
+        self.assertFalse(path.parent.exists())
+        count_history.record_correction(path, record)
+        with self.assertRaisesRegex(ValueError, "a correction already exists"):
+            count_history.record_correction(path, record)
+        self.assertEqual(historical.read_bytes(), original)
+        self.assertEqual(json.loads(path.read_bytes())["baseline"]["receipt"], json.loads(original))
+        self.assertEqual(record["evidence"]["receipt"]["result"]["receipt"]["tests"], record["after"])
+        commit = self.commit()
+        config = {"lanes": {"gate": {"parallel": ["unit", "other"]}, "unit": {}, "other": {}}}
+
+        def judge(executed, skipped):
+            inner = {"mac": "mac-a", "lanes": {
+                "unit": {"status": 0, "outcome": "passed", "executedTests": executed, "skippedTests": skipped},
+                "other": {"status": 0, "outcome": "passed", "executedTests": 4232, "skippedTests": 92}}}
+            failed = remote.group_held_to_history(self.root, config, self.store, "gate", inner, commit)
+            return failed, inner
+
+        self.assertEqual(judge(4226, 98)[0], [])
+        failed, inner = judge(4225, 99)
+        self.assertEqual(failed, ["unit"])
+        self.assertIn("1 fewer than the 4226", inner["error"])
+        self.assertIn(str(path), inner["error"])
+        self.assertEqual(count_history.baseline(self.root, self.store, "other", "mac-a", commit, HERE,
+                                                group="gate").executed, 4232)
+        self.assertEqual(count_history.baseline(self.root, self.store, "unit", "mac-b", commit, HERE,
+                                                group="gate").executed, 4232)
+        self.assertEqual(count_history.baseline(self.root, self.store, "unit", "mac-a", commit, HERE).executed, 4226)
+        another = json.loads(original)
+        another["lane"] = "another-group"
+        historical.with_name("another-group.json").write_text(json.dumps(another))
+        self.assertEqual(count_history.baseline(self.root, self.store, "unit", "mac-a", commit, HERE,
+                                                group="another-group").executed, 4232)
+        # Replacing the receipt at the same commit invalidates the correction's binding.
+        historical.write_bytes(original + b"\n")
+        self.assertEqual(judge(4226, 98)[0], ["unit"])
+        self.assertTrue(path.exists())
+        historical.write_bytes(original)
+        self.correction_receipts(commit, executed=4235)
+        git(self.root, "update-ref", "refs/remotes/origin/main", commit)
+        self.assertEqual(count_history.baseline(self.root, self.store, "unit", "mac-a", commit, HERE,
+                                                group="gate").executed, 4235)
+
+    def test_correction_refuses_incompatible_or_stale_receipts(self):
+        first = self.commit()
+        git(self.root, "update-ref", "refs/remotes/origin/main", first)
+        for changes, refused in (
+            ({"mac": "mac-b"}, "passing whole run on mac-a"),
+            ({"macId": "other-mac"}, "different execution Mac identities"),
+            ({"arguments": ["filter"]}, "passing whole run"),
+            ({"snapshot": True}, "passing whole run"),
+            ({"expect": 4226}, "passing whole run"),
+            ({"command": ["different"]}, "command must match"),
+            ({"tests": {"executed": 4225, "skipped": 98}}, "select the same total"),
+            ({"tests": {"executed": 0, "skipped": 4324}}, "select the same total"),
+        ):
+            with self.subTest(changes):
+                self.correction_receipts(first)
+                base = self.store / first
+                group = json.loads((base / "gate.json").read_bytes())
+                group["macId"] = "original-mac"
+                (base / "gate.json").write_text(json.dumps(group))
+                evidence = json.loads((base / "unit.json").read_bytes())
+                updated = count_history.lane_receipt(evidence) if changes.keys() & {"command", "tests"} else evidence
+                updated.update(changes)
+                (base / "unit.json").write_text(json.dumps(evidence))
+                with self.assertRaisesRegex(ValueError, refused):
+                    self.plan_correction(first)
+        second = self.commit()
+        self.correction_receipts(second)
+        with self.assertRaisesRegex(ValueError, "first-parent history of origin/main"):
+            self.plan_correction(second)
+        git(self.root, "update-ref", "refs/remotes/origin/main", second)
+        with self.assertRaisesRegex(ValueError, "is not the current"):
+            self.plan_correction(first)
+        self.assertFalse((self.store / "count-corrections").exists())
 
 
 if __name__ == "__main__":
