@@ -2389,8 +2389,9 @@ class ResourceTests(unittest.TestCase):
 
     def test_a_model_run_inside_heavy_admission_is_refused_and_inside_model_or_exclusive_admission_reuses_it(self):
         guard = Path(os.environ["QUEUEKEEPER_GATE_LOCK_FILE"] + ".warm-push-guard")
+        advice = 'Request it in the outer admission with `qk admit --model` or set "model": true on the outer lane'
         with contextlib.redirect_stderr(StringIO()), resources.Admission("heavy", timeout=0):
-            with self.assertRaisesRegex(RuntimeError, "on-device model"):
+            with self.assertRaisesRegex(RuntimeError, re.escape(advice)):
                 with resources.Admission("generate", model=True, timeout=0): self.fail("admitted without the model")
             # Nor can a heavy owner claim the model in its token.
             token = json.loads(os.environ[resources.TOKEN])

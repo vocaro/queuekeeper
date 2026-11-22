@@ -750,7 +750,9 @@ def inherited(exclusive=False, model=False):
             raise ValueError("Cannot acquire exclusive admission inside shared admission")
         # An exclusive owner holds the host, and with it the model.
         if model and not (owner.get("model") or owner.get("exclusive")):
-            raise ValueError("Cannot acquire the on-device model inside admission that does not hold it")
+            raise ValueError('Cannot acquire the on-device model inside admission that does not hold it. '
+                             'Request it in the outer admission with `qk admit --model` or set "model": true '
+                             'on the outer lane')
         return True
     except (KeyError, TypeError, OSError, ValueError) as error:
         raise RuntimeError(f"Invalid inherited resource admission: {error}") from error
