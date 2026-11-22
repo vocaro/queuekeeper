@@ -983,12 +983,33 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(status, 2, output)
         self.assertIn("--xcodegen generates an Xcode project: name it with --xcode-project", output)
 
+    def test_a_simctl_boot_error_names_the_command_and_keeps_its_error_text(self):
+        error = "NSPOSIXErrorDomain code=60: Unable to boot the Simulator"
+        for step, command in (("boot", "simctl boot"), ("bootstatus", "simctl bootstatus -b")):
+            with self.subTest(step=step):
+                run = matrix.Run(SimpleNamespace(logs=self.root, boot_timeout=180))
+
+                def boot(arguments, *, stdout, **_):
+                    if arguments[2] != step: return 0
+                    print(error, file=stdout)
+                    return 60
+
+                with mock.patch.object(matrix.processes, "supervise", side_effect=boot), \
+                     mock.patch.object(run, "say") as say:
+                    self.assertFalse(run.boot("phone", SimpleNamespace(udid="simulator")))
+                self.assertEqual(run.results["phone"], 1)
+                self.assertEqual((self.root / "phone-boot.log").read_text(), error + "\n")
+                say.assert_any_call(f"FAIL phone: the boot failed with status 60 in `{command}`; "
+                                    f"log: {self.root / 'phone-boot.log'}", f"    {error}")
+
     def test_a_boot_past_its_limit_leaves_only_that_device_unmeasured(self):
         iphone = self.add("Project iPhone 17 Pro 1")
         ipad = self.add("Project iPad Air 13-inch (M4) 1", IPAD)
-        status, output = self.run_matrix(timed_out_boot=ipad)
+        status, output = self.run_matrix("--boot-timeout", "180", timed_out_boot=ipad)
         self.assertEqual(status, lane_results.UNMEASURED, output)
-        self.assertIn("UNMEASURED iPad-Air-13-inch-M4: the boot exceeded its limit", output)
+        self.assertIn("boot limit 120s, bootstatus limit 180s", output)
+        self.assertIn("UNMEASURED iPad-Air-13-inch-M4: the boot exceeded its limit of 180s in "
+                      "`simctl bootstatus -b`, so no test ran", output)
         self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
         [call] = self.ran_tests()
         self.assertEqual(call[call.index("-destination") + 1], f"platform=iOS Simulator,id={iphone}")

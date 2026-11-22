@@ -1300,8 +1300,11 @@ qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
 - `--jobs N` tests N devices at a time. `--workers N` turns on xcodebuild's parallel testing on
   each device; leave it off until a suite has been shown to pass with it. `--shards N` instead
   splits each device's tests across N pool members, packed by the last run's times.
-- `--boot-timeout` (600 s) leaves a device that will not boot unmeasured. `--test-timeout` (2 h)
-  and `--test-allowance` bound the run and each test ([Time limits](#time-limits-and-the-gates-budget)).
+- `simctl boot` has a 120 s limit. `--boot-timeout` sets the separate limit for `simctl bootstatus -b`
+  (600 s by default). A device that reaches either limit is unmeasured. A nonzero exit from simctl
+  fails that device. The result names the command and points to its boot log.
+- `--test-timeout` (2 h) and `--test-allowance` bound the run and each test
+  ([Time limits](#time-limits-and-the-gates-budget)).
 - Two simulators at once can hold memory pressure at warning for the whole run, which stops
   admission from opening extra slots, so keep memory-ceiling measurements out of such a run.
 

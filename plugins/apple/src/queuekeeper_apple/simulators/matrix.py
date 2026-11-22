@@ -635,22 +635,26 @@ class Run:
     def boot(self, kind, device):
         """None once the device has booted; otherwise its outcome is already reported."""
         log = self.logs / f"{kind}-boot.log"
-        self.say(f"BOOT {kind} ({device.udid}), limit {self.args.boot_timeout}s; log: {log}")
+        self.say(f"BOOT {kind} ({device.udid}), boot limit {BOOT_COMMAND}s, "
+                 f"bootstatus limit {self.args.boot_timeout}s; log: {log}")
         started = time.monotonic()
+        command, limit = "simctl boot", BOOT_COMMAND
         try:
             with log.open("w") as stream:
                 status = processes.supervise(["xcrun", "simctl", "boot", device.udid], cwd=Path.cwd(),
-                                             stdout=stream, timeout=BOOT_COMMAND)
+                                             stdout=stream, timeout=limit)
                 if status == 0:
+                    command, limit = "simctl bootstatus -b", self.args.boot_timeout
                     status = processes.supervise(["xcrun", "simctl", "bootstatus", device.udid, "-b"], cwd=Path.cwd(),
-                                                 stdout=stream, timeout=self.args.boot_timeout)
+                                                 stdout=stream, timeout=limit)
         except processes.TimedOut:
             # A boot still going at its limit says nothing about the tests. A first boot can stall
             # in data migration while other simulators boot.
-            self.finish(kind, lane_results.UNMEASURED, f"the boot exceeded its limit, so no test ran", log)
+            self.finish(kind, lane_results.UNMEASURED,
+                        f"the boot exceeded its limit of {limit}s in `{command}`, so no test ran", log)
             return False
         if status != 0:
-            self.finish(kind, 1, f"the boot failed with status {status}", log)
+            self.finish(kind, 1, f"the boot failed with status {status} in `{command}`", log)
             return False
         self.say(f"BOOTED {kind} ({device.udid}) in {round(time.monotonic() - started)}s")
         why = simulator_pool.set_app_accessibility(simulator_pool.simctl, device.udid, self.args.app_accessibility,
