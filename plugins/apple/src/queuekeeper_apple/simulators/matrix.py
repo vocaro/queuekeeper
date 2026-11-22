@@ -693,9 +693,10 @@ class Run:
         except (RuntimeError, OSError, subprocess.SubprocessError, ValueError, KeyError) as error:
             self.finish(kind, 1, f"it could not be muted ({error}), so no test ran", log)
             return False
+        held_at = speech.now()
         again = f", muted again after reading {', '.join(map(str, unmuted))}" if unmuted else ""
         self.say(f"MUTED {kind}: VoiceOver's sound cues off; the volume read 0 {speech.MUTE_HELD} times in a row "
-                 f"in {round(seconds)}s{again}")
+                 f"in {round(seconds)}s{again}; hold ended at {held_at}")
         return True
 
     @contextlib.contextmanager
@@ -704,10 +705,12 @@ class Run:
         it comes back, then VoiceOver switched off if they left it on; the device fails when either
         happened. Its log's VOICEOVER_ lines are printed after its result, so that a run whose result is
         its output carries the transcript."""
-        session = SimpleNamespace(udid=device.udid, unmuted=[], unread=[])
+        session = SimpleNamespace(udid=device.udid, unmuted=[], unread=[], first_check=None)
         done = threading.Event()
         def watch():
-            while not done.wait(1): speech.keep_muted(session)
+            while not done.wait(1):
+                if session.first_check is None: session.first_check = speech.now()
+                speech.keep_muted(session)
         watcher = threading.Thread(target=watch, daemon=True)
         watcher.start()
         try:
@@ -733,10 +736,13 @@ class Run:
             lines = [line for line in (log.read_text(errors="replace").splitlines() if log.exists() else [])
                      if line.startswith(("VOICEOVER_EVENT ", "VOICEOVER_TREE "))]
             unread = f"; {len(session.unread)} volume checks got no reading" if session.unread else ""
+            watch_evidence = (f"first volume watch check at {session.first_check}" if session.first_check is not None
+                              else "no volume watch check ran")
             notes = problems + ([restored] if restored else [])
             self.say(*(f"{kind} {line}" for line in lines),
                      f"VOICEOVER {kind}: {len(lines)} lines; " + ("; ".join(notes) if notes else
-                                                                 "VoiceOver off and the volume 0 after the tests") + unread)
+                                                                 "VoiceOver off and the volume 0 after the tests")
+                     + f"{unread}; {watch_evidence}")
             if problems and kind in self.results:
                 self.finish(kind, 1, "the simulator was heard or left speaking: " + "; ".join(problems))
 

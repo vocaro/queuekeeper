@@ -931,7 +931,8 @@ class SimulatorMatrixTests(unittest.TestCase):
             calls = self.devicectl(udid)
             self.assertEqual(calls[0], f"settings audio --device {udid} --volume 0")
             self.assertGreaterEqual(len([call for call in calls if call.startswith("info audio")]), 20)
-            self.assertIn(f"MUTED {kind}: VoiceOver's sound cues off; the volume read 0 20 times in a row", output)
+            self.assertRegex(output, rf"MUTED {kind}: VoiceOver's sound cues off; the volume read 0 20 times in a row "
+                             r"in \d+s; hold ended at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z")
             self.assertLess(output.index(f"MUTED {kind}"), output.index(f"TEST {kind}"))
             # The probe's phrases reach the run's own output.
             self.assertIn(f"{kind} VOICEOVER_EVENT 2026-11-06T00:00:00.000Z touch: One Button", output)
@@ -940,6 +941,8 @@ class SimulatorMatrixTests(unittest.TestCase):
         # The negative control: the iPad's volume came back while its tests ran and they left VoiceOver on.
         self.assertRegex(output, r"FAIL iPad-Air-13-inch-M4: the simulator was heard or left speaking: \S+ UNMUTED "
                                  r"the volume was 60; muted again; VoiceOver was left on; it has been switched off")
+        self.assertRegex(output, r"VOICEOVER iPad-Air-13-inch-M4: [^\n]*; first volume watch check at "
+                                 r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z")
         self.assertFalse(self.devices()["Project iPad Air 13-inch (M4) 1"]["voiceover"])
         self.assert_every_device_returned()
 
