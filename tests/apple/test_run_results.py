@@ -164,11 +164,35 @@ class KeepTests(unittest.TestCase):
             self.assertEqual(run_results.history(self.root, "ios-tests", "Smoke/testOpens()", lines.append), 0)
         self.assertIn("ios-tests: no retained result names Smoke/testOpens()", lines)
 
+    def test_history_matches_an_identifier_url_even_when_printed_ids_are_shared(self):
+        identity = "test://com.apple.xcode/Example/FirstUI/Smoke/testBroken"
+        other = "test://com.apple.xcode/Example/SecondUI/Smoke/testBroken"
+        folder = self.root / ("a" * 40) / "ios-tests.results" / matrix.KEPT
+        folder.mkdir(parents=True)
+        (folder / "device.json").write_text(json.dumps({
+            "run": "device", "keptBy": run_results.KEPT_BY, "tests": [
+                {"test": "Smoke/testBroken()", "identifierURL": identity, "outcome": "failed", "seconds": 2},
+                {"test": "Smoke/testBroken()", "identifierURL": other, "outcome": "passed", "seconds": 3},
+                {"test": "Smoke/testBroken()", "outcome": "passed", "seconds": 4},
+            ],
+        }))
+        lines = []
+        with patch.object(run_results.remote, "store", return_value=self.root):
+            self.assertEqual(run_results.history(self.root, "ios-tests", identity, lines.append), 0)
+        self.assertIn("aaaaaaaaaaaa simulator-tests/device.json: failed 2.000s Smoke/testBroken()", lines)
+        self.assertIn("ios-tests: 0 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured", lines)
+
     def test_a_failed_run_keeps_the_same_record_with_its_status(self):
-        self.fixture([case("testBroken", "Failed", 0.5)], "Failed")
+        identity = "test://com.apple.xcode/Example/UI/Smoke/testBroken"
+        self.fixture([{**case("testBroken", "Failed", 0.5), "nodeIdentifierURL": identity}], "Failed")
         status, output = self.keep("--results", str(self.results), status="65")
         self.assertEqual(status, 0, output)
-        self.assertEqual((self.record()["status"], self.record()["tests"][0]["outcome"]), (65, "failed"))
+        record = self.record()
+        self.assertEqual((record["status"], record["tests"][0]["outcome"]), (65, "failed"))
+        self.assertEqual(record["tests"][0]["identifierURL"], identity)
+        evidence = self.results / "failures/simulator-tests/iPhone-17-Pro/failures.json"
+        self.assertEqual(json.loads(evidence.read_text())["failedTests"],
+                         [{"test": "Smoke/testBroken()", "identifierURL": identity, "failures": []}])
 
     def test_keeps_every_parameterized_issue_and_counts_only_the_test(self):
         location = {"filePath": "/Tests/Smoke.swift", "lineNumber": 12}

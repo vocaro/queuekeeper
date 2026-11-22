@@ -1345,7 +1345,8 @@ activities titled `PREFIX N s`. Keep a system trace in the results when a test r
 since the next run on that Mac replaces the logs.
 
 Use `qk results history LANE TEST` to see one exact test ID across that lane's retained Xcode
-results. Use the ID printed by `qk results keep` or in the kept JSON. Each observation names its
+results. Use the ID printed by `qk results keep` or the `identifierURL` in the kept JSON when Xcode
+supplied one. The URL distinguishes tests with the same printed ID. Each observation names its
 commit and result file, so results from different shards or simulators can be distinguished.
 These observations come from the latest whole run kept at each commit and reflect the results
 still on disk. The merge queue records proven flakes separately.

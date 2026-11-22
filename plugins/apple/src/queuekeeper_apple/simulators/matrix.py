@@ -358,7 +358,8 @@ def test_cases(record, activity_timings=None):
     """Each test case in a bundle's test tree (bundle_record), as {test, outcome, seconds}. outcome is passed,
     failed, skipped, expected failure or unmeasured, the last with its reason: a skip that says it could not
     measure, or a result this does not know. seconds is None when the bundle gives none. The record keeps
-    every issue message the tree gives, separately from the case's outcome and count.
+    every issue message the tree gives, separately from the case's outcome and count, and keeps
+    Xcode's exact identifier URL when present.
     An optional activity reader gets the case's identifier and supplies its selected timings."""
     found = []
     def skip_reason(node):
@@ -374,6 +375,9 @@ def test_cases(record, activity_timings=None):
         except (KeyError, TypeError, ValueError): seconds = None
         case = {"test": node.get("nodeIdentifier") or "/".join([*path, name]),
                 "outcome": OUTCOMES.get(node.get("result"), "unmeasured"), "seconds": seconds}
+        identifier_url = node.get("nodeIdentifierURL")
+        if isinstance(identifier_url, str) and identifier_url:
+            case["identifierURL"] = identifier_url
         canceled, reason = case_cancellations(node)
         if canceled: case["outcome"] = "skipped"
         if case["outcome"] == "skipped": reason = skip_reason(node) or reason
@@ -382,7 +386,7 @@ def test_cases(record, activity_timings=None):
         if issues := list(issue_messages(node)):
             case["issues"] = issues
         if activity_timings is not None:
-            case["activities"] = activity_timings(node.get("nodeIdentifierURL") or case["test"])
+            case["activities"] = activity_timings(case.get("identifierURL", case["test"]))
         found.append(case)
     for node in record[1].get("testNodes", []): walk(node, [])
     return found
@@ -555,7 +559,10 @@ def keep_failures(kind, results, tests, text):
                     where = f"{file}:{line}: "
             failures.append(failure)
             lines.extend(f"  {part}" for part in (where + issue["message"]).splitlines())
-        failed.append({"test": case["test"], "failures": failures})
+        evidence = {"test": case["test"], "failures": failures}
+        if "identifierURL" in case:
+            evidence["identifierURL"] = case["identifierURL"]
+        failed.append(evidence)
     if not failed:
         for name, place in lane_report.failing(text):
             lines.append(name + (f" at {place}" if place else ""))

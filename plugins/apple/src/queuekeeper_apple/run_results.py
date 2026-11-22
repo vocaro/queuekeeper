@@ -122,7 +122,7 @@ def keep(log, bundle, name, status, results=None, out=print, *, activity_prefixe
 
 
 def history(root, lane, test, out=print):
-    """Print the observations of an exact test ID in the retained results of one lane."""
+    """Print observations of an exact test ID or Xcode identifier URL in one lane's retained results."""
     try: folders = remote.all_kept_results(remote.store(root)).get(lane, [])
     except (OSError, RuntimeError) as error:
         print(f"queuekeeper results: cannot read the project's retained results: {error}", file=sys.stderr)
@@ -135,7 +135,7 @@ def history(root, lane, test, out=print):
                 if not isinstance(record, dict): raise ValueError("expected a result record")
                 if record.get("keptBy") not in (KEPT_BY, "qk simulator-tests") or record.get("bundleUnread"): continue
                 found = [(case["outcome"], case_line(str(path.relative_to(folder)), case))
-                         for case in record["tests"] if case["test"] == test]
+                         for case in record["tests"] if test in (case["test"], case.get("identifierURL"))]
             except (OSError, ValueError, KeyError, TypeError) as error:
                 out(f"queuekeeper: {path} could not be read: {error!r}")
                 continue
@@ -164,7 +164,7 @@ def main(argv, project=None):
                          help='keep test activities titled "PREFIX N s" (repeatable)')
     historical = actions.add_parser("history", help="show a test's outcomes in a lane's retained Xcode results")
     historical.add_argument("lane", help="lane that kept the results")
-    historical.add_argument("test", help="exact test ID, as printed by qk results keep")
+    historical.add_argument("test", help="exact test ID, as printed by qk results keep, or identifierURL from kept JSON")
     args = parser.parse_args(argv)
     if args.action == "history": return history(Path(project or ".").resolve(), args.lane, args.test)
     if not re.fullmatch(r"[\w.-]+", args.name): parser.error("--name must be a plain name")
