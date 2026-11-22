@@ -16,11 +16,12 @@ process. Like a heavy-work guard, an entry is never released by a deadline or a 
 an active run whose recorded process is gone is an orphan. Queuekeeper recovers a physical device's orphaned run by
 itself once its end is proven, ending the run and putting back what its record says it changed while the reservation
 stays with its holder, and keeps attended recovery for what it cannot prove (upkeep.py; owner's decision,
-2026-11-19, vocaro/queuekeeper#230). The one exception to keeping a reservation is a simulator pool's reservation that `qk simulator-pool reap` proves dead, every process
+2026-11-19, vocaro/queuekeeper#230). A simulator pool's reservation is released when `qk simulator-pool reap` proves it dead, every process
 it records gone and its simulator shut down, which reap releases as a recovery by reap: once its
 expected release has passed, or before then when only its holder held it (ALONE) and nothing accounts
 for its owner, no live admission or other process naming the owner or the device (offload_host.release_dead;
-vocaro-engineering#156).
+vocaro-engineering#156). `qk emulator-pool reap` can release an expired pool member's reservation when its recorded
+processes are gone and its emulator is confirmed stopped.
 
 The mac-foreground entry reserves a Mac's screen, keyboard, pointer, focus and speech. It names no
 device and, like a physical device's, records no approval (owner's decision, 2026-11-06,

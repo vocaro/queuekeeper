@@ -36,6 +36,11 @@ emulator another agent is using. The pool gives each run its own.
 - **Releasing.** `qk emulator-pool release --serial emulator-5556 --outcome "..."` stops the emulator, confirms adb
   no longer lists it, and releases the reservation. An emulator that does not stop keeps its reservation for
   recovery.
+- **Reaping an abandoned member.** `qk emulator-pool reap --dry-run` checks this Mac's named pool. Run it without
+  `--dry-run` to stop and release an emulator at least two hours old when its reservation has expired, its recorded
+  holder processes have ended and no process still names its AVD, serial or owner. The reaper checks the recorded
+  process owns the console connection, asks that console for its AVD name, and sends the stop down the same connection.
+  The reservation stays held until the recorded process, emulator ports and adb listing all confirm it stopped.
 
 Members are AVDs named `POOL_LABEL_N`, such as `Pagepour_Pixel_8_API_36_2`. Each is keyed by that name in the
 [device record](../../../../doc/user_guide.md#taking-a-device). Each Mac has its own pool.

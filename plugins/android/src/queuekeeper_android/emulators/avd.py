@@ -10,6 +10,7 @@ port is chosen by asking adb which are in use and by the record's reservation of
 choice, which two emulators starting at once can make alike.
 """
 import contextlib
+import errno
 import fcntl
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import socket
 import subprocess
 import time
 
+from queuekeeper import offload_host
 from .. import adb, sdk
 
 PORTS = range(5554, 5684, 2)
@@ -172,6 +174,54 @@ def _closed(port):
     with socket.socket() as probe:
         probe.settimeout(0.2)
         return probe.connect_ex(("127.0.0.1", port)) != 0
+
+
+def ports_stopped(port):
+    """Both emulator ports actively refuse a local connection. An unreadable port proves nothing."""
+    for candidate in (port, port + 1):
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            if probe.connect_ex(("127.0.0.1", candidate)) != errno.ECONNREFUSED:
+                return False
+    return True
+
+
+def console_reply(stream):
+    """The console's response before its final OK. Never copy its banner or auth errors into a log."""
+    lines = []
+    for _ in range(16):
+        line = stream.readline(1024).strip()
+        if line == b"OK": return lines
+        if not line or line.startswith(b"KO:"): break
+        lines.append(line)
+    raise adb.Failed("the emulator console did not confirm its command")
+
+
+@contextlib.contextmanager
+def owned_console(port, process, timeout):
+    """One authenticated socket to the recorded process. A new listener cannot take over this connection."""
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as connection, \
+            connection.makefile("rb") as stream:
+        banner = console_reply(stream)
+        pid = process["pid"]
+        local_port = connection.getsockname()[1]
+        endpoint = f"n127.0.0.1:{port}->127.0.0.1:{local_port}"
+        try:
+            found = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-p", str(pid), "-iTCP",
+                                    "-sTCP:ESTABLISHED", "-Fn"], capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise adb.Failed(f"the process check for console port {port} timed out") from None
+        if found.returncode or endpoint not in found.stdout.splitlines() or \
+                offload_host.process_state(process, offload_host.census([pid])) != "running":
+            raise adb.Failed(f"console port {port} could not be tied to the recorded emulator process")
+        if any(b"Authentication required" in line for line in banner):
+            with (Path.home() / ".emulator_console_auth_token").open("rb") as stored:
+                token = stored.read(513).strip()
+            if not token or len(token) > 512 or not all(33 <= byte <= 126 for byte in token):
+                raise adb.Failed("the emulator console authentication token could not be read")
+            connection.sendall(b"auth " + token + b"\n")
+            console_reply(stream)
+        yield connection, stream
 
 
 def start(name, port, *, log, window=False, wipe_data=False, extra=(), folder=None):

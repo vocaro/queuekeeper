@@ -1,9 +1,17 @@
 """The emulator pool's AVDs, copied by APFS clone and renamed, and its members taken and released under reservations
 (queuekeeper_android.emulators), against an AVD folder of the test's own and an emulator that is faked."""
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 import json
 import os
 from pathlib import Path
+import socket
+from subprocess import CompletedProcess
 import tempfile
+from threading import Thread
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -67,6 +75,46 @@ class Names(unittest.TestCase):
         self.assertEqual(emulator_pool.label("system-images;android-35;google_apis_playstore;arm64-v8a",
                                              "pixel_tablet"), "Pixel_Tablet_API_35_playstore")
         self.assertEqual(emulator_pool.word("Page pour/1"), "Page_pour_1")
+
+
+class Console(unittest.TestCase):
+    def test_a_loopback_connection_must_belong_to_the_recorded_pid(self):
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (home / ".emulator_console_auth_token").write_text("stand-in-token\n")
+        self.enterContext(patch.object(avd.Path, "home", return_value=home))
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(5)
+            commands = []
+
+            def serve():
+                for _ in range(2):
+                    peer, _ = listener.accept()
+                    with peer, peer.makefile("rb") as stream:
+                        peer.settimeout(5)
+                        peer.sendall(b"Android Console: Authentication required\r\nOK\r\n")
+                        commands.append(stream.readline())
+                        if commands[-1]:
+                            peer.sendall(b"OK\r\n")
+                            commands.append(stream.readline())
+                            peer.sendall(b"Demo_Pixel_8_API_36_1\r\nOK\r\n")
+
+            server = Thread(target=serve)
+            server.start()
+            try:
+                port = listener.getsockname()[1]
+                pid = os.getpid()
+                with avd.owned_console(port, {"pid": pid, "start": emulator_pool.process_start(pid)}, 3) as (peer, stream):
+                    peer.sendall(b"avd name\n")
+                    self.assertEqual(avd.console_reply(stream), [b"Demo_Pixel_8_API_36_1"])
+                parent = os.getppid()
+                with self.assertRaisesRegex(adb.Failed, "could not be tied to the recorded emulator process"):
+                    with avd.owned_console(port, {"pid": parent, "start": emulator_pool.process_start(parent)}, 3):
+                        self.fail("a console connected to another process was accepted")
+            finally:
+                server.join(12)
+        self.assertEqual(commands, [b"auth stand-in-token\n", b"avd name\n", b""])
 
 
 class Taking(unittest.TestCase):
@@ -174,6 +222,125 @@ class Taking(unittest.TestCase):
         path = make_avd(self.folder, name)
         (path / emulator_pool.WARMED).write_text(json.dumps({}))
         return name
+
+
+class Reaping(unittest.TestCase):
+    KEY, SERIAL = "Demo_Pixel_8_API_36_1", "emulator-5554"
+    OWNER, HOLDER, EMULATOR = "old-session", 402, 403
+
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(
+            dir=os.environ["QUEUEKEEPER_DEVICE_RECORD"].rsplit("/devices/", 1)[0])))
+        self.folder = root / "avd"
+        make_avd(self.folder, self.KEY)
+        self.record = devices.Record(root / "record.json")
+        self.pool = emulator_pool.Pool("Demo", None, record=self.record, folder=self.folder)
+        self.start = " ".join(time.ctime(time.time() - 3 * 3600).split())
+        self.running, self.answer, self.killed, self.ports_closed = True, self.KEY, [], False
+        self.other = []
+        self.entry = self.record.reserve(self.KEY, owner=self.OWNER, revision=0, purpose="instrumentation",
+                                         device=f"avd:{self.KEY}", release_by=self.due(2),
+                                         details={devices.HOLDER: {"pid": self.HOLDER, "start": self.start}})
+        self.update(expectedReleaseBy=self.due(-1), serial=self.SERIAL, port=5554,
+                    emulatorProcess={"pid": self.EMULATOR, "start": self.start})
+        self.enterContext(patch.object(emulator_pool.offload_host, "listing", side_effect=self.listing))
+        self.enterContext(patch.object(emulator_pool.offload_host, "census", side_effect=self.census))
+        self.enterContext(patch.object(avd, "ports_stopped", side_effect=lambda _port: self.ports_closed))
+        self.enterContext(patch.object(avd, "owned_console", side_effect=self.owned_console))
+        self.enterContext(patch.object(adb, "run", side_effect=self.adb_run))
+
+    def due(self, hours):
+        return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+
+    def update(self, **changes):
+        self.entry = self.record.update(self.KEY, owner=self.OWNER, revision=self.entry["revision"], **changes)
+
+    def listing(self, command, timeout):
+        self.assertEqual(command, list(emulator_pool.offload_host.ENVIRONMENTS))
+        rows = [(os.getpid(), os.getppid(), "python qk emulator-pool reap PATH=/bin"), *self.other]
+        if self.running: rows.append((self.EMULATOR, 1, f"qemu -avd {self.KEY} -port 5554"))
+        return "\n".join(f"{pid} {parent} {os.getuid()} {self.start} {command}" for pid, parent, command in rows)
+
+    def census(self, pids):
+        self.assertEqual(pids, [self.EMULATOR])
+        return {self.EMULATOR: self.start} if self.running else {}
+
+    @contextmanager
+    def owned_console(self, port, emulator, timeout):
+        self.assertEqual((port, emulator["pid"]), (5554, self.EMULATOR))
+        sent = []
+
+        def send(command):
+            sent.append(command)
+            if command == b"kill\n":
+                self.assertEqual(sent, [b"avd name\n", b"kill\n"])
+                self.killed.append(self.SERIAL)
+                self.running, self.ports_closed = False, True
+
+        yield SimpleNamespace(sendall=send), BytesIO(f"{self.answer}\nOK\n".encode())
+
+    def adb_run(self, arguments, *, timeout):
+        self.assertEqual(arguments, ["devices", "-l"])
+        return CompletedProcess(arguments, 0, stdout="List of devices attached\n"
+                                + (f"{self.SERIAL}\tdevice\n" if self.running else ""))
+
+    def test_a_dry_run_only_reports_then_reap_stops_and_recovers_the_expired_member(self):
+        self.assertEqual(self.pool.reap(dry_run=True), [(f"{self.KEY}: would stop and release", False)])
+        self.assertEqual(self.killed, [])
+        self.assertEqual(self.record.entry(self.KEY), self.entry)
+        self.assertEqual(self.pool.reap(), [(f"{self.KEY}: released after confirming its emulator stopped", False)])
+        self.assertEqual(self.killed, [self.SERIAL])
+        recovered = self.record.entry(self.KEY)
+        self.assertEqual((recovered["state"], recovered["recovery"]["by"], recovered["lastOwnerChatID"]),
+                         ("released", "emulator-pool reap", self.OWNER))
+        self.assertEqual(self.pool.reap(), [])
+
+    def test_an_unexpired_reservation_live_process_or_reused_serial_keeps_the_emulator(self):
+        self.update(expectedReleaseBy=self.due(1))
+        self.assertIn("has not passed", self.pool.reap()[0][0])
+        self.update(expectedReleaseBy=self.due(-1))
+        self.other = [(self.HOLDER, 1, "a live holder")]
+        self.assertIn("holder processes is still running", self.pool.reap()[0][0])
+        self.other = [(900, 1, f"adb -s {self.SERIAL} logcat")]
+        self.assertIn("PID 900 still names", self.pool.reap()[0][0])
+        self.other, self.answer = [], "Someone_elses_emulator"
+        self.assertIn("does not answer for", self.pool.reap()[0][0])
+        self.assertEqual(self.killed, [])
+        self.assertEqual(self.record.entry(self.KEY), self.entry)
+
+    def test_an_uncertain_census_or_failed_stop_leaves_the_reservation_held(self):
+        with patch.object(emulator_pool.offload_host, "listing", return_value=None):
+            self.assertIn("process census could not verify", self.pool.reap()[0][0])
+        with patch.object(self.pool, "_reap_stopped", return_value=False), \
+                patch.object(emulator_pool, "REAP_STOP_SECONDS", 0):
+            line, failed = self.pool.reap()[0]
+        self.assertTrue(failed)
+        self.assertIn("did not confirm its stop", line)
+        self.assertEqual(self.record.entry(self.KEY), self.entry)
+
+    def test_a_port_claimed_in_another_record_is_left_alone(self):
+        self.record.reserve("Another_1", owner="other-session", revision=0, purpose="instrumentation",
+                            device="avd:Another_1", release_by=self.due(1), details={"port": 5554})
+        self.assertIn("reservation Another_1 also holds its AVD or port", self.pool.reap()[0][0])
+        self.assertEqual(self.killed, [])
+        self.assertEqual(self.record.entry(self.KEY), self.entry)
+
+    def test_a_retry_recovers_a_member_that_already_stopped_without_sending_another_stop(self):
+        self.running, self.ports_closed = False, True
+        self.assertIn("released after confirming", self.pool.reap()[0][0])
+        self.assertEqual(self.killed, [])
+
+    def test_a_renewed_reservation_moves_the_revision_before_any_stop(self):
+        stop = self.pool._reap_stop
+
+        def renew(key, old_entry):
+            self.update(expectedReleaseBy=self.due(1))
+            return stop(key, old_entry)
+
+        with patch.object(self.pool, "_reap_stop", side_effect=renew):
+            self.assertIn("reservation changed", self.pool.reap()[0][0])
+        self.assertEqual(self.killed, [])
+        self.assertEqual(self.record.entry(self.KEY), self.entry)
 
 
 if __name__ == "__main__":

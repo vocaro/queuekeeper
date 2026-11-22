@@ -28,6 +28,7 @@ import re
 import sys
 import time
 
+from queuekeeper import offload_host
 from queuekeeper.resources import process_start
 from queuekeeper_mobile import devices as device_record
 from .. import adb, android_platform, sdk  # noqa: F401 -- android_platform switches the Android platform on
@@ -49,6 +50,10 @@ DEVICE = "pixel_8"
 # A member's own number at the end of its name.
 NUMBER = re.compile(r"_([1-9][0-9]*)")
 ATTEMPTS = 2
+# Keep a running member for at least as long as the simulator reaper keeps its counterpart.
+REAP_AFTER = timedelta(hours=2).total_seconds()
+REAP_QUERY_SECONDS = 5
+REAP_STOP_SECONDS = 10
 
 
 def configured(root):
@@ -317,6 +322,117 @@ class Pool:
             found.append((name, self.release(Lease(name, entry["revision"], entry.get("serial")), outcome=outcome)))
         return found
 
+    def reap(self, *, dry_run=False):
+        """Report stale reservations of this pool. Stop only an emulator proved to be the recorded run."""
+        if any(os.environ.get(key) for key in ("ADB_SERVER_SOCKET", "ANDROID_ADB_SERVER_ADDRESS",
+                                              "ANDROID_ADB_SERVER_PORT")):
+            raise ValueError("reap needs the default local adb server to identify this Mac's emulators")
+        entries = self.record.load()["devices"]
+        results = []
+        for name, avd_entry in avd.listed(self.folder).items():
+            image = avd.image_package(avd_entry["image"])
+            profile = avd_entry["device"]
+            entry = entries.get(name)
+            if not image or not profile or name not in self.members(image, profile, [name]).values():
+                continue
+            if not entry or entry.get("device") != f"avd:{name}" or entry.get("state") == "released":
+                continue
+            try:
+                if dry_run:
+                    booted, serial, emulator = self._reap_check(name, entries)
+                    if booted: self._reap_console(name, serial, emulator)
+                    elif self._reap_listed(serial):
+                        raise device_record.Refused(f"adb still lists {serial}")
+                    said = "would stop and release" if booted else "would release its stopped emulator"
+                else:
+                    self._reap_stop(name, entry)
+                    self.record.recover(name, by="emulator-pool reap", revision=entry["revision"],
+                                        verified="Expired reservation, recorded holder processes ended and emulator stopped")
+                    said = "released after confirming its emulator stopped"
+            except device_record.Refused as error:
+                results.append((f"{name}: kept: {error}", False))
+            except (OSError, adb.Failed, sdk.Missing, TimeoutError) as error:
+                results.append((f"{name}: could not reap: {error}", True))
+            else:
+                results.append((f"{name}: {said}", False))
+        return results
+
+    def _reap_check(self, name, entries):
+        """Whether the recorded emulator runs, with its observed serial and identity, or why it is kept."""
+        entry = entries[name]
+        if device_record.condition(entry) != "held" or entry.get("activeRun"):
+            raise device_record.Refused("its reservation is active or needs attended recovery")
+        due = device_record.moment(entry.get("expectedReleaseBy"))
+        if due is None or due > datetime.now(timezone.utc):
+            raise device_record.Refused("its expected release has not passed or cannot be read")
+        serial, port = entry.get("serial"), entry.get("port")
+        if type(port) is not int or port not in avd.PORTS or serial != f"emulator-{port}":
+            raise device_record.Refused("its emulator serial and port cannot be verified")
+        for key, other in entries.items():
+            if key != name and (other.get("port") == port or other.get("device") == entry["device"]) and \
+                    device_record.condition(other) != "released":
+                raise device_record.Refused(f"reservation {key} also holds its AVD or port")
+        emulator = entry.get("emulatorProcess")
+        owner = entry.get("ownerChatID")
+        owned = entry.get("ownedProcesses", [])
+        if not isinstance(owned, list) or not isinstance(owner, str) or len(owner.strip()) < 8:
+            raise device_record.Refused("its owner or recorded owned processes cannot be checked")
+        holders = [entry.get(device_record.HOLDER), *owned]
+        if any(not isinstance(item, dict) or type(item.get("pid")) is not int or item["pid"] <= 0
+               or offload_host.started(item.get("start")) is None for item in [emulator, *holders]):
+            raise device_record.Refused("its emulator or holder has no verifiable process identity")
+        if time.time() - offload_host.started(emulator["start"]) < REAP_AFTER:
+            raise device_record.Refused("its recorded emulator is less than two hours old")
+        table = offload_host.process_table(offload_host.listing(list(offload_host.ENVIRONMENTS), REAP_QUERY_SECONDS))
+        own = table.get(os.getpid(), {})
+        if "PATH=" not in own.get("args", ""):
+            raise device_record.Refused("the process census could not verify which processes still use it")
+        identities = {pid: row["start"] for pid, row in table.items()}
+        if any(offload_host.process_state(item, identities) != "ended" for item in holders):
+            raise device_record.Refused("one of its recorded holder processes is still running")
+        booted = offload_host.process_state(emulator, identities) == "running"
+        for pid, process in table.items():
+            if process["uid"] != os.getuid() or pid == os.getpid() or \
+                    (booted and emulator["pid"] in offload_host.lineage(table, pid)):
+                continue
+            if any(word in process["args"] for word in (name, serial, owner)):
+                raise device_record.Refused(f"PID {pid} still names its AVD, serial or owner")
+        if not booted and not self._reap_stopped(serial, emulator):
+            raise device_record.Refused("its recorded process ended but its serial or ports cannot be shown stopped")
+        return booted, serial, emulator
+
+    def _reap_stopped(self, serial, emulator):
+        return (avd.ports_stopped(adb.emulator_port(serial))
+                and offload_host.process_state(emulator, offload_host.census([emulator["pid"]])) == "ended")
+
+    def _reap_listed(self, serial):
+        listing = adb.run(["devices", "-l"], timeout=REAP_QUERY_SECONDS).stdout
+        if "List of devices attached" not in listing.splitlines():
+            raise adb.Failed("adb did not list its devices")
+        return serial in adb.listed(listing)
+
+    def _reap_console(self, name, serial, emulator, *, stop=False):
+        """Name and stop on the same connection to the recorded emulator process."""
+        with avd.owned_console(adb.emulator_port(serial), emulator, REAP_QUERY_SECONDS) as (connection, stream):
+            connection.sendall(b"avd name\n")
+            if avd.console_reply(stream) != [name.encode()]:
+                raise device_record.Refused(f"{serial} does not answer for {name}")
+            if stop: connection.sendall(b"kill\n")
+
+    def _reap_stop(self, name, entry):
+        """Request shutdown under the record's lock and wait outside it. The reservation remains held."""
+        with self.record._exclusive():
+            entries = self.record.load()["devices"]
+            if entries.get(name) != entry:
+                raise device_record.Stale("its reservation changed before the stop")
+            booted, serial, emulator = self._reap_check(name, entries)
+            if booted: self._reap_console(name, serial, emulator, stop=True)
+        deadline = time.monotonic() + REAP_STOP_SECONDS
+        while not self._reap_stopped(serial, emulator) or self._reap_listed(serial):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"{serial} did not confirm its stop")
+            time.sleep(0.2)
+
     def status(self):
         """One line per member and template of the pool: its kind, whether its emulator runs, and who holds it."""
         listed, running = avd.listed(self.folder), avd.running()
@@ -335,7 +451,7 @@ class Pool:
 
 
 def main(argv, project=None):
-    parser = argparse.ArgumentParser(prog="qk emulator-pool", description="Take, release or list members of the "
+    parser = argparse.ArgumentParser(prog="qk emulator-pool", description="Take, release, reap or list members of the "
                                      "project's emulator pool under device-record reservations.")
     parser.add_argument("--pool", default=configured(Path.cwd()) or (configured(project) if project else None),
                         help="the pool's name (default: the project's emulatorPool in queuekeeper.json)")
@@ -360,6 +476,8 @@ def main(argv, project=None):
     release.add_argument("--outcome", required=True)
     mine = actions.add_parser("release-mine", help="stop and release every member the owner holds")
     mine.add_argument("--outcome", default="Released at the session's end")
+    reap = actions.add_parser("reap", help="stop and release abandoned pool members on this Mac")
+    reap.add_argument("--dry-run", action="store_true", help="report eligible members without stopping or releasing them")
     args = parser.parse_args(argv)
     try:
         pool = Pool(args.pool, args.owner)
@@ -378,6 +496,11 @@ def main(argv, project=None):
             results = pool.release_mine(args.outcome)
             for key, released in results: print(f"{key}: {'released' if released else 'kept for recovery'}")
             return 0 if all(released for _key, released in results) else 1
+        elif args.action == "reap":
+            results = pool.reap(dry_run=args.dry_run)
+            for line, _failed in results: print(line)
+            if not results: print(f"{pool.name}: no recorded pool members to reap")
+            return 1 if any(failed for _line, failed in results) else 0
         return 0
     except (OSError, ValueError, RuntimeError, TimeoutError, sdk.Missing) as error:
         print(f"emulator-pool: {error}", file=sys.stderr)
