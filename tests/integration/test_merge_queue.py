@@ -10594,6 +10594,50 @@ class FlakyReruns(Fixture):
         self.assertIn("2 commits fail together", log)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
 
+    @contextlib.contextmanager
+    def unmeasured_rerun(self):
+        run_test = mq.processes.run
+
+        def rerun(command, **options):
+            if command[-1] == self.TEST and mq.lane_wait.VARIABLE in (options.get("env") or {}):
+                options["log_path"].write_text("queuekeeper unittest: UNMEASURED: test timed out\n")
+                return mq.lane_results.UNMEASURED
+            return run_test(command, **options)
+
+        with patch.object(mq.processes, "run", rerun):
+            yield
+
+    def test_a_rerun_with_no_verdict_beside_one_confirmed_failure_sends_its_entry_back(self):
+        self.plan.write_text("F")
+        self.commit("docs/a.md", "a", "The wrongword\n")
+        self.commit("b", "b")
+        ids = self.add("a", "b")
+        with self.unmeasured_rerun(), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"blaming {ids[0]} (Add docs/a.md): {self.WORDS}, which failed alone", log)
+        self.assertIn(f"{self.TEST} gave no verdict alone, on rerun 1", log)
+        self.assertNotIn("fail together", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
+        # The batch gate and b's gate both run the unresolved test. It is left out of the blame probe.
+        self.assertEqual(self.runs_of_the_test(), 2)
+        self.assertEqual(self.tracked, [])
+
+    def test_a_rerun_with_no_verdict_and_no_confirmed_failure_still_bisects(self):
+        self.plan.write_text("F")
+        self.commit("src/python/fixturelib/helper.py", "a", "from . import deeper\nVALUE = 1  # changed\n")
+        self.commit("b", "b")
+        ids = self.add("a", "b")
+        with self.unmeasured_rerun(), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        log = said.getvalue()
+        self.assertIn(f"{self.TEST} gave no verdict alone, on rerun 1", log)
+        self.assertIn("no rerun confirmed a failure, so no commit is blamed: bisecting", log)
+        self.assertIn("2 commits fail together", log)
+        self.assertNotIn("blaming", log)
+        self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["landed", "landed"])
+        self.assertEqual(self.tracked, [])
+
     def test_a_flake_beside_a_real_failure_that_points_at_one_entry_sends_it_back_and_files_the_flake(self):
         # The flaky test fails in the gate only; the spelling failure is real and names a. Until 2026-11-19 the flake
         # stopped the blame and the batch bisected, which cost about an hour in vocaro/queuekeeper#88; now a is sent

@@ -432,8 +432,9 @@ reruns one test and a function that names the failed tests from the lane's resul
   `--batch-size` and `--timeout`, without `--fail-fast`, up to `RERUNS` (3) times. Which options a
   rerun keeps comes from `qk unittest`'s own parser, `parallel.unittest_parser`, by each option's
   role in `parallel.UNITTEST_ROLES`, which `qk doctor`'s lane coverage reads too; a new option needs
-  a role there, and `core.test_parallel.Options` fails until it has one. Any failing or
-  unmeasured rerun makes the failure real. While reruns wait and run, the worker writes
+  a role there, and `core.test_parallel.Options` fails until it has one. A failed rerun confirms
+  the failure. An unmeasured rerun or one that could not start leaves it unresolved.
+  While reruns wait and run, the worker writes
   `.build/queuekeeper/.waits/rerun.json` in its checkout, which `qk queue status` reads for each
   rerun's test, count, log and admission wait; the record goes once the verdict is in.
 - **A gate cut short.** A `--fail-fast` gate whose failed tests all pass alone does not land, since
@@ -463,8 +464,10 @@ reruns one test and a function that names the failed tests from the lane's resul
   test can read a file neither its imports nor its output name. Failed tests that passed alone
   beside the real failures do not stop the blame: once it stands, they are filed as flakes, and the
   rest of the batch gates again at once (vocaro/queuekeeper#88). One that another entry adds or
-  changes bisects instead. Any doubt bisects: real failures that point at several entries or none,
-  or a rerun with no verdict.
+  changes bisects instead. The next gate also runs the tests whose reruns gave no verdict
+  (vocaro/queuekeeper#294). The batch bisects if no rerun confirms a failure, a confirmed failure
+  points at several entries or none, confirmed failures point at different entries, or a rerun
+  of a confirmed failure without the suspected entry fails or gives no verdict.
 - **A refused gate.** A `qk unittest` lane whose log has no summary and a refusal ending
   `nothing ran` is not rerun. The worker sends back the one entry whose tree alone gives the
   refusal or that changes a module it names; with none or several, it bisects. The same refusal in

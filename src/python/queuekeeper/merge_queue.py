@@ -90,6 +90,7 @@ NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
 # shared host's configuration, and a worker that lost Local Network access (Worker.older).
 NO_VERDICT = {lane_results.UNMEASURED, resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
+UNITTEST_RERUN_NO_VERDICT = NO_VERDICT | {lane_results.NOT_STARTED, lane_results.TOOL_NOT_STARTED}
 # Of those, the exits of a lane that did not run: no Mac admitted it, a shared host's configuration stopped it, or this
 # worker can no longer reach another Mac.
 UNRUN = {resources.BUSY, remote.MISCONFIGURED, remote.LOST_ACCESS}
@@ -5658,24 +5659,26 @@ class Worker:
         if busy:
             self.say(f"the failed tests are not rerun, as {busy}: bisecting")
             return None
-        ran = self.rerun_each(tests, lambda test: [*command, test], applied, head, log, round_name)
+        ran = self.rerun_each(tests, lambda test: [*command, test], applied, head, log, round_name,
+                              no_verdict_codes=UNITTEST_RERUN_NO_VERDICT)
         if ran is None: return None
         flakes, real = ran
         top = self.suite_top(command)
         added, changed = self.owned_tests(flakes, applied, top, base)
         if real:
-            if None in real.values():
-                self.say("a rerun ended with no verdict, so no commit is blamed")
+            confirmed = {test: path for test, path in real.items() if path is not None}
+            if not confirmed:
+                self.say("no rerun confirmed a failure, so no commit is blamed: bisecting")
                 return None
             owners = self.owners(applied, added, changed) if added or changed else {}
             if owners is None: return None
-            # Flakes beside a real failure no longer stop blame: the confirmed failures alone name the entry, and the
-            # flakes are filed once it is sent back (owner's decision of 2026-11-19, vocaro/queuekeeper#88).
+            # Confirmed failures name the entry. The next gate reruns unresolved tests (#294), and the worker files
+            # flakes once the entry is sent back (#88).
             rest = [flake for flake in flakes if flake["test"] not in owners]
             if rest:
                 self.say(f"{', '.join(flake['test'] for flake in rest)} passed alone beside the real failure, so blame "
                          "weighs the confirmed failures alone, and the flakes are filed only if one entry is blamed")
-            self.confirmed = {"tests": real, "top": top, "command": command, "base": base, "head": head,
+            self.confirmed = {"tests": confirmed, "top": top, "command": command, "base": base, "head": head,
                               "round": round_name, "flakes": rest, "owners": owners}
             return None
         if added or changed:
@@ -5740,11 +5743,11 @@ class Worker:
         self.say(f"every failed test passed alone {RERUNS} times, but {stopped}: "
                  + ("gating the batch again" if again else "it did so before on this commit, so bisecting"))
 
-    def rerun_each(self, tests, command_of, applied, head, log, round_name):
-        """(the flakes of tests, {test: the log of the rerun that failed, or None}) once each is rerun alone on head,
-        by command_of(test), up to RERUNS times, stopping at its first failure; or None once a lone entry's test failed
-        again, which leaves nothing to weigh. Each rerun's admission writes what it waits for to a wait record of its
-        own, which the round's failure record names (rerun_waits)."""
+    def rerun_each(self, tests, command_of, applied, head, log, round_name, *, no_verdict_codes=()):
+        """(the flakes of tests, {test: the log of its failed rerun, or None if it gave no verdict}) after rerunning
+        each test alone on head, up to RERUNS times, stopping at the first run that does not pass. For a lone entry,
+        return None as soon as one rerun does not pass. Each rerun writes its admission wait to a record named in
+        the round's failure record (rerun_waits)."""
         if self.head() != head: self.reset(head)
         flakes, real = [], {}
         record = lane_wait.path_of(self.checkout, "rerun")
@@ -5761,11 +5764,15 @@ class Worker:
                 except processes.TimedOut as error: status_ = f"unmeasured, {error}"
                 except (OSError, pins.Unpinned) as error: status_ = f"not started, {error}"
                 if status_:
-                    self.say(f"{test} failed again alone, on rerun {attempt} (exit {status_}), so the failure is real; "
-                             f"see {path}")
-                    # Only a rerun that ran and failed confirms the failure, whose output blame reads.
-                    real[test] = path if isinstance(status_, int) else None
-                    if isinstance(status_, int): self.repeated = True
+                    if isinstance(status_, int) and status_ not in no_verdict_codes:
+                        self.say(f"{test} failed again alone, on rerun {attempt} (exit {status_}), so the failure is "
+                                 f"real; see {path}")
+                        real[test] = path
+                        self.repeated = True
+                    else:
+                        detail = f"exit {status_}" if isinstance(status_, int) else status_
+                        self.say(f"{test} gave no verdict alone, on rerun {attempt} ({detail}); see {path}")
+                        real[test] = None
                     break
             if test in real:
                 if len(applied) == 1: return None
@@ -5990,8 +5997,9 @@ class Worker:
         (passes_without). Any doubt bisects: no confirmed failure, a module the worker cannot find, a test that reaches
         no entry or several, tests that reach different entries, or tests that fail without the entry too. Failed tests
         that passed alone beside them do not stop it (vocaro/queuekeeper#88): a flake is filed once the blame stands
-        (keep_flakes), and a test another entry adds or changes (owned_tests) bisects. A gate qk unittest refused
-        before running anything is blamed by its refusal instead (blame_refusal)."""
+        (keep_flakes), and a test another entry adds or changes (owned_tests) bisects. The rest of the batch gates
+        again, including tests whose reruns gave no verdict (vocaro/queuekeeper#294). A gate qk unittest refused before
+        running anything is blamed by its refusal instead (blame_refusal)."""
         confirmed, self.confirmed = self.confirmed, None
         refused, self.refused, self.unblamed = self.refused, None, None
         added, self.added = self.added, None
@@ -6086,10 +6094,13 @@ class Worker:
                 except processes.TimedOut as error: status_ = f"unmeasured, {error}"
                 except (OSError, pins.Unpinned) as error: status_ = f"not started, {error}"
                 if status_:
-                    self.say(f"{entry['id']} is blamed, but {test} "
-                             + (f"failed without it too, on the batch's other entries ({named}), "
-                                if isinstance(status_, int) else f"gave no verdict without it ({status_}), ")
-                             + f"so the blame is not confirmed: bisecting; see {path}")
+                    if isinstance(status_, int) and status_ not in UNITTEST_RERUN_NO_VERDICT:
+                        reason = f"failed without it too, on the batch's other entries ({named})"
+                    else:
+                        detail = f"exit {status_}" if isinstance(status_, int) else status_
+                        reason = f"gave no verdict without it ({detail})"
+                    self.say(f"{entry['id']} is blamed, but {test} {reason}, "
+                             f"so the blame is not confirmed: bisecting; see {path}")
                     return None
         finally:
             self.reset(confirmed["head"])
