@@ -90,6 +90,7 @@
     "queuekeeper_apple.simulators.template",
     "queuekeeper_apple.sources",
     "queuekeeper_apple.stale_modules",
+    "queuekeeper_apple.stale_packages",
     "queuekeeper_apple.stale_toolchain",
     "queuekeeper_apple.voiceover",
     "queuekeeper_apple.voiceover.guard",

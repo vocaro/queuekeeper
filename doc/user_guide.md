@@ -2749,6 +2749,13 @@ called by name, removes the stale module cache inside the checkout and runs once
 MODULES`. It never runs a third time. A script that calls `/usr/bin/xcodebuild` by path, through `xcrun`,
 or with PATH cleared bypasses this.
 
+**An earlier farm checkout path.** If a wrapped build fails and its package state inside the checkout
+still names that checkout under the farm's old root, the wrapper says `STALE PACKAGE PATHS`. For
+`xcodebuild`, the check reads the state selected by `-clonedSourcePackagesDirPath` or `-derivedDataPath`.
+For `swift`, it reads the state selected by `--scratch-path` or `--build-path`. Try a fresh build
+directory to rule out state kept under the old path. This diagnostic leaves the build outcome and
+cache intact.
+
 **A replaced Metal Toolchain mount.** macOS mounts the Metal Toolchain at a path with a random suffix,
 `/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-VERSION.SUFFIX/`, and can
 mount it again at a new one. A build folder reused from before keeps the old path in its build plan, and

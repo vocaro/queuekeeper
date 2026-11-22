@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from . import stale_toolchain
+from . import stale_packages, stale_toolchain
 from .shims import ROOT_VARIABLE, SHIMS, environment  # noqa: F401 -- environment is read here too
 
 STALE_MODULE = "has been modified since the module file"
@@ -137,7 +137,9 @@ def main(tool, arguments):
     command = [found, *arguments]
     status, errors = attempt(command)
     root = os.environ.get(ROOT_VARIABLE)
-    if status == 0 or not errors: return status
+    if status == 0: return status
+    if root and 0 < status < 128 and (warning := stale_packages.warning(tool, arguments, root)): say(warning)
+    if not errors: return status
     gone = stale_toolchain.mounts(errors)
     if gone: return toolchain(tool, command, gone, root, status)
     if STALE_MODULE not in errors or not root: return status
