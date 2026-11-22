@@ -454,14 +454,29 @@ def load_line(receipt, verdict):
     return f"  load: {said}" if said else None
 
 
-def lane_receipt(directory):
-    """The lane's own receipt in directory, a run's: its source.json, or for a dispatch the one another Mac wrote,
-    which it holds under result; {} when there is none."""
+def lane_receipt(directory, *, dispatched=False):
+    """The lane's own receipt, or {} when it cannot be read.
+
+    With dispatched, require the execution Mac's receipt under result, even when the sender recorded what it sent.
+    """
     try: receipt = json.loads((Path(directory) / "source.json").read_text())
     except (OSError, ValueError): return {}
     if not isinstance(receipt, dict): return {}
     there = receipt.get("result")
-    return there["receipt"] if isinstance(there, dict) and isinstance(there.get("receipt"), dict) else receipt
+    if isinstance(there, dict) and isinstance(there.get("receipt"), dict): return there["receipt"]
+    return {} if dispatched else receipt
+
+
+def toolkit_line(receipt):
+    """The Queuekeeper revision of the execution receipt, with the digest if that checkout had changes."""
+    if receipt.get("sentTree") or receipt.get("sentToolkit"):
+        return None  # the local command may have read a different checkout than its running launcher
+    toolkit = receipt.get("toolkit")
+    revision = toolkit.get("revision") if isinstance(toolkit, dict) else None
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", revision): return None
+    changes = toolkit.get("workingChangesSHA256")
+    modified = isinstance(changes, str) and re.fullmatch(r"[0-9a-f]{64}", changes) and changes != remote.CLEAN
+    return f"  Queuekeeper: {revision}" + (f" (working changes SHA-256 {changes})" if modified else "")
 
 
 def stopped_there(directory):
@@ -520,6 +535,7 @@ class Report:
     def __init__(self):
         self.lane = self.root = self.group = self.here = self.why = None
         self.began, self.complete = 0, True
+        self.local_toolkit = None
 
     def begin(self, root, lane):
         self.root, self.lane, self.began = root, lane, time.time()
@@ -527,6 +543,10 @@ class Report:
     def ran_here(self, directory):
         """The lane's work starts now on this Mac, writing to directory."""
         self.here = directory
+
+    def recorded_here(self, receipt):
+        """Remember this run's provenance before the shared lane directory can be reused."""
+        self.local_toolkit = toolkit_line(receipt)
 
     def explain(self, error, *, complete=True):
         """Why the run ended as it did. Without complete, its log was cut off and counts nothing."""
@@ -596,6 +616,8 @@ class Report:
         if outcomes is not None: lines.append(self.lanes_line(outcomes))
         load = load_line(lane_receipt(directory), verdict)
         if load: lines.append(load)
+        toolkit = self.local_toolkit if self.here is not None else toolkit_line(lane_receipt(directory, dispatched=True))
+        if toolkit: lines.append(toolkit)
         if why: lines.append(f"  why: {why}")
         names = []
         if verdict != "passed":

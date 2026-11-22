@@ -1007,6 +1007,11 @@ repository's Git directory, so any worktree can ask whether that commit already 
 `qk admit -- COMMAND` writes the same receipt, without a log, to `.build/queuekeeper/admit/`, and
 the next admitted command replaces it: copy it when it is evidence.
 
+When the run's own receipt identifies its Queuekeeper checkout, the summary gives its revision
+and the digest of any working changes. The merge queue retains this line in its lane log, so you
+can compare it with a previous gate even after the local receipt has been replaced. For a dispatched
+run the line comes from the execution Mac's receipt.
+
 | Outcome | Exit | When |
 |---|---|---|
 | `passed` | 0 | The command exited 0 and ran enough tests |

@@ -344,10 +344,11 @@ class Summary(unittest.TestCase):
     def printing(self, text, status=0):
         return {"command": self.command(f"import sys\nprint({text!r})\nsys.exit({status})")}
 
-    def qk(self, *arguments):
+    def qk(self, *arguments, identity=None):
         """qk run in this process, on a stream that joins stdout and stderr as a pipe to one file does."""
         stream = StringIO()
-        with patch.object(cli, "refresh_policy", return_value="policy"), patch.object(cli, "source_identity", return_value={}), \
+        with patch.object(cli, "refresh_policy", return_value="policy"), \
+                patch.object(cli, "source_identity", return_value=identity or {}), \
                 contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             status = cli.main(["--project", str(self.root), "run", "--here", *arguments])
         return status, stream.getvalue().splitlines()
@@ -361,6 +362,44 @@ class Summary(unittest.TestCase):
                                       "  failed: tests.test_x.X.test_b at /project/tests/test_x.py:7",
                                       "  failed: tests.test_x.X.test_c at /project/tests/test_x.py:20",
                                       f"  receipt: {self.lane_dir / 'source.json'}"])
+
+    def test_a_local_verdict_uses_its_own_toolkit_even_if_the_receipt_is_replaced(self):
+        self.configure(lane=self.printing(UNITTEST_FAILED, 1))
+        revision, changes, replacement = "a" * 40, "c" * 64, "b" * 40
+        finish = lane_report.Report.finish
+
+        def overwritten(report, status, error=None):
+            (self.lane_dir / "source.json").write_text(json.dumps({"toolkit": {"revision": replacement}}))
+            finish(report, status, error)
+
+        with patch.object(lane_report.Report, "finish", overwritten):
+            status, lines = self.qk("lane", identity={"revision": revision, "workingChangesSHA256": changes})
+        self.assertEqual(status, 1)
+        self.assertIn(f"  Queuekeeper: {revision} (working changes SHA-256 {changes})", lines)
+        self.assertFalse(any(replacement in line for line in lines))
+
+    def test_a_dispatched_verdict_uses_the_execution_receipt_never_the_sender_revision(self):
+        directory = self.root / "dispatch"
+        directory.mkdir()
+        receipt = directory / "source.json"
+        sender, execution = "a" * 40, "b" * 40
+        report = lane_report.Report()
+        report.begin(self.root, "gate")
+        dispatched = {"toolkit": sender, "toolkitHead": sender, "result": {"receipt": {
+            "toolkit": {"revision": execution, "workingChangesSHA256": lane_report.remote.CLEAN}}}}
+        with patch.object(lane_report.remote, "dispatch", return_value=(directory, "build-host")):
+            receipt.write_text(json.dumps(dispatched))
+            lines = report.lines(1, None)
+            self.assertIn("qk run gate: failed (exit 1), on build-host", lines)
+            self.assertIn(f"  Queuekeeper: {execution}", lines)
+            self.assertFalse(any(sender in line for line in lines))
+            receipt.unlink()
+            self.assertFalse(any(line.startswith("  Queuekeeper:") for line in report.lines(1, None)))
+            for content in ("{", json.dumps({"toolkit": {"revision": sender}}), json.dumps({
+                    "toolkit": sender, "result": {"receipt": {"toolkit": {"revision": "unreadable"}}}})):
+                with self.subTest(content=content):
+                    receipt.write_text(content)
+                    self.assertFalse(any(line.startswith("  Queuekeeper:") for line in report.lines(1, None)))
 
     def test_a_nested_groups_failed_member_tail_does_not_count_beside_the_full_log(self):
         member_log = ('➜ Test disabled() skipped: "off"\n'

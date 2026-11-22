@@ -2007,6 +2007,7 @@ def perform(argv, report):
             def concluded(status, **fields):
                 # The verdict in this checkout, and kept by commit for every worktree (vocaro-engineering#198).
                 conclude(directory, receipt, status, **fields)
+                report.recorded_here(receipt)
                 # A worktree of a snapshot is clean at a commit no branch holds, which is no commit's run to keep.
                 counts = whole and not (tree != root and offered.sent["commit"] != offered.sent.get("head")) \
                     and not receipt.get("checkoutMoved") and not receipt.get("checkoutChanged")

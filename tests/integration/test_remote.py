@@ -3526,15 +3526,16 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, output + error)
         lines = error.splitlines()
         receipt = json.loads(Path(lines[-1].removeprefix("  receipt: ")).read_text())
-        self.assertEqual(lines[-4:-2], ["qk run check: passed, on fake", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured"])
+        self.assertEqual(lines[-5:-3], ["qk run check: passed, on fake", "  tests: 2 passed, 0 failed, 0 skipped, 0 unmeasured"])
         self.assertEqual(receipt["lane"], "check")
         # The load of the Mac that ran it, which its own run read and kept in the receipt that came back, beside the
         # verdict (vocaro/queuekeeper#133).
         there = receipt["result"]["receipt"]
         self.assertEqual(there["ranOn"], offload_host.mac_name())
         self.assertGreaterEqual(len(there["load"]["readings"]), 1)
-        self.assertEqual(lines[-2], lane_report.load_line(there, "passed"))
-        self.assertRegex(lines[-2], r"^  load: the one-minute load (was highest [\d.]+, last [\d.]+ over \d+ readings?"
+        self.assertEqual(lines[-2], f"  Queuekeeper: {there['toolkit']['revision']}")
+        self.assertEqual(lines[-3], lane_report.load_line(there, "passed"))
+        self.assertRegex(lines[-3], r"^  load: the one-minute load (was highest [\d.]+, last [\d.]+ over \d+ readings?"
                                     r"|could not be read), and the CPU ")
         # Another Mac's own run prints none, which would repeat it with that Mac's paths.
         self.assertEqual((output + error).count("qk run check:"), 1, output + error)
@@ -3542,9 +3543,10 @@ class RemoteTests(unittest.TestCase):
         status, output, error = self.qk("run", "fail")
         self.assertEqual(status, 3, output + error)
         lines = error.splitlines()
-        self.assertEqual(lines[-4], "qk run fail: unmeasured (exit 3), on fake")
+        self.assertEqual(lines[-5], "qk run fail: unmeasured (exit 3), on fake")
         there = json.loads(Path(lines[-1].removeprefix("  receipt: ")).read_text())["result"]["receipt"]
-        self.assertEqual(lines[-2], lane_report.load_line(there, "unmeasured"))
+        self.assertEqual(lines[-2], f"  Queuekeeper: {there['toolkit']['revision']}")
+        self.assertEqual(lines[-3], lane_report.load_line(there, "unmeasured"))
         self.assertIn("load", there)
 
     def test_a_lane_group_sent_with_remote_run_ends_with_the_load_of_the_mac_it_ran_on_passed_or_not(self):
