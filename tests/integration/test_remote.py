@@ -7511,7 +7511,7 @@ class RemoteSetupTests(unittest.TestCase):
             "FAKE_PYTHON": sys.executable})
         self.environment.start()
         self.patches = [patch.object(remote, "BREW", [str(self.brew)]),
-                        patch.object(remote, "developer_directory", return_value=None)]
+                        patch.object(plugins, "REMOTE_SETUP_CHECKS", [])]
         for item in self.patches: item.start()
 
     def tearDown(self):
@@ -7582,15 +7582,37 @@ class RemoteSetupTests(unittest.TestCase):
         for line in ["MISSING Homebrew's python3 first", "MISSING numpy", "MISSING import no_such_module"]:
             self.assertIn(line, output)
 
-    def test_a_different_xcode_on_the_farm_mac_is_named(self):
+    def test_the_apple_plugin_checks_the_farm_macs_xcode_at_the_selected_developer_directory(self):
         self.install_homebrew()
-        # This Mac's Xcode is one version, another Mac's at the same path another.
-        with patch.object(remote, "developer_directory", return_value="/Applications/Xcode.app/Contents/Developer"), \
-                patch.object(offload_host, "output", return_value="Xcode 99.0\nBuild version 99A1"):
-            status, output, _ = self.qk()
-        self.assertEqual(status, 1)
-        self.assertIn("MISSING Xcode 99.0 Build version 99A1 at /Applications/Xcode.app/Contents/Developer, "
-                      "as on this Mac (found ", output)
+        developer = self.project / "Xcode Test.app/Contents/Developer"
+        developer.mkdir(parents=True)
+        version = developer / "remote-version"
+        version.write_text("Xcode 99.0\nBuild version 99A2\n")
+        xcrun = self.brew.with_name("xcrun")
+        xcrun.write_text('#!/bin/sh\n[ "$*" = "xcodebuild -version" ] && cat "$DEVELOPER_DIR/remote-version"\n')
+        host_isolation.executable(xcrun)
+        # This project has no platform plugin, even though the sender has an Xcode.
+        with patch.object(remote, "developer_directory", return_value=str(developer)) as selected, \
+                patch.object(offload_host, "xcode", return_value="Xcode 99.0\nBuild version 99A1") as read:
+            status, output, error = self.qk()
+            self.assertEqual(status, 0, output + error)
+            self.assertNotIn("Xcode", output)
+            selected.assert_not_called()
+            read.assert_not_called()
+
+            # The Apple plugin reads this Mac's version and sends a probe that needs no remote plugin.
+            (self.project / "queuekeeper.json").write_text(json.dumps({
+                "schemaVersion": 1, "name": "Example", "plugins": ["queuekeeper_apple"]}))
+            loaded = [name for name in plugins.LOADED if name != "queuekeeper_apple"]
+            with patch.object(plugins, "LOADED", loaded):
+                status, output, error = self.qk("--check")
+                self.assertEqual(status, 1, output + error)
+                self.assertIn(f"MISSING Xcode 99.0 Build version 99A1 at {developer}, "
+                              "as on this Mac (found Xcode 99.0 Build version 99A2)", output)
+                version.write_text("Xcode 99.0\nBuild version 99A1\n")
+                status, output, error = self.qk("--check")
+                self.assertEqual(status, 0, output + error)
+                self.assertIn(f"ok      Xcode 99.0 Build version 99A1 at {developer}", output)
 
     def test_a_plugin_folder_the_farm_mac_lacks_is_named_with_its_clone_and_left_to_the_owner(self):
         # #117: setup checks another Mac's own checkout of each folder a plugin loads from, and clones nothing.

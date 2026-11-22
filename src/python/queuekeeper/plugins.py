@@ -175,6 +175,9 @@ RECOVER = []
 AROUND_RUN = []
 # Each (lane, names) -> names from this Mac's environment the lane could use but a dispatch did not send.
 REMOTE_ENVIRONMENT = []
+# Each () -> (prefix, shell line, report): a probe sent in the remote setup login shell. report receives the
+# text after prefix and returns (line to print, passed).
+REMOTE_SETUP_CHECKS = []
 # Each (results): prints what a lane kept in its results folder.
 REPORT_RESULTS = []
 # Each (words) -> the default allowance in seconds for one simulator test, or None, from the runner's arguments.

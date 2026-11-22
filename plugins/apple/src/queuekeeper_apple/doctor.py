@@ -1,5 +1,5 @@
-"""What the Apple plugin adds to `doctor`: the simulator runtimes it evens out between the Macs, the stale pool
-simulators it shuts down, and Xcode's default simulators, which it deletes and warns of."""
+"""The Apple checks and fixes in `doctor` and `remote setup`: Xcode versions, simulator runtimes, and stale or
+default simulators."""
 import contextlib
 import json
 from pathlib import Path
@@ -8,9 +8,26 @@ import shlex
 import subprocess
 import sys
 
-from queuekeeper import disk, plugins, remote
+from queuekeeper import disk, offload_host, plugins, remote
 from . import disk as apple_disk
 from .simulators import pool as simulator_pool
+
+
+def remote_setup_xcode():
+    """Check the Xcode at this Mac's developer directory in the receiving Mac's login shell."""
+    developer = remote.developer_directory()
+    here = " ".join((offload_host.xcode(developer) or "").split())
+    selected = f"DEVELOPER_DIR={shlex.quote(developer)} " if developer else ""
+    prefix = "xcode   "
+    probe = f'echo "{prefix}$({selected}xcrun xcodebuild -version 2>/dev/null | tr \'\\n\' \' \')"'
+
+    def report(value):
+        there = " ".join(value.split())
+        if here and there != here:
+            return f"MISSING {here} at {developer}, as on this Mac (found {there or 'none'})", False
+        return f"ok      {there or 'no Xcode'}" + (f" at {developer}" if developer else ""), True
+
+    return prefix, probe, report
 
 
 def fix_hosts(root, hosts):
@@ -227,7 +244,9 @@ def required_commands(config):
 
 
 def register():
-    """Add these checks and fixes to `doctor`."""
+    """Register Apple checks and fixes for doctor and remote setup."""
+    if remote_setup_xcode not in plugins.REMOTE_SETUP_CHECKS:
+        plugins.REMOTE_SETUP_CHECKS.append(remote_setup_xcode)
     if required_commands not in plugins.REQUIRED_COMMANDS: plugins.REQUIRED_COMMANDS.append(required_commands)
     if fix_hosts not in plugins.HOST_FIXES: plugins.HOST_FIXES.append(fix_hosts)
     if simulator_warnings not in plugins.DOCTOR: plugins.DOCTOR.append(simulator_warnings)

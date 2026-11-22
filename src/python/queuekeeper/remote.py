@@ -2770,11 +2770,11 @@ echo "setup: brew install {' '.join(formulae)}"
 """
 
 
-def verify_script(formulae, modules, developer=None, siblings=()):
+def verify_script(formulae, modules, siblings=(), checks=()):
     """One `ok` or `MISSING` line for each thing the gates need, read by a fresh login shell, as
-    `qk remote` reads another Mac; exit 1 when anything is missing. The last line is the
-    version of the Xcode at developer, the path a run there uses, which the caller compares. siblings are
-    (name, clone) for each folder beside the project that its plugins load from, whose checkout there
+    `qk remote` reads another Mac; exit 1 when anything is missing. checks are plugin probes whose
+    output the caller checks. siblings are (name, clone) for each folder beside the project that its
+    plugins load from, whose checkout there
     setup only checks: making it is the owner's step, clone the command that does (vocaro/queuekeeper#117)."""
     lines = ["fail=0",
              "prefix=$(brew --prefix 2>/dev/null) || { echo \"MISSING Homebrew on the login shell's PATH\"; exit 1; }",
@@ -2802,8 +2802,8 @@ def verify_script(formulae, modules, developer=None, siblings=()):
         lines.append(f'if [ -d "$HOME/Development/"{shlex.quote(name)} ]; then '
                      f'echo {shlex.quote(f"ok      ~/Development/{name}")}; '
                      f'else echo {shlex.quote(missing)}; fail=1; fi')
-    selected = f"DEVELOPER_DIR={shlex.quote(developer)} " if developer else ""
-    lines += [f'echo "xcode   $({selected}xcrun xcodebuild -version 2>/dev/null | tr \'\\n\' \' \')"', 'exit $fail']
+    lines.extend(checks)
+    lines.append("exit $fail")
     return "\n".join(lines) + "\n"
 
 
@@ -2834,20 +2834,17 @@ def setup(host, formulae, modules, check, runtimes=False, root=None):
             print(f"queuekeeper: brew install on {host} exited {installed}", file=sys.stderr)
             return 1
     # A new login shell, so a PATH line just written to ~/.zprofile is read as qk remote reads it.
-    # A run there uses the Xcode at this Mac's developer directory, and must find the same version.
-    developer = developer_directory()
-    here = " ".join((offload_host.output(["xcrun", "xcodebuild", "-version"], {**os.environ, "DEVELOPER_DIR": developer})
-                     or "").split()) if developer else None
+    checks = [check() for check in plugins.REMOTE_SETUP_CHECKS]
     siblings = [(name, sibling_clone(root, name)) for name in sibling_folders(root)] if root else []
-    result = ssh(host, verify_script(wanted, modules, developer, siblings), capture_output=True, text=True)
+    script = verify_script(wanted, modules, siblings=siblings, checks=[probe for _, probe, _ in checks])
+    result = ssh(host, script, capture_output=True, text=True)
     status = 0 if result.returncode == 0 else 1
     for line in result.stdout.splitlines():
-        if line.startswith("xcode   "):
-            there = " ".join(line[8:].split())
-            if here and there != here:
-                line, status = f"MISSING {here} at {developer}, as on this Mac (found {there or 'none'})", 1
-            else:
-                line = f"ok      {there or 'no Xcode'}" + (f" at {developer}" if developer else "")
+        for prefix, _probe, report in checks:
+            if line.startswith(prefix):
+                line, passed = report(line.removeprefix(prefix))
+                if not passed: status = 1
+                break
         print(line)
     if result.returncode not in (0, 1):
         print(f"queuekeeper: could not check {host} (ssh exited {result.returncode}): {result.stderr.strip()}", file=sys.stderr)

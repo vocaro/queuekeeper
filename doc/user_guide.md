@@ -1870,8 +1870,9 @@ qk remote setup [FORMULA ...] [--import MODULE ...] [--host NAME] [--check]
 
 It puts Homebrew on the login shell's `PATH` in `~/.zprofile`, since work there runs in that
 Mac's login shell, and installs Homebrew's Python, `uv`, `shellcheck`, `xcodegen`, `zstd` and
-each formula you name. A new login shell then checks every tool, each `--import` module and the
-Xcode, one line each, and the command fails while anything is missing. Without Homebrew it stops
+each formula you name. A new login shell then checks every tool and each `--import` module.
+For Apple projects it also compares the Xcode versions at this Mac's developer directory.
+Each check prints a line and the command fails while anything is missing. Without Homebrew it stops
 with nothing changed; `--check` only checks. It also checks for the project's plugin folders
 and names the `git clone` to run, but clones nothing.
 
