@@ -956,8 +956,7 @@ class Run:
         if xctestrun is None: return record((1, 0, 0, [], "not tested: the build failed"))
         tests, partial = self.listed(device, xctestrun)
         if not tests: return record((1, 0, 0, [], "no tests were listed"))
-        try: seconds = json.loads((self.logs / SHARD_TIMINGS).read_text())
-        except (OSError, ValueError): seconds = {}
+        seconds = shards.read_timings(self.logs / SHARD_TIMINGS)
         shares = packed(tests, partial, seconds, self.args.shards)
         if not shares[number]: return record((0, 0, 0, [], None))
         record(self.test(label, device, xctestrun, shares[number]))
@@ -977,11 +976,7 @@ class Run:
         if unmeasured: self.say(*unmeasured)
 
     def keep_timings(self):
-        if not self.seconds: return
-        path = self.logs / SHARD_TIMINGS
-        try: kept = json.loads(path.read_text())
-        except (OSError, ValueError): kept = {}
-        path.write_text(json.dumps({**kept, **self.seconds}, indent=1, sort_keys=True) + "\n")
+        shards.keep_timings(self.logs / SHARD_TIMINGS, self.seconds)
 
     def device(self, kind, device, built):
         if not self.boot(kind, device): return

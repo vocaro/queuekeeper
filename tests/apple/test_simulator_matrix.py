@@ -1499,6 +1499,25 @@ class SimulatorMatrixTests(unittest.TestCase):
                         if self.devices_by_udid()[call[call.index("-destination") + 1].split("id=")[1]] == "iPhone-17-Pro")
         self.assertIn(["-only-testing:T/D"], shares, output)
 
+    def test_a_bad_shard_timing_does_not_discard_valid_history(self):
+        logs = self.root / ".build/simulator-tests/logs"
+        logs.mkdir(parents=True)
+        timings = logs / "shard-timings.json"
+        timings.write_text(json.dumps({"T/A": "bad", "T/B": 1, "T/C": 1, "T/D": 50, "T/Old": 25, "T/Corrupt": []}))
+        case = {"nodeType": "Test Case", "nodeIdentifier": "T/A/testA()", "result": "Passed",
+                "durationInSeconds": 2.5}
+        suite = {"nodeType": "Test Suite", "name": "A", "children": [case]}
+        bundle = {"nodeType": "Unit test bundle", "name": "T", "children": [suite]}
+        record = ({"totalTestCount": 1, "skippedTests": 0, "failedTests": 0}, {"testNodes": [bundle]})
+
+        status, output = self.run_matrix("--shards", "2", FAKE_TESTS=json.dumps(self.SHARDED),
+                                         FAKE_BUNDLE_RECORD=json.dumps(record))
+
+        self.assertEqual(status, 0, output)
+        shares = [[arg for arg in call if arg.startswith("-only-testing:")] for call in self.shard_runs()]
+        self.assertIn(["-only-testing:T/D"], shares, output)
+        self.assertEqual(json.loads(timings.read_text()), {"T/A": 2.5, "T/B": 1, "T/C": 1, "T/D": 50, "T/Old": 25})
+
     def test_each_shard_keeps_its_per_test_lines_and_bundle_summary_in_its_lanes_results(self):
         # They come back with the lane's dispatch and are kept by commit, where the logs folder's are overwritten (#218).
         results = self.root / "lane-results"
