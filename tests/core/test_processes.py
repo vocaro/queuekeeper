@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 SOURCE = Path(__file__).resolve().parents[2] / "src/python"
 sys.path.insert(0, str(SOURCE))
 from queuekeeper import processes, resources
@@ -173,13 +173,18 @@ class ProcessTests(unittest.TestCase):
     # supervise takes its kill_after when it is defined, so a test passes the grace it needs:
     # patching KILL_AFTER changes nothing, and with 10 s a loaded host failed these tests (#81).
     def outlive_the_root(self, directory, *descendants, root=ROOT, timeout=None, kill_after=processes.KILL_AFTER,
-                         late=0, awaits=None, progress=None, **limits):
+                         late=0, awaits=None, progress=None, bystanders=(), **limits):
         """Supervise ROOT with these descendants; return its result or timeout, stderr and their start identities.
 
         late delays the first sample after the root is reaped by that many seconds, as a busy host
         can. With awaits, each sample after the stop's report waits for that file in directory, so
         that a descendant's SIGTERM handler runs however long the host takes to schedule it."""
-        real, births, cue = processes.snapshot, {}, {"at": time.monotonic()}
+        roots, children, births = [], [], {}
+        here = Path(directory)
+        # ROOT publishes every child before it can leave them to launchd. Read only their
+        # real identities and the root's, even in the final survivor census.
+        cue = {"at": time.monotonic()}
+        settled = False
         # The grace a test gives is a wait the supervisor makes on purpose, without a cue, so a stall is bounded
         # beyond it: a grace stretched by load at a test's start once outlasted the stall bound read later (#128).
         grace = limits.get("LINGER", processes.LINGER)
@@ -193,37 +198,42 @@ class ProcessTests(unittest.TestCase):
             if time.monotonic() - cue["at"] > grace + stall:
                 self.fail("supervision stalled for 30 s past its grace, stretched by load")
             if awaits is not None and "stopping" in error.getvalue():
-                while not (Path(directory) / awaits).exists():
+                while not (here / awaits).exists():
                     if time.monotonic() - cue["at"] > grace + stall:
                         self.fail(f"no {awaits} within 30 s, stretched by load, of the stop")
                     time.sleep(0.01)
-            current = real()
-            try: root, *children = map(int, (Path(directory) / "children").read_text().split())
-            except FileNotFoundError: return current
-            if late and births and root not in current and "late" not in cue:
+            if not children:
+                with contextlib.suppress(FileNotFoundError):
+                    listed_root, *listed = map(int, (here / "children").read_text().split())
+                    self.assertEqual(listed_root, roots[0])
+                    children.extend(listed)
+                    cue["at"] = time.monotonic()
+            current = self.process_rows([*roots, *children, *bystanders], timeout=stall)
+            root_pid = roots[0]
+            if late and births and root_pid not in current and "late" not in cue:
                 cue["late"] = True
                 time.sleep(late)
-            if "listed" not in cue: cue.update(listed=True, at=time.monotonic())
-            if all(current.get(pid, (None,))[0] == root for pid in children):
+            if children and all(current.get(pid, (None,))[0] == root_pid for pid in children):
                 if not births: cue["at"] = time.monotonic()
                 births.update({pid: current[pid][2] for pid in children})
-                (Path(directory) / "adopted").touch()
+                (here / "adopted").touch()
             return current
         def cleanup():
-            if not births: return
-            with patch.object(processes.subprocess, "run", run):
-                current = real()
+            if settled or not births: return
+            current = self.process_rows(births, timeout=stall)
             for pid, birth in births.items():
                 if current.get(pid, (0, 0, None))[2] == birth:
                     with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
         self.addCleanup(cleanup)
         with patch.object(processes, "snapshot", observed), contextlib.redirect_stderr(StringIO()) as error, \
              patch.object(processes.subprocess, "run", run), patch.dict(processes.__dict__, limits):
-            try: result = processes.supervise([sys.executable, "-c", root, directory, *descendants], cwd=directory, timeout=timeout,
-                                                kill_after=kill_after, **({"progress": progress} if progress else {}))
+            try: result = processes.supervise([sys.executable, "-c", root, directory, *descendants], cwd=directory,
+                                                timeout=timeout, on_start=roots.append, kill_after=kill_after,
+                                                **({"progress": progress} if progress else {}))
             except TimeoutError as expired: result = expired
-            current = real()
+            current = self.process_rows(births, timeout=stall)
         self.assertEqual({pid for pid, birth in births.items() if current.get(pid, (0, 0, None))[2] == birth}, set())
+        settled = True
         return result, error.getvalue(), births
 
     def test_bounded_stops_its_whole_group_at_its_timeout_and_otherwise_keeps_the_status_and_output(self):
@@ -253,6 +263,14 @@ class ProcessTests(unittest.TestCase):
                                            timeout=stretched(60)),
                          (4, "done\n"))
 
+    def process_rows(self, pids, *, timeout):
+        """Read real process identities for the PIDs a fixture owns or has observed."""
+        if not pids: return {}
+        rows = subprocess.run(["ps", "-o", "pid=,ppid=,pgid=,lstart=", "-p", ",".join(map(str, sorted(pids)))],
+                              capture_output=True, text=True, timeout=timeout).stdout
+        return {int(parts[0]): (int(parts[1]), int(parts[2]), parts[3])
+                for parts in (line.split(maxsplit=3) for line in rows.splitlines()) if len(parts) == 4}
+
     def own_tree(self, *pinned):
         """A processes.snapshot of this test's own process tree and of the PIDs each of pinned lists, a file of PIDs:
         a listing of every process on the Mac is slow at a gate's start. The pinned ones
@@ -269,10 +287,7 @@ class ProcessTests(unittest.TestCase):
                 if pid not in found: found.add(pid); pending.extend(children.get(pid, []))
             for path in pinned:
                 with contextlib.suppress(FileNotFoundError): found.update(map(int, path.read_text().split()))
-            rows = subprocess.run(["ps", "-o", "pid=,ppid=,pgid=,lstart=", "-p", ",".join(map(str, sorted(found)))],
-                                  capture_output=True, text=True, timeout=stretched(60)).stdout
-            return {int(parts[0]): (int(parts[1]), int(parts[2]), parts[3])
-                    for parts in (line.split(maxsplit=3) for line in rows.splitlines()) if len(parts) == 4}
+            return self.process_rows(found, timeout=stretched(60))
         return listing
 
     def started(self, pid):
@@ -314,12 +329,18 @@ class ProcessTests(unittest.TestCase):
             self.addCleanup(bystander.kill)
             listing = self.own_tree(here / "descendants")
             # Each helper and the helper's child, by PID and start as first listed, for the assertions and a cleanup
-            # that never signals a PID taken over since.
+            # that never signals a PID taken over since. Before the root's listing is available, keep discovering its
+            # children by parent so a startup failure can still be cleaned up.
             descendants, seen = set(), {}
+            census_limit = stretched(60)
             def snapshot():
-                current = listing()
-                with contextlib.suppress(FileNotFoundError):
-                    descendants.update(map(int, (here / "descendants").read_text().split()))
+                if not descendants:
+                    with contextlib.suppress(FileNotFoundError):
+                        descendants.update(map(int, (here / "descendants").read_text().split()))
+                if descendants:
+                    current = self.process_rows(descendants | {bystander.pid}, timeout=census_limit)
+                else:
+                    current = listing()
                 seen.update({pid: " ".join(current[pid][2].split()) for pid in descendants if pid in current and pid not in seen})
                 return current
             def cleanup():
@@ -339,6 +360,46 @@ class ProcessTests(unittest.TestCase):
             for pid, start in seen.items():
                 self.assertTrue(self.gone(pid, start), f"descendant {pid} outlived the timed-out run")
             self.assertIsNone(bystander.poll(), "a process that is no descendant of the run was stopped")
+
+    def test_a_slow_census_before_sigkill_does_not_spend_the_descendants_kill_wait(self):
+        child = Mock(pid=100, returncode=None)
+        descendant = 101
+        row = (1, descendant, "birth")
+        root_row = (1, child.pid, "root")
+        clock = Mock(wraps=time)
+        clock.monotonic.return_value = 0
+        killed = []
+        samples = 0
+
+        def snapshot():
+            nonlocal samples
+            samples += 1
+            if samples == 1:
+                return {child.pid: root_row, descendant: (child.pid, descendant, "birth")}
+            if not killed:
+                clock.monotonic.return_value = processes.KILL_WAIT + 1
+                return {descendant: row}
+            return {}
+
+        def kill(pid, number):
+            if number == signal.SIGKILL:
+                killed.append(pid)
+
+        with patch.object(processes, "snapshot", snapshot), patch.object(processes, "time", clock), \
+             patch.object(processes.os, "kill", kill), patch.object(processes.os, "killpg"):
+            processes.end_tree(child, kill_after=0)
+        self.assertEqual(killed, [descendant])
+        child.wait.assert_called_once_with(timeout=processes.KILL_WAIT)
+
+    def test_bounded_stops_its_root_and_keeps_a_cleanup_failure(self):
+        for stopping in (None, lambda: False):
+            with self.subTest(stopping=stopping), patch.object(processes.subprocess, "Popen") as launch, \
+                 patch.object(processes, "waited", side_effect=subprocess.TimeoutExpired("run", 1)), \
+                 patch.object(processes, "end_tree", side_effect=RuntimeError("a descendant is still running")), \
+                 patch.object(processes, "stop") as stop_root:
+                with self.assertRaisesRegex(RuntimeError, "a descendant is still running"):
+                    processes.bounded(["run"], timeout=1, stop=stopping)
+                stop_root.assert_called_once_with(launch.return_value)
 
     def test_bounded_leaves_the_descendants_of_a_run_that_ends_in_time_as_they_are(self):
         # The control: only a timeout lists or stops descendants; a daemon a passing command starts keeps running.
@@ -552,7 +613,7 @@ class ProcessTests(unittest.TestCase):
                 return {pid: (start, 0) for pid, start in identities.items()}
             with patch.object(progress, "cpu", side_effect=readings):
                 result, error, births = self.outlive_the_root(directory, IGNORES_TERM, HANDLES_TERM, root=STAYS,
-                    progress=monitor, timeout=stretched(30), kill_after=0.5, awaits="terminated")
+                    progress=monitor, timeout=stretched(30), kill_after=0.5, awaits="terminated", bystanders=(unrelated.pid,))
             self.assertIsInstance(result, processes.Stalled, error)
             self.assertEqual(len(births), 2)
             self.assertTrue((here / "terminated").exists(), "the ordinary TERM handler must run before KILL")
@@ -589,11 +650,7 @@ class ProcessTests(unittest.TestCase):
                     return {pid: (start, ticks[0] if pid == active else 0) for pid, start in identities.items()}
                 should_stop = primary and working == "primary"
                 root = STAYS if should_stop else ROOT.replace("raise SystemExit(3)", "time.sleep(3)")
-                # Keep real PID/start identities and orphan cleanup, but ask ps for full
-                # identities only in our tree. Listing every process's lstart timed out
-                # under gate load (#142); pin the children after the root exits, too.
-                with patch.object(progress, "cpu", side_effect=readings), \
-                     patch.object(processes, "snapshot", self.own_tree(here / "children")):
+                with patch.object(progress, "cpu", side_effect=readings):
                     result, error, births = self.outlive_the_root(directory, HANDLES_TERM, HANDLES_TERM,
                         root=root, progress=monitor, timeout=stretched(5), kill_after=0.5,
                         awaits="terminated" if should_stop else None)

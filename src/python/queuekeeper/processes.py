@@ -708,19 +708,22 @@ def bounded(command, *, cwd=None, timeout, pass_fds=(), kill_after=KILL_AFTER, s
     with tempfile.TemporaryFile("w+", errors="replace") as output:
         child = subprocess.Popen(command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT,
                                  start_new_session=True, pass_fds=pass_fds)
-        try:
-            status = waited(child, timeout, stop)
-        except subprocess.TimeoutExpired:
-            status = None
-            try: end_tree(child, min(kill_after, STOPPED_KILL_AFTER) if stop is not None and stop() else kill_after)
-            except BaseException:
-                stop(child)
-                raise
-        except BaseException:
-            stop(child)
-            raise
+        status = _bounded_wait(child, timeout, kill_after, stop)
         output.seek(0)
         return status, output.read()
+
+
+def _bounded_wait(child, timeout, kill_after, stopping):
+    try:
+        try:
+            return waited(child, timeout, stopping)
+        except subprocess.TimeoutExpired:
+            grace = min(kill_after, STOPPED_KILL_AFTER) if stopping is not None and stopping() else kill_after
+            end_tree(child, grace)
+            return None
+    except BaseException:
+        stop(child)
+        raise
 
 
 def end_tree(child, kill_after=KILL_AFTER):
@@ -757,12 +760,15 @@ def end_tree(child, kill_after=KILL_AFTER):
         if child.returncode is not None and not outside: break
     # The root may have gone on SIGTERM and left the rest of its group running.
     with contextlib.suppress(ProcessLookupError, PermissionError): os.killpg(child.pid, signal.SIGKILL)
+    # The first census may be slow. Descendants get the full wait after being sent SIGKILL.
+    outside = sweep(signal.SIGKILL)
     deadline = time.monotonic() + KILL_WAIT
-    while outside := sweep(signal.SIGKILL):
+    while outside:
         if time.monotonic() >= deadline:
             raise RuntimeError(f"Timed-out command {child.pid}'s descendant(s) PID "
                                f"{', '.join(map(str, sorted(outside)))} survived SIGKILL")
         time.sleep(0.05)
+        outside = sweep(signal.SIGKILL)
     child.wait(timeout=KILL_WAIT)
 
 
