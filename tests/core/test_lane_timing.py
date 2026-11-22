@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import host_isolation
 from host_isolation import stretched
-from queuekeeper import agent_results, budgets, cli, config, lane_timing, merge_queue, processes
+from queuekeeper import agent_results, budgets, cli, config, lane_timing, lane_wait, merge_queue, offload_host, processes
 
 
 def history(tmp):
@@ -104,7 +104,10 @@ class PaceTests(unittest.TestCase):
             self.assertTrue(pace.active())
             clock.now = 99
             self.assertEqual(pace.observe(), (None, None))
-            self.assertIsNone(lane_timing.live(Path(tmp) / "gate.json"))
+            found = lane_timing.live(Path(tmp) / "gate.json")
+            self.assertEqual((found["state"], found["medianSeconds"], found["p90Seconds"], found["samples"]),
+                             ("baseline", 100, 100, 10))
+            self.assertNotIn("words", found, "the baseline is not a warning, including to an older reader")
             clock.now = 101
             said, failed = pace.observe()
             self.assertTrue(said.startswith(lane_timing.PREFIX + "warning: gate has run 1m41s, past its p90 of 1m40s"))
@@ -252,6 +255,10 @@ class LaneRunTests(unittest.TestCase):
             lane_timing.clear_live(live)
             paces = {name: lane_timing.Pace(name, {"timing": {"fail": "+50%"}}, "P", live=live, clock=clocks[name],
                                             group="group") for name in ("a", "b")}
+            found = lane_timing.live(Path(tmp) / "group.json")
+            self.assertEqual((found["state"], set(found["lanes"])), ("baseline", {"a", "b"}))
+            self.assertNotIn("medianSeconds", found, "the group has no baseline of its own")
+            self.assertNotIn("words", found)
             clocks["a"].now = 101
             paces["a"].observe()
             clocks["b"].now = 151
@@ -300,6 +307,26 @@ class StaleCommandTests(unittest.TestCase):
 
 
 class ShownTests(unittest.TestCase):
+    def test_status_and_wait_show_the_executing_macs_baseline_before_a_warning(self):
+        with tempfile.TemporaryDirectory() as tmp, history(tmp):
+            root = Path(tmp)
+            there, here = root / "there.json", root / "here.json"
+            lane_timing.Pace("gate", {}, "P", live=Path(str(there) + lane_timing.LIVE))
+            self.assertIsNone(offload_host.timing_state(there), "a lane with no baseline sends none")
+            for seconds in [55, 60, 65, 70, 90]: lane_timing.record("P", "gate", seconds)
+            lane_timing.Pace("gate", {}, "P", live=Path(str(there) + lane_timing.LIVE))
+            with patch.dict(os.environ, {lane_wait.VARIABLE: str(here)}):
+                lane_wait.relayed(json.dumps({"timing": offload_host.timing_state(there)}), "build-host")
+            found = lane_timing.live(here, lane="gate")
+            self.assertIsNone(lane_timing.live(here, lane="another-lane"), "provisioning can share the wait path")
+            self.assertEqual((found["state"], found["medianSeconds"], found["p90Seconds"], found["samples"]),
+                             ("baseline", 65, 90, 5))
+            gate = {"lane": "gate", "began": 1, "entries": ["e1"], "mac": "build-host", "timing": found}
+            state = {"round": "r1", "entries": ["e1"], "gates": {"batch": gate}}
+            expected = "timing: gate: median 1m05s, p90 1m30s over 5 passing runs on that Mac"
+            self.assertIn(expected, "\n".join(merge_queue.round_lines(state, at=2)))
+            self.assertIn(expected, merge_queue.situation(None, {"id": "e1", "state": "testing"}, state, at=2)[1])
+
     def test_status_and_wait_show_a_running_gates_timing(self):
         gate = {"lane": "gate", "began": 0, "entries": ["e1"], "mac": "this Mac",
                 "timing": {"state": "slow", "words": "gate has run 12m00s, past its p90 of 10m00s"}}

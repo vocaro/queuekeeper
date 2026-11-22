@@ -1871,7 +1871,7 @@ class GateWatch:
         self.queue.gate_note(self.role, mac=mac, waiting=waiting, waitingKind=record.get("kind") if waiting else None,
                              waitingOn=record.get("mac") if waiting else None, waitingSince=since, stranded=stranded,
                              progress=lane_progress.current(lane_wait.path_of(self.checkout, self.lane), self.began),
-                             timing=lane_timing.live(lane_wait.path_of(self.checkout, self.lane), self.began),
+                             timing=lane_timing.live(lane_wait.path_of(self.checkout, self.lane), self.began, self.lane),
                              moved=latest(run_progress.moved(self.checkout, self.began),
                                           run_progress.logs_moved(self.checkout, self.began)))
 
@@ -2816,7 +2816,7 @@ def round_lines(state, at=None):
         for observation in gate.get("progress", []):
             if lane_progress.valid(observation, gate.get("began"), at):
                 line += "\n    progress: " + lane_progress.words(observation)
-        if timing_words(gate): line += f"\n    timing: {timing_words(gate)}"
+        if timing := timing_words(gate): line += f"\n    timing: {timing}"
         if stuck(gate, at): line += f"\n    {stuck(gate, at)}"
         if gate.get("log"): line += f"\n    log: {gate['log']}"
         lines.append(line)
@@ -3015,7 +3015,7 @@ def situation(queue, entry, state, at=None):
         if identifier not in gate.get("entries", []): continue
         where = f"{gate.get('lane')} lane on {gate.get('mac') or 'no Mac yet'}"
         if gate.get("waiting"): where += f", waiting: {gate['waiting']}"
-        if timing_words(gate): where += f"; timing: {timing_words(gate)}"
+        if timing := timing_words(gate): where += f"; timing: {timing}"
         key = ("gate", name, role, gate.get("lane"), gate.get("mac"), gate.get("waitingKind") or bool(gate.get("waiting")),
                (gate.get("timing") or {}).get("state") if isinstance(gate.get("timing"), dict) else None)
         count = entries_word(len(gate.get("entries", [])))
@@ -3051,10 +3051,11 @@ def situation(queue, entry, state, at=None):
 
 
 def timing_words(gate):
-    """What a running gate's live timing record (lane_timing.live) says, such as that it has run past its baseline,
-    or None."""
+    """What a running gate's live timing record (lane_timing.live) says about its baseline or a warning."""
     timing = gate.get("timing")
-    if not isinstance(timing, dict) or not isinstance(timing.get("words"), str): return None
+    if not isinstance(timing, dict): return None
+    if timing.get("state") == "baseline": return lane_timing.baseline_words(timing)
+    if not isinstance(timing.get("words"), str): return None
     return ("failed: " if timing.get("state") == "failed" else "warning: ") + timing["words"]
 
 

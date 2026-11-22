@@ -1432,6 +1432,10 @@ least 5. While a lane runs, it warns once when it passes its baseline:
 queuekeeper timing: warning: gate has run 14m10s, past its p90 of 12m05s over its last 20 passing runs on this Mac (median 11m30s)
 ```
 
+When the lane starts work with a baseline, the queue shows its median, p90 and sample count on
+the Mac running it. These times describe past lane work and exclude waits for admission. A group
+shows the timings of its members with history, since the group has no baseline of its own.
+
 The warning goes to the lane's log and to `qk run`'s output, which the queue's gate log keeps.
 `qk queue status` and `qk land --wait` (or `qk queue wait`) show it beside the running gate as
 `timing: warning: ...`, including for a gate on another Mac. Their JSON results include it under

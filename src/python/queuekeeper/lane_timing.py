@@ -10,9 +10,10 @@ HISTORY beside the admission log (resources.log_path), by project and lane, with
 wait_history keeps. A lane's baseline is the 90th percentile, by nearest rank, of its newest RECENT such runs since its
 history was last marked stale, once it has FEWEST of them.
 
-While a lane runs, past its baseline it says so once: a line in its log and on qk run's standard error, which the
-queue's gate log keeps, and a record beside the lane's wait record (live_path) that `qk queue status`, `qk queue wait`
-and their JSON read, which a run on another Mac sends back with its wait record. A lane group has no timing of its
+At the start of a lane's work, a record beside its wait record (live_path) gives `qk queue status`, `qk queue wait`
+and their JSON the baseline, which a run on another Mac sends back with its wait record. Past its baseline the lane
+updates the live record and warns once in its log and on qk run's standard error, which the queue's gate log keeps.
+A lane group has no timing of its
 own: each of its members is timed against its own baseline as it runs in the group, records its own passing runs and
 says its own warnings, which the group's live record holds together, one entry per member (vocaro/queuekeeper#284).
 A lane may also give a fail threshold
@@ -244,6 +245,7 @@ class Pace:
         self.live = live if live is not None else live_path()
         self.began, self.started, self.warned, self.failed = clock(), time.time(), None, None
         if self.live is not None and group is None: clear_live(self.live)
+        if self.base is not None: self.publish("baseline")
 
     def active(self):
         """Whether there is anything to watch: a baseline to warn against, or a threshold to fail past."""
@@ -279,11 +281,12 @@ class Pace:
         """The run passed: one more in the lane's history, timed from its start (record)."""
         return record(self.project, self.name, self.clock() - self.began, self.commit)
 
-    def publish(self, state, said):
+    def publish(self, state, said=None):
         if self.live is None: return
-        live = {"lane": self.name, "state": state, "words": said, "startedAt": self.started, "written": time.time(),
-                "p90Seconds": round(self.base["p90"], 1), "samples": self.base["samples"],
-                **({"failSeconds": round(self.limit, 1)} if self.limit else {})}
+        live = {"lane": self.name, "state": state, "startedAt": self.started, "written": time.time(),
+                "medianSeconds": round(self.base["median"], 1), "p90Seconds": round(self.base["p90"], 1),
+                "samples": self.base["samples"], **({"failSeconds": round(self.limit, 1)} if self.limit else {})}
+        if said is not None: live["words"] = said
         if self.group is None: return write_live(self.live, live)
         with SHARED:
             try: found = json.loads(Path(self.live).read_text())
@@ -295,11 +298,27 @@ class Pace:
 
 def grouped(group, lanes):
     """A lane group's live record from its members' own, {NAME: record}: failed if any member failed, its words each
-    member's, a failure's first, and the members' own under "lanes"."""
+    member's warning or failure, a failure's first, and the members' own under "lanes"."""
     members = sorted(lanes.values(), key=lambda member: (member.get("state") != "failed", member.get("startedAt", 0)))
-    return {"lane": group, "state": "failed" if any(member.get("state") == "failed" for member in members) else "slow",
-            "words": "; ".join(member["words"] for member in members),
-            "startedAt": min(member.get("startedAt", 0) for member in members), "written": time.time(), "lanes": lanes}
+    warnings = [member for member in members if isinstance(member.get("words"), str)]
+    record = {"lane": group, "state": warnings[0]["state"] if warnings else "baseline",
+              "startedAt": min(member.get("startedAt", 0) for member in members), "written": time.time(), "lanes": lanes}
+    if warnings: record["words"] = "; ".join(member["words"] for member in warnings)
+    return record
+
+
+def baseline_words(record):
+    """The measured duration of the lane's work on the Mac that started it, or each group member's own."""
+    lanes = record.get("lanes")
+    members = lanes.values() if isinstance(lanes, dict) else [record]
+    lines = []
+    for member in members:
+        if not isinstance(member, dict): continue
+        name, median, p90, samples = (member.get(key) for key in ("lane", "medianSeconds", "p90Seconds", "samples"))
+        if isinstance(name, str) and number(median) and number(p90) and 0 <= median <= p90 \
+                and type(samples) is int and samples >= FEWEST:
+            lines.append(f"{name}: median {words(median)}, p90 {words(p90)} over {samples} passing runs on that Mac")
+    return "; ".join(lines) or None
 
 
 def clear_live(where):
@@ -326,20 +345,25 @@ def write_live(where, record):
         with contextlib.suppress(OSError): staged.unlink()
 
 
-def live(wait, since=None):
+def live(wait, since=None, lane=None):
     """The live timing record beside the wait record at wait, or None: absent, unreadable, or written before since,
-    the run's start."""
+    the run's start. A startup baseline is for the requested lane, which an earlier provision step can differ from."""
     try: found = json.loads(Path(str(wait) + LIVE).read_text())
     except (OSError, ValueError): return None
-    if not isinstance(found, dict) or not isinstance(found.get("words"), str): return None
+    if not live_record(found): return None
     if since is not None and (not number(found.get("written")) or found["written"] < since): return None
+    if lane is not None and found.get("state") == "baseline" and found.get("lane") != lane: return None
     return found
 
 
 def relayed(record, wait):
     """A live timing record another Mac sent back with its wait record, written beside this Mac's record at wait."""
-    if isinstance(record, dict) and isinstance(record.get("words"), str) and wait:
+    if wait and live_record(record):
         write_live(Path(str(wait) + LIVE), {**record, "written": time.time()})
+
+
+def live_record(record):
+    return isinstance(record, dict) and (isinstance(record.get("words"), str) or record.get("state") == "baseline")
 
 
 def found_in(text):

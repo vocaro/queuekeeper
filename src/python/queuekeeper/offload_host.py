@@ -4514,7 +4514,8 @@ def timing_state(path):
         data = Path(str(path) + ".timing").read_bytes()
         record = json.loads(data) if len(data) <= 65536 else None
     except (OSError, ValueError): return None
-    return record if isinstance(record, dict) and isinstance(record.get("words"), str) else None
+    return record if isinstance(record, dict) and (isinstance(record.get("words"), str)
+                                                    or record.get("state") == "baseline") else None
 
 
 def progress_state(path):
