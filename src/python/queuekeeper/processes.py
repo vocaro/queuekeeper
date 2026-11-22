@@ -351,8 +351,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
     gives more, as a foreground run does). Once the root and every observed descendant have ended,
     the run raises Interrupted, which admission releases; any still running KILL_WAIT seconds after
     SIGKILL leave it uncertain.
-    A timeout that expires while the root runs is carried out the same way with SIGTERM, without
-    on_stop, and the run raises TimedOut, which admission also releases.
+    A timeout that finds the root still running is carried out the same way with SIGTERM, without
+    on_stop, and the run raises TimedOut, which admission also releases. If a delayed sample first
+    discovers the root's exit after the deadline, its exit status stands because poll gives no exit time.
     With an opt-in progress monitor, a confirmed quiet bound uses that same stop and cleanup,
     raising Stalled only once the owned tree ended. Missing samples never establish a stall.
     space, called every SPACE_POLL seconds while the root runs, says why the disk is too full to go on, or None;
@@ -537,7 +538,9 @@ def supervise(command, *, cwd, stdout=None, timeout=None, env=None, on_stop=None
                     expired, slow = time.monotonic(), failed
                     logged(stdout, f"supervise: past its timing threshold: {failed}; sending SIGTERM to the command "
                            f"(PID {child.pid}) and its observed descendants, then SIGKILL after {kill_after:g}s")
-            if timeout is not None and exited is None and expired is None and time.monotonic() - started >= timeout:
+            # A delayed sample can cross the deadline after the root has already exited.
+            if timeout is not None and exited is None and expired is None \
+                    and time.monotonic() - started >= timeout and child.poll() is None:
                 expired = time.monotonic()
                 logged(stdout, f"supervise: timed out after {timeout:g}s; sending SIGTERM to the command (PID {child.pid}) "
                        f"and its observed descendants, then SIGKILL after {kill_after:g}s")

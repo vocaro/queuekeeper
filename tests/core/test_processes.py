@@ -387,6 +387,31 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual(result, 3)
             self.assertIn("stopping 1 process(es)", error)
 
+    def test_a_root_that_exits_before_a_delayed_sample_keeps_its_status(self):
+        # Wait for the exit without reaping it, then model a sample that returns past the deadline.
+        roots = []
+        with tempfile.TemporaryDirectory() as directory, patch.object(processes, "time", wraps=time) as clock:
+            clock.monotonic.return_value = 0
+
+            def delayed():
+                if clock.monotonic.return_value == 0:
+                    deadline = time.monotonic() + stretched(10)
+                    while True:
+                        event = os.waitid(os.P_PID, roots[0], os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        if event is not None:
+                            self.assertEqual((event.si_code, event.si_status), (os.CLD_EXITED, 0))
+                            break
+                        if time.monotonic() >= deadline:
+                            self.fail("the root did not exit before the sample's wait limit")
+                        time.sleep(0.01)
+                    clock.monotonic.return_value = 61
+                return {}
+
+            with patch.object(processes, "snapshot", delayed), contextlib.redirect_stderr(StringIO()) as error:
+                result = processes.supervise(["/usr/bin/true"], cwd=directory, timeout=60, on_start=roots.append)
+            self.assertEqual(result, 0)
+            self.assertNotIn("timed out", error.getvalue())
+
     def test_xcodes_own_programs_left_to_launchd_are_stopped_without_the_grace(self):
         with tempfile.TemporaryDirectory() as directory, self.hold_stand_ins(directory):
             # Fixed: a grace of 600 s, which the run must not wait; the bound on it stretches by load.

@@ -1083,7 +1083,10 @@ command starts outlives it unseen.
 - **Stops and timeouts.** SIGTERM, SIGINT and SIGHUP are a stop. Once admitted, the job first marks
   its guard entry uncertain, in case SIGKILL follows, then forwards the signal and sends SIGKILL
   10 seconds later. A later signal doesn't hasten SIGKILL, since a task stop can deliver SIGTERM
-  twice. A timeout is carried out the same way and raises `TimedOut` (exit 3).
+  twice. When the deadline has passed, the supervisor checks whether the root is still running
+  before it sends a timeout signal. A root that is still running is stopped the same way and the
+  run raises `TimedOut` (exit 3). If a delayed sample first discovers the root's exit after the
+  deadline, the root keeps its status because polling gives no exit time.
 - **Nested owners.** When SIGKILL falls due and an observed process is an admission owner, the
   outer supervisor waits up to `SETTLE_WAIT` (30 s) more for it to stop its own command and settle
   its entry.
