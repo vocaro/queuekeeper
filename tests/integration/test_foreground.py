@@ -883,14 +883,56 @@ class ReadinessTests(unittest.TestCase):
         answers = [{"mac": "Second", "problems": [["the screen is locked", "unlock it"]], "voiceover": True,
                     "entry": None},
                    {"mac": "Second", "problems": [], "entry": {"state": "reserved", "ownerChatID": "queuekeeper 7 on Second",
-                                                                "purpose": "P lane", "expectedReleaseBy": "later"}}]
+                                                                "purpose": "P lane", "expectedReleaseBy": "later",
+                                                                "activeRun": True, "hostProcessIdentifier": 7,
+                                                                "hostProcessStart": "Tue Nov 17 08:00:00 2026"}}]
         for answer, status, words in zip(answers, [remote.MISCONFIGURED, 0],
                                          ["no run holds it\n- the screen is locked: unlock it",
-                                          "queuekeeper 7 on Second holds it for P lane, expected release later\nReady"]):
+                                          "queuekeeper 7 on Second holds it for P lane, expected release later\n"
+                                          "Configured for foreground work started over SSH. New runs wait"]):
             with self.subTest(status), patch.object(remote, "ask", return_value=answer), \
                  contextlib.redirect_stdout(StringIO()) as output:
                 self.assertEqual(remote.foreground_report("build-host"), status)
             self.assertIn(words, output.getvalue())
+
+    def test_remote_foreground_refuses_when_healthy_ssh_and_screen_have_a_lease_needing_recovery(self):
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "device-handoff.json"
+        held = {"state": "reserved", "ownerChatID": "queuekeeper 7 on Second", "purpose": "P lane",
+                "expectedReleaseBy": "later", "revision": 19, "activeRun": True,
+                "hostProcessIdentifier": 7, "hostProcessStart": "Tue Nov 17 08:00:00 2026"}
+        cases = (
+            (None, {}, "released", 0, "Ready for foreground work started over SSH."),
+            (held, {7: held["hostProcessStart"]}, "active", 0, "New runs wait for the holder"),
+            ({**held, "uncertain": True, "voiceOverRestoration": {"verified": False,
+             "reason": "[Errno 32] Broken pipe"}}, {}, "uncertain", 2,
+             "mac-foreground is uncertain"),
+            ({**held, "state": "restoration-unverified"}, {}, "uncertain", 2, "mac-foreground is uncertain"),
+            (held, {}, "orphan", 2, "mac-foreground is orphan"),
+            (held, None, "unknown", 2, "the recorded run's process could not be verified"),
+        )
+        for entry, processes, condition, status, words in cases:
+            with self.subTest(condition=condition, entry=entry):
+                record = json.dumps({"vocaroDeviceHandoff": 1, "devices": {} if entry is None else {"mac-foreground": entry}})
+                path.write_text(record)
+                with patch.object(offload_host, "record_path", return_value=path), \
+                     patch.object(offload_host, "mac_name", return_value="Second"), \
+                     patch.object(offload_host, "system_events_accessibility", return_value=True), \
+                     patch.object(offload_host, "foreground_problems", return_value=[]), \
+                     patch.object(offload_host, "crash_dialogs", return_value=None), \
+                     patch.object(offload_host, "screen_capture_approvals", return_value=[]), \
+                     patch.object(offload_host, "census", return_value=processes) as census, \
+                     patch.object(remote, "ask", side_effect=lambda _host, request: offload_host.answer(request)), \
+                     contextlib.redirect_stdout(StringIO()) as output:
+                    self.assertEqual(remote.foreground_report("build-host"), status)
+                said = output.getvalue()
+                self.assertIn(words, said)
+                self.assertEqual(path.read_text(), record)
+                if condition in ("orphan", "uncertain"):
+                    self.assertIn("it needs attended recovery first", said)
+                    self.assertIn("devices recover --host build-host mac-foreground --by SESSION --revision 19", said)
+                    self.assertNotIn("Ready for foreground", said)
+                if condition == "uncertain":
+                    census.assert_not_called()
 
 
 class RoutingTests(unittest.TestCase):

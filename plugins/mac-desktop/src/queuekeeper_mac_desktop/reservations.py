@@ -127,13 +127,7 @@ def moment(value):
 
 def condition(entry):
     """released, held, active, orphan or uncertain. Reading a condition never changes an entry."""
-    if entry.get("uncertain") or entry.get("state") == "restoration-unverified":
-        return "uncertain"
-    if entry.get("activeRun"):
-        pid, start = entry.get("hostProcessIdentifier"), entry.get("hostProcessStart")
-        alive = isinstance(pid, int) and pid > 0 and start is not None and process_start(pid) == start
-        return "active" if alive else "orphan"
-    return "released" if entry.get("state") == "released" else "held"
+    return offload_host.reservation_condition(entry, lambda pid, start: "active" if process_start(pid) == start else "orphan")
 
 
 def identity(entry):

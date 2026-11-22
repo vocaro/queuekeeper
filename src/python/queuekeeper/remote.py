@@ -2667,13 +2667,30 @@ def offering_here(here, send):
 
 def foreground_report(host):
     """Print what another Mac lacks for foreground work started over SSH, each with the owner's fix, and who
-    holds its foreground; exit 0 when it lacks nothing, MISCONFIGURED otherwise."""
+    holds its foreground. A lease needing attended recovery is refused as it is by admission."""
     found = ask(host, {"foreground": True})
     entry = found.get("entry")
-    holder = "no run holds it" if not entry or entry.get("state") == "released" else \
-        entry.get("error") or f"{entry.get('ownerChatID')} holds it for {entry.get('purpose')}, " \
-        f"expected release {entry.get('expectedReleaseBy')}"
+    condition = found.get("condition")
+    if condition is None:  # older replies identify a holder without checking its PID there
+        condition = offload_host.reservation_condition(entry, lambda _pid, _start: "held")
+    if entry and entry.get("error"):
+        holder, condition = entry["error"], "unknown"
+    elif condition == "released":
+        holder = "no run holds it"
+    elif condition in ("orphan", "uncertain"):
+        holder = (f"mac-foreground is {condition}, held by {entry.get('ownerChatID')} for {entry.get('purpose')}; "
+                  "it needs attended recovery first")
+    elif condition == "unknown":
+        holder = "the recorded run's process could not be verified"
+    else:
+        holder = (f"{entry.get('ownerChatID')} holds it for {entry.get('purpose')}, "
+                  f"expected release {entry.get('expectedReleaseBy')}")
     print(f"{found.get('mac')}'s foreground: {holder}")
+    if condition in ("orphan", "uncertain"):
+        if entry.get("uncertainReason"):
+            print(f"- {entry['uncertainReason']}")
+        command = offload_host.recover_command("mac-foreground", entry.get("revision", 0), host=host, toolkit=TOOLKIT_ROOT)
+        print(f"- after checking what the run left, recover that Mac's lease with `{command}`")
     for line in crash_dialog_report(found.get("crashDialogs"), entry): print(line)
     if "captureApprovals" in found:  # another Mac whose toolkit predates them says nothing
         for line in plugins.FOREGROUND.capture_lines(found["captureApprovals"]): print(line)
@@ -2683,7 +2700,10 @@ def foreground_report(host):
         print(f"These are the owner's settings to change, on {called(host)}; "
               "foreground work there stops until they are.")
         return MISCONFIGURED
-    print("Ready for foreground work started over SSH.")
+    if condition in ("orphan", "uncertain", "unknown"):
+        return 2
+    print("Ready for foreground work started over SSH." if condition == "released" else
+          "Configured for foreground work started over SSH. New runs wait for the holder to release it.")
     return 0
 
 

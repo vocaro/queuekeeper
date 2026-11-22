@@ -1142,18 +1142,40 @@ def crash_dialogs(*, read_alerts=True):
     return {"value": crash_dialog(), "record": kept, "alerts": alerts, "windows": alerts and output(ORDER)}
 
 
+def reservation_condition(entry, run_state):
+    """released, held, active, orphan, uncertain or unknown, as admission and foreground readiness read it.
+    run_state(pid, start) reads the recorded process on the Mac that owns the reservation."""
+    if entry is None:
+        return "released"
+    if entry.get("uncertain") or entry.get("state") == "restoration-unverified":
+        return "uncertain"
+    if entry.get("activeRun"):
+        pid, start = entry.get("hostProcessIdentifier"), entry.get("hostProcessStart")
+        if not isinstance(pid, int) or pid <= 0 or start is None:
+            return "orphan"
+        return run_state(pid, start)
+    return "released" if entry.get("state") == "released" else "held"
+
+
+def foreground_run_state(pid, start):
+    state = process_state({"pid": pid, "start": start}, census([pid]))
+    return {"running": "active", "ended": "orphan", "unknown": "unknown"}[state]
+
+
 def foreground():
     """The Mac's name, foreground readiness and mac-foreground entry, for `qk remote foreground`.
     VoiceOver is read under the lease only."""
-    path = record_path()
-    try: entry = json.loads(path.read_text()).get("devices", {}).get("mac-foreground")
-    except FileNotFoundError: entry = None
-    except (OSError, ValueError, AttributeError) as error: entry = {"error": f"the device record cannot be read: {error}"}
+    try:
+        entry = device_entries().get("mac-foreground")
+    except ReapProblem as error:
+        entry, condition = {"error": str(error)}, "unknown"
+    else:
+        condition = reservation_condition(entry, foreground_run_state)
     # VoiceOver may belong to the current holder. Even its baseline is read only after a
     # run acquires the lease; on is a valid baseline, preserved by the foreground state guard.
     system_events = system_events_accessibility()
     return {"mac": mac_name(), "problems": foreground_problems(system_events), "voiceoverManagedUnderLease": True,
-            "entry": entry, "crashDialogs": crash_dialogs(read_alerts=system_events is True),
+            "entry": entry, "condition": condition, "crashDialogs": crash_dialogs(read_alerts=system_events is True),
             "captureApprovals": screen_capture_approvals()}
 
 

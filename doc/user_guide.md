@@ -2720,7 +2720,7 @@ another Mac whose settings take foreground work (`qk farm foreground NAME`), nev
 with what the owner must change if that Mac is not ready.
 
 ```sh
-qk remote foreground                     # 0 ready; 78 with what the owner must change, and who holds it
+qk remote foreground                     # report foreground settings and who holds the lease
 qk remote run LANE -- KEY=VALUE ...
 qk remote admit --foreground -- COMMAND  # one command, under that Mac's foreground and admission
 qk admit --foreground -- COMMAND         # on that Mac itself
@@ -2728,6 +2728,11 @@ qk admit --foreground -- COMMAND         # on that Mac itself
 
 `--exclusive` with `admit --foreground` holds the whole Mac for a timing measurement. `--app NAME` names
 the app under test, as a lane's `"apps"` does.
+
+`qk remote foreground` exits 0 when the host is configured and reports whether new runs must wait for
+a holder. It exits 78 when host settings need attention. An uncertain or orphaned lease needs attended
+recovery even when the host is configured. The check exits 2 and gives the recovery command with the
+lease's revision. It also exits 2 if the lease or its recorded process cannot be verified.
 
 #### Setting up a Mac for foreground work
 
