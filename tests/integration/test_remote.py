@@ -3650,6 +3650,8 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 1, output + error)
         self.assertEqual(output.count("pixel_8: failed 0.500s example.Tests#open (AssertionError)"), 1, output + error)
         self.assertEqual(output.count("pixel_8: skipped no time example.Tests#close"), 1, output + error)
+        self.assertEqual(output.count("pixel_8: 0 passed, 1 failed, 1 skipped, 0 unmeasured (adb exit status 0)"),
+                         1, output + error)
         results = self.project / ".build/queuekeeper/remote/instrumented"
         self.assertEqual(json.loads((results / "results/emulator-tests/pixel_8.json").read_text()), record)
         receipt = json.loads((results / "source.json").read_text())

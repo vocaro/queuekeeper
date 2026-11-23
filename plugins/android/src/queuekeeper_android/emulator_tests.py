@@ -15,9 +15,11 @@ there and runs `am instrument -r -w`, reading each test's outcome as it streams 
   died with a test running, or a run that ran no test measures nothing.
 
 Each kind's tests and their outcomes and seconds are kept in the lane's results/, as emulator-tests/KIND.json, beside
-the log. A lane reports the per-test outcomes when it finishes, after bringing its results back from another Mac.
+the log. A lane reports the per-test outcomes, their totals and the adb exit status when it finishes, after bringing
+its results back from another Mac.
 """
 import argparse
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -250,7 +252,9 @@ def report(results, out=print):
             if not isinstance(record, dict): raise ValueError("expected a result record")
             if record.get("keptBy") != KEPT_BY: continue
             kind = record["run"]
-            lines = [case_line(kind, case) for case in record["tests"]]
+            tests = record["tests"]
+            lines = [case_line(kind, case) for case in tests]
+            totals = Counter(case["outcome"] for case in tests)
         except (OSError, ValueError, KeyError, TypeError) as error:
             out(f"queuekeeper: {path} could not be read: {error!r}")
             continue
@@ -258,6 +262,10 @@ def report(results, out=print):
         for line in lines: out(line)
         if not lines: out(f"{kind}: no test outcomes recorded")
         if crashed := record.get("crashed"): out(f"{kind}: {crashed}")
+        counts = ", ".join(f"{totals[result]} {result}" for result in ("passed", "failed", "skipped", "unmeasured"))
+        status = record.get("status")
+        adb_status = f"adb exit status {status}" if type(status) is int else "adb exit status unavailable"
+        out(f"{kind}: {counts} ({adb_status})")
 
 
 def parse(argv, project):

@@ -72,8 +72,15 @@ class Judging(unittest.TestCase):
         self.assertIn("pixel_8: skipped 1.000s a.B#t1", lines)
         self.assertIn("pixel_8: unmeasured 1.000s a.B#t2", lines)
         self.assertIn("pixel_8: Process crashed.", lines)
+        self.assertIn("pixel_8: 1 passed, 0 failed, 1 skipped, 1 unmeasured (adb exit status 0)", lines)
         self.assertNotIn("other.json", "\n".join(lines))
         self.assertIsNone(lane_results.counted("\n".join(lines)))
+
+        self.judged(run_of(), status=None)
+        lines = []
+        emulator_tests.report(root, lines.append)
+        self.assertIn("pixel_8: no test outcomes recorded", lines)
+        self.assertIn("pixel_8: 0 passed, 0 failed, 0 skipped, 0 unmeasured (adb exit status unavailable)", lines)
 
 
 if __name__ == "__main__":
