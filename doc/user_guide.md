@@ -363,6 +363,26 @@ still need a manual resolution. This setting does not change which gate lanes ru
   does it for its own branch once the entry lands, and `qk queue reclaim` does it for every branch
   the queue holds a landed entry from ([Cleaning up after a landing](#cleaning-up-after-a-landing)).
 
+### Repeated conflicts with entries ahead
+
+For a wide change such as a folder move, use the refusal's file paths and entry IDs to find the
+overlap. Split independent edits into smaller landings where possible. If the move has to land as
+one change, agree on a short pause in overlapping submissions with their sessions, let existing
+overlapping entries settle, then rebase onto `origin/main` and land the move. A `qk land --wait`
+that is waiting for conflicting entries has yet to queue your change, so other submissions can
+still get ahead of it.
+
+If an entry ahead appears to need your fix to pass its gate, read its lane log to confirm the
+failure. Land the smallest fix first if you can split it from the overlapping edits, then land
+those edits separately. An urgent fix that still conflicts with the entry ahead can take its own
+gated round:
+
+```sh
+qk land --front --wait --why "repair the lane every waiting entry needs"
+```
+
+See [Emergencies](#emergencies) for when to use this option.
+
 ### Preflight lanes
 
 Preflight lanes are a project's cheap checks: a spelling check, a linter, a formatter in check
@@ -816,7 +836,9 @@ does not help, since the second is still judged by `main` as it was.
 These are for a fix that cannot wait, never routine, and never for a flaky test.
 
 - `qk land --front` tests an entry next, as a batch of its own, ahead of everything waiting. A
-  running gate finishes first. `--why` is optional.
+  running gate finishes first. When `origin/main` exists, the submission checks against it alone.
+  Once the fix lands, waiting entries that conflict with it come back for a rebase. `--why` is
+  optional.
 - `qk land --no-gate --why "..."` lands the entry alone, in its turn, with only the preflight lanes
   and the pre-push hook. The reason is required and recorded in a `Landed-without-gate:` trailer,
   and status lists the commit as ungated until a later gate covers it. Tell the owner you used it
