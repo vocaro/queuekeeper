@@ -318,6 +318,7 @@ class ShownTests(unittest.TestCase):
             with patch.dict(os.environ, {lane_wait.VARIABLE: str(here)}):
                 lane_wait.relayed(json.dumps({"timing": offload_host.timing_state(there)}), "build-host")
             found = lane_timing.live(here, lane="gate")
+            self.assertNotIn("startedMonotonic", found, "another Mac's monotonic clock has no meaning here")
             self.assertIsNone(lane_timing.live(here, lane="another-lane"), "provisioning can share the wait path")
             self.assertEqual((found["state"], found["medianSeconds"], found["p90Seconds"], found["samples"]),
                              ("baseline", 65, 90, 5))
@@ -326,6 +327,36 @@ class ShownTests(unittest.TestCase):
             expected = "timing: gate: median 1m05s, p90 1m30s over 5 passing runs on that Mac"
             self.assertIn(expected, "\n".join(merge_queue.round_lines(state, at=2)))
             self.assertIn(expected, merge_queue.situation(None, {"id": "e1", "state": "testing"}, state, at=2)[1])
+            self.assertIsNone(merge_queue.remaining_work(gate))
+
+    def test_remaining_work_uses_the_local_lanes_work_start_and_stops_at_its_p90(self):
+        with tempfile.TemporaryDirectory() as tmp, history(tmp):
+            wait = Path(tmp) / "gate.json"
+            clock = Clock()
+            clock.now = 100
+            for seconds in [55, 60, 65, 70, 90]: lane_timing.record("P", "gate", seconds)
+            lane_timing.Pace("gate", {"timing": {"warn": False}}, "P", clock=clock,
+                             live=Path(str(wait) + lane_timing.LIVE))
+            gate = {"lane": "gate", "began": 1, "entries": ["e1"], "mac": "this Mac",
+                    "timing": lane_timing.live(wait)}
+            state = {"round": "r1", "entries": ["e1"], "gates": {"batch": gate}}
+            entry = {"id": "e1", "state": "testing"}
+            with patch.object(lane_timing.time, "monotonic", clock):
+                clock.now = 120
+                self.assertEqual(merge_queue.remaining_work(gate), {"low": 45, "high": 70})
+                self.assertIn("roughly 45s to 1m10s of lane work left", "\n".join(merge_queue.round_lines(state, at=1000)))
+                key, said = merge_queue.situation(None, entry, state, at=1000)
+                self.assertIn("roughly 45s to 1m10s of lane work left", said)
+                for unavailable in ({"mac": None}, {"mac": "build-host"}, {"waiting": "admission"}, {"lane": "other"},
+                                    {"timing": None}, {"timing": {**gate["timing"], "lanes": {}}}):
+                    self.assertIsNone(merge_queue.remaining_work({**gate, **unavailable}))
+                clock.now = 170
+                after_median, said = merge_queue.situation(None, entry, state, at=1000)
+                self.assertEqual(after_median, key, "countdown changes do not print new wait lines")
+                self.assertIn("roughly up to 20s of lane work left", said)
+                clock.now = 190
+                self.assertIsNone(merge_queue.remaining_work(gate))
+                self.assertNotIn("lane work left", merge_queue.situation(None, entry, state, at=1000)[1])
 
     def test_status_and_wait_show_a_running_gates_timing(self):
         gate = {"lane": "gate", "began": 0, "entries": ["e1"], "mac": "this Mac",

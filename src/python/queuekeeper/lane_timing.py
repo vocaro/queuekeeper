@@ -287,7 +287,7 @@ class Pace:
                 "medianSeconds": round(self.base["median"], 1), "p90Seconds": round(self.base["p90"], 1),
                 "samples": self.base["samples"], **({"failSeconds": round(self.limit, 1)} if self.limit else {})}
         if said is not None: live["words"] = said
-        if self.group is None: return write_live(self.live, live)
+        if self.group is None: return write_live(self.live, {**live, "startedMonotonic": self.began})
         with SHARED:
             try: found = json.loads(Path(self.live).read_text())
             except (OSError, ValueError): found = None
@@ -319,6 +319,19 @@ def baseline_words(record):
                 and type(samples) is int and samples >= FEWEST:
             lines.append(f"{name}: median {words(median)}, p90 {words(p90)} over {samples} passing runs on that Mac")
     return "; ".join(lines) or None
+
+
+def remaining_work(record):
+    """Seconds left to the historical median and p90, using the same Mac's monotonic clock."""
+    if record.get("state") != "baseline" or "lanes" in record: return None
+    samples = record.get("samples")
+    if type(samples) is not int or samples < FEWEST: return None
+    began, median, p90 = (record.get(key) for key in ("startedMonotonic", "medianSeconds", "p90Seconds"))
+    if not all(map(number, (began, median, p90))) or not 0 <= median <= p90: return None
+    elapsed = time.monotonic() - began
+    if not 0 <= elapsed < p90: return None
+    low, high = round(max(0, median - elapsed)), round(p90 - elapsed)
+    return {"low": low, "high": high} if high else None
 
 
 def clear_live(where):
@@ -359,7 +372,9 @@ def live(wait, since=None, lane=None):
 def relayed(record, wait):
     """A live timing record another Mac sent back with its wait record, written beside this Mac's record at wait."""
     if wait and live_record(record):
-        write_live(Path(str(wait) + LIVE), {**record, "written": time.time()})
+        here = {**record, "written": time.time()}
+        here.pop("startedMonotonic", None)
+        write_live(Path(str(wait) + LIVE), here)
 
 
 def live_record(record):

@@ -1489,6 +1489,13 @@ When the lane starts work with a baseline, the queue shows its median, p90 and s
 the Mac running it. These times describe past lane work and exclude waits for admission. A group
 shows the timings of its members with history, since the group has no baseline of its own.
 
+For a single lane running on this Mac, the queue subtracts its elapsed work from the historical
+median and p90 to show a rough range of work left. After the median it shows the time left to
+the p90, and at the p90 the estimate ends. `qk queue status --json` includes the range as
+`remainingWorkSeconds` with `low` and `high` bounds. The range uses recent passing runs and is
+independent of current load. Remaining work for groups and remote lanes, admission wait time and
+time to land are unknown.
+
 The warning goes to the lane's log and to `qk run`'s output, which the queue's gate log keeps.
 `qk queue status` and `qk land --wait` (or `qk queue wait`) show it beside the running gate as
 `timing: warning: ...`, including for a gate on another Mac. Their JSON results include it under

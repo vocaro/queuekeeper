@@ -2946,6 +2946,7 @@ def reading(root, recent=5):
         if "progress" in gate:
             gate["progress"] = [record for record in gate["progress"] if lane_progress.valid(record, gate.get("began"))]
         if isinstance(gate.get("began"), (int, float)): gate["runningSeconds"] = round(time.time() - gate["began"])
+        if remaining := remaining_work(gate): gate["remainingWorkSeconds"] = remaining
         if stuck(gate): gate["stuck"] = stuck(gate)
     # Idle is no live worker and nothing queued, testing or passed (vocaro/queuekeeper#21). A worker between rounds
     # with nothing waiting is not idle: what ends it ends whatever it starts next. A held queue with entries waiting is
@@ -3060,11 +3061,28 @@ def situation(queue, entry, state, at=None):
     return ("between", entry["state"]), f"is {entry['state']}, and the worker is between rounds"
 
 
+def remaining_work(gate):
+    """Estimate only the current lane's work, once it is running on this Mac."""
+    timing = gate.get("timing")
+    if gate.get("mac") == HERE_MAC and not gate.get("waiting") and isinstance(timing, dict) \
+            and timing.get("lane") == gate.get("lane"):
+        return lane_timing.remaining_work(timing)
+    return None
+
+
 def timing_words(gate):
     """What a running gate's live timing record (lane_timing.live) says about its baseline or a warning."""
     timing = gate.get("timing")
     if not isinstance(timing, dict): return None
-    if timing.get("state") == "baseline": return lane_timing.baseline_words(timing)
+    if timing.get("state") == "baseline":
+        baseline = lane_timing.baseline_words(timing)
+        if baseline and (remaining := remaining_work(gate)):
+            low, high = map(lane_timing.words, (remaining["low"], remaining["high"]))
+            if low == high: span = high
+            elif remaining["low"]: span = f"{low} to {high}"
+            else: span = f"up to {high}"
+            return f"{baseline}; roughly {span} of lane work left"
+        return baseline
     if not isinstance(timing.get("words"), str): return None
     return ("failed: " if timing.get("state") == "failed" else "warning: ") + timing["words"]
 
