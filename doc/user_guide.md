@@ -3182,6 +3182,9 @@ wake you.
   `heartbeat:` line comes at most every five minutes. With `--json`, these lines go to stderr.
 - **A send-back ends the wait within seconds**, naming the conflicting files and entries, or the
   failed tests and the log.
+  When a failed lane and a kept passing run of that lane at its `origin/main` base identify
+  different clean Queuekeeper revisions, the send-back names both. Use the difference as a
+  lead when investigating the failure.
 - **A gate running past its usual time** shows `timing: warning: ...` in these lines. A lane stopped
   by a limit prints a `queuekeeper notice:`. Do not raise a `timeout`, stall bound or timing threshold
   just to make the gate pass; find what made it slower, or after a deliberate change to the lane's

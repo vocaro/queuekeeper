@@ -10173,6 +10173,23 @@ class SummaryFacts(Fixture):
         why = self.rejected(self.SWIFT, "Sources/Reader.swift", "let reader = 1\n")
         self.assertIn(f"This entry changes no file of the failed tests {self.NAMED}: only the files they failed in are "
                       "compared, not the code they test", why)
+        self.assertNotIn("A kept passing run", why)
+
+    def test_a_send_back_compares_the_failed_toolkit_with_the_kept_pass_at_main(self):
+        (self.repo / ".gitignore").write_text(".build/\n")
+        run(self.repo, "git", "add", ".gitignore")
+        run(self.repo, "git", "commit", "-qm", "Ignore lane artifacts")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        base = run(self.repo, "git", "rev-parse", "origin/main")
+        earlier = "a" * 40
+        kept = {"project": {"revision": base, "workingChangesSHA256": mq.remote.CLEAN},
+                "toolkit": {"revision": earlier, "workingChangesSHA256": mq.remote.CLEAN},
+                "outcome": "passed", "ranOn": mq.remote.HERE}
+        self.assertIsNotNone(mq.remote.keep_here(self.repo, "gate", kept, 0))
+        why = self.rejected(self.SWIFT, "Sources/Reader.swift", "let reader = 1\n")
+        revision = run(os.environ["QUEUEKEEPER_ROOT"], "git", "rev-parse", "HEAD")
+        self.assertIn(f"Queuekeeper revision for the failed lane: {revision}. A kept passing run of gate "
+                      f"on origin/main at {base[:12]} used {earlier}.", why)
 
     def test_a_file_named_twice_in_the_repository_is_not_guessed(self):
         # A second file of the same name leaves the bare name the summary gives two places.

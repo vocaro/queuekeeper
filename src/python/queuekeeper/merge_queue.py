@@ -59,7 +59,7 @@ from xml.etree import ElementTree
 
 from . import budgets, disk, plugins, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
-from . import add_only_json, events, gate_reuse, landed_cleanup, pre_push, recovery, restartable, worktree_ownership
+from . import add_only_json, count_history, events, gate_reuse, landed_cleanup, pre_push, recovery, restartable, worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
@@ -3594,6 +3594,27 @@ def swift_test_assertions(log):
     return list(dict.fromkeys(issue[0] for issue in SWIFT_TESTING_ASSERTION.finditer(log) if issue[1] in failed))
 
 
+def clean_gate_toolkit(receipt, commit):
+    """The recorded execution revision of a lane on the clean tree it was asked to test."""
+    project = receipt.get("project")
+    if not isinstance(project, dict) or project.get("revision") != commit \
+            or project.get("workingChangesSHA256") != remote.CLEAN:
+        return None
+    revision = lane_report.toolkit_revision(receipt)
+    return revision if revision and receipt["toolkit"].get("workingChangesSHA256") == remote.CLEAN else None
+
+
+def failed_gate_toolkit(directory, commit, began, dispatched):
+    """Read only the fresh execution receipt of the completed gate command."""
+    try:
+        if (directory / "source.json").stat().st_mtime < began: return None
+    except OSError:
+        return None
+    receipt = lane_report.lane_receipt(directory, dispatched=dispatched)
+    if receipt.get("outcome") not in ("failed", "build-failed"): return None
+    return clean_gate_toolkit(receipt, commit)
+
+
 def failed_lane_excerpt(lane_log, dispatch_output, lane, swift_assertions=()):
     """Read the outer unittest verdict or the dispatcher's lane report, with the confirmed assertions."""
     summaries = list(UNITTEST_SUMMARY.finditer(lane_log))
@@ -3845,6 +3866,7 @@ class Worker:
         self.left = None  # why follow last left the shared checkout as it is, for any reason, or None
         self.timed_out = None  # why the last gate's lane reached its limit, or None (gate)
         self.failed_dispatch = None  # the last failed gate log and its dispatch evidence (gate)
+        self.failed_toolkit = None
         self.ran_on = None  # another Mac that ran the last lane the gate ran, or None (gate)
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.pin_names, self.evaluated_pins = {}, {}
@@ -4657,7 +4679,7 @@ class Worker:
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
         self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
         self.failed_results = None
-        self.failed_dispatch = None
+        self.failed_dispatch = self.failed_toolkit = None
         self.tooling = None
         self.altered_files = self.altered_paths = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
@@ -4813,6 +4835,7 @@ class Worker:
                 self.failed_results = printed.parent / "results"
                 self.tooling = self.tool_unstarted(lane, began, status_, ran, log)
                 if status_ not in NO_VERDICT:
+                    if not only: self.failed_toolkit = failed_gate_toolkit(printed.parent, tested, began, ran is not None)
                     self.failed_load = loads.finish(self.ran_on)
                     if remote_failure:
                         swift_assertions = swift_test_assertions(lane_text) if member_log is None else group_assertions
@@ -4869,7 +4892,7 @@ class Worker:
         if not lane or not base or head == base or not self.altered_files: return None
         kept = {name: getattr(self, name, None) for name in (
             "ran_on", "measured", "timed_out", "ran_where", "failed_lane", "failed_load", "withdrawn", "ahead",
-            "failed_results", "failed_dispatch", "tooling", "altered_files", "altered_paths", "lane_now")}
+            "failed_results", "failed_dispatch", "failed_toolkit", "tooling", "altered_files", "altered_paths", "lane_now")}
         self.say(f"{lane} changed the tree it tested: running it on origin/main at {base[:12]}, without the batch")
         try:
             self.reset(base)
@@ -6392,7 +6415,20 @@ class Worker:
         try: copies = main_copies(config, self.changed_by(entry)) if entry.get("commits") else ""
         except Exception:  # noqa: BLE001
             copies = ""
-        return f" {load}. {touched}" + (f".{main}" if main else "") + (f" {copies}." if copies else "")
+        toolkit = self.toolkit_comparison(base)
+        return f" {load}. {touched}" + (f".{main}" if main else "") + (f" {copies}." if copies else "") + toolkit
+
+    def toolkit_comparison(self, base):
+        """Compare the failed lane with a kept pass of the same lane at the exact main base."""
+        if not base or not self.failed_lane or not self.failed_toolkit: return ""
+        with contextlib.suppress(OSError, RuntimeError, subprocess.SubprocessError):
+            kept = remote.passed(self.checkout, self.failed_lane, base)
+            receipt = count_history.lane_receipt(kept)
+            before = clean_gate_toolkit(receipt, base) if receipt.get("outcome") == "passed" else None
+            if before and before != self.failed_toolkit and text(self.checkout, "rev-parse", MAIN) == base:
+                return (f" Queuekeeper revision for the failed lane: {self.failed_toolkit}. A kept passing run of "
+                        f"{self.failed_lane} on origin/main at {base[:12]} used {before}.")
+        return ""
 
     def settle_failure(self, entry, log, why, runner=None, **fields):
         """Keep only the dispatch of the gate that actually rejected this entry, with fields such as conflictWith."""
@@ -8045,7 +8081,8 @@ class Joint:
                 runner.unstarted(result) and not (runner.tooling and runner.batch_stops_start(self.base, head, log)))):
             raise Unsettled(members, result, log, head, runner)
         account = {"failed_load": runner.failed_load, "failed_lane": runner.failed_lane,
-                   "failed_dispatch": runner.failed_dispatch, "altered_files": runner.altered_files}
+                   "failed_dispatch": runner.failed_dispatch, "failed_toolkit": runner.failed_toolkit,
+                   "altered_files": runner.altered_files}
         failed = runner.confirm(self.config, members, self.base, head, log, name) if result else False
         self.known[self.key(members)] = (failed, log, account, runner)
         runner.say(f"probe {self.probes}: {ids} "

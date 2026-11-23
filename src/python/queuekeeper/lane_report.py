@@ -467,14 +467,19 @@ def lane_receipt(directory, *, dispatched=False):
     return {} if dispatched else receipt
 
 
-def toolkit_line(receipt):
-    """The Queuekeeper revision of the execution receipt, with the digest if that checkout had changes."""
+def toolkit_revision(receipt):
+    """The Queuekeeper revision from an execution receipt that identifies the running launcher."""
     if receipt.get("sentTree") or receipt.get("sentToolkit"):
         return None  # the local command may have read a different checkout than its running launcher
     toolkit = receipt.get("toolkit")
     revision = toolkit.get("revision") if isinstance(toolkit, dict) else None
-    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", revision): return None
-    changes = toolkit.get("workingChangesSHA256")
+    return revision if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", revision) else None
+
+
+def toolkit_line(receipt):
+    """The Queuekeeper revision of the execution receipt, with the digest if that checkout had changes."""
+    if (revision := toolkit_revision(receipt)) is None: return None
+    changes = receipt["toolkit"].get("workingChangesSHA256")
     modified = isinstance(changes, str) and re.fullmatch(r"[0-9a-f]{64}", changes) and changes != remote.CLEAN
     return f"  Queuekeeper: {revision}" + (f" (working changes SHA-256 {changes})" if modified else "")
 
