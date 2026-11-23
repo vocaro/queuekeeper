@@ -3602,8 +3602,10 @@ still marked `testing` and there is no worker, check for a hold. If there is no 
 recovery](developer_guide.md#state-and-recovery) for how the worker handles each saved state.
 
 - **`qk queue doctor`** reads the queue's records and says whether it is testing or stuck, and
-  what would unstick it. It names a gate that has waited 15 minutes for admission and what holds
-  the slots, and any Mac short of memory with its largest processes. It stops nothing itself.
+  what would unstick it. It names a gate that has waited 15 minutes for admission on a Mac with
+  spare CPU and what holds the slots. When a holder's current progress reading shows a lane has
+  reached its configured stall bound, doctor names the lane and its measured quiet interval.
+  Doctor also names any Mac short of memory with its largest processes. It stops nothing itself.
   The process list describes one reading. A process outside the list has no reported size.
   To measure growth, compare separate readings of the same process instance on the same Mac.
   A PID can be reused after a process exits.

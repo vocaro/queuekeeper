@@ -3341,7 +3341,7 @@ def holders_on(host):
 
 
 def holder_words(holder):
-    """A holder of admission as idle_waits names it: its command, PID, hold time, CPU use and origin."""
+    """An admission holder's command, PID, hold time, CPU use, origin and measured quiet lanes."""
     held = holder.get("heldSeconds")
     process, cpu = holder.get("process"), holder.get("cpuPercent")
     # Admission frees such a holder at its next attempt (vocaro/queuekeeper#23).
@@ -3351,9 +3351,20 @@ def holder_words(holder):
     elif isinstance(cpu, (int, float)): used = f"CPU {cpu:g}% of one core, with what it started"
     else: used = "CPU use unknown"
     origin = resources.whence(holder.get("origin"))
+    quiet_lanes = []
+    # The admission reading has checked the holder and each reporter's process identity and the sample's age.
+    if process == "running" and not holder.get("stranded") and isinstance(holder.get("progress"), list):
+        for record in holder["progress"]:
+            if not isinstance(record, dict) or record.get("state") != "quiet": continue
+            quiet, bound = record.get("quietSeconds"), record.get("thresholdSeconds")
+            if type(quiet) not in (int, float) or type(bound) is not int or not 0 < bound <= quiet < float("inf"):
+                continue
+            lane = record.get("lane") or "a lane"
+            quiet_lanes.append(f"{lane} observed quiet for {round(quiet)}s (stall bound {bound}s)")
     return (f"{holder.get('label') or 'an unnamed owner'} (PID {holder.get('pid')}, held "
             + (resources.duration(held) if isinstance(held, (int, float)) else "for an unknown time")
-            + f", {used}, " + (f"from {origin}" if origin else "where its work comes from was not recorded") + ")")
+            + f", {used}, " + (f"from {origin}" if origin else "where its work comes from was not recorded")
+            + (f"; {'; '.join(quiet_lanes)}" if quiet_lanes else "") + ")")
 
 
 def reclaimed_words(item):

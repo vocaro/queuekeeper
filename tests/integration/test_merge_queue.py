@@ -1487,6 +1487,31 @@ class Doctor(UnittestGate):
         self.assertEqual((self.snapshot(), queue.round_state()["gates"]), (before, account))
         self.busy_of.assert_called_with(None)
 
+    def test_doctor_names_only_current_quiet_lanes_of_a_verified_holder(self):
+        queue = self.waiting_gate(45)
+        before, account = self.snapshot(), queue.round_state()["gates"]
+        quiet = {"lane": "quicklook-ipad", "state": "quiet", "quietSeconds": 620.0, "thresholdSeconds": 600}
+        holder = {**self.QUICK_LOOK, "progress": [
+            quiet,
+            {**quiet, "lane": "working", "state": "observing", "quietSeconds": 5.0, "maximumQuietSeconds": 620.0},
+            {**quiet, "lane": "unobservable", "state": "unobservable", "quietSeconds": None},
+            {**quiet, "lane": "below-bound", "quietSeconds": 90.0},
+            {**quiet, "lane": "invalid", "quietSeconds": "620"},
+        ]}
+        unknown = {**holder, "identity": "u", "process": "unknown", "progress": [{**quiet, "lane": "dead-reporter"}]}
+        stranded = {**holder, "identity": "s", "stranded": True, "progress": [{**quiet, "lane": "stranded-run"}]}
+        with patch.object(offload_host, "admissions_now", return_value=self.reading(holder, unknown, stranded)):
+            status_, said, report = self.doctor()
+        self.assertEqual(status_, 1)
+        expected = "quicklook-ipad observed quiet for 620s (stall bound 600s)"
+        finding, = report["findings"]
+        self.assertEqual(finding["signal"], "held back on a Mac with spare CPU")
+        self.assertIn(expected, said)
+        self.assertIn(expected, finding["diagnosis"])
+        for lane in ("working", "unobservable", "below-bound", "invalid", "dead-reporter", "stranded-run"):
+            self.assertNotIn(f"{lane} observed quiet", said)
+        self.assertEqual((self.snapshot(), queue.round_state()["gates"]), (before, account))
+
     def test_a_gate_waiting_long_on_a_busy_mac_or_briefly_on_an_idle_one_is_no_finding(self):
         # The negative control: a Mac at or above its busy limit is busy, and its holders are not read.
         self.waiting_gate(45)
