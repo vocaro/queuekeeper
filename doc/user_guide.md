@@ -3480,7 +3480,9 @@ Good to know:
 - Banners appear to come from Script Editor, so allow its notifications in System Settings.
 - A stalled queue writes no event, so Queuekeeper looks for one, at most every two minutes,
   whenever a command such as `land` or `run` runs, or every two minutes with the signed launcher.
-  A problem is reported once it has lasted five minutes.
+  A problem is reported once it has lasted five minutes. If no channel accepts the notice, the
+  next check retries while the problem is still present. Once a channel accepts it, the check
+  considers it reported.
 
 ### The dashboard
 

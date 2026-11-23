@@ -4,7 +4,8 @@ Entries that wait with no worker, gates in a row with no verdict and the like ch
 delivery tells of them. Each command that reaches the hosts therefore starts a look, apart from itself and at most
 once every EVERY seconds for a repository (spawn): the signed launcher runs such a command every two minutes, and
 agents run them all day. A finding is told once it has lasted PERSIST seconds, so that the moment between a worker
-ending and the next one starting is not news, and told again only after it has gone and come back. What it has
+ending and the next one starting is not news. If no channel takes the notice, the next look tries again while the
+finding is present. Once a channel accepts it, it is told again only after it has gone and come back. What it has
 found is kept beside the journal:
 
     <common>/queuekeeper-queue/visibility-notify-check.json   each finding's first sighting, and whether it was told
@@ -61,7 +62,8 @@ def spawn():
 
 def check(root, now=None, diagnose=None):
     """Look at the queue of the repository at root, and return (its findings, how many were told of now). A
-    finding is told once, when it has lasted PERSIST seconds, through every channel that is on."""
+    finding that has lasted PERSIST seconds is sent through every channel that is on. It stays eligible until
+    at least one channel accepts it."""
     now = time.time() if now is None else now
     directory = directory_of(root)
     found = deliver.settings()
@@ -69,17 +71,21 @@ def check(root, now=None, diagnose=None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         findings = [finding for finding in (diagnose or merge_queue.diagnose)(root)[0]
                     if finding.get("signal") not in SKIPPED]
-        before, kept, told = read(directory).get("findings", {}), {}, 0
+        before, kept, pending = read(directory).get("findings", {}), {}, {}
         for finding in findings:
-            seen = before.get(finding["signal"])
+            signal = finding["signal"]
+            seen = before.get(signal)
             seen = seen if isinstance(seen, dict) and isinstance(seen.get("first"), (int, float)) else {"first": now}
-            kept[finding["signal"]] = seen
+            kept[signal] = seen
             if seen.get("told") or now - seen["first"] < PERSIST or RULE not in rules.chosen(found): continue
-            # Marked before it is sent: a finding is told at most once, as an event is.
-            seen["told"] = True
-            write(directory, {"findings": kept})
+            pending.setdefault(signal, finding)
+        told = 0
+        for signal, finding in pending.items():
             sent, refused = deliver.send(rules.finding_notice(finding, deliver.repository_of(directory)), found)
-            told += bool(sent)
+            if sent:
+                kept[signal]["told"] = True
+                write(directory, {"findings": kept})
+                told += 1
             for words in refused: deliver.log(words)
             if not channels.on(found): deliver.log(f"a notice that {root}'s queue looks stuck went nowhere: no channel is on")
         write(directory, {"findings": kept})

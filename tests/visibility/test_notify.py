@@ -422,14 +422,33 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.assertEqual(self.look(check.PERSIST)[1], 0)
         self.assertEqual(self.sent, [])
 
-    def test_a_channel_that_refuses_is_logged_and_the_finding_is_not_told_again(self):
+    def test_a_finding_retries_after_every_channel_refuses(self):
         def refuse(notice_, config): raise RuntimeError("no route")
         self.found = [self.finding()]
         self.look(0.0)
         with patch.object(channels, "on", lambda found: [("broken", types.SimpleNamespace(send=refuse), {})]):
             self.assertEqual(self.look(check.PERSIST)[1], 0)
-        self.assertEqual(self.look(check.PERSIST + 60)[1], 0)
         self.assertIn('broken did not send "Queue looks stuck": no route', deliver.log_path().read_text())
+        self.assertEqual(self.look(check.PERSIST + 60)[1], 1)
+        self.assertEqual(self.look(check.PERSIST + 120)[1], 0)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_finding_waits_for_a_channel_to_be_enabled(self):
+        self.found = [self.finding()]
+        self.look(0.0)
+        with patch.object(channels, "on", return_value=[]):
+            self.assertEqual(self.look(check.PERSIST)[1], 0)
+        self.assertEqual(self.look(check.PERSIST + 60)[1], 1)
+
+    def test_a_finding_delivered_to_one_channel_does_not_retry_other_channels(self):
+        def refuse(notice_, config): raise RuntimeError("no route")
+        self.found = [self.finding()]
+        self.look(0.0)
+        available = [*channels.on({}), ("broken", types.SimpleNamespace(send=refuse), {})]
+        with patch.object(channels, "on", return_value=available):
+            self.assertEqual(self.look(check.PERSIST)[1], 1)
+            self.assertEqual(self.look(check.PERSIST + 60)[1], 0)
+        self.assertEqual(len(self.sent), 1)
 
     def test_the_queues_own_doctor_is_what_it_asks(self):
         self.commit("a.txt", "one")
