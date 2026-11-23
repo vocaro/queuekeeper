@@ -231,6 +231,13 @@ same worker at login and on its interval. An empty or held queue returns at once
 lock keeps out a second worker. If launchd refuses a start, `worker.log` records why and the
 session starts the worker itself.
 
+To give the signed agent its own stable Queuekeeper worktree, pass `--toolkit-root PATH` to
+`qk queue launcher-plist`. The command checks that the checkout is clean and its commit can import
+the worker. The generated agent starts from that path and sets `QUEUEKEEPER_ROOT` so the worker and
+its lanes keep using it as Queuekeeper's `main` advances. Keep the worktree clean and at that path.
+The option applies to the generated LaunchAgent. A session starting its own worker still uses the
+Queuekeeper that session loaded.
+
 #### Removing the launcher
 
 Close the queue, wait until it is idle, then boot the agent out and remove its plist:

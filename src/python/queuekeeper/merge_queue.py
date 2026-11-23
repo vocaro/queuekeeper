@@ -2171,12 +2171,19 @@ class Queue:
     def working(self):
         with self.worker() as free: return not free
 
-    def command(self, toolkit, *, if_waiting=False):
+    def command(self, toolkit, *, if_waiting=False, pinned=False):
         """What runs this repository's worker on the toolkit at toolkit: `qk queue run` for the main checkout, from
         that toolkit's Python, as start starts one and as a worker starts itself again on a newer toolkit
         (Worker.move_to)."""
         script = ("import sys; sys.path.insert(0, sys.argv[1]); from queuekeeper.cli import main; "
                   "sys.exit(main(['--project', sys.argv[2], 'queue', 'run', *sys.argv[3:]]))")
+        if pinned:
+            # A configured checkout that disappeared must not fall through to another Python installation.
+            script = ("import sys\nfrom pathlib import Path\n"
+                      "package = Path(sys.argv[1]) / 'queuekeeper'\n"
+                      "if not all((package / name).is_file() for name in ('__init__.py', 'cli.py')):\n"
+                      "    sys.exit(f'queuekeeper: pinned toolkit is missing at {package.parents[2]}')\n"
+                      + script)
         return [sys.executable, "-c", script, str(Path(toolkit) / "src/python"), str(self.main_checkout),
                 *(["--if-waiting"] if if_waiting else [])]
 
@@ -2185,7 +2192,7 @@ class Queue:
         digest = hashlib.sha256(os.fsencode(self.directory.resolve())).hexdigest()[:24]
         return f"{LAUNCHER_BUNDLE}.{digest}"
 
-    def launcher_plist(self, app):
+    def launcher_plist(self, app, *, toolkit_root=None):
         """Describe the signed service for this repository without installing it."""
         if sys.platform != "darwin": raise ValueError("the signed queue launcher requires macOS")
         app = Path(app).expanduser().resolve()
@@ -2194,13 +2201,25 @@ class Queue:
         checked = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", LAUNCHER_REQUIREMENT, str(app)],
                                  capture_output=True, text=True, timeout=10)
         if checked.returncode: raise ValueError(f"the queue launcher needs an Apple signing identity: {checked.stderr.strip()}")
-        toolkit = Path(text(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
         variables = {key: os.environ[key] for key in ("PATH",) if key in os.environ}
+        if toolkit_root is None:
+            toolkit = Path(text(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+        else:
+            toolkit = Path(toolkit_root).expanduser().resolve()
+            top = git(toolkit, "rev-parse", "--show-toplevel")
+            if top.returncode or Path(top.stdout.strip()).resolve() != toolkit or not (toolkit / "bin/qk").is_file():
+                raise ValueError(f"{toolkit} is not a Queuekeeper checkout root")
+            if text(toolkit, "--no-optional-locks", "status", "--porcelain", "--untracked-files=normal"):
+                raise ValueError(f"{toolkit} has uncommitted changes. Select a clean Queuekeeper checkout.")
+            head = text(toolkit, "rev-parse", "--verify", "HEAD")
+            if why := starts(toolkit, head):
+                raise ValueError(f"the Queuekeeper commit at {toolkit} could not start: {why}")
+            variables[TOOLKIT_VARIABLE] = str(toolkit)
         log = str(self.directory / "worker.log")
         return {
             "Label": self.launcher_label(),
             "AssociatedBundleIdentifiers": [LAUNCHER_BUNDLE],
-            "ProgramArguments": [str(executable), *self.command(toolkit, if_waiting=True)],
+            "ProgramArguments": [str(executable), *self.command(toolkit, if_waiting=True, pinned=toolkit_root is not None)],
             "WorkingDirectory": str(self.main_checkout),
             "EnvironmentVariables": variables,
             "RunAtLoad": True,
@@ -9229,6 +9248,7 @@ def add_arguments(parser):
     running.add_argument("--if-waiting", action="store_true", help="do nothing when the queue is empty or held")
     launcher = operations.add_parser("launcher-plist", help="print this queue's LaunchAgent for a signed launcher app")
     launcher.add_argument("app", type=Path)
+    launcher.add_argument("--toolkit-root", type=Path, help="pin this agent to a clean Queuekeeper checkout at a stable path")
 
 
 def main(root, args):
@@ -9276,6 +9296,6 @@ def main(root, args):
     if args.operation == "reopen": return reopen(root)
     if args.operation == "reclaim": return reclaim(root, args.dry_run, args.json)
     if args.operation == "launcher-plist":
-        sys.stdout.write(plistlib.dumps(Queue(root).launcher_plist(args.app)).decode())
+        sys.stdout.write(plistlib.dumps(Queue(root).launcher_plist(args.app, toolkit_root=args.toolkit_root)).decode())
         return 0
     return run(root, if_waiting=args.if_waiting)

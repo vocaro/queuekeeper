@@ -50,6 +50,46 @@ class CommandOlderInterpreterTests(OlderInterpreterTests):
     launcher = "bin/qk"
 
 
+class BootstrapTests(unittest.TestCase):
+    def test_a_main_checkout_import_failure_names_the_checkout_before_the_traceback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "toolkit"
+            project = Path(folder) / "project"
+            core = root / "src/python/queuekeeper"
+            core.mkdir(parents=True)
+            (core / "__init__.py").touch()
+            shutil.copyfile(ROOT / "src/python/queuekeeper/checkout.py", core / "checkout.py")
+            (core / "cli.py").write_text("from .config import NOT_PREFLIGHT\n")
+            (core / "config.py").write_text("# The working tree is missing the new name.\n")
+            environment = host_isolation.reduced(os.environ, QUEUEKEEPER_ROOT=str(root))
+            environment.pop("PYTHONPATH", None)
+            git = root / ".git"
+            for relative, checkout in [("bin/qk", root), ("scripts/qk", project)]:
+                launcher = checkout / relative
+                launcher.parent.mkdir(parents=True)
+                shutil.copyfile(ROOT / relative, launcher)
+                for shared in (True, False):
+                    with self.subTest(launcher=relative, shared=shared):
+                        if shared:
+                            git.mkdir()
+                            (git / "HEAD").write_text("ref: refs/heads/main\n")
+                        else:
+                            shutil.rmtree(git)
+                            git.write_text("gitdir: /linked-worktree\n")
+                        result = subprocess.run([sys.executable, str(launcher), "--version"], env=environment,
+                                                capture_output=True, text=True, timeout=stretched(60))
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertEqual(result.stdout, "")
+                        self.assertIn("ImportError: cannot import name 'NOT_PREFLIGHT'", result.stderr)
+                        if shared:
+                            self.assertTrue(result.stderr.startswith(
+                                f"queuekeeper: could not load Queuekeeper from {root.resolve()}. "
+                                "Inspect that checkout with git status.\n"), result.stderr)
+                        else:
+                            self.assertTrue(result.stderr.startswith("Traceback"), result.stderr)
+                            git.unlink()
+
+
 class EarlierLauncherTests(unittest.TestCase):
     """A project's scripts/qk from before the plugins left the core puts only src/python on the import path and
     calls cli.main. Thirteen projects carry one, and each must run a current Queuekeeper (vocaro-engineering#497)."""

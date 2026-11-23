@@ -2070,8 +2070,12 @@ it off: a project fixes its own hits before turning it on.
 - **Keep the main checkout clean.** `qk doctor` also warns about staged changes, unstaged changes
   and untracked files in the loaded main checkout. Inspect the changes with `git status` in
   that checkout and preserve the work in a linked worktree. Ignored files and edits in linked
-  worktrees do not trigger this warning. If a shared checkout edit prevents Queuekeeper from
-  starting, inspect that checkout with Git directly.
+  worktrees do not trigger this warning. If an import fails before the command starts, `bin/qk`
+  and current copies of `scripts/qk` name the main checkout before the traceback. Inspect that
+  checkout with Git directly. To start from a known-good Queuekeeper worktree, set `QUEUEKEEPER_ROOT`
+  to its path when running the project's `scripts/qk`, or run that worktree's `bin/qk` with `--project`
+  pointing to the project checkout. See [Copies in each project](#copies-in-each-project) for how to
+  refresh an older `scripts/qk`.
 
 ### Moving a module
 
@@ -2223,7 +2227,7 @@ requires the project's file to be clean and match a stock copy in that checkout'
 It prints an empty patch when the copy already matches. Save a successful, nonempty patch,
 review it, then use `git apply --check PATCH` and `git apply PATCH` in the same project checkout.
 If the launcher has project-specific changes or the stock copy cannot be identified, review and
-refresh it by hand. The source checkout's `bin/qk` works even when the copied launcher cannot start.
+refresh it by hand. The patch command runs the source checkout's `bin/qk` directly.
 
 To queue a reviewed stock patch without putting it in your branch or index, save it as a file
 and run `qk launcher-patch --queue PATCH` from the project checkout. Both checkouts must be at

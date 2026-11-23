@@ -8751,6 +8751,60 @@ class SignedLauncher(Fixture):
         self.assertEqual(agent["ProgramArguments"], [str(executable), *queue.command(stable, if_waiting=True)])
         self.assertTrue(agent["RunAtLoad"])
         self.assertEqual(agent["StartInterval"], mq.LAUNCHER_INTERVAL)
+        self.assertNotIn("QUEUEKEEPER_ROOT", agent["EnvironmentVariables"])
+
+    def test_an_explicit_toolkit_boots_the_signed_worker_without_the_shared_source(self):
+        shared = self.base / "shared-toolkit"
+        pinned = self.base / "pinned-toolkit"
+        package = shared / "src/python/queuekeeper"
+        package.mkdir(parents=True)
+        (package / "__init__.py").touch()
+        (package / "merge_queue.py").touch()
+        (package / "cli.py").write_text(
+            "import json, os\n"
+            "def main(args): print(json.dumps([__file__, os.environ['QUEUEKEEPER_ROOT'], args]))\n")
+        (shared / "bin").mkdir()
+        (shared / "bin/qk").touch()
+        run(shared, "git", "init", "-q")
+        run(shared, "git", "add", ".")
+        run(shared, "git", "commit", "-qm", "Toolkit")
+        run(shared, "git", "worktree", "add", "-q", "--detach", str(pinned))
+        (package / "cli.py").write_text("raise ImportError('broken shared bootstrap')\n")
+
+        app = self.base / "Queue Launcher.app"
+        executable = app / "Contents" / "MacOS" / mq.LAUNCHER_PROGRAM
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        output = io.StringIO()
+        run_process = subprocess.run
+
+        def verify_app(command, **options):
+            if command[0] == "/usr/bin/codesign": return SimpleNamespace(returncode=0)
+            return run_process(command, **options)
+
+        with patch.object(mq.subprocess, "run", side_effect=verify_app), contextlib.redirect_stdout(output):
+            args = self.arguments("launcher-plist", str(app), "--toolkit-root", str(pinned))
+            self.assertEqual(mq.main(self.repo, args), 0)
+            queue = mq.Queue(self.repo)
+            with self.assertRaisesRegex(ValueError, "uncommitted changes"):
+                queue.launcher_plist(app, toolkit_root=shared)
+            with self.assertRaisesRegex(ValueError, "not a Queuekeeper checkout root"):
+                queue.launcher_plist(app, toolkit_root=self.base / "missing")
+
+        agent = plistlib.loads(output.getvalue().encode())
+        command = agent["ProgramArguments"][1:]
+        environment = host_isolation.reduced(agent["EnvironmentVariables"], PYTHONPATH=str(shared / "src/python"))
+        options = {"env": environment, "capture_output": True, "text": True, "timeout": stretched(30)}
+        result = subprocess.run(command, **options)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        source = pinned.resolve() / "src/python/queuekeeper/cli.py"
+        self.assertEqual(json.loads(result.stdout), [str(source), str(pinned.resolve()),
+                                                   ["--project", str(self.repo), "queue", "run", "--if-waiting"]])
+
+        source.unlink()
+        result = subprocess.run(command, **options)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stderr.strip(), f"queuekeeper: pinned toolkit is missing at {pinned.resolve()}")
 
     def test_agent_entry_does_nothing_for_an_empty_held_or_running_queue(self):
         queue = mq.Queue(self.repo)
