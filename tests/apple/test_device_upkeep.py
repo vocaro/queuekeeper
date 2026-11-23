@@ -19,7 +19,7 @@ from queuekeeper_apple import device_notifications
 from queuekeeper_mac_desktop import owner_notice
 from queuekeeper_mobile import device_pass, devices, doctor, upkeep
 from queuekeeper.resources import process_start
-from test_support.devices import PHONE, TABLET, Devicectl, Watches, alive, later, live, scratch
+from test_support.devices import PHONE, TABLET, Devicectl, Watches, alive, later, live, run_printed, scratch
 
 SILENCE = "shortcuts://run-shortcut?name=Vocaro%20Silence%20Notifications"
 RESTORE = "shortcuts://run-shortcut?name=Vocaro%20Restore%20Notifications"
@@ -204,7 +204,12 @@ class RunRecovery(Fixture):
         entry = self.record.entry("iPhone")
         self.assertEqual(devices.condition(entry), "orphan")
         self.assertEqual(entry[upkeep.FALLBACK]["step"], "stopping its processes")
-        self.assertIn("qk devices recover iPhone --by SESSION", "\n".join(said))
+        command = entry[upkeep.FALLBACK]["finish"]
+        self.assertIn(f"`{command}`", "\n".join(said))
+        self.assertIn(" devices recover iPhone --by SESSION --revision N", command)
+        parsed = run_printed(command.replace("--revision N", f"--revision {entry['revision']}") + " --help")
+        self.assertEqual(parsed.returncode, 0, parsed.stderr)
+        self.assertIn("usage: qk devices recover", parsed.stdout)
         self.assertTrue(alive(session.pid))
         self.assertEqual(self.shortcuts(), [SILENCE])
         # It is not tried again, and the attended recovery it names finishes it.

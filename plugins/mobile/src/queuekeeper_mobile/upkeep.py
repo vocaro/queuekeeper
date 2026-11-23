@@ -36,7 +36,8 @@ import subprocess
 import sys
 import time
 
-from queuekeeper import processes
+from queuekeeper import offload_host, processes
+from queuekeeper.config import TOOLKIT_ROOT
 from queuekeeper.resources import process_start
 from . import devices
 from .devices import DEFERRED, Refused, Stale, condition, moment, now, physical, running
@@ -152,7 +153,7 @@ def _settle(record, key, before, change):
 def _fell_back(record, key, entry, step, detail, said):
     """Record and say that the automatic recovery of key's run stopped at step, naming what finishes it."""
     owner = entry.get("ownerChatID")
-    command = f"qk devices recover {key} --by SESSION --revision N --verified \"WHAT WAS CHECKED\""
+    command = offload_host.recover_command(key, "N", toolkit=TOOLKIT_ROOT)
     said(f"devices: {key}'s run process is gone, but Queuekeeper could not recover it by itself: {step} failed: "
          f"{detail}. Once that is settled, its holder {owner} or the owner finishes it with `{command}`")
 
