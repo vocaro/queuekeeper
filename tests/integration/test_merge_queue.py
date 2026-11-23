@@ -8594,10 +8594,12 @@ class SignedLauncher(Fixture):
         with patch.object(mq.remote, "stop_dead_dispatches") as recover:
             self.assertEqual(mq.main(self.repo, args), 0)
             self.commit("a", "a")
-            self.add("a")
+            identifier, = self.add("a")
+            queue.mark([queue.read(identifier)], mq.TESTING)
             queue.hold_file.write_text("held for this test")
             self.assertEqual(mq.main(self.repo, args), 0)
             self.assertEqual(queue.hold_file.read_text(), "held for this test")
+            self.assertEqual(self.state(identifier)["state"], mq.TESTING)
             queue.hold_file.unlink()
             with queue.worker() as free:
                 self.assertTrue(free)
@@ -8605,13 +8607,19 @@ class SignedLauncher(Fixture):
         recover.assert_not_called()
         self.assertEqual(self.gates(), 0)
 
-    def test_agent_entry_drains_a_waiting_queue(self):
+    def test_agent_entry_drains_queued_and_interrupted_entries_after_restart(self):
         self.commit("a", "a")
-        identifier, = self.add("a")
+        self.commit("b", "b")
+        interrupted, waiting = self.add("a", "b")
+        queue = mq.Queue(self.repo)
+        # The earlier worker left the first entry testing. No process holds the worker lock.
+        queue.mark([queue.read(interrupted)], mq.TESTING)
         args = self.arguments("run", "--if-waiting")
         self.assertEqual(mq.main(self.repo, args), 0)
-        self.assertEqual(self.state(identifier)["state"], mq.LANDED)
-        self.assertIn("a", self.main_files())
+        self.assertEqual([self.state(identifier)["state"] for identifier in (interrupted, waiting)],
+                         [mq.LANDED, mq.LANDED])
+        self.assertLessEqual({"a", "b"}, self.main_files())
+        self.assertEqual(self.gates(), 1)
 
 
 class LostLocalNetwork(Fixture):
