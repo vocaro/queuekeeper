@@ -123,6 +123,26 @@ class StopTests(Fixture):
         self.assertEqual([item["pid"] for item in report["eligible"]], [LEFTOVER])
         self.assertIn(f"would stop PID {LEFTOVER}", "\n".join(remote.reap_lines("build-host", {"processes": report})))
 
+    def test_a_rebooted_simulator_is_reported_but_is_outside_checkout_cleanup(self):
+        simulator = LEFTOVER + 200
+        device = "0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D"
+        bootstrap = self.home / offload_host.DEVICES / device / "data/var/run/launchd_bootstrap.plist"
+        command = f"launchd_sim {bootstrap}"
+        # Even a checkout journal that names the first boot cannot make the simulator a checkout executable.
+        self.record(simulator, self.started, command)
+        for start in (self.started, ago(60)):
+            with self.subTest(start=start):
+                self.process(simulator, 1, command, start=start)
+                census = offload_host.leftovers(remote.ROOT, listed=self.listed, written=lambda _: 0)
+                rows = {item["pid"]: item for item in census["leftovers"]}
+                self.assertIn(simulator, rows)
+                row = rows[simulator]
+                self.assertEqual((row["place"], row["simulator"], row["start"]), ("simulator", device, start))
+                eligible, kept, problem = offload_host.proofs(remote.ROOT, listed=self.listed, written=lambda _: 0)
+                self.assertIsNone(problem)
+                self.assertEqual([item["pid"] for item in eligible], [LEFTOVER])
+                self.assertEqual(kept, [])
+
     def test_a_live_recording_run_keeps_it(self):
         self.process(RUN, 1, "python3 -c offload_host", start=self.run_start)
         self.assertKept(self.stop(), f"the run that saw it start, PID {RUN}, still runs")
