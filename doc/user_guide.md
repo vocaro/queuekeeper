@@ -3595,7 +3595,9 @@ recovery](developer_guide.md#state-and-recovery) for how the worker handles each
 ### Checking a project's setup
 
 `qk doctor` checks a project's lanes and every Mac's setup. It also notes recent Python crash
-reports on each Mac, without changing its verdict. Run `qk doctor --check-only` to report setup
+reports on each Mac and reports this Mac's system-wide wired memory as `wiredBytes`, when readable.
+Wired memory is a separate measurement from the resident memory reported for individual processes.
+Neither observation changes the verdict. Run `qk doctor --check-only` to report setup
 findings without repairing Git hook configuration, device records or the farm's toolkits and simulators.
 Publication and gate send-backs that include diagnostics keep this report as `setup-doctor-log` and the
 queue report as `queue-doctor-log` in `qk queue result --json`. Read either with `qk queue logs ID --artifact KIND`.

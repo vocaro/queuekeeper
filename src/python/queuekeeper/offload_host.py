@@ -497,9 +497,9 @@ def say(text):
     emit(b"O", f"{mac_name()}: {text}".encode())
 
 
-def output(command, environment=None):
+def output(command, environment=None, *, timeout=60):
     try:
-        result = subprocess.run(command, capture_output=True, text=True, env=environment, timeout=60)
+        result = subprocess.run(command, capture_output=True, text=True, env=environment, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
@@ -1247,6 +1247,22 @@ def swap_usage(text):
     sizes = {name: float(number) * 1024 ** "BKMGT".index(unit or "B")
              for name, number, unit in SWAP_SIZE.findall(text or "")}
     return (int(sizes["used"]), int(sizes["total"])) if {"used", "total"} <= sizes.keys() else None
+
+
+def wired_bytes(text):
+    """System wired bytes from one vm_stat snapshot, using the page size reported in that snapshot."""
+    if not text: return None
+    page_size = re.search(r"^Mach Virtual Memory Statistics: \(page size of ([0-9]{1,20}) bytes\)$", text, re.MULTILINE)
+    pages = re.search(r"^Pages wired down:[ \t]*([0-9]{1,20})\.$", text, re.MULTILINE)
+    if page_size and pages and (size := int(page_size[1])) > 0:
+        return int(pages[1]) * size
+    return None
+
+
+def doctor_wired_bytes(health):
+    """An optional local-only observation, kept out of the routine host-health and placement surveys."""
+    if os.environ.get(HEALTH_RECORDING): return (health or {}).get("wiredBytes")
+    return wired_bytes(output(["/usr/bin/vm_stat"], {**os.environ, "LC_ALL": "C"}, timeout=2))
 
 
 def host_health():

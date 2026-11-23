@@ -157,6 +157,8 @@ for variable in [name for name in os.environ if name in ("DEVELOPER_DIR", "GIT_C
     os.environ.pop(variable)
 # Launcher patch inspection reads local Git objects only. Keep its fetch restriction scoped to those Git calls.
 os.environ.pop("GIT_NO_LAZY_FETCH", None)
+# The wired-memory probe selects the C locale for vm_stat alone.
+os.environ.pop("LC_ALL", None)
 # Nor does a test run as a trial because the suite was started inside one (vocaro/queuekeeper#34): every cli.main a test
 # calls would move its namespaces there. A test of a trial sets it itself.
 os.environ.pop(cli.trial.VARIABLE, None)

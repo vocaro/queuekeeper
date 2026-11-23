@@ -99,6 +99,28 @@ class Reading(unittest.TestCase):
         self.assertIsNone(offload_host.swap_usage(None))
         self.assertIsNone(offload_host.swap_usage("nonsense"))
 
+    def test_wired_bytes_uses_the_snapshot_page_size_and_requires_both_fields(self):
+        def snapshot(size, pages):
+            return (f"Mach Virtual Memory Statistics: (page size of {size} bytes)\n"
+                    f"Pages wired down: {pages}.\n")
+
+        self.assertEqual(offload_host.wired_bytes(snapshot(16384, 1310720)), 20 * GB)
+        self.assertEqual(offload_host.wired_bytes(snapshot(4096, 3)), 12288)
+        self.assertEqual(offload_host.wired_bytes(snapshot(16384, 0)), 0)
+        for unread in (None, "Pages wired down: 1.", snapshot(4096, 1).splitlines()[0],
+                       snapshot(0, 1), snapshot(4096, "many"), snapshot(4096, -1)):
+            with self.subTest(unread=unread):
+                self.assertIsNone(offload_host.wired_bytes(unread))
+
+    def test_doctors_optional_wired_read_has_a_short_timeout_and_uses_the_c_locale(self):
+        error = offload_host.subprocess.TimeoutExpired(["/usr/bin/vm_stat"], 2)
+        with patch.object(offload_host.subprocess, "run", side_effect=error) as run, \
+                patch.dict(os.environ, {offload_host.HEALTH_RECORDING: "", "LC_ALL": "other"}):
+            self.assertIsNone(offload_host.doctor_wired_bytes(None))
+        self.assertEqual(run.call_args.args, (["/usr/bin/vm_stat"],))
+        self.assertEqual(run.call_args.kwargs["timeout"], 2)
+        self.assertEqual(run.call_args.kwargs["env"]["LC_ALL"], "C")
+
     def test_host_health_lists_the_largest_processes_without_their_arguments(self):
         answers = {("sysctl", "-n", "hw.memsize"): str(64 * GB),
                    ("/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"): "2",
@@ -193,6 +215,20 @@ class Doctor(unittest.TestCase):
         shown = self.doctor(hosts, reading())
         self.assertFalse([w for w in shown["warnings"] if "short of memory" in w])
         self.assertTrue(any("whether build is short of memory" in item for item in shown["farm"][0]["unchecked"]))
+
+    def test_local_wired_bytes_are_optional_and_independent_of_resident_memory_warnings(self):
+        hosts = {"host": "build", "errors": [], "unchecked": [], "pythonCrashes": {},
+                 "remote": {"hostHealth": reading()}}
+        here = reading(memory=36 * GB, largest=[(123, "coreaudiod", int(2.5 * GB), DAY)])
+        absent = self.doctor(hosts, here)
+        self.assertNotIn("wiredBytes", absent)
+        for value in (0, 20 * GB):
+            with self.subTest(value=value):
+                shown = self.doctor(hosts, {**here, "wiredBytes": value})
+                self.assertEqual(shown.pop("wiredBytes"), value)
+                self.assertEqual(shown["warnings"], absent["warnings"])
+        self.assertEqual(self.doctor(hosts, {**SWAPPING, "wiredBytes": 20 * GB})["warnings"],
+                         self.doctor(hosts, SWAPPING)["warnings"])
 
 
 

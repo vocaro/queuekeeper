@@ -1848,8 +1848,9 @@ def perform(argv, report):
                 errors += found
                 warnings += said
             # Each Mac short of memory, with what holds it (host_health); another Mac's rides on its survey.
-            warnings += host_health.warnings((compared[0].get("local") or {}).get("hostHealth")
-                                             or offload_host.host_health(), "this Mac")
+            local_health = (compared[0].get("local") or {}).get("hostHealth") or offload_host.host_health()
+            warnings += host_health.warnings(local_health, "this Mac")
+            wired = host_health.number(offload_host.doctor_wired_bytes(local_health))
             for hosts in compared:
                 if "remote" in hosts and "hostHealth" not in hosts["remote"]:
                     hosts.setdefault("unchecked", []).append(f"whether {hosts['host']} is short of memory, which its "
@@ -1867,7 +1868,8 @@ def perform(argv, report):
                                              *lane_coverage.skipping_notes(affected),
                                              *([launcher_note] if launcher_note else [])])),
                 "testLanes": test_lanes, **({"affectedPaths": affected} if affected else {}),
-                "startFree": start_floors(config), "farm": compared},
+                "startFree": start_floors(config), "farm": compared,
+                **({"wiredBytes": wired} if wired is not None else {})},
                 indent=2))
             return int(bool(missing or errors or any(hosts["errors"] for hosts in compared)))
         elif args.action == "pre-push": return pre_push.main(root, config, args.remote)
