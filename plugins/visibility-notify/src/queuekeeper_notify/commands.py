@@ -107,7 +107,7 @@ def main(argv, project=None):
     trying.add_argument("--channel", help="through this channel alone")
     operations.add_parser("check", help="look now for a queue that is stuck, as `qk queue doctor` does, and "
                           "tell of what has lasted, as the commands that reach the hosts do by themselves every two "
-                          "minutes: 0 when nothing is found, 1 when something is")
+                          "minutes: 0 when nothing is found, 1 for a queue finding, 2 when the check fails")
     operations.add_parser("deliver", help="tell now of what this project's queue has journaled since the last "
                           "delivery, as the queue does by itself after each event")
     args = parser.parse_args(argv)
@@ -128,6 +128,7 @@ def main(argv, project=None):
             findings, told = check.check(git_state.main_checkout(root) or root)
             for finding in findings: print(f"{finding['signal']}: {finding['diagnosis']}")
             print(f"{len(findings)} finding(s), {told} told of now")
+            if any(finding["signal"] == rules.CHECK_FAILED for finding in findings): return 2
             return 1 if findings else 0
         told = deliver.deliver(merge_queue.Queue(root).directory)
         print(f"{told} notice(s) sent")

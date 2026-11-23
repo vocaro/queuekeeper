@@ -180,6 +180,16 @@ class Channels(Settings, unittest.TestCase):
         config = {"argv": [sys.executable, "-c", "import sys; print('no route', file=sys.stderr); sys.exit(3)"]}
         with self.assertRaisesRegex(RuntimeError, r"no route \(exit 3\)"): command.send(NOTICE, config)
 
+    def test_a_missing_executable_is_definite_but_a_running_command_timeout_is_uncertain(self):
+        for sender, config in ((banner, {}), (command, {"argv": ["notifier"]})):
+            with self.subTest(channel=sender.__name__):
+                with patch.object(subprocess, "run", side_effect=FileNotFoundError("executable absent")):
+                    with self.assertRaises(channels.NotDelivered):
+                        sender.send(NOTICE, config)
+                with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired(["notifier"], 30)):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        sender.send(NOTICE, config)
+
     def test_a_command_needs_an_argument_list(self):
         for config in ({}, {"argv": []}, {"argv": "echo hi"}, {"argv": ["echo", 1]}):
             with self.subTest(config=config): self.assertIn("no argv is set", command.ready(config))
@@ -277,8 +287,23 @@ class Delivery(Settings, unittest.TestCase):
         self.assertEqual((last["level"], last["rule"], last["event"]), (rules.URGENT, "several", None))
         self.assertIn("Add 4: its gate failed; Entry came back: Add 5", last["body"])
 
+    def test_a_new_owner_hold_is_distinct_even_when_recent_event_notices_are_summarized(self):
+        for number in range(deliver.MOST + 1): self.failed(str(number))
+        hold = events.emit(self.directory, "queue.held", **{"for": "owner", "why": "for the owner: inspect"})
+
+        def refuse_hold(notice_, config):
+            if notice_["event"] == hold:
+                raise channels.NotDelivered("no route")
+
+        both = [*channels.on({}), ("broken", types.SimpleNamespace(send=refuse_hold), {})]
+        with patch.object(channels, "on", return_value=both):
+            self.assertEqual(deliver.deliver(self.directory), deliver.MOST)
+        self.assertEqual(self.sent[-2]["title"], "Queue held for you")
+        self.assertEqual(self.sent[-1]["rule"], "several")
+        self.assertEqual(deliver.read_cursor(self.directory)[deliver.HOLD_RETRY], {"event": hold, "channels": ["broken"]})
+
     def test_a_channel_that_refuses_is_logged_and_the_others_still_send(self):
-        def refuse(notice_, config): raise RuntimeError("no route")
+        def refuse(notice_, config): raise channels.NotDelivered("no route")
         both = [("broken", types.SimpleNamespace(send=refuse), {}), ("kept", self.kept, {})]
         self.failed("a")
         with patch.object(channels, "on", lambda found: both):
@@ -423,7 +448,7 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.assertEqual(self.sent, [])
 
     def test_a_finding_retries_after_every_channel_refuses(self):
-        def refuse(notice_, config): raise RuntimeError("no route")
+        def refuse(notice_, config): raise channels.NotDelivered("no route")
         self.found = [self.finding()]
         self.look(0.0)
         with patch.object(channels, "on", lambda found: [("broken", types.SimpleNamespace(send=refuse), {})]):
@@ -433,6 +458,32 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.assertEqual(self.look(check.PERSIST + 120)[1], 0)
         self.assertEqual(len(self.sent), 1)
 
+    def test_uncertain_delivery_is_skipped_while_a_definite_refusal_can_retry(self):
+        self.found = [self.finding()]
+        ambiguous, accepted = [], []
+        refusing = True
+
+        def timed_out(notice_, config):
+            ambiguous.append(notice_)
+            raise subprocess.TimeoutExpired(["notifier"], 30)
+
+        def recoverable(notice_, config):
+            if refusing: raise channels.NotDelivered("not started")
+            accepted.append(notice_)
+
+        self.look(0.0)
+        both = [("timed-out", types.SimpleNamespace(send=timed_out), {}),
+                ("recoverable", types.SimpleNamespace(send=recoverable), {})]
+        with patch.object(channels, "on", return_value=both):
+            self.assertEqual(self.look(check.PERSIST)[1], 0)
+            self.assertEqual(check.read(self.directory)["findings"]["no worker"]["uncertain"], ["timed-out"])
+            refusing = False
+            self.assertEqual(self.look(check.PERSIST + check.EVERY)[1], 1)
+            self.assertEqual(self.look(check.PERSIST + 2 * check.EVERY)[1], 0)
+        self.assertEqual(ambiguous, accepted)
+        self.assertEqual(len(ambiguous), 1)
+        self.assertIn("could not confirm delivery", deliver.log_path().read_text())
+
     def test_a_finding_waits_for_a_channel_to_be_enabled(self):
         self.found = [self.finding()]
         self.look(0.0)
@@ -441,7 +492,7 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.assertEqual(self.look(check.PERSIST + 60)[1], 1)
 
     def test_a_finding_delivered_to_one_channel_does_not_retry_other_channels(self):
-        def refuse(notice_, config): raise RuntimeError("no route")
+        def refuse(notice_, config): raise channels.NotDelivered("no route")
         self.found = [self.finding()]
         self.look(0.0)
         available = [*channels.on({}), ("broken", types.SimpleNamespace(send=refuse), {})]
@@ -457,6 +508,143 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.assertEqual(([finding["signal"] for finding in findings], told), (["no worker"], 0))
         self.assertEqual(check.check(self.repo, now=check.PERSIST)[1], 1)
         self.assertIn("1 entry wait and no worker runs", self.sent[0]["body"])
+
+    def test_a_broken_doctor_is_reported_without_clearing_an_earlier_finding(self):
+        self.found = [self.finding()]
+        self.look(0.0)
+        self.assertEqual(self.look(check.PERSIST)[1], 1)
+
+        def broken(root):
+            raise OSError("private detector detail")
+
+        first_failure = check.PERSIST + 10
+        for at, told in ((first_failure, 0), (first_failure + check.PERSIST, 1),
+                         (first_failure + check.PERSIST + 60, 0)):
+            findings, count = check.check(self.repo, now=at, diagnose=broken)
+            self.assertEqual(([finding["signal"] for finding in findings], count), ([rules.CHECK_FAILED], told))
+        self.assertEqual([notice_["title"] for notice_ in self.sent], ["Queue looks stuck", "Queue check failed"])
+        self.assertNotIn("private detector detail", json.dumps(self.sent))
+        self.assertIn("private detector detail", deliver.log_path().read_text())
+        self.assertEqual(self.look(first_failure + check.PERSIST + 120), (self.found, 0))
+        self.assertNotIn(rules.CHECK_FAILED, check.read(self.directory)["findings"])
+
+    def test_a_background_check_returns_failure_and_keeps_trying_to_tell_of_it(self):
+        now = 1000.0
+        with (patch.object(mq, "diagnose", side_effect=RuntimeError("no doctor")),
+              patch.object(check.time, "time", side_effect=lambda: now)):
+            self.assertEqual(deliver.main(["--check", str(self.repo)]), 1)
+            self.assertEqual(self.sent, [])
+            now += check.PERSIST
+            self.assertEqual(deliver.main(["--check", str(self.repo)]), 1)
+            self.assertEqual(deliver.main(["--check", str(self.repo)]), 1)
+        self.assertEqual([notice_["title"] for notice_ in self.sent], ["Queue check failed"])
+
+    def test_real_diagnosis_tells_of_no_verdict_and_preserves_queue_records(self):
+        queue = mq.Queue(self.repo)
+        config = self.config()
+        config["lanes"]["gate"]["command"] = ["python3", "scripts/qk", "unittest", "-s", "tests"]
+        (self.repo / "tests").mkdir()
+        (self.repo / "tests/host_isolation.py").touch()
+        (self.repo / "tests/test_gate.py").write_text(
+            "import unittest\nimport host_isolation\n\nclass Gate(unittest.TestCase):\n    def test_gate(self): pass\n")
+        test_merge_queue.run(self.repo, "git", "add", "tests")
+        self.publish(config, "Gate on qk unittest")
+        self.commit("a.txt", "one")
+        identifier, = self.add("one")
+        queue.mark([queue.read(identifier)], mq.TESTING)
+        for index in range(2):
+            (queue.logs / f"20261107-10000{index}-aaaaaaaa-gate.log").write_text(
+                "queuekeeper: lane gate reached its limit\n")
+        recorded = [self.repo / ".git/HEAD", *queue.logs.glob("*"), *queue.entries.glob("*.json")]
+        before = {path: path.read_bytes() for path in recorded}
+        with queue.worker() as free:
+            self.assertTrue(free)
+            findings, _ = check.check(self.repo, now=0.0)
+            self.assertEqual(check.check(self.repo, now=check.PERSIST)[1], 1)
+            self.assertEqual(check.check(self.repo, now=2 * check.PERSIST)[1], 0)
+        self.assertEqual([finding["signal"] for finding in findings], ["no verdict"])
+        notice_, = self.sent
+        self.assertEqual(notice_["finding"], findings[0])
+        self.assertEqual({path: path.read_bytes() for path in recorded}, before)
+        self.assertIsNone(queue.held())
+        self.assertEqual(queue.read(identifier)["state"], mq.TESTING)
+
+    def test_an_owner_hold_alerts_via_its_event_without_a_duplicate_from_the_check(self):
+        queue = mq.Queue(self.repo)
+        why = "for the owner: inspect the queue"
+        with patch.object(plugins, "AFTER_EVENT", []):
+            queue.hold(why)
+
+        self.assertEqual(deliver.deliver(self.directory), 1)
+        self.assertEqual(deliver.deliver(self.directory), 0)
+        self.assertEqual(check.check(self.repo, now=0.0), ([], 0))
+        self.assertEqual(check.check(self.repo, now=check.PERSIST), ([], 0))
+        notice_, = self.sent
+        self.assertEqual((notice_["title"], notice_["body"]), ("Queue held for you", why))
+        self.assertEqual(queue.held(), why)
+
+    def test_the_checker_retries_only_the_refused_owner_hold_channel(self):
+        queue = mq.Queue(self.repo)
+        retried, ambiguous = [], []
+        refusing = True
+
+        def flaky(notice_, config):
+            if refusing: raise channels.NotDelivered("no route")
+            retried.append(notice_)
+
+        def timed_out(notice_, config):
+            ambiguous.append(notice_)
+            raise TimeoutError("no response from the webhook")
+
+        hold = "for the owner: inspect the queue"
+        # Load a cursor written by a previous Queuekeeper to verify its shape migrates as events advance.
+        prior = queue.emit("gate.began", lane="gate")
+        (self.directory / deliver.CURSOR).write_text(json.dumps({"id": prior["id"], "time": prior["time"]}))
+        both = [*channels.on({}), ("flaky", types.SimpleNamespace(send=flaky), {}),
+                ("timed-out", types.SimpleNamespace(send=timed_out), {})]
+        with patch.object(plugins, "AFTER_EVENT", []), patch.object(channels, "on", return_value=both):
+            queue.hold(hold)
+            self.assertEqual(deliver.deliver(self.directory), 1)
+            refused = deliver.read_cursor(self.directory)[deliver.HOLD_RETRY]
+            self.assertEqual(refused["channels"], ["flaky"])
+            newest = queue.emit("gate.began", lane="gate")
+            self.assertEqual(deliver.deliver(self.directory), 0)
+            self.assertEqual(deliver.read_cursor(self.directory)[deliver.HOLD_RETRY], refused)
+            self.assertEqual(retried, [])
+            self.configure(rules_={"stuck": False})
+            self.spawned().assert_called_once_with("--check", str(self.repo))
+            refusing = False
+            self.assertEqual(deliver.main(["--check", str(self.repo)]), 0)
+            self.assertEqual(deliver.main(["--check", str(self.repo)]), 0)
+
+        notice_, = self.sent
+        self.assertEqual(retried, [notice_])
+        self.assertEqual(ambiguous, [notice_])
+        self.assertIn("could not confirm delivery", deliver.log_path().read_text())
+        self.assertEqual(notice_["body"], hold)
+        self.assertEqual(deliver.read_cursor(self.directory), {"id": newest["id"], "time": newest["time"]})
+        self.assertEqual(queue.held(), hold)
+
+    def test_the_checker_discards_a_retry_for_a_superseded_hold_even_with_the_same_reason(self):
+        queue = mq.Queue(self.repo)
+        hold = "for the owner: inspect the queue"
+
+        def refuse(notice_, config):
+            raise channels.NotDelivered("no route")
+
+        with patch.object(plugins, "AFTER_EVENT", []):
+            queue.hold(hold)
+            with patch.object(channels, "on", return_value=[("kept", types.SimpleNamespace(send=refuse), {})]):
+                self.assertEqual(deliver.deliver(self.directory), 0)
+            queue.hold_file.unlink()
+            queue.emit("queue.resumed", was=hold)
+            queue.hold(hold)
+            self.assertEqual(deliver.main(["--check", str(self.repo)]), 0)
+            self.assertEqual(self.sent, [])
+            self.assertNotIn(deliver.HOLD_RETRY, deliver.read_cursor(self.directory))
+            self.assertEqual(deliver.deliver(self.directory), 1)
+        notice_, = self.sent
+        self.assertEqual(notice_["body"], hold)
 
     def spawned(self, folder=None):
         with patch.object(deliver, "start") as start, patch.object(check.Path, "cwd", return_value=folder or self.repo):
@@ -483,7 +671,7 @@ class Checking(Settings, test_merge_queue.Fixture):
         with patch.dict(os.environ, {visibility.SWITCH: "off"}): self.spawned().assert_not_called()
 
     def test_the_process_looks_when_asked_to_check(self):
-        with patch.object(check, "check") as looked:
+        with patch.object(check, "check", return_value=([], 0)) as looked:
             self.assertEqual(deliver.main(["--check", str(self.repo)]), 0)
         looked.assert_called_once_with(str(self.repo))
         with patch.object(check, "check", side_effect=RuntimeError("no queue")):
@@ -502,6 +690,14 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.assertEqual(status, 1)
         self.assertIn("no worker: 1 entry wait and no worker runs", printed.getvalue())
         self.assertTrue(printed.getvalue().endswith("1 finding(s), 0 told of now\n"))
+
+    def test_the_command_distinguishes_a_broken_check_from_a_queue_finding(self):
+        self.keep_plugins()
+        printed = io.StringIO()
+        with (patch("sys.stdout", printed), patch.object(mq, "diagnose", side_effect=OSError("no doctor"))):
+            status = cli.main(["--project", str(self.repo), "notify", "check"])
+        self.assertEqual(status, 2)
+        self.assertIn("doctor unavailable: Queue doctor could not complete its check", printed.getvalue())
 
     def test_the_feature_registers_the_look_with_the_commands_that_reach_the_hosts(self):
         self.keep_plugins()

@@ -15,6 +15,7 @@ RULES = {
     "resumed": (False, "a hold was cleared"),
 }
 BODY_LIMIT = 300
+CHECK_FAILED = "doctor unavailable"
 
 
 def chosen(settings):
@@ -43,7 +44,8 @@ def rule_of(event, on):
 def finding_notice(finding, repository):
     """The notice of a finding of the queue's doctor (merge_queue.diagnose) that has lasted (check): what it found,
     then what would heal it."""
-    return {"rule": "stuck", "level": URGENT, "title": "Queue looks stuck", "repository": repository, "event": None,
+    title = "Queue check failed" if finding.get("signal") == CHECK_FAILED else "Queue looks stuck"
+    return {"rule": "stuck", "level": URGENT, "title": title, "repository": repository, "event": None,
             "body": cut(f"{finding.get('diagnosis')}. Next: {finding.get('remedy')}"), "finding": finding}
 
 

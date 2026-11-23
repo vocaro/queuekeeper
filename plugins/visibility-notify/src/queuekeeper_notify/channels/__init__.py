@@ -1,11 +1,15 @@
 """The ways of telling the owner, each a module of its own here, found by its name.
 
 A channel has `ready(config)`, which returns None when config lets it send or else why it cannot, and
-`send(notice, config)`, which raises when the notice did not go. config is the object the feature's settings hold
-under `channels` and the channel's name; its `enabled`, when false, turns the channel off. A channel imports no
-other channel."""
+`send(notice, config)`, which returns on success. NotDelivered confirms the notice could not have gone.
+Other exceptions leave delivery uncertain. config is the object the feature's settings hold under `channels`
+and the channel's name. A false `enabled` turns the channel off. A channel imports no other channel."""
 import importlib
 import pkgutil
+
+
+class NotDelivered(RuntimeError):
+    """A channel failed before it could deliver the notice."""
 
 
 def available():

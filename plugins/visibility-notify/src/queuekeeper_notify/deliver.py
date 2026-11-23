@@ -3,12 +3,13 @@
 A delivery is a process of its own (`python3 -m queuekeeper_notify DIRECTORY`), which the process that
 wrote an event starts apart from itself (spawn) and never waits for. It keeps where it stopped beside the journal:
 
-    <common>/queuekeeper-queue/visibility-notify.json   the last event told of, by its ID and time
+    <common>/queuekeeper-queue/visibility-notify.json   the last event read, plus any pending owner-hold retry
     <common>/queuekeeper-queue/visibility-notify.lock   one delivery at a time
 
 so a delivery that dies loses at most its own notices, the next one goes on from the same place, and no event is
-told twice however many deliveries start. What a channel refuses is written to notify.log, beside the owner's
-settings, and holds up neither the other channels nor the next notice."""
+replayed however many deliveries start. What a channel refuses is written to notify.log, beside the owner's
+settings, and holds up neither the other channels nor the next notice. The checker retries an active owner hold
+once, only through the channels that explicitly refused its original notice."""
 import contextlib
 import fcntl
 import json
@@ -23,6 +24,7 @@ from queuekeeper import events, visibility
 from . import channels, rules
 
 CURSOR, LOCK, LOG, LOG_LIMIT = "visibility-notify.json", "visibility-notify.lock", "notify.log", 1 << 20
+HOLD_RETRY = "ownerHoldRetry"
 # A first delivery tells of nothing older than this many seconds: the journal's history is not news.
 FIRST = 120
 # The most notices one delivery sends as they are; the rest go as one that counts them.
@@ -93,10 +95,12 @@ def read_cursor(directory):
     return found if isinstance(found, dict) and isinstance(found.get("time"), (int, float)) else None
 
 
-def write_cursor(directory, event):
+def write_cursor(directory, event, retry=None):
     path = Path(directory) / CURSOR
     staged = path.with_suffix(f".{os.getpid()}.tmp")
-    staged.write_text(json.dumps({"id": event.get("id"), "time": event.get("time", 0)}) + "\n")
+    cursor = {"id": event.get("id"), "time": event.get("time", 0)}
+    if retry: cursor[HOLD_RETRY] = retry
+    staged.write_text(json.dumps(cursor) + "\n")
     os.replace(staged, path)
 
 
@@ -111,39 +115,86 @@ def gathered(notices):
         "repository": rest[0]["repository"], "event": None}]
 
 
-def send(notice, found=None):
-    """Send notice through every channel that is on, and return (how many took it, [each refusal])."""
+def send(notice, found=None, *, only=None, skip=()):
+    """Send through enabled channels. Return the accepted count, definite refusals and uncertain outcomes."""
     found = settings() if found is None else found
-    sent, refused = 0, []
+    sent, refused, uncertain = 0, {}, {}
     for name, module, config in channels.on(found):
+        if name in skip or (only is not None and name not in only): continue
         try:
             module.send(notice, config)
             sent += 1
+        except channels.NotDelivered as error:
+            refused[name] = f"{name} did not send \"{notice['title']}\": {error}"
         except Exception as error:  # noqa: BLE001
-            refused.append(f"{name} did not send \"{notice['title']}\": {error}")
-    return sent, refused
+            uncertain[name] = f"{name} could not confirm delivery of \"{notice['title']}\": {error}"
+    return sent, refused, uncertain
+
+
+def last_hold_transition(records):
+    return next((event for event in reversed(records) if event.get("kind") in {"queue.held", "queue.resumed"}), None)
 
 
 def deliver(directory, now=None):
-    """Tell of each event written to the journal in directory since the last delivery, and return how many
-    notices went to at least one channel. The cursor moves past every event read, told of or not, before anything
-    is sent: an event is told at most once, and a channel that hangs cannot make the next delivery repeat it."""
+    """Tell of events since the last delivery. Move the cursor before sending each batch.
+
+    Only an explicit refusal of the current owner hold can earn a separate retry on the next check.
+    """
     now = time.time() if now is None else now
     found = settings()
     with (Path(directory) / LOCK).open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        fresh = pending(directory, read_cursor(directory), now)
+        cursor = read_cursor(directory)
+        fresh = pending(directory, cursor, now)
         if not fresh: return 0
-        write_cursor(directory, fresh[-1])
+        transition = last_hold_transition(fresh)
+        retry = (cursor or {}).get(HOLD_RETRY) if transition is None else None
+        write_cursor(directory, fresh[-1], retry)
         on, repository = rules.chosen(found), repository_of(directory)
-        notices = gathered([notice for notice in (rules.notice(event, on, repository) for event in fresh) if notice])
+        notices = [notice for notice in (rules.notice(event, on, repository) for event in fresh) if notice]
+        # Keep the current owner hold distinct when a burst would otherwise fold it into the summary.
+        if len(notices) > MOST:
+            for index in range(MOST - 1, len(notices)):
+                if notices[index]["rule"] == "held-owner" and notices[index]["event"] == transition:
+                    notices.insert(MOST - 2, notices.pop(index))
+                    break
+        notices = gathered(notices)
         told = 0
         for notice in notices:
-            sent, refused = send(notice, found)
+            sent, refused, uncertain = send(notice, found)
             told += bool(sent)
-            for words in refused: log(words)
+            if refused and notice["rule"] == "held-owner" and notice["event"] == transition:
+                write_cursor(directory, fresh[-1], {"event": transition, "channels": list(refused)})
+            for words in (*refused.values(), *uncertain.values()): log(words)
         if notices and not channels.on(found): log(f"{len(notices)} notice(s) of {repository} went nowhere: no channel is on")
         return told
+
+
+def retry_owner_hold(directory, now):
+    """Retry only explicit refusals of the same owner hold, once under the event delivery lock."""
+    if not (read_cursor(directory) or {}).get(HOLD_RETRY): return
+    with (Path(directory) / LOCK).open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        cursor = read_cursor(directory) or {}
+        retry = cursor.get(HOLD_RETRY)
+        if not isinstance(retry, dict): return
+        event, names = retry.get("event"), retry.get("channels")
+        found = settings()
+        on = rules.chosen(found)
+        notice = None
+        if (isinstance(event, dict) and isinstance(names, list)
+                and rules.rule_of(event, on) == "held-owner"
+                and last_hold_transition(pending(directory, cursor, now)) is None):
+            try: why = (Path(directory) / "hold").read_text().strip()
+            except FileNotFoundError: why = None
+            original = event.get("why")
+            if isinstance(original, str) and why == original.strip():
+                notice = rules.notice(event, on, repository_of(directory))
+        # Consume before sending, as for new events. Never repeat a channel after an uncertain result.
+        write_cursor(directory, cursor)
+        if notice:
+            _, refused, uncertain = send(notice, found, only=names)
+            for words in (*refused.values(), *uncertain.values()): log(words)
 
 
 def main(argv):
@@ -157,7 +208,8 @@ def main(argv):
     try:
         if checking:
             from . import check
-            check.check(argv[1])
+            findings, _ = check.check(argv[1])
+            return int(any(finding["signal"] == rules.CHECK_FAILED for finding in findings))
         else: deliver(argv[0])
     except Exception as error:  # noqa: BLE001
         log(f"the {'check of' if checking else 'delivery for'} {argv[-1]} stopped: {error}")

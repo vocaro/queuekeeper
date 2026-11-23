@@ -3,6 +3,8 @@ import shutil
 import subprocess
 import sys
 
+from . import NotDelivered
+
 OSASCRIPT = "/usr/bin/osascript"
 # The notice's text reaches the script as arguments, never as source.
 SCRIPT = ("on run argv", "if (item 4 of argv) is \"\" then",
@@ -20,5 +22,9 @@ def send(notice, config):
     sound = config.get("sound") if isinstance(config.get("sound"), str) else ""
     command = [OSASCRIPT, *(part for line in SCRIPT for part in ("-e", line)),
                notice["title"], notice["body"], notice["repository"], sound]
-    done = subprocess.run(command, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+    except FileNotFoundError as error:
+        # The executable did not start. Once it runs, even an error can follow delivery.
+        raise NotDelivered(str(error)) from error
     if done.returncode: raise RuntimeError(done.stderr.strip() or f"osascript exited {done.returncode}")

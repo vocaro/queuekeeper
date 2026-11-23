@@ -3517,15 +3517,22 @@ qk notify unset webhook url
 
 Good to know:
 
-- Each event is told at most once, and a burst of more than five notices is summarized.
+- A burst of more than five event notices is summarized. If a channel confirms it could not
+  deliver a notice about a hold for the owner, the next check retries that channel once while
+  the same hold remains. The check skips channels that reported success or uncertain delivery.
+- A timeout or other error after a channel starts may follow delivery. Queuekeeper logs the
+  uncertain outcome and skips that channel on later checks for the same notice.
 - A failing channel never holds up the others; its errors go to `notify.log` beside
   `visibility.json`.
 - Banners appear to come from Script Editor, so allow its notifications in System Settings.
 - A stalled queue writes no event, so Queuekeeper looks for one, at most every two minutes,
-  whenever a command such as `land` or `run` runs, or every two minutes with the signed launcher.
-  A problem is reported once it has lasted five minutes. If no channel accepts the notice, the
-  next check retries while the problem is still present. Once a channel accepts it, the check
+  whenever a command such as `land` or `run` runs, or every two minutes with the
+  [signed queue launcher](#the-signed-queue-launcher). A problem is reported once it has lasted
+  five minutes. If no channel accepts the notice, the next check can retry channels with a
+  definite failure while the problem is still present. Once a channel accepts it, the check
   considers it reported.
+- If Queuekeeper cannot complete the check, `notify.log` records why. A failure that persists is
+  eligible for its own notice, and the incomplete check leaves earlier findings as they were.
 
 ### The dashboard
 
