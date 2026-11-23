@@ -352,9 +352,13 @@ def git(directory, *arguments):
                           text=True).stdout.strip()
 
 
+def commit_staged(directory):
+    git(directory, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "state")
+
+
 def commit_all(directory):
     git(directory, "add", "-A")
-    git(directory, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "state")
+    commit_staged(directory)
     return git(directory, "rev-parse", "HEAD")
 
 
@@ -732,7 +736,9 @@ class RemoteTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
         # The fixture can be removed as soon as its first commit returns. A detached repack can race that cleanup.
         git(root, "config", "maintenance.auto", "false")
-        commit_all(root)
+        # These fresh fixture blobs are short-lived. Skip loose-object compression while staging them.
+        git(root, "-c", "core.looseCompression=0", "add", "-A")
+        commit_staged(root)
         git(root, "remote", "add", "origin", remote.UPSTREAM)
         # Here in the copy's own configuration, and there in another Mac's home's.
         git(root, "config", f"url.{root}.insteadOf", remote.UPSTREAM)
