@@ -377,6 +377,29 @@ class PoolTests(unittest.TestCase):
         # Without a label, the device type's display name is used.
         self.assertEqual(self.pool.create(DUO, RUNTIME, purpose="Tests").key, "Project iPhone Duo 1")
 
+    def test_a_number_reserved_between_selection_and_claim_is_skipped(self):
+        occupied, contested, released = (f"Project Duo {number}" for number in (1, 2, 3))
+        self.simctl.add(occupied, state="Booted")
+        self.release_entry(released, None, days=1)
+        reserve = self.pool.record.reserve
+        winning = []
+
+        def claim(key, **options):
+            if key == contested:
+                # The other claimant commits its reservation after this caller reads revision zero.
+                winning.append(reserve(key, **{**options, "owner": "other"}))
+            return reserve(key, **options)
+
+        with mock.patch.object(self.pool.record, "reserve", side_effect=claim) as tried:
+            lease = self.pool.create(DUO, RUNTIME, label="Duo", purpose="Tests")
+
+        self.assertEqual([call.args[0] for call in tried.call_args_list], [contested, released])
+        self.assertEqual(self.pool.record.entry(contested), winning[0])
+        self.assertEqual(lease.key, released)
+        self.assertEqual(self.pool.record.entry(released)["ownerChatID"], "me")
+        self.assertEqual([call for call in self.simctl.calls if call[0] in {"create", "clone", "erase", "delete"}],
+                         [("create", released, DUO, RUNTIME)])
+
     def test_an_interrupted_creation_adopts_only_the_device_of_its_exact_name(self):
         def stored_then_failed(rest):
             self.simctl.add(rest[0], rest[1], rest[2])

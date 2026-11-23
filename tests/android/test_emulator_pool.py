@@ -180,6 +180,35 @@ class Taking(unittest.TestCase):
         self.assertEqual(again.key, lease.key)
         self.assertFalse((member / "left-by-the-run").exists())
 
+    def test_a_number_reserved_between_selection_and_claim_is_skipped(self):
+        template = self.template()
+        occupied, contested, released = (f"Demo_Pixel_8_API_36_{number}" for number in (1, 2, 3))
+        make_avd(self.folder, occupied)
+        self.running["emulator-5554"] = occupied
+        deadline = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        old = self.record.reserve(released, owner="earlier", revision=0, device=f"avd:{released}",
+                                  purpose="Earlier tests", release_by=deadline)
+        self.record.release(released, owner="earlier", revision=old["revision"], outcome="done", restoration="checked")
+        reserve = self.record.reserve
+        winning = []
+
+        def claim(key, **options):
+            if key == contested:
+                # The other claimant commits its reservation after this caller reads revision zero.
+                winning.append(reserve(key, **{**options, "owner": "session-b"}))
+            return reserve(key, **options)
+
+        with patch.object(self.record, "reserve", side_effect=claim) as tried, \
+                patch.object(avd, "clone", wraps=avd.clone) as clone, patch.object(avd, "delete") as delete:
+            lease = self.pool.take(IMAGE, "pixel_8", purpose="Tests")
+
+        self.assertEqual([call.args[0] for call in tried.call_args_list], [contested, released])
+        self.assertEqual(self.record.entry(contested), winning[0])
+        self.assertEqual(lease.key, released)
+        self.assertEqual(self.record.entry(released)["ownerChatID"], "session-a")
+        clone.assert_called_once_with(template, released, folder=self.folder)
+        delete.assert_not_called()
+
     def test_a_member_whose_emulator_does_not_stop_stays_reserved_for_recovery(self):
         lease = self.pool.take(IMAGE, "pixel_8", purpose="first")
         with patch.object(avd, "stop", return_value=False):
