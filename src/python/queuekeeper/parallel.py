@@ -23,6 +23,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -31,6 +32,8 @@ from . import plugins, lane_results, lane_timing, processes, resources, run_prog
 
 # Lines of a failed lane's log printed under its result.
 TAIL = 40
+# Limit what one group's skip evidence adds to the results sent from another Mac.
+SKIP_ARTIFACT_BYTES = 2 * 1024 * 1024
 # Processes `qk unittest` runs at a time unless --jobs says otherwise.
 DEFAULT_JOBS = 4
 # unittest's own exit status for a run that found no tests (Python 3.12 and later).
@@ -128,13 +131,34 @@ def hand_up(results, lane, environment=None):
     return target
 
 
+def keep_skip_evidence(results_directory, skipped):
+    """File bounded private evidence among the group's results, leaving only its basename in the receipt."""
+    payload = json.dumps({"schemaVersion": 1, "members": skipped}, separators=(",", ":"), sort_keys=True) + "\n"
+    if len(payload) > SKIP_ARTIFACT_BYTES:
+        print("queuekeeper: this group's skip evidence exceeds the artifact size limit", file=sys.stderr, flush=True)
+        return None
+    artifact = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix=".queuekeeper-group-skips-",
+                                         suffix=".json", dir=results_directory, delete=False) as output:
+            artifact = Path(output.name)
+            output.write(payload)
+        return artifact.name
+    except OSError as error:
+        if artifact is not None:
+            with contextlib.suppress(OSError): artifact.unlink()
+        print(f"queuekeeper: this group's skip evidence could not be kept: {error}", file=sys.stderr, flush=True)
+        return None
+
+
 def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_directory=None, fail_fast=False,
-          pace=None, unselected=()):
+          pace=None, unselected=(), record_skips=False):
     """Run members, (name, lane) pairs, jobs at a time, each with its log at directory/NAME.log and
     its receipt at directory/NAME.json, and return the combined status. judge(name, lane, status, log) is
     a lane's status from its command's and its log, raising ValueError for a run that executed too
     few tests. With results_directory, the group's results/, each lane's command finds results/NAME/ in
     RESULTS_VARIABLE, so that what it writes there comes back with the group's from another Mac.
+    With record_skips, a passing whole group's reported skip details follow the same results path.
 
     Every lane runs to its own end, however the others end. A stop reaches every running lane and
     starts none of the rest; once all have ended the stop is raised, or the uncertainty of a lane
@@ -157,7 +181,7 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
     in notSelected: none is run, and none counts in the group's status.
     """
     directory.mkdir(parents=True, exist_ok=True)
-    results, lock, started = {}, threading.Lock(), time.monotonic()
+    results, skipped, lock, started = {}, {}, threading.Lock(), time.monotonic()
     # Set once a lane fails, under fail_fast, with that lane's name first in failed.
     cut, failed = (threading.Event() if fail_fast else None), []
 
@@ -171,12 +195,15 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
         """Record a lane's end in the group's receipt and in its own, beside its log, with the tests
         its log counts, so that its counts read from its files wherever they are copied."""
         seconds = round(time.monotonic() - began)
-        found = lane_results.counted(log.read_text(errors="replace")) if log.exists() else None
+        output = log.read_text(errors="replace") if log.exists() else ""
+        found = lane_results.counted(output)
         result = {"status": status, "outcome": verdict, "seconds": seconds, "log": str(log),
                   "executedTests": None if found is None else found[0] - found[1],
                   "skippedTests": None if found is None else found[1], **({"error": detail} if detail else {}),
                   **({"timing": timing} if timing else {})}
         results[name] = result
+        if record_skips and results_directory is not None and verdict == "passed" and found and found[1]:
+            skipped[name] = lane_results.skip_evidence(output, found[1])
         # The log's name, not its path: the receipt is read beside it, on another Mac too.
         (directory / f"{name}.json").write_text(json.dumps(
             {"lane": name, "command": lane["command"], **result, "log": log.name}, indent=2) + "\n")
@@ -267,6 +294,8 @@ def lanes(root, members, directory, jobs, judge, receipt, on_stop=None, results_
     stopped = [name for name, _lane in members if results[name]["outcome"] == CUT_SHORT]
     if stopped: receipt.update(stoppedAt=failed[0], cutShort=stopped)
     status = combined([results[name]["status"] for name, _lane in members if name not in stopped])
+    if status == 0 and skipped and not unselected:
+        if artifact := keep_skip_evidence(results_directory, skipped): receipt["skipEvidence"] = artifact
     width = max(len(name) for name, _lane in [*members, *unselected])
     say(f"Lane times (wall-clock {round(time.monotonic() - started)}s, {jobs} at a time):",
         *(f"  {name:<{width}}  {results[name]['seconds']:>6}s  "

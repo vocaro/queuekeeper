@@ -157,6 +157,35 @@ class LaneResultTests(unittest.TestCase):
         # Such a line is no test, so it never makes a run that exits 0 unmeasured.
         self.assertEqual(lane_results.unmeasured_tests(log), ["test_x (m.X) ... skipped 'Unmeasured: the voices were not ready'"])
 
+    def test_skip_evidence_keeps_named_runner_skips_apart_from_aggregate_counts(self):
+        log = ("/p/Case.swift:6: -[Example.Cases testUnavailable] : Test skipped - needs a Mac\n"
+               '➜ Test swiftUnavailable() skipped: "needs a fixture"\n'
+               "test_other (mod.Cases.test_other) ... skipped 'not supported'\n"
+               "SKIPPED tests/test_sample.py::test_one[2] - Skipped: needs model\n"
+               "SKIPPED [2] tests/test_sample.py:15: folded summary\n")
+        found = lane_results.skip_evidence(log, 6)
+        self.assertEqual((found["reported"], found["coverage"], found["truncated"]), (6, "partial", False))
+        self.assertEqual(found["skips"], [
+            {"runner": "xctest", "test": "-[Example.Cases testUnavailable]", "reason": "needs a Mac"},
+            {"runner": "swift-testing", "test": "swiftUnavailable()", "reason": "needs a fixture"},
+            {"runner": "unittest", "test": "mod.Cases.test_other", "reason": "not supported"},
+            {"runner": "pytest", "test": "tests/test_sample.py::test_one[2]", "reason": "needs model"},
+        ])
+        self.assertEqual(lane_results.skip_evidence("Ran 6 tests\n\nOK (skipped=2)", 2),
+                         {"reported": 2, "coverage": "aggregate-only", "truncated": False, "skips": []})
+        repeated = lane_results.skip_evidence(log + log, 4)
+        self.assertEqual((repeated["coverage"], repeated["repeatedIdentities"]), ("partial", True))
+        self.assertEqual(repeated["skips"], found["skips"])
+
+    def test_skip_evidence_caps_both_entries_and_fields(self):
+        reason = "a" * (lane_results.SKIP_EVIDENCE_FIELD + 1)
+        count = lane_results.SKIP_EVIDENCE_ITEMS + 1
+        log = "".join(f"test_a (module.Cases.test_{i}) ... skipped '{reason}'\n" for i in range(count))
+        found = lane_results.skip_evidence(log, count)
+        self.assertEqual((found["coverage"], found["truncated"]), ("partial", True))
+        self.assertEqual(len(found["skips"]), count - 1)
+        self.assertEqual(found["skips"][0]["reason"], reason[:-1])
+
 
     # pytest 8.4.2's output, with and without pytest-xdist 3.8.0 (Python 3.12, 2026-11-03), on a
     # module of passes, skips, unittest skips, xfails, a failure, a fixture error and a warning.

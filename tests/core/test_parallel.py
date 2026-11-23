@@ -64,6 +64,15 @@ def meeting(mine, theirs, group=None):
     """)
 
 
+class SkipArtifactTests(unittest.TestCase):
+    def test_the_group_artifact_size_limit_leaves_no_partial_file(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(parallel, "SKIP_ARTIFACT_BYTES", 1), \
+                contextlib.redirect_stderr(StringIO()) as error:
+            self.assertIsNone(parallel.keep_skip_evidence(Path(folder), {"tests": {"reported": 1}}))
+            self.assertEqual(list(Path(folder).iterdir()), [])
+            self.assertIn("exceeds the artifact size limit", error.getvalue())
+
+
 class UnittestRunnerTests(unittest.TestCase):
     def suite(self, *modules):
         temporary = tempfile.TemporaryDirectory()

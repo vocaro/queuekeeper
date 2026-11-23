@@ -3443,7 +3443,10 @@ class RemoteTests(unittest.TestCase):
         settings = json.loads((self.project / "queuekeeper.json").read_text())
         for name in ("ios", "mac"):
             settings["lanes"][name] = {"command": [sys.executable, "-c",
-                f"from pathlib import Path; print('Ran', Path({name!r}).read_text(), 'tests')"]}
+                f"from pathlib import Path; count = int(Path({name!r}).read_text()); "
+                + ("print(f\"test_skip_{count} (fixture.Tests.test_skip_{count}) ... skipped 'fixture skip'\"); "
+                   if name == "ios" else "") +
+                "print(f'Ran {count + 1} tests\\n\\nOK (skipped=1)')"]}
         settings["lanes"]["suites"] = {"parallel": ["ios", "mac"]}
         settings["lanes"]["outer"] = {"command": ["sh", "-c",
             '"$0" "$QUEUEKEEPER_ROOT/bin/qk" --project . run --here suites', sys.executable]}
@@ -3457,8 +3460,20 @@ class RemoteTests(unittest.TestCase):
         first = landed(5, 3)
         status, output, error = self.qk("remote", "run", "outer")
         self.assertEqual(status, 0, output + error)
-        kept = json.loads((remote.store(self.project) / first / "suites.json").read_text())
+        store = remote.store(self.project) / first
+        kept = json.loads((store / "suites.json").read_text())
         self.assertEqual(kept["result"]["receipt"]["lanes"]["ios"]["executedTests"], 5)
+        artifact = kept["result"]["receipt"]["skipEvidence"]
+        manifest = store / kept["keptResults"] / artifact
+        evidence = json.loads(manifest.read_text())
+        self.assertEqual(evidence["members"]["ios"], {
+            "reported": 1, "coverage": "matches-count", "truncated": False,
+            "skips": [{"runner": "unittest", "test": "fixture.Tests.test_skip_5", "reason": "fixture skip"}]})
+        self.assertEqual(evidence["members"]["mac"], {
+            "reported": 1, "coverage": "aggregate-only", "truncated": False, "skips": []})
+        self.assertNotIn("fixture.Tests.test_skip_5", json.dumps(kept))
+        remote_log = self.checkout(0) / ".build/queuekeeper/suites/lanes/ios.log"
+        self.assertIn("fixture.Tests.test_skip_5", remote_log.read_text())
         landed(4, 4)
         for command in (("suites",), ("--serial", "suites"), ("outer",)):
             with self.subTest(command=command):
@@ -3468,6 +3483,8 @@ class RemoteTests(unittest.TestCase):
                 self.assertIn("Tests-Removed: ios", error)
         member = self.lane_files("suites", "ios")[1]
         self.assertEqual((member["outcome"], member["executedTests"]), ("failed", 4))
+        self.assertIn("fixture.Tests.test_skip_4", remote_log.read_text())
+        self.assertEqual(json.loads(manifest.read_text()), evidence)
 
     def test_a_reviewed_correction_changes_only_the_nested_groups_execution_floor(self):
         skips = Path(self.temp.name) / "skips"
@@ -3768,7 +3785,8 @@ class RemoteTests(unittest.TestCase):
                                  (2, 1, "passed"))
                 kept = json.loads((results / "source.json").read_text())
                 self.assertEqual(kept["returned"], ["lanes/left.log", "lanes/left.json", "lanes/right.log",
-                                                    "lanes/right.json"])
+                                                    "lanes/right.json",
+                                                    "results/" + kept["result"]["receipt"]["skipEvidence"]])
                 self.assertEqual(kept["result"]["receipt"]["lanes"]["right"]["executedTests"], 2)
                 self.assertIn(f"remote: the logs and receipts of pair's lanes are in "
                               f"{self.project.resolve()}/.build/queuekeeper/remote/pair/lanes: left, right", error)

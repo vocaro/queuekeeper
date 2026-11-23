@@ -1066,6 +1066,17 @@ floor. With no number in `queuekeeper.json`:
   from passing whole runs of that group on `main`. The same checks apply with `--serial` and
   when an outer gate invokes the group. The group's whole, passing parallel runs supply baselines.
   A run with member-selection arguments or `--serial` leaves those baselines in place.
+  A passing whole group with skips can name a private artifact in its receipt's `skipEvidence` field.
+  For a group run here, look in `.build/queuekeeper/GROUP/results/`. For a direct dispatch, look
+  in its private dispatch directory under `results/`, or under `results/GROUP/` when the group
+  ran inside the dispatched lane. A receipt kept by commit names the sibling `keptResults`
+  directory containing the artifact.
+  Each affected member records its reported count, up to 256 identities and any reasons its
+  runner printed. `matches-count` means the number of retained identities equals the reported
+  count. `aggregate-only` means the parser found no individual identities, and `partial`
+  indicates incomplete, repeated or truncated detail. Repeated identities are recorded once
+  because a log can include retries. The artifact is limited to 2 MiB and follows the usual
+  results retention rules. The count check uses the receipt's counts.
 - **Removing tests on purpose** takes a trailer in any commit of the change, naming each lane whose
   count falls, or `*` for every lane:
 

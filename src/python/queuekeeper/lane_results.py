@@ -28,7 +28,14 @@ GROUP_TAIL = re.compile(r"^((?:FAIL|UNMEASURED|NOT RUN) [^\n]+ \(\d+s, status -?
 # itself has none, and is printed as passed: qk xctest's Apple plugin writes its test such a line from the
 # event stream (xctest_shards.canceled_cases, vocaro/queuekeeper#312).
 SWIFT_TESTING_RUN = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? (?:passed|failed)")
-SWIFT_TESTING_SKIP = re.compile(r'^\S+ Test \S.*? (?:skipped(?:\.|: ".*")?|was cancelled after [^\n]*)$', re.M)
+SWIFT_TESTING_SKIP = re.compile(r'^\S+ Test (?P<test>\S.*?) '
+                                r'(?:skipped(?:\.|: "(?P<reason>.*)")?|(?P<cancellation>was cancelled after [^\n]*))$',
+                                re.M)
+XCTEST_SKIP_DETAILS = re.compile(r"^\S.*?: (?P<test>-\[[^\]\n]+\]) : Test skipped(?: - (?P<reason>.*))?$", re.M)
+UNITTEST_SKIP_DETAILS = re.compile(r"^\S+ \((?P<test>[^)\n]+)\) \.\.\. skipped (?P<reason>['\"].*['\"])$", re.M)
+PYTEST_SKIP_DETAILS = re.compile(r"^[ \t]*SKIPPED (?P<test>\S+::.*?) - (?:Skipped: )?(?P<reason>\S.*)$", re.M)
+SKIP_EVIDENCE_ITEMS = 256
+SKIP_EVIDENCE_FIELD = 512
 # unittest's total, then its result line, which names its skips: OK (skipped=2).
 RAN = re.compile(r"^Ran (\d+) tests?\b[^\n]*\n\s*(?:(?:OK|FAILED)(?: \(([^)\n]*)\))?)?", re.M)
 # pytest's last line, a line of its own, framed in "=" unless -q, and indented by a wrapper that
@@ -117,6 +124,43 @@ class NotRun(ValueError):
 def canceled_tests(text):
     """The distinct lines in which Swift Testing reports a test skipped or canceled, each with its reason."""
     return list(dict.fromkeys(match.group(0).strip() for match in SWIFT_TESTING_SKIP.finditer(text)))
+
+
+def skip_evidence(text, skipped):
+    """Bound the reported skip details for a private group artifact, leaving the count parser unchanged."""
+    text = unquoted(SERIES_RUN_RECAP.sub("", text))
+    runner_output = outside_unittest(text)
+    entries, seen = [], set()
+    truncated, repeated = False, False
+    for runner, pattern, source in (("xctest", XCTEST_SKIP_DETAILS, runner_output),
+                                    ("swift-testing", SWIFT_TESTING_SKIP, runner_output),
+                                    ("unittest", UNITTEST_SKIP_DETAILS, text),
+                                    ("pytest", PYTEST_SKIP_DETAILS, runner_output)):
+        for match in pattern.finditer(source):
+            if len(entries) == SKIP_EVIDENCE_ITEMS:
+                truncated = True
+                break
+            fields = match.groupdict()
+            test, reason = fields["test"], fields.get("reason") or fields.get("cancellation")
+            if runner == "unittest" and reason is not None:
+                reason = reason[1:-1]
+            if len(test) > SKIP_EVIDENCE_FIELD:
+                truncated = True
+                continue
+            identity = runner, test
+            if identity in seen:
+                repeated = True
+                continue
+            seen.add(identity)
+            entry = {"runner": runner, "test": test}
+            if reason is not None:
+                if len(reason) > SKIP_EVIDENCE_FIELD: truncated = True
+                entry["reason"] = reason[:SKIP_EVIDENCE_FIELD]
+            entries.append(entry)
+    coverage = ("matches-count" if not truncated and not repeated and len(entries) == skipped else
+                "aggregate-only" if not entries and not truncated else "partial")
+    return {"reported": skipped, "coverage": coverage, "truncated": truncated, "skips": entries,
+            **({"repeatedIdentities": True} if repeated else {})}
 
 
 def require_tests(text, minimum=1, expected=None):

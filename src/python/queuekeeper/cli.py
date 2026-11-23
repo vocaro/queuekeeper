@@ -2180,7 +2180,7 @@ def perform(argv, report):
                             return status
                         return parallel.lanes(tree, wrapped, directory / "lanes", jobs, judged, receipt, on_stop,
                                               results_directory=directory / "results", fail_fast=fail_fast, pace=pace,
-                                              unselected=unselected)
+                                              unselected=unselected, record_skips=whole)
                     return record(directory, receipt, lambda: prepared(work))
             try:
                 with processes.forwarding_signals():
