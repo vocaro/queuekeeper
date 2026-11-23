@@ -1474,6 +1474,7 @@ def perform(argv, report):
         "there; for a stacked gate or newer bisect half whose companion gates on this Mac")
     # Its name until vocaro-engineering#58, which main refuses, naming the new one, beside --here too.
     run.add_argument("--build-host-only", action="store_true", help=argparse.SUPPRESS)
+    run.add_argument(remote.GATE_OFFER_HOSTS, help=argparse.SUPPRESS)
     run.add_argument("--if-free", action="store_true", help=f"run only if another Mac's heavy-work admission, or "
         f"else this Mac's, admits the lane within {FREE_WAIT}s; otherwise exit {BUSY} without running it")
     run.add_argument("--serial", action="store_true", help="run a lane group's lanes one after another, on this "
@@ -1904,6 +1905,18 @@ def perform(argv, report):
             exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
             release = os.environ.pop(remote.QUEUE_GATE_RELEASE, None)
             beside = (exclude, Path(release)) if queue_gate and exclude and release else None
+            scope = args.queue_gate_offer_hosts
+            offers = {}
+            if scope is not None:
+                if (not queue_gate or not args.if_free or args.here or args.serial
+                        or args.offload_only or args.offload_wait or exclude or release or lane.get("foreground")):
+                    raise ValueError(f"{remote.GATE_OFFER_HOSTS} is for a queue gate that starts now on an eligible Mac")
+                scope = json.loads(scope)
+                if not isinstance(scope, list) or any(not isinstance(host, str) or
+                        not remote.farm.DESTINATION.fullmatch(host) for host in scope):
+                    raise ValueError(f"{remote.GATE_OFFER_HOSTS} needs a list of SSH destinations")
+                active = set(remote.farm.destinations())
+                offers["hosts"] = tuple(host for host in dict.fromkeys(scope) if host in active)
             reason = stays(config["lanes"], args.lane)
             away = "--offload-wait" if args.offload_wait else "--offload-only"
             if args.lane == PROVISION and (args.offload_only or args.offload_wait):
@@ -1954,7 +1967,7 @@ def perform(argv, report):
                 # Asked to start now or not at all, as the second gate of a queue's pair is: on another Mac, once.
                 if args.if_free:
                     return remote.first(root, config, args.lane, extra, args.expect, fallback=False,
-                                        queue_gate=queue_gate, exclude=exclude).status
+                                        queue_gate=queue_gate, exclude=exclude, **offers).status
                 others = tuple(host for host in remote.farm.destinations() if host != exclude)
                 if not others and exclude:
                     # A queue's second gate, kept off the first gate's Mac, which is the only other that takes work.
@@ -1999,7 +2012,7 @@ def perform(argv, report):
                 # The Mac with spare capacity for the lane and the most headroom, and while none has,
                 # whichever admits the lane first (remote.first, admitted_here).
                 offered = remote.first(root, config, args.lane, extra, args.expect, queue_gate=queue_gate,
-                                       exclude=exclude)
+                                       exclude=exclude, **offers)
                 if not isinstance(offered.status, str): return offered.status
                 reason = offered.status
             # Every lane is admitted, a light one as heavy work, except a self lane, whose script admits its parts.

@@ -894,6 +894,35 @@ class RemoteTests(unittest.TestCase):
     def checkout(self, slot):
         return self.home / remote.ROOT / "checkouts/example" / str(slot) / "example"
 
+    def test_a_scoped_queue_gate_offers_only_to_eligible_macs_and_can_fall_back_here(self):
+        (self.project / ".build").mkdir(exist_ok=True)
+        (self.project / ".build/provisioned").touch()
+        free = {"slots": 1, "slotsMax": 1, "busy": [], "busyLimit": 70, "cpuBusy": 0}
+        with farm_fixture.only("occupied-1", "spare", "occupied-2", "new", farm_fixture.mac("paused", state="paused")), \
+                patch.dict(os.environ, {remote.QUEUE_GATE: "1"}), \
+                patch.object(remote, "reachable") as reachable, \
+                patch.object(remote, "capacity_there", return_value=free), \
+                patch.object(remote.offload_host, "capacity", return_value={**free, "cpuBusy": 60}), \
+                patch.object(remote, "execute", side_effect=remote.Busy("the spare Mac declined it")) as execute:
+            status, output, errors = self.qk("run", "--if-free", remote.GATE_OFFER_HOSTS,
+                                             '["spare", "paused"]', "check")
+        self.assertEqual(status, 0, output + errors)
+        reachable.assert_called_once_with("spare")
+        self.assertEqual([call.args[2] for call in execute.call_args_list], ["spare"])
+        receipt = json.loads((self.project / ".build/queuekeeper/check/source.json").read_text())
+        self.assertEqual(receipt["ranOn"], "this Mac")
+
+    def test_a_scoped_queue_gate_cannot_widen_its_offers_when_the_workstation_declines_it(self):
+        with farm_fixture.only("occupied-1", "spare", "occupied-2", "new"), \
+                patch.dict(os.environ, {remote.QUEUE_GATE: "1"}), \
+                patch.object(remote, "here_unfit", return_value="this Mac does not take it"), \
+                patch.object(remote, "reachable") as reachable, \
+                patch.object(remote, "execute", side_effect=remote.Busy("the spare Mac declined it")):
+            status, output, errors = self.qk("run", "--if-free", remote.GATE_OFFER_HOSTS, '["spare"]', "check")
+        self.assertEqual(status, resources.BUSY, output + errors)
+        reachable.assert_called_once_with("spare")
+        self.assertFalse((self.project / ".build/queuekeeper/check/source.json").exists())
+
     def test_a_remote_xcode_lane_names_only_the_caller_variables_it_did_not_send(self):
         variable = "TEST_RUNNER_QK_CONTROL"
         sentinel = "caller-value-should-stay-here"
@@ -10204,8 +10233,8 @@ class GateHostPoolTests(unittest.TestCase):
                 patch.object(remote.offload_host, "capacity") as local_capacity, \
                 patch.object(remote, "execute", side_effect=[remote.Busy("its slots are busy"), 0]) as execute, \
                 contextlib.redirect_stderr(StringIO()):
-            offer = remote.lane_offer(".", {}, "gate", [], None, False, True, None, ("spare",))
-            self.assertEqual(offer.make(fallback=False), resources.BUSY)
+            offer = remote.first(".", {}, "gate", [], None, fallback=False, queue_gate=True, hosts=("spare",))
+            self.assertEqual(offer.status, resources.BUSY)
             self.assertIsNone(offer.again())
             self.assertEqual(offer.again(), 0)
 
@@ -10229,6 +10258,17 @@ class GateHostPoolTests(unittest.TestCase):
                     offer = remote.first(".", {}, "gate", [], None, queue_gate=True, exclude="gate-03")
                     self.assertEqual(offer.status, remote.MISCONFIGURED)
                 reachable.assert_called_once_with("gate-04")
+
+    def test_an_offload_only_gate_stays_off_both_the_workstation_and_the_excluded_mac(self):
+        with farm_fixture.only("occupied", "spare"), patch.object(remote, "reachable") as reachable, \
+                patch.object(remote.offload_host, "capacity") as here, \
+                patch.object(remote, "execute", side_effect=remote.Busy("the spare Mac did not admit it")) as execute, \
+                contextlib.redirect_stderr(StringIO()):
+            offer = remote.first(".", {}, "gate", [], None, fallback=False, queue_gate=True, exclude="occupied")
+            self.assertEqual(offer.status, resources.BUSY)
+        here.assert_not_called()
+        reachable.assert_called_once_with("spare")
+        self.assertEqual(execute.call_args.args[2], "spare")
 
 
 class MacSettingsPlacementTests(unittest.TestCase):

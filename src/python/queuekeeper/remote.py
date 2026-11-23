@@ -165,6 +165,8 @@ LOST_ACCESS = 69
 QUEUE_GATE = "QUEUEKEEPER_QUEUE_GATE"
 QUEUE_GATE_EXCLUDE = "QUEUEKEEPER_QUEUE_GATE_EXCLUDE"
 QUEUE_GATE_RELEASE = "QUEUEKEEPER_QUEUE_GATE_RELEASE"
+# Use an argument so an older toolkit refuses the scoped run before it can offer work.
+GATE_OFFER_HOSTS = "--queue-gate-offer-hosts"
 # Seconds the check before a dispatch gives each address of another Mac's name to answer on its ssh
 # port, and then `ssh true` to finish there, login shell included: an offline Mac costs a few
 # seconds, where ssh's ConnectTimeout would take ten for each address.
@@ -3253,7 +3255,7 @@ def bring_runtimes(host, developer, check):
     return 1
 
 
-def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False, exclude=None):
+def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False, exclude=None, *, hosts=None):
     """Offer a lane to another Mac to start now, once (Offer.make), and return the Offer.
 
     With fallback, the offer first reads each Mac's capacity for the lane (Offer.attempt): a whole-host
@@ -3265,9 +3267,10 @@ def first(root, config, lane, arguments, expect, fallback=True, queue_gate=False
     commits to send. With queue_gate, for a queue worker's own `qk run` of a gate's lane, a process that lost Local
     Network access ends with LOST_ACCESS rather than the work running on this Mac (Offer.lost_access).
     Every Mac of the farm that takes work now is asked, in the farm's order (Offer.attempt); a queue gate leaves out
-    exclude, the Mac the active batch runs on, when stacking.
+    exclude, the Mac the active batch runs on, when stacking. An explicit hosts tuple limits the offer and retries
+    to that part of the farm (a stack beside two remote halves).
     """
-    offered = lane_offer(root, config, lane, arguments, expect, fallback, queue_gate, exclude, None)
+    offered = lane_offer(root, config, lane, arguments, expect, fallback, queue_gate, exclude, hosts)
     offered.make(fallback)
     return offered
 

@@ -1835,6 +1835,16 @@ def apart(mac, hosts, waits):
     return ("--if-free",), excluded, f"on a Mac other than {mac} if one can start them now"
 
 
+def apart_from_pair(first, second, hosts):
+    """Place a speculative gate away from both halves when one gates here and one on the farm."""
+    if (first == HERE_MAC) == (second == HERE_MAC): return None
+    placed = apart(second if first == HERE_MAC else first, hosts, waits=False)
+    if placed is None: return None
+    _, excluded, _ = placed
+    if excluded is None or not any(host != excluded for host in hosts): return None
+    return ("--offload-only",), excluded, "on another Mac that can start them now, away from both halves"
+
+
 def stuck(gate, at=None):
     """What `qk queue status` and the worker log say of a gate held up by dead guard entries, or None: its wait,
     since waitingSince, names a dead or uncertain entry and has lasted STUCK_SECONDS (#315)."""
@@ -4834,9 +4844,13 @@ class Worker:
                 raise
             loads.stopped.set()
             ended = time.monotonic()
+            ran, self.ran_on = remote.dispatch(self.checkout, lane, began)
+            if (remote.GATE_OFFER_HOSTS in placed and status_ in (2, lane_results.TOOL_NOT_STARTED)
+                    and ran is None and not self.mac(lane, began)):
+                # A candidate may launch an older qk that refuses the scope before it can run the lane.
+                status_ = resources.BUSY
             # It ran, unless no Mac admitted it or a host's configuration stopped it: it is placed as before next.
             if status_ not in UNRUN: self.unlocked.discard(lane)
-            ran, self.ran_on = remote.dispatch(self.checkout, lane, began)
             # What the lane printed: here in its own file; on another Mac in its dispatch's run.log, whose qk
             # unittest summary names the failed tests that rerun reruns alone.
             printed = lane_log if ran is None else ran / "run.log"
@@ -6644,12 +6658,13 @@ class Worker:
         self.checks = quick_lanes(config, code=not docs)
         if beside: beside.checks = self.checks
         self.begun(round_name, head, base, applied, beside)
-        # Docs entries can land beside these gates (docs_beside, #394). A bisect with only one gate can also test
-        # later entries against main while that gate runs, provided no companion probe needs the other checkout.
+        # Docs entries can land beside these gates (docs_beside, #394). A bisect can test later entries against
+        # main in a separate checkout if the Macs running its checks leave another eligible.
         isolating = False
         if beside:
+            self.lane_now = beside.lane_now = None
             result, log = self.watched(self, config, lanes, base, head, [*applied, *beside.newer],
-                                       lambda: beside.both(self, lanes, round_name), stacks=False)
+                                       lambda: beside.both(self, lanes, round_name), isolating=True, companion=beside)
         elif (self.limit or self.alone) and not (docs or ungated):
             # A bisect's lone entry gates on the main before the bisect's landings too, beside its own gate, for
             # whether it fails only with them (vocaro/queuekeeper#263).
@@ -7282,12 +7297,13 @@ class Worker:
         return True
 
     def watched(self, runner, config, lanes, base, head, applied, gate, stacks=True, isolating=False,
-                docs=True, parallel=()):
+                docs=True, parallel=(), companion=None):
         """gate(), the lanes of applied at head in runner's checkout, while a thread looks every STACK_POLL for
         entries that arrive behind them: docs-only entries it lands beside the gate (docs_beside), and, unless stacks
         is false, the others it gates stacked on head in the other checkout, on another Mac (stack). During a
-        serial bisect or joint-failure probe the stack runs on base and is stopped before it can compete with a rerun
-        or the next probe. A finished isolation stack stays pending across probes."""
+        bisect or joint-failure probe the stack runs on base and is stopped before it can compete with a rerun or
+        the next probe. A finished isolation stack stays pending across probes. When there is a companion, a
+        stack starts only while both active gates have confirmed their placements."""
         if not isolating:
             self.pending = None
             self.stack_retry_after = 0
@@ -7303,7 +7319,7 @@ class Worker:
                         docs = False
                 if stacks:
                     try: self.stack(runner, config, lanes, base if isolating else head, applied, stop, said,
-                                    isolating=isolating, parallel=parallel)
+                                    isolating=isolating, parallel=parallel, companion=companion)
                     except Exception as error:  # a stacked gate is a saving, never the round's verdict
                         self.say(f"no gate stacked on {head[:12]}: {error}")
                         stacks = False
@@ -7316,13 +7332,14 @@ class Worker:
             if isolating and self.pending is not None and not self.pending.done():
                 self.drop_stacked("the bisect's gate ended and its next checks take precedence")
 
-    def stack(self, runner, config, lanes, head, applied, stop, said, *, isolating=False, parallel=()):
+    def stack(self, runner, config, lanes, head, applied, stop, said, *, isolating=False, parallel=(),
+              companion=None):
         """Start self.pending, the waiting entries not in applied, the batch at head, gated stacked on head, when
-        there are any and none is pending: on any Mac but the one running the primary's final lane (admitted_mac,
-        apart), in the other checkout. One that gave no verdict or stopped when an entry left the queue is thrown
-        away. An admission decline delays the next attempt. An entry qk land put first or lands without the gate
-        goes first on main. A batch with a withdrawn entry does not start a stack, as its own gate stops
-        (Worker.gate, #247)."""
+        there are any and none is pending: away from the Macs running the active gates' final lanes (admitted_mac,
+        apart, apart_from_pair), in a separate checkout. One that gave no verdict or stopped when an entry left the
+        queue is thrown away. An admission decline delays the next attempt. An entry qk land put first or lands
+        without the gate goes first on main. A batch with a withdrawn entry does not start a stack, as its own gate
+        stops (Worker.gate, #247)."""
         if self.pending is not None:
             if not self.pending.done(): return
             why = self.pending.void()
@@ -7344,8 +7361,16 @@ class Worker:
         # A docs-only entry lands beside the gate or in a round of its own, never on a stacked code gate (#394).
         fresh = without_docs(fresh, config, self.own_paths)
         if not fresh: return
-        mac = self.admitted_mac(runner, lanes[-1])
-        if mac is None: return
+        if companion is None:
+            mac = self.admitted_mac(runner, lanes[-1])
+            if mac is None: return
+            other_mac = None
+        else:
+            first = self.admitted_record(runner, lanes[-1])
+            second = self.admitted_record(companion, lanes[-1])
+            if not first or not first.get("mac") or not second or not second.get("mac"): return
+            mac, other_mac = first["mac"], second["mac"]
+        here_occupied = HERE_MAC in (mac, other_mac)
         # The stacked entries' own lanes: main's docs lanes too when they change documents and code (#122).
         paths = set().union(*(self.own_paths(entry) for entry in fresh))
         lanes = lanes_of(config, paths)
@@ -7355,13 +7380,22 @@ class Worker:
         if (isolating or len(hosts) > 1) and any(settings.get(lane, {}).get("foreground") for lane in lanes): return
         checks = quick_lanes(config, code=True)
         # Quick checks run here.
-        if isolating and mac == HERE_MAC and checks.intersection(lanes): return
-        # Any Mac but the batch's, this Mac among them. Isolation and a disjoint split only use capacity free now.
-        placed = apart(mac, hosts, waits=not (isolating or parallel))
+        if isolating and here_occupied and checks.intersection(lanes): return
+        # Isolation and a disjoint split only use capacity free now.
+        if companion is None:
+            placed = apart(mac, hosts, waits=not (isolating or parallel))
+        elif here_occupied:
+            placed = apart_from_pair(mac, other_mac, hosts)
+        else:
+            occupied = (first.get("destination"), second.get("destination"))
+            if occupied[0] == occupied[1] or any(host not in hosts for host in occupied): return
+            hosts = tuple(host for host in hosts if host not in occupied)
+            placed = (("--if-free", remote.GATE_OFFER_HOSTS, json.dumps(hosts)), None,
+                      "on a Mac that can start them now, away from both halves")
         if placed is None: return
         where, excluded, said_where = placed
         # A lane that runs only on this Mac cannot leave it, and the batch gates here.
-        why = offerable(config, lanes) if mac == HERE_MAC else None
+        why = offerable(config, lanes) if here_occupied else None
         if why:
             if why not in said: self.say(f"the entries behind the batch wait for it, since {why}")
             said.add(why)
@@ -7412,12 +7446,17 @@ class Worker:
 
     def admitted_mac(self, runner, final_lane):
         """The Mac that admitted the primary's final lane. Earlier lanes can use a different Mac."""
+        record = self.admitted_record(runner, final_lane)
+        return record.get("mac") if record else None
+
+    def admitted_record(self, runner, final_lane):
+        """The live, confirmed admission of the current final lane, for speculative gate placement."""
         current = runner.lane_now
         if current is None or current[0] != final_lane: return None
         lane, began, _ = current
         record = lane_wait.current(lane_wait.path_of(runner.checkout, lane), began)
         if not record or record.get("admitted") is not True or not lane_wait.alive(record.get("pid")): return None
-        return record.get("mac")
+        return record
 
     def after_stack(self, outcome, runner, config=None):
         """Keep the pending Stack for the next round when the batch below it landed at exactly the tip it was
@@ -8097,7 +8136,11 @@ class Joint:
                 runner.say(f"probe {number}: gating {', '.join(entry['id'] for entry in members)} at {head[:12]} on "
                            f"{self.base[:12]}" + (", two at once" if len(placed) == 2 else ""))
             if len(placed) == 2:
-                results = self.both(placed, names)
+                (first, _, head), (second, _, _) = placed
+                first.lane_now = second.lane_now = None
+                results = self.worker.watched(first, self.config, self.lanes, self.stack_on, head, self.suspects,
+                                              lambda: self.both(placed, names), isolating=True, docs=False,
+                                              companion=second)
                 if results[1] is None:
                     # No other Mac could start the second now: it gates on its own, and the rest one at a time.
                     self.at_once = False

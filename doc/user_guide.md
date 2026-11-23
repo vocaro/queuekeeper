@@ -521,6 +521,10 @@ that test's issue before you land again, so the flake becomes somebody's to fix.
   becomes the next round's gate, already under way. Anything else (the batch fails or lands at
   another commit, an entry is removed or put first, `main`'s lanes change, the queue holds) throws
   it away and queues its entries again. Only one runs at a time.
+- **While a bisect or failure search runs.** Later entries can gate against `origin/main` in a
+  separate checkout. When the final lanes of a pair have both started, the stack can use an
+  eligible Mac that can start it immediately, with both occupied Macs excluded.
+  A stack still running when the paired checks finish gives way to the next checks.
 - **Documentation does not wait for code.** A documentation-only entry lands beside a running
   code gate, in a checkout of its own, as long as it changes none of the gate's paths. Queued
   beside code, documentation lands first, in a round of its own.

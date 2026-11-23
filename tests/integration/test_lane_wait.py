@@ -247,6 +247,7 @@ class Waits(Named):
             lane_wait.relayed(b"null", host)
             unplaced.append(keeping[-1]())
             lane_wait.relayed(json.dumps({"kind": None, "admitted": True}).encode(), host)
+            self.assertEqual(lane_wait.read(os.environ[lane_wait.VARIABLE])["destination"], host)
             unplaced.append(keeping[-1]())
             return 0
         offered.place, offered.send = Place(), send

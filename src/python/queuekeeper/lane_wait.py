@@ -43,7 +43,7 @@ WORDS = {ADMISSION: "admission on {mac}: {reason}",
          ALONE: "this Mac alone, as another Mac cannot take it: {reason}",
          OVERFLOW: "whichever Mac admits it first, the farm's other Macs asked again{probes}: {reason}"}
 # What identifies a state of the record, apart from when it was written.
-STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted", "probes")
+STATE = ("kind", "reason", "mac", "offer", "stranded", "pid", "admitted", "probes", "destination")
 
 _owned = None  # the record this process named, and so removes (begin, finish)
 _offer = None  # why this run waits for this Mac instead of another Mac, until it is admitted
@@ -136,7 +136,7 @@ def ended(found, how, at=None):
 
 
 def same(found, record):
-    return (found is not None and all(found.get(key) == record[key] for key in STATE)
+    return (found is not None and all(found.get(key) == record.get(key) for key in STATE)
             and found.get("progressRun") == os.environ.get("QUEUEKEEPER_LANE_PROGRESS_RUN"))
 
 
@@ -163,13 +163,15 @@ def waiting(kind, reason, mac=HERE, stranded=False, probes=None):
            "kindSince": kind_since if isinstance(kind_since, (int, float)) else now})
 
 
-def running(mac=HERE, *, admitted=True):
-    """Clear the wait. Only a confirmed start on mac establishes placement for a stacked gate."""
+def running(mac=HERE, *, admitted=True, destination=None):
+    """Clear the wait. Only a confirmed start on mac establishes placement for a stacked gate.
+    A relayed admission keeps its SSH destination independently of the farm's display name."""
     global _offer
     if not os.environ.get(VARIABLE): return
     _offer = None
     record = {"kind": None, "reason": None, "mac": mac, "offer": None, "stranded": False,
               "pid": os.getpid(), "admitted": admitted, "probes": None}
+    if destination is not None: record["destination"] = destination
     found = read(os.environ[VARIABLE])
     if same(found, record): return
     ended(found, "cleared")
@@ -235,7 +237,7 @@ def relayed(data, host, observe_work=None):
         waiting(kind, record.get("reason"), farm_mac(host), bool(record.get("stranded")))
         return kind
     admitted = isinstance(record, dict) and record.get("admitted") is True
-    running(farm_mac(host), admitted=admitted)
+    running(farm_mac(host), admitted=admitted, destination=host if admitted else None)
     return "admitted" if admitted else ""
 
 

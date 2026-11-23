@@ -4770,18 +4770,39 @@ class DocsOnly(Fixture):
         self.assertEqual((self.gates(), self.docs_runs()), (1, 1))
 
     def test_a_bisects_gates_look_for_docs_entries_to_land_beside_them(self):
-        """A bisect's gates stack nothing, but docs entries that arrive during them still land beside them: the old
-        worker ran a bisect's gates with no watch at all, so a docs entry waited out every half."""
-        self.commit("bad", "bad"); self.commit("code", "code")
+        """The paired bisect keeps looking for docs entries while it checks for eligible isolation stacks."""
+        self.commit("bad", "bad"); self.commit("code", "code"); self.commit("doc/guide.md", "guide")
         ids = self.add("bad", "code")
-        watched, real = [], mq.Worker.watched
-        def watch(worker, runner, config, lanes, base, head, applied, gate, stacks=True):
-            watched.append((len(applied), stacks))
-            return real(worker, runner, config, lanes, base, head, applied, gate, stacks=stacks)
+        docs, real = [], mq.Worker.watched
+
+        def watch(worker, runner, config, lanes, base, head, applied, gate, **options):
+            if options.get("companion") is None or docs:
+                return real(worker, runner, config, lanes, base, head, applied, gate, **options)
+            self.assertEqual(len(applied), 2)
+            self.assertTrue(options["isolating"])
+            self.assertTrue(options.get("stacks", True))
+            [guide] = self.add("guide")
+            docs.append(guide)
+            landed = threading.Event()
+            docs_beside = worker.docs_beside
+
+            def look(config, applied):
+                docs_beside(config, applied)
+                if self.state(guide)["state"] == mq.LANDED:
+                    landed.set()
+
+            def gate_with_docs():
+                self.assertTrue(landed.wait(stretched(30)), "the paired watcher did not land the guide")
+                return gate()
+
+            with patch.object(worker, "docs_beside", look):
+                return real(worker, runner, config, lanes, base, head, applied, gate_with_docs, **options)
+
         with patch.object(mq.Worker, "watched", watch), patch.object(mq, "STACK_POLL", 0.05): self.work()
-        self.assertEqual([self.state(i)["state"] for i in ids], ["failed", "landed"])
-        # The bisect's round, the older half gating with the newer beside it, ran under the watch, stacking nothing.
-        self.assertIn((2, False), watched)
+        self.assertEqual([self.state(i)["state"] for i in ids], [mq.FAILED, mq.LANDED])
+        [guide] = docs
+        self.assertEqual(self.state(guide)["docsOnly"], ["docs"])
+        self.assertEqual(self.landed_order(guide, ids[1]), [guide, ids[1]])
 
     def test_a_failing_docs_lane_sends_the_batch_back(self):
         self.docs_status.write_text("1")
@@ -12430,6 +12451,103 @@ class PooledStack(Fixture):
                 self.assertTrue(stack.call_args.kwargs["isolating"])
                 self.assertEqual(runner.environment.get(mq.remote.QUEUE_GATE_EXCLUDE), excluded)
             worker.pending = None
+
+    def test_a_paired_isolation_stack_leaves_both_halves_on_their_macs(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.suspects = 2
+        companion = Mock()
+        waiting = [{"id": "older", "state": mq.TESTING}, {"id": "newer", "state": mq.TESTING},
+                   {"id": "fresh", "state": mq.QUEUED}]
+        for first, second, hosts, expected in [
+            (mq.HERE_MAC, "occupied", ("occupied", "spare"), "spare"),
+            ("occupied", mq.HERE_MAC, ("occupied", "spare"), "spare"),
+            (mq.HERE_MAC, "occupied", ("occupied",), None),
+            (mq.HERE_MAC, "unknown", ("occupied", "spare"), None),
+            (mq.HERE_MAC, None, ("occupied", "spare"), None),
+            ("occupied", "spare", ("occupied", "spare"), None),
+        ]:
+            with self.subTest(first=first, second=second, hosts=hosts), farm_fixture.only(*hosts), \
+                    patch.object(worker.queue, "waiting", return_value=waiting), \
+                    patch.object(worker, "admitted_record",
+                                 side_effect=[{"mac": mac} if mac else None for mac in (first, second)]), \
+                    patch.object(mq.remote, "capacity_there", return_value=ROOMY) as capacity, \
+                    patch.object(mq.offload_host, "capacity") as here, patch.object(mq, "Stack") as stack:
+                worker.stack(worker, {"lanes": {"gate": {"resource": "heavy"}}}, ["gate"], "base",
+                             waiting[:2], threading.Event(), set(), isolating=True, companion=companion)
+                here.assert_not_called()
+                if expected is None:
+                    stack.assert_not_called()
+                    capacity.assert_not_called()
+                else:
+                    capacity.assert_called_once_with(expected)
+                    stack.assert_called_once()
+                    _, runner, entries, base, _lanes, options = stack.call_args.args
+                    self.assertEqual((entries, base, options), (waiting[2:], "base", ("--offload-only",)))
+                    self.assertEqual(runner.environment[mq.remote.QUEUE_GATE_EXCLUDE], "occupied")
+                    self.assertEqual(runner.checkout, worker.queue.home / f"{self.repo.name}{mq.ISOLATION_STACK_SUFFIX}")
+                    self.assertTrue(stack.call_args.kwargs["isolating"])
+                worker.pending = None
+
+    def test_a_pair_on_remote_macs_scopes_the_stack_to_the_remaining_farm_and_this_mac(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.suspects = 2
+        companion = Mock(lane_now=("gate", time.time(), ()), checkout=self.repo / "paired")
+        worker.lane_now = ("gate", time.time(), ())
+        waiting = [{"id": "older", "state": mq.TESTING}, {"id": "newer", "state": mq.TESTING},
+                   {"id": "fresh", "state": mq.QUEUED}]
+        active = ("occupied-1", "occupied-2", "spare")
+        # The admitted name no longer matches the farm. The relay's destination still identifies its Mac.
+        first = {"mac": "renamed", "destination": "occupied-1", "pid": os.getpid(), "admitted": True}
+        second = {"mac": "busy", "destination": "occupied-2", "pid": os.getpid(), "admitted": True}
+        for hosts, update, eligible in [
+            (active, {}, ("spare",)),
+            (active[:2], {}, ()),
+            (active, {"destination": None}, None),
+            (active, {"destination": "occupied-1"}, None),
+            (active, {"destination": "not-registered"}, None),
+            (active, {"admitted": False}, None),
+        ]:
+            with self.subTest(hosts=hosts, update=update), farm_fixture.only(*hosts), \
+                    patch.object(worker.queue, "waiting", return_value=waiting), \
+                    patch.object(mq.lane_wait, "current", side_effect=[first, {**second, **update}]), \
+                    patch.object(mq.remote, "capacity_there", return_value=ROOMY) as capacity, \
+                    patch.object(mq.offload_host, "capacity", return_value=ROOMY) as here, \
+                    patch.object(mq, "Stack") as stack:
+                worker.stack(worker, {"lanes": {"gate": {"resource": "heavy"}}}, ["gate"], "base",
+                             waiting[:2], threading.Event(), set(), isolating=True, companion=companion)
+                if eligible is None:
+                    stack.assert_not_called()
+                    capacity.assert_not_called()
+                    here.assert_not_called()
+                else:
+                    stack.assert_called_once()
+                    where = stack.call_args.args[5]
+                    self.assertEqual(where[:2], ("--if-free", mq.remote.GATE_OFFER_HOSTS))
+                    self.assertEqual(json.loads(where[2]), list(eligible))
+                    if eligible:
+                        capacity.assert_called_once_with("spare")
+                        here.assert_not_called()
+                    else:
+                        capacity.assert_not_called()
+                        here.assert_called_once_with()
+            worker.pending = None
+
+    def test_a_scoped_stack_treats_old_launcher_refusal_as_no_verdict_but_keeps_a_lane_failure(self):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.checkout = self.repo
+        worker.queue.logs.mkdir(parents=True, exist_ok=True)
+        where = ("--if-free", mq.remote.GATE_OFFER_HOSTS, "[]")
+        receipt = worker.checkout / ".build/queuekeeper/gate/source.json"
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        for reached, expected in [(False, mq.resources.BUSY), (True, 2)]:
+            def run_lane(command, *, log_path, **_):
+                self.assertIn(mq.remote.GATE_OFFER_HOSTS, command)
+                log_path.write_text("lane failed" if reached else "unrecognized arguments")
+                if reached: receipt.write_text('{"ranOn": "this Mac"}')
+                return 2
+            with self.subTest(reached=reached), patch.object(mq.processes, "run", side_effect=run_lane):
+                status, _ = worker.gate(["gate"], "scoped", where=where, quick=set())
+                self.assertEqual(status, expected)
 
     def test_a_finished_isolation_stack_can_only_be_adopted_on_the_same_base_with_nothing_older(self):
         worker = mq.Worker(mq.Queue(self.repo))
