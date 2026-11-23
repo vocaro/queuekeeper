@@ -1412,6 +1412,7 @@ class RemoteTests(unittest.TestCase):
                                           "import os; print('ran in', os.getcwd())")
         self.assertEqual(status, 0)
         self.assertIn(f"ran in {self.checkout(0).resolve()}", output)
+        self.assertTrue((self.checkout(0) / ".build/provisioned").exists())
         self.assertIn("ran in", (self.project / ".build/queuekeeper/remote/admit/output.log").read_text())
 
     def test_a_command_asks_whether_it_was_sent_to_the_farm_mac_whatever_either_mac_is_called(self):
@@ -6512,6 +6513,8 @@ exec {shlex.quote(real)} "$@"
         self.assertEqual(self.ran_in(), self.checkout(0).resolve())
         receipt = json.loads((self.project / ".build/queuekeeper/remote/admit/source.json").read_text())
         self.assertEqual((receipt["ranOn"], receipt["host"]), ("fake", "fake"))
+        self.assertNotIn("provision", receipt["result"]["phases"])
+        self.assertFalse((self.checkout(0) / ".build/provisioned").exists())
         self.assertFalse((self.project / ".build/queuekeeper/admit").exists())
         # Its build products stayed there, which one line says, naming --here.
         self.assertIn(f"build products and other files Git ignores stayed in {self.checkout(0)}", error)
@@ -6917,11 +6920,11 @@ exec {shlex.quote(real)} "$@"
             self.assertIn("queuekeeper: the command runs on this Mac from what was sent, ", output)
             self.assertIn("D\tnew.txt", output)
             read = self.read()
-            # It read the tree sent, provisioned as another Mac provisions it, in its directory that matches pkg.
+            # The raw command reads the sent tree in its matching directory.
             ran = Path(read["directory"])
             self.assertEqual((ran.name, ran.parent.name), ("pkg", "example"))
             self.assertTrue(ran.parent.parent.name.startswith(remote.SENT_TREE_PREFIX), ran)
-            self.assertEqual((read["new"], read["edited"], read["provisioned"]), ("new\n", "edited\n", True))
+            self.assertEqual((read["new"], read["edited"], read["provisioned"]), ("new\n", "edited\n", False))
             # The toolkit beside it is the toolkit's checkout, whose tree is still the one sent.
             self.assertEqual(Path(read["toolkit"]), ran.parent.parent / "vocaro-engineering")
             self.assertEqual(Path(read["real"]), self.toolkit.resolve())

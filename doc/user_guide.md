@@ -2186,10 +2186,11 @@ when the run, or each lane of a group, ends:
 Untracked files are not compared, since a lane's own outputs land there.
 
 Each Mac keeps four checkouts per project, under `~/Development/queuekeeper-farm`, and a run takes
-the free one closest to its commit, so builds stay warm. The project's `provision` lane, if it has
-one, runs first in that checkout, and the work runs only if it passes. A checkout a run left with
-changes is passed over and kept for inspection; the message names the files and the command that
-removes it.
+the free one closest to its commit, so builds stay warm. For a named lane or an explicit
+`qk remote admit`, the project's `provision` lane runs first in that checkout if one is defined.
+Ordinary `qk admit -- COMMAND` runs the requested command alone, including when it goes to another
+Mac or falls back to a temporary local checkout. A checkout a run left with changes is passed over
+and kept for inspection; the message names the files and the command that removes it.
 
 **Environment variables do not travel.** Another Mac runs work in its own login shell's
 environment. Pass lane settings as arguments after `--`, such as

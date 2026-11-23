@@ -158,6 +158,10 @@ The worker fetches, takes everything waiting, oldest first, cherry-picks each en
 3. the docs lanes, when the batch changes documentation beside code;
 4. `gate`, or the lanes `queue.lanes` names.
 
+When the round adds `provision` for checkout setup, a failure in that step gives the round no
+verdict. The failure report names the exit status and the provision log. If the project selects
+`provision` as a check, its result counts like any other selected check.
+
 Settings are read from `origin/main` in the worker's own checkout, never from a working tree; the
 lanes' own definitions come from the batch. The submission trial and the worker use
 `queue.addOnlyJson` from main to settle independent key additions to a selected JSON object.
@@ -856,8 +860,9 @@ checks the commit out detached with the toolkit beside it, and runs `qk run` or 
 - **A named slot** (`--checkout-slot N`) waits under that slot's lock with no place in line.
   A checkout slot is neither a heavy-work slot nor the foreground reservation, so waiting for one
   holds neither.
-- **Provision first.** The project's `provision` lane runs as `qk run --here provision`, admitted,
-  with `--if-free` when the work was offered to start now.
+- **Provision first.** For a named lane or an explicit `qk remote admit`, the project's `provision`
+  lane runs as `qk run --here provision`, admitted, with `--if-free` when the work was offered to
+  start now. An automatic offer from `qk admit` sends the requested command alone.
 - **No bytecode.** The work runs with `PYTHONDONTWRITEBYTECODE=1`.
 - **`QUEUEKEEPER_DISPATCHED_FROM`** is set to the sender's name. Code tests only that it is set.
 
@@ -915,7 +920,8 @@ A lane this Mac takes runs in this checkout only while its tree is still the com
   say what ran. If no worktree can be made, the lane exits 2.
 - **Only the toolkit changed**: it runs in this checkout with a temporary toolkit worktree,
   recorded as `sentToolkit`.
-- **`qk admit`** does the same; its edits come back as from another Mac, usually as a kept patch.
+- **`qk admit`** uses the same temporary checkout when it needs one. It runs the requested command
+  alone, and its edits come back as from another Mac, usually as a kept patch.
 
 A lane that runs here for any reason runs `qk run --here provision` first, inside the lane's
 admission; a failing provision exits 78, no verdict. Nested work, the provision lane itself and

@@ -6004,6 +6004,34 @@ class UnprovisionedWhereTheGateRuns(Fixture):
         self.assertNotIn("fail on this commit", held)
         self.assertNotIn("a shared host's configuration", held)
 
+    def test_an_implicit_provision_step_for_a_configuration_change_gives_no_verdict(self):
+        config = self.config()
+        config["lanes"]["provision"] = {"command": ["python3", "-c", "print('inputs missing'); exit(4)"]}
+        config["queue"]["noVerdictRuns"] = 1
+        self.publish(config, "Add a provision lane")
+        self.commit("queuekeeper.json", "reformat", content=json.dumps(config, indent=2))
+        [identifier] = self.add("reformat")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed", said.getvalue())
+        self.assertEqual(self.gates(), 0, said.getvalue())
+        self.assertIn("gave no verdict in 1 run in a row, the last with exit 78", entry["why"])
+        self.assertIn("the standalone provision lane exited 4", entry["why"])
+        self.assertNotIn("fail on this commit", entry["why"])
+
+    def test_provision_explicitly_selected_as_a_gate_lane_keeps_its_verdict(self):
+        config = self.config()
+        config["lanes"]["provision"] = {"command": ["python3", "-c", "exit(4)"]}
+        config["queue"]["lanes"] = ["provision", "gate"]
+        self.publish(config, "Select provision as a gate lane")
+        self.commit("fix", "fix")
+        [identifier] = self.add("fix")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed", said.getvalue())
+        self.assertIn("fail on this commit", entry["why"])
+        self.assertNotIn("gave no verdict", entry["why"])
+
 
 class PinnedFolders(Fixture):
     """vocaro-engineering#497: a round pins each folder beside the project that its plugins load from at its
@@ -9727,6 +9755,22 @@ class Refusals(Fixture):
     def origin_main(self):
         """origin's main, or "" while it has none."""
         return run(self.origin, "git", "for-each-ref", "--format=%(objectname)", "refs/heads/main")
+
+    def test_an_implicit_provision_failure_before_first_landing_leaves_no_verdict(self):
+        self.without_main()
+        config = self.config()
+        config["lanes"]["provision"] = {"command": ["python3", "-c", "exit(4)"]}
+        config["queue"]["noVerdictRuns"] = 1
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", "Add provisioning to the first gate")
+        [identifier] = self.add("first")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed", said.getvalue())
+        self.assertEqual(self.origin_main(), "")
+        self.assertEqual(self.gates(), 0, said.getvalue())
+        self.assertIn("gave no verdict in 1 run in a row, the last with exit 78", entry["why"])
+        self.assertIn("the standalone provision lane exited 4", entry["why"])
 
     def test_the_landing_into_a_repository_with_no_main_creates_main_at_its_tip(self):
         """#10: the queue fetched origin's main to land anything, so an empty repository's first commit went in by

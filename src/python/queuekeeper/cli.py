@@ -921,20 +921,6 @@ def matching_directory(root):
         return Path(".")
 
 
-def provision_sent(root, config, checkout, toolkit, variables, limit, on_stop=None):
-    """0 once the project's provision lane, if it has one, has run in the worktree of what was sent, as it runs in
-    another Mac's checkout before the command; otherwise its status, after saying where its log is."""
-    if "provision" not in config.get("lanes", {}): return 0
-    log = Path(root) / ".build/queuekeeper/admit/provision.log"
-    status = processes.run([sys.executable, str(toolkit / "bin/qk"), "--project", str(checkout), "run", "--here",
-                            "provision"], cwd=checkout, log_path=log, timeout=limit, env=variables,
-                            on_stop=on_stop)
-    if status:
-        print(f"queuekeeper: the command not run: the provision lane exited {status} in the worktree of what was sent; its "
-              f"log is {log}", file=sys.stderr, flush=True)
-    return status
-
-
 def redirected_stdin():
     """Whether the command would lose this Mac's redirected input if it ran on another Mac."""
     try:
@@ -976,9 +962,9 @@ def provisioned_here(root, config, lane, receipt, inherited, directory, on_stop=
     and does not send back (the owner's decision, 2026-11-15). One that got no admission or ended unmeasured ran
     nothing to judge, and lane ends as it did.
 
-    tree is the worktree of what was sent, when lane runs from it (admitted_tree): the provision lane runs there, as
-    it does before `qk admit`'s command (provision_sent). Its own log goes with the worktree, so what qk run said
-    of it is kept in the lane's run directory, beside its own log and receipt."""
+    tree is the worktree of what was sent, when lane runs from it (admitted_tree). The provision lane runs there.
+    Its own log goes with the worktree, so what qk run said of it is kept in the lane's run directory, beside its
+    own log and receipt."""
     if lane == "provision" or "provision" not in config.get("lanes", {}): return None
     if inherited or os.environ.get(SELF_LANE) or os.environ.get(remote.DISPATCHER): return None
     # With the toolkit the lane runs with: the one that was sent, once its checkout has moved (admitted_tree).
@@ -1128,14 +1114,10 @@ def admit(root, args, config=None, *, device_window=None):
                 sys.stdout.flush()
                 directory, variables = Path.cwd(), None
                 if tree is not None:
-                    # In the worktree's directory that matches the current one, as on another Mac, after its
-                    # provision lane, with the toolkit beside it (remote.sent_tree).
+                    # Run the raw command in the matching directory, with its toolkit beside it (remote.sent_tree).
                     checkout, toolkit = tree
                     directory = checkout / matching_directory(root)
                     variables = {**os.environ, "QUEUEKEEPER_ROOT": str(toolkit)}
-                    provisioned = provision_sent(root, config, checkout, toolkit, variables, args.time_limit,
-                                                 admission.interrupted)
-                    if provisioned: return provisioned
                 # A foreground command restores what it changed on the Mac before SIGKILL, VoiceOver first.
                 with plugins.around_run([command], directory):
                     status = processes.supervise(here_command(command), cwd=directory, env=variables,

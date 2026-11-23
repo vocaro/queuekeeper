@@ -665,6 +665,10 @@ def preflighted(config):
     return [name for name in preflight(config) if configured(config, name)]
 
 
+class ImplicitProvision(str):
+    """The provision lane when a round adds it for checkout setup."""
+
+
 def lanes_of(config, changed=()):
     """The lanes a batch must pass, in order: the project's preflight lanes (preflighted), then an independent
     provision step when needed, then the docs lanes of a batch whose changed
@@ -683,7 +687,9 @@ def lanes_of(config, changed=()):
         docs or policy.get("reuseGate") or PROVISION in policy.get("hookCoveredBy", {})
         or PROVISION in gate_lanes(config) or "queuekeeper.json" in changed
     ):
-        first.append(PROVISION)
+        explicit = (PROVISION in first or PROVISION in docs or PROVISION in gate_lanes(config)
+                    or PROVISION in policy.get("hookCoveredBy", {}))
+        first.append(PROVISION if explicit else ImplicitProvision(PROVISION))
     return first + [lane for lane in docs if lane not in first] + named
 
 
@@ -4812,6 +4818,12 @@ class Worker:
             # What the lane printed: here in its own file; on another Mac in its dispatch's run.log, whose qk
             # unittest summary names the failed tests that rerun reruns alone.
             printed = lane_log if ran is None else ran / "run.log"
+            if isinstance(lane, ImplicitProvision) and status_ and status_ not in NO_VERDICT:
+                mac = self.ran_on or f"this Mac ({offload_host.mac_name()})"
+                with contextlib.suppress(OSError), log.open("a") as kept:
+                    kept.write(f"\nqueuekeeper: remaining checks not run: {mac} {remote.UNPROVISIONED}: "
+                               f"the standalone provision lane exited {status_}; its log is {printed}\n")
+                status_ = remote.MISCONFIGURED
             remote_failure = ran is not None and status_ and status_ not in NO_VERDICT
             dispatch_output, lane_text = "", ""
             if remote_failure:

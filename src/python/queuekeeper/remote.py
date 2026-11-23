@@ -1728,7 +1728,7 @@ def lost(host, status, said, dispatched, slept, output, journal=None, gone=False
             + f"Its output is in {output}")
 
 
-def detached_seconds(config, lane, work):
+def detached_seconds(config, lane, work, *, provision=True):
     """How long a run on another Mac may last with nobody attending it: its own timeouts, each lane's,
     N times the lane's for a --repeat series as qk run limits it there, or the time limit work's `qk admit`
     carries, with UNATTENDED_WAIT for what comes before them. queuekeeper stops each of them at its timeout there, and
@@ -1741,7 +1741,8 @@ def detached_seconds(config, lane, work):
     head = work[:work.index("--")] if "--" in work else work
     limit = own(lane) * (lane_results.repeats_asked(work) or 1) if lane is not None else \
         float(head[head.index("--time-limit") + 1]) if "--time-limit" in head else processes.DEFAULT_LIMIT
-    return limit + (own("provision") if "provision" in lanes and lane != "provision" else 0) + UNATTENDED_WAIT
+    if provision and "provision" in lanes and lane != "provision": limit += own("provision")
+    return limit + UNATTENDED_WAIT
 
 
 def tell(channel, word):
@@ -2016,7 +2017,7 @@ def timing_marks(root, config):
 
 def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, decline=False, lease=None,
             serial=False, subdirectory=None, sent=None, changes=False, slot=None, slot_wait=None, says_load=False,
-            strict_offer=False, admission_deadline=None):
+            strict_offer=False, admission_deadline=None, provision=True):
     """Run queuekeeper's work on another Mac and return its exit status, with the log and receipt kept here.
 
     work is another Mac's queuekeeper arguments: run [--serial] [--expect N] LANE [-- ARGUMENTS] or
@@ -2039,7 +2040,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     will do, and another Mac waits for it for slot_wait seconds (offload_host.claim); the receipt's
     checkoutSlot says which was asked for and given, where it is, and how long the wait for it took. With says_load,
     for `qk remote run`, whose output has no summary of qk run's to say it, a lane's run there ends by saying the load
-    of that Mac over the run, as its receipt there keeps it (lane_report.load_said).
+    of that Mac over the run, as its receipt there keeps it (lane_report.load_said). An automatic offer of a raw
+    `qk admit` command sets provision=False, so the receiving Mac runs only the requested command.
 
     The receipt's preparation records what came before another Mac's queue: the seconds of
     staging the commits, the preparing connection and the pushes here, each push's record (send),
@@ -2101,7 +2103,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "siblings": pins.dispatched(root, sibling_declarations(root)),
             "decline": decline, "busy": BUSY,
             "unlockedScreen": lane is not None and unlocked_screen(config.get("lanes", {}), lane),
-            "provision": "provision" in config.get("lanes", {}) and lane != "provision",
+            "provision": provision and "provision" in config.get("lanes", {}) and lane != "provision",
             "developerDir": developer, "xcode": local["xcode"],
             "log": f".build/queuekeeper/{lane}/run.log" if lane is not None else None,
             "wait": lane_wait.relative(lane) if lane is not None else None,
@@ -2117,7 +2119,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             **({"checkoutSlot": slot, "checkoutWait": slot_wait} if slot is not None else {})}
     # A run that uses this Mac's device reservations ends with its connection (Lease). Any other outlives it, within
     # its own bound, for a later connection to collect (Frames, offload_host.Journal; vocaro-engineering#321).
-    detached = detached_seconds(config, lane, work) if lease is None else None
+    detached = detached_seconds(config, lane, work, provision=provision) if lease is None else None
     journal = f"{dispatch}-{uuid.uuid4().hex[:8]}"
     if detached is not None: plan["detach"] = {"id": journal, "seconds": detached}
     if strict_offer: plan["admissionOffer"] = journal
@@ -3437,7 +3439,7 @@ def first_command(root, config, command, kind):
 
     def send(host, sent):
         # What the command changed in the checkout there comes back and is applied here (brought_back).
-        status = execute(root, config, host, work, decline=True,
+        status = execute(root, config, host, work, decline=True, provision=False,
                          subdirectory=None if relative in (None, ".") else relative, sent=sent, changes=True)
         return brought_back(root, sent, status)
     offered = Offer("the command", "`qk admit --here`", send, refused, exclusive="--exclusive" in kind,
