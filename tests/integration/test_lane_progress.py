@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import host_isolation
 
-from queuekeeper import lane_progress, lane_wait, merge_queue, offload_host, progress, remote, resources
+from queuekeeper import direct_status, lane_progress, lane_wait, merge_queue, offload_host, progress, remote, resources
 
 
 class LiveProgress(unittest.TestCase):
@@ -252,6 +252,16 @@ class LiveProgress(unittest.TestCase):
                         contextlib.redirect_stderr(StringIO()): monitor.finish("exit-0")
                 self.assertEqual(lane_progress.blockers(guard, {"owned": owner}), [])
                 self.assertTrue((Path(folder)/"retained.json").exists())
+
+    def test_direct_status_retries_an_observation_after_an_optional_write_fails(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(lane_progress, "starts", return_value={os.getpid(): "born"}), \
+                direct_status.tracking(folder, "check"):
+            with patch.object(lane_progress, "write", side_effect=OSError("optional mirror unavailable")):
+                direct_status.observe(state="admitted")
+            self.assertEqual(direct_status.records(folder, "check")[0]["state"], "starting")
+            direct_status.observe(state="admitted")
+            self.assertEqual(direct_status.records(folder, "check")[0]["state"], "admitted")
 
     def test_optional_publication_failure_and_ended_cleanup_preserve_retained_status(self):
         with tempfile.TemporaryDirectory() as folder:

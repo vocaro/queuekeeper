@@ -4540,6 +4540,74 @@ def follow(path, done):
     if pending: emit(b"L", pending)
 
 
+MEMBER_DEVICE = re.compile(r"(?:iPhone|iPad)(?:-[A-Za-z0-9]+)*")
+# The simulator pool and the project lane scripts report these stages. The rest of each
+# line belongs in the returned member log, including any device identifier or paths.
+MEMBER_STAGE_LINES = (
+    ("Taking", re.compile(rb"Taking: a ([A-Za-z0-9-]+)(?: [(]| member\b)")),
+    ("TOOK", re.compile(rb"TOOK ([A-Za-z0-9-]+) [(]")),
+    ("Testing", re.compile(rb"Testing: ([A-Za-z0-9-]+), ")),
+    ("Passed", re.compile(rb"Passed: ([A-Za-z0-9-]+), ")),
+    ("Failed", re.compile(rb"Failed: ([A-Za-z0-9-]+)(?:, | [(])")),
+    ("Unmeasured", re.compile(rb"Unmeasured: ([A-Za-z0-9-]+)(?:, | [(])")),
+)
+MEMBER_STAGES = frozenset(stage for stage, _pattern in MEMBER_STAGE_LINES)
+MEMBER_LINE_LIMIT = 4096
+
+
+def device_stage(line):
+    """The stage and kind of device described by a recognized simulator log line."""
+    for stage, pattern in MEMBER_STAGE_LINES:
+        if (match := pattern.match(line)) is None: continue
+        device = match[1].decode("ascii")
+        if len(device) <= 80 and MEMBER_DEVICE.fullmatch(device): return stage, device
+        break
+    return None
+
+
+def open_member_log(path):
+    """Open an expected regular member file, without following a replacement symlink or blocking on a pipe."""
+    if path.parent.is_symlink(): return None
+    try: descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError: return None
+    if stat.S_ISREG(os.fstat(descriptor).st_mode): return os.fdopen(descriptor, "rb")
+    os.close(descriptor)
+    return None
+
+
+def follow_members(directory, paths, done):
+    """Send only described device stages from member logs that this dispatch is already bringing back."""
+    candidates = {path.stem: directory / path for entry in paths
+                  if (path := Path(entry)).parent == Path("lanes") and path.suffix == ".log"}
+    opened, overlong = {}, set()
+    with contextlib.ExitStack() as stack:
+        while True:
+            finished = done.is_set()
+            for name, path in candidates.items():
+                stream = opened.get(name)
+                if stream is None:
+                    if (stream := open_member_log(path)) is None: continue
+                    opened[name] = stack.enter_context(stream)
+                # Bound work per pass so one noisy member cannot crowd out the rest.
+                for _ in range(128):
+                    offset = stream.tell()
+                    line = stream.readline(MEMBER_LINE_LIMIT)
+                    if not line.endswith(b"\n"):
+                        if len(line) == MEMBER_LINE_LIMIT:
+                            overlong.add(name)
+                            continue
+                        if line and not finished: stream.seek(offset)
+                        break
+                    if name in overlong:
+                        overlong.discard(name)
+                        continue
+                    if (report := device_stage(line)) is not None:
+                        stage, device = report
+                        emit(b"M", json.dumps({"member": name, "stage": stage, "device": device}).encode())
+            if finished: break
+            done.wait(0.2)
+
+
 def wait_state(path):
     """What the lane's wait record at path says, to send back, or None for no record or a wait whose process is gone.
     The record's fields are lane_wait's."""
@@ -4665,7 +4733,8 @@ def send_back(directory, paths):
                 emit(b"D", base64.b64encode(chunk))
 
 
-def step(command, directory, environment, lock, log, wait=None, work=False, launches=None):
+def step(command, directory, environment, lock, log, wait=None, work=False, launches=None,
+         member_logs=None):
     """Run one queuekeeper command in directory; a stop sends it SIGTERM, which it carries out as a supervised stop. wait is
     the path of the lane's wait record, sent back as it changes (relay_wait). launches, the slot's Launches, samples
     what launchd starts from the slot while it runs, and once more when it has ended."""
@@ -4677,6 +4746,8 @@ def step(command, directory, environment, lock, log, wait=None, work=False, laun
     done = threading.Event()
     threads = [threading.Thread(target=relay, args=(child.stdout,), daemon=True)]
     if log is not None: threads.append(threading.Thread(target=follow, args=(log, done), daemon=True))
+    if member_logs is not None:
+        threads.append(threading.Thread(target=follow_members, args=(*member_logs, done), daemon=True))
     if wait is not None:
         threads.append(threading.Thread(target=relay_wait, args=(wait, done, work, (child.pid, started)), daemon=True))
     for thread in threads: thread.start()
@@ -4884,8 +4955,9 @@ def main(plan):
             work_environment = environment
             if stage == "work" and "cleanupSeconds" in (plan.get("lease") or {}):
                 work_environment = {**environment, "QUEUEKEEPER_DEVICE_WINDOW": environment["QUEUEKEEPER_DEVICE_LEASE"]}
+            member_logs = back if stage == "work" and returns and plan.get("memberStages") else None
             result.update(stage=stage, exitStatus=step(command, directory, work_environment, lock, log, wait,
-                                                       stage == "work", launches))
+                                                       stage == "work", launches, member_logs))
             timed(stage, began)
             if result["exitStatus"] != 0: break
         result["stopped"] = _stop.is_set()

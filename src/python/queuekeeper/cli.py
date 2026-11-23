@@ -17,7 +17,7 @@ import time
 import traceback
 
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, gate_reuse, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
-    launcher_patch, parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
+    direct_status, launcher_patch, parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, parse as parse_configuration, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
     project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
@@ -1229,6 +1229,13 @@ def main(argv=None):
     project = words[1] if first == 2 else words[0].split("=", 1)[1] if first == 1 else None
     if words[first:first + 1] == ["hook"]: return agent_hooks.main(words[first + 1:], project)
     if words[first:first + 1] == ["agents"]: return agent_setup.main(words[first + 1:], project)
+    separator = words.index("--") if "--" in words else len(words)
+    run_args = words[first + 1:separator]
+    if words[first:first + 1] == ["run"] and "--status" in run_args:
+        if separator < len(words):
+            print("qk run --status does not take lane arguments", file=sys.stderr)
+            return USAGE
+        return direct_status.main(project, [word for word in run_args if word != "--status"])
     # A shared checkout left on a work branch runs that branch's code for every project's qk (#184).
     off_main = git_state.off_main(TOOLKIT_ROOT)
     if off_main: print(f"queuekeeper: {off_main}", file=sys.stderr, flush=True)
@@ -1452,7 +1459,7 @@ def perform(argv, report):
         "when one fails or is unmeasured; a project's hook is `exec python3 scripts/qk pre-push \"$@\"`")
     hook.add_argument("remote", nargs="*", help="the remote's name and URL, as Git gives a pre-push hook")
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] [--repeat N [--erase|--template] [--only TEST]] "
-        "lane [-- ARGUMENTS ...]",
+        "lane [-- ARGUMENTS ...]\n       %(prog)s --status lane [--run-id ID]",
         help="run a configured lane, admitting a heavy or exclusive one, on the Mac that has spare capacity for "
         "it now and the most headroom under its own CPU limit, this Mac or one of the farm's, unless "
         "the lane says why it stays on this Mac: qk run LANE [-- ARGUMENTS], which appends the arguments, such as "
@@ -1497,6 +1504,9 @@ def perform(argv, report):
         "checkout of NAME, or a checkout's path, such as a session's worktree, taken as its working tree stands. A "
         "commit that NAME's origin does not hold runs on this Mac only. Refused in a lane of the merge queue, which "
         "judges a project with its folders' origin/main")
+    run.add_argument("--status", action="store_true", help="read live observations from direct runs of this lane "
+                     "started in this checkout, without contacting another Mac")
+    run.add_argument("--run-id", metavar="ID", help="with --status, select the exact run shown in a previous lookup")
     run.add_argument("lane")
     # Listed for help only: main passes everything after these to their own parsers.
     for name, (described, _) in plugins.COMMANDS.items(): commands.add_parser(name, help=described)
@@ -1728,6 +1738,8 @@ def perform(argv, report):
     if argv[first:first + 2] == ["admissions", "now"]: return resources.now_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
+    if args.action == "run" and args.status: parser.error("spell --status in full")
+    if args.action == "run" and args.run_id is not None: parser.error("--run-id requires --status")
     # Only the remote work itself reports its admission. Provisioning and nested commands do not.
     device_window = plugins.DEVICES.take_window()
     args.passed = argv[split + 1:] if split < len(argv) else None
@@ -1899,6 +1911,8 @@ def perform(argv, report):
                                  f"given {shlex.join(extra)}; nothing ran. Run it without them: qk run {args.lane}")
             # A series' lane runs N times inside its one admission, within N times its limit.
             limit = parallel.lane_timeout(lane, extra)
+            if not os.environ.get(lane_wait.VARIABLE) and not os.environ.get(remote.QUEUE_GATE):
+                held.enter_context(direct_status.tracking(root, args.lane))
             lane_wait.begin(root, args.lane, project_name(root, config), bool(lane.get("wholeHost")))
             # Keep the queue's placement scope at the outer lane.
             queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))

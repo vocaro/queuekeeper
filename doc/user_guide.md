@@ -2252,8 +2252,16 @@ whole lane with timing history. It gives the time measured on the receiver, roun
 30 seconds, and how long ago the sender heard it. It measures elapsed lane work only.
 A parallel group's heartbeat names the
 members whose starts have been reported and whose endings have yet to arrive, with the elapsed
-time since each reported start.
-A member's current stage is in its own log, which comes back after the group ends.
+time since each reported start. It also gives the number of members with reported endings
+and the latest member's reported outcome and age. Recognized iPhone and iPad stages in a
+running member's log also appear with the member, device kind, and time since the sending Mac
+heard the report. The complete member logs come back after the group ends.
+
+From another shell in the sending checkout, `qk run --status LANE` reads the latest observations
+for live direct runs of that lane. Use `--run-id ID` with an ID from its output to select one
+when runs overlap. The lookup reads local files only and leaves the run alone. For local
+runs it shows the invocation's last reported phase. For remote runs it can also show the
+last stage received from the matching dispatch, with the reported device kind when available.
 
 From the project checkout, `qk admissions now` shows which Mac is holding or waiting for
 admission and why. `qk progress FOLDER` reads a runner's record when its output announced a

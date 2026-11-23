@@ -1099,18 +1099,77 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(len(relayed), 4, during)
         self.assertNotIn("an ordinary line", during)
 
-    def test_a_group_heartbeat_names_the_member_whose_end_has_not_arrived(self):
+    def test_a_group_heartbeat_names_the_running_member_and_its_reported_device_stage(self):
         active = "members reported started, with no end yet: narrated"
-        status, during, error = self.narrated(lambda said: active in said, lane="narrated-pair")
+        stage = "last stage Testing: iPad-Pro-11"
+        status, during, error = self.narrated(lambda said: stage in said, lane="narrated-pair")
         self.assertEqual(status, 0, error)
-        self.assertRegex(during, rf"(?m)^remote: heartbeat .* narrated-pair on fake, .*{active} \([^\n]+ ago\)$")
-        # With one job, left must have finished before narrated can start. Its own log and narrated's are
-        # still separate, and the heartbeat does not read narrated's device stage or count its tests.
-        self.assertNotIn("Testing: iPad", during)
+        self.assertRegex(during, rf"(?m)^remote: heartbeat .* narrated-pair on fake, .*{active} \([^\n]+ ago; "
+                                 rf"{stage}, [^\n]+ ago\)$")
+        self.assertRegex(during, r"member end reports: 1 of 2, latest left \(pass, [^\n]+ ago\)")
+        self.assertRegex(during, r"(?m)^remote: progress \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: "
+                                 r"narrated: Testing: iPad-Pro-11$")
+        # Complete logs come back separately. Only the known stage and device kind arrived live.
+        self.assertNotIn("(DEF)", during)
+        self.assertNotIn("an ordinary line", during)
         self.assertIsNone(lane_results.counted(during))
         files = self.project / ".build/queuekeeper/remote/narrated-pair/lanes"
         self.assertIn("Ran 2 tests", (files / "left.log").read_text())
-        self.assertIn("Testing: iPad", (files / "narrated.log").read_text())
+        self.assertIn("Testing: iPad-Pro-11, narrated (DEF)", (files / "narrated.log").read_text())
+
+    def test_an_independent_lookup_reads_a_remote_direct_stage_by_run_id(self):
+        command = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project), "run", "--status"]
+        lookups = []
+        def ready(output):
+            if "narrated: Testing: iPad-Pro-11" not in output: return False
+            listing = subprocess.run([*command, "narrated-pair"], capture_output=True, text=True)
+            lookups.append(listing)
+            if (match := re.search(r"run ([0-9a-f]{32})", listing.stdout)) is not None:
+                lookups.append(subprocess.run([*command, "--run-id", match[1], "narrated-pair"],
+                                              capture_output=True, text=True))
+            return True
+        status, _, error = self.narrated(ready, lane="narrated-pair")
+        self.assertEqual(status, 0, error)
+        listing, exact = lookups
+        self.assertEqual((listing.returncode, exact.returncode), (0, 0), listing.stderr + exact.stderr)
+        self.assertEqual(exact.stdout, listing.stdout)
+        self.assertIn("narrated-pair on fake: receiver reported progress", exact.stdout)
+        self.assertIn("Last reported stage: narrated: Testing: iPad-Pro-11", exact.stdout)
+        self.assertNotIn("(DEF)", exact.stdout)
+        self.assertEqual(subprocess.run([*command, "narrated-pair"], capture_output=True).returncode, 1)
+
+    def test_exact_status_ignores_the_overwritten_log_of_overlapping_local_runs(self):
+        base = [sys.executable, str(self.toolkit / "bin/qk"), "--project", str(self.project), "run"]
+        release = Path(self.temp.name) / "narrated-release"
+        shared_log = self.project / ".build/queuekeeper/narrated/run.log"
+        admitted = "narrated on this Mac: admitted (run "
+        with contextlib.ExitStack() as stack:
+            processes = [stack.enter_context(subprocess.Popen([*base, "--here", "narrated"], stdout=subprocess.PIPE,
+                                                               stderr=subprocess.PIPE, text=True)) for _ in range(2)]
+            try:
+                deadline = time.monotonic() + stretched(25)
+                while time.monotonic() < deadline:
+                    listing = subprocess.run([*base, "--status", "narrated"], capture_output=True, text=True)
+                    if listing.stdout.count(admitted) == 2 and shared_log.is_file():
+                        original = shared_log.read_text()
+                        if "Testing: iPad-Pro-11" in original: break
+                    time.sleep(0.1)
+                else:
+                    self.fail(listing.stdout + listing.stderr)
+                # A fresh write to the shared path is still not evidence about either invocation.
+                shared_log.write_text(original + "Testing: iPhone-99, overwritten stage\n")
+                ids = re.findall(r"run ([0-9a-f]{32})", listing.stdout)
+                self.assertEqual(len(set(ids)), 2)
+                for selected in ids:
+                    exact = subprocess.run([*base, "--status", "--run-id", selected, "narrated"],
+                                           capture_output=True, text=True)
+                    self.assertEqual(exact.returncode, 0, exact.stderr)
+                    self.assertEqual(exact.stdout.strip(), f"{admitted}{selected})")
+            finally:
+                release.touch()
+                for process in processes:
+                    out, error = process.communicate(timeout=stretched(12))
+                    self.assertEqual(process.returncode, 0, out + error)
 
     def test_a_group_or_a_log_not_begun_gets_a_heartbeat_that_says_so(self):
         now = [0.0]
@@ -1129,6 +1188,33 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("no member starts without an end report", group)
         self.assertNotIn("clock", group)
         self.assertNotIn("grew", group)
+
+    def test_a_group_heartbeat_counts_received_ends_without_repeating_details_or_replays(self):
+        now = [0.0]
+        progress = remote.Progress("group", "fake", ("ended", "omitted", "active"), "its clock",
+                                   clock=lambda: now[0])
+        frames = remote.Frames(Path(self.temp.name), BytesIO(), BytesIO(), (), "fake", progress)
+        reports = (b"O NOT SELECTED omitted\n", b"O RUN ended\n",
+                   b"O FAIL ended (3s, status 1): /private/member.log\n", b"O RUN active\n",
+                   b'M {"member":"active","stage":"Testing","device":"iPad-Pro-11"}\n')
+        with contextlib.redirect_stderr(StringIO()) as error:
+            for line in reports: frames.take(line)
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+            frames.rewind()
+            for line in reports: frames.take(line)
+            frames.take(b"O PASS undeclared (2s, status 0): /private/other.log\n")
+            frames.take(b'M {"member":"ended","stage":"Testing","device":"iPhone-17-Pro"}\n')
+            frames.take(b'M {"member":"active","stage":"Testing","device":"private-identifier"}\n')
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+        relay, first, second = error.getvalue().splitlines()
+        self.assertTrue(relay.endswith("active: Testing: iPad-Pro-11"), relay)
+        self.assertIn("member end reports: 2 of 3, latest ended (fail, 5m 00s ago)", first)
+        self.assertIn("member end reports: 2 of 3, latest ended (fail, 10m 00s ago)", second)
+        self.assertIn("members reported started, with no end yet: active "
+                      "(10m 00s ago; last stage Testing: iPad-Pro-11, 10m 00s ago)", second)
+        self.assertNotIn("/private/", error.getvalue())
 
     def test_a_direct_heartbeat_before_log_output_reports_only_observed_wait_and_admission(self):
         now = [0.0]

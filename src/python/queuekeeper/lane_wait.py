@@ -102,6 +102,10 @@ def read(path):
 
 
 def write(record):
+    from . import direct_status
+    kind = record.get("kind")
+    state = f"waiting ({kind})" if kind else "admitted" if record.get("admitted") else "offered"
+    direct_status.observe(host=record["mac"], state=state)
     path = Path(os.environ[VARIABLE])
     staged = path.with_name(f".{path.name}.{os.getpid()}")
     try:

@@ -68,7 +68,7 @@ import time
 import uuid
 import zlib
 
-from . import disk, plugins, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
+from . import direct_status, disk, plugins, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
 from . import count_history, window_placement
 from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_declarations, sibling_folders, unadmitted, unlocked_screen
 from . import farm
@@ -1770,10 +1770,10 @@ class Frames:
     """What one dispatch has heard from another Mac, in order, across every connection that carried it: the
     lane's log and the output, kept in log and output, and what came back in staging, the files in returned.
 
-    A later connection sends the run's journal from its start (offload_host.reattach), so rewind has the log and
-    the output skip what they already hold, by the bytes of each, and the files come again whole."""
+    A later connection sends the run's journal from its start (offload_host.reattach), so rewind skips the
+    log, output and observations already heard, by the bytes of each. The files come again whole."""
 
-    KINDS = (b"L ", b"R ", b"O ", b"F ", b"D ", b"J ", b"E ", b"W ")
+    KINDS = (b"L ", b"R ", b"O ", b"F ", b"D ", b"J ", b"E ", b"W ", b"M ")
 
     def __init__(self, staging, log, output, returns, host=None, progress=None):
         self.staging, self.log, self.output, self.returns = staging, log, output, returns
@@ -1783,7 +1783,8 @@ class Frames:
         self.framed, self.journaled, self.gone, self.again = False, False, False, False
         # Whether offload_host.py started there, and the last line of anything else, such as the shell's.
         self.returned = []  # The files asked back that have arrived, in order.
-        self.held, self.skip = {"log": 0, "output": 0, "wait": 0}, {"log": 0, "output": 0, "wait": 0}
+        self.held = dict.fromkeys(("log", "output", "wait", "member"), 0)
+        self.skip = dict(self.held)
 
     def once(self, which, data):
         """The part of data, the next bytes of the log or the output, not heard before a reconnection."""
@@ -1814,6 +1815,9 @@ class Frames:
             fresh = self.once("log", data)
             self.log.write(fresh)
             if fresh and self.progress is not None: self.progress.arrived(fresh)
+        elif kind == b"M ":
+            fresh = self.once("member", data)
+            if fresh and self.progress is not None: self.progress.group_stage(fresh)
         elif kind == b"R ":
             self.result = json.loads(data)
             if self.progress is not None: self.progress.observed_work(None)
@@ -1867,7 +1871,7 @@ PROGRESS_WIDTH = 300
 PROGRESS_LINE = re.compile(r"(?:Taking: |TOOK |Testing: |Passed: |Failed: |Unmeasured: |BUILD |BUILT |TEST |SHARD "
                            r"|PASS |FAIL |UNMEASURED )")
 # The group launcher writes these member endings to stdout (parallel.lanes); member commands log to separate files.
-GROUP_MEMBER_END = re.compile(r"(?:PASS|FAIL|UNMEASURED|NOT RUN|CUT SHORT|STOPPED|UNCERTAIN) "
+GROUP_MEMBER_END = re.compile(r"(PASS|FAIL|UNMEASURED|NOT RUN|CUT SHORT|STOPPED|UNCERTAIN) "
                               r"(.+?) \(\d+s(?:, status -?\d+)?\): .+")
 # What evidence.py counts wherever a log holds it, written in lower case in the copy a progress line shows, since a
 # lane nested in another or the merge queue's gate log holds this output too: "Executed 6 tests" there is a second count.
@@ -1909,11 +1913,14 @@ class Progress:
     and a heartbeat that says only what is known, whether its log grew. An open connection is no progress, so a heartbeat
     never says a run is working: a reader compares its numbers. Nothing here can end the run: a stderr that has closed
     ends these lines, not the lane (a redirect's reader that left, say). A group's launcher reports member starts
-    and ends; the member logs come back when it ends (group_files). Nothing judges a stall yet: that needs each
+    and ends. Only recognized device stages are relayed from member logs as they grow; the complete logs come back
+    when the group ends (group_files). Nothing judges a stall yet: that needs each
     lane's slowest measured step, which leaves part of #320 open."""
     def __init__(self, lane, host, members, clock_said, clock=time.monotonic):
         self.lane, self.host, self.clock_said, self.clock = lane, host, clock_said, clock
-        self.members, self.started = frozenset(members), {}
+        self.members, self.started, self.ended = frozenset(members), {}, set()
+        self.member_stages = {}
+        self.last_member_end = None
         self.began = self.beaten = clock()
         self.lines, self.lines_at_beat, self.latest = 0, 0, None
         self.relayed, self.last, self.closed = 0, None, False
@@ -1932,27 +1939,70 @@ class Progress:
         if not self.lines and not self.members: self.tell("clock", self.clock_said)
         self.lines, self.latest = self.lines + 1, moment
         text = progress_text(data)
-        if not PROGRESS_LINE.match(text): return
+        if (match := PROGRESS_LINE.match(text)) is None: return
+        device = offload_host.device_stage(data)
+        report = f"{device[0]}: {device[1]}" if device else match[0].strip(" :")
+        direct_status.observe(host=self.host, state="receiver reported progress", stage=report)
         self.last = (text, moment)
+        self.reported(text)
+
+    def reported(self, text):
         if self.relayed < PROGRESS_LINES:
             self.tell("progress", text)
         elif self.relayed == PROGRESS_LINES:
+            logs = "the member logs hold" if self.members else "the run's log holds"
             self.tell("progress", f"{PROGRESS_LINES} progress lines shown; the heartbeat quotes only the latest from here, "
-                                  "and the run's log holds them all")
+                                  f"and {logs} them all")
         self.relayed += 1
 
     def group_output(self, data):
         """Track the group launcher's reports for declared members, without interpreting their command output."""
         if not self.members: return
         line = data.decode(errors="replace").rstrip("\r\n")
-        if line.startswith("RUN ") and line[4:] in self.members:
-            self.started[line[4:]] = self.clock()
+        if line.startswith("RUN ") and (name := line[4:]) in self.members:
+            if name not in self.started and name not in self.ended:
+                self.started[name] = self.clock()
+            return
+        if line.startswith("NOT SELECTED "):
+            outcome, name = "NOT SELECTED", line.removeprefix("NOT SELECTED ")
         elif ending := GROUP_MEMBER_END.fullmatch(line):
-            self.started.pop(ending[1], None)
+            outcome, name = ending.groups()
+        else:
+            return
+        if name in self.members and name not in self.ended:
+            self.started.pop(name, None)
+            self.member_stages.pop(name, None)
+            self.ended.add(name)
+            self.last_member_end = (name, outcome.lower(), self.clock())
+
+    def group_stage(self, data):
+        """Accept only recognized device stages for members in this dispatch's plan."""
+        try: record = json.loads(data)
+        except ValueError: return
+        if not isinstance(record, dict): return
+        name, stage, device = (record.get(key) for key in ("member", "stage", "device"))
+        if not all(isinstance(field, str) for field in (name, stage, device)): return
+        if name not in self.members or name in self.ended or stage not in offload_host.MEMBER_STAGES \
+                or len(device) > 80 or not offload_host.MEMBER_DEVICE.fullmatch(device):
+            return
+        words = f"{stage}: {device}"
+        self.member_stages[name] = (words, self.clock())
+        report = f"{progress_text(name.encode())[:45]}: {words}"
+        direct_status.observe(host=self.host, state="receiver reported progress", stage=report)
+        self.reported(report)
+
+    def member_heartbeat(self, name, began, moment):
+        shown = progress_text(name.encode())[:45]
+        age = spelled_seconds(moment - began)
+        if name in self.member_stages:
+            words, heard = self.member_stages[name]
+            return f"{shown} ({age} ago; last stage {words}, {spelled_seconds(moment - heard)} ago)"
+        return f"{shown} ({age} ago)"
 
     def waited(self, status):
         """Remember the receiver's reported state, without copying its reason into the heartbeat."""
         words = PROGRESS_WAIT.get(status)
+        if words: direct_status.observe(host=self.host, state=f"receiver reported {words}")
         if not words: self.wait_status = None
         elif self.wait_status is None or words != self.wait_status[0]:
             self.wait_status = (words, self.clock())
@@ -1976,10 +2026,14 @@ class Progress:
         since = spelled_seconds(moment - self.began)
         if self.members:
             said = "its member logs come back when it ends"
+            if self.last_member_end is not None:
+                name, outcome, ended = self.last_member_end
+                shown = progress_text(name.encode())[:45]
+                said += f"; member end reports: {len(self.ended)} of {len(self.members)}, " \
+                        f"latest {shown} ({outcome}, {spelled_seconds(moment - ended)} ago)"
             if self.started:
                 active = list(self.started.items())
-                shown = ", ".join(f"{progress_text(name.encode())[:45]} ({spelled_seconds(moment - began)} ago)"
-                                  for name, began in active[:4])
+                shown = ", ".join(self.member_heartbeat(name, began, moment) for name, began in active[:4])
                 more = f" and {len(active) - 4} more" if len(active) > 4 else ""
                 said += f"; members reported started, with no end yet: {shown}{more}"
             else:
@@ -2111,6 +2165,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             "wait": lane_wait.relative(lane) if lane is not None else None,
             "receipt": f".build/queuekeeper/{name}/source.json",
             "returns": {"directory": f".build/queuekeeper/{name}", "paths": returns} if returns else None,
+            "memberStages": bool(members),
             "changes": f".build/queuekeeper/{name}/{CHANGES}" if changes else None,
             "deviceRecord": local["name"], "deviceSetup": plugins.DEVICES.remote_setup(local["name"]), "lease": lease.plan(local["name"]) if lease is not None else None,
             "dispatcher": local["name"], "subdirectory": subdirectory, "silence": HEARTBEAT_SILENCE,
@@ -2232,6 +2287,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     group = config.get("lanes", {}).get(lane, {}).get("parallel") or ()
     progress = Progress(name, host, group, clock_line(config, lane, arguments)) if lane is not None else None
     lane_wait.sent(host)
+    if progress is not None: direct_status.observe(host=host, state="offered", stage=None)
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
         frames = Frames(staging, log, output, returns, host, progress)
 
@@ -2558,7 +2614,7 @@ def main(root, config, args):
         if slot is not None:
             sending = send
             send = lambda: not_run_if_busy(args.lane, sending, called(host))
-        with processes.forwarding_signals():
+        with direct_status.tracking(root, args.lane), processes.forwarding_signals():
             return plugins.DEVICES.carrying(held, root, host, work, args.lane, lambda: offering_here(
                 f"qk run --here {args.lane}", send) if lane.get("foreground") else send())
     # Without a leading --, argparse collected the command, and a later -- belongs to it.
