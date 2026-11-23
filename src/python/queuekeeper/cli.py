@@ -17,7 +17,7 @@ import time
 import traceback
 
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, gate_reuse, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
-    parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
+    launcher_patch, parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, parse as parse_configuration, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
     project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
@@ -1250,6 +1250,8 @@ def main(argv=None):
     # A shared checkout left on a work branch runs that branch's code for every project's qk (#184).
     off_main = git_state.off_main(TOOLKIT_ROOT)
     if off_main: print(f"queuekeeper: {off_main}", file=sys.stderr, flush=True)
+    if words[first:first + 1] == ["launcher-patch"]:
+        return launcher_patch.main(words[first + 1:], project, TOOLKIT_ROOT)
     report = lane_report.Report()
     try:
         # The project's plugins first: they add commands, and what they add to a command's environment, such as
@@ -1457,6 +1459,7 @@ def perform(argv, report):
     doctor_mode.add_argument("--hooks", action="store_true", help="check and repair core.hooksPath alone, as a session-start "
         "hook asks: one line for each finding, each beginning repaired or warning, or one beginning fine; exit 0 "
         "unless a warning is left")
+    commands.add_parser("launcher-patch", help=launcher_patch.HELP)
     hook = commands.add_parser("pre-push", help="a pre-push hook: run the lanes the project names for the paths a push "
         "changes, the docs lanes for a docs-only push, queue.lanes or gate for any other and none for a push that "
         "changes no path, and refuse the push "

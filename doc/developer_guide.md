@@ -2137,13 +2137,22 @@ Projects that use the vocaro-engineering toolkit may also carry its `scripts/_en
 Without `scripts/qk`, the worker uses this checkout's `bin/qk`. Before removing a copy, check
 the project's lane commands, hooks and scripts for direct references to it.
 
-When `qk doctor` loads Queuekeeper from a checkout, its `notes` identify a differing stock
-`scripts/qk` copy and name the source it compared. Review the diff before replacing the copy,
-especially if the project has local changes. Use the installed `qk doctor` if the copied launcher
-can no longer start. After refreshing the copy, run `python3 scripts/qk --version` to check that
-the launcher starts with the project's Python. Combine launcher updates where practical and land
-them through the project's existing gate. Include the launcher in the `inputs` of lanes that
-read it, including lanes the worker starts through that copy.
+When `qk doctor` loads Queuekeeper from a checkout, its `notes` flag a differing `scripts/qk`
+copy with Queuekeeper's launcher header and name the source it compared. A project can keep that
+header when it customizes the launcher, so inspect the difference before acting on the note.
+
+From the project checkout root, run `~/Development/queuekeeper/bin/qk launcher-patch` to print
+a patch for review. The command reads the checked-in launcher from that Queuekeeper checkout's `HEAD` and
+requires the project's file to be clean and match a stock copy in that checkout's Git history.
+It prints an empty patch when the copy already matches. Save a successful, nonempty patch,
+review it, then use `git apply --check PATCH` and `git apply PATCH` in the same project checkout.
+If the launcher has project-specific changes or the stock copy cannot be identified, review and
+refresh it by hand. The source checkout's `bin/qk` works even when the copied launcher cannot start.
+
+After refreshing the copy, run `python3 scripts/qk --version` to check that the launcher starts
+with the project's Python. Combine launcher updates where practical and land them through the
+project's existing gate. Include the launcher in the `inputs` of lanes that read it, including
+lanes the worker starts through that copy.
 
 ### The README's screenshots
 
