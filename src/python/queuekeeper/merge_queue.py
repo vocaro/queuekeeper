@@ -2209,10 +2209,12 @@ class Queue:
             "StandardErrorPath": log,
         }
 
+    def launcher_file(self):
+        return Path.home() / "Library" / "LaunchAgents" / f"{self.launcher_label()}.plist"
+
     def start_with_launcher(self, log):
-        if sys.platform != "darwin": return False
+        if sys.platform != "darwin" or not self.launcher_file().is_file(): return False
         label = self.launcher_label()
-        if not (Path.home() / "Library" / "LaunchAgents" / f"{label}.plist").is_file(): return False
         try:
             done = subprocess.run([LAUNCHCTL, "kickstart", f"gui/{os.getuid()}/{label}"],
                                   capture_output=True, text=True, timeout=10)
@@ -3498,8 +3500,12 @@ def diagnose(root):
         found("held", f"the queue is held {held}", "deal with the cause the hold names, then run `qk queue resume`, "
               "unless the hold says it is for the owner")
     elif waiting and not working:
+        remedy = "`qk queue resume` starts one"
+        if sys.platform == "darwin" and not queue.launcher_file().is_file():
+            remedy += (". For automatic login recovery, the owner can install this repository's signed LaunchAgent "
+                       "with `qk queue launcher-plist` and the installation steps in the user guide")
         found("no worker", f"{entries_word(len(waiting))} wait and no worker runs, so nothing gates them "
-              "(vocaro-engineering#287)", "`qk queue resume` starts one")
+              "(vocaro-engineering#287)", remedy)
     # A closure refuses every landing until it lapses (vocaro/queuekeeper#286): said, with whether its closer's
     # worktree is gone, so that a closure that has outlived its closer is reopened rather than waited out.
     closure = queue.closed()

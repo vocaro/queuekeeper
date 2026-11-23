@@ -1596,6 +1596,24 @@ class Doctor(UnittestGate):
         self.assertEqual([f["signal"] for f in found["findings"]], ["held"])
         self.assertIn("the queue is held for a session: something", said)
 
+    def test_doctor_suggests_a_signed_launcher_only_when_the_waiting_queue_has_no_plist(self):
+        self.commit("ready", "ready")
+        self.add("ready")
+        queue = mq.Queue(self.repo)
+        with patch.object(mq.Path, "home", return_value=self.base), patch.object(mq.sys, "platform", "darwin"):
+            status_, said, found = self.doctor(working=False)
+            self.assertEqual(status_, 1, said)
+            remedy, = (finding["remedy"] for finding in found["findings"])
+            self.assertIn("`qk queue resume` starts one", remedy)
+            self.assertIn("this repository's signed LaunchAgent", remedy)
+            self.assertIn("`qk queue launcher-plist`", said)
+            self.assertFalse(queue.launcher_file().exists())
+            queue.launcher_file().parent.mkdir(parents=True)
+            queue.launcher_file().touch()
+            status_, said, found = self.doctor(working=False)
+            self.assertEqual(status_, 1, said)
+            self.assertEqual(found["findings"][0]["remedy"], "`qk queue resume` starts one")
+
     def test_an_entry_queued_again_unchanged_came_back_and_a_changed_one_did_not(self):
         self.commit("c", "c")
         first = self.add("c")[0]

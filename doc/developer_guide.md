@@ -595,7 +595,11 @@ output in the checkout's `.build/queuekeeper/remote/.dispatches/LANE/*/run.log`,
 gate's log when the lane ends.
 
 - A worker starts with `qk land`, `qk queue wait` or `qk queue resume`, and exits when nothing
-  waits. After taking the lock, it requests a stop for each run whose dispatcher is proven gone.
+  waits. A repository with its [signed launcher](user_guide.md#the-signed-queue-launcher)
+  installed also starts a worker at login and on the launcher's interval when work waits and the
+  queue is free and unheld. When entries wait with no worker and no launcher plist, `qk queue doctor`
+  points the owner to that setup. After taking the lock, the worker requests a stop for each run
+  whose dispatcher is proven gone.
 - After that, it removes each scratch worktree whose maker its record proves gone
   (`worktree_ownership.reclaim`, as `qk queue reclaim` runs it). A scratch worktree's lock names its
   record and the record its path, so neither a path nor a lock's words alone is authority to delete.
