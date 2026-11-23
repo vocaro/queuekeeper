@@ -3832,6 +3832,31 @@ class MemberInputs(PathLanes, Fixture):
               patch.object(mq.Worker, "stack_room", return_value="no capacity")):
             self.assertEqual(mq.Worker(queue).disjoint_batch(waiting, self.config()), (waiting, ()))
 
+    def test_a_disjoint_stack_rechecks_inputs_against_the_integrated_tree(self):
+        self.commit("app/temporary.py", "app-change")
+        run(self.repo, "git", "mv", "app/temporary.py", "app/permanent.py")
+        run(self.repo, "git", "commit", "-qm", "Rename the new input before it lands")
+        [identifier] = self.add("app-change")
+        queue = mq.Queue(self.repo)
+        [entry] = queue.waiting()
+        worker = mq.Worker(queue)
+        runner = mq.Beside(worker, label="stacked", settles=False)
+        base = run(self.repo, "git", "rev-parse", mq.MAIN)
+        paths = worker.own_paths(entry)
+        self.assertEqual(paths, {"app/temporary.py", "app/permanent.py"})
+
+        stack = mq.Stack(worker, runner, [entry], base, ["gate"], (), paths=paths,
+                         parallel_config=self.config())
+        with patch.object(runner, "gate") as gate:
+            self.assertFalse(stack.begin())
+            self.assertIsNone(stack.thread)
+            gate.assert_not_called()
+        self.assertEqual(self.state(identifier)["state"], mq.QUEUED)
+
+        self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], mq.LANDED)
+        self.assertEqual((self.gates(), self.app_gates()), (0, 1))
+
     def test_a_path_of_both_lanes_runs_the_whole_group(self):
         self.assertNotIn("of its lanes", self.landed("shared/b.py", (1, 1)))
 
