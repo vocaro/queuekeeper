@@ -6976,8 +6976,8 @@ class Worker:
             return self.send_back_no_verdict(applied, log, reason, runner)
         self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
                  + f", run {self.no_verdicts} of at most {runs}"
-                 # Name what the run could not measure before its last attempt.
-                 + (f": {cause}" if result == lane_results.UNMEASURED else ""))
+                 # Name the reason an attempt could not start or measure the lane while retries remain.
+                 + (f": {cause}" if result in (resources.BUSY, lane_results.UNMEASURED) else ""))
         # Every retry waits, so that none starts into the load that voided the run before it, or another Mac's.
         busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
         if busy: return self.send_back_no_verdict(applied, log, f"{gave}, and {busy}", runner)

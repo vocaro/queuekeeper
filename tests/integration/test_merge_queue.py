@@ -1902,6 +1902,19 @@ class NoVerdict(Fixture):
         self.assertIn(f"no verdict (exit {mq.remote.LOST_ACCESS}), run 1 of at most {mq.NO_VERDICT_RUNS}", said.getvalue())
         self.assertNotIn("exits, holding nothing", said.getvalue())
 
+    def test_a_retry_names_the_admission_refusal_before_the_last_attempt(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        refusal = ("gate not run on this Mac (fixture): Resource queue busy on fixture: "
+                   "it waits behind a whole-host lane holding the host: another gate; waited 5400s; nothing ran")
+        Path(f"{self.status}.screen").write_text(f"queuekeeper: {refusal}\n")
+        with self.no_verdict_for(1, str(mq.resources.BUSY)), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.gates(), 2)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertRegex(said.getvalue(), rf"no verdict \(exit 75\).*run 1 of at most {mq.NO_VERDICT_RUNS}: not run: ")
+        self.assertIn(f"not run: {refusal}", said.getvalue())
+
     def test_unmeasured_batch_comes_back_and_later_entries_still_land(self):
         self.commit("a", "a")
         self.commit("b", "b")
