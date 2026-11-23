@@ -2429,10 +2429,14 @@ def admissions_now(at=None):
             try: since = datetime.fromisoformat(owner["admitted"]).timestamp()
             except (KeyError, TypeError, ValueError): since = None
             process = process_state(owner, listed)
-            # None when it cannot be told: a holder that does not run, or a ps that could not say.
-            progress = None if process != "running" or identity not in observations else [
-                {key: value for key, value in record.items() if key not in ("pid", "start")}
-                for record in observations[identity] if process_state(record, listed) == "running"]
+            progress = None
+            if process == "running" and identity in observations:
+                records = observations[identity]
+                progress = [{key: value for key, value in record.items() if key not in ("pid", "start")}
+                            for record in records if process_state(record, listed) == "running"]
+                # If no leaf was verified, an unreadable reporter leaves progress unknown.
+                if not progress and any(process_state(record, listed) == "unknown" for record in records):
+                    progress = None
             holders.append({"identity": identity, "label": str(owner.get("label") or "an unnamed owner")[:160],
                             "pid": owner["pid"], "start": owner["start"], "admittedAt": since,
                             "heldSeconds": None if since is None else round(max(0.0, at - since), 1),

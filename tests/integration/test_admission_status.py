@@ -329,6 +329,31 @@ class HoldersTests(Namespace):
             unknown = self.read()
         self.assertTrue(all(holder["progress"] is None for holder in unknown["holders"]))
 
+    def test_an_unverifiable_leaf_leaves_a_live_holders_progress_unknown(self):
+        self.holders({"a": self.owner("Alpha gate")}, slots=[(0, "a")])
+        reporter = os.getpid() + 1
+        self.observation("a", "unverified", reporter=reporter, reporterStart="recorded start",
+                         state="quiet", quietSeconds=700.0)
+        owner = {os.getpid(): " ".join(self.start.split())}
+        unknown = {**owner, reporter: None}
+        empty = "      progress: not observed (only a lane that declares `stall` publishes it)"
+        for census, state, progress, line in (
+                (unknown, "partial", None, "      progress: unknown"),
+                (owner, "observed", [], empty),
+                ({**owner, reporter: "different start"}, "observed", [], empty)):
+            with self.subTest(census=census), patch.object(offload_host, "census", return_value=census):
+                reading = self.read()
+            holder, = reading["holders"]
+            self.assertEqual((reading["state"], holder["process"], holder["progress"]), (state, "running", progress))
+            self.assertEqual(resources.progress_lines(holder), [line])
+
+        self.observation("a", "verified")
+        with patch.object(offload_host, "census", return_value=unknown):
+            reading = self.read()
+        self.assertEqual(reading["state"], "partial")
+        holder, = reading["holders"]
+        self.assertEqual([record["lane"] for record in holder["progress"]], ["verified"])
+
     def test_a_reading_too_large_is_cut_and_partial(self):
         reading = {"state": "observed", "reasons": [], "waiters": [{"label": "x" * 1000}] * 2000, "holders": [], "slots": []}
         cut = offload_host.bounded(reading)
