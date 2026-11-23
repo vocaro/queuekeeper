@@ -68,7 +68,8 @@ class Device:
         if arguments[0] == "boot": self.boots += 1
         if arguments[0] == "bootstatus": self.clock.sleep(2)
         status = {"boot": self.boot, "bootstatus": self.bootstatus if self.boots < 2 else self.reboot}.get(arguments[0], 0)
-        return subprocess.CompletedProcess(arguments, status, "", "failed" if status else "")
+        error = f"timed out after {timeout} s" if status == 124 else "failed" if status else ""
+        return subprocess.CompletedProcess(arguments, status, "", error)
 
     @staticmethod
     def assertion(holds, detail):
@@ -327,18 +328,43 @@ class WarmTests(unittest.TestCase):
         self.assertEqual((voices["settled"], voices["firstUse"]["seconds"], voices["secondUse"]["seconds"], voices["outcome"]),
                          (False, 57.0, None, "the second use, after a reboot, gave no answer: no answer in 300 s"))
         # The reboot between them.
-        for reboot, detail in ((124, "reached its limit"), (165, "exited 165: failed")):
+        for reboot, detail in ((124, "reached its 600 s limit"), (165, "exited 165: failed")):
             with self.subTest(reboot=reboot):
                 clock = Clock()
                 device = Device(clock, reboot=reboot)
                 voices = self.warm(device, clock)["voices"]
-                self.assertEqual((voices["settled"], voices["outcome"]), (False, f"the reboot between the uses {detail}"))
+                self.assertEqual((voices["settled"], voices["outcome"]),
+                                 (False, f"the reboot between the uses stopped when `simctl bootstatus -b` {detail}"))
                 self.assertNotIn("secondUse", voices)
                 self.assertEqual(len([call for call in device.calls if call[:4] == ("simctl", "spawn", UDID, TOOL)]), 1)
         # A program that lists no voice exits 1, and its words are kept.
         answer = lambda *arguments, timeout: subprocess.CompletedProcess(arguments, 1, "0.001 start pid 1\n0.500 speechVoices 0\n", "")
         self.assertEqual(template.use_voices(UDID, TOOL, simctl=answer, limit=10),
                          {"seconds": None, "outcome": "the voices program exited 1: 0.001 start pid 1\n0.500 speechVoices 0"})
+
+    def test_reboot_failure_names_the_stopped_command_without_inventing_a_timeout(self):
+        for step, flags, status in (("shutdown", "", 60), ("boot", "", 60), ("bootstatus", " -b", 60),
+                                    ("bootstatus", " -b", 124)):
+            with self.subTest(step=step, status=status):
+                clock = Clock()
+                device = Device(clock)
+                error = "ServiceError code=316\n" + "x" * 400 + "\nUnderlying error code=4"
+
+                def simctl(*arguments, timeout):
+                    if arguments[0] == step:
+                        return subprocess.CompletedProcess(arguments, status, "", error)
+                    return device.simctl(*arguments, timeout=timeout)
+
+                voices = template.settle_voices(UDID, simctl=simctl, tool=TOOL, limit=300,
+                                                boot_timeout=600, clock=clock)
+                self.assertFalse(voices["settled"])
+                self.assertNotIn("secondUse", voices)
+                outcome = voices["outcome"]
+                self.assertIn(f"`simctl {step}{flags}` exited {status}: ServiceError code=316", outcome)
+                self.assertTrue(outcome.endswith("Underlying error code=4"), outcome)
+                self.assertIn("[cut:", outcome)
+                self.assertNotIn("\n", outcome)
+                self.assertLess(len(outcome), 430)
 
     def test_the_voices_are_used_whatever_voiceover_did(self):
         for name, options in (("cues", dict(cues="1")), ("mute", dict(volumes=[60] * 1000)), ("silent", dict(speaks_after=None))):

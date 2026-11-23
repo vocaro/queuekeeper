@@ -179,13 +179,19 @@ def settle_voices(udid, *, simctl, tool, limit, boot_timeout, clock=time.monoton
         record["outcome"] = f"the first use gave no answer: {record['firstUse']['outcome']}"
         return record
     started = clock()
-    rebooted = simctl("shutdown", udid, timeout=300)
-    if rebooted.returncode == 0: rebooted = simctl("boot", udid, timeout=120)
-    if rebooted.returncode == 0: rebooted = simctl("bootstatus", udid, "-b", timeout=boot_timeout)
-    if rebooted.returncode != 0:
-        detail = "reached its limit" if rebooted.returncode == 124 else \
-            f"exited {rebooted.returncode}: {(rebooted.stderr or rebooted.stdout).strip()[-300:]}"
-        record["outcome"] = f"the reboot between the uses {detail}"
+    for command, flags, timeout in (("shutdown", (), 300), ("boot", (), 120), ("bootstatus", ("-b",), boot_timeout)):
+        rebooted = simctl(command, udid, *flags, timeout=timeout)
+        if rebooted.returncode == 0:
+            continue
+        output = " ".join((rebooted.stderr or rebooted.stdout or "").split())
+        if len(output) > 300:
+            output = f"{output[:150]} [cut: {len(output) - 300} characters] {output[-150:]}"
+        if rebooted.returncode == 124 and output == f"timed out after {timeout} s":
+            detail = f"reached its {timeout} s limit"
+        else:
+            detail = f"exited {rebooted.returncode}: {output or 'no output'}"
+        step = " ".join(("simctl", command, *flags))
+        record["outcome"] = f"the reboot between the uses stopped when `{step}` {detail}"
         return record
     record["rebootSeconds"] = round(clock() - started, 1)
     record["secondUse"] = use_voices(udid, tool, simctl=simctl, limit=limit)
