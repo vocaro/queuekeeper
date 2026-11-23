@@ -375,6 +375,12 @@ class Doctor(Project):
                     self.assertIn(str(source), notes[0])
                 self.assertEqual((self.root / "scripts/qk").read_text(), launcher)
 
+    def test_doctor_reports_changes_in_the_loaded_main_checkout_as_a_warning(self):
+        with patch.object(cli, "TOOLKIT_ROOT", self.root):
+            status, shown = self.doctor({"gate": {**lane("/usr/bin/true"), "timeout": 60}})
+        self.assertEqual(status, 0)
+        self.assertTrue(any("main checkout has uncommitted changes" in warning for warning in shown["warnings"]))
+
     def test_doctor_keeps_could_not_tell_apart_from_a_pass(self):
         self.package()
         self.write("Examples/UITests/Stale.swift", XCTEST.format(name="Stale"))

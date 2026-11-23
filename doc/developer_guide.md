@@ -2031,6 +2031,11 @@ it off: a project fixes its own hits before turning it on.
   checkout on another branch, or detached at a commit `main` lacks, every command warns first on
   stderr (`queuekeeper: Queuekeeper loads from PATH, on branch NAME at COMMIT, not main, ...`) and
   `qk doctor` lists it among its warnings.
+- **Keep the main checkout clean.** `qk doctor` also warns about staged changes, unstaged changes
+  and untracked files in the loaded main checkout. Inspect the changes with `git status` in
+  that checkout and preserve the work in a linked worktree. Ignored files and edits in linked
+  worktrees do not trigger this warning. If a shared checkout edit prevents Queuekeeper from
+  starting, inspect that checkout with Git directly.
 
 ### Moving a module
 

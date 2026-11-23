@@ -1790,8 +1790,9 @@ def perform(argv, report):
             required = {"git", "python3"}
             for needed in plugins.REQUIRED_COMMANDS: required |= set(needed(config))
             missing = sorted(name for name in required if not shutil.which(name))
-            # The Queuekeeper this ran, when it is a main checkout off main (#184).
+            # The Queuekeeper this ran, when its main checkout is off main (#184) or has edits (#179).
             warnings = [off_main] if (off_main := git_state.off_main(TOOLKIT_ROOT)) else []
+            if changed := git_state.shared_changes(TOOLKIT_ROOT): warnings.append(changed)
             unbounded = sorted(name for name, lane in config.get("lanes", {}).items()
                                if "command" in lane and "timeout" not in lane
                                and name not in config.get("queue", {}).get("preflight", []))

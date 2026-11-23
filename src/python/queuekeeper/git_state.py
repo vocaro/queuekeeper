@@ -63,6 +63,16 @@ def off_main(toolkit):
             "Queuekeeper in a linked worktree (vocaro/queuekeeper#184)")
 
 
+def shared_changes(toolkit):
+    """Warn when the loaded main checkout has working changes. Linked worktrees are for edits."""
+    if not (Path(toolkit) / ".git/HEAD").is_file(): return None
+    if git(toolkit, "--no-optional-locks", "status", "--porcelain", "--untracked-files=normal"):
+        return (f"Queuekeeper loads from {toolkit}, whose main checkout has uncommitted changes. Projects using "
+                "this checkout can run those changes. Inspect them with git status in that checkout, preserve them "
+                "in a linked worktree, and keep the main checkout clean (vocaro/queuekeeper#179)")
+    return None
+
+
 def worktrees(checkout):
     """Each worktree of checkout's repository, from `git worktree list --porcelain`, as a dict of its
     fields (worktree, HEAD, branch, detached, locked, prunable); the main checkout comes first."""

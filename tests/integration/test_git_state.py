@@ -161,6 +161,32 @@ class OffMainTests(Fixture):
                                                     "work at "), error.getvalue())
 
 
+class SharedChangesTests(Fixture):
+    def test_only_changes_in_the_loaded_main_checkout_warn(self):
+        (self.checkout / ".git/info/exclude").write_text("ignored\n")
+        (self.checkout / "ignored").touch()
+        self.assertIsNone(git_state.shared_changes(self.checkout))
+
+        module = self.checkout / "module.py"
+        module.write_text("# module\n")
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                if staged: self.git(self.checkout, "add", module.name)
+                warning = git_state.shared_changes(self.checkout)
+                self.assertIn(f"{self.checkout}, whose main checkout has uncommitted changes", warning)
+                self.assertIn("git status", warning)
+                self.assertIn("linked worktree", warning)
+        self.git(self.checkout, "commit", "-qm", "Add a module")
+        module.write_text("# local edit\n")
+        self.assertIn("uncommitted changes", git_state.shared_changes(self.checkout))
+
+        linked = self.root / "linked"
+        self.git(self.checkout, "worktree", "add", "-q", "-b", "work", str(linked))
+        (linked / module.name).write_text("# worktree edit\n")
+        self.assertIsNone(git_state.shared_changes(linked))
+        self.assertIsNone(git_state.shared_changes(self.root / "nowhere"))
+
+
 class WorktreeTests(Fixture):
     def test_worktrees_lists_the_main_checkout_first_with_each_ones_fields(self):
         linked = self.root / "linked"
