@@ -141,8 +141,7 @@ class GateBudget(unittest.TestCase):
         self.assertNotIn("loaded run", budgets.busy_words({"cpuBusy": 30.0, "busyLimit": 75.0}))
 
     def test_a_whole_host_gates_run_is_never_left_out_for_its_own_busy_share(self):
-        """Admission admits no other heavy work beside a whole-host lane, so its busy share is its own work
-        (vocaro/queuekeeper#12)."""
+        """A whole-host lane's host-wide busy share cannot rule it out of the budget (vocaro/queuekeeper#12)."""
         self.assertFalse(budgets.loaded({"cpuBusy": 91.5, "busyLimit": 70.0, "wholeHost": True}))
         # Negative controls: the same readings of any other lane are a loaded run, and only true says whole-host.
         for other in ({}, {"wholeHost": False}, {"wholeHost": "yes"}):
@@ -154,9 +153,9 @@ class GateBudget(unittest.TestCase):
         self.assertEqual(budgets.gate_warnings(self.config(budgetMinutes=15), [loaded(n, 1740) for n in range(3)]), [])
         said = budgets.busy_words({"cpuBusy": 91.5, "cpuBusyHighest": 99.0, "busyLimit": 70.0, "busyOn": "this Mac",
                                    "busyReadings": 14, "wholeHost": True})
-        self.assertTrue(said.endswith("against its busy limit of 70%: its own work, as a whole-host lane has the Mac's "
-                                      "heavy work to itself, so the gate's budget median counts it"), said)
-        self.assertNotIn("its own work", budgets.busy_words({"cpuBusy": 30.0, "busyLimit": 70.0, "wholeHost": True}))
+        self.assertTrue(said.endswith("against its busy limit of 70%: the budget median includes whole-host gates at "
+                                      "this busy share. The CPU reading covers all work on the Mac"), said)
+        self.assertNotIn("budget median", budgets.busy_words({"cpuBusy": 30.0, "busyLimit": 70.0, "wholeHost": True}))
         self.assertEqual(budgets.busy_words({}), "the CPU busy share of the Mac it ran on could not be read")
 
     def test_the_budget_judges_the_gates_own_work_and_gives_its_wait_for_admission_apart(self):

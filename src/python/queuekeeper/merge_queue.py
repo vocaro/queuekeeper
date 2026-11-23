@@ -4827,7 +4827,7 @@ class Worker:
                 return status_, log
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
-                    # A whole-host lane's busy share is its own work, which the budget does not take for a loaded host.
+                    # The budget keeps whole-host samples even when host-wide CPU reaches the busy limit.
                     if busy and self.whole_host(lane): busy["wholeHost"] = True
                     self.measured = {**budgets.timed(ended - started, admitted, began),
                                      "parts": budgets.parts(log.read_text(errors="replace"))[:budgets.KEPT_PARTS], **busy}
