@@ -137,6 +137,26 @@ class Reading(unittest.TestCase):
                                                           "swapTotalBytes": None, "memoryLevel": None,
                                                           "largest": None})
 
+    def test_a_process_that_falls_below_the_census_limit_has_no_reported_size(self):
+        # The daemon grows between readings, but the other processes grow more.
+        listings = []
+        for elapsed, other_rss, daemon_rss in (("02:00", 2048, 4096), ("03:00", 8192, 5120)):
+            others = [f"{pid} {other_rss + pid * 256} {elapsed} Other{pid}" for pid in range(1, 6)]
+            listings.append("\n".join([*others, f"42 {daemon_rss} {elapsed} fseventsd"]))
+        snapshots = iter(listings)
+
+        def read(command):
+            if tuple(command) == offload_host.HEALTH_LISTING:
+                return next(snapshots)
+            return None
+
+        with patch.object(offload_host, "output", side_effect=read), \
+                patch.dict(os.environ, {offload_host.HEALTH_RECORDING: ""}):
+            earlier, later = offload_host.host_health(), offload_host.host_health()
+        self.assertIn({"pid": 42, "name": "fseventsd", "residentBytes": 4096 * 1024, "seconds": 120},
+                      earlier["largest"])
+        self.assertEqual([one["pid"] for one in later["largest"]], [5, 4, 3, 2, 1])
+
     def test_the_farm_asks_for_health_beside_pressure_and_the_merge_queue_does_not(self):
         with patch.object(offload_host, "pressure", return_value={"load": 1.0}), \
                 patch.object(offload_host, "host_health", return_value=SWAPPING):

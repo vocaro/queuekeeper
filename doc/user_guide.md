@@ -3573,6 +3573,9 @@ recovery](developer_guide.md#state-and-recovery) for how the worker handles each
 - **`qk queue doctor`** reads the queue's records and says whether it is testing or stuck, and
   what would unstick it. It names a gate that has waited 15 minutes for admission and what holds
   the slots, and any Mac short of memory with its largest processes. It stops nothing itself.
+  The process list describes one reading. A process outside the list has no reported size.
+  To measure growth, compare separate readings of the same process instance on the same Mac.
+  A PID can be reused after a process exits.
 - **`qk queue health`** gives one verdict on whether the queue is healthy and when the waiting
   entries should land, from five signs: progress of running gates, time since the last landing,
   each Mac's reachability and memory, connected devices, and how many recent entries came back.
