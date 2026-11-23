@@ -121,7 +121,7 @@ def local_toolkit():
 
 @functools.cache
 def project_seed():
-    """Create the fixture's starting repository once. Tests copy the bare origin before cloning it."""
+    """Create the fixture's starting origin and checkout once per test process."""
     base = Path(tempfile.mkdtemp()).resolve()
     atexit.register(shutil.rmtree, base, ignore_errors=True)
     origin, repo = base / "origin.git", base / "project"
@@ -140,7 +140,9 @@ def project_seed():
     run(repo, "git", "add", ".")
     run(repo, "git", "commit", "-qm", "start")
     run(repo, "git", "push", "-q", "origin", "HEAD:main")
-    return origin
+    # An empty clone cannot set origin/HEAD. Fill it in now, as a clone of the populated origin would.
+    run(repo, "git", "remote", "set-head", "origin", "main")
+    return origin, repo
 
 
 def never_exec(command, env):
@@ -201,8 +203,10 @@ class Fixture(unittest.TestCase):
         self.counter, self.status = self.base / "gates", self.base / "status"
         self.origin = self.base / "origin.git"
         self.repo = self.base / "project"
-        shutil.copytree(project_seed(), self.origin)
-        run(self.base, "git", "clone", "-q", str(self.origin), str(self.repo))
+        origin, repo = project_seed()
+        shutil.copytree(origin, self.origin)
+        shutil.copytree(repo, self.repo)
+        run(self.repo, "git", "remote", "set-url", "origin", str(self.origin))
 
     def config(self):
         return configuration.load(self.repo)
