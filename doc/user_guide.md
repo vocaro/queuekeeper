@@ -2858,10 +2858,19 @@ or with PATH cleared bypasses this.
 
 **An earlier farm checkout path.** If a wrapped build fails and its package state inside the checkout
 still names that checkout under the farm's old root, the wrapper says `STALE PACKAGE PATHS`. For
-`xcodebuild`, the check reads the state selected by `-clonedSourcePackagesDirPath` or `-derivedDataPath`.
-For `swift`, it reads the state selected by `--scratch-path` or `--build-path`. Try a fresh build
-directory to rule out state kept under the old path. This diagnostic leaves the build outcome and
-cache intact.
+`xcodebuild`, the check reads the state selected by `-clonedSourcePackagesDirPath` when given,
+otherwise the `SourcePackages` directory in the explicit `-derivedDataPath`. For `swift`, it reads
+the state selected by `--scratch-path` or `--build-path`. The wrapper leaves SwiftPM state uninspected
+when `SWIFTPM_BUILD_DIR` is set. The warning leaves the build outcome and cache intact.
+
+To check for reused build state, rerun the same revision on the affected Mac, through admission,
+with fresh, unused paths for the build. For Xcode, give it a fresh `-derivedDataPath` and, if the
+command sets `-clonedSourcePackagesDirPath`, give that option a fresh path too. Changing only
+DerivedData leaves an explicit package directory in use. For SwiftPM, use a fresh `--scratch-path`
+or point `SWIFTPM_BUILD_DIR` at the fresh directory if the launcher sets it. Keep the old paths
+available for diagnosis. If the lane uses `test-without-building`, first produce its test build in
+the fresh directory. A passing fresh build is evidence that reused state contributed to the
+failure. The warning reports a stale reference and leaves the cause of the failure open.
 
 **A replaced Metal Toolchain mount.** macOS mounts the Metal Toolchain at a path with a random suffix,
 `/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-VERSION.SUFFIX/`, and can
