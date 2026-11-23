@@ -3214,9 +3214,10 @@ wake you.
   `heartbeat:` line comes at most every five minutes. With `--json`, these lines go to stderr.
 - **A send-back ends the wait within seconds**, naming the conflicting files and entries, or the
   failed tests and the log.
-  When a failed lane and a kept passing run of that lane at its `origin/main` base identify
-  different clean Queuekeeper revisions, the send-back names both. Use the difference as a
-  lead when investigating the failure.
+  When a failed `gate` and the passing queue gate that tested and published its exact
+  `origin/main` base identify different clean Queuekeeper revisions, the send-back names both.
+  Without that queue evidence, it can compare a kept passing run of the same lane at that base.
+  Use the difference as a lead when investigating the failure.
 - **A gate running past its usual time** shows `timing: warning: ...` in these lines. A lane stopped
   by a limit prints a `queuekeeper notice:`. Do not raise a `timeout`, stall bound or timing threshold
   just to make the gate pass; find what made it slower, or after a deliberate change to the lane's
@@ -3270,6 +3271,11 @@ An entry's result names its `commit`, `landedAs`, failure details, the entries i
 with (`conflictWith`, empty for others), test counts, flaky tests (`flakes`), timing warnings and limit notices
 from its logs (`timing`) and the run's artifacts. A missing or pruned artifact is listed with
 `available: false`. Results carry `schemaVersion: 1`; tolerate added keys and unknown states.
+When a landed entry has fresh, clean execution receipts from passing whole queue gate lanes,
+`gateExecution` gives the `testedRevision` and the `toolkitRevision` for each recorded lane,
+keyed by lane name. A tested revision can differ from the published commit when the queue
+carries a verdict over a move of `main`. The field is absent when no execution receipt
+establishes those revisions.
 
 Every result has a `recovery` object that says what to do next:
 

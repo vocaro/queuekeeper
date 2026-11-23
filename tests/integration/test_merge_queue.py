@@ -8815,7 +8815,8 @@ class PassedThroughAHold(Fixture):
 
     def test_a_refused_push_keeps_the_pass_and_resume_pushes_it_without_a_gate(self):
         self.commit("a", "a"); self.commit("b", "b")
-        ids = self.refused("a", "b")
+        with patch.object(mq, "gate_toolkit", return_value="a" * 40):
+            ids = self.refused("a", "b")
         self.assertEqual([self.state(i)["state"] for i in ids], ["passed"] * 2)
         verdict = self.state(ids[0])["passed"]
         self.assertEqual(verdict["batch"], ids)
@@ -8835,6 +8836,9 @@ class PassedThroughAHold(Fixture):
         self.assertLessEqual({"a", "b"}, self.main_files())
         # The landed entries still record the gate that passed them, for its budget.
         self.assertEqual(self.state(ids[0])["gate"], verdict["gate"])
+        self.assertEqual(verdict["gateExecution"],
+                         {"gate": {"testedRevision": verdict["head"], "toolkitRevision": "a" * 40}})
+        self.assertEqual(self.state(ids[0])["gateExecution"], verdict["gateExecution"])
 
     def test_without_a_pass_the_next_worker_gates_again(self):
         """Negative control: a batch a worker left testing was never judged, so it is gated again."""
@@ -9059,13 +9063,18 @@ class PublicationUnverified(Fixture):
 
     def test_a_worker_killed_after_its_push_went_through_lands_it_without_pushing_again(self):
         self.commit("a", "a")
-        [identifier] = self.die("after", "a")
-        head = self.state(identifier)["passed"]["head"]
+        with patch.object(mq, "gate_toolkit", return_value="b" * 40):
+            [identifier] = self.die("after", "a")
+        unverified = self.state(identifier)
+        head = unverified["passed"]["head"]
+        self.assertEqual(unverified["publishing"]["gateExecution"],
+                         {"gate": {"testedRevision": head, "toolkitRevision": "b" * 40}})
         self.assertEqual(self.origin_main(), head)
         self.assertEqual(self.restart(), [])
         entry = self.state(identifier)
         self.assertEqual((entry["state"], entry["landedAs"], entry["landedTip"]), ("landed", head, head))
         self.assertEqual(entry["gatedOn"], entry["passed"]["base"])
+        self.assertEqual(entry["gateExecution"], unverified["publishing"]["gateExecution"])
         self.assertEqual(self.gates(), 1)
         [event] = self.reconciled()
         self.assertEqual((event["head"], event["entries"]), (head, [identifier]))
@@ -10216,6 +10225,37 @@ class SummaryFacts(Fixture):
         revision = run(os.environ["QUEUEKEEPER_ROOT"], "git", "rev-parse", "HEAD")
         self.assertIn(f"Queuekeeper revision for the failed lane: {revision}. A kept passing run of gate "
                       f"on origin/main at {base[:12]} used {earlier}.", why)
+
+    def test_a_send_back_prefers_the_exact_configured_queue_lane_over_a_later_manual_pass(self):
+        earlier, manual = "a" * 40, "b" * 40
+        lane = "checks"
+        config = self.config()
+        config["lanes"][lane] = config["lanes"].pop("gate")
+        config.setdefault("queue", {})["lanes"] = [lane]
+        self.publish(config)
+        self.commit(".gitignore", "baseline", ".build/\n")
+        [identifier] = self.add("baseline")
+        with patch.object(mq, "gate_toolkit", return_value=earlier), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.work(), 0)
+        entry = self.state(identifier)
+        base = entry["landedTip"]
+        self.assertEqual(entry["gateExecution"], {lane: {"testedRevision": base, "toolkitRevision": earlier}})
+        kept = {"project": {"revision": base, "workingChangesSHA256": mq.remote.CLEAN},
+                "toolkit": {"revision": manual, "workingChangesSHA256": mq.remote.CLEAN},
+                "outcome": "passed", "ranOn": mq.remote.HERE}
+        self.assertIsNotNone(mq.remote.keep_here(self.repo, lane, kept, 0))
+        why = self.rejected(self.SWIFT, "Sources/Reader.swift", "let reader = 1\n")
+        self.assertIn(f"The passing queue gate on origin/main at {base[:12]} used {earlier}.", why)
+        self.assertNotIn(manual, why)
+
+        runner = mq.Worker(mq.Queue(self.repo))
+        runner.failed_lane, runner.failed_toolkit = lane, earlier
+        self.assertEqual(runner.toolkit_comparison(base), "")
+        # A carried verdict can land a different commit from the one it tested.
+        entry["gateExecution"][lane]["testedRevision"] = "c" * 40
+        runner.queue.note_landed([entry], gateExecution=entry["gateExecution"])
+        self.assertIn(f"A kept passing run of {lane} on origin/main at {base[:12]} used {manual}.",
+                      runner.toolkit_comparison(base))
 
     def test_a_file_named_twice_in_the_repository_is_not_guessed(self):
         # A second file of the same name leaves the bare name the summary gives two places.
@@ -14124,6 +14164,20 @@ class GateResultsNamed(Fixture):
         self.assertNotIn("sent none back", line)
         self.assertIn(f"{line}\n", log)
         self.assert_waited_ends(waited, entry)
+        # A sender-only dispatch record gives no evidence of the executing toolkit.
+        self.assertNotIn("gateExecution", entry)
+        self.assertNotIn("gateExecution", agent_results.lookup(mq.Queue(self.repo), entry["id"]))
+
+    def test_a_whole_passing_gate_keeps_its_execution_revision_in_the_landed_result(self):
+        (self.repo / ".gitignore").write_text(".build/\n")
+        run(self.repo, "git", "add", ".gitignore")
+        run(self.repo, "git", "commit", "-qm", "Ignore lane artifacts")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        entry, _, _, _ = self.landed()
+        revision = run(os.environ["QUEUEKEEPER_ROOT"], "git", "rev-parse", "HEAD")
+        execution = {"gate": {"testedRevision": entry["landedAs"], "toolkitRevision": revision}}
+        self.assertEqual(entry["gateExecution"], execution)
+        self.assertEqual(agent_results.lookup(mq.Queue(self.repo), entry["id"])["gateExecution"], execution)
 
     def test_a_gate_run_here_that_wrote_results_names_them_as_a_dispatched_one_does(self):
         # The same gap: nothing named them here either, and the next run here replaces them.

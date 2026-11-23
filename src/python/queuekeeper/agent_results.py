@@ -154,6 +154,7 @@ def entry_result(queue, entry):
                        for flake in entry.get("flakes", [])],
             "artifacts": artifacts, "gates": gates,
             "resultsSummary": (entry.get("gate") or {}).get("results"),
+            **({"gateExecution": execution} if (execution := entry.get("gateExecution")) else {}),
             "docsOnly": entry.get("docsOnly"), "docsNamed": entry.get("docsNamed"), "ungated": entry.get("ungated"),
             "partialGate": entry.get("partialGate"),
             "reusedGates": entry.get("reusedGates"),

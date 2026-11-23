@@ -3604,14 +3604,14 @@ def clean_gate_toolkit(receipt, commit):
     return revision if revision and receipt["toolkit"].get("workingChangesSHA256") == remote.CLEAN else None
 
 
-def failed_gate_toolkit(directory, commit, began, dispatched):
+def gate_toolkit(directory, commit, began, dispatched, outcomes):
     """Read only the fresh execution receipt of the completed gate command."""
     try:
         if (directory / "source.json").stat().st_mtime < began: return None
     except OSError:
         return None
     receipt = lane_report.lane_receipt(directory, dispatched=dispatched)
-    if receipt.get("outcome") not in ("failed", "build-failed"): return None
+    if receipt.get("outcome") not in outcomes: return None
     return clean_gate_toolkit(receipt, commit)
 
 
@@ -3871,6 +3871,7 @@ class Worker:
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.pin_names, self.evaluated_pins = {}, {}
         self.measured = None  # the passing gate run of the last round, which its landed entries record
+        self.gate_executions = {}  # verified receipts for the whole lanes that passed in that round
         self.alone = False  # whether this round's batch is one entry an option of qk land put on its own (choose)
         self.ungating = False  # whether this round lands that entry without the gate (round, first_ungated)
         self.failed_lane = None  # the lane whose failure the last gate returned, or None (gate)
@@ -4677,6 +4678,7 @@ class Worker:
         (quick_lanes, Worker.quick): self.checks, which the round sets for its batch, unless given. Reuse holds the
         main policy and submitted entries of an ordinary batch whose candidates may satisfy a whole lane."""
         log, self.ran_on, self.measured, self.timed_out, self.ran_where = None, None, None, None, ""
+        self.gate_executions = {}
         self.failed_lane, self.failed_load, self.withdrawn, self.ahead = None, None, [], None
         self.failed_results = None
         self.failed_dispatch = self.failed_toolkit = None
@@ -4835,7 +4837,9 @@ class Worker:
                 self.failed_results = printed.parent / "results"
                 self.tooling = self.tool_unstarted(lane, began, status_, ran, log)
                 if status_ not in NO_VERDICT:
-                    if not only: self.failed_toolkit = failed_gate_toolkit(printed.parent, tested, began, ran is not None)
+                    if not only:
+                        self.failed_toolkit = gate_toolkit(printed.parent, tested, began, ran is not None,
+                                                           ("failed", "build-failed"))
                     self.failed_load = loads.finish(self.ran_on)
                     if remote_failure:
                         swift_assertions = swift_test_assertions(lane_text) if member_log is None else group_assertions
@@ -4848,6 +4852,8 @@ class Worker:
                         with contextlib.suppress(OSError), log.open("a") as kept:
                             kept.write("\n" + "\n".join([*group_assertions, *recorded, *dispatch_logs(ran)]) + "\n")
                 return status_, log
+            if not only and (revision := gate_toolkit(printed.parent, tested, began, ran is not None, ("passed",))):
+                self.gate_executions[lane] = {"testedRevision": tested, "toolkitRevision": revision}
             if lane == budgets.GATE:
                 with contextlib.suppress(OSError):
                     # The budget keeps whole-host samples even when host-wide CPU reaches the busy limit.
@@ -4892,7 +4898,8 @@ class Worker:
         if not lane or not base or head == base or not self.altered_files: return None
         kept = {name: getattr(self, name, None) for name in (
             "ran_on", "measured", "timed_out", "ran_where", "failed_lane", "failed_load", "withdrawn", "ahead",
-            "failed_results", "failed_dispatch", "failed_toolkit", "tooling", "altered_files", "altered_paths", "lane_now")}
+            "failed_results", "failed_dispatch", "failed_toolkit", "gate_executions", "tooling", "altered_files",
+            "altered_paths", "lane_now")}
         self.say(f"{lane} changed the tree it tested: running it on origin/main at {base[:12]}, without the batch")
         try:
             self.reset(base)
@@ -5295,6 +5302,8 @@ class Worker:
         # What the landing's record says of a gate its paths narrowed (partial_gate).
         partial = None if ungated else partial_gate(config, changed) if not docs else \
             {"lanes": [], "skipped": gate_lanes(config)} if any(skips_by_inputs(config, path) for path in changed) else None
+        configured = gate_lanes(config) if not docs and not ungated else ()
+        executions = {lane: self.gate_executions[lane] for lane in configured if lane in self.gate_executions}
         unsure = False
         checked = None
         covered = config.get("queue", {}).get("hookCoveredBy")
@@ -5314,7 +5323,7 @@ class Worker:
             if landed:
                 self.say(f"origin/main holds {landed['head'][:12]}, pushed before its answer came: it landed")
                 self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated, self.measured,
-                                   partial=partial, reused=self.reused_gates)
+                                   partial=partial, reused=self.reused_gates, executions=executions)
                 return LANDED
             # An earlier push of some of the batch, whose answer never came, may have landed since (reconcile).
             kept = [current for entry in batch if (current := self.queue.read(entry["id"])) and current.get("pushedBefore")]
@@ -5358,6 +5367,7 @@ class Worker:
                 **({"docsOnly": docs} if docs else {}), **({"docsNamed": named} if named else {}),
                 **({"ungated": ungated} if ungated else {}), **({"gate": self.measured} if self.measured else {}),
                 **({"partialGate": partial} if partial else {}),
+                **({"gateExecution": executions} if executions else {}),
                 **({"reusedGates": self.reused_gates} if self.reused_gates else {})}
             started, retrying = self.publication_callbacks(batch, marker)
             # A connection that dropped pushes again here, without running the hook again.
@@ -5374,7 +5384,7 @@ class Worker:
                 self.say(f"pushed {head[:12]}" + (", landed without the gate, which the next gate on main covers"
                                                   if ungated else ""))
                 self.settle_pushed(batch, base, head, gated_on, docs, named, ungated, self.measured,
-                                   partial=partial, reused=self.reused_gates)
+                                   partial=partial, reused=self.reused_gates, executions=executions)
                 return LANDED
             said = pushed.stderr.strip()
             if "rejected" in said and ("fetch first" in said or "non-fast-forward" in said): continue
@@ -5390,7 +5400,8 @@ class Worker:
                                        f"rejected the push: {error}") from error
                 if landed := self.landed_attempt(attempts):
                     self.settle_pushed(batch, landed["base"], landed["head"], gated_on, docs, named, ungated,
-                                       self.measured, reconciled=True, partial=partial, reused=self.reused_gates)
+                                       self.measured, reconciled=True, partial=partial, reused=self.reused_gates,
+                                       executions=executions)
                     return LANDED
                 if kept and self.settle_kept(kept): return QUEUED
                 return self.rejected_push(batch, head, pushed)
@@ -5402,7 +5413,8 @@ class Worker:
                                f"answer: {said or 'no output'}")
         return QUEUED
 
-    def settle_pushed(self, batch, base, head, gated_on, docs, named, ungated, gate, reconciled=False, partial=None, reused=None):
+    def settle_pushed(self, batch, base, head, gated_on, docs, named, ungated, gate, reconciled=False, partial=None,
+                      reused=None, executions=None):
         """Settle batch as landed by head, pushed on base: each entry its own commit (landed), the push's event,
         the app kept and the shared checkout followed, as after any landing. reconciled says the push's answer
         never came, and a later fetch found head on origin/main (reconcile)."""
@@ -5419,6 +5431,7 @@ class Worker:
                               **({"partialGate": partial} if partial else {}),
                               **({"reusedGates": reused} if reused else {}),
                               **({"gate": gate} if gate and not docs else {}),
+                              **({"gateExecution": executions} if executions else {}),
                               **({} if docs or ungated else {"gatedOn": gated_on}))
         if not docs and not ungated: self.keep_app(head)
         if self.follows(): self.follow()
@@ -5515,7 +5528,8 @@ class Worker:
                      f"{ids} landed")
             self.settle_pushed(group, attempt["base"], attempt["head"], marker.get("gatedOn"), marker.get("docsOnly"),
                       marker.get("docsNamed"), marker.get("ungated"), marker.get("gate"), reconciled=True,
-                      partial=marker.get("partialGate"), reused=marker.get("reusedGates"))
+                      partial=marker.get("partialGate"), reused=marker.get("reusedGates"),
+                      executions=marker.get("gateExecution"))
             landed = True
         return landed
 
@@ -6418,16 +6432,32 @@ class Worker:
         toolkit = self.toolkit_comparison(base)
         return f" {load}. {touched}" + (f".{main}" if main else "") + (f" {copies}." if copies else "") + toolkit
 
+    def landed_gate_toolkit(self, base):
+        """The one recorded revision of a whole gate that tested and landed exactly base, if known."""
+        revisions = set()
+        for entry in self.queue.all():
+            if entry.get("state") != LANDED or entry.get("landedTip") != base: continue
+            executions = entry.get("gateExecution")
+            execution = executions.get(self.failed_lane) if isinstance(executions, dict) else None
+            if not isinstance(execution, dict) or execution.get("testedRevision") != base: continue
+            revision = execution.get("toolkitRevision")
+            if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", revision):
+                revisions.add(revision)
+        return next(iter(revisions)) if len(revisions) == 1 else None
+
     def toolkit_comparison(self, base):
-        """Compare the failed lane with a kept pass of the same lane at the exact main base."""
+        """Compare the failed lane with its passing queue gate at base, or a kept whole pass as a weaker lead."""
         if not base or not self.failed_lane or not self.failed_toolkit: return ""
-        with contextlib.suppress(OSError, RuntimeError, subprocess.SubprocessError):
-            kept = remote.passed(self.checkout, self.failed_lane, base)
-            receipt = count_history.lane_receipt(kept)
-            before = clean_gate_toolkit(receipt, base) if receipt.get("outcome") == "passed" else None
+        with contextlib.suppress(KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
+            before = self.landed_gate_toolkit(base)
+            source = "The passing queue gate"
+            if before is None:
+                receipt = count_history.lane_receipt(remote.passed(self.checkout, self.failed_lane, base))
+                if receipt.get("outcome") == "passed": before = clean_gate_toolkit(receipt, base)
+                source = f"A kept passing run of {self.failed_lane}"
             if before and before != self.failed_toolkit and text(self.checkout, "rev-parse", MAIN) == base:
-                return (f" Queuekeeper revision for the failed lane: {self.failed_toolkit}. A kept passing run of "
-                        f"{self.failed_lane} on origin/main at {base[:12]} used {before}.")
+                return (f" Queuekeeper revision for the failed lane: {self.failed_toolkit}. "
+                        f"{source} on origin/main at {base[:12]} used {before}.")
         return ""
 
     def settle_failure(self, entry, log, why, runner=None, **fields):
@@ -6513,6 +6543,7 @@ class Worker:
         if not batch: return False
         if not self.limit: self.bisect_landed = None
         self.early = None
+        self.gate_executions = {}
         self.reused_gates = {}
         passed = [entry for entry in batch if entry["state"] == PASSED] if not self.stacked else []
         if not fetch_main(queue.main_checkout, self.say): return self.first_landing(batch[0])
@@ -6717,6 +6748,7 @@ class Worker:
             return True
         marker = {"batch": [entry["id"]], "attempts": [{"head": tip, "base": None, "at": time.time()}]}
         if self.measured: marker["gate"] = self.measured
+        if self.gate_executions: marker["gateExecution"] = self.gate_executions
         started, retrying = self.publication_callbacks([entry], marker)
         try:
             pushed = reach(self.checkout, "push", "--no-verify", "--force-with-lease=refs/heads/main:", "origin",
@@ -6729,7 +6761,8 @@ class Worker:
         if pushed.returncode == 0:
             git(self.checkout, *FETCH)
             self.say(f"pushed {tip[:12]}, creating main")
-            self.settle_pushed([entry], None, tip, None, None, {}, None, self.measured)
+            self.settle_pushed([entry], None, tip, None, None, {}, None, self.measured,
+                               executions=self.gate_executions)
             return True
         if STALE_LEASE.search(said) and fetch_main(self.queue.main_checkout, self.say):
             self.say(f"main was created while {entry['id']} gated, so its push, which creates main only while there is "
@@ -7817,6 +7850,7 @@ class Worker:
         if flakes: verdict["flakes"] = flakes
         if self.alone: verdict["alone"] = True
         if self.measured: verdict["gate"] = self.measured
+        if self.gate_executions and not docs and not ungated: verdict["gateExecution"] = self.gate_executions
         if self.reused_gates: verdict["reusedGates"] = self.reused_gates
         for entry in batch: self.queue.record(entry, state=PASSED, passed=verdict)
         self.queue.emit("batch.passed", head=head, base=base, entries=verdict["batch"])
@@ -7839,6 +7873,7 @@ class Worker:
         flakes = verdict.get("flakes")
         config = self.settings(base, head)
         self.measured = verdict.get("gate")
+        self.gate_executions = verdict.get("gateExecution", {})
         self.reused_gates = verdict.get("reusedGates", {})
         self.alone = bool(verdict.get("alone"))
         self.say(f"{len(batch)} entr{'y' if len(batch) == 1 else 'ies'} passed at {head[:12]} on {base[:12]}: "
