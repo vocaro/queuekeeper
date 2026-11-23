@@ -103,11 +103,14 @@ def restart(say=print):
     os.execve(sys.executable, [sys.executable, *sys.orig_argv[1:]], {**os.environ, RESTARTED: "1"})
 
 
-def watch(checkout, then, poll=POLL, settle=SETTLE, stop=None):
-    """Start a daemon thread that calls then(old, new) once checkout's HEAD has moved from what it is now and
-    stayed put for settle seconds, and return the thread. stop, an Event, ends it."""
+def watch(checkout, then, poll=POLL, settle=SETTLE, stop=None, *, initial=None):
+    """Call then(old, new) once HEAD differs from its initial reading and stays put for settle seconds.
+
+    A caller that read HEAD before registering can pass that reading as initial. Return the daemon thread.
+    stop, an Event, ends it.
+    """
     stop = stop or threading.Event()
-    first = head(checkout)
+    first = head(checkout) if initial is None else initial
 
     def run():
         while not stop.wait(poll):

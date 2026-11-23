@@ -1088,6 +1088,31 @@ class Command(Fixture):
         self.assertIn("0.0.0.0 is not this Mac alone: every machine that can reach it can read the queue and its logs",
                       errors)
 
+    def test_dashboard_restarts_when_head_moves_before_its_watcher_starts(self):
+        before, after = "a" * 40, "b" * 40
+        revision = before
+
+        def registered(*_args):
+            nonlocal revision
+            revision = after
+
+        with patch.object(server, "make") as make, patch.object(server.signal, "signal"), \
+                patch.object(server.threading, "Thread") as thread, patch("sys.stdout", io.StringIO()) as out, \
+                patch.object(server.restartable, "code_checkout", return_value=self.repo), \
+                patch.object(server.restartable, "head", side_effect=lambda _checkout: revision), \
+                patch.object(server.restartable, "register", side_effect=registered), \
+                patch.object(server.restartable, "unregister"), patch.object(server.restartable, "restart") as restart:
+            make.return_value.server_address = ("127.0.0.1", 8750)
+            self.assertEqual(server.main([], project=self.repo), 0)
+            self.assertEqual(make.return_value.commit, before)
+            watch, = (call.kwargs["target"] for call in thread.call_args_list
+                      if call.kwargs.get("name") == "restartable-watch")
+            with patch.object(threading.Event, "wait", side_effect=[False, True]), \
+                    patch.object(server.restartable.time, "sleep"):
+                watch()
+            restart.assert_called_once_with()
+            self.assertIn(f"moved from {before[:12]} to {after[:12]}", out.getvalue())
+
     def serving(self, made):
         """made, serving on a thread of its own until the test ends or it is shut down."""
         threading.Thread(target=made.serve_forever, daemon=True).start()

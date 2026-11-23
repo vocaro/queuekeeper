@@ -317,7 +317,8 @@ def main(argv, project=None):
             server.server_close()
             restartable.restart()
 
-        restartable.watch(checkout, moved)
+        # The worker can advance HEAD as soon as the registration is visible.
+        restartable.watch(checkout, moved, initial=server.commit)
     # A kill ends it as Ctrl-C does, so that it says it no longer runs (restartable.unregister).
     signal.signal(signal.SIGTERM, stopped)
     # A server that restarted itself has its page open already.
