@@ -97,6 +97,13 @@ assert cli.main(["--version"]) == 0
                                   timeout=host_isolation.stretched(60))
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_remote_host_bootstrap_imports_only_the_standard_library(self):
+        # The sender transmits this program before the receiver has a toolkit checkout or plugins.
+        source = (PACKAGES["queuekeeper"] / "queuekeeper/offload_host.py").read_text()
+        found = [(line, name) for line, name in imports(source, "queuekeeper.offload_host")
+                 if name.split(".", 1)[0] not in sys.stdlib_module_names]
+        self.assertEqual(found, [])
+
     def test_each_plugin_loads_with_only_its_declared_dependencies(self):
         for name, item in COMPONENTS.items():
             names = [name, *item["requires"]]
