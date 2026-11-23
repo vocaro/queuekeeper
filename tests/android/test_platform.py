@@ -175,6 +175,23 @@ class Watch(unittest.TestCase):
         self.assertEqual((seen["watched"], seen["presented"]), (False, 0))
         self.assertIn("off", seen["detail"])
 
+    def test_an_adb_log_watch_uses_the_device_s_serial_and_cleans_up_its_relay(self):
+        with tempfile.TemporaryDirectory() as folder:
+            fake_adb = Path(folder) / "adb"
+            alert = self.EVENTS.splitlines()[2]
+            host_isolation.executable(fake_adb, "#!/bin/sh\n"
+                                      f'[ "$*" = "-s {PIXEL} logcat -b events -v epoch -T 1" ] || exit 2\n'
+                                      f"printf '%s\\n' '{alert}'\n"
+                                      "exec /bin/sleep 60\n")
+            with patch.dict(os.environ, {device_notifications.WATCH: "on"}), \
+                    patch.object(sdk, "tool", return_value=str(fake_adb)):
+                watch = android_platform.PLATFORM.watch(PIXEL)
+                seen = watch.stop()
+            self.assertEqual(seen, {"watched": True, "transport": "adb", "presented": 1,
+                                    "first": "notification_alert from com.chat.app"})
+            self.assertIsNotNone(watch.process.poll())
+            self.assertFalse(Path(watch.path).exists())
+
 
 class Settings(unittest.TestCase):
     def test_the_android_key_takes_a_gradle_project_inside_the_checkout(self):
