@@ -946,6 +946,31 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertFalse(self.devices()["Project iPad Air 13-inch (M4) 1"]["voiceover"])
         self.assert_every_device_returned()
 
+    def test_volume_watch_keeps_the_time_of_its_first_attempt_even_without_a_reading(self):
+        run = matrix.Run(SimpleNamespace(logs=self.root))
+        device = SimpleNamespace(udid="simulator")
+        held = "2026-11-06T00:00:20.000Z"
+        first = "2026-11-06T00:01:30.000Z"
+        unread = "2026-11-06T00:01:35.000Z"
+        event = mock.Mock()
+        event.wait.side_effect = [False, False, True]
+        thread = mock.Mock()
+        watch = SimpleNamespace(Event=lambda: event, Thread=thread)
+        with mock.patch.object(matrix, "threading", watch), \
+             mock.patch.object(matrix.speech, "silence_cues", return_value=True), \
+             mock.patch.object(matrix.speech, "hold_mute", return_value=(20, [])), \
+             mock.patch.object(matrix.speech, "state", side_effect=[RuntimeError("no volume reading"),
+                              {"volume": 0}, {"enabled": False}, {"volume": 0}]), \
+             mock.patch.object(matrix.speech, "now", side_effect=[held, first, unread]) as clock, \
+             mock.patch.object(run, "say") as say:
+            self.assertTrue(run.silence("phone", device, self.root / "phone.log"))
+            with run.heard("phone", device):
+                thread.call_args.kwargs["target"]()
+        self.assertEqual(clock.call_count, 3)
+        self.assertTrue(say.call_args_list[0].args[0].endswith(f"hold ended at {held}"))
+        say.assert_called_with("VOICEOVER phone: 0 lines; VoiceOver off and the volume 0 after the tests; "
+                               f"1 volume checks got no reading; first volume watch check at {first}")
+
     def test_voiceover_whose_cues_cannot_be_switched_off_runs_no_test_on_that_member(self):
         # The iPad's write is taken and the switch still reads unset, so its VoiceOver would play cues.
         status, output = self.run_matrix("--voiceover", FAKE_DEFAULTS_IGNORED="iPad-Air-13-inch-M4")
