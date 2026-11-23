@@ -746,6 +746,29 @@ covers placement and setup as a user sees them; this is the mechanism, in `remot
 `offload_host.py` and `farm.py`. `qk run`, `qk admit`, `qk remote run` and `qk remote admit` all
 send work the same way.
 
+### Checking reads on a farm with several Macs
+
+When the owner has configured two or more other Macs, compare these snapshots from the sending
+Mac. The commands only read the farm list and admission state.
+
+```sh
+qk farm list
+qk admissions now --here --json
+qk admissions now --json
+```
+
+1. With the Macs reachable, check that `hosts` starts with this Mac, followed by every other Mac
+   that takes work in farm order. Check that two Macs of the same model have distinct farm names
+   and IDs, and that both report `observed` when their readings succeed.
+2. If a configured Mac is naturally out of reach, repeat the all-host reading. Its row should
+   be `unknown`, with a reason and `null` for `holders` and `waiters`. Reachable Macs should still
+   have their own observations. Time one invocation with `/usr/bin/time -p`. Compare the extra
+   wait beyond reading this Mac alone with a single remote read budget (currently 10 seconds),
+   allowing for launcher overhead and variation in the local reading.
+3. Keep the snapshots private because they include hardware IDs, SSH destinations and worktree
+   details. In [#207](https://github.com/vocaro/queuekeeper/issues/207), record only how many Macs
+   were observed, elapsed durations, and where the expected behavior differed.
+
 ### Reading a Mac's capacity
 
 Every Mac, this one included, is judged by one test: what its own admission would admit now. The

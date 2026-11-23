@@ -769,6 +769,31 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("build-host: unknown: build-host did not answer") for line in lines))
         self.assertIn("  holders: none", lines)
 
+    def test_a_timed_out_farm_mac_is_read_concurrently_with_two_macs_of_the_same_model(self):
+        macs = [farm_fixture.mac("slow.local", "slow"), farm_fixture.mac("west.local", "west"),
+                farm_fixture.mac("east.local", "east")]
+        started = threading.Barrier(len(macs), timeout=stretched(5))
+        calls = []
+
+        def read(host, budget):
+            calls.append((host, budget))
+            # A serial implementation breaks the barrier. The slowest fake needs no real timeout.
+            started.wait()
+            if host == "slow.local":
+                raise remote.Unreachable("slow.local did not answer", "wake it")
+            return self.reading(mac="Mac17,6")
+
+        report = resources.admissions_now(read_here=self.reading, read_there=read, macs=lambda: macs)
+        here, slow, west, east = report["hosts"]
+        self.assertCountEqual(calls, [(mac["ssh"], remote.ADMISSIONS_BUDGET) for mac in macs])
+        self.assertEqual((here["role"], here["state"]), ("here", "observed"))
+        self.assertEqual((slow["role"], slow["state"], slow["holders"], slow["waiters"]),
+                         ("slow", "unknown", None, None))
+        self.assertIn("slow.local did not answer", slow["reasons"][0])
+        self.assertEqual([(reading["role"], reading["mac"], reading["id"], reading["state"])
+                          for reading in (west, east)],
+                         [(mac["name"], mac["name"], mac["id"], "observed") for mac in macs[1:]])
+
     def test_no_farm_mac_configured_is_no_failure_and_here_reads_this_mac_alone(self):
         asked = []
         found = resources.admissions_now(read_here=self.reading, read_there=lambda *_: asked.append(1),
