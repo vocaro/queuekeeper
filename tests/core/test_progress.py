@@ -143,16 +143,21 @@ class MonitorTests(unittest.TestCase):
                 self.assertEqual(json.loads(status.read_text())["phase"], "ended")
             self.assertFalse(list(Path(directory).glob("*.tmp-*")))
 
-    def test_unreadable_cpu_or_log_cannot_trigger_a_stop(self):
+    def test_a_missing_log_cannot_trigger_a_stop_and_is_recorded_privately(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "missing.log"
             monitor = progress.Monitor({"seconds": 1, "action": "stop"}, log, None)
-            with patch.object(progress, "cpu", return_value=None):
+            with patch.object(progress, "cpu", return_value={1: ("birth", 0)}):
                 for moment in range(4):
                     with patch.object(progress.time, "monotonic", return_value=moment), \
                             patch.object(progress.time, "time", return_value=moment):
                         self.assertIsNone(monitor.observe({1: "birth"}))
             self.assertEqual(monitor.last["state"], "unobservable")
+            retained = json.loads(monitor.status.read_text())
+            self.assertEqual(retained["logUnavailableSamples"], {"missing-log": 4})
+            self.assertEqual(retained["lastLogUnavailable"]["reason"], "missing-log")
+            self.assertIn(str(log), retained["lastLogUnavailable"]["error"])
+            self.assertNotIn("lastLogUnavailable", monitor.last)
 
     def test_cpu_failures_reset_coverage_and_retain_bounded_evidence_only_in_the_receipt(self):
         birth = "Tue Nov 10 12:30:00 2026"
@@ -183,7 +188,7 @@ class MonitorTests(unittest.TestCase):
             evidence = retained["lastCpuUnavailable"]
             self.assertEqual(evidence["reason"], "process-list-timeout")
             self.assertEqual(evidence["requested"], [{"pid": 123, "start": birth}, {"pid": 124, "start": birth}])
-            self.assertEqual(evidence["stderr"], "x" * progress.CPU_DIAGNOSTIC_LIMIT + " [truncated]")
+            self.assertEqual(evidence["stderr"], "x" * progress.DIAGNOSTIC_LIMIT + " [truncated]")
 
     def test_the_final_recheck_can_observe_progress_and_withdraw_a_stop(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -208,8 +213,17 @@ class MonitorTests(unittest.TestCase):
             log = Path(directory) / "run.log"
             log.touch()
             monitor = progress.Monitor({"seconds": 2, "action": "stop"}, log, None)
+            monitor.live_paths = [Path(directory) / "live.json"]
+            write = monitor.write
+
+            def sometimes_unwritable():
+                if progress.time.monotonic() == 1:
+                    raise OSError("x" * 2048 + "private tail")
+                write()
+
             with patch.object(progress, "cpu", return_value={1: ("birth", 0)}), \
-                    patch.object(monitor, "write", side_effect=[None, OSError("unwritable"), None, None, None]), \
+                    patch.object(monitor, "write", side_effect=sometimes_unwritable), \
+                    patch.object(lane_progress, "publish") as publish, \
                     contextlib.redirect_stderr(StringIO()) as error:
                 for moment in range(5):
                     with patch.object(progress.time, "monotonic", return_value=moment), \
@@ -219,6 +233,14 @@ class MonitorTests(unittest.TestCase):
                 self.assertEqual(monitor.last["quietSeconds"], 2)
                 self.assertEqual(monitor.last["unobservableSamples"], 1)
                 self.assertEqual(error.getvalue().count("progress observations unavailable"), 1)
+                self.assertNotIn("private tail", error.getvalue())
+                for call in publish.call_args_list:
+                    self.assertNotIn("lastPublicationFailure", call.args[0])
+                    self.assertNotIn("observationError", call.args[0])
+            retained = json.loads(monitor.status.read_text())
+            self.assertEqual(retained["publicationFailures"], 1)
+            self.assertEqual(retained["lastPublicationFailure"], {
+                "observedAt": 1, "error": "x" * progress.DIAGNOSTIC_LIMIT + " [truncated]"})
 
 
 class LaneTests(unittest.TestCase):

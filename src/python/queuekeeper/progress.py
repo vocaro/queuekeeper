@@ -9,14 +9,14 @@ import time
 # A cadence, not a stopping bound. Three missed cadences invalidate the quiet interval; no
 # conclusion about idleness is made across a host sleep or a delayed/unavailable observation.
 INTERVAL = 1.0
-CPU_DIAGNOSTIC_LIMIT = 1024
+DIAGNOSTIC_LIMIT = 1024
 
 
 def diagnostic_text(value):
     if not value: return ""
-    prefix = value[:CPU_DIAGNOSTIC_LIMIT]
+    prefix = value[:DIAGNOSTIC_LIMIT]
     if isinstance(prefix, bytes): prefix = prefix.decode(errors="replace")
-    return prefix + (" [truncated]" if len(value) > CPU_DIAGNOSTIC_LIMIT else "")
+    return prefix + (" [truncated]" if len(value) > DIAGNOSTIC_LIMIT else "")
 
 
 def cpu(identities, *, unavailable=None):
@@ -97,7 +97,9 @@ class Monitor:
         self.maximum, self.samples, self.unobservable = 0, 0, 0
         self.sampling_gaps = 0
         self.cpu_unavailable_samples, self.last_cpu_unavailable = {}, None
-        self.write_error = None
+        self.log_unavailable_samples, self.last_log_unavailable = {}, None
+        self.publication_failures, self.last_publication_failure = 0, None
+        self.publication_failed = False
         from . import lane_progress
         self.live_paths = lane_progress.destinations(self.run, self.status)
         self.reporter_start = lane_progress.start(os.getpid()) if self.live_paths else None
@@ -114,7 +116,10 @@ class Monitor:
         try:
             stat = self.log.stat()
             output = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-        except OSError:
+        except OSError as error:
+            reason = "missing-log" if isinstance(error, FileNotFoundError) else "log-stat-failed"
+            self.log_unavailable_samples[reason] = self.log_unavailable_samples.get(reason, 0) + 1
+            self.last_log_unavailable = {"reason": reason, "observedAt": wall, "error": diagnostic_text(str(error))}
             output = None
         quiet = self.quiet.sample(now, wall, (readings, output) if readings is not None and output is not None else None)
         if self.quiet.gap:
@@ -180,8 +185,12 @@ class Monitor:
         temporary = self.status.with_name(self.status.name + ".tmp-" + self.run)
         try:
             retained = {**self.last, "samplingGapSamples": self.sampling_gaps,
-                        "cpuUnavailableSamples": self.cpu_unavailable_samples}
+                        "cpuUnavailableSamples": self.cpu_unavailable_samples,
+                        "logUnavailableSamples": self.log_unavailable_samples,
+                        "publicationFailures": self.publication_failures}
             if self.last_cpu_unavailable is not None: retained["lastCpuUnavailable"] = self.last_cpu_unavailable
+            if self.last_log_unavailable is not None: retained["lastLogUnavailable"] = self.last_log_unavailable
+            if self.last_publication_failure is not None: retained["lastPublicationFailure"] = self.last_publication_failure
             temporary.write_text(json.dumps(retained, indent=2) + "\n")
             temporary.replace(self.status)
         except OSError:
@@ -193,15 +202,16 @@ class Monitor:
         try:
             self.write()
         except OSError as error:
-            detail = str(error)
-            if detail != self.write_error:
+            self.publication_failures += 1
+            self.last_publication_failure = {"observedAt": time.time(), "error": diagnostic_text(str(error))}
+            if not self.publication_failed:
                 import sys
-                print(f"supervise: progress observations unavailable: {detail}; no stall stop requested",
+                print("supervise: progress observations unavailable: could not write the retained receipt; "
+                      "no stall stop requested",
                       file=sys.stderr, flush=True)
-            self.write_error = detail
-            self.last["observationError"] = detail
+            self.publication_failed = True
             return False
-        self.write_error = None
+        self.publication_failed = False
         if self.live_paths:
             from . import lane_progress
             lane_progress.publish(self.last, self.live_paths)

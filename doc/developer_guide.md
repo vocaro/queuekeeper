@@ -731,7 +731,11 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   backward or advancing by more than three sampling intervals, even if the sample was also unreadable.
   The receipt also counts unavailable CPU readings by cause under `cpuUnavailableSamples` and
   keeps the latest failure under `lastCpuUnavailable`, with the requested identities, elapsed time
-  and bounded process-list evidence. The live observation leaves these diagnostics in the receipt.
+  and bounded process-list evidence. `logUnavailableSamples` distinguishes a missing log from
+  other errors reading its metadata. A successful receipt write after an error records the count
+  of failed writes under `publicationFailures`. `lastLogUnavailable` and `lastPublicationFailure`
+  keep bounded details of the latest errors. These diagnostics stay in the retained receipt,
+  whose write counts cover only its own publication.
   Stopping rechecks output and CPU, uses the supervisor's TERM and KILL, and reports `Stalled` as
   unmeasured only after the owned tree has ended.
 
