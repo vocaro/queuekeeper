@@ -2336,6 +2336,10 @@ every group that runs it. Such a lane:
 - **has the screen read and logged** as it starts (`queuekeeper: screen: STATE ...`), kept in its
   receipt as `screen`, and read again as `screenAfter` when it ends unmeasured.
 
+A group takes one admission on one Mac. Its screen requirement applies even when only headless
+members are selected, including selection by [changed paths](#gate-lanes-chosen-by-changed-paths).
+To run a headless member under its own requirements, call `qk run MEMBER` directly.
+
 `"display": true` wakes the display and keeps it on, but unlocks nothing. A `"display": true`
 lane whose tests can't measure behind a lock also says `"unlockedScreen": true`; one that can says
 `"unlockedScreen": false`. `qk doctor` warns about a display lane that says neither.

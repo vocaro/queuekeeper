@@ -361,10 +361,11 @@ class AdmissionTests(unittest.TestCase):
 class InheritedAdmissionTests(unittest.TestCase):
     """A generic outer admission cannot promise the nested lane an unlocked console (#366)."""
 
-    def run_lane(self, state, declared=True, explicit=False, group=False):
+    def run_lane(self, state, declared=True, explicit=False, group=False, headless_only=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             marker = root / "ran"
+            headless = root / "headless-ran"
             lane = {"command": [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
                     "resource": "heavy", "timeout": 30}
             if declared: lane["unlockedScreen"] = True
@@ -372,7 +373,10 @@ class InheritedAdmissionTests(unittest.TestCase):
             name = "check"
             if group:
                 name = "group"
-                lanes[name] = {"parallel": ["check"], "resource": "heavy",
+                lanes["headless"] = {"command": [sys.executable, "-c",
+                                                f"from pathlib import Path; Path({str(headless)!r}).touch()"],
+                                     "timeout": 30}
+                lanes[name] = {"parallel": ["check", "headless"], "resource": "heavy",
                                "unlockedScreen": declared}
             (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Nested", "lanes": lanes}))
             with resources.Admission("outer", exclusive=True, timeout=0), \
@@ -382,7 +386,11 @@ class InheritedAdmissionTests(unittest.TestCase):
                     patch.object(cli, "screen_wait", side_effect=AssertionError("nested work waited")), \
                     patch.object(remote, "first", side_effect=AssertionError("nested work was dispatched")), \
                     contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as error:
-                status = cli.main(["--project", str(root), "run", *(["--unlocked-screen"] if explicit else []), name])
+                status = cli.main(["--project", str(root), "run", *(["--unlocked-screen"] if explicit else []),
+                                   name, *(["--", "headless"] if headless_only else [])])
+                if headless_only:
+                    self.assertFalse(marker.exists(), "the unselected screen member ran")
+                    marker = headless
                 return status, marker.exists(), error.getvalue(), screen.call_count
 
     def test_a_declared_nested_lane_runs_only_with_an_unlocked_reading(self):
@@ -406,6 +414,13 @@ class InheritedAdmissionTests(unittest.TestCase):
         for state in ("unlocked", "locked", "unknown"):
             with self.subTest(state=state):
                 status, ran, error, reads = self.run_lane(state, group=True)
+                self.assertEqual((status, ran), (0, True) if state == "unlocked" else (resources.BUSY, False), error)
+                self.assertEqual(reads, 1)
+
+    def test_selecting_only_a_headless_member_keeps_the_nested_groups_screen_requirement(self):
+        for state in ("locked", "unlocked"):
+            with self.subTest(state=state):
+                status, ran, error, reads = self.run_lane(state, group=True, headless_only=True)
                 self.assertEqual((status, ran), (0, True) if state == "unlocked" else (resources.BUSY, False), error)
                 self.assertEqual(reads, 1)
 
