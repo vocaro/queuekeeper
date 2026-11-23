@@ -85,6 +85,23 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(config.plugins_of(root), [])
             self.assertEqual(config.plugins_of(root / "none"), [])
 
+    def test_environment_inputs_accept_distinct_shell_variable_names_on_a_lane(self):
+        def settings(names, group=False):
+            lanes = {"purchases": {"command": ["./wrapper"]}}
+            target = lanes.setdefault("group", {"parallel": ["purchases"]}) if group else lanes["purchases"]
+            target["environmentInputs"] = names
+            return config.parse(json.dumps({"schemaVersion": 1, "name": "Example", "lanes": lanes}))
+
+        names = ["PROJECT_SIM_RUNTIME", "_wrapperFlag2"]
+        self.assertEqual(settings(names)["lanes"]["purchases"]["environmentInputs"], names)
+        invalid = (None, [], "SETTING", ["SETTING", "SETTING"], ["SETTING", {}], ["SETTING=value"],
+                   ["SETTING*"], ["3SETTING"], ["SETTING\n"])
+        for names in invalid:
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, r"purchases\.environmentInputs"):
+                settings(names)
+        with self.assertRaisesRegex(ValueError, "Lane group group takes only"):
+            settings(["PROJECT_SIM_RUNTIME"], group=True)
+
     def test_the_schema_lists_the_lane_and_group_keys_config_accepts(self):
         # vocaro-engineering#248: config took unlockedScreen, and lane groups, while the schema refused them.
         def drift(schema):

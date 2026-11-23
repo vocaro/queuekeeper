@@ -906,6 +906,56 @@ class RemoteTests(unittest.TestCase):
                     self.assertEqual(error.count(notice), expected, error)
         self.assertIn("has setting", (self.project / ".build/queuekeeper/remote/assigned/run.log").read_text())
 
+    def test_a_remote_wrapper_names_its_declared_caller_settings_without_sending_them(self):
+        variable = "PROJECT_SIM_RUNTIME"
+        sentinel = "caller-runtime-should-stay-here"
+        # Model the SSH login boundary, since the fake ssh is a process on this Mac.
+        host_isolation.executable(self.tools / "ssh", FAKE_SSH.replace(
+            "exec env -u QUEUEKEEPER_SCREEN_IOREG", f"exec env -u {variable} -u QUEUEKEEPER_SCREEN_IOREG"))
+        host_isolation.executable(self.project / "wrapper", f"#!/bin/sh\n"
+                                  f"if [ -n \"${{{variable}+set}}\" ]; then echo 'has runtime setting'; "
+                                  "else echo 'uses default runtime'; fi\n")
+        settings = json.loads((self.project / "queuekeeper.json").read_text())
+        settings["plugins"] = []
+        wrapper = {"command": ["./wrapper"], "environmentInputs": [variable, "QK_EMPTY_SETTING", "QK_NOT_SET"]}
+        settings["lanes"].update({
+            "purchases": wrapper,
+            "failed-build": {**wrapper, "compileFirst": ["/usr/bin/false"]},
+            "blocked": {**wrapper, "command": [sys.executable, "-c", "raise SystemExit(75)"]},
+            "group": {"parallel": ["purchases", "check", "blocked"]},
+        })
+        (self.project / "queuekeeper.json").write_text(json.dumps(settings))
+        commit_all(self.project)
+        notice = "without sending this Mac's environment variables"
+        with patch.object(remote.plugins, "REMOTE_ENVIRONMENT", []), \
+                patch.dict(os.environ, {variable: sentinel, "QK_NOT_DECLARED": "unused", "QK_EMPTY_SETTING": ""}):
+            os.environ.pop("QK_NOT_SET", None)
+            status, output, error = self.qk("remote", "run", "purchases")
+            self.assertEqual(status, 0, output + error)
+            self.assertEqual(error.count(notice), 1, error)
+            self.assertIn(f"{notice} {variable}, QK_EMPTY_SETTING;", error)
+            self.assertIn("qk run --here purchases", error)
+            self.assertNotIn(sentinel, output + error)
+            remote_run = self.project / ".build/queuekeeper/remote/purchases"
+            self.assertIn("uses default runtime", (remote_run / "run.log").read_text())
+            self.assertNotIn(sentinel, (remote_run / "source.json").read_text())
+
+            for member, expected, warned in [("check", 0, False), ("purchases", 0, True), ("blocked", 75, False)]:
+                with self.subTest(member=member):
+                    status, output, error = self.qk("remote", "run", "group", "--", member)
+                    self.assertEqual(status, expected, output + error)
+                    self.assertEqual(notice in error, warned, error)
+
+            status, output, error = self.qk("remote", "run", "failed-build")
+            self.assertEqual(status, 1, output + error)
+            self.assertEqual(self.slot_receipt("failed-build")["result"]["receipt"]["outcome"], "build-failed")
+            self.assertNotIn(notice, error)
+
+            status, output, error = self.run_here("--here", "purchases")
+            self.assertEqual(status, 0, output + error)
+            self.assertNotIn(notice, error)
+            self.assertIn("has runtime setting", (self.project / ".build/queuekeeper/purchases/run.log").read_text())
+
     def test_a_lane_runs_at_the_commit_on_the_farm_mac_after_its_provision_lane(self):
         status, output, error = self.qk("remote", "run", "check")
         self.assertEqual(status, 0, output + error)
@@ -7428,6 +7478,21 @@ class DispatchResultsTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name) / "remote"
+
+    def test_dropped_environment_needs_a_work_receipt_and_omits_the_xcode_selection_sent_in_the_plan(self):
+        variable = "PROJECT_SIM_RUNTIME"
+        developer = "/Applications/Xcode.app/Contents/Developer"
+        config = {"lanes": {"wrapper": {"command": ["./wrapper"],
+                                       "environmentInputs": [variable, "DEVELOPER_DIR"]}}}
+        with patch.dict(os.environ, {variable: "runtime", "DEVELOPER_DIR": developer}):
+            receipt = {"outcome": "passed"}
+            self.assertEqual(remote.dropped_environment(config, "wrapper", {"stage": "work", "receipt": receipt},
+                                                         developer), [variable])
+            early = ({"stage": "provision", "receipt": receipt}, {"stage": "work"},
+                     {"stage": "work", "receipt": {"outcome": "not-started"}})
+            for result in early:
+                with self.subTest(result=result):
+                    self.assertEqual(remote.dropped_environment(config, "wrapper", result, developer), [])
 
     def staged(self, label):
         staging = self.base / f".admit.{label}"

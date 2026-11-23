@@ -1605,18 +1605,25 @@ def group_files(config, lane):
     return [f"lanes/{member}{suffix}" for member in members for suffix in (".log", ".json")] if members else None
 
 
-def dropped_environment(config, lane, result):
-    """Names of caller variables relevant to the lane or members that ran on another Mac."""
+def dropped_environment(config, lane, result, developer):
+    """Names of caller variables relevant to the lane or members attempted on another Mac."""
     receipt = result.get("receipt") or {}
-    if not plugins.REMOTE_ENVIRONMENT or result.get("stage") != "work" or not receipt:
+    if result.get("stage") != "work" or not receipt:
         return []
     lanes = config.get("lanes", {})
     ran = receipt.get("lanes", {lane: receipt})
-    names = tuple(os.environ)
-    return sorted({name for member, outcome in ran.items()
-                   if member in lanes and outcome.get("outcome") not in
-                   ("not-run", "not-started", "build-failed", parallel.NOT_SELECTED, parallel.CUT_SHORT)
-                   for relevant in plugins.REMOTE_ENVIRONMENT for name in relevant(lanes[member], names)})
+    # The selected Xcode directory travels separately in the dispatch plan.
+    names = tuple(name for name in os.environ if name != "DEVELOPER_DIR" or os.environ[name] != developer)
+    dropped = set()
+    for member, outcome in ran.items():
+        if member not in lanes or outcome.get("outcome") in (
+                "not-run", "not run", "not-started", "build-failed", parallel.NOT_SELECTED, parallel.CUT_SHORT):
+            continue
+        settings = lanes[member]
+        dropped.update(name for name in settings.get("environmentInputs", ()) if name in names)
+        for relevant in plugins.REMOTE_ENVIRONMENT:
+            dropped.update(relevant(settings, names))
+    return sorted(dropped)
 
 
 def asleep():
@@ -2335,8 +2342,8 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     status = result["exitStatus"]
     remote = result["host"]
     if lane is not None and not (sent or {}).get("saidDroppedEnvironment"):
-        if dropped := dropped_environment(config, lane, result):
-            print(f"remote: {lane} ran on {called(host)} without sending this Mac's environment variables "
+        if dropped := dropped_environment(config, lane, result, developer):
+            print(f"remote: {lane} was dispatched to {called(host)} without sending this Mac's environment variables "
                   f"{', '.join(dropped)}; use a lane argument after -- if the runner takes one, or "
                   f"qk run --here {lane} to use this Mac's environment", file=sys.stderr, flush=True)
             if sent is not None: sent["saidDroppedEnvironment"] = True

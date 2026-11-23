@@ -153,7 +153,8 @@
                 "timing",
                 "notice",
                 "disk",
-                "inputs"
+                "inputs",
+                "environmentInputs"
               ]
             }
           },
@@ -215,6 +216,16 @@
             "items": {
               "type": "string",
               "minLength": 1
+            }
+          },
+          "environmentInputs": {
+            "description": "Caller environment variable names the lane's command reads. After a remote attempt at the lane's command, Queuekeeper warns when the calling shell set a listed name that the dispatch omitted. The setting adds a warning only. Set it on the member lane of a group",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
             }
           },
           "resource": {

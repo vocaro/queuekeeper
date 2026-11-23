@@ -2154,6 +2154,13 @@ the path to its toolkit package from its checkout on that Mac. For commands sent
 Use `qk admit --here -- COMMAND` when the command depends on this shell's environment. A value
 supplied by a plugin takes precedence over the shell's value on either Mac.
 
+A lane whose wrapper reads caller settings can list them by name in `queuekeeper.json`, for
+example `"environmentInputs": ["PROJECT_SIM_RUNTIME"]`. After a remote attempt at the lane's
+command, Queuekeeper warns about listed settings the sending shell set and the dispatch omitted.
+The notice gives names only. For a lane group, put `environmentInputs` on each member that reads
+the settings. Use a runner argument after `--` to supply a setting on another Mac, or
+`qk run --here LANE` to use the local value.
+
 The Apple plugin names caller-set `TEST_RUNNER_` variables after an applicable remote lane runs.
 This covers lanes that invoke `xcodebuild test`, `xcodebuild test-without-building`, or
 `qk simulator-tests` directly and lanes that declare `idioms`. The notice gives names only.
