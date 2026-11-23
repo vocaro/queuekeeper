@@ -18,7 +18,7 @@ bundleUnread and the output say; and 1 when nothing could be written or NAME is 
 A result bundle is never copied, and nothing is kept outside the lane's results/, whose rules bound it.
 """
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 from functools import partial
 import json
 import os
@@ -127,25 +127,30 @@ def history(root, lane, test, out=print):
     except (OSError, RuntimeError) as error:
         print(f"queuekeeper results: cannot read the project's retained results: {error}", file=sys.stderr)
         return 1
-    outcomes = Counter()
+    outcomes = defaultdict(Counter)
     for folder in folders:
         for path in sorted(folder.rglob(f"{matrix.KEPT}/*.json")):
             try:
                 record = json.loads(path.read_text())
                 if not isinstance(record, dict): raise ValueError("expected a result record")
                 if record.get("keptBy") not in (KEPT_BY, "qk simulator-tests") or record.get("bundleUnread"): continue
-                found = [(case["outcome"], case_line(str(path.relative_to(folder)), case))
+                found = [(case.get("identifierURL"), case["outcome"], case_line(str(path.relative_to(folder)), case))
                          for case in record["tests"] if test in (case["test"], case.get("identifierURL"))]
             except (OSError, ValueError, KeyError, TypeError) as error:
                 out(f"queuekeeper: {path} could not be read: {error!r}")
                 continue
-            for outcome, line in found:
-                outcomes[outcome] += 1
+            for identity, outcome, line in found:
+                key = identity if isinstance(identity, str) and identity else None
+                outcomes[key][outcome] += 1
                 out(f"{folder.parent.name[:12]} {line}")
-    if outcomes:
-        out(f"{lane}: " + ", ".join(f"{outcomes[outcome]} {outcome}" for outcome in OUTCOMES))
-    else:
+    separate = len(outcomes) > 1
+    if not outcomes:
         out(f"{lane}: no retained result names {test}")
+    elif separate:
+        out(f"{lane}: retained observations for {test} have different recorded identities")
+    for identity, counts in sorted(outcomes.items(), key=lambda item: item[0] or ""):
+        heading = f"{lane} ({identity or 'without an identifier URL'})" if separate else lane
+        out(f"{heading}: " + ", ".join(f"{counts[outcome]} {outcome}" for outcome in OUTCOMES))
     out("Showing the latest kept results of each retained commit. The queue records proven flakes separately.")
     return 0
 

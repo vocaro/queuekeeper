@@ -176,11 +176,18 @@ class KeepTests(unittest.TestCase):
                 {"test": "Smoke/testBroken()", "outcome": "passed", "seconds": 4},
             ],
         }))
-        lines = []
+        lines, by_name = [], []
         with patch.object(run_results.remote, "store", return_value=self.root):
             self.assertEqual(run_results.history(self.root, "ios-tests", identity, lines.append), 0)
+            self.assertEqual(run_results.history(self.root, "ios-tests", "Smoke/testBroken()", by_name.append), 0)
         self.assertIn("aaaaaaaaaaaa simulator-tests/device.json: failed 2.000s Smoke/testBroken()", lines)
         self.assertIn("ios-tests: 0 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured", lines)
+        self.assertIn("ios-tests: retained observations for Smoke/testBroken() have different recorded identities", by_name)
+        self.assertIn(f"ios-tests ({identity}): 0 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured", by_name)
+        self.assertIn(f"ios-tests ({other}): 1 passed, 0 failed, 0 skipped, 0 expected failure, 0 unmeasured", by_name)
+        self.assertIn("ios-tests (without an identifier URL): 1 passed, 0 failed, 0 skipped, 0 expected failure, 0 unmeasured",
+                      by_name)
+        self.assertFalse(any(line.startswith("ios-tests: 2 passed") for line in by_name))
 
     def test_a_failed_run_keeps_the_same_record_with_its_status(self):
         identity = "test://com.apple.xcode/Example/UI/Smoke/testBroken"
