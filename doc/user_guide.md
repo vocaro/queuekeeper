@@ -2042,6 +2042,12 @@ A placement line says where a lane went and why, for example
 `queuekeeper: trying LANE on this Mac: this Mac has the most headroom ...`, and a refusal names
 its cause and where the Mac sets that limit.
 
+Even a short gate shares this admission policy. A lane's `timeout` bounds its work after
+admission. If the admission wait expires first, the command has not started. The merge queue
+handles that attempt under its [no-verdict retry rules](#no-verdict-is-not-a-failure). While the
+gate is waiting, `qk queue status` shows its current blocker. For past waits, use the
+[admission wait breakdown](#who-holds-and-who-waits).
+
 **Lanes that stay on this Mac:**
 
 - `qk run provision`, which prepares the checkout in hand. `qk remote run provision` explicitly
