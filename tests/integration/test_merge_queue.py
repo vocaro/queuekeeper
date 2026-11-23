@@ -5938,6 +5938,32 @@ class LaneThatCannotStart(Fixture):
 class UnprovisionedWhereTheGateRuns(Fixture):
     """A queue gate provisions its own checkout, and a provision failure there is the Mac's environment (#19)."""
 
+    def test_a_docs_only_batch_provisions_its_admitted_check_after_the_quick_checks(self):
+        config = self.config()
+        (self.repo / ".git/info/exclude").write_text(".build/\n")
+        steps = self.base / "steps"
+        config["lanes"]["check"] = {"command": ["python3", "-c", (
+            "from pathlib import Path; assert not Path('.build/provisioned').exists(); "
+            f"Path({str(steps)!r}).open('a').write('check\\n')")]}
+        config["lanes"]["provision"] = {"command": ["python3", "-c", (
+            "from pathlib import Path; Path('.build/provisioned').touch(); "
+            f"Path({str(steps)!r}).open('a').write('provision\\n')")]}
+        config["lanes"]["examples"] = {"command": ["python3", "-c", (
+            "from pathlib import Path; assert Path('.build/provisioned').exists(); "
+            f"Path({str(steps)!r}).open('a').write('examples\\n')")], "here": "test runs in the worker checkout"}
+        config["queue"]["preflight"] = ["check"]
+        config["queue"]["unread"]["paths"]["doc/examples.md"] = {"why": "only the example check reads it",
+                                                                  "lanes": ["examples"]}
+        self.publish(config, "Add a provisioned documentation check")
+        self.commit("doc/examples.md", "examples", content="# Examples\n")
+        [identifier] = self.add("examples")
+        with contextlib.redirect_stdout(io.StringIO()) as said: self.work()
+        state = self.state(identifier)
+        self.assertEqual(state["state"], "landed", said.getvalue())
+        self.assertEqual(state["docsOnly"], ["check", "docs", "examples"])
+        self.assertEqual(steps.read_text(), "check\nprovision\nexamples\n")
+        self.assertEqual(self.gates(), 0)
+
     def test_a_code_batch_provisions_the_gate_checkout_only_once(self):
         config = self.config()
         (self.repo / ".git/info/exclude").write_text(".build/\n")

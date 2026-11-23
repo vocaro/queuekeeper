@@ -181,6 +181,10 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   passes `DOCS_CHECK_LIMIT` (60 s) runs again admitted. `qk run` provisions the checkout that
   runs each admitted lane. An ordinary code round needs no separate provision pass in the
   worker checkout, which may be on a different Mac from the gate.
+  In a docs-only round, quick checks run directly on the checked-out files. If a documentation
+  check needs provisioned inputs, give it its own lane outside `queue.preflight` and name that
+  lane for the relevant paths in `queue.unread.paths`. `qk run` provisions its checkout after
+  admission.
 - **Pushing.** On a pass the worker pushes exactly the commits it tested, each with its own message
   and author, after the pre-push hook (below). A project with `app` then starts
   `qk app keep --after-landing` in the background.
