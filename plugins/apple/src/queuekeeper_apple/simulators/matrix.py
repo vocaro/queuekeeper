@@ -64,6 +64,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -282,12 +283,35 @@ def selecting(argument):
 
 
 def enumerated(listing):
-    """(enabled test ids, units with a disabled test) from xcodebuild -enumerate-tests' flat JSON."""
-    enabled, partial = [], set()
+    """(enabled test IDs, disabled test IDs) from xcodebuild -enumerate-tests' flat JSON."""
+    enabled, disabled = [], set()
     for value in listing.get("values", []):
         enabled += [test["identifier"] for test in value.get("enabledTests", [])]
-        partial |= {unit(test["identifier"]) for test in value.get("disabledTests", [])}
-    return enabled, partial
+        disabled.update(test["identifier"] for test in value.get("disabledTests", []))
+    if any(not isinstance(test, str) for test in (*enabled, *disabled)):
+        raise ValueError("Xcode test identifiers must be strings")
+    return enabled, disabled
+
+
+METHOD_SELECTOR = re.compile(r"-only-testing:((?:[^/]+/){2,}[^/()]+)")
+
+
+def selector_corrections(arguments, disabled):
+    """Shell words for omitted Swift Testing parentheses, corroborated by a zero-match listing."""
+    skipped = [argument.removeprefix("-skip-testing:") for argument in arguments
+               if argument.startswith("-skip-testing:")]
+    for argument in dict.fromkeys(arguments):
+        match = METHOD_SELECTOR.fullmatch(argument)
+        if not match:
+            continue
+        name = match[1]
+        corrected = f"{name}()"
+        if corrected not in disabled or name in disabled:
+            continue
+        if any(test != corrected and test.startswith((name + "/", name + "(")) for test in disabled):
+            continue  # A suite or an overloaded method could be what the caller meant.
+        if not any(corrected == scope or corrected.startswith(scope + "/") for scope in skipped):
+            yield shlex.quote(f"-only-testing:{corrected}")
 
 
 def unit(identifier):
@@ -909,7 +933,10 @@ class Run:
             return self.finish(kind, 1, f"the tests failed with status {status}, {counted}", log, seconds)
         if executed == 0 and not unmeasured:
             # A filter that selects nothing, or only ordinary skips, passes xcodebuild and establishes nothing.
-            return self.finish(kind, 1, f"no tests ran ({counted})", log, seconds)
+            self.finish(kind, 1, f"no tests ran ({counted})", log, seconds)
+            if not skipped and any(METHOD_SELECTOR.fullmatch(argument) for argument in passed):
+                self.listed(device, xctestrun)
+            return
         # The wrapper's "Executed N tests" is what a lane counts: the device's own totals are in its log.
         self.finish(kind, lane_results.UNMEASURED if unmeasured else 0, counted, log, seconds)
         if unmeasured: self.say(*unmeasured)
@@ -917,6 +944,7 @@ class Run:
     def listed(self, device, xctestrun):
         """(enabled test ids, partial units) for the run's selection, listed once, on the first member to ask.
 
+        Shards use the listing to assign tests. An ordinary run uses it only to diagnose an empty result.
         The shards start as soon as the listing is written: the xcodebuild that wrote it can outlive it by
         a minute and a half while its leftover programs are stopped (EPUBLib, 2026-11-05, 95 s), and is
         waited for at the run's end (listing_done). It has a derived data folder and result bundle of its
@@ -934,24 +962,38 @@ class Run:
                        "-resultBundlePath", str(bundle), *[a for a in self.args.passed if selecting(a)]]
             ended = []
             def enumerate_tests():
-                try: ended.append(processes.run(command, cwd=Path.cwd(), log_path=log, timeout=self.args.test_timeout))
+                timeout = self.args.test_timeout if self.args.shards else min(self.args.test_timeout, 60)
+                try: ended.append(processes.run(command, cwd=Path.cwd(), log_path=log, timeout=timeout))
                 except Exception as error: ended.append(error)
                 finally:
                     for folder in (scratch, bundle): shutil.rmtree(folder, ignore_errors=True)
             self.listing_thread = threading.Thread(target=enumerate_tests, daemon=True)
             self.listing_thread.start()
-            listing = None
-            while listing is None:
-                try: listing = enumerated(json.loads(path.read_text()))
-                except (OSError, ValueError):
-                    if not self.listing_thread.is_alive():
-                        # Ended: one last read, in case it wrote the file as it ended.
-                        try: listing = enumerated(json.loads(path.read_text())) if ended == [0] else ([], set())
-                        except (OSError, ValueError): listing = ([], set())
-                    else: time.sleep(0.5)
-            self.listing = listing
-            self.say(f"LISTED {len(self.listing[0])} tests to share among {self.args.shards} members of each device; "
-                     f"log: {log}")
+            while True:
+                running = self.listing_thread.is_alive()
+                try:
+                    data = json.loads(path.read_text()) if running or ended == [0] else {}
+                    enabled, disabled = enumerated(data)
+                    break
+                except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                    if not running:
+                        data, enabled, disabled = {}, [], set()
+                        break
+                    time.sleep(0.5)
+            self.listing = enabled, {unit(test) for test in disabled}
+            if self.args.shards:
+                self.say(f"LISTED {len(enabled)} tests to share among {self.args.shards} members of each device; "
+                         f"log: {log}")
+            if not enabled and not data.get("errors"):
+                hints = [f"NO TESTS SELECTED: try the Swift Testing selector {selector}"
+                         for selector in selector_corrections(self.args.passed, disabled)]
+                if hints:
+                    self.say(*hints)
+            if not self.args.shards:
+                # The diagnostic can be displayed while xcodebuild exits, but still owns this destination.
+                self.listing_done()
+                if ended and isinstance(ended[0], (processes.Interrupted, processes.Unconfirmed)):
+                    raise ended[0]
             return self.listing
 
     def listing_done(self):

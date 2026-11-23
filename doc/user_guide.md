@@ -1359,6 +1359,8 @@ qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
   and derived data.
 - Arguments after `--` go to every device's test run. A lane that runs `qk simulator-tests` ends
   its command with `--`, so `qk run LANE -- -only-testing:T/C` lands there.
+  If a filter omits the parentheses of an unambiguous Swift Testing method and matches nothing,
+  the failed run uses Xcode's test listing to print the shell-quoted selector to retry.
 - `-C DIRECTORY`, `--xcode-project` or `--workspace` say where the scheme is; `--setting NAME=VALUE`
   adds a build setting. `--build-only` builds and tests nothing, to warm a build a later run reuses.
 - Counts come from each device's result bundle. A passing Swift Testing test with canceled

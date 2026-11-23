@@ -1379,6 +1379,57 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertFalse([call for call in self.calls() if "-enumerate-tests" in call])
         self.assertFalse([a for call in self.shard_runs() for a in call if a.startswith("-only-testing")])
 
+    def test_zero_match_lists_disabled_methods_and_suggests_the_exact_selector_once(self):
+        status, output = self.run_matrix("--", "-only-testing:T/A/testA",
+                                         FAKE_TESTS=json.dumps(self.SHARDED))
+        self.assertEqual(status, 1, output)
+        self.assertEqual(output.count("try the Swift Testing selector '-only-testing:T/A/testA()'"), 1, output)
+        self.assertEqual(len(self.shard_runs()), 2)
+        self.assertEqual(len([call for call in self.calls() if "-enumerate-tests" in call]), 1)
+        self.assert_every_device_returned()
+
+    def test_sharded_zero_match_uses_the_existing_listing_before_any_test_runs(self):
+        status, output = self.run_matrix("--shards", "2", "--", "-only-testing:T/A/testA",
+                                         FAKE_TESTS=json.dumps(self.SHARDED))
+        self.assertEqual(status, 1, output)
+        self.assertIn("try the Swift Testing selector '-only-testing:T/A/testA()'", output)
+        self.assertIn("no tests were listed", output)
+        self.assertFalse(self.shard_runs())
+        self.assertEqual(len([call for call in self.calls() if "-enumerate-tests" in call]), 1)
+        self.assert_every_device_returned()
+
+    def test_without_shards_valid_xctest_suite_and_parameterized_selectors_need_no_listing(self):
+        status, output = self.run_matrix("--", "-only-testing:T/A/testLegacy", "-only-testing:T/B",
+                                         "-only-testing:T/C/testValue(label:)",
+                                         FAKE_TESTS='["T/A/testLegacy", "T/B/testSuite()", "T/C/testValue(label:)"]')
+        self.assertEqual(status, 0, output)
+        self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
+        self.assertFalse([call for call in self.calls() if "-enumerate-tests" in call])
+
+    def test_a_stale_listing_does_not_supply_a_hint_when_current_enumeration_fails(self):
+        logs = self.root / ".build/simulator-tests/logs"
+        logs.mkdir(parents=True)
+        (logs / "enumerated.json").write_text(json.dumps({"values": [{
+            "enabledTests": [], "disabledTests": [{"identifier": "T/A/testA()"}]}]}))
+        status, output = self.run_matrix("--", "-only-testing:T/A/testA",
+                                         FAKE_TESTS=json.dumps(self.SHARDED), FAKE_ENUMERATE_FAIL="1")
+        self.assertEqual(status, 1, output)
+        self.assertNotIn("try the Swift Testing selector", output)
+        self.assertIn("no tests ran", output)
+
+    def test_selector_corrections_leave_exact_suite_skipped_and_ambiguous_methods_alone(self):
+        for selector, methods, extra in (
+            ("T/A/test", {"T/A/test", "T/A/test()"}, []),
+            ("T/A", {"T/A/test()"}, []),
+            ("T/A/Nested", {"T/A/Nested()", "T/A/Nested/test()"}, []),
+            ("T/A/test(label:)", {"T/A/test()"}, []),
+            ("T/A/test", {"T/A/test(label:)"}, []),
+            ("T/A/test", {"T/A/test()", "T/A/test(label:)"}, []),
+            ("T/A/test", {"T/A/test()"}, ["-skip-testing:T/A"]),
+        ):
+            with self.subTest(selector=selector, methods=methods, extra=extra):
+                self.assertEqual(list(matrix.selector_corrections([f"-only-testing:{selector}", *extra], methods)), [])
+
     def test_a_runs_own_selection_is_listed_and_a_partly_chosen_unit_is_shared_test_by_test(self):
         status, output = self.run_matrix("--shards", "2", "--", "-skip-testing:T/A/testB()", "-skip-testing:T/D",
                                          FAKE_TESTS=json.dumps(self.SHARDED))
