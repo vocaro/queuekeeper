@@ -5617,6 +5617,34 @@ class LaneLabelTests(unittest.TestCase):
         self.marker(root, lane, "released").touch()
         self.assertEqual(run.wait(timeout=stretched(30)), 0)
 
+    def test_fresh_local_whole_lane_wait_identifies_the_configured_lane(self):
+        suite = {"command": self.QUICK}
+        root = self.project("Beta", suite=suite, local={**suite, "here": "it needs a local input"},
+                            gate={"parallel": ["suite", "local"]})
+        self.hold(0, 1, 2)
+        original = resources.Admission._unobserve
+        observed = []
+
+        def unobserve(admission):
+            try:
+                waiter, = offload_host.admissions_now()["waiters"]
+                observed.append(waiter.get("lane"))
+            finally:
+                original(admission)
+
+        cases = [
+            (("--here", "suite"), "suite"),
+            (("local",), "local"),
+            (("--here", "suite", "--", "filter"), None),
+            (("--here", "gate"), None),
+        ]
+        with patch.object(resources.Admission, "_unobserve", unobserve):
+            for words, identity in cases:
+                with self.subTest(words=words):
+                    status, error = self.run_lane(root, "--if-free", *words)
+                    self.assertEqual(status, resources.BUSY, error)
+                    self.assertEqual(observed.pop(), identity)
+
     def test_a_request_waiting_behind_another_projects_lane_names_that_project(self):
         alpha = self.project("Alpha", generate={"command": self.held("Alpha", "generate"), "resource": "heavy", "model": True},
                              gate={"command": self.QUICK, "resource": "exclusive"})

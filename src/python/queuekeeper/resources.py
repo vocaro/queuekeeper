@@ -970,7 +970,7 @@ class AdmissionRecordError(RuntimeError):
 
 class Admission:
     def __init__(self, label, exclusive=False, timeout=5400, model=False, whole_host=False, place=None, placement=None,
-                 supervised=False):
+                 supervised=False, *, wait_lane=None):
         self.label, self.exclusive, self.timeout = label, exclusive, timeout
         # Whether this process starts every command of the admission through processes.supervise, as qk admit, qk run
         # and the resource CLI do, so that supervision records each before it starts it: then an entry whose record
@@ -1002,6 +1002,7 @@ class Admission:
         # named, not "this Mac": another Mac's refusal is relayed to the Mac that offered it the work.
         from . import offload_host
         self.said = limits_words(found, offload_host.mac_name())
+        self.wait_lane = offload_host.wait_lane_name(wait_lane)
         # The CPU's busy share, read over about BUSY_WINDOW seconds, shows a new job only once it has started work.
         self.settle = float(found["settleSeconds"][0])
         self.poll = float(os.environ.get("HEAVY_POLL_SECONDS", "1"))
@@ -1092,6 +1093,7 @@ class Admission:
                       "model": self.model, "queuedAt": self.ordered, "startedAt": time.time() - waited,
                       "sampledAt": time.time(), "waited": round(waited, 3), "refusal": self.refusal,
                       "reason": self.waiting, **({"origin": self.origin} if self.origin else {})}
+            if self.wait_lane: record["lane"] = self.wait_lane
             with tempfile.NamedTemporaryFile("w", dir=folder, prefix=f".{self.identity}.", delete=False) as stream:
                 staged = Path(stream.name)
                 json.dump(record, stream)

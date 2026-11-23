@@ -218,6 +218,19 @@ class HoldersTests(Namespace):
         # A place kept while its process is away, and a waiter whose own record says why, though the queue lacks it.
         self.assertEqual((found["Waiter"]["away"], found["Waiter"]["holdsBack"]), (True, False))
         self.assertEqual((found["Asking"]["reason"], found["Asking"]["queued"]), ("all 2 guaranteed slots are busy", False))
+        self.assertNotIn("lane", found["Asking"])
+
+    def test_waiter_lane_requires_a_fresh_verified_sample_with_a_whole_name(self):
+        at = 200.0
+        for name, sampled, process, expected in [("ios-tests", at, "running", "ios-tests"),
+                                                  ("ios-tests", at - 31, "running", None),
+                                                  ("ios-tests", at, "unknown", None),
+                                                  ("x" * 161, at, "running", None),
+                                                  ("other/path", at, "running", None)]:
+            with self.subTest(name=name, sampled=sampled, process=process):
+                record = {"lane": name, "sampledAt": sampled}
+                result = offload_host.waiter_reading({}, record, "ordinary", None, process, at, 15)
+                self.assertEqual(result.get("lane"), expected)
 
     def test_a_place_said_to_wait_still_reads_as_away_and_holding_since_it_last_asked(self):
         """vocaro/queuekeeper#160: a place its caller keeps holding during an offer (resources.Place.still_waiting) is

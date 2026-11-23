@@ -2526,6 +2526,12 @@ def admissions_now(at=None):
     return bounded(reading)
 
 
+def wait_lane_name(name):
+    """A bounded lane name, kept whole because a truncated label cannot identify a lane."""
+    if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,159}", name): return name
+    return None
+
+
 def waiter_reading(waiter, record, kind, position, process, at, hold):
     """One waiting request: from its queue record and its own observation record, either of which may be missing. A
     queued request without a record is a place kept while its process is away, such as offering its work to another
@@ -2542,6 +2548,8 @@ def waiter_reading(waiter, record, kind, position, process, at, hold):
     if queued_at is not None: total = max(0.0, at - queued_at)
     elif waited is not None and sampled is not None: total = max(0.0, waited + at - sampled)
     else: total = None
+    lane = wait_lane_name(record.get("lane")) if (process == "running" and not waiter.get("heldFor")
+                                                  and sampled is not None and 0 <= at - sampled <= NOW_STALE) else None
     return {"identity": waiter.get("identity") or record.get("identity"), "request": record.get("request"), "kind": kind,
             "model": record.get("model") is True, "label": str(waiter.get("label") or record.get("label") or "an unnamed request")[:160],
             "pid": waiter.get("pid") if type(waiter.get("pid")) is int else record.get("pid"), "process": process,
@@ -2553,7 +2561,7 @@ def waiter_reading(waiter, record, kind, position, process, at, hold):
             # before its first refusal; one that has not is away, its place kept.
             "away": not record and (kept or seen is None or at - seen > NOW_STALE),
             "lastAskedSeconds": None if asked is None else round(max(0.0, at - asked), 1),
-            "holdsBack": None if record or seen is None else at - seen < hold}
+            "holdsBack": None if record or seen is None else at - seen < hold, **({"lane": lane} if lane else {})}
 
 
 def origin_of(found):

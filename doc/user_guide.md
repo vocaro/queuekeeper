@@ -1788,6 +1788,14 @@ shown as unknown, never idle. A holder whose process has ended is shown as ended
 it at its next attempt. A live whole-host queue place held while its lane waits elsewhere names
 the sending Mac in the waiting list and as `heldFor` in JSON.
 
+A fresh, verified JSON waiter can include `lane`, the configured name of a whole single lane
+fixed to this Mac by `--here` or the lane's `here` setting. The field is optional. Groups,
+filtered runs, raw commands, dispatches and older records have no lane field. It identifies the
+lane within its configuration. A wait comparison needs matching workload evidence for each
+timed run. The timing history records project and lane names and may record a revision. The
+kept receipt at that revision describes only the latest retained run, so it cannot identify
+the workload behind earlier timing samples. The wait comparison is unknown.
+
 `qk admissions --wait-breakdown` groups requests into whole-host, one-slot, and exclusive work.
 It estimates time by blocker in proportion to each request's refused attempts. Whole-host requests
 record whether the CPU was under its limit when all guaranteed slots were required and at least one

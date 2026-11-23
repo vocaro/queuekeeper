@@ -605,7 +605,7 @@ def space_wait(name, seconds, paths, floor=None):
 
 
 def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusive=False, model=False, whole_host=False,
-                  screen=False, placement=None, space=None, floor=None, *, beside=None, foreground=None):
+                  screen=False, placement=None, space=None, floor=None, *, beside=None, foreground=None, wait_lane=None):
     """This Mac's heavy-work admission of the work label names, entered in stack, or the work's status
     instead: its status on another Mac when another Mac took it after all, MISCONFIGURED, or
     BUSY when no admission came, after saying so. Work another Mac did not take (offered), declined
@@ -645,7 +645,7 @@ def admitted_here(stack, name, label, timeout, offered=None, once=False, exclusi
                 left = max(deadline - time.monotonic(), 0) if space or screen else seconds
                 context = resources.Admission(label, exclusive=exclusive, timeout=left,
                                               model=model, whole_host=whole_host, place=place, placement=placement,
-                                              supervised=True)
+                                              supervised=True, wait_lane=wait_lane)
                 admission = context.__enter__()
             except TimeoutError as error:
                 # Admission published nothing but the place, which the finally below leaves.
@@ -2044,6 +2044,10 @@ def perform(argv, report):
             if pins.held(): receipt["siblings"] = pins.recorded(pins.held())
             # A run of the whole lane, which a pass of counts for its commit once kept (concluded).
             whole = not extra and args.expect is None and not args.serial
+            # Only describe a whole configured single lane fixed to this Mac, never a movable offer or a dispatch.
+            wait_lane = args.lane if (whole and group is None and offered is None and not inherited
+                                      and (args.here or lane.get("here")) and args.lane in config["lanes"]
+                                      and args.lane != PROVISION and not os.environ.get(remote.DISPATCHER)) else None
             # The run's lane_timing.Pace, once its own work starts, which a passing whole run adds to its history.
             timed = {"pace": None}
             keys = lane_devices(lane)
@@ -2261,7 +2265,8 @@ def perform(argv, report):
                                                       (disk.DATA_VOLUME, str(root)) if fills_disk(lane, resource)
                                                       and not os.environ.get(resources.TOKEN) else None,
                                                       start_free(config, args.lane, lane), beside=beside,
-                                                      foreground=take_foreground if second and beside is not None else None)
+                                                      foreground=take_foreground if second and beside is not None else None,
+                                                      wait_lane=wait_lane)
                             if isinstance(admission, int): return plugins.DEVICES.not_admitted(args.lane, waiting, admission)
                             if offer_id:
                                 os.environ.pop(offload_host.ADMISSION_OFFER, None)
