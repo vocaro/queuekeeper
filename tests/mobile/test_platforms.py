@@ -146,6 +146,22 @@ class Record(unittest.TestCase):
         self.assertEqual(set(found), {"FAKE-1"})
 
 
+class PoolReservations(unittest.TestCase):
+    def test_a_race_skips_one_member_and_reserves_only_as_many_as_requested(self):
+        reserved = []
+
+        def reserve(candidate):
+            reserved.append(candidate)
+            if candidate == "first":
+                raise devices.Refused("another run got there first")
+            return len(reserved)
+
+        candidates = devices.reserve_candidates(["first", "second", "third"], reserve)
+        self.assertEqual(next(candidates), ("second", 2))
+        self.assertEqual(reserved, ["first", "second"])
+        self.assertEqual(list(candidates), [("third", 3)])
+
+
 class Shards(unittest.TestCase):
     def test_units_go_longest_first_into_the_emptiest_shard_and_unknown_ones_count_the_median(self):
         packed = shards.packed(["a", "b", "c", "d", "e"], {"a": 10, "b": 6, "c": 4, "d": 1}, 2)

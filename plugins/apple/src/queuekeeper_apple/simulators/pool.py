@@ -855,17 +855,15 @@ class Pool:
         if prune: self.prune(device_type, runtime)
         listing = self.listing()
         record = self.record.load()
-        for member in self.members(listing):
-            if member.kind != (device_type, runtime) or member.state != "Shutdown" or not member.available: continue
-            if member.udid in exclude: continue
-            if any(device_record.condition(entry) != "released" for entry in entries_for(member, record).values()):
-                continue
-            details = {"preservation": preservation or (KEPT_STATE if keep_state else PRESERVATION)}
-            if keep_state: details["keptState"] = True
-            try:
-                revision = self._reserve(member.name, purpose, member.udid, taken=True, **details)
-            except device_record.Refused:
-                continue  # Another session reserved it first, perhaps under another key.
+        candidates = (member for member in self.members(listing)
+                      if member.kind == (device_type, runtime) and member.state == "Shutdown" and member.available
+                      and member.udid not in exclude and all(device_record.condition(entry) == "released"
+                                                            for entry in entries_for(member, record).values()))
+        details = {"preservation": preservation or (KEPT_STATE if keep_state else PRESERVATION)}
+        if keep_state: details["keptState"] = True
+        for member, revision in device_record.reserve_candidates(
+            candidates, lambda member: self._reserve(member.name, purpose, member.udid, taken=True, **details),
+        ):
             lease = Lease(member.name, member.udid, revision, kept=keep_state)
             erased, why = None, None
             try:
@@ -914,17 +912,15 @@ class Pool:
         device_type, runtime = qualified(DEVICE_TYPE, device_type), qualified(RUNTIME, runtime)
         label = label or self.kind_label(device_type, runtime)
         names = {entry.get("name") for entries in self.listing().get("devices", {}).values() for entry in entries}
-        number = 0
-        while True:
-            number += 1
-            key = f"{self.name} {label} {number}"
+
+        def available(key):
             current = self.record.entry(key)
-            if key in names or (current is not None and device_record.condition(current) != "released"): continue
-            try:
-                revision = self._reserve(key, purpose, taken=True, preservation=preservation, created=True)
-            except device_record.Refused:
-                continue
-            break
+            return key not in names and (current is None or device_record.condition(current) == "released")
+
+        key, revision = device_record.reserve_numbered(
+            f"{self.name} {label} ", available,
+            lambda key: self._reserve(key, purpose, taken=True, preservation=preservation, created=True),
+        )
         try:
             return self._create(key, revision, device_type, runtime, purpose=purpose, label=label,
                                 preservation=preservation, erase=erase)

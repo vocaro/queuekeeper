@@ -73,6 +73,7 @@ import codecs
 from datetime import datetime, timedelta, timezone
 import glob
 import hashlib
+from itertools import count
 import json
 import os
 from pathlib import Path
@@ -273,6 +274,22 @@ def _merge(current, incoming):
         merged["uncertainReason"] = current.get("uncertainReason") or (
             "imported records hold this device for different runs; resolve ownership before use")
     return merged
+
+
+def reserve_candidates(candidates, reserve):
+    """Yield each candidate and its revision once reserved, in the pool's candidate order."""
+    for candidate in candidates:
+        try:
+            revision = reserve(candidate)
+        except Refused:
+            continue  # It may have been reserved since the pool checked its availability.
+        yield candidate, revision
+
+
+def reserve_numbered(prefix, available, reserve):
+    """Return the lowest available pool key and its reserved revision."""
+    keys = (f"{prefix}{number}" for number in count(1))
+    return next(reserve_candidates((key for key in keys if available(key)), reserve))
 
 
 class Record(reservations.Record):

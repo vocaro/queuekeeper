@@ -266,12 +266,12 @@ class Pool:
         listed = avd.listed(self.folder)
         running = set(avd.running().values())
         members = self.members(image, device, listed)
-        for number, name in sorted(members.items()):
-            if name in exclude or not self._free(name, running): continue
-            try:
-                revision = self._reserve(name, purpose, keptState=bool(keep_state))
-            except device_record.Refused:
-                continue
+        candidates = (name for _, name in sorted(members.items()) if name not in exclude and self._free(name, running))
+        chosen = next(device_record.reserve_candidates(
+            candidates, lambda name: self._reserve(name, purpose, keptState=bool(keep_state)),
+        ), None)
+        if chosen is not None:
+            name, revision = chosen
             lease = Lease(name, revision)
             if not keep_state:
                 try:
@@ -281,20 +281,12 @@ class Pool:
                     self.release(lease, outcome=f"Its reset failed before {purpose}")
                     raise
             return lease
-        # A new member takes the lowest number no AVD or entry has; two sessions creating at once each reserve the
-        # name first, and the one refused tries the next.
-        number = 1
-        while True:
-            name = f"{self.name}_{label(image, device)}_{number}"
-            if number in members or name in exclude or not self._free(name, running):
-                number += 1
-                continue
-            try:
-                revision = self._reserve(name, purpose, created=True)
-            except device_record.Refused:
-                number += 1
-                continue
-            break
+        occupied = set(members.values())
+        name, revision = device_record.reserve_numbered(
+            f"{self.name}_{label(image, device)}_",
+            lambda name: name not in occupied and name not in exclude and self._free(name, running),
+            lambda name: self._reserve(name, purpose, created=True),
+        )
         lease = Lease(name, revision, created=True)
         try:
             avd.clone(template, name, folder=self.folder)
