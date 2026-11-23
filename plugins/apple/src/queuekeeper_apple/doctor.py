@@ -30,6 +30,47 @@ def remote_setup_xcode():
     return prefix, probe, report
 
 
+def compare_toolchains(report, developer):
+    """Report Xcode and simulator runtime differences using the standalone host inventories."""
+    host, here, there = report["host"], report["local"], report.get("remote")
+    if there is None:
+        report["unchecked"].append(f"{host}'s default Xcode, its Xcode at this Mac's developer directory and its "
+                                   "simulator runtimes, which it did not report")
+        return
+    version = lambda text: ", ".join((text or "no Xcode").splitlines())
+    default = lambda side: (side.get("defaultDeveloperDir"), side.get("defaultXcode"))
+    # When each Mac's default is this Mac's developer directory, the next check covers its version.
+    shared = here.get("defaultDeveloperDir") == there.get("defaultDeveloperDir") == developer
+    if default(here) != default(there) and not shared:
+        report["errors"].append(
+            f"the default Xcodes differ: `xcode-select -p` is {here.get('defaultDeveloperDir')} "
+            f"({version(here.get('defaultXcode'))}) on this Mac and {there.get('defaultDeveloperDir')} "
+            f"({version(there.get('defaultXcode'))}) on {host}, so whatever reads {host}'s default, such as "
+            f"`ssh {host} xcodebuild -version` or a script without DEVELOPER_DIR, sees another Xcode than this Mac's; "
+            "to fix it, the owner chooses the Xcode the Macs use and selects it with `sudo xcode-select -s PATH` "
+            "on the Mac that differs")
+    if developer is None or not here.get("xcode"):
+        report["unchecked"].append("the Xcode at this Mac's developer directory and its simulator runtimes, since "
+                                   "this Mac has no Xcode selected")
+        return
+    if here["xcode"] != there.get("xcode"):
+        report["errors"].append(
+            f"the Xcode at this Mac's developer directory, {developer}, is {version(here['xcode'])} on this Mac and "
+            f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so qk remote refuses "
+            f"every run there; to fix it, install this Mac's Xcode at that path on {host}, "
+            "or select with DEVELOPER_DIR an Xcode the Macs have at the same path")
+    if None in (here.get("runtimes"), there.get("runtimes")):
+        report["unchecked"].append(f"the simulator runtimes, which simctl did not list on "
+                                   f"{'this Mac' if here.get('runtimes') is None else host}")
+    elif here["runtimes"] != there["runtimes"]:
+        differences = remote.runtime_differences(here["runtimes"], there["runtimes"], host)
+        report["runtimesDiffer"] = True
+        report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
+                                "`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
+                                "defaults uses and copying any other to the Mac that lacks it, and it could not here: "
+                                "see its `runtimes:` lines, or run `python3 scripts/qk remote setup --runtimes`")
+
+
 def fix_hosts(root, hosts):
     """What `doctor` fixes of remote.compare_hosts' report itself (the owner's decision, 2026-11-03): runtimes that
     differ, which it evens out (remote.match_runtimes) and then compares again; stale pool simulators on the
@@ -248,6 +289,10 @@ def register():
     if remote_setup_xcode not in plugins.REMOTE_SETUP_CHECKS:
         plugins.REMOTE_SETUP_CHECKS.append(remote_setup_xcode)
     if required_commands not in plugins.REQUIRED_COMMANDS: plugins.REQUIRED_COMMANDS.append(required_commands)
+    inventory_checks = getattr(plugins, "HOST_INVENTORY_CHECKS", None)
+    # An older core compares the Apple inventory directly.
+    if inventory_checks is not None and compare_toolchains not in inventory_checks:
+        inventory_checks.append(compare_toolchains)
     if fix_hosts not in plugins.HOST_FIXES: plugins.HOST_FIXES.append(fix_hosts)
     if simulator_warnings not in plugins.DOCTOR: plugins.DOCTOR.append(simulator_warnings)
     plugins.DOCTOR_WITHOUT_REPAIRS[simulator_warnings] = simulator_warnings

@@ -84,8 +84,24 @@ class Packages(unittest.TestCase):
 
     def test_core_runs_without_any_plugin_on_its_import_path(self):
         probe = '''import importlib.util, json
-from queuekeeper import cli, config
+from unittest.mock import patch
+from queuekeeper import cli, config, plugins, remote
 assert config.PLUGINS == ()
+assert plugins.HOST_INVENTORY_CHECKS == []
+with (
+    patch.object(remote, "connection", return_value={}),
+    patch.object(remote, "slow_connection", return_value=None),
+    patch.object(remote, "developer_directory", return_value="/Xcode"),
+    patch.object(remote, "reachable"),
+    patch.object(remote, "survey", return_value={"xcode": "other"}),
+    patch.object(remote, "leftover_census", return_value=({"leftovers": []}, None)),
+    patch.object(remote, "compare_device_records"),
+    patch.object(remote.offload_host, "toolchain", return_value={"xcode": "selected"}),
+    patch.object(remote.offload_host, "python_crash_reports", return_value={}),
+):
+    report = remote.compare_hosts("fixture")
+assert report["remote"]["xcode"] == "other"
+assert report["errors"] == []
 assert config.parse(json.dumps({"schemaVersion": 1, "name": "core", "plugins": [], "lanes": {}}))
 for name in %r:
     assert importlib.util.find_spec(name) is None, name

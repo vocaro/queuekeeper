@@ -2348,11 +2348,13 @@ the other Mac; keep this Mac awake. ssh drops a connection after about two minut
 | `Connection timed out during banner exchange` | The port answered, but no SSH banner came within 10 seconds |
 | `Connection to ADDRESS port 22 timed out` (no banner line) | Silence for two minutes during key exchange or login |
 
-`qk doctor` compares the Macs and reports as errors a different default Xcode, a different Xcode
-at this Mac's developer directory, different simulator runtimes (which it evens out itself), a
-refused login, and leading addresses that do not answer. An unreachable Mac is `unchecked`, not an
-error. It also shuts down stale pool simulators on each Mac and keeps each Mac's own Queuekeeper
-checkout current when it safely can.
+`qk doctor` reports a refused login and leading addresses that do not answer as errors. It marks an
+unreachable Mac as `unchecked`. When the project enables the Apple plugin, doctor also compares
+the Macs' default Xcode, the Xcode at this Mac's developer directory, and its simulator runtimes.
+It reports differences, tries to even out the runtimes, and shuts down stale pool simulators.
+When the sender reports an Xcode version for a dispatch, the receiver must report the same
+version and build at the selected developer directory before work can start. Doctor also keeps
+each Mac's own Queuekeeper checkout current when it safely can.
 
 ### Asking whether a command runs on another Mac
 

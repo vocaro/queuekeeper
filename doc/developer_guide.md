@@ -903,6 +903,18 @@ a plan's command under two thirds of 128 KiB and a question's under 192 KiB. A p
 nothing of the file, such as the holder of a waiting gate's place, is a file of its own
 (`place_holder.py`).
 
+The standalone receiver publishes inventory observations without loading plugins. The sending
+process applies a project's registered inventory checks before any doctor repairs. The Apple
+plugin compares the default and selected Xcode and the simulator runtimes from the existing
+inventory fields. The receiver's dispatch compatibility check still protects a run before the
+project and its plugins are available.
+
+Use core and plugin packages from the same Queuekeeper revision when building and installing
+wheels. The checkout installation already loads both from one revision. The Apple plugin
+registers its comparison when the core provides the inventory hook. An older core performs
+the comparison itself. A core with the hook needs a matching Apple plugin for doctor to
+report the Xcode and runtime differences.
+
 ### What comes back
 
 - **Output** streams back as written, into `.build/queuekeeper/remote/LANE/`. Each dispatch also

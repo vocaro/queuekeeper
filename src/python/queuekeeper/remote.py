@@ -5179,18 +5179,12 @@ def python_crash_notes(hosts):
 
 
 def compare_hosts(host=None):
-    """What `qk doctor` reports of one of the farm's Macs, the one at host, else the first that takes work now, as
-    another Mac: this Mac's and another Mac's default Xcodes
-    (`xcode-select -p`), the Xcode at this Mac's developer directory, which every run there uses,
-    and the simulator runtimes it lists. A difference is an error, and what could not be compared is
-    named in unchecked. Another Mac that cannot be reached, as when this Mac is away from its
-    network, is no error, since work then runs here (the owner's decision, 2026-10-28): unchecked
-    says why it was not compared, while one that answers but refuses the login is an error. The
-    processes there that runs left running are listed in leftovers, which are no error: they say
-    what to tell the owner. How ssh connects to it is in connection, and first addresses that keep
-    each connection waiting are an error too, as are device records that do not keep physical
-    devices in this Mac's alone. Differing runtimes also set runtimesDiffer, which `qk doctor` evens
-    out (match_runtimes) before it compares again."""
+    """Compare this Mac with one farm Mac for `qk doctor`, with optional plugin inventory checks.
+
+    An unreachable Mac is unchecked, so work can keep running here. A refusal to log in, slow first
+    address, or conflicting physical device record is an error. Leftover processes are listed without
+    treating them as errors. Plugins compare the inventories before doctor applies optional repairs.
+    """
     host = host or configured()
     report = {"host": host, "name": farm.named(host) if host else None, "errors": [], "unchecked": [],
               "pythonCrashes": {"local": offload_host.python_crash_reports()}}
@@ -5209,63 +5203,24 @@ def compare_hosts(host=None):
         if host in RENAMED: report["errors"].append(f"{host} was renamed from {RENAMED[host]['from']} to "
                                                     f"{RENAMED[host]['to']}, which queuekeeper finds again in each run; "
                                                     f"{renamed_fix(host)}")
+        there = report["remote"] = survey(host, developer)
+        report["pythonCrashes"][host] = there.get("pythonCrashes", {"notes": ["host did not report Python crashes"]})
     except Unreachable as away:
         report["unchecked"].append(f"{host}, which cannot be reached, so work runs on this Mac until it can: "
                                    f"{away.problem}")
         return report
     except Misconfigured as problem:
         report["errors"].append(str(problem))
-        report["unchecked"].append(f"{host}'s default Xcode, its Xcode at this Mac's developer directory and its "
-                                   "simulator runtimes, which it did not report")
-        return report
-    try:
-        there = report["remote"] = survey(host, developer)
-        report["pythonCrashes"][host] = there.get("pythonCrashes", {"notes": ["host did not report Python crashes"]})
-    except Misconfigured as problem:
-        report["errors"].append(str(problem))
-        report["unchecked"].append(f"{host}'s default Xcode, its Xcode at this Mac's developer directory and its "
-                                   "simulator runtimes, which it did not report")
-        return report
-    try:
-        census, missing = leftover_census(host)
-    except Misconfigured as problem:
-        census, missing = None, problem.problem
-    if census is None:
-        report["unchecked"].append(f"the processes left over from runs on {host}, which it did not list: {missing}")
     else:
-        report["leftovers"] = census["leftovers"]
-        report["unchecked"] += [f"on {host}, {item}" for item in census.get("unchecked", [])]
-    compare_device_records(report, host, here, there)
-    version = lambda text: ", ".join((text or "no Xcode").splitlines())
-    default = lambda side: (side.get("defaultDeveloperDir"), side.get("defaultXcode"))
-    # When each Mac's default is this Mac's developer directory, the next check covers its version.
-    shared = here.get("defaultDeveloperDir") == there.get("defaultDeveloperDir") == developer
-    if default(here) != default(there) and not shared:
-        report["errors"].append(
-            f"the default Xcodes differ: `xcode-select -p` is {here.get('defaultDeveloperDir')} "
-            f"({version(here.get('defaultXcode'))}) on this Mac and {there.get('defaultDeveloperDir')} "
-            f"({version(there.get('defaultXcode'))}) on {host}, so whatever reads {host}'s default, such as "
-            f"`ssh {host} xcodebuild -version` or a script without DEVELOPER_DIR, sees another Xcode than this Mac's; "
-            "to fix it, the owner chooses the Xcode the Macs use and selects it with `sudo xcode-select -s PATH` "
-            "on the Mac that differs")
-    if developer is None or not here.get("xcode"):
-        report["unchecked"].append("the Xcode at this Mac's developer directory and its simulator runtimes, since "
-                                   "this Mac has no Xcode selected")
-        return report
-    if here["xcode"] != there.get("xcode"):
-        report["errors"].append(
-            f"the Xcode at this Mac's developer directory, {developer}, is {version(here['xcode'])} on this Mac and "
-            f"{version(there.get('xcode')) if there.get('xcode') else 'missing'} on {host}, so qk remote refuses "
-            f"every run there; to fix it, install this Mac's Xcode at that path on {host}, "
-            "or select with DEVELOPER_DIR an Xcode the Macs have at the same path")
-    if None in (here.get("runtimes"), there.get("runtimes")):
-        report["unchecked"].append(f"the simulator runtimes, which simctl did not list on "
-                                   f"{'this Mac' if here.get('runtimes') is None else host}")
-    elif here["runtimes"] != there["runtimes"]:
-        differences = runtime_differences(here["runtimes"], there["runtimes"], host)
-        report["runtimesDiffer"] = True
-        report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
-                                "`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
-                                "defaults uses and copying any other to the Mac that lacks it, and it could not here: "
-                                "see its `runtimes:` lines, or run `python3 scripts/qk remote setup --runtimes`")
+        try:
+            census, missing = leftover_census(host)
+        except Misconfigured as problem:
+            census, missing = None, problem.problem
+        if census is None:
+            report["unchecked"].append(f"the processes left over from runs on {host}, which it did not list: {missing}")
+        else:
+            report["leftovers"] = census["leftovers"]
+            report["unchecked"] += [f"on {host}, {item}" for item in census.get("unchecked", [])]
+        compare_device_records(report, host, here, there)
+    for compare in plugins.HOST_INVENTORY_CHECKS: compare(report, developer)
     return report

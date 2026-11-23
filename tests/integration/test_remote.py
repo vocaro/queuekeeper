@@ -8185,6 +8185,21 @@ class RemoteSetupTests(unittest.TestCase):
         for line in ["MISSING Homebrew's python3 first", "MISSING numpy", "MISSING import no_such_module"]:
             self.assertIn(line, output)
 
+    def test_the_apple_doctor_registers_with_and_without_the_inventory_hook(self):
+        callbacks = ("REMOTE_SETUP_CHECKS", "REQUIRED_COMMANDS", "HOST_FIXES", "DOCTOR", "DOCTOR_WITHOUT_REPAIRS")
+        with contextlib.ExitStack() as isolated:
+            for name in callbacks:
+                isolated.enter_context(patch.object(plugins, name, getattr(plugins, name).copy()))
+            isolated.enter_context(patch.object(plugins, "HOST_INVENTORY_CHECKS", []))
+            del plugins.HOST_INVENTORY_CHECKS
+            apple_doctor.register()
+            self.assertIn(apple_doctor.remote_setup_xcode, plugins.REMOTE_SETUP_CHECKS)
+
+            plugins.HOST_INVENTORY_CHECKS = []
+            apple_doctor.register()
+            apple_doctor.register()
+            self.assertEqual(plugins.HOST_INVENTORY_CHECKS, [apple_doctor.compare_toolchains])
+
     def test_the_apple_plugin_checks_the_farm_macs_xcode_at_the_selected_developer_directory(self):
         self.install_homebrew()
         developer = self.project / "Xcode Test.app/Contents/Developer"
@@ -8319,7 +8334,8 @@ class FarmMacDoctorTests(unittest.TestCase):
         self.project = base / "example"
         self.project.mkdir()
         (self.project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
-                                                                   "integration": "direct-main"}))
+                                                                   "integration": "direct-main",
+                                                                   "plugins": ["queuekeeper_apple"]}))
         self.home = home
         (base / "second-mac-tmp").mkdir()
         # Each Mac's device record; another Mac's defers physical devices to this Mac, as a run makes it.
@@ -8447,6 +8463,15 @@ class FarmMacDoctorTests(unittest.TestCase):
             self.assertIn("`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
                           "defaults uses and copying any other to the Mac that lacks it", found["errors"][0])
             self.assertNotIn("runtimesDiffer", found)
+
+    def test_a_legacy_remote_inventory_can_report_xcode_without_runtimes(self):
+        legacy = {"xcode": RELEASE, "defaultDeveloperDir": str(self.release), "defaultXcode": RELEASE,
+                  "deviceRecord": {"deferredTo": offload_host.mac_name(), "physical": []},
+                  "hostHealth": {}}
+        with patch.object(remote, "survey", return_value=legacy):
+            status, found = self.doctor()
+        self.assertEqual((status, found["errors"]), (0, []), found)
+        self.assertIn("the simulator runtimes, which simctl did not list on fake", found["unchecked"])
 
     def test_device_records_that_do_not_keep_physical_devices_here_alone_are_errors(self):
         devices.platforms.discover()

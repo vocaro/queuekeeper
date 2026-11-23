@@ -58,6 +58,9 @@ DOCTOR_CHECKS = []
 LANDING_WARNINGS = []
 # Each (config) -> the commands doctor requires on this Mac for the project, beside its own.
 REQUIRED_COMMANDS = []
+# Each (report, selected_location): compare the host inventories in a doctor report, before repairs.
+# Called with a local inventory and either a remote inventory or a refused comparison. Pure reporting only.
+HOST_INVENTORY_CHECKS = []
 # Each (root, hosts) -> hosts: what `doctor` fixes of the hosts' comparison itself.
 HOST_FIXES = []
 # Each (root, config, reports): what a plugin reads and compares across `doctor`'s Macs after the fixes.
