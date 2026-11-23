@@ -9601,6 +9601,18 @@ class Refusals(Fixture):
         self.assertIn("Expecting property name", done.stderr)
         self.assertNotIn("has no queuekeeper.json", done.stderr)
 
+    def test_a_deleted_working_configuration_is_not_reported_as_behind_adoption(self):
+        configuration = self.repo / "queuekeeper.json"
+        configuration.unlink()
+        project = [sys.executable, str(ROOT / "bin/qk")]
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                if staged: run(self.repo, "git", "add", "-u", "queuekeeper.json")
+                done = subprocess.run([*project, "run", "gate"], cwd=self.repo, capture_output=True, text=True)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("restore queuekeeper.json from HEAD", done.stderr)
+                self.assertNotIn("behind the commit that added it", done.stderr)
+
     def test_the_commit_that_adds_the_configuration_lands_and_main_decides_after(self):
         """#10: the queue read main's queuekeeper.json alone, so it refused a project's first landing."""
         self.without_configuration()
