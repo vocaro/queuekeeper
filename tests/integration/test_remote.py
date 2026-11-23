@@ -10131,6 +10131,26 @@ class GateHostPoolTests(unittest.TestCase):
         self.assertEqual(attempts, [("gate-03", {}), ("gate-03", {"prepared": "gate-03"}), ("gate-04", {})])
         self.assertEqual(reachable.call_count, 8)
 
+    def test_an_offer_scoped_to_the_third_mac_keeps_that_scope_when_retried(self):
+        # This Mac and occupied run the paired checks. The candidate's scope omits both, even if the farm
+        # subsequently lists another Mac. A declined or unreachable spare gives no permission to widen it.
+        away = remote.Unreachable("spare could not be reached", "wake it")
+        with farm_fixture.only("occupied", "spare", "newly-added"), \
+                patch.object(remote.farm, "destinations") as destinations, \
+                patch.object(remote, "reachable", side_effect=[None, away, None]) as reachable, \
+                patch.object(remote.offload_host, "capacity") as local_capacity, \
+                patch.object(remote, "execute", side_effect=[remote.Busy("its slots are busy"), 0]) as execute, \
+                contextlib.redirect_stderr(StringIO()):
+            offer = remote.lane_offer(".", {}, "gate", [], None, False, True, None, ("spare",))
+            self.assertEqual(offer.make(fallback=False), resources.BUSY)
+            self.assertIsNone(offer.again())
+            self.assertEqual(offer.again(), 0)
+
+        destinations.assert_not_called()
+        local_capacity.assert_not_called()
+        self.assertEqual([call.args[0] for call in reachable.call_args_list], ["spare"] * 3)
+        self.assertEqual([call.args[2] for call in execute.call_args_list], ["spare"] * 2)
+
     def test_a_lost_dispatch_or_bad_configuration_never_starts_another_copy(self):
         free = {"slots": 1, "slotsMax": 1, "busy": [], "busyLimit": 70}
         for error in (remote.Lost("run may still be alive"), remote.Misconfigured("bad Xcode", "match Xcode")):
