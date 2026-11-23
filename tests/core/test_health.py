@@ -209,6 +209,27 @@ class CameBack(unittest.TestCase):
                                               ("b", "landed"), ("c", "landed"), ("d", "landed")))
         self.assertEqual((found["level"], found["text"]), ("ok", "1 of the last 4 commits"))
 
+    def test_a_rebased_patch_counts_once_with_its_legacy_retries(self):
+        tries = self.settled(("before", "failed"), ("other", "failed"), ("before", "failed"),
+                             ("rebased", "conflict"), ("landed", "landed"))
+        for index in (2, 3, 4): tries[index]["patchId"] = "same-patch"
+        found = health.came_back(tries)
+        self.assertEqual((found["level"], found["text"]), ("ok", "2 of the last 2 commits"))
+
+    def test_warning_names_the_latest_came_back_tip_of_a_patch_that_later_landed(self):
+        tries = self.settled(("before", "failed"), ("after", "conflict"), ("other", "conflict"),
+                             ("another", "conflict"), ("landed", "landed"))
+        for index in (0, 1, 4): tries[index]["patchId"] = "same-patch"
+        found = health.came_back(tries)
+        self.assertEqual(found["text"], "3 of the last 3 commits came back (1 failed the lanes, 2 conflicted with main, "
+                         "recent commits after, another, other): a test, main or a Mac may be at fault")
+
+    def test_legacy_retry_does_not_guess_a_patch_if_the_tip_has_two_identities(self):
+        tries = self.settled(("tip", "failed"), ("tip", "landed"), ("tip", "landed"))
+        tries[1]["patchId"], tries[2]["patchId"] = "first-patch", "second-patch"
+        found = health.came_back(tries)
+        self.assertEqual(found["text"], "1 of the last 3 commits")
+
     def test_three_commits_that_came_back_warn_and_say_how(self):
         found = health.came_back(self.settled(("a", "failed"), ("a", "failed"), ("b", "conflict"), ("c", "failed"),
                                               ("d", "landed")))
@@ -217,6 +238,17 @@ class CameBack(unittest.TestCase):
                                                            "a test, main or a Mac may be at fault"))
         found = health.came_back(self.settled(("a", "conflict"), ("b", "conflict"), ("c", "conflict")))
         self.assertEqual(found["text"], "3 of the last 3 commits came back (3 conflicted with main, recent commits c, b, a)")
+
+    def test_verified_causes_are_named_and_mixed_or_legacy_retries_stay_unknown(self):
+        tries = self.settled(("host", "failed"), ("test", "failed"), ("mixed-before", "failed"),
+                             ("mixed-after", "failed"), ("legacy", "failed"), ("legacy", "failed"))
+        for index, cause in enumerate(("host", "test", "host", "test", "host")):
+            tries[index]["failureKind"] = cause
+        tries[2]["patchId"] = tries[3]["patchId"] = "same-patch"
+        found = health.came_back(tries)
+        self.assertEqual(found["text"], "4 of the last 4 commits came back (1 failed verified tests, "
+                         "1 hit confirmed Mac faults, 2 failed the lanes, recent commits legacy, mixed-after, test): "
+                         "a test, main or a Mac may be at fault")
 
     def test_warning_names_only_three_recent_came_back_tips_and_omits_legacy_entry_names(self):
         a, b, c, d, e = (letter * 40 for letter in "abcde")

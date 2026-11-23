@@ -25,7 +25,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
 from queuekeeper import agent_logs, agent_results, cli, config as configuration, landing_proofs, lane_coverage, \
-    merge_queue as mq, offload_host
+    events, merge_queue as mq, offload_host
 # What qk land runs before it queues, which Fixture leaves out but PreflightBeforeQueued puts back.
 PREFLIGHT_BEFORE_QUEUED = mq.preflight_before_queued
 import host_isolation
@@ -2581,6 +2581,52 @@ class NoVerdict(Fixture):
         run.mkdir(parents=True)
         if said is not None: (run / "source.json").write_text(said)
         return run
+
+    def settle_fault(self, every_attempt):
+        """Run a lane that gives no verdict and has a host fault marker on one or every attempt."""
+        config = self.config()
+        config["plugins"] = ["queuekeeper_apple"]
+        config["queue"]["noVerdictRuns"] = 2
+        command = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "results = Path(os.environ['QUEUEKEEPER_RESULTS_DIR'])\n"
+            f"marker = Path({str(self.status)!r})\n"
+            "if marker.exists():\n"
+            "    results.mkdir(parents=True, exist_ok=True)\n"
+            "    (results / 'toolchain-fault.txt').write_text('stand-in stale toolchain mount')\n"
+            f"    if not {every_attempt!r}: marker.unlink()\n"
+            "    sys.exit(1)\n"
+            "sys.exit(3)\n"
+        )
+        self.status.touch()
+        config["lanes"]["gate"]["command"] = ["python3", "-c", command]
+        self.publish(config)
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch("builtins.print"): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "failed")
+        [failure] = events.read(mq.Queue(self.repo).directory, kinds=["entry.failed"])
+        return failure
+
+    def test_verified_host_fault_at_every_attempt_is_recorded_on_send_back(self):
+        self.assertEqual(self.settle_fault(every_attempt=True)["failureKind"], "host")
+
+    def test_host_fault_beside_an_unknown_no_verdict_attempt_is_left_unclassified(self):
+        self.assertNotIn("failureKind", self.settle_fault(every_attempt=False))
+
+    def test_remote_host_fault_requires_a_terminal_receipt_from_this_attempt_and_head(self):
+        worker, _, receipt = self.stopped_worker()
+        began = worker.lane_now[1]
+        run = self.dispatch_of(worker, None)
+        outer = {"head": "tested", "commit": "tested", "dispatched": began + 1,
+                 "result": {"receipt": {"project": {"revision": "tested"}, "outcome": "unmeasured",
+                                        "hostFault": True}}}
+        source = run / "source.json"
+        source.write_text(json.dumps(outer))
+        self.assertTrue(mq.gate_host_fault(run, receipt.with_name("run.log"), "tested", began))
+        self.assertFalse(mq.gate_host_fault(run, receipt.with_name("run.log"), "another", began))
+        self.assertFalse(mq.gate_host_fault(run, receipt.with_name("run.log"), "tested", began + 2))
 
     def test_a_no_verdict_send_back_quotes_the_error_its_own_receipt_records(self):
         """A lane that reached its own limit: the real qk run, its real receipt, and a log that just stops (#288)."""
@@ -10865,6 +10911,8 @@ class FlakyReruns(Fixture):
         entries = [self.state(identifier) for identifier in ids]
         self.assertEqual([entry["state"] for entry in entries], ["landed", "failed", "landed"])
         self.assertIn("its failure names docs/a.md", entries[1]["why"])
+        [failure] = events.read(mq.Queue(self.repo).directory, kinds=["entry.failed"])
+        self.assertEqual(failure["failureKind"], "test")
         self.assertIn(f"on the batch's other entries, {ids[0]}, {ids[2]}, which gate again at once", entries[1]["why"])
         # One gate for the batch and one for the other two, with no half gated.
         self.assertEqual(self.runs_of_the_test(), 2)
@@ -10971,6 +11019,8 @@ class FlakyReruns(Fixture):
         self.assertIn(f"{self.TEST} gave no verdict alone, on rerun 1", log)
         self.assertNotIn("fail together", log)
         self.assertEqual([self.state(identifier)["state"] for identifier in ids], ["failed", "landed"])
+        [failure] = events.read(mq.Queue(self.repo).directory, kinds=["entry.failed"])
+        self.assertNotIn("failureKind", failure)
         # The batch gate and b's gate both run the unresolved test. It is left out of the blame probe.
         self.assertEqual(self.runs_of_the_test(), 2)
         self.assertEqual(self.tracked, [])

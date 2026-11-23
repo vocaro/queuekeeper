@@ -2350,7 +2350,7 @@ def perform(argv, report):
                 return lane_results.UNMEASURED
             faulted = host_faulted(args.lane, status, receipt, directory / "results")
             if faulted is not None:
-                concluded(lane_results.UNMEASURED, unmeasured=[faulted], error=faulted)
+                concluded(lane_results.UNMEASURED, unmeasured=[faulted], error=faulted, hostFault=True)
                 return lane_results.UNMEASURED
             if status == lane_results.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)

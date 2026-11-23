@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -184,6 +185,38 @@ class QueueEvents(test_merge_queue.Fixture):
         self.assertEqual((failed["why"], failed["log"]), (self.state(identifier)["why"], self.state(identifier)["log"]))
         self.assertEqual([event["status"] for event in self.events(kinds=["gate.ended"])][-1], 1)
         self.assertEqual(self.kinds(kinds=["entry.landed", "batch.pushed"]), [])
+
+    def test_rebased_retries_settle_with_the_same_patch_identity(self):
+        run = test_merge_queue.run
+        original = self.commit("a.txt", "change")
+        first, = self.add("change")
+        queue = mq.Queue(self.repo)
+        queue.settle(self.state(first), mq.FAILED)
+
+        self.commit("unrelated.txt", "published")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "fetch", "-q", "origin")
+        run(self.repo, "git", "checkout", "-q", "change")
+        run(self.repo, "git", "rebase", "origin/main")
+        rebased = run(self.repo, "git", "rev-parse", "HEAD")
+        self.assertNotEqual(original, rebased)
+        second, = self.add("change")
+        queue.settle(self.state(second), mq.CONFLICT)
+
+        failed, conflict = self.events(kinds=["entry.failed", "entry.conflict"])
+        self.assertEqual((failed["tip"], conflict["tip"]), (original, rebased))
+        self.assertTrue(failed["patchId"])
+        self.assertEqual(failed["patchId"], conflict["patchId"])
+
+    def test_a_patch_identity_timeout_does_not_refuse_submission_or_settlement(self):
+        self.commit("a.txt", "one")
+        with patch.object(mq, "patch_of", side_effect=subprocess.TimeoutExpired("git patch-id", 1)):
+            identifier, = self.add("one")
+        queue = mq.Queue(self.repo)
+        queue.settle(self.state(identifier), mq.FAILED)
+        failed, = self.events(kinds=["entry.failed"])
+        self.assertEqual(failed["tip"], self.state(identifier)["tip"])
+        self.assertNotIn("patchId", failed)
 
     def test_removing_holding_and_resuming_are_journaled(self):
         self.commit("a.txt", "one")

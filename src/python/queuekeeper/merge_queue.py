@@ -81,10 +81,10 @@ WAITING = {QUEUED, TESTING, PASSED}
 # A waiting entry whose push may have landed, cut off before its answer came by a timeout, a dropped connection or
 # the worker's death: its record keeps the push (publishing) until a fetch of origin/main says (Worker.reconcile).
 PUBLICATION_UNVERIFIED = "publication-unverified"
-# What an entry's record gives the event of its final state (Queue.settle), where it has them. The tip lets a reader,
-# such as health.came_back, count one commit added again as one (vocaro/queuekeeper#219).
-EVENT_FIELDS = ("tip", "why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated",
-                "partialGate", "reusedGates", "conflictWith")
+# What an entry's record gives the event of its final state (Queue.settle), where it has them. The patch ID lets
+# health.came_back count one change added again as one even after a rebase (vocaro/queuekeeper#219).
+EVENT_FIELDS = ("tip", "patchId", "why", "log", "landedAs", "landedTip", "landedCommits", "docsOnly", "docsNamed", "ungated",
+                "partialGate", "reusedGates", "conflictWith", "failureKind")
 # What Worker.older returns for a batch whose lanes gave no verdict, which is no entry's state.
 NO_VERDICT_OUTCOME = "no verdict"
 # What a lane exits with when it says nothing about the commits: unmeasured, no admission, a
@@ -2536,6 +2536,9 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
              "subject": subject, "submitted": now, "state": QUEUED,
              "directory": str(root), **resources.coding_agent(), **({"replays": replays} if merges else {}), **flags}
+    # Fingerprinting is advisory. A missing patch ID must never stop a submission or its eventual settlement.
+    with contextlib.suppress(OSError, subprocess.SubprocessError, UnicodeError):
+        if identity := patch_of(root, entry): entry["patchId"] = identity
     if not no_gate and (candidates := gate_reuse.candidates(root, config, submitted_tip)):
         entry["gateCandidates"] = candidates
     with queue.locked():
@@ -3151,7 +3154,7 @@ def patch_of(root, entry):
     be read."""
     commits = entry.get("commits") or []
     if not commits or not entry.get("tip"): return None
-    diff = git(root, "diff", "--no-color", f"{commits[0]}^", entry["tip"])
+    diff = git(root, "diff", "--no-color", "--no-ext-diff", "--no-textconv", f"{commits[0]}^", entry["tip"])
     if diff.returncode or not diff.stdout: return None
     done = subprocess.run(["git", "-C", str(root), "patch-id", "--stable"], input=diff.stdout, capture_output=True,
                           text=True, env=environment(), timeout=GIT_TIMEOUT)
@@ -3845,6 +3848,21 @@ class Removal:
         return self.look()
 
 
+def gate_host_fault(dispatch, lane_log, head, began):
+    """Whether this gate's terminal lane receipt attributes its unmeasured outcome to the Mac."""
+    path = (dispatch or lane_log.parent) / "source.json"
+    try:
+        if path.stat().st_mtime < began: return False
+        receipt = json.loads(path.read_text())
+        if dispatch is not None:
+            if receipt["dispatched"] < began or receipt["head"] != head or receipt["commit"] != head: return False
+            receipt = receipt["result"]["receipt"]
+        return receipt["project"]["revision"] == head and receipt["outcome"] == "unmeasured" \
+            and receipt.get("hostFault") is True
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 class Worker:
     def __init__(self, queue, progress=None):
         self.queue = queue
@@ -3853,6 +3871,7 @@ class Worker:
         self.suspects = 0  # how many of the oldest entries hold a commit that fails
         self.no_verdicts = 0  # the runs in a row that gave no verdict
         self.locked_screens = 0  # the runs in a row a screen locked during
+        self.only_host_faults = True  # every no-verdict attempt in this retry series has host fault evidence
         self.retrying = tuple(progress.get("retrying", ())) if progress else ()  # the batch that gave no verdict
         # The commits whose gate --fail-fast cut short gated again once, as their failed tests all passed alone
         # (rerun), and whether the last rerun asked for that.
@@ -3861,6 +3880,7 @@ class Worker:
             self.limit, self.suspects = progress.get("limit"), progress.get("suspects", 0)
             self.no_verdicts = progress.get("no_verdicts", 0)
             self.locked_screens = progress.get("locked_screens", 0)
+            self.only_host_faults = progress.get("only_host_faults", not (self.no_verdicts or self.locked_screens))
         # The lanes whose next run goes only to a Mac whose screen reads unlocked, since a locked screen left their
         # last run without a verdict (screen_locked, vocaro-engineering#293).
         self.unlocked = set(progress.get("unlocked", ())) if progress else set()
@@ -3933,6 +3953,7 @@ class Worker:
         progress = {"limit": self.limit, "suspects": self.suspects, "no_verdicts": self.no_verdicts}
         if self.unlocked: progress["unlocked"] = sorted(self.unlocked)
         if self.locked_screens: progress["locked_screens"] = self.locked_screens
+        if self.no_verdicts or self.locked_screens: progress["only_host_faults"] = self.only_host_faults
         if self.retrying: progress["retrying"] = list(self.retrying)
         return progress
 
@@ -4690,6 +4711,7 @@ class Worker:
         self.failed_dispatch = self.failed_toolkit = None
         self.tooling = None
         self.altered_files = self.altered_paths = None
+        self.gate_host_fault = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
         if quick is None: quick = self.checks
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
@@ -4845,6 +4867,8 @@ class Worker:
                 return status_, log
             if status_:
                 self.failed_lane = lane
+                if status_ == lane_results.UNMEASURED and gate_host_fault(ran, lane_log, tested, began):
+                    self.gate_host_fault = log
                 # Its results folder came back beside what it printed, here or from another Mac.
                 self.failed_results = printed.parent / "results"
                 self.tooling = self.tool_unstarted(lane, began, status_, ran, log)
@@ -5789,7 +5813,7 @@ class Worker:
                 self.say(f"{', '.join(flake['test'] for flake in rest)} passed alone beside the real failure, so blame "
                          "weighs the confirmed failures alone, and the flakes are filed only if one entry is blamed")
             self.confirmed = {"tests": confirmed, "top": top, "command": command, "base": base, "head": head,
-                              "round": round_name, "flakes": rest, "owners": owners}
+                              "round": round_name, "flakes": rest, "owners": owners, "allConfirmed": len(confirmed) == len(tests)}
             return None
         if added or changed:
             flakes = [flake for flake in flakes if flake["test"] not in added and flake["test"] not in changed]
@@ -6100,7 +6124,7 @@ class Worker:
         return "" if shown.returncode else shown.stdout
 
     def blame(self, applied):
-        """(the one entry of applied that every failed test the last rerun confirmed reaches, why), to send back while
+        """(the one entry the last rerun reaches, why, optional settlement fields), to send back while
         the rest gate again at once, sparing the bisect's gates; or None to bisect. A test reaches an entry whose
         commits change a path its failing rerun's output names, as a preflight lane's `PATH:LINE:` lines do, or a file
         its module is or imports (imported_files); the blame stands only once the tests pass without it
@@ -6114,18 +6138,20 @@ class Worker:
         refused, self.refused, self.unblamed = self.refused, None, None
         added, self.added = self.added, None
         dropped, self.dropped = getattr(self, "dropped", None), None
-        if refused: return self.blame_refusal(applied, *refused)
-        if added: return added
-        if dropped: return dropped
+        if refused or added or dropped:
+            blamed = self.blame_refusal(applied, *refused) if refused else added or dropped
+            return (*blamed, {}) if blamed else None
         if not confirmed or len(applied) < 2: return None
         changes = {entry["id"]: self.changed_by(entry) for entry in applied}
         prefix = f"{self.checkout.resolve()}/"
         found, whys = set(), []
+        verified = confirmed.get("allConfirmed", False)
         for test, path in confirmed["tests"].items():
             try: output = Path(path).read_text(errors="replace").replace(prefix, "").replace(f"{self.checkout}/", "")
             except OSError as error:
                 self.say(f"the rerun log of {test} cannot be read, so no commit is blamed: {error}; bisecting")
                 return None
+            if verified: verified = failed_tests(output)[0] == [test]
             files = imported_files(self.checkout, confirmed["top"], test)
             if files is None:
                 self.say(f"the worker cannot find the module of {test}, so no commit is blamed: bisecting")
@@ -6176,7 +6202,7 @@ class Worker:
         why = "; ".join([*whys, without, *extra])
         self.say(f"blaming {identifier} ({entry.get('subject') or entry['tip'][:12]}): {why}; sending it back and "
                  f"gating the other {len(applied) - 1} at once instead of bisecting")
-        return entry, why
+        return entry, why, {"failureKind": "test"} if verified else {}
 
     def passes_without(self, entry, applied, confirmed):
         """What blame says of the failed tests that confirmed holds, once each passed alone on the batch without entry,
@@ -6478,10 +6504,10 @@ class Worker:
         details = {"failedDispatch": dispatch[1]} if dispatch is not None and dispatch[0] == log else {}
         self.queue.settle(entry, FAILED, why=why, log=str(log), **details, **fields)
 
-    def send_back(self, applied, log, entry, why, facts="", *, runner=None):
+    def send_back(self, applied, log, entry, why, fields, facts="", *, runner=None):
         """Settle entry, the one of applied that blame found, as failed, and queue the rest to gate again at once."""
         self.settle_failure(entry, log, f"the queue's lanes fail on this commit on top of origin/main: {why}. Fix "
-                                       f"it and add it again.{facts}", runner)
+                                       f"it and add it again.{facts}", runner, **fields)
         self.queue.mark([other for other in applied if other["id"] != entry["id"]], QUEUED)
 
     def suite_top(self, command):
@@ -6965,13 +6991,14 @@ class Worker:
 
     def reset_no_verdict(self):
         self.no_verdicts = self.locked_screens = 0
+        self.only_host_faults = True
         self.retrying = ()
 
-    def send_back_no_verdict(self, applied, log, reason, runner):
+    def send_back_no_verdict(self, applied, log, reason, runner, **fields):
         """Finish the affected entries without attributing a test failure, and preserve a read-only diagnosis."""
         self.reset_no_verdict()
         if not self.alone: self.limit, self.suspects = None, 0
-        return self.send_back_with_diagnosis(applied, log, reason, runner, noVerdict=True)
+        return self.send_back_with_diagnosis(applied, log, reason, runner, noVerdict=True, **fields)
 
     def send_back_publication(self, batch, log, reason):
         """Finish a batch whose gate passed but whose publication was refused (#24)."""
@@ -7025,8 +7052,10 @@ class Worker:
                                        "`python3 scripts/qk disk --delete`, or by removing what `python3 "
                                        f"scripts/qk disk` lists, then resume the queue; see {log}"))
             return NO_VERDICT_OUTCOME
+        self.only_host_faults &= getattr(runner, "gate_host_fault", None) == log and log is not None
         locked = runner.screen_locked(result, log)
         if locked:
+            self.only_host_faults = False
             # A run a locked screen voided has its own limit, and the lane runs next only on an unlocked Mac
             # (vocaro-engineering#293).
             lane, reading = locked
@@ -7054,7 +7083,8 @@ class Worker:
                 f"row, the last with exit {result}{runner.ran_where}, {cause}")
         if self.no_verdicts >= runs:
             reason = f"{gave}, the most queue.noVerdictRuns allows ({runs})" + runner.shared_timing(result, config)
-            return self.send_back_no_verdict(applied, log, reason, runner)
+            fields = {"failureKind": "host"} if self.only_host_faults else {}
+            return self.send_back_no_verdict(applied, log, reason, runner, **fields)
         self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
                  + f", run {self.no_verdicts} of at most {runs}"
                  # Name the reason an attempt could not start or measure the lane while retries remain.

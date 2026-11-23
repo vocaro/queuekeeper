@@ -3596,7 +3596,11 @@ recovery](developer_guide.md#state-and-recovery) for how the worker handles each
 - **`qk queue health`** gives one verdict on whether the queue is healthy and when the waiting
   entries should land, from five signs: progress of running gates, time since the last landing,
   each Mac's reachability and memory, connected devices, and how many recent entries came back.
+  Retries of the same patch count as one change, including after a rebase. Older records use
+  the commit or queue entry when the journal has no patch identity for them.
   A warning about entries coming back includes up to three recent commit IDs from the journal.
+  It can distinguish verified test failures from confirmed Mac faults when every failed try
+  of a patch gives the same evidence.
   It exits 0 when healthy or quiet, 1 when it needs attention, and 3 when it can't tell. The
   dashboard shows the same verdict.
 - **`qk queue placement`** shows whether each Mac could start a gate now.

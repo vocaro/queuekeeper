@@ -215,6 +215,7 @@ class Lane(Fixture):
                 self.assertEqual(receipt["outcome"], "unmeasured")
                 self.assertIn("this Mac's fault, not the commits'", receipt["error"])
                 self.assertEqual(receipt["unmeasured"], [receipt["error"]])
+                self.assertIs(receipt["hostFault"], True)
                 self.assertIn("for the Mac's fault", error)
 
     def test_a_plain_build_failure_stays_failed(self):

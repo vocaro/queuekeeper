@@ -231,32 +231,48 @@ def devices(record, state):
 
 
 def came_back(journal):
-    """How many of the last CAME_BACK commits settled came back, failed or with a conflict, and how. A commit is the tip
-    its entry held, so that one commit added again after it came back counts once, not once for each try
-    (vocaro/queuekeeper#219); it came back when any of its tries did, and failed when any failed. An event from before
-    the journal kept the tip counts by its entry. A lane not run for its Mac's reason, such as a locked screen, gives no
-    verdict and settles no entry, but the journal cannot tell a Mac's fault that fails a lane, such as a stale cache,
-    from a test's failure, so the sign names a Mac among the causes of a failure. A warning names up to three
-    of the newest came-back tips in its window, when the journal has them."""
+    """How many of the last CAME_BACK changes settled came back, failed or with a conflict, and how. The patch ID
+    counts one change once across retries and rebases (vocaro/queuekeeper#219). A change came back when any of its
+    tries did, and failed when any failed. An older event falls back to its tip or entry if its patch is unknown.
+    Attribute a failure only when every failed try records the same cause. A warning names up to three recent
+    came-back tips in its window, when the journal has them."""
+    events = [event for event in journal if event.get("kind") in ("entry.landed", "entry.failed", "entry.conflict")]
+    # A legacy retry can share a modern record's patch ID when its exact tip identifies just one patch in the journal.
+    patches = {}
+    for event in events:
+        tip, identity = event.get("tip"), event.get("patchId")
+        if isinstance(tip, str) and tip and isinstance(identity, str) and identity:
+            if patches.setdefault(tip, identity) != identity: patches[tip] = None
     commits = {}
-    for index, event in enumerate(journal):
-        if event.get("kind") not in ("entry.landed", "entry.failed", "entry.conflict"): continue
-        tip = event.get("tip")
-        key = ("tip", tip) if isinstance(tip, str) and tip else ("entry", event.get("entry") or index)
-        kinds = commits.pop(key, set())  # taken out and put back, so that the commits stay in the order last settled
-        commits[key] = kinds | {event["kind"]}
-    settled = list(commits.items())[-CAME_BACK:]
+    for index, event in enumerate(events):
+        tip, identity = event.get("tip"), event.get("patchId")
+        tip = tip if isinstance(tip, str) and tip else None
+        identity = identity if isinstance(identity, str) and identity else patches.get(tip)
+        key = ("patch", identity) if identity else ("tip", tip) if tip else ("entry", event.get("entry") or index)
+        # Take the change out and put it back, so the window stays ordered by its last settlement.
+        kinds, causes, came_back_tip = commits.pop(key, (set(), set(), None))
+        kind = event["kind"]
+        kinds.add(kind)
+        if kind == "entry.failed":
+            failure = event.get("failureKind")
+            causes.add(failure if failure in ("test", "host") else None)
+        commits[key] = kinds, causes, (tip or came_back_tip) if kind != "entry.landed" else came_back_tip
+    settled = list(commits.values())[-CAME_BACK:]
     if not settled: return sign("cameBack", IDLE, "nothing settled yet")
-    failed = sum(1 for _, kinds in settled if "entry.failed" in kinds)
-    conflict = sum(1 for _, kinds in settled if "entry.conflict" in kinds and "entry.failed" not in kinds)
+    failed = sum(1 for _, causes, _ in settled if causes)
+    conflict = sum(1 for kinds, causes, _ in settled if "entry.conflict" in kinds and not causes)
     text = f"{failed + conflict} of the last {len(settled)} commit{'s' if len(settled) != 1 else ''}"
     if failed + conflict < 3: return sign("cameBack", OK, text)
-    how = ", ".join(words for count, words in ((failed, f"{failed} failed the lanes"),
+    tests = sum(1 for _, causes, _ in settled if causes == {"test"})
+    hosts = sum(1 for _, causes, _ in settled if causes == {"host"})
+    unknown = failed - tests - hosts
+    how = ", ".join(words for count, words in ((tests, f"{tests} failed verified tests"),
+                                               (hosts, f"{hosts} hit confirmed Mac faults"),
+                                               (unknown, f"{unknown} failed the lanes"),
                                                (conflict, f"{conflict} conflicted with main")) if count)
-    tips = [tip[:12] for (source, tip), kinds in reversed(settled)
-            if source == "tip" and kinds != {"entry.landed"}][:3]
+    tips = list(dict.fromkeys(tip[:12] for _, _, tip in reversed(settled) if tip))[:3]
     if tips: how += f", recent commits {', '.join(tips)}"
-    cause = ": a test, main or a Mac may be at fault" if failed else ""
+    cause = ": a test, main or a Mac may be at fault" if unknown else ""
     return sign("cameBack", WARNING, f"{text} came back ({how}){cause}")
 
 

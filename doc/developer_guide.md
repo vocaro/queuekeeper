@@ -1950,13 +1950,20 @@ Every event has `v` (the schema version, 1), `id` (unique in the journal), `time
 the epoch) and `kind`, plus its kind's own keys. A key with nothing to say is left out. The
 schema only grows, so readers ignore what they do not know.
 
+An entry's optional `patchId` is Git's stable patch ID for its submitted changes. Queuekeeper
+records it at submission and includes it when the entry settles, so readers can group equivalent
+retries after a rebase even when the original refs are gone. An optional `failureKind`
+records `test` when the failed tests repeated alone and passed with the blamed entry removed,
+or `host` when every attempt in an exhausted no-verdict retry series recorded a confirmed Mac
+fault in its gate lane receipt. A missing value leaves the cause unknown.
+
 | Kind | When | Its own keys |
 |---|---|---|
 | `entry.queued` | A commit range joined the queue | `entry`, `subject`, `commits`, `branch`, `note`, `front`, `noGate`, `aheadWhy` |
-| `entry.landed` | An entry is on `main` | `entry`, `subject`, `tip`, `landedAs`, `landedTip`, `landedCommits`, `docsOnly`, `ungated`, `partialGate` |
-| `entry.failed` | An entry came back from its gate | `entry`, `subject`, `tip`, `why`, `log` |
-| `entry.conflict` | An entry came back with a conflict | `entry`, `subject`, `tip`, `why` |
-| `entry.removed` | An entry was taken out | `entry`, `subject`, `tip` |
+| `entry.landed` | An entry is on `main` | `entry`, `subject`, `tip`, `patchId`, `landedAs`, `landedTip`, `landedCommits`, `docsOnly`, `ungated`, `partialGate` |
+| `entry.failed` | An entry came back from its gate | `entry`, `subject`, `tip`, `patchId`, `failureKind`, `why`, `log` |
+| `entry.conflict` | An entry came back with a conflict | `entry`, `subject`, `tip`, `patchId`, `why` |
+| `entry.removed` | An entry was taken out | `entry`, `subject`, `tip`, `patchId` |
 | `branch.deleted` | A landed entry's local branch was deleted (`landed_cleanup`) | `branch`, `tip`, `entry`, `how`, and `detached` (the worktree) for `--detach-landed` |
 | `entries.testing` | Entries went under test | `entries` |
 | `entries.requeued` | Entries went back to waiting | `entries` |
