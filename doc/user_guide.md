@@ -1769,9 +1769,11 @@ It estimates time by blocker in proportion to each request's refused attempts. W
 record whether the CPU was under its limit when all guaranteed slots were required and at least one
 was busy. Older records can leave a withdrawal's scope or a blocker's details unrecorded.
 
-A held slot from an `eng checkpoint` names the project, commit, current lane and its position
-when the report can match the slot to the checkpoint's dedicated worktree. This also works for
-a lane sent to another Mac when the report reads both Macs.
+Each Mac's `checkpoints` list shows observed `eng checkpoint` runs, including those still
+preparing their first lane or waiting for a slot. An unavailable reading is unknown. A held slot
+also names its checkpoint when the report can match the slot to the checkpoint's dedicated
+worktree, including a lane sent to another Mac when both Macs answer. The list is a snapshot.
+Duplicate protection remains local to `eng checkpoint`.
 
 `qk admissions` summarizes each kind and label over a period: requests admitted and withdrawn,
 their waits and what they waited behind, the loads seen and how admissions ended. Each Mac keeps

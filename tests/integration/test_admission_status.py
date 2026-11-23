@@ -126,6 +126,25 @@ class HoldersTests(Namespace):
         self.assertEqual(reading["checkpoints"], [])
         self.assertTrue(all("checkpoint" not in holder for holder in reading["holders"]))
 
+    def test_checkpoint_reading_distinguishes_startup_unreadable_and_stale_records(self):
+        directory = self.directory / "checkpoints"
+        directory.mkdir(parents=True)
+        file = directory / "Alpha.json"
+        record = {"project": "Alpha", "commit": "0123456789abcdef", "lane": None, "index": 0, "count": 4}
+        file.write_text(json.dumps(record))
+        self.assertEqual(self.read()["checkpoints"], [])  # no lock file
+        with (directory / "Alpha.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            reading = self.read()
+            self.assertEqual((reading["state"], reading["checkpoints"]), ("observed", [{**record, "runsIn": None}]))
+            file.write_text(json.dumps({**record, "lane": "build", "index": 1}))
+            self.assertEqual(self.read()["checkpoints"][0]["lane"], "build")  # older writer without a worktree
+            file.write_text("{")
+            reading = self.read()
+            self.assertEqual((reading["state"], reading["checkpoints"]), ("partial", None))
+            self.assertTrue(any("checkpoint record" in reason for reason in reading["reasons"]))
+        self.assertEqual(self.read()["checkpoints"], [])  # stale unlocked record
+
     def test_each_running_holder_says_how_much_cpu_it_and_what_it_started_use(self):
         # What `qk queue doctor` names beside a gate the holder holds back on an idle Mac (vocaro/queuekeeper#89).
         self.holders({"a": self.owner("Alpha"), "dead": self.owner("Gone", start="Thu Jan  1 00:00:00 1970")},
@@ -752,6 +771,26 @@ class CommandTests(unittest.TestCase):
         found = resources.admissions_now(read_here=self.reading, read_there=lambda host, _: entries[host],
                                          macs=lambda: macs)
         self.assertEqual(found["hosts"][1]["holders"][0]["checkpoint"], {**checkpoint, "host": "studio"})
+
+    def test_a_farm_checkpoint_without_a_slot_is_visible_beside_unknown_and_empty_readings(self):
+        checkpoint = {"project": "Alpha", "commit": "0123456789abcdef", "runsIn": "/private/Alpha",
+                      "lane": None, "index": 0, "count": 4}
+        entries = {"mini": self.reading(checkpoints=[]), "studio": self.reading(checkpoints=[checkpoint])}
+
+        def read(host, budget):
+            if host == "away": raise remote.Unreachable("away did not answer", "wake it")
+            return entries[host]
+
+        found = resources.admissions_now(read_here=self.reading, read_there=read,
+                                         macs=lambda: [farm_fixture.mac(name) for name in ("mini", "studio", "away")])
+        _here, mini, studio, away = found["hosts"]
+        self.assertEqual((mini["checkpoints"], studio["checkpoints"], away["checkpoints"]), ([], [checkpoint], None))
+        lines = resources.now_lines(found)
+        self.assertIn("  checkpoints: unknown", lines)  # this Mac's reading lacks the field
+        self.assertIn("  checkpoints: none observed", lines)
+        self.assertIn("    Alpha at 0123456789ab, before its first lane", lines)
+        self.assertTrue(any(line.startswith("away: unknown: away did not answer") for line in lines))
+        self.assertNotIn(checkpoint["runsIn"], "\n".join(lines))
 
     def test_an_unreachable_farm_mac_is_unknown_beside_this_macs_reading(self):
         def unreachable(host, budget):

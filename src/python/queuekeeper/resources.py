@@ -2367,8 +2367,9 @@ def admission_report(hosts):
     by_tree = {}
     for host in hosts:
         for checkpoint in host.get("checkpoints") or []:
-            tree = checkpoint["runsIn"]
-            by_tree[tree] = None if tree in by_tree else {**checkpoint, "host": host["name"]}
+            tree = checkpoint.get("runsIn")
+            if tree and checkpoint.get("lane"):
+                by_tree[tree] = None if tree in by_tree else {**checkpoint, "host": host["name"]}
     for host in hosts:
         for holder in host.get("holders") or []:
             tree = (holder.get("origin") or {}).get("worktree")
@@ -2465,6 +2466,12 @@ def reclaimed_lines(reclaimed):
     return lines
 
 
+def checkpoint_description(checkpoint):
+    current = (f"{checkpoint['lane']} ({checkpoint['index']} of {checkpoint['count']})"
+               if checkpoint.get("lane") else "before its first lane")
+    return f"{checkpoint['project']} at {checkpoint['commit'][:12]}, {current}"
+
+
 def now_lines(reading, at=None):
     """`qk admissions now` in words, host by host."""
     lines = []
@@ -2516,10 +2523,14 @@ def now_lines(reading, at=None):
                 lines.append(f"    {holder['label']}: {kind}, {where}, PID {holder['pid']}, {held}{status}")
                 if whence(holder.get("origin")): lines.append(f"      from {whence(holder['origin'])}")
                 if checkpoint := holder.get("checkpoint"):
-                    lines.append(f"      checkpoint: {checkpoint['project']} at {checkpoint['commit'][:12]}, "
-                                 f"{checkpoint['lane']} ({checkpoint['index']} of {checkpoint['count']}) "
-                                 f"from {checkpoint['host']}")
+                    lines.append(f"      checkpoint: {checkpoint_description(checkpoint)} from {checkpoint['host']}")
                 lines += progress_lines(holder)
+        checkpoints = host.get("checkpoints")
+        if checkpoints is None: lines.append("  checkpoints: unknown")
+        elif not checkpoints: lines.append("  checkpoints: none observed")
+        else:
+            lines.append("  checkpoints:")
+            lines.extend(f"    {checkpoint_description(checkpoint)}" for checkpoint in checkpoints)
         lines += reclaimed_lines(host.get("reclaimed"))
         waiters = host.get("waiters")
         if waiters is None: lines.append("  waiting: unknown")

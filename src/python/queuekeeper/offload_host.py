@@ -2271,10 +2271,10 @@ def slot_names(directory, count):
 
 
 def checkpoint_readings(directory, reasons):
-    """Read the running lanes of release checkpoints whose writers still hold their project locks.
+    """Read release checkpoints whose writers still hold their project locks.
 
-    The toolkit gives each checkpoint a dedicated worktree in `runsIn` (vocaro-engineering#501).
-    Older records without one cannot identify which admissions belong to the checkpoint.
+    The toolkit sets `runsIn` when its dedicated worktree is ready, and names a lane when it starts one.
+    A record can establish that a checkpoint is live before it can identify which admissions belong to it.
     """
     folder = directory / "checkpoints"
     try: names = sorted(name for name in os.listdir(folder) if name.endswith(".json") and not name.startswith("."))
@@ -2282,6 +2282,7 @@ def checkpoint_readings(directory, reasons):
     except OSError as error:
         reasons.append(f"the checkpoint records in {folder} cannot be listed: {error}")
         return None
+    before = len(reasons)
     if len(names) > NOW_RECORDS:
         reasons.append(f"{len(names)} checkpoint records, of which only {NOW_RECORDS} were read")
     found = []
@@ -2300,15 +2301,21 @@ def checkpoint_readings(directory, reasons):
         except (OSError, ValueError) as error:
             reasons.append(f"the checkpoint record {record} cannot be read: {error}")
             continue
-        if not isinstance(checkpoint, dict): continue
+        if not isinstance(checkpoint, dict):
+            reasons.append(f"the checkpoint record {record} is not an object")
+            continue
         project, commit, tree, lane = (checkpoint.get(key) for key in ("project", "commit", "runsIn", "lane"))
         index, count = checkpoint.get("index"), checkpoint.get("count")
-        if (all(isinstance(value, str) and value for value in (project, commit, tree, lane))
-                and len(tree) <= 300 and os.path.isabs(tree)
-                and type(index) is int and type(count) is int and 1 <= index <= count):
-            found.append({"project": project[:160], "commit": commit[:64], "runsIn": tree, "lane": lane[:160],
+        if (all(isinstance(value, str) and value for value in (project, commit))
+                and (tree is None or isinstance(tree, str) and len(tree) <= 300 and os.path.isabs(tree))
+                and type(index) is int and type(count) is int and 0 <= index <= count
+                and (lane is None if index == 0 else isinstance(lane, str) and bool(lane))):
+            found.append({"project": project[:160], "commit": commit[:64], "runsIn": tree,
+                          "lane": None if lane is None else lane[:160],
                           "index": index, "count": count})
-    return found
+        else:
+            reasons.append(f"the checkpoint record {record} has invalid fields")
+    return found if found or len(reasons) == before else None
 
 
 def admissions_now(at=None):
