@@ -1483,11 +1483,17 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(self.simctl.deleted(), [old])
         self.assertTrue(any(f"REPLACED the template {template} ({old}): {reason}" in line for line in self.log), self.log)
         self.assertEqual((again.udid, again.reset), (free, template))
-        self.assertTrue(pool.release(again, outcome="done"))
-        # A template that was current when warmed, such as one from before this check, is replaced too.
+        # With the member still reserved, the next take needs a clone. A template that was current when
+        # warmed, such as one from before this check, must be replaced before the pool clones from it.
         source, = [udid for udid, device in self.simctl.devices.items() if device["name"] == template]
         save_voiceover(self.simctl.data(source), True)
         self.assertEqual([(current, why) for _, current, why in pool.templates()], [(False, reason)])
+        cloned = pool.take(DUO, RUNTIME, purpose="Other tests")
+        replacement = devices.Record(self.path).entry(template)["device"]
+        self.assertEqual(self.simctl.deleted(), [old, source])
+        self.assertEqual([call for call in self.simctl.calls if call[0] == "clone"],
+                         [("clone", replacement, cloned.key)])
+        self.assertFalse(simulator_pool.saved_voiceover_on(self.simctl.data(cloned.udid)))
 
     def test_saved_voiceover_reads_only_a_setting_that_is_on(self):
         with tempfile.TemporaryDirectory() as folder:
