@@ -2810,6 +2810,14 @@ and with it the simulator tool's approval.
   generous limits. Run it before lanes on a new runtime, or when a take reports a cold or unsettled
   template. A take makes a missing template itself, within shorter limits.
 
+**Checking a template after refresh.** On the affected Mac, read the command's result or the
+template's line in `qk simulator-pool list`. Check the reported runtime build, whether VoiceOver
+spoke, and whether the voice lists answered both before and after reboot. A successful command
+can save a template whose VoiceOver stayed cold or whose voice lists did not settle. A take of an
+existing member can erase it again using that saved result without rerunning the warm-up. To
+verify recovery, check that the next default take of an existing member reports a reset from
+that template. For a lane that exercises VoiceOver, verify the speech probe separately.
+
 **App accessibility.** A hosted test that reads UIKit's and SwiftUI's own accessibility in process, such
 as an accessibility snapshot of system views, asks for it with `--app-accessibility` on
 `qk simulator-tests` or `qk simulator-pool take`. Queuekeeper sets it after each boot and fails the
