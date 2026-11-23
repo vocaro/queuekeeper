@@ -799,6 +799,26 @@ class Relay(unittest.TestCase):
         self.path.write_text("{oops")
         self.assertEqual(self.run_relay(lambda waiter: None), [])
 
+    def test_elapsed_remote_work_comes_from_the_current_process_and_step(self):
+        frames = []
+        done = Mock()
+        done.is_set.side_effect = [False] * 5 + [True]
+        old = {"lane": "gate", "state": "baseline", "startedMonotonic": 100, "timingReporter": 42}
+        nested = {**old, "startedMonotonic": 200, "timingReporter": 43}
+        current = {**old, "startedMonotonic": 200}
+        with patch.object(offload_host, "emit", side_effect=lambda kind, data: frames.append(json.loads(data))), \
+                patch.object(offload_host, "timing_state", side_effect=map(dict, [old, nested] + [current] * 4)), \
+                patch.object(offload_host.time, "monotonic", side_effect=[247, 259, 260]), \
+                patch.object(offload_host, "WAIT_POLL", 0):
+            offload_host.relay_wait(self.path, done, True, (42, 199))
+        self.assertNotIn("workObservation", frames[0])
+        self.assertEqual([frame.get("workObservation") for frame in frames[1:]], [
+            {"lane": "gate", "elapsedSeconds": 30}, {"lane": "gate", "elapsedSeconds": 60}, None])
+        self.assertIn("workObservation", frames[-1])
+        for frame in frames:
+            self.assertNotIn("startedMonotonic", frame["timing"])
+            self.assertNotIn("timingReporter", frame["timing"])
+
 
 if __name__ == "__main__":
     unittest.main()

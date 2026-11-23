@@ -1107,6 +1107,31 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(seconds(), 100 + remote.UNATTENDED_WAIT)
         self.assertEqual(seconds("--", "--repeat", "3"), 300 + remote.UNATTENDED_WAIT)
 
+    def test_elapsed_work_heartbeat_reports_only_recent_observations_on_the_original_connection(self):
+        now = [0.0]
+        progress = remote.Progress("lane", "fake", (), "its clock", clock=lambda: now[0])
+        frames = remote.Frames(Path(self.temp.name), BytesIO(), BytesIO(), (), "fake", progress)
+        sample = b'W {"workObservation":{"lane":"lane","elapsedSeconds":60}}\n'
+        wrong = b'W {"workObservation":{"lane":"provision","elapsedSeconds":120}}\n'
+        next_sample = b'W {"workObservation":{"lane":"lane","elapsedSeconds":90}}\n'
+        with contextlib.redirect_stderr(StringIO()) as error:
+            now[0] = remote.PROGRESS_INTERVAL - 4
+            for frame in (sample, wrong): frames.take(frame)
+            now[0] += 4
+            progress.beat()
+            now[0] += remote.PROGRESS_INTERVAL
+            frames.take(sample)  # A repeated bucket cannot renew its age.
+            progress.beat()
+            frames.rewind()
+            for frame in (sample, wrong, sample, next_sample): frames.take(frame)
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+        observed, stale, replayed = error.getvalue().splitlines()
+        self.assertIn("last receiver observation (heard 4s ago): at least 1m 00s of lane work had elapsed", observed)
+        self.assertNotIn("receiver observation", stale)
+        self.assertNotIn("receiver observation", replayed)
+        self.assertIsNone(progress.work_observation)
+
     def test_the_clock_line_names_a_lanes_timeout_and_only_a_stated_test_allowance(self):
         command = ["python3", "scripts/qk", "simulator-tests", "--scheme", "A",
                    "--runtime", "iOS-27-2", "--device", "iPhone-17-Pro"]

@@ -1796,6 +1796,7 @@ class Frames:
         for path in self.returned: (self.staging / path).unlink(missing_ok=True)
         self.returned.clear()
         self.again = True
+        if self.progress is not None: self.progress.observed_work(None)
 
     def close(self):
         if self.receiving is not None: self.receiving.close()
@@ -1812,10 +1813,12 @@ class Frames:
             if fresh and self.progress is not None: self.progress.arrived(fresh)
         elif kind == b"R ":
             self.result = json.loads(data)
+            if self.progress is not None: self.progress.observed_work(None)
         elif kind == b"W ":
             fresh = self.once("wait", data)
             if fresh:
-                status = lane_wait.relayed(fresh, self.host)
+                observe = self.progress.observed_work if self.progress is not None and not self.again else None
+                status = lane_wait.relayed(fresh, self.host, observe_work=observe)
                 if status is not None and self.progress is not None: self.progress.waited(status)
         elif kind == b"J ":
             self.journaled = True
@@ -1912,6 +1915,7 @@ class Progress:
         self.lines, self.lines_at_beat, self.latest = 0, 0, None
         self.relayed, self.last, self.closed = 0, None, False
         self.wait_status = None
+        self.work_observation = None
 
     def tell(self, kind, text):
         if self.closed: return
@@ -1950,6 +1954,16 @@ class Progress:
         elif self.wait_status is None or words != self.wait_status[0]:
             self.wait_status = (words, self.clock())
 
+    def observed_work(self, record):
+        """Keep the latest elapsed-work snapshot from this dispatch's original connection."""
+        if record is None:
+            self.work_observation = None
+        elif not self.members and isinstance(record, dict) and record.get("lane") == self.lane:
+            elapsed = record.get("elapsedSeconds")
+            if type(elapsed) is int and 0 <= elapsed <= 2**31 \
+                    and (self.work_observation is None or elapsed > self.work_observation[0]):
+                self.work_observation = (elapsed, self.clock())
+
     def beat(self):
         """Say what has arrived since the last heartbeat, when one is due. Called only when no line is arriving, so
         that a heartbeat does not fall inside a block of the run's own output, such as the lanes' times."""
@@ -1978,6 +1992,12 @@ class Progress:
             said = f"its log grew by {grew} line{'' if grew == 1 else 's'}, the latest {spelled_seconds(moment - self.latest)} ago"
         else:
             said = f"its log has not grown for {spelled_seconds(moment - self.latest)}, so nothing shows it moving"
+        if self.work_observation is not None:
+            elapsed, heard = self.work_observation
+            age = moment - heard
+            if elapsed > 0 and 0 <= age <= offload_host.WORK_OBSERVATION_SECONDS * 2:
+                said += f"; last receiver observation (heard {spelled_seconds(age)} ago): " \
+                        f"at least {spelled_seconds(elapsed)} of lane work had elapsed"
         if self.last is not None:
             said += f"; last progress line {spelled_seconds(moment - self.last[1])} ago: {self.last[0]}"
         self.tell("heartbeat", f"{self.lane} on {self.host}, {since} in: {said}")

@@ -72,6 +72,8 @@ REPORT_SECONDS, CLAIM_TIMEOUT = 300, 5400
 DRAIN_SECONDS = 5
 # Seconds between readings of a lane's wait record (relay_wait); admission rewords it at most once a poll.
 WAIT_POLL = 0.5
+# Reuse the wait stream for coarse work observations without journaling a timing frame every poll.
+WORK_OBSERVATION_SECONDS = 30
 # Bytes of a runtime image read or written at once.
 CHUNK = 8 << 20
 # Bytes of a file sent back in one D line, before base64.
@@ -4575,12 +4577,12 @@ def progress_state(path):
     except (OSError, ValueError, subprocess.SubprocessError): return []
 
 
-def relay_wait(path, done, work):
+def relay_wait(path, done, work, timing_owner=None):
     """Send the lane's wait record back as it changes, as `W` frames, and that a wait whose process is gone is over
     (lane_wait.relayed). work is whether this step is the lane's own: that the provision lane before it was admitted
     says nothing of the lane, so it does not clear a wait that goes on across offers. Nor does the step's own end: a
     run that declined leaves its wait, whose process is gone by then, and the dispatcher's next state replaces it."""
-    last, last_progress = None, []
+    last, last_progress, last_work = None, [], None
     while True:
         finished = done.is_set()
         state = wait_state(path)
@@ -4590,7 +4592,20 @@ def relay_wait(path, done, work):
                 state = {**(state or {}), "progress": fresh_progress}
             last_progress = fresh_progress
             timing = timing_state(path)
-            if timing is not None: state = {**(state or {}), "timing": timing}
+            if timing is not None:
+                began = timing.pop("startedMonotonic", None)
+                reporter = timing.pop("timingReporter", None)
+                state = {**(state or {}), "timing": timing}
+                # Only the dispatched qk process can attest to its work. Old slot records, provision and nested
+                # commands can share this path, and cannot establish its start.
+                if not finished and timing_owner is not None and reporter == timing_owner[0] \
+                        and type(began) in (float, int) and timing_owner[1] <= began <= (now := time.monotonic()):
+                    elapsed = int(now - began) // WORK_OBSERVATION_SECONDS * WORK_OBSERVATION_SECONDS
+                    state["workObservation"] = {"lane": timing.get("lane"), "elapsedSeconds": elapsed}
+            live_work = state.get("workObservation") if state else None
+            if last_work is not None and live_work is None:
+                state = {**(state or {"timing": None}), "workObservation": None}
+            last_work = live_work
         if state != last and not (finished and state is None):
             if state is None:
                 if last is not None and last.get("kind"): emit(b"W", b"null")
@@ -4629,13 +4644,15 @@ def step(command, directory, environment, lock, log, wait=None, work=False, laun
     the path of the lane's wait record, sent back as it changes (relay_wait). launches, the slot's Launches, samples
     what launchd starts from the slot while it runs, and once more when it has ended."""
     if log is not None: log.unlink(missing_ok=True)
+    started = time.monotonic()
     child = subprocess.Popen(command, cwd=directory, env=environment, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
                              pass_fds=(lock,))
     done = threading.Event()
     threads = [threading.Thread(target=relay, args=(child.stdout,), daemon=True)]
     if log is not None: threads.append(threading.Thread(target=follow, args=(log, done), daemon=True))
-    if wait is not None: threads.append(threading.Thread(target=relay_wait, args=(wait, done, work), daemon=True))
+    if wait is not None:
+        threads.append(threading.Thread(target=relay_wait, args=(wait, done, work, (child.pid, started)), daemon=True))
     for thread in threads: thread.start()
     forwarded, killed, sampled = None, False, time.monotonic()
     while child.poll() is None:

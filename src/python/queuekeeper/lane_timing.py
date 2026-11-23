@@ -287,7 +287,8 @@ class Pace:
                 "medianSeconds": round(self.base["median"], 1), "p90Seconds": round(self.base["p90"], 1),
                 "samples": self.base["samples"], **({"failSeconds": round(self.limit, 1)} if self.limit else {})}
         if said is not None: live["words"] = said
-        if self.group is None: return write_live(self.live, {**live, "startedMonotonic": self.began})
+        if self.group is None:
+            return write_live(self.live, {**live, "startedMonotonic": self.began, "timingReporter": os.getpid()})
         with SHARED:
             try: found = json.loads(Path(self.live).read_text())
             except (OSError, ValueError): found = None
@@ -366,6 +367,7 @@ def live(wait, since=None, lane=None):
     if not live_record(found): return None
     if since is not None and (not number(found.get("written")) or found["written"] < since): return None
     if lane is not None and found.get("state") == "baseline" and found.get("lane") != lane: return None
+    found.pop("timingReporter", None)
     return found
 
 
@@ -374,6 +376,7 @@ def relayed(record, wait):
     if wait and live_record(record):
         here = {**record, "written": time.time()}
         here.pop("startedMonotonic", None)
+        here.pop("timingReporter", None)
         write_live(Path(str(wait) + LIVE), here)
 
 

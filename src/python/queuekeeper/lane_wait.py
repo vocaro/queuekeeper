@@ -213,17 +213,19 @@ def taken_there():
     return found.get("kind") is None and found.get("admitted") is True and host_of(found.get("mac")) is not None
 
 
-def relayed(data, host):
+def relayed(data, host, observe_work=None):
     """What the lane's record on host now says, as its `W` frame carries it (offload_host.relay_wait): a wait, or
     nothing to wait for, in this Mac's record of the lane, named for the Mac it is on and by this Mac's clock.
     Return the reported wait kind, `admitted`, or an empty string when the wait clears without admission.
     A frame that says nothing about the wait returns None."""
     try: record = json.loads(data)
     except ValueError: return
+    if isinstance(record, dict) and "workObservation" in record and observe_work is not None:
+        observe_work(record["workObservation"])
     if isinstance(record, dict) and "timing" in record:
         from . import lane_timing
         lane_timing.relayed(record["timing"], os.environ.get(VARIABLE))
-    if isinstance(record, dict) and ("progress" in record or "timing" in record):
+    if isinstance(record, dict) and ("progress" in record or "timing" in record or "workObservation" in record):
         if "progress" in record:
             from . import lane_progress
             lane_progress.relayed(record["progress"], host)
