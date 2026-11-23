@@ -88,7 +88,7 @@ import threading
 import time
 import uuid
 
-from . import lane_wait
+from . import lane_timing, lane_wait
 
 TOKEN = "QUEUEKEEPER_RESOURCE_TOKEN"
 # `qk run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
@@ -1959,7 +1959,7 @@ def summarize(entries, since=None, until=None, *, wait_breakdown=False):
     A request that waited counts behind each kind that refused it, and its wait is divided among those
     kinds in proportion to their refusals (#49). Where the log also has requests that say what they saw,
     those an older toolkit logged count as unrecorded. With wait_breakdown, group by slot scope rather than by
-    kind or label, and use the more specific blocker counts when the log records them.
+    kind or label, and show admitted wait percentiles and the coverage of the more specific blocker counts.
     """
     requests = {}
     for entry in entries:
@@ -1983,8 +1983,10 @@ def summarize(entries, since=None, until=None, *, wait_breakdown=False):
                 and all(type(count) is int and count > 0 for count in blockers.values())
                 and sum(blockers.values()) == sum(refusals.values())):
             counted, words = blockers, BLOCKER_WORDS
+            group["blockerCoverage"]["detailed"] += 1
         else:
             counted, words = refusals, LEGACY_BLOCKERS if wait_breakdown else {}
+            if wait_breakdown: group["blockerCoverage"]["legacy"] += 1
         total = sum(counted.values())
         for kind, count in counted.items():
             name = words.get(kind, kind)
@@ -2002,7 +2004,8 @@ def summarize(entries, since=None, until=None, *, wait_breakdown=False):
                 else [(first["kind"], None), (first["kind"], first["label"])])
         for key in keys:
             group = groups.setdefault(key, {"admitted": 0, "withdrawn": Counter(), "ends": Counter(),
-                                            "waited": [], "held": [], "recorded": 0, "behind": Counter(),
+                                            "waited": [], "admittedWaits": [], "held": [], "recorded": 0,
+                                            "behind": Counter(), "blockerCoverage": Counter(),
                                             "queued": Counter(), "loads": [], "peaks": [], "busies": [],
                                             "busyPeaks": []})
             group["waited"].append(first["waited"])
@@ -2011,6 +2014,7 @@ def summarize(entries, since=None, until=None, *, wait_breakdown=False):
                 group["withdrawn"][first["outcome"]] += 1
                 continue
             group["admitted"] += 1
+            if wait_breakdown: group["admittedWaits"].append(first["waited"])
             # An admission with no end logged is still held, or its process was killed and its entry
             # either awaits recovery or was recovered or reclaimed since (vocaro/queuekeeper#23).
             group["ends"][end["outcome"] if end else "recovered" if "recovered" in lines
@@ -2039,6 +2043,12 @@ def summarize(entries, since=None, until=None, *, wait_breakdown=False):
             if busy_peaks: text += f", while waiting max {max(busy_peaks):.0f}%"
         if held: text += f"; held mean {duration(sum(held) / len(held))}, max {duration(max(held))}, total {duration(sum(held))}"
         if group["ends"]: text += f"; ends {counts(group['ends'])}"
+        if admitted_waits := group["admittedWaits"]:
+            median = duration(lane_timing.percentile(admitted_waits, 50))
+            p95 = duration(lane_timing.percentile(admitted_waits, 95))
+            text += f"; admitted waits p50 {median}, p95 {p95}, max {duration(max(admitted_waits))}"
+        if coverage := group["blockerCoverage"]:
+            text += f"; detailed blockers for {coverage['detailed']} of {sum(coverage.values())} requests with refusals"
         return text
 
     order = {"exclusive": 0, "model": 1, "heavy": 2}

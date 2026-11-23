@@ -1768,6 +1768,9 @@ the sending Mac in the waiting list and as `heldFor` in JSON.
 It estimates time by blocker in proportion to each request's refused attempts. Whole-host requests
 record whether the CPU was under its limit when all guaranteed slots were required and at least one
 was busy. Older records can leave a withdrawal's scope or a blocker's details unrecorded.
+The report counts how many requests with refusals in each group have a complete blocker breakdown.
+It also shows nearest-rank p50 and p95 waits for admitted requests. The mean and maximum for all
+requests include withdrawals.
 
 Each Mac's `checkpoints` list shows observed `eng checkpoint` runs, including those still
 preparing their first lane or waiting for a slot. An unavailable reading is unknown. A held slot

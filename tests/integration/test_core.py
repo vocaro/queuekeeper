@@ -4210,6 +4210,25 @@ class AdmissionLogTests(unittest.TestCase):
                       "waited behind slots (detail unrecorded) 1 (20s)", output.getvalue())
         self.assertIn("scope unrecorded: 0 admitted, 1 withdrawn (timed-out 1); waited mean 1m00s, max 1m00s; "
                       "waited behind slots (detail unrecorded) 1 (1m00s)", output.getvalue())
+        groups = dict(line.split(": ", 1) for line in output.getvalue().splitlines()[3:])
+        self.assertIn("detailed blockers for 1 of 1 requests with refusals", groups["whole-host"])
+        self.assertIn("detailed blockers for 0 of 1 requests with refusals", groups["scope unrecorded"])
+
+    def test_admitted_wait_percentiles_exclude_withdrawals_and_report_detailed_blocker_coverage(self):
+        common = {"time": "2026-11-20T10:00:00+00:00", "event": "admitted", "kind": "heavy", "pid": 1,
+                  "label": "tests", "holders": 1}
+        wait = {"refusals": {"slots": 2}, "load": {"max": None}}
+        lines = [{**common, "identity": str(seconds), "waited": seconds} for seconds in (0, 2, 5, 10)]
+        lines[1]["wait"] = {**wait, "blockers": {"ordinaryAhead": 2}}
+        lines[2]["wait"] = {**wait, "blockers": {"ordinaryAhead": 1}}
+        lines.append({**common, "identity": "withdrawal", "event": "withdrawn", "outcome": "timed-out",
+                      "wholeHost": False, "waited": 100, "wait": wait})
+        entries = [resources.read_entry(json.dumps(line)) for line in lines]
+
+        summary, = resources.summarize(entries, wait_breakdown=True)
+        self.assertIn("admitted waits p50 2s, p95 10s, max 10s", summary)
+        self.assertIn("detailed blockers for 1 of 3 requests with refusals", summary)
+        self.assertTrue(all("p95" not in line for line in resources.summarize(entries)))
 
 
 class UsageTests(unittest.TestCase):
