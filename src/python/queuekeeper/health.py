@@ -236,21 +236,26 @@ def came_back(journal):
     (vocaro/queuekeeper#219); it came back when any of its tries did, and failed when any failed. An event from before
     the journal kept the tip counts by its entry. A lane not run for its Mac's reason, such as a locked screen, gives no
     verdict and settles no entry, but the journal cannot tell a Mac's fault that fails a lane, such as a stale cache,
-    from a test's failure, so the sign names a Mac among the causes of a failure."""
+    from a test's failure, so the sign names a Mac among the causes of a failure. A warning names up to three
+    of the newest came-back tips in its window, when the journal has them."""
     commits = {}
     for index, event in enumerate(journal):
         if event.get("kind") not in ("entry.landed", "entry.failed", "entry.conflict"): continue
-        key = event.get("tip") or event.get("entry") or index
+        tip = event.get("tip")
+        key = ("tip", tip) if isinstance(tip, str) and tip else ("entry", event.get("entry") or index)
         kinds = commits.pop(key, set())  # taken out and put back, so that the commits stay in the order last settled
         commits[key] = kinds | {event["kind"]}
-    settled = list(commits.values())[-CAME_BACK:]
+    settled = list(commits.items())[-CAME_BACK:]
     if not settled: return sign("cameBack", IDLE, "nothing settled yet")
-    failed = sum(1 for kinds in settled if "entry.failed" in kinds)
-    conflict = sum(1 for kinds in settled if "entry.conflict" in kinds and "entry.failed" not in kinds)
+    failed = sum(1 for _, kinds in settled if "entry.failed" in kinds)
+    conflict = sum(1 for _, kinds in settled if "entry.conflict" in kinds and "entry.failed" not in kinds)
     text = f"{failed + conflict} of the last {len(settled)} commit{'s' if len(settled) != 1 else ''}"
     if failed + conflict < 3: return sign("cameBack", OK, text)
     how = ", ".join(words for count, words in ((failed, f"{failed} failed the lanes"),
                                                (conflict, f"{conflict} conflicted with main")) if count)
+    tips = [tip[:12] for (source, tip), kinds in reversed(settled)
+            if source == "tip" and kinds != {"entry.landed"}][:3]
+    if tips: how += f", recent commits {', '.join(tips)}"
     cause = ": a test, main or a Mac may be at fault" if failed else ""
     return sign("cameBack", WARNING, f"{text} came back ({how}){cause}")
 

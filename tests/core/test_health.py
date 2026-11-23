@@ -213,10 +213,18 @@ class CameBack(unittest.TestCase):
         found = health.came_back(self.settled(("a", "failed"), ("a", "failed"), ("b", "conflict"), ("c", "failed"),
                                               ("d", "landed")))
         self.assertEqual((found["level"], found["text"]), ("warning", "3 of the last 4 commits came back (2 failed the "
-                                                           "lanes, 1 conflicted with main): a test, main or a Mac may "
-                                                           "be at fault"))
+                                                           "lanes, 1 conflicted with main, recent commits c, b, a): "
+                                                           "a test, main or a Mac may be at fault"))
         found = health.came_back(self.settled(("a", "conflict"), ("b", "conflict"), ("c", "conflict")))
-        self.assertEqual(found["text"], "3 of the last 3 commits came back (3 conflicted with main)")
+        self.assertEqual(found["text"], "3 of the last 3 commits came back (3 conflicted with main, recent commits c, b, a)")
+
+    def test_warning_names_only_three_recent_came_back_tips_and_omits_legacy_entry_names(self):
+        a, b, c, d, e = (letter * 40 for letter in "abcde")
+        tries = self.settled((a, "conflict"), (b, "conflict"), (c, "conflict"), (d, "conflict"),
+                             (None, "conflict"), (e, "landed"))
+        found = health.came_back(tries)
+        self.assertEqual(found["text"], "5 of the last 6 commits came back (5 conflicted with main, recent commits "
+                         "dddddddddddd, cccccccccccc, bbbbbbbbbbbb)")
 
     def test_the_window_is_the_last_commits_by_their_last_try_and_events_without_a_tip_count_by_entry(self):
         # a's retry settles last, so a stays among the last six while the oldest commit, l0, falls out.
