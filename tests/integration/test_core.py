@@ -6091,24 +6091,27 @@ class DeviceWindowWaitTests(unittest.TestCase):
         self.assertIn("its measured 6000s", error)
         self.assertFalse(ran.exists())
 
-    def test_a_cutoff_crossed_during_preparation_refuses_the_start(self):
+    def test_a_cutoff_crossed_during_preparation_or_provisioning_refuses_the_start(self):
         root, ran = self.lane(devices=["iPad", "iPhone"], deviceRunMinutes=90)
         self.reserve(7200)
         window = devices.held_window(["iPhone"], "session-a")
         latest = devices.WindowWait(window, budget=5400).latest
-        now = latest - timedelta(seconds=60)
+        for step in ("reap_here", "provisioned_here"):
+            with self.subTest(step=step):
+                now = latest - timedelta(seconds=60)
 
-        def prepare(*_args):
-            nonlocal now
-            now = latest + timedelta(seconds=1)
+                def prepare(*_args):
+                    nonlocal now
+                    now = latest + timedelta(seconds=1)
 
-        with patch.object(devices, "datetime", wraps=datetime) as clock, patch.object(reservations, "datetime", clock), \
-                patch.object(cli, "reap_here", side_effect=prepare):
-            clock.now.side_effect = lambda zone: now.astimezone(zone)
-            status, error = self.run_lane(root, "device")
-        self.assertEqual(status, resources.BUSY, error)
-        self.assertIn("No device result was recorded", error)
-        self.assertFalse(ran.exists())
+                with patch.object(devices, "datetime", wraps=datetime) as clock, \
+                        patch.object(reservations, "datetime", clock), patch.object(cli, step, side_effect=prepare) as run:
+                    clock.now.side_effect = lambda zone: now.astimezone(zone)
+                    status, error = self.run_lane(root, "device")
+                run.assert_called_once()
+                self.assertEqual(status, resources.BUSY, error)
+                self.assertIn("No device result was recorded", error)
+                self.assertFalse(ran.exists())
 
     def test_only_a_judged_whole_pass_on_both_devices_records_a_sample(self):
         keys = ["iPad", "iPhone"]

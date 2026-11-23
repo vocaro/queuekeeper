@@ -2279,6 +2279,9 @@ def perform(argv, report):
                             unprovisioned = provisioned_here(root, config, args.lane, receipt, inherited, directory,
                                                              admission.interrupted, tree if tree != root else None)
                             if unprovisioned is not None: return unprovisioned
+                            # Provisioning holds this admission and can use up the time that still fit before it.
+                            closed = plugins.DEVICES.window_closed(args.lane, waiting)
+                            if closed is not None: return closed
                             began = started_here(root, args.lane, receipt) if tree == root else None
                             asleep_began = remote.asleep()
                             result = execute(admission.interrupted)
