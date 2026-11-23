@@ -610,8 +610,15 @@ def recover_there(args):
     come back unchanged. A connection that fails or times out leaves the outcome unknown, and nothing is recovered
     here in its place: `devices show` there says what became of the entry (vocaro/queuekeeper#167)."""
     from queuekeeper import remote
-    arguments = ["devices", "recover", args.key, "--by", args.by, "--revision", args.revision, "--verified", args.verified]
-    if args.offload_unchecked is not None: arguments += ["--offload-unchecked", args.offload_unchecked]
+    arguments = ["devices", "recover"]
+    for option, value in (("--by", args.by), ("--revision", args.revision), ("--verified", args.verified),
+                          ("--offload-unchecked", args.offload_unchecked)):
+        if value is None: continue
+        # A quoted value beginning with a dash still looks like an option to the receiving parser.
+        if isinstance(value, str) and value.startswith("-"): arguments.append(f"{option}={value}")
+        else: arguments.extend((option, value))
+    if args.key.startswith("-"): arguments += ["--", args.key]
+    else: arguments.insert(2, args.key)
     try:
         return remote.toolkit_qk(args.host, arguments, project=True, timeout=remote.SURVEY_TIMEOUT)
     except subprocess.SubprocessError as error:

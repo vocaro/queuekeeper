@@ -563,6 +563,74 @@ class DeviceRecordTests(unittest.TestCase):
                 self.assertIn("devices:", error)
         self.assertEqual(self.path.read_bytes(), before, "nothing is recovered in this Mac's record")
 
+    def test_recovery_hints_pass_an_option_like_reservation_key_to_either_macs_parser(self):
+        from queuekeeper import remote
+
+        key = "-phone"
+        code, output, error = self.cli("reserve", "--owner", "session-a", "--revision", "0", "--purpose", "test",
+                                       "--release-by", later(), "--", key)
+        self.assertEqual(code, 0, error)
+        revision = json.loads(output)["entry"]["revision"]
+        before = self.path.read_bytes()
+
+        def arguments(host=None):
+            command = devices.offload_host.recover_command(key, revision, host=host, toolkit=config.TOOLKIT_ROOT)
+            words = shlex.split(command)
+            return words[words.index("devices") + 1:]
+
+        def assert_recovery_arguments(args):
+            self.assertEqual((args.action, args.key, args.by, args.revision, args.verified, args.host),
+                             ("recover", key, "SESSION", revision, "WHAT YOU CHECKED", None))
+
+        with patch.object(reservations, "act", return_value=0) as act:
+            code, _output, error = self.cli(*arguments())
+            self.assertEqual(code, 0, error)
+            assert_recovery_arguments(act.call_args.args[0])
+
+        def receive(host, words, **_options):
+            self.assertEqual((host, words[0]), ("build-host", "devices"))
+            with patch.object(reservations, "act", return_value=0) as act:
+                status, _output, error = self.cli(*(str(word) for word in words[1:]))
+                self.assertEqual(status, 0, error)
+                assert_recovery_arguments(act.call_args.args[0])
+            return status
+
+        with patch.object(remote, "toolkit_qk", side_effect=receive) as send:
+            code, _output, error = self.cli(*arguments("build-host"))
+            self.assertEqual(code, 0, error)
+            send.assert_called_once()
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_remote_recovery_preserves_dash_leading_values_and_a_quoted_key(self):
+        from queuekeeper import remote
+
+        key = "-Owner's iPad (Wi-Fi)"
+        by = "-owner"
+        verified = "- owner verified shutdown; device is offline"
+        unchecked = "- Mac's connection is gone"
+        command = devices.offload_host.recover_command(key, 7, shlex.quote(verified), host="build-host",
+                                                       toolkit=config.TOOLKIT_ROOT)
+        words = shlex.split(command)
+        arguments = words[words.index("devices") + 1:]
+        arguments[arguments.index("--by"):arguments.index("--by") + 2] = [f"--by={by}"]
+        arguments[arguments.index("--verified"):arguments.index("--verified") + 2] = [f"--verified={verified}"]
+        arguments.insert(arguments.index("--"), f"--offload-unchecked={unchecked}")
+
+        def receive(host, script, **_options):
+            self.assertEqual(host, "build-host")
+            words = shlex.split(script)
+            with patch.object(reservations, "act", return_value=0) as act:
+                status, output, error = self.cli(*words[words.index("devices") + 1:])
+                self.assertEqual(status, 0, error)
+                args = act.call_args.args[0]
+                self.assertEqual((args.action, args.key, args.by, args.revision, args.verified, args.offload_unchecked,
+                                  args.host), ("recover", key, by, 7, verified, unchecked, None))
+            return subprocess.CompletedProcess([], status, stdout=output, stderr=error)
+
+        with patch.object(remote, "ssh", side_effect=receive) as send:
+            self.assertEqual(self.cli(*arguments), (0, "", ""))
+            send.assert_called_once()
+
     def test_status_does_not_name_a_live_holder_or_a_release_not_yet_due(self):
         start = process_start(os.getpid())
         self.held_by(os.getpid(), start, "2026-01-01T00:00:00+00:00")

@@ -3223,7 +3223,10 @@ def recover_command(key, revision, verified="'WHAT YOU CHECKED'", host=None, *, 
     launcher = QK_DEVICES
     if toolkit is not None and (Path(toolkit) / "bin/qk").is_file():
         launcher = f"python3 {shlex.quote(str(Path(toolkit) / 'bin/qk'))} --project {shlex.quote(str(toolkit))} devices"
-    return f"{launcher} recover {there}{shlex.quote(key)} --by SESSION --revision {revision} --verified {verified}"
+    options = f"--by SESSION --revision {revision} --verified {verified}"
+    name = shlex.quote(key)
+    arguments = f"{options} -- {name}" if key.startswith("-") else f"{name} {options}"
+    return f"{launcher} recover {there}{arguments}"
 
 
 def passed(due):
