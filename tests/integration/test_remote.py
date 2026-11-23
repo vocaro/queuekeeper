@@ -5647,6 +5647,25 @@ exec {shlex.quote(real)} "$@"
         return patch.dict(os.environ, {remote.QUEUE_GATE: "1", remote.QUEUE_GATE_EXCLUDE: companion,
                                        remote.QUEUE_GATE_RELEASE: str(release)})
 
+    def test_a_bisect_uses_the_third_mac_when_local_admission_is_busy(self):
+        homes = durable_scratch()
+        self.addCleanup(homes.cleanup)
+        root = Path(homes.name)
+        (root / "mini").mkdir()
+        (root / "mini.tmp").mkdir()
+        released = self.project.parent / "older-finished"
+        with farm_fixture.only("fake", "mini"), patch.dict(os.environ, {
+                "FAKE_HOMES": str(root), "FAKE_ALIASES": "mini"}), self.busy_here(), \
+                self.paired_gate("fake", released), patch.object(remote, "execute", wraps=remote.execute) as offered:
+            status, output, error = self.run_here("gate")
+        self.assertEqual(status, 0, output + error)
+        self.assertFalse(released.exists())
+        offered.assert_called_once()
+        receipt = json.loads((self.project / ".build/queuekeeper/remote/gate/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["farmMac"]), ("mini", "mini"))
+        self.assertFalse((self.checkout(0) / ".build/queuekeeper/gate/source.json").exists())
+        self.assertFalse((self.project / ".build/queuekeeper/gate/source.json").exists())
+
     def test_a_bisect_hands_off_to_this_mac_only_after_the_remote_refuses_admission(self):
         released = self.project.parent / "older-finished"
         real_execute, capacity = remote.execute, remote.capacity_there
