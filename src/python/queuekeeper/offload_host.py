@@ -252,6 +252,7 @@ WATCH_SECONDS = 5
 
 _output = threading.Lock()
 _stop = threading.Event()
+_stop_details = {}
 # The dispatcher's `attached` and `received`, and that the run outlasted its unattended bound.
 _attached, _received, _overran = threading.Event(), threading.Event(), threading.Event()
 # Set once the dispatcher has gone silent past the plan's bound (watch): nobody is left to read this run's output.
@@ -307,6 +308,12 @@ def emit(kind, data):
     if not _silent.is_set(): write_frame(kind, data)
 
 
+def request_stop(reason):
+    """Record the first observed reason before waking the run. A disconnect often follows another stop."""
+    _stop_details.setdefault("reason", reason)
+    _stop.set()
+
+
 def write_frame(kind, data):
     """Write one framed line: to the run's journal when it keeps one, which never waits on the network, and otherwise
     to standard output, where a closed connection is a stop, since nobody is left to read the result. A journal
@@ -320,16 +327,17 @@ def write_frame(kind, data):
                 sys.stdout.buffer.write(kind + b" " + data)
                 sys.stdout.buffer.flush()
         except OSError:
-            _stop.set()
+            request_stop("could not write to the dispatch connection" if _journal is None
+                         else "could not write the dispatch journal")
 
 
-def connection_ended():
+def connection_ended(reason="the dispatch connection ended"):
     """The connection to the dispatcher ended. Once the dispatcher has heard the run start and while the run keeps a
     journal, the run goes on, and later connections can collect it. Otherwise this is a stop: a dispatcher that
     never heard the run start takes it for one that never ran. Called from a signal handler, so it writes no frame."""
     global _detached_at
     if _received.is_set(): return
-    if _journal is None or not _attached.is_set(): _stop.set()
+    if _journal is None or not _attached.is_set(): request_stop(reason)
     elif _detached_at is None: _detached_at = time.monotonic()
 
 
@@ -386,14 +394,14 @@ class Journal:
         each stop their own work at its timeout; this is for an queuekeeper that does not."""
         announced = False
         while not self.closed.wait(0.5):
-            if (self.directory / STOP_FILE).exists(): _stop.set()
+            if (self.directory / STOP_FILE).exists(): request_stop("a stop was requested for the dispatch journal")
             if _detached_at is None: continue
             if not announced:
                 announced = True
                 say(f"the connection to the dispatching Mac ended; the run goes on, for at most {self.limit:g} s more")
             if not _overran.is_set() and time.monotonic() - _detached_at > self.limit:
                 _overran.set()
-                _stop.set()
+                request_stop(f"the run outlasted its {self.limit:g} s unattended bound")
                 say(f"the run outlasted the {self.limit:g} s it may run with nobody attending; stopping it")
 
     def finish(self):
@@ -4626,7 +4634,8 @@ def step(command, directory, environment, lock, log, wait=None, work=False, laun
             launches.sample()
             sampled = time.monotonic()
         if _stop.is_set() and forwarded is None:
-            say("stop requested; sending SIGTERM to the run, which stops its command and leaves admission")
+            reason = _stop_details.get("reason", "stop requested")
+            say(f"{reason}; sending SIGTERM to the run, which stops its command and leaves admission")
             try: os.killpg(child.pid, signal.SIGTERM)
             except ProcessLookupError: pass
             forwarded = time.monotonic()
@@ -4675,7 +4684,7 @@ def watch(silence=None):
                 if left <= 0:
                     # In this order, so that the stop's own words wait on no connection.
                     _silent.set()
-                    _stop.set()
+                    request_stop(f"nothing received from the dispatcher for {silence}s")
                     write_frame(b"O", f"{mac_name()}: nothing from the dispatcher for {silence}s; stopping this run, "
                                       "which leaves admission, and sending no result".encode())
                     return
@@ -4685,7 +4694,7 @@ def watch(silence=None):
             heard = time.monotonic()
             *lines, pending = (pending + data).split(b"\n")
             for word in lines:
-                if word == b"stop": _stop.set()
+                if word == b"stop": request_stop("the dispatcher asked to stop the run")
                 elif word == b"attached": _attached.set()
                 elif word == b"received": _received.set()
     except OSError:
@@ -4693,14 +4702,20 @@ def watch(silence=None):
     connection_ended()
 
 
+def stop_signal(number, _frame):
+    """The Python signal handler sees the signal number, with no information about the sender."""
+    reason = f"the dispatch host process received {signal.Signals(number).name} (sender unknown)"
+    if number == signal.SIGHUP: connection_ended(reason)
+    else: request_stop(reason)
+
+
 def main(plan):
     global _journal
     offer_seconds = plan.get("admissionOfferSeconds")
     offer_deadline = time.monotonic() + offer_seconds if offer_seconds is not None else None
-    for number in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(number, lambda *_: _stop.set())
     # sshd's hangup when the connection goes, which is no stop of a run that keeps a journal.
-    signal.signal(signal.SIGHUP, lambda *_: connection_ended())
+    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(number, stop_signal)
     threading.Thread(target=watch, args=(plan.get("silence"),), daemon=True).start()
     detach = plan.get("detach")
     if detach:
@@ -4856,6 +4871,12 @@ def main(plan):
     finally:
         if not begun and result.get("refused") and plan.get("admissionOffer"):
             result["notStarted"] = plan["admissionOffer"]
+        if result["stopped"] and "reason" in _stop_details:
+            result["stopReason"] = _stop_details["reason"]
+        elif (status := result["exitStatus"]) is not None and status < 0:
+            try: name = signal.Signals(-status).name
+            except ValueError: name = f"signal {-status}"
+            result["stopReason"] = f"the run process exited by {name} (sender unknown)"
         result["finished"] = time.time()
         if _detached_at is not None:
             result["detached"] = {"seconds": round(time.monotonic() - _detached_at, 3), "limit": detach["seconds"],

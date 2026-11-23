@@ -2443,6 +2443,8 @@ class RemoteTests(unittest.TestCase):
                 lane = None
                 receipt = json.loads((results / "resident/source.json").read_text())
                 self.assertTrue(receipt["result"]["stopped"])
+                self.assertEqual(receipt["result"]["stopReason"], "the dispatcher asked to stop the run")
+                self.assertIn("stopped (the dispatcher asked to stop the run); results in", output)
                 lock = os.open(root / "checkouts/example/0.lock", os.O_RDWR)
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -2458,6 +2460,18 @@ class RemoteTests(unittest.TestCase):
                         dispatcher.kill()
                         dispatcher.wait(timeout=stretched(60))
                 self.reap(lane)
+
+    def test_a_signal_to_the_run_supervisor_does_not_claim_an_ssh_stop(self):
+        with self.resident(kill=False) as (lane, dispatcher):
+            supervisor = subprocess.check_output(["ps", "-o", "ppid=", "-p", str(lane)], text=True)
+            os.kill(int(supervisor), signal.SIGTERM)
+            output = dispatcher.communicate(timeout=stretched(60))[0].decode()
+            self.assertEqual(dispatcher.returncode, 128 + signal.SIGTERM, output)
+            receipt = json.loads((self.project / ".build/queuekeeper/remote/resident/source.json").read_text())
+            self.assertFalse(receipt["result"]["stopped"])
+            reason = "the run process exited by SIGTERM (sender unknown)"
+            self.assertEqual(receipt["result"]["stopReason"], reason)
+            self.assertIn(f"exit {-signal.SIGTERM} ({reason}); results in", output)
 
     def test_a_run_that_lost_its_dispatcher_is_listed_before_the_next_is_sent_and_left_running(self):
         # Keep this fake host's census independent of the time to list every process on this Mac.
@@ -2649,6 +2663,7 @@ class RemoteTests(unittest.TestCase):
             receipt = json.loads((self.project / ".build/queuekeeper/remote/linger/source.json").read_text())
             self.assertTrue(receipt["result"]["stopped"])
             self.assertIs(receipt["result"]["detached"]["overran"], True)
+            self.assertEqual(receipt["result"]["stopReason"], "the run outlasted its 1 s unattended bound")
             self.assertEqual(receipt["result"]["detached"]["limit"], 1)
             self.assertIn("the run outlasted the 1 s it may run with nobody attending", output)
             self.all_ended(lane)
@@ -2676,6 +2691,9 @@ class RemoteTests(unittest.TestCase):
             self.all_ended(lane)
             receipt = json.loads((self.project / ".build/queuekeeper/remote/slow/source.json").read_text())
             self.assertTrue(receipt["result"]["stopped"])
+            reason = "a stop was requested for the dispatch journal"
+            self.assertEqual(receipt["result"]["stopReason"], reason)
+            self.assertIn(f"stopped ({reason}); results in", output)
         finally:
             self.reap(lane)
             if dispatcher.poll() is None: dispatcher.kill()
@@ -2753,6 +2771,7 @@ class RemoteTests(unittest.TestCase):
     def test_what_a_connection_s_end_means_turns_on_the_journal_and_the_dispatcher_having_heard_the_run(self):
         def reset():
             offload_host._stop.clear()
+            offload_host._stop_details.clear()
             offload_host._attached.clear()
             offload_host._received.clear()
             offload_host._detached_at = None
@@ -2770,6 +2789,17 @@ class RemoteTests(unittest.TestCase):
                 offload_host.connection_ended()
                 self.assertEqual(offload_host._stop.is_set(), stopped)
                 self.assertEqual(offload_host._detached_at is not None, detached)
+                self.assertEqual(offload_host._stop_details.get("reason"),
+                                 "the dispatch connection ended" if stopped else None)
+
+    def test_a_signal_followed_by_a_disconnect_keeps_the_signal_as_the_first_observed_stop(self):
+        self.addCleanup(offload_host._stop.clear)
+        self.addCleanup(offload_host._stop_details.clear)
+        offload_host.stop_signal(signal.SIGTERM, None)
+        offload_host.connection_ended()
+        self.assertTrue(offload_host._stop.is_set())
+        self.assertEqual(offload_host._stop_details["reason"],
+                         "the dispatch host process received SIGTERM (sender unknown)")
 
     def test_a_connection_that_takes_no_bytes_does_not_hold_up_the_run(self):
         blocked, written = threading.Event(), threading.Event()

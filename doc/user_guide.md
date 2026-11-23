@@ -2209,6 +2209,12 @@ same run's result. Stopping a run here asks the other Mac to stop it, including 
 A run with a device lease, or whose journal was never acknowledged, stops when its connection
 ends or the sender is silent past its bound.
 
+When a dispatch observes a stop and returns a result, `result.stopReason` records its first
+observed stop request. A request may arrive while the run is already ending. If the receiver
+or run process received a signal of unknown origin, the reason names that signal and says the
+sender is unknown. The sender includes the reason in its result line, including after a
+reconnection. If no result comes back, use the sender's SSH diagnostic and the unmeasured verdict.
+
 **Reading an uncollected journal.** If the sender reports an unmeasured run and names a retained
 journal, use the host and journal ID from that message to copy its frame file into a scratch
 directory with room for the log and returned files. This reads a snapshot while leaving the

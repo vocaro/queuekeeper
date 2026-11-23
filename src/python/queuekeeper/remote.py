@@ -2347,8 +2347,10 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
                   f"{', '.join(dropped)}; use a lane argument after -- if the runner takes one, or "
                   f"qk run --here {lane} to use this Mac's environment", file=sys.stderr, flush=True)
             if sent is not None: sent["saidDroppedEnvironment"] = True
+    verdict = "stopped" if result["stopped"] else f"exit {status}"
+    if reason := result.get("stopReason"): verdict += f" ({reason})"
     print(f"remote: {name} at {at} on {describe(remote)} in {result.get('checkout')}: "
-          f"{'stopped' if result['stopped'] else f'exit {status}'}; results in {results}, and this dispatch's alone in "
+          f"{verdict}; results in {results}, and this dispatch's alone in "
           f"{own}", file=sys.stderr, flush=True)
     if says_load and lane is not None and work[:1] == ["run"] and result.get("stage") == "work":
         # The load of the Mac that ran the lane, a group's or one lane's, over its admitted run, as its own receipt
