@@ -201,6 +201,37 @@ class Doctor(unittest.TestCase):
         self.assertTrue(any("did not opt in" in warning for warning in shown["warnings"]))
         self.assertEqual(shown["farm"][0]["errors"], ["the default Xcodes differ"])
 
+    def test_check_only_names_same_model_macs_by_farm_destination(self):
+        west = farm_fixture.mac("west.local", "West")
+        east = farm_fixture.mac("east.local", "East")
+        developer = "/Applications/Xcode.app/Contents/Developer"
+        here = {"name": "Desk", "model": "Mac17,6", "defaultDeveloperDir": developer,
+                "xcode": "Xcode 27.2", "runtimes": [], "hostHealth": reading()}
+        there = {**here, "name": "Build Mac", "deviceRecord": {"deferredTo": "Desk"}}
+        surveys = {west["ssh"]: there, east["ssh"]: {**there, "xcode": "Xcode 27.1"}}
+        with tempfile.TemporaryDirectory() as directory, farm_fixture.only(west, east), \
+                patch.object(remote, "connection", return_value={}), patch.object(remote, "reachable"), \
+                patch.object(remote, "developer_directory", return_value=developer), \
+                patch.object(remote, "ask", side_effect=lambda host, _: surveys[host]) as asked, \
+                patch.object(remote, "leftover_census", return_value=({"leftovers": []}, None)), \
+                patch.object(offload_host, "python_crash_reports", return_value={}), \
+                patch.object(offload_host, "toolchain", return_value=here), \
+                patch.object(cli, "fix_hosts") as fix, patch.object(cli.plugins, "recover") as recover, \
+                contextlib.redirect_stdout(StringIO()) as output:
+            Path(directory, "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Example",
+                "integration": "direct-main", "lanes": {"gate": {"command": ["true"], "timeout": 60}}}))
+            self.assertEqual(cli.main(["--project", directory, "doctor", "--check-only"]), 1)
+        fix.assert_not_called()
+        recover.assert_not_called()
+        self.assertEqual([call.args for call in asked.call_args_list],
+                         [(host["ssh"], {"toolchain": developer}) for host in (west, east)])
+        reports = json.loads(output.getvalue())["farm"]
+        self.assertEqual([(report["name"], report["host"], report["remote"]["model"]) for report in reports],
+                         [(host["name"], host["ssh"], "Mac17,6") for host in (west, east)])
+        self.assertEqual(reports[0]["errors"], [])
+        [mismatch] = reports[1]["errors"]
+        self.assertIn("Xcode 27.1 on east.local", mismatch)
+
 
 class QueueDoctor(unittest.TestCase):
     def test_queue_doctor_finds_each_mac_short_of_memory_and_notes_one_it_cannot_read(self):
