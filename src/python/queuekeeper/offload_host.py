@@ -2820,10 +2820,12 @@ class Launches:
         self.claimed, self.seen = clock(), set()
         try:
             # What earlier runs recorded stays while its process runs, for the stop that proves it theirs.
-            table = process_table(listed(PS))
-            kept = [line for line in self.path.read_text(errors="replace").splitlines()[-LAUNCHED_KEPT:]
-                    if self.running(line, table)] if table else None
-            if kept is not None:
+            lines = self.path.read_text(errors="replace").splitlines()[-LAUNCHED_KEPT:]
+            if not lines: return
+            # Pruning needs PID and start time. Only sampling new launches needs arguments.
+            table = process_table(listed(["ps", "-ax", "-o", "pid=,ppid=,uid=,lstart="]))
+            if table:
+                kept = [line for line in lines if self.running(line, table)]
                 temporary = self.path.with_name(self.path.name + ".new")
                 temporary.write_text("".join(line + "\n" for line in kept))
                 temporary.replace(self.path)

@@ -280,18 +280,32 @@ class RequestTests(Fixture):
 
 
 class LaunchesTests(Fixture):
-    def launches(self):
+    def launches(self, listed=None):
         with patch.object(offload_host, "output", return_value=self.run_start), \
                 patch.object(offload_host.os, "getpid", return_value=RUN):
-            return offload_host.Launches(self.checkouts, 1, listed=self.listed, clock=lambda: self.claimed)
+            return offload_host.Launches(self.checkouts, 1, listed=listed or self.listed, clock=lambda: self.claimed)
 
     def lines(self):
         return [json.loads(line) for line in (self.checkouts / f"1.{offload_host.LAUNCHED}").read_text().splitlines()]
 
     def test_a_claim_keeps_only_records_of_processes_that_still_run(self):
         self.record(LEFTOVER + 1, ago(9000), self.appex)
-        self.launches()
+        def identities(command):
+            self.assertEqual(command, ["ps", "-ax", "-o", "pid=,ppid=,uid=,lstart="])
+            return "".join(f"{pid} {parent} {uid} {start}\n"
+                           for pid, (parent, uid, start, _args) in self.table.items())
+
+        self.launches(listed=identities)
         self.assertEqual([line["pid"] for line in self.lines()], [LEFTOVER])
+
+    def test_claims_without_prior_records_need_no_process_census(self):
+        journal = self.checkouts / f"1.{offload_host.LAUNCHED}"
+        journal.unlink()
+        self.launches(listed=lambda command: self.fail("a missing journal needs no census"))
+        self.assertFalse(journal.exists())
+        journal.touch()
+        self.launches(listed=lambda command: self.fail("an empty journal needs no census"))
+        self.assertEqual(journal.read_bytes(), b"")
 
     def test_it_records_what_launchd_starts_from_its_slot_after_the_claim_and_nothing_else(self):
         (self.checkouts / f"1.{offload_host.LAUNCHED}").unlink()
