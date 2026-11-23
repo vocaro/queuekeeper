@@ -5756,6 +5756,49 @@ class LaneLabelTests(unittest.TestCase):
         # The wait took nothing from the run that holds it.
         self.assertEqual(record.entry(devices.FOREGROUND)["revision"], held["revision"])
 
+    def test_canceling_a_foreground_lane_while_waiting_for_admission_releases_its_lease(self):
+        beta, ran = self.foreground_project()
+        self.hold(0, 1, 2)
+        record = devices.Record()
+        observed, restored = [], []
+        observe = resources.Admission._observe
+
+        @contextlib.contextmanager
+        def guard(owner, **options):
+            try:
+                yield
+            finally:
+                entry = record.entry(devices.FOREGROUND)
+                restored.append((entry["ownerChatID"], devices.condition(entry)))
+
+        def cancel_after_observing(admission):
+            observe(admission)
+            waiter = json.loads(admission.wait_record.read_text())
+            entry = record.entry(devices.FOREGROUND)
+            self.assertEqual(devices.condition(entry), "active")
+            self.assertEqual((waiter["pid"], waiter["start"]),
+                             (entry["hostProcessIdentifier"], entry["hostProcessStart"]))
+            self.assertFalse(admission.descriptors)
+            self.assertFalse(ran.exists())
+            observed.append((entry["ownerChatID"], admission.wait_record))
+
+        # Deliver the synthetic stop at the first published host wait, without using a real signal or the desktop.
+        with patch.object(foreground, "GUARDS", [guard]), patch.object(foreground, "front", return_value="Finder"), \
+                patch.object(foreground.opened_apps, "read", return_value=[]), \
+                patch.object(foreground.opened_apps, "settle", return_value=None), \
+                patch.object(resources.Admission, "_observe", cancel_after_observing), \
+                patch.object(processes, "requested", side_effect=lambda: signal.SIGTERM if observed else None):
+            with self.assertRaisesRegex(processes.Interrupted, "SIGTERM while waiting for admission"):
+                self.run_lane(beta, "--here", "gate")
+
+        [(owner, wait_record)] = observed
+        self.assertEqual(restored, [(owner, "active")])
+        self.assertEqual(record.entry(devices.FOREGROUND)["state"], "released")
+        self.assertFalse(wait_record.exists())
+        self.assertFalse((resources.slot_directory() / resources.QUEUE).exists())
+        self.assertFalse(ran.exists())
+        self.assertEqual([(line["event"], line["outcome"]) for line in self.lines()], [("withdrawn", "stopped")])
+
     def test_a_foreground_release_that_times_out_after_the_lane_ran_is_not_reported_as_not_run(self):
         """Only the wait to enter is BUSY: the same TimeoutError once the lane has run must not say it did not."""
         beta, ran = self.foreground_project()
