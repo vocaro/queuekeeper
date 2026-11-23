@@ -9,7 +9,7 @@ import gc
 import hashlib
 import importlib.util
 import itertools
-from io import StringIO
+from io import BytesIO, StringIO
 import json
 import os
 import plistlib
@@ -1065,6 +1065,33 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("no member starts without an end report", group)
         self.assertNotIn("clock", group)
         self.assertNotIn("grew", group)
+
+    def test_a_direct_heartbeat_before_log_output_reports_only_observed_wait_and_admission(self):
+        now = [0.0]
+        progress = remote.Progress("lane", "fake", (), "its clock", clock=lambda: now[0])
+        frames = remote.Frames(Path(self.temp.name), BytesIO(), BytesIO(), (), "fake", progress)
+        waiting = b'W {"kind":"admission","reason":"a reason kept in the wait record"}\n'
+        admitted = b'W {"kind":null,"admitted":true}\n'
+        with contextlib.redirect_stderr(StringIO()) as error:
+            frames.take(waiting)
+            frames.take(b'W {"progress":[]}\n')
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+            frames.take(admitted)
+            now[0] += remote.PROGRESS_INTERVAL - 1
+            frames.rewind()
+            for line in (waiting, b'W {"progress":[]}\n', admitted): frames.take(line)
+            now[0] += 1
+            progress.beat()
+            frames.take(b'W null\n')
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+        waiting_beat, admitted_beat, cleared_beat = error.getvalue().splitlines()
+        self.assertIn("no line of its log yet; receiver reported a wait for admission 5m 00s ago", waiting_beat)
+        self.assertIn("no line of its log yet; receiver reported admission 5m 00s ago", admitted_beat)
+        self.assertNotIn("a reason kept in the wait record", error.getvalue())
+        self.assertNotIn("receiver reported", cleared_beat)
+        self.assertEqual(frames.log.getvalue(), b"")
 
     def test_a_series_may_run_unattended_for_its_scaled_limit(self):
         # qk run limits a --repeat series to N times its lane's timeout, on any Mac, so a dropped connection must

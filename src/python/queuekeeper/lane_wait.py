@@ -215,7 +215,9 @@ def taken_there():
 
 def relayed(data, host):
     """What the lane's record on host now says, as its `W` frame carries it (offload_host.relay_wait): a wait, or
-    nothing to wait for, in this Mac's record of the lane, named for the Mac it is on and by this Mac's clock."""
+    nothing to wait for, in this Mac's record of the lane, named for the Mac it is on and by this Mac's clock.
+    Return the reported wait kind, `admitted`, or an empty string when the wait clears without admission.
+    A frame that says nothing about the wait returns None."""
     try: record = json.loads(data)
     except ValueError: return
     if isinstance(record, dict) and "timing" in record:
@@ -226,9 +228,13 @@ def relayed(data, host):
             from . import lane_progress
             lane_progress.relayed(record["progress"], host)
         if "kind" not in record: return
-    if isinstance(record, dict) and record.get("kind") in WORDS:
-        waiting(record["kind"], record.get("reason"), farm_mac(host), bool(record.get("stranded")))
-    else: running(farm_mac(host), admitted=isinstance(record, dict) and record.get("admitted") is True)
+    kind = record.get("kind") if isinstance(record, dict) else None
+    if isinstance(kind, str) and kind in WORDS:
+        waiting(kind, record.get("reason"), farm_mac(host), bool(record.get("stranded")))
+        return kind
+    admitted = isinstance(record, dict) and record.get("admitted") is True
+    running(farm_mac(host), admitted=admitted)
+    return "admitted" if admitted else ""
 
 
 def alive(pid):

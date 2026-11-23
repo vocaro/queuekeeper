@@ -1814,7 +1814,9 @@ class Frames:
             self.result = json.loads(data)
         elif kind == b"W ":
             fresh = self.once("wait", data)
-            if fresh: lane_wait.relayed(fresh, self.host)
+            if fresh:
+                status = lane_wait.relayed(fresh, self.host)
+                if status is not None and self.progress is not None: self.progress.waited(status)
         elif kind == b"J ":
             self.journaled = True
         elif kind == b"E ":
@@ -1865,6 +1867,9 @@ GROUP_MEMBER_END = re.compile(r"(?:PASS|FAIL|UNMEASURED|NOT RUN|CUT SHORT|STOPPE
 # lane nested in another or the merge queue's gate log holds this output too: "Executed 6 tests" there is a second count.
 COUNTED_PHRASE = re.compile(r"Executed (?=\d)|Test run with (?=\d)|Test skipped - Unmeasured:")
 CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]+")
+PROGRESS_WAIT = {lane_wait.ADMISSION: "a wait for admission", lane_wait.SCREEN: "a wait for an unlocked screen",
+                 lane_wait.SPACE: "a wait for free disk space", lane_wait.FOREGROUND: "a wait for the foreground",
+                 "admitted": "admission"}
 
 
 def progress_text(data):
@@ -1906,6 +1911,7 @@ class Progress:
         self.began = self.beaten = clock()
         self.lines, self.lines_at_beat, self.latest = 0, 0, None
         self.relayed, self.last, self.closed = 0, None, False
+        self.wait_status = None
 
     def tell(self, kind, text):
         if self.closed: return
@@ -1937,6 +1943,13 @@ class Progress:
         elif ending := GROUP_MEMBER_END.fullmatch(line):
             self.started.pop(ending[1], None)
 
+    def waited(self, status):
+        """Remember the receiver's reported state, without copying its reason into the heartbeat."""
+        words = PROGRESS_WAIT.get(status)
+        if not words: self.wait_status = None
+        elif self.wait_status is None or words != self.wait_status[0]:
+            self.wait_status = (words, self.clock())
+
     def beat(self):
         """Say what has arrived since the last heartbeat, when one is due. Called only when no line is arriving, so
         that a heartbeat does not fall inside a block of the run's own output, such as the lanes' times."""
@@ -1955,7 +1968,12 @@ class Progress:
             else:
                 said += "; no member starts without an end report"
         elif self.latest is None:
-            said = "no line of its log yet, so it has not started or has written nothing"
+            said = "no line of its log yet"
+            if self.wait_status is not None:
+                words, observed = self.wait_status
+                said += f"; receiver reported {words} {spelled_seconds(moment - observed)} ago"
+            else:
+                said += ", so it has not started or has written nothing"
         elif grew:
             said = f"its log grew by {grew} line{'' if grew == 1 else 's'}, the latest {spelled_seconds(moment - self.latest)} ago"
         else:
