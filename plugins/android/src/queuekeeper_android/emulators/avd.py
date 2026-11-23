@@ -239,14 +239,21 @@ def start(name, port, *, log, window=False, wipe_data=False, extra=(), folder=No
 
 def running():
     """{serial: AVD name} of each emulator adb lists, by asking each its name."""
+    return running_inventory()[0]
+
+
+def running_inventory():
+    """Return the observed names and whether every listed emulator could be identified."""
     found = {}
     try: listed_serials = adb.devices()
-    except (adb.Failed, sdk.Missing): return found
+    except (adb.Failed, sdk.Missing): return found, False
+    complete = True
     for serial in listed_serials:
         if adb.emulator_port(serial) is None: continue
         name = name_of(serial)
         if name: found[serial] = name
-    return found
+        else: complete = False
+    return found, complete
 
 
 def listed_serial(serial):

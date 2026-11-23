@@ -1,8 +1,8 @@
 """The emulator pool's AVDs, copied by APFS clone and renamed, and its members taken and released under reservations
 (queuekeeper_android.emulators), against an AVD folder of the test's own and an emulator that is faked."""
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 import json
 import os
 from pathlib import Path
@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import host_isolation  # noqa: F401
 from queuekeeper_android import adb
-from queuekeeper_android.emulators import avd, pool as emulator_pool
+from queuekeeper_android.emulators import avd, pool as emulator_pool, reap_report
 from queuekeeper_mobile import devices
 
 IMAGE = "system-images;android-36;google_apis;arm64-v8a"
@@ -32,6 +32,112 @@ def make_avd(folder, name, image="system-images/android-36/google_apis/arm64-v8a
     avd.write_ini(Path(folder) / f"{name}.ini", {"avd.ini.encoding": "UTF-8", "path": str(path),
                                                   "path.rel": f"avd/{name}.avd", "target": "android-36"})
     return path
+
+
+class FarmReap(unittest.TestCase):
+    def test_farm_requires_dry_run_before_reading_any_mac(self):
+        with patch.object(emulator_pool, "Pool") as pool, patch.object(reap_report.farm, "active") as active:
+            with redirect_stderr(StringIO()) as errors, self.assertRaises(SystemExit) as raised:
+                emulator_pool.main(["--pool", "Demo", "reap", "--farm"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--farm requires --dry-run", errors.getvalue())
+        pool.assert_not_called()
+        active.assert_not_called()
+
+    def test_the_receiving_entry_point_always_checks_ownership_in_dry_run(self):
+        with patch.object(emulator_pool.Pool, "reap", autospec=True, return_value=[]) as reap:
+            self.assertEqual(reap_report.receive("Demo"), {"pool": "Demo", "inventory": "verified", "results": []})
+        self.assertEqual(reap.call_args.args[0].name, "Demo")
+        self.assertEqual(reap.call_args.kwargs, {"dry_run": True})
+
+    def test_farm_reports_each_mac_and_does_not_confuse_unchecked_with_an_empty_check(self):
+        macs = [{"name": "Studio", "ssh": "studio"}, {"name": "Mini", "ssh": "mini"},
+                {"name": "Air", "ssh": "air"}, {"name": "Old", "ssh": "old"}, {"name": "Empty", "ssh": "empty"}]
+        replies = {
+            "studio": (0, json.dumps({"pool": "Demo", "inventory": "verified",
+                                      "results": [["Demo_member: would stop and release", False]]}), ""),
+            "mini": (1, "", "the farm's Queuekeeper checkout lacks the Android reap report\n"),
+            "air": (0, json.dumps({"pool": "Other", "inventory": "verified", "results": []}), ""),
+            "old": (0, json.dumps({"pool": "Demo", "results": []}), ""),
+            "empty": (0, json.dumps({"pool": "Demo", "inventory": "verified", "results": []}), ""),
+        }
+
+        def response(host, command, **options):
+            return CompletedProcess(command, *replies[host])
+
+        with (patch.object(reap_report.farm, "active", return_value=macs),
+              patch.object(reap_report.remote, "host_command", return_value="probe") as command,
+              patch.object(reap_report.remote, "ssh", side_effect=response),
+              patch.object(emulator_pool.Pool, "reap", return_value=[]) as local,
+              redirect_stdout(StringIO()) as stdout):
+            self.assertEqual(emulator_pool.main(["--pool", "Demo", "reap", "--farm", "--dry-run"]), 1)
+        local.assert_called_once_with(dry_run=True)
+        request = {"checkout": reap_report.offload_host.TOOLKIT_CHECKOUT, "pool": "Demo"}
+        self.assertEqual(len(command.call_args_list), 5)
+        for call in command.call_args_list:
+            self.assertEqual(call.args[0], reap_report.PROBE)
+            self.assertEqual(json.loads(call.args[1]), request)
+        self.assertEqual(stdout.getvalue().splitlines(), [
+            "this Mac: Demo: inventory verified; no recorded pool members to reap",
+            "Studio: Demo_member: would stop and release",
+            "Mini: unchecked: probe exited 1: the farm's Queuekeeper checkout lacks the Android reap report",
+            "Air: unchecked: the Android reap probe did not return a report for this pool",
+            "Old: unchecked: the Android reap probe did not verify this Mac's inventory",
+            "Empty: Demo: inventory verified; no recorded pool members to reap",
+        ])
+
+
+class ReapInventory(unittest.TestCase):
+    """An AVD folder that cannot be read is reported unchecked, never as a verified empty inventory."""
+    KEY = "Demo_Pixel_8_API_36_1"
+
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.folder = root / "avd"
+        self.folder.mkdir()
+        self.record = devices.Record(root / "record.json")
+        self.pool = emulator_pool.Pool("Demo", None, record=self.record, folder=self.folder)
+        self.enterContext(patch.dict(os.environ, dict.fromkeys(emulator_pool.ADB_SERVER_OVERRIDES, "")))
+        self.enterContext(patch.object(reap_report.farm, "active", return_value=[]))
+
+    def farm(self):
+        with redirect_stdout(StringIO()) as stdout:
+            code = reap_report.print_farm(self.pool)
+        return code, stdout.getvalue().splitlines()
+
+    def test_a_readable_empty_folder_is_a_verified_empty_inventory(self):
+        self.assertEqual(self.pool.reap(dry_run=True), [])
+        self.assertEqual(self.farm(), (0, ["this Mac: Demo: inventory verified; no recorded pool members to reap"]))
+
+    def test_an_absent_folder_is_verified_empty_only_without_an_unreleased_member(self):
+        self.folder.rmdir()
+        self.assertEqual(self.pool.reap(dry_run=True), [])
+        self.record.reserve(self.KEY, owner="old-session", revision=0, purpose="instrumentation",
+                            device=f"avd:{self.KEY}", release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+        with self.assertRaisesRegex(OSError, f"is missing but the record holds {self.KEY}"):
+            self.pool.reap(dry_run=True)
+        code, lines = self.farm()
+        self.assertEqual(code, 1)
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], f"^this Mac: unchecked: the AVD folder .* is missing but the record holds {self.KEY}$")
+
+    def test_an_unreadable_folder_is_unchecked_rather_than_empty(self):
+        make_avd(self.folder, self.KEY)
+        with patch.object(emulator_pool.os, "scandir", side_effect=PermissionError(13, "Permission denied")), \
+                patch.object(avd, "listed") as listed:
+            with self.assertRaisesRegex(OSError, "cannot be read: Permission denied"):
+                self.pool.reap(dry_run=True)
+            code, lines = self.farm()
+        listed.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertRegex(lines[0], r"^this Mac: unchecked: the AVD folder .* cannot be read: Permission denied$")
+        self.assertNotIn("no recorded pool members", "\n".join(lines))
+
+    def test_an_unreadable_folder_fails_the_receiving_probe_instead_of_answering_empty(self):
+        with patch.object(emulator_pool, "Pool", return_value=self.pool), \
+                patch.object(emulator_pool.os, "scandir", side_effect=PermissionError(13, "Permission denied")):
+            with self.assertRaises(OSError):
+                reap_report.receive("Demo")
 
 
 class Files(unittest.TestCase):
@@ -266,6 +372,96 @@ class Taking(unittest.TestCase):
         path = make_avd(self.folder, name)
         (path / emulator_pool.WARMED).write_text(json.dumps({}))
         return name
+
+
+class Inventory(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        folder = root / "avd"
+        self.member, self.other = "Demo_Pixel_8_API_36_1", "Demo_Pixel_8_API_36_2"
+        for name in (self.member, self.other): make_avd(folder, name)
+        self.pool = emulator_pool.Pool("Demo", None, record=devices.Record(root / "record.json"), folder=folder)
+
+    def test_inventory_distinguishes_observed_members_from_an_incomplete_adb_listing(self):
+        with patch.object(adb, "devices", return_value={"emulator-5554": {}, "emulator-5556": {}, "phone1": {}}), \
+                patch.object(avd, "name_of", side_effect=[self.member, None]) as names:
+            lines = self.pool.status()
+        self.assertIn("running as emulator-5554", lines[0])
+        self.assertIn("emulator state unknown (incomplete adb inventory)", lines[1])
+        self.assertEqual([call.args for call in names.call_args_list], [("emulator-5554",), ("emulator-5556",)])
+
+    def test_inventory_distinguishes_adb_failure_from_a_complete_empty_listing(self):
+        with patch.object(adb, "devices", side_effect=adb.Failed("fixture could not list devices")):
+            self.assertTrue(all("emulator state unknown" in line for line in self.pool.status()))
+        with patch.object(adb, "devices", return_value={}):
+            self.assertTrue(all("not listed by adb" in line for line in self.pool.status()))
+
+
+class PruneCheck(unittest.TestCase):
+    FIRST, TARGET, TEMPLATE = (f"Demo_Pixel_8_API_36_{suffix}" for suffix in ("1", "2", "template"))
+
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.folder = root / "avd"
+        for name in (self.FIRST, self.TARGET, self.TEMPLATE): make_avd(self.folder, name)
+        self.record = devices.Record(root / "record.json")
+        self.pool = emulator_pool.Pool("Demo", None, record=self.record, folder=self.folder)
+        self.enterContext(patch.dict(os.environ, dict.fromkeys(emulator_pool.ADB_SERVER_OVERRIDES, "")))
+        past = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        start = " ".join(time.ctime(time.time() - 3 * 3600).split())
+        self.released = {"device": f"avd:{self.TARGET}", "state": "released", "releasedAt": past,
+                         "keptState": False, "port": 5554, "serial": "emulator-5554",
+                         "emulatorProcess": {"pid": 403, "start": start}}
+        self.entries = {self.TARGET: self.released}
+        self.enterContext(patch.object(self.record, "load", return_value={"devices": self.entries}))
+        self.change = self.enterContext(patch.object(self.record, "_change"))
+        self.delete = self.enterContext(patch.object(avd, "delete"))
+        self.inventory = self.enterContext(patch.object(avd, "running_inventory", return_value=({}, True)))
+        self.enterContext(patch.object(self.pool, "_reap_listed", return_value=False))
+        self.stopped = self.enterContext(patch.object(self.pool, "_reap_stopped", return_value=True))
+        self.listing = self.enterContext(patch.object(emulator_pool.offload_host, "listing"))
+        self.listing.return_value = f"{os.getpid()} 1 {os.getuid()} {start} python qk emulator-pool prune"
+
+    def test_prune_requires_an_exact_target_and_dry_run_and_never_changes_a_member(self):
+        with patch.object(emulator_pool, "Pool", return_value=self.pool), redirect_stdout(StringIO()) as output:
+            self.assertEqual(emulator_pool.main(["--pool", "Demo", "prune", "--avd", self.TARGET, "--dry-run"]), 0)
+        self.assertIn(f"{self.TARGET}: passes the read-only check", output.getvalue())
+        self.assertTrue((self.folder / f"{self.TARGET}.avd/userdata-qemu.img").is_file())
+        self.delete.assert_not_called()
+        self.change.assert_not_called()
+        with redirect_stderr(StringIO()):
+            for args in (["--dry-run"], ["--avd", self.TARGET]):
+                with self.subTest(args=args), self.assertRaises(SystemExit) as stopped:
+                    emulator_pool.main(["--pool", "Demo", "prune", *args])
+                self.assertEqual(stopped.exception.code, 2)
+
+    def test_prune_keeps_templates_the_lowest_member_and_unverified_state(self):
+        self.assertIn("lowest-numbered", self.pool.prune_check(self.FIRST))
+        self.assertIn("not a numbered member", self.pool.prune_check(self.TEMPLATE))
+        self.released["keptState"] = True
+        self.assertIn("kept state", self.pool.prune_check(self.TARGET))
+        self.released["keptState"] = False
+        self.released["releasedAt"] = datetime.now(timezone.utc).isoformat()
+        self.assertIn("within one hour", self.pool.prune_check(self.TARGET))
+        self.inventory.assert_not_called()
+
+    def test_prune_keeps_an_emulator_whose_current_liveness_is_uncertain(self):
+        self.inventory.return_value = {}, False
+        self.assertIn("could not be confirmed stopped", self.pool.prune_check(self.TARGET))
+        self.inventory.return_value = {}, True
+        self.stopped.return_value = False
+        self.assertIn("could not be confirmed stopped", self.pool.prune_check(self.TARGET))
+        self.stopped.return_value = True
+        self.listing.return_value = None
+        self.assertIn("process census could not verify", self.pool.prune_check(self.TARGET))
+
+    def test_prune_keeps_a_redirected_avd_and_a_member_named_by_another_record(self):
+        self.entries["alias"] = self.released.copy()
+        self.assertIn("another reservation names this AVD", self.pool.prune_check(self.TARGET))
+        del self.entries["alias"]
+        avd.write_ini(self.folder / f"{self.TARGET}.ini", {"path": str(self.folder / f"{self.FIRST}.avd")})
+        self.assertIn("cannot verify this member's AVD directory", self.pool.prune_check(self.TARGET))
+        self.inventory.assert_not_called()
 
 
 class Reaping(unittest.TestCase):

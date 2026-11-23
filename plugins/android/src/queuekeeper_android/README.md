@@ -41,13 +41,27 @@ emulator another agent is using. The pool gives each run its own.
   holder processes have ended and no process still names its AVD, serial or owner. The reaper checks the recorded
   process owns the console connection, asks that console for its AVD name, and sends the stop down the same connection.
   The reservation stays held until the recorded process, emulator ports and adb listing all confirm it stopped.
+  `qk emulator-pool reap --farm --dry-run` runs the same checks on this Mac and every active farm Mac for that pool.
+  A Mac needs a Queuekeeper checkout with this command at `~/Development/queuekeeper`. Unchecked Macs are named in
+  the report and make the command exit unsuccessfully. A Mac whose AVD folder cannot be read, or is missing while
+  its record holds an unreleased member, is unchecked; only a Mac whose inventory was read reports no members. To act on a report, run `qk emulator-pool reap` on the Mac
+  that owns the emulator, where it checks ownership again before attempting a stop.
 
 Members are AVDs named `POOL_LABEL_N`, such as `Pagepour_Pixel_8_API_36_2`. Each is keyed by that name in the
 [device record](../../../../doc/user_guide.md#taking-a-device). Each Mac has its own pool.
+`qk emulator-pool list` names the emulators that adb can identify. If adb is unavailable or a listed
+emulator does not identify itself, other members show an unknown emulator state. A member absent from
+a complete listing is reported as `not listed by adb`.
 
 From an Android-enabled checkout, `qk disk` measures the host's known pool members and templates, emulator test
 logs in the main project checkouts, and Gradle's caches and wrapper distributions. Pool rows show the recorded
 reservation or the time since release when available. These items are kept by `qk disk --delete`.
+
+`qk emulator-pool prune --avd NAME --dry-run` checks one local member without removing any files. The check keeps
+templates, the lowest-numbered member of a kind, and members whose last reservation kept state or was released
+within an hour. It requires a verifiable AVD directory, reservation, and local liveness readings. Passing the
+check describes the available evidence at that moment. Android does not supply the simulator pool's separate
+last-use reading, and this command only reports the time since the last Queuekeeper release.
 
 ## Emulator tests
 

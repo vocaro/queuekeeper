@@ -22,7 +22,7 @@ def register():
         "emulator-tests": ("build an Android app's instrumented tests once and run them on several members of the "
                            "project's emulator pool side by side: qk emulator-tests --device pixel_8 --device "
                            "pixel_tablet; -h for the rest", emulator_tests.main),
-        "emulator-pool": ("list, take, release, reap or warm members of the project's Android emulator pool under "
-                          "device-record reservations: qk emulator-pool list|take|release|release-mine|template|reap; "
+        "emulator-pool": ("list, take, release, check pruning, reap or warm the project's Android emulator pool "
+                          "under device-record reservations: qk emulator-pool list|take|release|release-mine|template|reap|prune; "
                           "-h for the rest", emulator_pool.main),
     })

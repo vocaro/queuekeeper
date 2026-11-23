@@ -52,8 +52,10 @@ NUMBER = re.compile(r"_([1-9][0-9]*)")
 ATTEMPTS = 2
 # Keep a running member for at least as long as the simulator reaper keeps its counterpart.
 REAP_AFTER = timedelta(hours=2).total_seconds()
+PRUNE_AFTER = timedelta(hours=1)
 REAP_QUERY_SECONDS = 5
 REAP_STOP_SECONDS = 10
+ADB_SERVER_OVERRIDES = ("ADB_SERVER_SOCKET", "ANDROID_ADB_SERVER_ADDRESS", "ANDROID_ADB_SERVER_PORT")
 
 
 def configured(root):
@@ -310,12 +312,11 @@ class Pool:
 
     def reap(self, *, dry_run=False):
         """Report stale reservations of this pool. Stop only an emulator proved to be the recorded run."""
-        if any(os.environ.get(key) for key in ("ADB_SERVER_SOCKET", "ANDROID_ADB_SERVER_ADDRESS",
-                                              "ANDROID_ADB_SERVER_PORT")):
+        if any(os.environ.get(key) for key in ADB_SERVER_OVERRIDES):
             raise ValueError("reap needs the default local adb server to identify this Mac's emulators")
         entries = self.record.load()["devices"]
         results = []
-        for name, avd_entry in avd.listed(self.folder).items():
+        for name, avd_entry in self._reap_inventory(entries).items():
             image = avd.image_package(avd_entry["image"])
             profile = avd_entry["device"]
             entry = entries.get(name)
@@ -342,6 +343,21 @@ class Pool:
             else:
                 results.append((f"{name}: {said}", False))
         return results
+
+    def _reap_inventory(self, entries):
+        """This Mac's AVDs, or OSError when they cannot be verified. An empty result is a verified inventory: the
+        folder was read and named no AVD, or it is absent and the record holds no unreleased member of the pool."""
+        try:
+            with os.scandir(self.folder): pass
+        except FileNotFoundError:
+            pending = sorted(key for key, entry in entries.items() if key.startswith(self.name + "_")
+                             and isinstance(entry, dict) and device_record.condition(entry) != "released")
+            if pending:
+                raise OSError(f"the AVD folder {self.folder} is missing but the record holds {', '.join(pending)}")
+            return {}
+        except OSError as error:
+            raise OSError(f"the AVD folder {self.folder} cannot be read: {error.strerror or error}") from error
+        return avd.listed(self.folder)
 
     def _reap_check(self, name, entries):
         """Whether the recorded emulator runs, with its observed serial and identity, or why it is kept."""
@@ -419,10 +435,55 @@ class Pool:
                 raise TimeoutError(f"{serial} did not confirm its stop")
             time.sleep(0.2)
 
+    def prune_check(self, name):
+        """Explain whether an explicit member passes the local, read-only idle and liveness checks."""
+        if any(os.environ.get(key) for key in ADB_SERVER_OVERRIDES):
+            return "kept: the check needs the default local adb server"
+        listed = avd.listed(self.folder)
+        item = listed.get(name)
+        if item is None or not item["image"] or not item["device"]:
+            return "kept: no readable AVD image and profile record"
+        members = self.members(avd.image_package(item["image"]), item["device"], listed)
+        if name not in members.values(): return "kept: not a numbered member of the selected pool"
+        if name == members[min(members)]: return "kept: the lowest-numbered member of its kind"
+        path, folder = Path(item["path"]), self.folder.resolve()
+        if (self.folder / f"{name}.ini").is_symlink() or path.is_symlink() or not path.is_dir() or \
+                path.resolve() != folder / f"{name}.avd" or (path / "config.ini").is_symlink() or \
+                item["config"].get("AvdId") != name:
+            return "kept: cannot verify this member's AVD directory and name"
+        entries = self.record.load()["devices"]
+        entry = entries.get(name)
+        if not entry or entry.get("device") != f"avd:{name}" or device_record.condition(entry) != "released":
+            return "kept: no matching released reservation"
+        if any(key != name and other.get("device") == entry["device"] for key, other in entries.items()):
+            return "kept: another reservation names this AVD"
+        if entry.get("keptState") is not False:
+            return "kept: its last reservation kept state or did not record a reset"
+        released = device_record.moment(entry.get("releasedAt"))
+        if released is None or datetime.now(timezone.utc) - released <= PRUNE_AFTER:
+            return "kept: its release was within one hour or could not be read"
+
+        emulator, port, serial = entry.get("emulatorProcess"), entry.get("port"), entry.get("serial")
+        if type(port) is not int or port not in avd.PORTS or serial != f"emulator-{port}" or \
+                not isinstance(emulator, dict) or type(emulator.get("pid")) is not int or emulator["pid"] <= 0 or \
+                offload_host.started(emulator.get("start")) is None:
+            return "kept: its recorded emulator process or port cannot be verified"
+        running, complete = avd.running_inventory()
+        if not complete or name in running.values() or self._reap_listed(serial) or not self._reap_stopped(serial, emulator):
+            return "kept: the emulator could not be confirmed stopped"
+        table = offload_host.process_table(offload_host.listing(offload_host.PS, REAP_QUERY_SECONDS))
+        if not table.get(os.getpid(), {}).get("args"):
+            return "kept: the process census could not verify the AVD is unused"
+        if any(pid != os.getpid() and name in row["args"] for pid, row in table.items()):
+            return "kept: a process still names this AVD"
+        return "passes the read-only check: released more than one hour ago, no emulator or process naming this AVD found"
+
     def status(self):
         """One line per member and template of the pool: its kind, whether its emulator runs, and who holds it."""
-        listed, running = avd.listed(self.folder), avd.running()
+        listed = avd.listed(self.folder)
+        running, complete = avd.running_inventory()
         names = {name: serial for serial, name in running.items()}
+        unobserved = "not listed by adb" if complete else "emulator state unknown (incomplete adb inventory)"
         value = self.record.load()["devices"]
         lines = []
         for name, item in sorted(listed.items()):
@@ -432,7 +493,7 @@ class Pool:
             holder = f" by {entry.get('ownerChatID')}" if state != "released" and entry else ""
             image = avd.image_package(item["image"])
             lines.append(f"{name}: {image or 'unknown image'} as {item['device'] or 'unknown profile'}; "
-                         f"{'running as ' + names[name] if name in names else 'stopped'}; {state}{holder}")
+                         f"{'running as ' + names[name] if name in names else unobserved}; {state}{holder}")
         return lines
 
 
@@ -464,7 +525,13 @@ def main(argv, project=None):
     mine.add_argument("--outcome", default="Released at the session's end")
     reap = actions.add_parser("reap", help="stop and release abandoned pool members on this Mac")
     reap.add_argument("--dry-run", action="store_true", help="report eligible members without stopping or releasing them")
+    reap.add_argument("--farm", action="store_true", help="include active farm Macs in a dry run")
+    prune = actions.add_parser("prune", help="check one idle pool member without removing it")
+    prune.add_argument("--avd", required=True, help="the exact member's AVD name")
+    prune.add_argument("--dry-run", action="store_true", required=True, help="report only, without deleting any files")
     args = parser.parse_args(argv)
+    if args.action == "reap" and args.farm and not args.dry_run:
+        reap.error("--farm requires --dry-run")
     try:
         pool = Pool(args.pool, args.owner)
         if args.action == "list":
@@ -483,10 +550,15 @@ def main(argv, project=None):
             for key, released in results: print(f"{key}: {'released' if released else 'kept for recovery'}")
             return 0 if all(released for _key, released in results) else 1
         elif args.action == "reap":
+            if args.farm:
+                from . import reap_report
+                return reap_report.print_farm(pool)
             results = pool.reap(dry_run=args.dry_run)
             for line, _failed in results: print(line)
             if not results: print(f"{pool.name}: no recorded pool members to reap")
             return 1 if any(failed for _line, failed in results) else 0
+        elif args.action == "prune":
+            print(f"{args.avd}: {pool.prune_check(args.avd)}")
         return 0
     except (OSError, ValueError, RuntimeError, TimeoutError, sdk.Missing) as error:
         print(f"emulator-pool: {error}", file=sys.stderr)
