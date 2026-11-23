@@ -41,6 +41,24 @@ class QuietTests(unittest.TestCase):
 
 
 class CpuTests(unittest.TestCase):
+    def test_owned_trees_keep_separate_cpu_readings_when_a_child_pid_is_reused(self):
+        first = "Tue Nov 10 12:30:00 2026"
+        later = "Tue Nov 10 12:30:01 2026"
+        left, right, child = 120, 130, 140
+        # The left tree still expects the original child. Its next PID selection contains
+        # a valid root row alongside the replacement, so a partial sample must not pass.
+        output = [f"{left} {first} 00:01.25\n{child} {first} 00:00.25\n",
+                  f"{left} {first} 00:02.25\n{child} {later} 00:00.50\n",
+                  f"{right} {first} 00:03.25\n{child} {later} 00:00.50\n"]
+        with patch.object(progress.subprocess, "run", side_effect=[
+                subprocess.CompletedProcess([], 0, rows, "") for rows in output]) as run:
+            left_identities = {left: first, child: first}
+            self.assertEqual(progress.cpu(left_identities), {left: (first, 1.25), child: (first, 0.25)})
+            self.assertIsNone(progress.cpu(left_identities))
+            self.assertEqual(progress.cpu({right: first, child: later}),
+                             {right: (first, 3.25), child: (later, 0.5)})
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["120,140", "120,140", "130,140"])
+
     def test_cpu_reads_exact_pid_and_start_and_supported_clock_forms(self):
         birth = "Tue Nov 10 12:30:00 2026"
         for clock, seconds in (("00:01.25", 1.25), ("01:02:03", 3723), ("2-01:02:03", 176523)):
