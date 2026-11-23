@@ -2900,7 +2900,11 @@ qk admit --foreground -- COMMAND         # on that Mac itself
 the app under test, as a lane's `"apps"` does.
 
 `qk remote foreground` exits 0 when the host is configured and reports whether new runs must wait for
-a holder. It exits 78 when host settings need attention. An uncertain or orphaned lease needs attended
+a holder. A Local Network consent prompt can still block a configured host. Have the owner review
+the prompt on that Mac before retrying. The name shown in the prompt is a display name. If the
+requester is unclear, identify the app that asked before granting access.
+
+The report exits 78 when host settings need attention. An uncertain or orphaned lease needs attended
 recovery even when the host is configured. The check exits 2 and gives the recovery command with the
 lease's revision. It also exits 2 if the lease or its recorded process cannot be verified.
 

@@ -29,6 +29,8 @@ PASSWORD = {"app": "SecurityAgent", "frame": [600, 300, 400, 220],
             "texts": ["Xcode wants to use the login keychain."], "buttons": ["Deny", "Allow"]}
 ACCESS = {"app": "UserNotificationCenter", "frame": [600, 300, 400, 220],
           "texts": ["“Terminal” would like to access files in your Documents folder."], "buttons": ["Don't Allow", "OK"]}
+LOCAL_NETWORK = {**ACCESS, "texts": ["Allow ‘Python’ to find devices on local networks?"],
+                 "buttons": ["Don’t Allow", "Allow"]}
 
 
 class Host:
@@ -125,6 +127,7 @@ class AlertTests(HostTest):
         # A password, permission or keychain prompt is the owner's, whatever process raised it and whatever it offers.
         self.assertIsNone(crash_alerts.dismissal(PASSWORD))
         self.assertIsNone(crash_alerts.dismissal(ACCESS))
+        self.assertIsNone(crash_alerts.dismissal(LOCAL_NETWORK))
         self.assertIsNone(crash_alerts.dismissal({**PASSWORD, "app": "UserNotificationCenter",
                                                   "texts": ["Xcode quit unexpectedly. Enter your password."]}))
         self.assertIsNone(crash_alerts.dismissal({**CRASH, "texts": ["The disk was not ejected properly."]}))
@@ -723,6 +726,15 @@ class ReportTests(unittest.TestCase):
         with patch.object(remote, "ask", return_value=found), contextlib.redirect_stdout(StringIO()) as output:
             self.assertEqual(remote.foreground_report("build-host"), 0)
         return output.getvalue()
+
+    def test_a_local_network_consent_prompt_blocks_foreground_work_even_when_ssh_is_ready(self):
+        said = self.report({"alerts": [CRASH, LOCAL_NETWORK]})
+        self.assertIn("ColorPickerUIService quit unexpectedly.", said)
+        self.assertIn(LOCAL_NETWORK["texts"][0], said)
+        self.assertIn("SSH setup is ready. A Local Network consent prompt blocks foreground work.", said)
+        self.assertIn("Have the owner review it on build-host before trying again.", said)
+        self.assertNotIn("Ready for foreground work started over SSH.", said)
+        self.assertNotIn("Local Network consent", self.report({"alerts": [CRASH, ACCESS]}))
 
     def test_eng_remote_foreground_reports_leftover_alerts_and_dialogs_left_off(self):
         said = self.report({"value": "basic", "record": None, "alerts": [CRASH]})

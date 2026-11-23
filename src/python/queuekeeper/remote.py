@@ -2715,6 +2715,14 @@ def offering_here(here, send):
                                         f"`{here}`") from None
 
 
+def local_network_prompt(dialogs):
+    """Whether the receiver reported the Local Network consent prompt, without guessing the requester."""
+    return any(alert.get("app") == "UserNotificationCenter"
+               and {"allow", "don't allow"} <= {button.casefold().replace("’", "'") for button in alert["buttons"]}
+               and any(re.search(r"\blocal networks?\b", words, re.IGNORECASE) for words in alert["texts"])
+               for alert in (dialogs or {}).get("alerts") or ())
+
+
 def foreground_report(host):
     """Print what another Mac lacks for foreground work started over SSH, each with the owner's fix, and who
     holds its foreground. A lease needing attended recovery is refused as it is by admission."""
@@ -2741,7 +2749,8 @@ def foreground_report(host):
             print(f"- {entry['uncertainReason']}")
         command = offload_host.recover_command("mac-foreground", entry.get("revision", 0), host=host, toolkit=TOOLKIT_ROOT)
         print(f"- after checking what the run left, recover that Mac's lease with `{command}`")
-    for line in crash_dialog_report(found.get("crashDialogs"), entry): print(line)
+    dialogs = found.get("crashDialogs")
+    for line in crash_dialog_report(dialogs, entry): print(line)
     if "captureApprovals" in found:  # another Mac whose toolkit predates them says nothing
         for line in plugins.FOREGROUND.capture_lines(found["captureApprovals"]): print(line)
     for problem, fix in found.get("problems", []):
@@ -2752,6 +2761,10 @@ def foreground_report(host):
         return MISCONFIGURED
     if condition in ("orphan", "uncertain", "unknown"):
         return 2
+    if local_network_prompt(dialogs):
+        print("SSH setup is ready. A Local Network consent prompt blocks foreground work. "
+              f"Have the owner review it on {called(host)} before trying again.")
+        return 0
     print("Ready for foreground work started over SSH." if condition == "released" else
           "Configured for foreground work started over SSH. New runs wait for the holder to release it.")
     return 0
