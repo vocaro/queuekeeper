@@ -740,6 +740,10 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   of failed writes under `publicationFailures`. `lastLogUnavailable` and `lastPublicationFailure`
   keep bounded details of the latest errors. These diagnostics stay in the retained receipt,
   whose write counts cover only its own publication.
+  The next retained write includes `liveMirrorFailures`, the number of failed delivery attempts
+  across destinations for running observations, and `lastLiveMirrorFailure` with bounded details
+  of the latest one.
+  Other destinations can still receive the observation, and the failure does not reset its quiet interval.
   Stopping rechecks output and CPU, uses the supervisor's TERM and KILL, and reports `Stalled` as
   unmeasured only after the owned tree has ended.
 

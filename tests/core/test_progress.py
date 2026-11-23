@@ -260,6 +260,41 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(retained["lastPublicationFailure"], {
                 "observedAt": 1, "error": "x" * progress.DIAGNOSTIC_LIMIT + " [truncated]"})
 
+    def test_a_failed_live_mirror_is_retained_without_resetting_the_quiet_interval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "run.log"
+            log.touch()
+            failed, working = (Path(directory) / name / "live.json" for name in ("failed", "working"))
+            monitor = progress.Monitor({"seconds": 1, "action": "stop"}, log, None)
+            monitor.live_paths = [failed, working]
+            replace = Path.replace
+
+            def replace_mirror(staged, target):
+                if target == failed and progress.time.monotonic() == 0:
+                    raise OSError("x" * progress.DIAGNOSTIC_LIMIT + "private tail")
+                return replace(staged, target)
+
+            with patch.object(progress, "cpu", return_value={1: ("birth", 0)}), \
+                    patch.object(Path, "replace", replace_mirror), contextlib.redirect_stderr(StringIO()) as error:
+                for moment in (0, 1):
+                    with patch.object(progress.time, "monotonic", return_value=moment), \
+                            patch.object(progress.time, "time", return_value=moment):
+                        detail = monitor.observe({1: "birth"})
+                    self.assertEqual(bool(detail), moment == 1)
+                    self.assertTrue(working.is_file())
+                    self.assertEqual(failed.is_file(), moment == 1)
+                    self.assertFalse(failed.with_name("live.json.tmp").exists())
+            retained = json.loads(monitor.status.read_text())
+            self.assertEqual(retained["publicationFailures"], 0)
+            self.assertEqual(retained["liveMirrorFailures"], 1)
+            self.assertEqual(retained["lastLiveMirrorFailure"], {
+                "observedAt": 0, "error": "x" * progress.DIAGNOSTIC_LIMIT + " [truncated]"})
+            self.assertNotIn("private tail", error.getvalue())
+            for path in (failed, working):
+                live = json.loads(path.read_text())
+                self.assertNotIn("liveMirrorFailures", live)
+                self.assertNotIn("lastLiveMirrorFailure", live)
+
 
 class LaneTests(unittest.TestCase):
     def test_an_unwritable_observation_does_not_stop_the_command_or_change_its_result(self):

@@ -99,6 +99,7 @@ class Monitor:
         self.cpu_unavailable_samples, self.last_cpu_unavailable = {}, None
         self.log_unavailable_samples, self.last_log_unavailable = {}, None
         self.publication_failures, self.last_publication_failure = 0, None
+        self.live_mirror_failures, self.last_live_mirror_failure = 0, None
         self.publication_failed = False
         from . import lane_progress
         self.live_paths = lane_progress.destinations(self.run, self.status)
@@ -159,9 +160,7 @@ class Monitor:
             if quiet is not None: self.unobservable += 1
             self.last.update(state="unobservable", quietSeconds=None, lastProgressAt=None,
                              unobservableSamples=self.unobservable)
-            if self.live_paths:
-                from . import lane_progress
-                lane_progress.publish(self.last, self.live_paths)
+            self.publish_live()
             self.warned = False
             return None
         if not stalled:
@@ -180,6 +179,16 @@ class Monitor:
         self.cpu_unavailable_samples[reason] = self.cpu_unavailable_samples.get(reason, 0) + 1
         self.last_cpu_unavailable = {"reason": reason, "observedAt": time.time(), **evidence}
 
+    def record_live_mirror_failure(self, error):
+        self.live_mirror_failures += 1
+        self.last_live_mirror_failure = {"observedAt": time.time(), "error": diagnostic_text(str(error))}
+
+    def publish_live(self):
+        if self.live_paths:
+            from . import lane_progress
+            unavailable = self.record_live_mirror_failure if self.last["phase"] == "running" else None
+            lane_progress.publish(self.last, self.live_paths, unavailable=unavailable)
+
     def write(self):
         self.status.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.status.with_name(self.status.name + ".tmp-" + self.run)
@@ -187,10 +196,12 @@ class Monitor:
             retained = {**self.last, "samplingGapSamples": self.sampling_gaps,
                         "cpuUnavailableSamples": self.cpu_unavailable_samples,
                         "logUnavailableSamples": self.log_unavailable_samples,
-                        "publicationFailures": self.publication_failures}
+                        "publicationFailures": self.publication_failures,
+                        "liveMirrorFailures": self.live_mirror_failures}
             if self.last_cpu_unavailable is not None: retained["lastCpuUnavailable"] = self.last_cpu_unavailable
             if self.last_log_unavailable is not None: retained["lastLogUnavailable"] = self.last_log_unavailable
             if self.last_publication_failure is not None: retained["lastPublicationFailure"] = self.last_publication_failure
+            if self.last_live_mirror_failure is not None: retained["lastLiveMirrorFailure"] = self.last_live_mirror_failure
             temporary.write_text(json.dumps(retained, indent=2) + "\n")
             temporary.replace(self.status)
         except OSError:
@@ -212,15 +223,11 @@ class Monitor:
             self.publication_failed = True
             return False
         self.publication_failed = False
-        if self.live_paths:
-            from . import lane_progress
-            lane_progress.publish(self.last, self.live_paths)
+        self.publish_live()
         return True
 
     def finish(self, state, settled=True):
         if self.last is not None:
             self.last.update(phase="ended" if settled else "uncertain", state=state, finishedAt=time.time())
             self.publish()
-            if self.live_paths:
-                from . import lane_progress
-                lane_progress.publish(self.last, self.live_paths)
+            self.publish_live()

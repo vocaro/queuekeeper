@@ -50,6 +50,7 @@ def write(path, record):
     except OSError:
         try: staged.unlink()
         except OSError: pass
+        raise
 
 
 def read(path):
@@ -97,7 +98,8 @@ def in_directory(folder, since=None, *, verify=True, limit=LIMIT):
     return sorted(records, key=lambda record: (record.get("lane") or "", record["run"]))
 
 
-def publish(record, paths):
+def publish(record, paths, *, unavailable=None):
+    """Mirror a record best effort, optionally reporting each failed destination to its publisher."""
     for path in paths:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +113,8 @@ def publish(record, paths):
                     if record.get("phase") != "running" or previous.get("startedAt", 0) > record.get("startedAt", 0): continue
                 if record.get("phase") != "running": path.unlink(missing_ok=True)
                 else: write(path, record)
-        except (OSError, TypeError): pass
+        except (OSError, TypeError) as error:
+            if unavailable is not None: unavailable(error)
 
 
 def destinations(run, leaf=None):
