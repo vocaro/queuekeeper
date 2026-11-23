@@ -538,6 +538,18 @@ that names a Metal Toolchain mount macOS has since replaced (see [The simulator 
 unmeasured. The worker waits for a Mac to settle (CPU under its busy limit and memory pressure
 normal, for up to an hour) and runs the lanes again.
 
+If a gate repeatedly ends unmeasured, read its lane log for the command's reason. When a
+measurement reports that other work interfered, check whether the lane uses shared admission.
+Ordinary admission can let another job start during the gate. A whole-host lane keeps other
+Queuekeeper jobs off its Mac while it runs. A timing check that needs the Mac to itself should
+take exclusive admission for the measurement. See [Choosing the request](#choosing-the-request).
+
+- **Retry placement** follows the lane's usual requirements and the farm's current capacity. The
+  worker checks which Macs could take the lane as it waits, so the retry can run on the same Mac
+  or another eligible one. A timeout, a missing dispatch result, a signal with an unknown sender,
+  or a pass on another Mac leaves the cause of the earlier run open. For a lost dispatch, check
+  its [retained journal](#following-a-direct-run-on-another-mac) for a verdict or a recorded stop before
+  attributing the loss to a Mac.
 - **Three runs in a row without a verdict** send back the batch with the reason and the gate
   log. The worker records both `qk doctor --check-only` and `qk queue doctor` and continues with the queue.
   With the [notify feature](#the-notify-feature) on, the usual send-back notice tells the owner.
@@ -1673,7 +1685,9 @@ for a slot and chooses the Mac.
   minutes for the CPU to read under 25% busy, and starts anyway at that bound. Its command then
   finds what admission read in `QUEUEKEEPER_HOST_BUSY`, `QUEUEKEEPER_HOST_LOAD`,
   `QUEUEKEEPER_HOST_SETTLED_SECONDS` and `QUEUEKEEPER_HOST_QUIET` (1 when the Mac read quiet). A
-  check that must judge the Mac reads `QUEUEKEEPER_HOST_QUIET` rather than waiting on its own.
+  check that requires a quiet start can report an unmeasured result (exit 3) when
+  `QUEUEKEEPER_HOST_QUIET` is `0`. This is a reading at startup. Work that starts outside
+  Queuekeeper can still interfere during the measurement.
 - **A model run that is timed** or compared with a baseline stays exclusive. Core ML pinned off
   the GPU (`.cpuAndNeuralEngine`, `.cpuOnly`) needs no model lock.
 - **`qk doctor` warns** of a `self` lane whose command never calls `qk admit`.
