@@ -2194,8 +2194,20 @@ project sees.
 
 Some projects copy `scripts/qk` so their commands can find Queuekeeper without relying on PATH.
 Projects that use the vocaro-engineering toolkit may also carry its `scripts/_engineering.py`.
-Without `scripts/qk`, the worker uses this checkout's `bin/qk`. Before removing a copy, check
-the project's lane commands, hooks and scripts for direct references to it.
+A project can use the [installed `qk`](user_guide.md#install) and drop its `scripts/qk` copy.
+Without that file, the worker uses the Queuekeeper checkout's `bin/qk` for its own lane dispatch.
+Explicit commands in the project still run as written. To remove a copy:
+
+1. In the project, search lane commands, hooks, scripts and agent instructions for calls to
+   `scripts/qk`. Use the installed `qk` for agent and Terminal commands. When a lane or helper
+   needs the worker's selected Queuekeeper revision, invoke `"$QUEUEKEEPER_ROOT/bin/qk"` from
+   its shell wrapper when that variable is set, with the installed `qk` as the local fallback.
+   Check the commands in the worker's environment on each Mac that can run the lanes.
+2. Remove the copy on the project branch. From that checkout, run `qk doctor`, verify the
+   affected lanes through admission and land the migration through the project's queue.
+   Check the landing to confirm the worker ran the expected lanes without the copy.
+
+Review callers of the vocaro-engineering toolkit's `scripts/_engineering.py` separately.
 
 When `qk doctor` loads Queuekeeper from a checkout, its `notes` flag a differing `scripts/qk`
 copy with Queuekeeper's launcher header and name the source it compared. A project can keep that

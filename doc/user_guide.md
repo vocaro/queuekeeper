@@ -218,7 +218,7 @@ use after login. The worker uses the account's normal Git and SSH credentials.
 
 ```sh
 draft="$(mktemp)"
-python3 scripts/qk queue launcher-plist "$app" > "$draft" &&
+qk queue launcher-plist "$app" > "$draft" &&
   label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$draft")" &&
   mkdir -p "$HOME/Library/LaunchAgents" &&
   install -m 644 "$draft" "$HOME/Library/LaunchAgents/$label.plist" &&
@@ -646,9 +646,9 @@ one of `queue.lanes` or else `gate`, lists `inputs`: the globs of the paths that
 ```json
 "lanes": {
   "unit": {"command": ["python3", "scripts/qk", "unittest", "-s", "tests"],
-           "inputs": ["src/python/**", "tests/**", "schemas/*.json"]},
+           "inputs": ["scripts/qk", "src/python/**", "tests/**", "schemas/*.json"]},
   "app":  {"command": ["xcodebuild", "test", "-scheme", "App"],
-           "inputs": ["apple/**", "*.xcconfig", "schemas/*.json"]}
+           "inputs": ["scripts/qk", "apple/**", "*.xcconfig", "schemas/*.json"]}
 },
 "queue": {"lanes": ["unit", "app"]}
 ```
@@ -691,15 +691,16 @@ one of `queue.lanes` or else `gate`, lists `inputs`: the globs of the paths that
   that matches no tracked file is a warning, listed in `affectedPaths.unmatched`.
 
 List every path a lane reads: a file left off a lane's `inputs` lands untested by that lane, and
-the next batch that runs the lane takes the blame. Read `qk doctor`'s list after each change to
-the globs.
+the next batch that runs the lane takes the blame. Where a project keeps a copy of `scripts/qk`,
+include it in each lane's inputs. The worker uses the copy to start the lanes. Read
+`qk doctor`'s list after each change to the globs.
 
 **A gate that is a lane group** takes `inputs` in one of two ways, never both:
 
 ```json
 "lanes": {
-  "unit": {"command": ["python3", "scripts/qk", "unittest", "-s", "tests"], "inputs": ["src/python/**", "tests/**"]},
-  "app":  {"command": ["xcodebuild", "test", "-scheme", "App"], "inputs": ["apple/**", "*.xcconfig"]},
+  "unit": {"command": ["python3", "scripts/qk", "unittest", "-s", "tests"], "inputs": ["scripts/qk", "src/python/**", "tests/**"]},
+  "app":  {"command": ["xcodebuild", "test", "-scheme", "App"], "inputs": ["scripts/qk", "apple/**", "*.xcconfig"]},
   "gate": {"parallel": ["unit", "app"], "resource": "heavy"}
 }
 ```
