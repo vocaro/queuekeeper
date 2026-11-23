@@ -2,7 +2,9 @@
 from contextlib import redirect_stderr, redirect_stdout
 from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -60,6 +62,33 @@ class LauncherPatch(unittest.TestCase):
     def test_current_copy_has_no_patch(self):
         self.commit(self.project, NEW)
         self.assertEqual(launcher_patch.prepare(self.project, self.source), b"")
+
+    def test_bare_command_prepares_a_refresh_the_project_launcher_can_run(self):
+        # Give the source its real entry point and core package, keeping the launcher's history
+        # in the fixture so the test also works when the suite runs without Git history of its own.
+        toolkit = cli.TOOLKIT_ROOT
+        shutil.copytree(toolkit / "src/python", self.source / "src/python",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        command = self.source / "bin/qk"
+        command.parent.mkdir()
+        shutil.copyfile(toolkit / "bin/qk", command)
+        self.commit(self.source, (toolkit / FILE).read_bytes())
+        environment = host_isolation.reduced(self.environment)
+        environment.pop("PYTHONPATH", None)
+        prepared = subprocess.run([sys.executable, str(command), "launcher-patch"], cwd=self.project,
+                                  env=environment, capture_output=True, timeout=host_isolation.stretched(60))
+        self.assertEqual(prepared.returncode, 0, prepared.stderr.decode())
+        self.assertEqual(prepared.stderr, b"")
+        self.assertEqual(self.git(self.project, "status", "--porcelain"), b"")
+        self.git(self.project, "apply", "--check", data=prepared.stdout)
+        self.git(self.project, "apply", data=prepared.stdout)
+
+        refreshed = subprocess.run([sys.executable, FILE, "--version"], cwd=self.project,
+                                   env={**environment, "QUEUEKEEPER_ROOT": str(self.source)},
+                                   capture_output=True, text=True, timeout=host_isolation.stretched(60))
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        self.assertEqual(refreshed.stdout.strip(), cli.__version__)
+        self.assertEqual(self.git(self.project, "status", "--porcelain"), b" M scripts/qk\n")
 
     def test_patch_uses_source_head_even_when_the_source_launcher_has_local_edits(self):
         (self.source / FILE).write_bytes(NEW + b"# local source edit\n")
