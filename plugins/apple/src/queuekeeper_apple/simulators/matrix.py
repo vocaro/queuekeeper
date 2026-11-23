@@ -72,6 +72,7 @@ import tempfile
 import threading
 import time
 from types import SimpleNamespace
+from urllib.parse import unquote, urlsplit
 import uuid
 
 from queuekeeper import lane_report, lane_results, plugins, processes, resources
@@ -641,6 +642,41 @@ def kept(kind, log, record, status, seconds, results=None, unread=None, by="qk s
     return folder
 
 
+def isolated_outcome(record, selector, status):
+    """The exact measured outcome from this invocation's bundle, if it selected one plain method."""
+    expected = {0: ("Passed", "passed"), 65: ("Failed", "failed")}.get(status)
+    if record is None or expected is None: return None
+    summary, tree = record
+    if (summary.get("totalTestCount"), summary.get("skippedTests"), summary.get("result")) != (1, 0, expected[0]):
+        return None
+    cases = test_cases(record)
+    if len(cases) != 1 or cases[0]["outcome"] != expected[1]: return None
+    case = cases[0]
+    identity = case.get("identifierURL")
+    if not identity: return None
+    # Xcode's display ID can omit the target. Its URL must also agree with every selector component.
+    target, suite, method = selector.split("/")
+    if case["test"] not in (f"{suite}/{method}", selector): return None
+    try: address = urlsplit(identity)
+    except ValueError: return None
+    path = [unquote(part) for part in address.path.split("/")]
+    if (address.scheme, address.netloc, address.query, address.fragment) != ("test", "com.apple.xcode", "", ""):
+        return None
+    if (len(path) != 5 or path[:1] != [""] or not path[1] or path[2:4] != [target, suite]
+            or path[4] not in (method, method.removesuffix("()"))):
+        return None
+
+    def has_case_variants(nodes, in_case=False):
+        for node in nodes:
+            kind = node.get("nodeType")
+            if in_case and kind in ("Arguments", "Test Case", "Test Case Run"): return True
+            if has_case_variants(node.get("children", []), in_case or kind == "Test Case"): return True
+        return False
+
+    if has_case_variants(tree.get("testNodes", [])): return None
+    return {"identifierURL": identity, "outcome": expected[1]}
+
+
 class Run:
     def __init__(self, args):
         self.args, self.lock, self.results = args, threading.Lock(), {}
@@ -650,6 +686,8 @@ class Run:
         # Each test run's own, for a series: what finished it, its seconds, its test counts and its loads.
         self.details, self.durations, self.tallies, self.loads = {}, {}, {}, {}
         self.daemon_crashes = set()
+        self.isolated = {}
+        self.isolated_selector = None
 
     def say(self, *lines):
         with self.lock: print(*lines, sep="\n", flush=True)
@@ -903,6 +941,8 @@ class Run:
             kept_status = lane_results.UNMEASURED
             unmeasured.extend(f"{kind}: -[{test}] : {UNMEASURED_SKIP} {TESTMANAGERD_CRASH}" for test in tests)
         kept(kind, log, record, kept_status, seconds, cases=cases, console_failures=interruption is None)
+        if self.isolated_selector and not unmeasured:
+            self.isolated[kind] = isolated_outcome(record, self.isolated_selector, kept_status)
         # The failed tests are counted in this line, which is all a lane reads of the device's run: the device's own
         # lines that name them are in its log alone (vocaro/queuekeeper#81).
         counted = f"Executed {executed} tests" + (f", {skipped} skipped" if skipped else "") + \
@@ -1230,6 +1270,10 @@ def series(run, pool, args, kinds):
     built once, on the first round's destination. Each run's outcome stands apart, a run that could not take its
     member, or that the series stopped before, counts unmeasured, and a failed build ends the series there. Returns
     the series' status, and reports it however the series ended."""
+    if (len(kinds) == len(args.only) == 1 and not args.workers and (args.erase or args.template)
+            and args.passed == [f"-only-testing:{args.only[0]}"]
+            and re.fullmatch(r"[\w.-]+/[\w.-]+/\w+(?:\(\))?", args.only[0])):
+        run.isolated_selector = args.only[0]
     purpose = f"qk simulator-tests {args.scheme}, repeat series"
     asked = [(number, kind, f"{kind}-run{number}") for number in range(1, args.repeat + 1) for kind in kinds]
     members, built = {}, None
@@ -1270,8 +1314,17 @@ def series(run, pool, args, kinds):
                     f"{load_words(result['load'])}" + (f"; {result['seconds']}s" if result["seconds"] is not None else "")
                     + (f"; {result['detail']}" if result["detail"] else ""))
         summary = series_summary(args, kinds, runs)
-        keep_series(run, {**summary, "host": os.uname().nodename, "scheme": args.scheme, "testArguments": args.passed,
-                          "eachRun": runs})
+        record = {**summary, "host": os.uname().nodename, "scheme": args.scheme, "testArguments": args.passed,
+                  "eachRun": runs}
+        if run.isolated_selector:
+            observations = []
+            for result in runs:
+                measure = run.isolated.get(result["label"])
+                if measure and measure["outcome"] == result["outcome"]:
+                    observations.append({"run": result["run"], **measure})
+            record["isolatedTest"] = {"selector": run.isolated_selector, "runtime": args.runtime,
+                                      "observations": observations}
+        keep_series(run, record)
         run.say(series_line(summary))
     try:
         with ThreadPoolExecutor(max_workers=1) as builder:

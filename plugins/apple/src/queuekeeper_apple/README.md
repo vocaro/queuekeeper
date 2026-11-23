@@ -51,6 +51,14 @@ with its own log and result bundle.
 
 It covers iOS simulators only, one runtime per run.
 
+To investigate an intermittent case, repeat it on one device type with `--erase` and pass its
+fully qualified `TARGET/SUITE/METHOD` selector as `--only`, quoting a Swift Testing method's
+parentheses. For example, add `--repeat 2 --erase --only 'AppTests/Smoke/testOpens()'`. The
+`isolatedTest` observations in `series.json` include a pass or failure from a run only when its
+fresh bundle shows that exact, single case. Use the recorded identifier URL to match cases across
+runs. Missing, ambiguous, skipped and parameterized cases do not supply an observation. A failed
+run still fails the series. These observations do not change merge queue verdicts.
+
 ## Swift package tests
 
 `swift test --parallel` reports a skipped XCTest test as passed and prints no total.

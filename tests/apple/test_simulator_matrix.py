@@ -289,6 +289,16 @@ XCODEBUILD = textwrap.dedent("""\
             if console := os.environ.get("FAKE_BUNDLE_CONSOLE"):
                 print(console)
             sys.exit(65)
+    elif identity := os.environ.get("FAKE_ISOLATED_BUNDLE"):
+        failed = at_run("FAKE_FAIL_RUN")
+        if run_number != int(os.environ.get("FAKE_MISSING_CASE_RUN", "0")):
+            result = "Failed" if failed else "Passed"
+            (bundle / "summary.json").write_text(json.dumps({"result": result, "totalTestCount": 1,
+                                                             "failedTests": int(failed), "skippedTests": 0}))
+            (bundle / "tests.json").write_text(json.dumps({"testNodes": [{"nodeType": "Test Case", "result": result,
+                "nodeIdentifier": "Smoke/testOpens()", "nodeIdentifierURL": identity}]}))
+        print(f"Executed 1 tests, with {int(failed)} failures (0 unexpected) in 0.1 (0.1) seconds")
+        sys.exit(65 if failed else 0)
     elif os.environ.get("FAKE_BUNDLE"):
         # The bundle's own record: three tests, testA skipped, unmeasured when asked.
         skip = {"name": "Test skipped - Unmeasured: the host was busy" if unmeasured else "Test skipped - planted",
@@ -458,6 +468,48 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(record["runs"], {"passed": 2, "failed": 1, "skipped": 0, "unmeasured": 0})
         self.assertIn("runs: 2 passed, 1 failed, 0 skipped, 0 unmeasured", output)
         self.assertEqual(len(self.ran_tests()), 3, "a failure does not stop the series")
+
+    def test_an_isolated_series_keeps_measured_outcomes_without_changing_its_verdict(self):
+        identity = "test://com.apple.xcode/App/AppTests/Smoke/testOpens()"
+        selector = "AppTests/Smoke/testOpens()"
+        args = ("--repeat", "2", "--erase", "--only", selector)
+        env = {"FAKE_ISOLATED_BUNDLE": identity, "FAKE_FAIL_RUN": "iPhone-17-Pro:1"}
+        status, output = self.run_series(*args, **env)
+        self.assertEqual(status, 1, output)
+        self.assertEqual(self.series_record()["isolatedTest"], {
+            "selector": selector, "runtime": "iOS-27-0", "observations": [
+                {"run": 1, "identifierURL": identity, "outcome": "failed"},
+                {"run": 2, "identifierURL": identity, "outcome": "passed"}]})
+        self.assertEqual([call[-1] for call in self.ran_tests()], [f"-only-testing:{selector}"] * 2)
+
+    def test_an_isolated_series_needs_a_fresh_matching_bundle_on_each_run(self):
+        identity = "test://com.apple.xcode/App/AppTests/Smoke/testOpens"
+        selector = "AppTests/Smoke/testOpens()"
+        args = ("--repeat", "2", "--erase", "--only", selector)
+        env = {"FAKE_ISOLATED_BUNDLE": identity, "FAKE_FAIL_RUN": "iPhone-17-Pro:1"}
+        status, output = self.run_series(*args, **env)
+        self.assertEqual(status, 1, output)
+        self.assertEqual(len(self.series_record()["isolatedTest"]["observations"]), 2)
+        (self.state / "runs-iPhone-17-Pro").unlink()
+        status, output = self.run_series(*args, **env, FAKE_MISSING_CASE_RUN="2")
+        self.assertEqual(status, 1, output)
+        self.assertEqual(self.series_record()["isolatedTest"]["observations"], [
+            {"run": 1, "identifierURL": identity, "outcome": "failed"}])
+
+    def test_an_isolated_outcome_rejects_other_cases_even_when_the_display_name_matches(self):
+        selector = "AppTests/Smoke/testOpens"
+        identity = "test://com.apple.xcode/App/AppTests/Smoke/testOpens"
+        summary = {"result": "Passed", "totalTestCount": 1, "skippedTests": 0}
+        case = {"nodeType": "Test Case", "nodeIdentifier": "Smoke/testOpens", "result": "Passed",
+                "nodeIdentifierURL": identity}
+        self.assertEqual(matrix.isolated_outcome((summary, {"testNodes": [case]}), selector, 0),
+                         {"identifierURL": identity, "outcome": "passed"})
+        for records in ([{**case, "nodeIdentifierURL": identity.replace("AppTests", "OtherTests")}],
+                        [{**case, "nodeIdentifierURL": ""}], [{**case, "result": "Expected Failure"}],
+                        [{**case, "result": "Skipped"}], [case, case],
+                        [{**case, "children": [{"nodeType": "Arguments"}]}]):
+            with self.subTest(records=records):
+                self.assertIsNone(matrix.isolated_outcome((summary, {"testNodes": records}), selector, 0))
 
     def test_an_unmeasured_run_leaves_a_series_unmeasured_and_never_passes_it(self):
         self.add("Project iPhone 17 Pro 1")
