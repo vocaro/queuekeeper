@@ -1828,6 +1828,10 @@ Code: `queuekeeper_apple/simulators/pool.py` and `template.py`.
   owner declined. `stable_runner_path(PROJECT, BUNDLE)`, `stage` (a `ditto` copy, refused while one runs
   from it) and `rebind` (the xctestrun's paths) launch runners from one path per Mac. Reading the plist is
   harmless; never edit it.
+  Keep `CAPTURE_RUNNERS`, the project directory and the bundle name stable across rebuilds and checkout
+  slots. The stable-path test pins the directory layout, and the signing test checks that staging
+  preserves the copied bundle's signature. If a change moves the launch path, tell the owner to
+  expect and review the next prompt at that path.
 - **Crash alerts** (`crash_alerts.py`). The run keeps `com.apple.CrashReporter DialogType` in
   `~/Library/Application Support/queuekeeper/crash-dialog.json`, sets it to `none`, and puts back the
   exact value (deleting the key if it was unset); the next Queuekeeper command on that Mac restores one a

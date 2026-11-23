@@ -2923,6 +2923,13 @@ XCTest's "Automation Running" banner cannot be turned off with System Integrity 
 VoiceOver stops at the banner is unmeasured, and a project's session runner runs it again a bounded
 number of times. Builds signed ad hoc are unmeasured there; signing with a team needs that Mac's keychain.
 
+Before dispatching a capture, look for the exact runner path in `qk remote foreground` on the intended
+Mac. The stable path includes the project directory and the runner's `.app` name. A line for the SSH
+command host covers that host's own captures. A line for a different runner path is a separate record.
+If the runner's line is absent or lapsed, plan an attended first capture so the owner can review the
+macOS prompt. If the approval record cannot be read, its status is unknown. The foreground readiness
+verdict covers the host settings and lease, while the approval lines report the recorded prompt dates.
+
 #### Running and waiting
 
 - **Results.** A lane writes what must come back, transcripts included, in the folder named by
