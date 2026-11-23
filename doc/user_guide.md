@@ -3105,6 +3105,11 @@ editor that will not close, say for unsaved changes, ends the run unmeasured. A 
 says `"unity": true`, and Queuekeeper checks on the Mac that runs it that a batch run can start; when it
 cannot, the lane ends unmeasured rather than failed.
 
+To restrict placement to Macs with verified batch licensing, add `"labels": ["unity-license"]` to
+the named lane. Verify licensing with an admitted batch run in the session context the lane uses
+before [labeling the Mac](../plugins/unity/src/queuekeeper_unity/README.md#lanes). For a one-off
+command that starts Unity, use `qk admit --here -- COMMAND` on a Mac where that check passed.
+
 A second session on a Mac:
 
 1. Create the worktree, and open its editor with `qk unity open --ensure` when needed, expecting a cold

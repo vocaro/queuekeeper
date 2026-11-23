@@ -33,10 +33,15 @@ editor is never closed or counted as this project's.
 
 ## Lanes
 
-A lane whose command runs the editor says so:
+A lane whose command needs a licensed editor declares both Unity readiness and a placement label:
 
 ```json
-"gate": {"command": ["./tools/verification/check.sh", "--gates"], "resource": "exclusive", "unity": true}
+"gate": {
+  "command": ["./tools/verification/check.sh", "--gates"],
+  "resource": "exclusive",
+  "unity": true,
+  "labels": ["unity-license"]
+}
 ```
 
 Queuekeeper then runs the command under `qk unity ready --` on whichever Mac runs the lane.
@@ -49,15 +54,16 @@ keeps simulating on the GPU while it is unfocused. So a `"unity": true` lane who
 `exclusive` also ends unmeasured while any editor on that Mac, on any project, is in Play mode.
 A paused editor, or one whose Play state cannot be read, does not stop it.
 
-For a lane that needs a licensed editor, add `"labels": ["unity-license"]` to the lane. Give that
-label only to Macs where an admitted Unity batch run has obtained a license in the same session
-context the lane uses. Set it in each Mac's `mac-settings.json` as described under
+The readiness checks complete before Unity tries to obtain a license. Verify licensing with an
+admitted batch run in the same session context the lane uses, such as a dispatch over SSH. Give
+the `unity-license` label to Macs where that check passes.
+Set it in each Mac's `mac-settings.json` as described under
 [What a Mac takes](../../../../doc/user_guide.md#what-a-mac-takes). Placement leaves Macs without the
 label out. A lane whose results differ by GPU can require both `unity-license` and a chip label,
 such as `apple-m5-max`.
 
-A command under bare `qk admit` can go to another Mac without the lane's labels. For a one-off
-Unity command, use `qk admit --here -- COMMAND` on a Mac where licensing has been verified.
+Labels apply when Queuekeeper places a named lane. For a one-off Unity command or a script that
+starts Unity, use `qk admit --here -- COMMAND` on a Mac where batch licensing has been verified.
 
 ## Flaky tests
 
@@ -128,7 +134,8 @@ unity: 1 passed, 1 failed
 `--filter TEST` runs only the test whose full name is TEST, as the merge queue reruns a failed
 test alone ([Flaky tests](#flaky-tests)), and exits 3 when no such test ran.
 
-Started outside a lane, it is admitted and placed first, as `qk admit` would run it.
+Started outside a lane, it is admitted and placed first, as `qk admit` would run it. To require
+the `unity-license` label, use it as the command of a named lane with that label.
 `--unadmitted` after `test` runs it with no admission, on this Mac.
 
 ```bash
