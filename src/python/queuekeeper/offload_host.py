@@ -1278,21 +1278,24 @@ def host_health():
     return reading
 
 
-def toolchain(developer_dir):
-    """The Mac's identity with the Xcode at developer_dir, its default Xcode (`xcode-select -p`), the
-    simulator runtimes the Xcode at developer_dir lists and its device record, which `qk doctor`
-    compares."""
-    found = identity(developer_dir)
+def apple_toolchain_inventory(developer_dir, selected_xcode):
+    """The default Xcode and the runtime inventory for the selected Xcode."""
     default = output(["xcode-select", "-p"])
     runtimes = None
-    if found["xcode"]:
+    if selected_xcode:
         listed = output(["xcrun", "simctl", "list", "runtimes", "-j"], {**os.environ, "DEVELOPER_DIR": developer_dir})
         try:
             runtimes = sorted(f"{runtime['name']} ({runtime['buildversion']})"
                               for runtime in json.loads(listed)["runtimes"] if runtime.get("isAvailable"))
         except (TypeError, ValueError, KeyError):
             pass
-    return {**found, "defaultDeveloperDir": default, "defaultXcode": xcode(default), "runtimes": runtimes,
+    return {"defaultDeveloperDir": default, "defaultXcode": xcode(default), "runtimes": runtimes}
+
+
+def toolchain(developer_dir):
+    """The Mac's identity, Apple toolchain inventory and local diagnostics that `qk doctor` compares."""
+    found = identity(developer_dir)
+    return {**found, **apple_toolchain_inventory(developer_dir, found["xcode"]),
             "deviceRecord": device_record(), "pythonCrashes": python_crash_reports(), "hostHealth": host_health()}
 
 

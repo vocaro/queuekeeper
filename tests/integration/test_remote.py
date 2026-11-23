@@ -374,6 +374,35 @@ def ignored_exceptions():
 class HostCommandTests(unittest.TestCase):
     """The self-contained host program, including the login shell's second quoting layer."""
 
+    def test_toolchain_answer_keeps_selected_runtime_inventory_separate_from_default_xcode(self):
+        selected, default = "/Applications/Selected/Contents/Developer", "/Applications/Default/Contents/Developer"
+        available = json.dumps({"runtimes": [
+            {"name": "iOS 27", "buildversion": "24A1", "isAvailable": True},
+            {"name": "iOS 26", "buildversion": "23A1", "isAvailable": False},
+        ]})
+        for selected_xcode, listing, runtimes in (
+                ("Xcode selected", available, ["iOS 27 (24A1)"]),
+                ("Xcode selected", '{"runtimes": [{"isAvailable": true}]}', None),
+                (None, None, None)):
+            with self.subTest(xcode=selected_xcode, runtimes=runtimes), \
+                    patch.object(offload_host, "identity", return_value={"name": "Example", "xcode": selected_xcode}), \
+                    patch.object(offload_host, "output", side_effect=[default, listing]) as output, \
+                    patch.object(offload_host, "xcode", return_value="Xcode default") as xcode, \
+                    patch.object(offload_host, "device_record", return_value={"deferTo": None}), \
+                    patch.object(offload_host, "python_crash_reports", return_value=[]), \
+                    patch.object(offload_host, "host_health", return_value=None):
+                result = offload_host.answer({"toolchain": selected})
+                self.assertEqual(result, {"name": "Example", "xcode": selected_xcode, "defaultDeveloperDir": default,
+                                          "defaultXcode": "Xcode default", "runtimes": runtimes,
+                                          "deviceRecord": {"deferTo": None}, "pythonCrashes": [], "hostHealth": None})
+                xcode.assert_called_once_with(default)
+                self.assertEqual(output.call_args_list[0].args, (["xcode-select", "-p"],))
+                self.assertEqual(output.call_count, 2 if selected_xcode else 1)
+                if selected_xcode:
+                    command, environment = output.call_args.args
+                    self.assertEqual(command, ["xcrun", "simctl", "list", "runtimes", "-j"])
+                    self.assertEqual(environment["DEVELOPER_DIR"], selected)
+
     def test_the_maintained_program_and_large_request_fit_the_ssh_packet(self):
         source = Path(offload_host.__file__).read_text()
         helper = ("print('transport fixture')\n" * 400)[:9550]
