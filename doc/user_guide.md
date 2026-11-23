@@ -2595,7 +2595,8 @@ A project's own launcher can do the same from Python with `devices.BoundedRun`.
 #### Devices and another Mac
 
 **Physical devices are reserved only in this Mac's record**, the Mac that sends work to the others.
-Every paired device is reachable from every Mac, so a record on each would let two runs share one.
+A paired device can be reachable from more than one Mac, so a shared reservation prevents two runs
+from using it at once.
 Every `qk remote` run first makes the other Mac's record defer physical devices to this one's
 (`qk devices defer MAC`); a deferring record refuses to reserve one. `qk doctor` reports each Mac's
 record and calls it an error for this Mac's record to defer, or another Mac's to hold a device.

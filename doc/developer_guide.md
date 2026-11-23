@@ -1503,9 +1503,12 @@ The rules above cite these by their labels.
 - **D7, no Mac is special.** Setup is the one exception: it writes 70% for its own Mac, and an
   added Mac defaults to 90%. This Mac is a placement candidate like any other, with one test of
   room, either half of a queue's pair on any Mac, the foreground only where a Mac's settings allow
-  it, and kinds plus labels in each Mac's `mac-settings.json`. Devices are declared with
-  `qk devices declare` (their `reach`, in order, and whether being `absent` is an error or
-  offline) and read by `qk devices status`.
+  it, and kinds plus labels in each Mac's `mac-settings.json`. These settings apply across
+  projects. A lane that needs inputs available only in the current checkout declares `here`
+  with a reason. Physical-device reservations have their own constraint. The sending Mac's
+  record holds the reservation, and an explicit remote device dispatch carries it. `qk devices
+  declare` records the expected ways to reach a device and how to report its absence. `qk devices
+  status` reports those readings. The declarations are for reach and absence reporting today.
 
 The November 19 follow-up ([#232](https://github.com/vocaro/queuekeeper/issues/232)) measured 8%
 whole-host occupancy on the workstation and 15% on build-host, against 40% and 11% on November 15.
