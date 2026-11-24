@@ -601,7 +601,7 @@
           }
         },
         "unread": {
-          "description": "The paths no code lane reads. A batch that changes only these runs the docs lanes in place of the gate, and main changing one a passed batch does not touch leaves its result standing. The conventional Markdown defaults, the root README.md, CONTRIBUTING.md and CHANGELOG.md and Markdown under doc/ and docs/, count unless defaults is false. False gates every batch and carries nothing over. Replaced docsOnly and carryOver, which are refused",
+          "description": "The paths no code lane reads. A batch that changes only these runs the docs lanes in place of the gate, and main changing one a passed batch does not touch leaves its result standing. The conventional Markdown defaults, the root README.md, CONTRIBUTING.md and CHANGELOG.md and Markdown under doc/ and docs/, count unless defaults is false, as do the root AGENTS.md and CLAUDE.md while the docs lane is the toolkit's qk docs check. False gates every batch and carries nothing over. Replaced docsOnly and carryOver, which are refused",
           "type": [
             "object",
             "boolean"
@@ -672,7 +672,7 @@
               }
             },
             "defaults": {
-              "description": "False drops the conventional Markdown defaults, so that only paths counts",
+              "description": "False drops the conventional Markdown defaults and the root agent instructions, so that only paths counts",
               "type": "boolean"
             }
           }

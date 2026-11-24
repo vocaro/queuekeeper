@@ -587,9 +587,13 @@ over the changed paths. A document that names extra checks waits for the running
 
 - **Documentation** is Markdown in the usual places: the root `README.md`, `CONTRIBUTING.md` and
   `CHANGELOG.md`, and `.md` or `.markdown` files under `doc/` and `docs/`.
-- **Everything else is code**, including `AGENTS.md`, configuration, stylesheets, scripts, and
-  images a document shows. One code path makes the whole entry ride the code gate, with the
-  documentation lanes run ahead of it so a cheap failure comes back first.
+- **Agent instructions** count too: the root `AGENTS.md` and `CLAUDE.md`, while the documentation
+  lane is the default `qk docs check`, which reads every root Markdown file and keeps `AGENTS.md`
+  under 32 KiB. A project whose own `docs` lane replaces that check, or whose tests read these
+  files, keeps them on the code gate; list them in `queue.unread.exclude` for the latter.
+- **Everything else is code**, including configuration, stylesheets, scripts, agent instructions
+  outside the root, and images a document shows. One code path makes the whole entry ride the
+  code gate, with the documentation lanes run ahead of it so a cheap failure comes back first.
 - **`qk land` says which gate an entry will ride**, after the `queued ID` line. For an entry that
   rides the code gate, it names the first path that is not documentation.
 - **Land unrelated document changes on their own.** Commit them on a separate branch from
@@ -623,7 +627,7 @@ Every key is optional:
 - `exclude` names paths code does read, and wins over both.
 - `lanes`, by default `["docs"]`, is what a docs-only batch runs in place of the gate. The default
   `docs` lane is `qk docs check`.
-- `"defaults": false` drops the Markdown defaults. `"unread": false` gates every batch and carries
+- `"defaults": false` drops the Markdown defaults and the root agent instructions. `"unread": false` gates every batch and carries
   nothing over.
 
 List a path only after checking that no lane reads it: a path left out costs a gate run, and a path

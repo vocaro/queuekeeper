@@ -481,11 +481,16 @@ DOCS = "docs"
 IMPLICIT_DOCS = ["python3", LAUNCHER, "docs", "check"]
 # What the toolkit's docs check asks of Queuekeeper, by whichever command runs it (implicit_command).
 IMPLICIT_WORDS = {DOCS: ["docs", "check"]}
-# Conventional prose only; configuration, agent policy, source and test fixtures keep their code gates. guides/ and
+# Conventional prose only; configuration, source and test fixtures keep their code gates. guides/ and
 # knowledge/ are no standard documentation folders, so a project that keeps documents there names them in
 # queue.unread.paths (vocaro/queuekeeper#106).
 DOCS_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md"}
 DOCS_FOLDERS = ("doc/", "docs/")
+# The root agent instruction files, which the toolkit's docs check reads as it reads every root Markdown file, and
+# whose AGENTS.md it holds under 32 KiB: documentation by the defaults while the docs lanes run that check
+# (agent_doc). On 2026-11-23 removing MathMLLayout's CLAUDE.md, checked by its docs lane alone, waited for the full
+# gate (vocaro/queuekeeper#255).
+AGENT_FILES = ("AGENTS.md", "CLAUDE.md")
 # Seconds a preflight lane may run before qk land queues an entry, and its timeout when its lane gives none
 # (vocaro-engineering#283, vocaro/queuekeeper#69). A preflight lane is a cheap check, never a build.
 PREFLIGHT_LIMIT = 300
@@ -501,6 +506,25 @@ NOT_PREFLIGHT = ("parallel", "foreground", "unlockedScreen", "wholeHost", "model
 def conventional_doc(path):
     """Whether path is conventional prose, which queue.unread takes unless its defaults are false."""
     return path in DOCS_FILES or (path.startswith(DOCS_FOLDERS) and path.endswith((".md", ".markdown")))
+
+
+def agent_doc(config, path):
+    """Whether path is a root agent instruction file (AGENT_FILES) that the docs lanes check: queue.unread.lanes run
+    the toolkit's docs check (toolkit_docs), which reads every root Markdown file, so that a batch changing only such
+    a file runs that check in place of the gate, as for conventional prose. A project whose docs lane is its own
+    command, or that runs no docs lane, keeps the code gate for them; one whose tests read them excludes them."""
+    lanes = unread_lanes(config)
+    return path in AGENT_FILES and lanes is not None and DOCS in lanes and toolkit_docs(config)
+
+
+def toolkit_docs(config):
+    """Whether config's docs lane is the toolkit's check of every Markdown file: no docs lane, so the implicit one, or
+    one whose command ends in qk's `docs check` with no paths after it, by any path to qk (implicit_command)."""
+    lane = (config.get("lanes") or {}).get(DOCS)
+    if lane is None: return True
+    command = lane.get("command") if isinstance(lane, dict) else None
+    return isinstance(command, list) and len(command) >= 3 and command[-2:] == ["docs", "check"] \
+        and any(isinstance(word, str) and PurePosixPath(word).name == "qk" for word in command[:-2])
 
 
 def names_path(path, key):
@@ -528,7 +552,7 @@ def unread_taken(config, path, inputs=False):
     if declared is False: return False
     if any(names_path(path, key) for key in declared.get("exclude", {})): return False
     if inputs: return unselected(config, path)
-    if declared.get("defaults", True) and conventional_doc(path): return True
+    if declared.get("defaults", True) and (conventional_doc(path) or agent_doc(config, path)): return True
     return any(names_path(path, key) for key in declared.get("paths", {}))
 
 

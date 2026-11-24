@@ -4829,7 +4829,8 @@ class DocsOnly(Fixture):
         self.assertEqual(mq.lanes_of({"lanes": lanes, "queue": {"unread": False}}, ["doc/a.md", "src/a.py"]),
                          ["gate"])
         # The defaults: conventional Markdown beside code runs the docs lane, the toolkit's where there is none.
-        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}, ["README.md", "AGENTS.md"]), ["docs", "gate"])
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}, ["README.md", "AGENTS.md", "src/a.py"]),
+                         ["docs", "gate"])
         # A preflight lane runs first, and once, though the docs lanes would run it too.
         listed = {"lanes": {**lanes, "lint": {}}, "queue": {"unread": {**declared, "lanes": ["docs", "lint"]},
                                                           "preflight": ["lint"]}}
@@ -5070,7 +5071,10 @@ class Unread(unittest.TestCase):
 
     def test_the_defaults_paths_exclude_and_false(self):
         cases = [({}, "README.md", True), ({}, "doc/a.md", True), ({}, "doc/a.markdown", True),
-                 ({}, "AGENTS.md", False), ({}, "src/NOTES.md", False), ({}, "doc/a.png", False),
+                 ({}, "AGENTS.md", True), ({}, "CLAUDE.md", True), ({}, "src/AGENTS.md", False),
+                 ({}, "src/NOTES.md", False), ({}, "doc/a.png", False),
+                 ({"unread": {"defaults": False}}, "AGENTS.md", False),
+                 ({"unread": {"exclude": {"AGENTS.md": "a test reads it"}}}, "AGENTS.md", False),
                  ({"unread": {"paths": {"records/": "why"}}}, "records/a.json", True),
                  ({"unread": {"paths": {"records/": "why"}}}, "README.md", True),
                  ({"unread": {"paths": {"records/": "why"}, "defaults": False}}, "README.md", False),
@@ -5080,6 +5084,42 @@ class Unread(unittest.TestCase):
         for queue, path, expected in cases:
             with self.subTest(queue=queue, path=path):
                 self.assertIs(configuration.unread({"queue": queue}, path), expected)
+
+    def test_agent_instructions_are_documentation_while_the_docs_lanes_check_them(self):
+        """vocaro/queuekeeper#255: the root AGENTS.md and CLAUDE.md, which the toolkit's docs check reads as it reads
+        every root Markdown file, skip the gate as conventional prose does, while queue.unread.lanes run that check:
+        the implicit docs lane, or a docs lane whose command is qk's `docs check` by any path. A project's own docs
+        command, docs lanes without docs, or the docs check given paths keep them gated, as do exclude and defaults."""
+        toolkit = [sys.executable, "/kit/bin/qk", "--project", "/project", "docs", "check"]
+        checked = [{}, {"lanes": {"docs": {"command": configuration.IMPLICIT_DOCS}}},
+                   {"lanes": {"docs": {"command": toolkit}}},
+                   {"queue": {"unread": {"lanes": ["docs", "notes"]}}},
+                   {"queue": {"unread": {"paths": {"records/": "why"}}}}]
+        for config in checked:
+            for path in ("AGENTS.md", "CLAUDE.md"):
+                with self.subTest(config=config, path=path):
+                    self.assertTrue(configuration.unread(config, path))
+                    self.assertEqual(mq.docs_lanes(config, [path, "README.md"])[0], "docs")
+                    self.assertTrue(mq.carried_over(path, config, set()))
+        unchecked = [{"lanes": {"docs": {"command": ["python3", "tools/check_docs.py"]}}},
+                     {"lanes": {"docs": {"command": ["python3", "scripts/qk", "docs", "check", "README.md"]}}},
+                     {"lanes": {"docs": {"parallel": ["notes"]}}},
+                     {"queue": {"unread": {"lanes": ["notes"]}}},
+                     {"queue": {"unread": {"defaults": False, "paths": {"records/": "why"}}}},
+                     {"queue": {"unread": {"exclude": {"CLAUDE.md": "a test reads it",
+                                                       "AGENTS.md": "a test reads it"}}}},
+                     {"queue": {"unread": False}}]
+        for config in unchecked:
+            for path in ("AGENTS.md", "CLAUDE.md"):
+                with self.subTest(config=config, path=path):
+                    self.assertFalse(configuration.unread(config, path))
+                    self.assertIsNone(mq.docs_lanes(config, [path]))
+                    self.assertFalse(mq.carried_over(path, config, set()))
+        # Only the root files: agent instructions elsewhere are no root Markdown the docs check reads by default.
+        for path in ("src/CLAUDE.md", "agents/AGENTS.md", ".claude/CLAUDE.md", "AGENTS.md.orig", "agents.md"):
+            with self.subTest(path=path): self.assertIsNone(mq.docs_lanes({}, [path]))
+        # Beside code, the docs lane runs ahead of the gate, as for a README (vocaro/queuekeeper#122).
+        self.assertEqual(mq.lanes_of({"lanes": {"gate": {}}}, ["CLAUDE.md", "src/a.py"]), ["docs", "gate"])
 
     def test_one_reading_decides_both_a_gate_skip_and_a_carry_over(self):
         for queue in ({}, {"unread": {"paths": {"records/": "why"}}}, {"unread": False},
@@ -5397,6 +5437,30 @@ class DefaultDocsOnly(Fixture):
         self.assertEqual(self.gates(), 0)
         self.assertNotIn("docs", self.main_files())
 
+    def test_an_agent_file_only_change_lands_on_the_docs_check_without_the_gate(self):
+        """vocaro/queuekeeper#255: on 2026-11-23 removing MathMLLayout's CLAUDE.md, which only its docs lane checks,
+        waited for the full gate. The root agent instructions count as documentation while the toolkit's docs check
+        is the docs lane, so removing CLAUDE.md and editing AGENTS.md lands on that check alone, and a broken link in
+        AGENTS.md comes back from it, never reaching the gate."""
+        run(self.repo, "git", "fetch", "-q", "origin")
+        run(self.repo, "git", "checkout", "-q", "-B", "agents", "origin/main")
+        run(self.repo, "git", "rm", "-q", "CLAUDE.md")
+        (self.repo / "AGENTS.md").write_text("# Fixture\n\nRead the [guide](README.md).\n")
+        (self.repo / "README.md").write_text("# Guide\n")
+        run(self.repo, "git", "add", "AGENTS.md", "README.md")
+        run(self.repo, "git", "commit", "-qm", "Keep one agent entry")
+        [landed] = self.add("agents")
+        self.work()
+        self.assertEqual(self.state(landed)["state"], "landed")
+        self.assertEqual(self.state(landed)["docsOnly"], ["docs"])
+        self.assertEqual(self.gates(), 0)
+        self.assertNotIn("CLAUDE.md", self.main_files())
+        self.commit("AGENTS.md", "broken", "# Fixture\n\n[missing](missing.md)\n")
+        [broken] = self.add("broken")
+        self.work()
+        self.assertEqual(self.state(broken)["state"], "failed")
+        self.assertEqual(self.gates(), 0)
+
     def test_a_preflight_finding_in_default_docs_is_rejected(self):
         # A docs-only batch runs the project's preflight lane before its docs lanes, never the gate.
         self.preflight_check()
@@ -5436,7 +5500,7 @@ class DefaultDocsOnly(Fixture):
     def test_default_classification_keeps_code_configuration_and_fixtures_gated(self):
         config = self.config()
         for path in ("README.md", "CONTRIBUTING.md", "CHANGELOG.md", "doc/guide.md", "docs/guide.md",
-                     "doc/apple/topic.md", "docs/topic.markdown"):
+                     "doc/apple/topic.md", "docs/topic.markdown", "AGENTS.md", "CLAUDE.md"):
             with self.subTest(path=path):
                 self.assertEqual(mq.docs_lanes(config, [path]), ["docs"])
                 self.assertIsNone(mq.docs_lanes(config, [path, "src/code.py"]))
@@ -5444,7 +5508,8 @@ class DefaultDocsOnly(Fixture):
         # queue.unread.paths, which adds to the defaults (vocaro/queuekeeper#106).
         for path in ("queuekeeper.json", "doc/config.json", "docs/code.py", "tests/input.md", "src/input.md",
                      "guides/guide.md", "guides/topic.markdown", "knowledge/apple/topic.md",
-                     "AGENTS.md", "agents/core.md", ".github/workflows/check.yml", "README.md.orig"):
+                     "agents/core.md", "src/CLAUDE.md", ".claude/CLAUDE.md", ".github/workflows/check.yml",
+                     "README.md.orig"):
             with self.subTest(path=path): self.assertIsNone(mq.docs_lanes(config, [path]))
         # One reading answers both questions, so main changing such a guide gates a passed batch again, where a
         # default document carries over; a project that names the folder gets both back, beside the defaults.
@@ -5488,10 +5553,15 @@ class DefaultDocsOnly(Fixture):
                 self.assertIsNone(mq.docs_lanes(own, [path, "src/python/queuekeeper/config.py"]))
                 self.assertTrue(mq.carried_over(path, own, set()))
         old = "guides" + "/maintenance.md"   # the guide's path before the move, which no default takes
-        for path in ("AGENTS.md", "queuekeeper.json", "tests/core/test_docs.py", old, "doc/diagram.png"):
+        for path in ("queuekeeper.json", "tests/core/test_docs.py", old, "doc/diagram.png"):
             with self.subTest(path=path):
                 self.assertIsNone(mq.docs_lanes(own, [path]))
                 self.assertFalse(mq.carried_over(path, own, set()))
+        # No lane of Queuekeeper's reads its agent instructions, which its implicit docs lane checks (#255).
+        for path in ("AGENTS.md", "CLAUDE.md"):
+            with self.subTest(path=path):
+                self.assertEqual(mq.docs_lanes(own, [path]), ["docs"])
+                self.assertTrue(mq.carried_over(path, own, set()))
 
     def test_a_default_docs_file_moved_into_source_keeps_code_gate(self):
         self.commit("README.md", "guide", "# Guide\n")
