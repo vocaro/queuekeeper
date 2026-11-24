@@ -135,8 +135,10 @@ def main(tool, arguments):
         say(f"queuekeeper: no {tool} on PATH besides queuekeeper's wrapper in {SHIMS}")
         return 127
     command = [found, *arguments]
-    status, errors = attempt(command)
     root = os.environ.get(ROOT_VARIABLE)
+    if preserved := stale_packages.refresh_moved_build(tool, arguments, root):
+        say(f"{stale_packages.REFRESH}: preserved {preserved}; rebuilding at the configured path (#201)")
+    status, errors = attempt(command)
     if status == 0: return status
     if root and 0 < status < 128 and (warning := stale_packages.warning(tool, arguments, root)): say(warning)
     if not errors: return status

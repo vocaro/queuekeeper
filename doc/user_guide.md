@@ -2904,12 +2904,19 @@ called by name, removes the stale module cache inside the checkout and runs once
 MODULES`. It never runs a third time. A script that calls `/usr/bin/xcodebuild` by path, through `xcrun`,
 or with PATH cleared bypasses this.
 
-**An earlier farm checkout path.** If a wrapped build fails and its package state inside the checkout
-still names that checkout under the farm's old root, the wrapper says `STALE PACKAGE PATHS`. For
-`xcodebuild`, the check reads the state selected by `-clonedSourcePackagesDirPath` when given,
-otherwise the `SourcePackages` directory in the explicit `-derivedDataPath`. For `swift`, it reads
-the state selected by `--scratch-path` or `--build-path`. The wrapper leaves SwiftPM state uninspected
-when `SWIFTPM_BUILD_DIR` is set. The warning leaves the build outcome and cache intact.
+**An earlier farm checkout path.** Before a dispatched build, Queuekeeper can set aside an explicit,
+Git-ignored cache under the checkout's `.build` when its package state still names this same checkout
+under the farm's old root. It says `REFRESH MOVED BUILD CACHE` and preserves the old directory beside
+the configured path. The build recreates the cache at that configured path, including the build plan
+that also contains absolute paths. This applies to explicit Xcode build, build-for-testing, test and
+archive actions using `-derivedDataPath`, and SwiftPM build and test actions using `--scratch-path` or
+`--build-path`.
+
+When recovery cannot establish that a cache can be rebuilt, a build failure can still report
+`STALE PACKAGE PATHS`. For `xcodebuild`, the warning reads the state selected by
+`-clonedSourcePackagesDirPath` when given, otherwise the `SourcePackages` directory in the explicit
+`-derivedDataPath`. For `swift`, it reads the state selected by `--scratch-path` or `--build-path`
+when `SWIFTPM_BUILD_DIR` is unset.
 
 To check for reused build state, rerun the same revision on the affected Mac, through admission,
 with fresh, unused paths for the build. For Xcode, give it a fresh `-derivedDataPath` and, if the
