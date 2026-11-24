@@ -1837,11 +1837,11 @@ def apart(mac, hosts, waits):
 
 def apart_from_pair(first, second, hosts):
     """Place a speculative gate away from both halves when one gates here and one on the farm."""
-    if (first == HERE_MAC) == (second == HERE_MAC): return None
-    placed = apart(second if first == HERE_MAC else first, hosts, waits=False)
-    if placed is None: return None
-    _, excluded, _ = placed
-    if excluded is None or not any(host != excluded for host in hosts): return None
+    first_here, second_here = first["mac"] == HERE_MAC, second["mac"] == HERE_MAC
+    if first_here == second_here: return None
+    # The relay keeps the occupied destination even if its farm name changes during the gate.
+    excluded = (second if first_here else first).get("destination")
+    if excluded not in hosts or not any(host != excluded for host in hosts): return None
     return ("--offload-only",), excluded, "on another Mac that can start them now, away from both halves"
 
 
@@ -7391,7 +7391,7 @@ class Worker:
         if companion is None:
             placed = apart(mac, hosts, waits=not (isolating or parallel))
         elif here_occupied:
-            placed = apart_from_pair(mac, other_mac, hosts)
+            placed = apart_from_pair(first, second, hosts)
         else:
             occupied = (first.get("destination"), second.get("destination"))
             if occupied[0] == occupied[1] or any(host not in hosts for host in occupied): return

@@ -12476,18 +12476,23 @@ class PooledStack(Fixture):
         companion = Mock()
         waiting = [{"id": "older", "state": mq.TESTING}, {"id": "newer", "state": mq.TESTING},
                    {"id": "fresh", "state": mq.QUEUED}]
+        workstation = {"mac": mq.HERE_MAC}
+        occupied = {"mac": "occupied", "destination": "occupied"}
+        # The occupied Mac was renamed after admitting its gate, and the spare now has its old name.
+        renamed = (farm_fixture.mac("occupied", name="renamed"), farm_fixture.mac("spare", name="occupied"))
         for first, second, hosts, expected in [
-            (mq.HERE_MAC, "occupied", ("occupied", "spare"), "spare"),
-            ("occupied", mq.HERE_MAC, ("occupied", "spare"), "spare"),
-            (mq.HERE_MAC, "occupied", ("occupied",), None),
-            (mq.HERE_MAC, "unknown", ("occupied", "spare"), None),
-            (mq.HERE_MAC, None, ("occupied", "spare"), None),
-            ("occupied", "spare", ("occupied", "spare"), None),
+            (workstation, occupied, ("occupied", "spare"), "spare"),
+            (occupied, workstation, ("occupied", "spare"), "spare"),
+            (workstation, occupied, renamed, "spare"),
+            (workstation, occupied, ("occupied",), None),
+            (workstation, {"mac": "occupied"}, ("occupied", "spare"), None),
+            (workstation, {**occupied, "destination": "unknown"}, ("occupied", "spare"), None),
+            (workstation, None, ("occupied", "spare"), None),
+            (occupied, {"mac": "spare"}, ("occupied", "spare"), None),
         ]:
             with self.subTest(first=first, second=second, hosts=hosts), farm_fixture.only(*hosts), \
                     patch.object(worker.queue, "waiting", return_value=waiting), \
-                    patch.object(worker, "admitted_record",
-                                 side_effect=[{"mac": mac} if mac else None for mac in (first, second)]), \
+                    patch.object(worker, "admitted_record", side_effect=[first, second]), \
                     patch.object(mq.remote, "capacity_there", return_value=ROOMY) as capacity, \
                     patch.object(mq.offload_host, "capacity") as here, patch.object(mq, "Stack") as stack:
                 worker.stack(worker, {"lanes": {"gate": {"resource": "heavy"}}}, ["gate"], "base",
@@ -12549,6 +12554,61 @@ class PooledStack(Fixture):
                         capacity.assert_not_called()
                         here.assert_called_once_with()
             worker.pending = None
+
+    def test_paired_joint_probes_start_a_spare_stack_that_lands_on_unchanged_main(self):
+        self.commit("left", "left"); self.commit("right", "right"); self.commit("later", "later")
+        left, right, later = self.add("left", "right", "later")
+        suspects = [self.state(left), self.state(right)]
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.queue.logs.mkdir(parents=True, exist_ok=True)
+        worker.queue.mark(suspects, mq.TESTING)
+        worker.limit, worker.suspects = 1, 2
+        base = mq.text(self.repo, "rev-parse", mq.MAIN)
+        joint = mq.Joint(worker, self.config(), base, ["gate"], suspects, stack_on=base)
+        placements = {joint.runners[0].checkout: (mq.HERE_MAC, None), worker.checkout: ("peer", "peer")}
+        done, stack_offers = threading.Event(), []
+        run_command, start_stack = mq.processes.run, mq.Stack.begin
+
+        def gate(command, **options):
+            if command[:3] != ["python3", "scripts/qk", "run"] or command[-1] != "gate":
+                return run_command(command, **options)
+            checkout, log = options["cwd"], options["log_path"]
+            log.write_text("passed\n")
+            if checkout.name.endswith(mq.ISOLATION_STACK_SUFFIX):
+                stack_offers.append((command[3:-1], options["env"].get(mq.remote.QUEUE_GATE_EXCLUDE)))
+            else:
+                mac, destination = placements[checkout]
+                path = mq.lane_wait.path_of(checkout, "gate")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"schemaVersion": mq.lane_wait.SCHEMA, "kind": None, "mac": mac,
+                                            "destination": destination, "pid": os.getpid(), "admitted": True,
+                                            "written": time.time()}))
+                self.assertTrue(done.wait(stretched(20)), "the paired probes did not start a spare stack")
+            return 0
+
+        def start(stack):
+            started = start_stack(stack)
+            if started:
+                stack.thread.join(stretched(10))
+                if stack.done(): done.set()
+            return started
+
+        with farm_fixture.only("peer", "spare"), patch.object(mq, "STACK_POLL", 0.02), \
+                patch.object(mq.remote, "capacity_there", return_value=ROOMY) as room, \
+                patch.object(mq.processes, "run", side_effect=gate), patch.object(mq.Stack, "begin", start):
+            joint.learn([[entry] for entry in suspects])
+            self.assertEqual((joint.probes, joint.paired), (2, 1))
+            self.assertEqual(stack_offers, [(["--offload-only"], "peer")])
+            room.assert_called_once_with("spare")
+            self.assertEqual(worker.pending.base, base)
+            self.assertEqual([entry["id"] for entry in worker.pending.entries], [later])
+            for entry in suspects: worker.queue.settle(entry, mq.FAILED)
+            worker.limit = None
+            worker.after_isolation_stack()
+            self.assertIsNotNone(worker.stacked)
+            self.assertTrue(worker.round())
+        self.assertEqual((self.state(later)["state"], self.state(later)["gatedOn"]), (mq.LANDED, base))
+        self.assertEqual(len(stack_offers), 1)
 
     def test_a_scoped_stack_treats_old_launcher_refusal_as_no_verdict_but_keeps_a_lane_failure(self):
         worker = mq.Worker(mq.Queue(self.repo))
