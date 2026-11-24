@@ -264,7 +264,8 @@ class Doctor(unittest.TestCase):
         here = {"name": "Desk", "model": "Mac17,6", "defaultDeveloperDir": developer,
                 "xcode": "Xcode 27.2", "runtimes": [], "hostHealth": reading()}
         there = {**here, "name": "Build Mac", "deviceRecord": {"deferredTo": "Desk"}}
-        surveys = {west["ssh"]: there, east["ssh"]: {**there, "xcode": "Xcode 27.1"}}
+        # Without the Apple plugin, core compares device records, not Xcodes: east alone drifts.
+        surveys = {west["ssh"]: there, east["ssh"]: {**there, "deviceRecord": {"deferredTo": "Other Desk"}}}
         with tempfile.TemporaryDirectory() as directory, farm_fixture.only(west, east), \
                 patch.object(remote, "connection", return_value={}), patch.object(remote, "reachable"), \
                 patch.object(remote, "developer_directory", return_value=developer), \
@@ -286,7 +287,7 @@ class Doctor(unittest.TestCase):
                          [(host["name"], host["ssh"], "Mac17,6") for host in (west, east)])
         self.assertEqual(reports[0]["errors"], [])
         [mismatch] = reports[1]["errors"]
-        self.assertIn("Xcode 27.1 on east.local", mismatch)
+        self.assertIn("east.local's device record defers physical devices to Other Desk", mismatch)
 
 
 class QueueDoctor(unittest.TestCase):
