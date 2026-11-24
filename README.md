@@ -2,30 +2,28 @@
   <img src="assets/banner.svg" alt="Queuekeeper" width="100%">
 </p>
 
-Queuekeeper is a merge queue and build farm for one developer working with AI coding agents. It
-runs on that developer's own machines instead of in the cloud. Agents hand it commits; it batches
-them, tests each batch once on whichever machine has room, and pushes to `main` only what passed.
-Its [plugins](#plugins) handle the local tools and hardware that builds and tests depend on.
+Queuekeeper is a local merge queue and build coordinator for one developer working with AI coding
+agents. Like traditional merge queues, it shortens development time by batching changes and running
+them through the expensive test suites once, pushing to `main` only what passed. Unlike other merge queues, however, it understands how to manage local tools and devices efficiently, making it ideal for mobile app and video game developers.
 
 ## Why another merge queue?
 
-Merge queues serve different workflows. Queuekeeper brings one developer's agents, projects and
-local machines together, with a few priorities:
+When several agents work in parallel, their builds and tests can still compete for the same Mac,
+editor or test device. Queuekeeper lets you give agents work across one or more projects without
+having to schedule each run yourself.
 
-- **Designed for AI agents.** One developer can direct several agents across several projects.
-  Commands run without prompts and return verdicts, failure details and next steps that agents can
-  act on. Agents submit commits and follow their results, while Queuekeeper coordinates shared
-  build capacity and tests batches before they reach `main`.
-- **Builds that need local tools.** Cloud queues and build farms suit web services and large teams.
-  They suit mobile apps, video games and other front-end work less well, because those need tools
-  such as Xcode, Unity or Unreal, along with simulators and real devices, which are difficult or
-  expensive to run in the cloud.
-- **Platform knowledge.** Building and testing for iOS, Android or a game engine unattended takes
-  specialized knowledge: managing simulators, sharing a device between runs, driving interactive
-  tests, and telling a broken machine from a broken commit. That knowledge belongs in the tool, and
-  it is what the plugins are for.
-- **Hardware you already own.** The build farm is the machine on your desk plus any others you can
-  reach. Nothing has to be rented.
+- **Give each run its turn.** Queuekeeper starts jobs as build capacity opens up, including jobs
+  that require local development platforms like Xcode, Android Studio, or Unity. It can also reserve a
+  physical phone or tablet for one agent at a time and give a macOS UI test exclusive use of a Mac's
+  desktop.
+- **Reuse simulator setup.** Xcode simulator and Android emulator pools give each run its own
+  instance and reuse state from a template that has already completed its first boot. Agents can
+  get to testing sooner without setting up a fresh simulator or emulator each time.
+- **Let agents follow their own work.** Agents can start builds, run tests and submit commits
+  without prompts. Queuekeeper reports what passed, which tests failed, or when a machine problem
+  prevented a verdict, with next steps the agent can act on.
+- **Run on your own Macs.** One Mac is enough to start. Add more when you need more capacity, and
+  Queuekeeper automatically distributes jobs across Macs that can run them and have room.
 
 [Related tools](doc/related_tools.md) compares Queuekeeper feature by feature with other merge
 queues, including other local queues for AI agents, and says where they are the better choice.
