@@ -1062,6 +1062,14 @@ The most useful settings:
   Mac however the run ends, and a whole lane's results are kept by commit beside its receipt.
 - **Where the project is.** A lane's command finds the project's main checkout in
   `QUEUEKEEPER_PROJECT_CHECKOUT` wherever it runs.
+- **Queuekeeper's own command.** A command whose first word is the bare word `qk`, such as
+  `["qk", "unittest", "-s", "tests"]`, runs Queuekeeper itself. `qk run` starts it as the selected
+  Queuekeeper checkout's `bin/qk` with `--project`. That checkout is the one `QUEUEKEEPER_ROOT`
+  names, else the one running. The command is made on the Mac that runs the lane, so a lane
+  sent to another Mac runs that Mac's checkout. A project's own `scripts/qk` copy does not take
+  the bare word. Queuekeeper recognizes its own command by a word named `qk`. That is how it reruns
+  a failed test alone and runs `qk run LANE -- NAME`, so a project script that starts
+  Queuekeeper for a lane must be named `qk` too, such as `scripts/lane/qk`.
 
 ### Receipts and outcomes
 

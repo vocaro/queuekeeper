@@ -18,7 +18,7 @@ import traceback
 
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, gate_reuse, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     direct_status, launcher_patch, parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
-from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, plugins_of, lane_to_run, load, parse as parse_configuration, \
+from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, launched, plugins_of, lane_to_run, load, parse as parse_configuration, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
     project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -273,7 +273,7 @@ def compile_first(lane, root, directory, receipt, limit, env, on_stop, kill_afte
     log = directory / "run.log"
     step = receipt["compile"] = {"command": command}
     began = time.monotonic()
-    status = processes.run([*wrap, *command], cwd=root, log_path=log, timeout=limit, on_stop=on_stop, env=env, kill_after=kill_after)
+    status = processes.run([*wrap, *launched(command, root)], cwd=root, log_path=log, timeout=limit, on_stop=on_stop, env=env, kill_after=kill_after)
     seconds = time.monotonic() - began
     step.update(exitStatus=status, seconds=round(seconds, 3))
     if status == 0:
@@ -419,10 +419,13 @@ def said_notice(directory, name, lane, limit, stall=False):
     with contextlib.suppress(OSError), (directory / "run.log").open("a") as log: log.write(line + "\n")
 
 
-def lane_command(lane, extra=()):
+def lane_command(lane, extra=(), root=None):
     """The command a lane runs, with extra appended, as the keys plugins add to a lane make it
-    (plugins.lane_command), such as the Mac desktop plugin's "display". The receipt records it so."""
-    return plugins.lane_command(lane, [*lane["command"], *extra])
+    (plugins.lane_command), such as the Mac desktop plugin's "display". The receipt records it so, with a bare qk as
+    configured; with root, the command that starts it in that tree, its bare qk the selected toolkit's bin/qk
+    (config.launched), made on the Mac that runs it."""
+    command = lane["command"] if root is None else launched(lane["command"], root)
+    return plugins.lane_command(lane, [*command, *extra])
 
 
 def correct_test_count(root, args):
@@ -2160,7 +2163,7 @@ def perform(argv, report):
                             why = unstartable(lane["command"], tree)
                             if why: return not_started(directory, receipt, args.lane, why)
                             try:
-                                return processes.run([*wrap, *command], cwd=tree, log_path=directory / "run.log",
+                                return processes.run([*wrap, *lane_command(lane, extra, tree)], cwd=tree, log_path=directory / "run.log",
                                                      timeout=left, on_stop=on_stop, env=env, kill_after=kill_after,
                                                      pace=pace, **({"stall": lane["stall"],
                                                                     "progress_path": directory / "results/progress.json"}
@@ -2199,7 +2202,9 @@ def perform(argv, report):
                             try: wrap, sandboxed = sandbox.prepared(name, member, tree, directory, f"sandbox-{name}.sb")
                             except sandbox.Unusable as error: return not_started(directory, receipt, name, str(error))
                             if sandboxed: receipt.setdefault("sandbox", {})[name] = sandboxed
-                            wrapped.append((name, {**member, "command": [*wrap, *member["command"]]}))
+                            # Its bare qk started as the selected toolkit's (config.launched), as a lane's is.
+                            started = lane_command(config["lanes"][name], (), tree)
+                            wrapped.append((name, {**member, "command": [*wrap, *started]}))
                         # Each member against its own timing baseline, as it would be alone, under one live record
                         # that holds each member's warnings (lane_timing, vocaro/queuekeeper#284): a group has no
                         # timing of its own, and the serial reference is no run a baseline measures.

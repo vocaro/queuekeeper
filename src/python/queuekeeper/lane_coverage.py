@@ -254,6 +254,10 @@ def unittest_discovery(root, words, discover_form):
 
 
 def eng_command(root, words):
+    # The --project that a lane's bare qk is run with (config.launched) names no tests.
+    if words[0] == "--project": words = words[2:]
+    elif words[0].startswith("--project="): words = words[1:]
+    if not words: raise Unread("it runs queuekeeper with no command")
     action, rest = words[0], words[1:]
     if action in ("docs", "run", "preflight"): return NOTHING
     if action == "xctest": return swift_package(root, rest)

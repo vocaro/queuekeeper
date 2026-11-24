@@ -62,7 +62,7 @@ from . import budgets, disk, plugins, farm, host_health, lane_results, landing_p
 from . import add_only_json, count_history, events, gate_reuse, git_state, landed_cleanup, pre_push, recovery, restartable, \
     worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
-    PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
+    PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, launched, queuekeeper_at, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
     project_siblings, sibling_revisions, siblings_in, stays, toolkit_command, full_run, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
@@ -1021,11 +1021,11 @@ def rerun_unread(command):
 
 def rerun_reading(command):
     """(rerun_command, rerun_unread) of command."""
-    if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None, None
-    at = next((index for index, word in enumerate(command[:-1])
-               if Path(word).name == "qk" and command[index + 1] == "unittest"), None)
+    # The bare qk of a lane (config.launched), a path to qk and the command launched makes of it, with its --project,
+    # all read so.
+    at = queuekeeper_at(command, "unittest")
     if at is None: return None, None
-    kept, words, index = command[:at + 2], command[at + 2:], 0
+    kept, words, index = command[:at + 1], command[at + 1:], 0
     while index < len(words):
         word = words[index]
         name, equals, _ = word.partition("=")
@@ -1261,6 +1261,8 @@ def preflight_run(queue, root, commit, name):
             made = pins.make(root, names)
             env.update(pins.exported(made))
             env[pins.VARIABLE] = pins.encoded(made)
+        # A lane's bare qk runs the toolkit the environment names, else this one (config.launched).
+        command = launched(command, path, env.get(TOOLKIT_VARIABLE))
         try: status_ = processes.run(command, cwd=path, log_path=log, timeout=limit, env=env)
         except processes.TimedOut as error: return None, [f"{shlex.join(command)} reached its limit: {error}"], command
         except processes.NotStarted as error: return None, [f"{shlex.join(command)} could not start: {error}"], command
@@ -5202,10 +5204,10 @@ class Worker:
         if configured is None:
             if lane != DOCS: return None
             command = self.implicit(lane)
-        elif lane == DOCS and configured.get("command") != IMPLICIT_DOCS: return None
+        elif lane == DOCS and configured.get("command") not in (IMPLICIT_DOCS, ["qk", "docs", "check"]): return None
         elif not isinstance(configured, dict) or any(configured.get(key) for key in (*NOT_PREFLIGHT, *plugins.LANE_KEYS)):
             return None
-        else: command = configured.get("command")
+        else: command = launched(configured.get("command"), self.checkout, self.toolkit_root())
         return command if isinstance(command, list) and command else None
 
     def main_fails(self, base, log, config):
@@ -5492,7 +5494,8 @@ class Worker:
         if text(self.checkout, "diff", new_base, "HEAD") != patch:
             self.say("the batch's patch changed on main: gating again")
             return None
-        checks = carry_checks(config, moved, base, self.implicit(DOCS))
+        checks = [launched(check, self.checkout, self.toolkit_root())
+                  for check in carry_checks(config, moved, base, self.implicit(DOCS))]
         if ruled and preflighted(config): checks.append(toolkit_command(self.checkout, ["preflight"], self.toolkit_root()))
         if not self.carry_passes(checks): return None
         self.say(f"carried the result over {len(moved)} file(s) on main: {', '.join(moved[:5])}")
@@ -5993,6 +5996,8 @@ class Worker:
         if busy:
             self.say(f"the failed tests are not rerun, as {busy}: bisecting")
             return None
+        # A lane's bare qk runs this worker's toolkit, as the gate's qk run ran it (config.launched).
+        command = launched(command, self.checkout, self.toolkit_root())
         ran = self.rerun_each(tests, lambda test: [*command, test], applied, head, log, round_name,
                               no_verdict_codes=UNITTEST_RERUN_NO_VERDICT)
         if ran is None: return None
@@ -6182,7 +6187,8 @@ class Worker:
         if busy:
             self.say(f"the failed tests are not rerun, as {busy}: bisecting")
             return None
-        template = reruns.rerun if reruns else settings["rerun"]
+        # A bare qk runs this worker's toolkit, as the gate's qk run ran it (config.launched).
+        template = launched(reruns.rerun if reruns else settings["rerun"], self.checkout, self.toolkit_root())
         ran = self.rerun_each(tests, lambda test: [word.replace("{test}", test) for word in template], applied, head,
                               log, round_name)
         if ran is None: return None

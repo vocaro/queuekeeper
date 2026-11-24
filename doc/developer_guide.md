@@ -172,6 +172,11 @@ document. The worker checks for conflicting additions even after Git reports a c
 A project without `queue.preflight` has no preflight
 lanes, and no lane runs first because of its name. Where the
 checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
+A lane command's bare first word `qk` becomes the selected checkout's `bin/qk` with `--project`
+only as the command starts (`config.launched`): in `qk run`, `qk preflight`, and the worker's quick
+lanes, preflight runs, carry-over checks and single-test reruns. Receipts and everything that reads
+a lane, such as `merge_queue.rerun_command`, keep the configured words. A lane sent to another Mac
+therefore names that Mac's checkout. `config.queuekeeper_at` reads Queuekeeper's subcommand in either form.
 
 - **Local gate receipts.** In a regular round, opted-in lanes can use a pass discovered by
   `qk land` in the existing commit receipt store. `gate_reuse` checks that the same receipt is
@@ -2265,9 +2270,14 @@ Without that file, the worker uses the Queuekeeper checkout's `bin/qk` for its o
 Explicit commands in the project still run as written. To remove a copy:
 
 1. In the project, search lane commands, hooks, scripts and agent instructions for calls to
-   `scripts/qk`. Use the installed `qk` for agent and Terminal commands. When a lane or helper
-   needs the worker's selected Queuekeeper revision, invoke `"$QUEUEKEEPER_ROOT/bin/qk"` from
-   its shell wrapper when that variable is set, with the installed `qk` as the local fallback.
+   `scripts/qk`. Use the installed `qk` for agent and Terminal commands. In a lane command,
+   write the bare word `qk` first, as in `["qk", "unittest", "-s", "tests"]`. `qk run` starts it
+   as the selected Queuekeeper checkout's `bin/qk` with `--project`, so no wrapper is needed
+   ([Lanes](user_guide.md#lanes)). A script that a lane runs and that calls Queuekeeper itself,
+   such as a shell script, invokes `"$QUEUEKEEPER_ROOT/bin/qk"` when that variable is set, with
+   the installed `qk` as the local fallback. If a lane command runs such a wrapper in place of
+   Queuekeeper, name the wrapper `qk`, such as `scripts/lane/qk`: Queuekeeper recognizes its own
+   command by that name for single-test reruns, `qk run LANE -- NAME` and the docs lane.
    Check the commands in the worker's environment on each Mac that can run the lanes.
    The project's pre-push hook needs the same fallback when it calls Queuekeeper. The worker runs
    the hook itself, through `git hook run pre-push` with the round's environment (`pre_push`),

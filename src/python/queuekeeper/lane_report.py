@@ -29,6 +29,7 @@ import threading
 import time
 
 from . import lane_results, remote, resources, sandbox
+from .config import queuekeeper_at
 
 # The failing tests a summary names; the rest are in its failures.txt or log.
 SHOWN = 20
@@ -498,9 +499,8 @@ def stopped_there(directory):
 def unittest_launcher(command):
     """The words of a lane's command that start qk, when what follows them is `unittest`, or None: a lane whose
     command is qk unittest, which `qk run LANE -- NAME...` runs for those names alone."""
-    if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
-    return next((command[:index + 1] for index, word in enumerate(command[:-1])
-                 if Path(word).name == "qk" and command[index + 1] == "unittest"), None)
+    at = queuekeeper_at(command, "unittest")
+    return None if at is None else command[:at]
 
 
 def unreached_lines(directory, lane, group=None):

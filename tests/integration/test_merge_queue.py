@@ -5762,6 +5762,22 @@ class PreflightLaneInRounds(Fixture):
         for lane in ("check", "docs"):
             self.assertIn(f"{lane} exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
 
+    def test_a_bare_qk_docs_lane_with_no_launcher_runs_unadmitted_by_the_queues_toolkit(self):
+        # vocaro/queuekeeper#340: the docs lane written with the bare qk is the toolkit's check, as quick reads it, and
+        # runs by the queue's toolkit: the installed qk, which refuses, never runs.
+        self.unlaunched()
+        config = self.config()
+        config["lanes"]["docs"] = {"command": ["qk", "docs", "check"]}
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "commit", "-qam", "Name the docs lane by the bare qk")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        installed_qk_refuses(self)
+        self.commit("doc/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        said = self.rounds()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn("docs exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
+
 
 class NegatedClaims(unittest.TestCase):
     """What landing_proofs.negated reads as a closing claim its own clause denies (vocaro-engineering#286)."""
@@ -6195,6 +6211,71 @@ class LaneThatCannotStart(Fixture):
         self.assertEqual(self.state(identifier)["state"], "failed")
         self.assertIn("the queue's lanes fail on this commit", self.state(identifier)["why"])
         self.assertIsNone(mq.Queue(self.repo).held())
+
+
+def installed_qk_refuses(test):
+    """Put first on PATH, for test, an installed qk that fails, so that a lane's bare qk that ran it, not the selected
+    toolkit's bin/qk, fails the test rather than passing by the owner's own installed qk."""
+    folder = Path(test.enterContext(tempfile.TemporaryDirectory())) / "bin"
+    folder.mkdir()
+    host_isolation.executable(folder / "qk", "#!/bin/sh\necho 'the installed qk ran' >&2\nexit 97\n")
+    test.enterContext(patch.dict(os.environ, {"PATH": os.pathsep.join([str(folder), os.environ.get("PATH", "")])}))
+
+
+class BareQueuekeeperWordRuns(Fixture):
+    """qk run starts a lane whose command begins with the bare word qk by the selected toolkit's bin/qk, in a project
+    with no launcher of its own, alone and in a group, and its receipt keeps the configured words
+    (vocaro/queuekeeper#340)."""
+    PASSING = "import unittest\n\nclass A(unittest.TestCase):\n    def test_one(self):\n        pass\n"
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / "scripts/qk").unlink()
+        (self.repo / "scripts/tests").mkdir(parents=True)
+        (self.repo / "scripts/tests/test_a.py").write_text(self.PASSING)
+        installed_qk_refuses(self)
+
+    def eng_run(self, *words):
+        with patch.object(cli, "refresh_policy", return_value="policy"), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as said:
+            status = cli.main(["--project", str(self.repo), "run", "--here", *words])
+        return status, said.getvalue()
+
+    def lanes(self, lanes):
+        config = self.config()
+        config["lanes"].update(lanes)
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+
+    def test_a_bare_qk_unittest_lane_runs_with_no_launcher(self):
+        command = ["qk", "unittest", "-s", "scripts/tests", "-v"]
+        self.lanes({"gate": {"command": command}})
+        status, said = self.eng_run("gate")
+        self.assertEqual(status, 0, said)
+        receipt = json.loads((self.repo / ".build/queuekeeper/gate/source.json").read_text())
+        self.assertEqual((receipt["outcome"], receipt["command"]), ("passed", command))
+        self.assertIn("test_one", (self.repo / ".build/queuekeeper/gate/run.log").read_text())
+
+    def test_each_start_names_the_toolkit_qk_run_selected(self):
+        # The project's scripts/qk, put back, does not take the bare word; QUEUEKEEPER_ROOT names the toolkit.
+        (self.repo / "scripts/qk").write_text("raise SystemExit('the project copy ran')\n")
+        kit = self.base / "sent-toolkit"
+        self.lanes({"gate": {"command": ["qk", "unittest", "-s", "scripts/tests"], "compileFirst": ["qk", "--version"]},
+                    "member": {"command": ["qk", "docs", "check"]}, "other": {"command": ["true"]},
+                    "group": {"parallel": ["member", "other"]}})
+        started = []
+        def run(command, **options):
+            started.append(list(command))
+            Path(options["log_path"]).write_text("")
+            return 0
+        with patch.dict(os.environ, {"QUEUEKEEPER_ROOT": str(kit)}), patch.object(cli.processes, "run", run):
+            self.eng_run("gate")
+            self.eng_run("group")
+        qk = [sys.executable, str(kit / "bin/qk"), "--project", str(self.repo)]
+        self.assertIn([*qk, "--version"], started)
+        self.assertIn([*qk, "unittest", "-s", "scripts/tests"], started)
+        self.assertIn([*qk, "docs", "check"], started)
+        self.assertIn(["true"], started)
+        self.assertFalse(any("scripts/qk" in word for command in started for word in command), started)
 
 
 class UnprovisionedWhereTheGateRuns(Fixture):
@@ -12014,6 +12095,97 @@ FAIL: test_old (test_c.C)
 ----------------------------------------------------------------------
 queuekeeper unittest: 5 tests (0 skipped) in 3 processes, 4 at a time, 3.4s: FAILED: test_b.B (FAILED (failures=1, errors=1), status 1), test_c (FAILED (failures=1), status 1)
 """
+
+
+class BareQueuekeeperWord(unittest.TestCase):
+    """A lane command whose first word is the bare word qk runs Queuekeeper's own command, the selected toolkit's
+    bin/qk with --project, as the lane starts (config.launched), and everything that reads Queuekeeper's command by
+    the name qk reads it so before and after that (vocaro/queuekeeper#340)."""
+    BARE = ["qk", "unittest", "-s", "scripts/tests", "-v"]
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+
+    def started(self, command, **options):
+        return configuration.launched(command, self.root, **options)
+
+    def test_the_bare_word_becomes_the_selected_toolkits_bin_qk_with_the_project(self):
+        kit = self.root / "kit"
+        self.assertEqual(self.started(self.BARE, toolkit=str(kit)),
+                         [sys.executable, str(kit / "bin/qk"), "--project", str(self.root), *self.BARE[1:]])
+        with patch.dict(os.environ, {"QUEUEKEEPER_ROOT": str(kit)}):
+            self.assertEqual(self.started(self.BARE)[:2], [sys.executable, str(kit / "bin/qk")])
+        with patch.dict(os.environ):
+            os.environ.pop("QUEUEKEEPER_ROOT", None)
+            self.assertEqual(self.started(self.BARE)[:2], [sys.executable, str(configuration.TOOLKIT_ROOT / "bin/qk")])
+
+    def test_a_project_copy_of_the_launcher_does_not_take_the_bare_word(self):
+        # The bare word means Queuekeeper's command, the run's toolkit, not the project's scripts/qk, which
+        # toolkit_command still prefers for the queue's own words.
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts/qk").write_text("#!/usr/bin/env python3\n")
+        kit = self.root / "kit"
+        self.assertEqual(self.started(["qk", "docs", "check"], toolkit=str(kit)),
+                         [sys.executable, str(kit / "bin/qk"), "--project", str(self.root), "docs", "check"])
+        self.assertEqual(configuration.toolkit_command(self.root, ["docs", "check"], str(kit)),
+                         ["python3", "scripts/qk", "docs", "check"])
+
+    def test_only_a_bare_first_word_is_expanded(self):
+        # Negative controls: a path to qk, qk after another word, a command that is not a list.
+        for command in (["python3", "scripts/qk", "unittest"], ["scripts/lane/qk", "unittest"], ["./qk", "unittest"],
+                        ["env", "A=1", "qk", "unittest"], ["echo", "qk"], ["qkx", "unittest"], "qk unittest", None):
+            with self.subTest(command=command):
+                self.assertEqual(self.started(command), command)
+
+    def test_what_reads_qk_unittest_reads_the_lane_before_and_after_it_starts(self):
+        started = self.started(self.BARE, toolkit=str(self.root / "kit"))
+        for command in (self.BARE, started):
+            with self.subTest(command=command[0]):
+                # The rerun keeps the suite and names one process, verbose, as it does for any qk unittest lane.
+                self.assertEqual(mq.rerun_command(command + ["-j", "8"]), [*command[:-1], "-j", "1", "-v"])
+                self.assertEqual(mq.suite_of(command), ("scripts/tests", None))
+                self.assertEqual(mq.unittest_lanes({"lanes": {"gate": {"command": command}}, "queue": {"lanes": ["gate"]}}),
+                                 {"gate": ("scripts/tests", None)})
+                self.assertEqual(mq.lane_report.unittest_launcher(command), command[:command.index("unittest")])
+                # Read as qk unittest's discovery, not refused as a command whose selection is unknown.
+                self.assertIs(lane_coverage.read_command(self.root, command).filtered,
+                              lane_coverage.read_command(self.root, self.BARE).filtered)
+        self.assertEqual(mq.lane_report.unittest_launcher(self.BARE), ["qk"])
+        self.assertEqual(mq.rerun_command(["qk", "--project=.", "unittest"]), ["qk", "--project=.", "unittest", "-j", "1", "-v"])
+        # Negative controls: --project with another command after it, and another command's unittest.
+        self.assertIsNone(mq.rerun_command(["qk", "--project", ".", "xctest", "unittest"]))
+        self.assertIsNone(mq.lane_report.unittest_launcher(["tool", "unittest"]))
+
+    def test_what_reads_docs_and_devices_reads_the_bare_word(self):
+        for command in (["qk", "docs", "check"], self.started(["qk", "docs", "check"])):
+            with self.subTest(command=command[0]):
+                self.assertTrue(configuration.toolkit_docs({"lanes": {"docs": {"command": command}}}))
+        self.assertFalse(configuration.toolkit_docs({"lanes": {"docs": {"command": ["tool", "docs", "check"]}}}))
+        for command in (["qk", "device-tests", "--device", "x"], self.started(["qk", "xctest", "--device", "x"])):
+            with self.subTest(command=command[0]):
+                self.assertTrue(mq.budgets.takes_device(command))
+        self.assertFalse(mq.budgets.takes_device(["qk", "simulator-tests", "iphone", "--device", "x"]))
+
+
+class FlakyRerunsByBareWord(FlakyReruns):
+    """A gate whose command is the bare qk, in a project with no launcher, reruns its failed tests alone by the
+    worker's toolkit too, as its gate ran (vocaro/queuekeeper#340)."""
+
+    def setUp(self):
+        super().setUp()
+        config = self.config()
+        config["lanes"]["gate"]["command"] = ["qk", "unittest", "-s", "tests", "-v"]
+        (self.repo / "queuekeeper.json").write_text(json.dumps(config))
+        run(self.repo, "git", "rm", "-q", "scripts/qk")
+        run(self.repo, "git", "commit", "-qam", "Gate by the bare qk with no launcher")
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        installed_qk_refuses(self)
+
+
+# Only the first case runs again by the bare word: the rest cover what the worker does with a rerun's verdict.
+for _name in [name for name in dir(FlakyReruns) if name.startswith("test_")
+              and name != "test_a_test_that_fails_once_and_passes_alone_lands_the_batch_after_a_settle_and_is_recorded"]:
+    setattr(FlakyRerunsByBareWord, _name, None)
 
 
 class FlakyParts(unittest.TestCase):

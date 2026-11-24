@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import processes
-from .config import PREFLIGHT_LIMIT, PROJECT_CHECKOUT_VARIABLE, preflight, project_checkout
+from .config import PREFLIGHT_LIMIT, PROJECT_CHECKOUT_VARIABLE, launched, preflight, project_checkout
 
 # The last lines of a failed lane's output that the summary repeats.
 SHOWN = 40
@@ -25,7 +25,8 @@ def command_of(root, config, name):
     lane = config.get("lanes", {}).get(name)
     command = lane.get("command") if isinstance(lane, dict) else None
     if not (isinstance(command, list) and command): return None, f"{name} is no lane with one command"
-    return command, min(lane.get("timeout", PREFLIGHT_LIMIT), PREFLIGHT_LIMIT)
+    # A bare qk runs the toolkit QUEUEKEEPER_ROOT names, else this one (launched).
+    return launched(command, root), min(lane.get("timeout", PREFLIGHT_LIMIT), PREFLIGHT_LIMIT)
 
 
 def run(root, config, names=(), out=print):

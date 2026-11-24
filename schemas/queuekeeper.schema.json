@@ -212,6 +212,7 @@
             "type": "boolean"
           },
           "command": {
+            "description": "The lane's command, its words run with no shell. A first word that is the bare word qk, as in [\"qk\", \"unittest\", \"-s\", \"tests\"], runs Queuekeeper's own command: qk run starts it as the selected Queuekeeper checkout's bin/qk with --project, that checkout being the one QUEUEKEEPER_ROOT names, else the one running, on the Mac that runs the lane",
             "type": "array",
             "minItems": 1,
             "items": {

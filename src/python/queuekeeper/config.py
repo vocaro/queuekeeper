@@ -477,6 +477,9 @@ SPELLING_GONE = ("is no longer a Queuekeeper setting, and Queuekeeper has no spe
                  "the user guide's Preflight lanes says how")
 # A project's launcher: its copy of this repository's scripts/qk, which runs Queuekeeper on the project it is in.
 LAUNCHER = "scripts/qk"
+# The first word of a lane command that names Queuekeeper's own command, which launched makes the selected
+# toolkit's bin/qk as the lane starts (vocaro/queuekeeper#340).
+COMMAND_WORD = "qk"
 # The toolkit's docs check, the docs lane of a project that has none (implicit_command, lane_to_run).
 DOCS = "docs"
 IMPLICIT_DOCS = ["python3", LAUNCHER, "docs", "check"]
@@ -520,12 +523,13 @@ def agent_doc(config, path):
 
 def toolkit_docs(config):
     """Whether config's docs lane is the toolkit's check of every Markdown file: no docs lane, so the implicit one, or
-    one whose command ends in qk's `docs check` with no paths after it, by any path to qk (implicit_command)."""
+    one whose command ends in qk's `docs check` with no paths after it, by any path to qk (implicit_command) or the
+    bare word qk (launched)."""
     lane = (config.get("lanes") or {}).get(DOCS)
     if lane is None: return True
     command = lane.get("command") if isinstance(lane, dict) else None
     return isinstance(command, list) and len(command) >= 3 and command[-2:] == ["docs", "check"] \
-        and any(isinstance(word, str) and PurePosixPath(word).name == "qk" for word in command[:-2])
+        and any(isinstance(word, str) and PurePosixPath(word).name == COMMAND_WORD for word in command[:-2])
 
 
 def names_path(path, key):
@@ -1074,9 +1078,45 @@ def toolkit_command(root, words, toolkit=None):
     scripts/qk that getting started never asked it for (vocaro/queuekeeper#108)."""
     root = Path(root)
     if (root / LAUNCHER).is_file(): return ["python3", LAUNCHER, *words]
+    return queuekeeper_command(root, words, toolkit)
+
+
+def queuekeeper_command(root, words, toolkit=None):
+    """The command that runs Queuekeeper's words on the project at root by the toolkit's own bin/qk, with the Python
+    that runs this Queuekeeper, and the project named: the toolkit is toolkit, else the one QUEUEKEEPER_ROOT names,
+    as a launcher reads it, else this one."""
+    root = Path(root)
     named = toolkit or os.environ.get("QUEUEKEEPER_ROOT")
     kit = (root / named).resolve() if named else TOOLKIT_ROOT
     return [sys.executable, str(kit / "bin/qk"), "--project", str(root.resolve()), *words]
+
+
+def launched(command, root, toolkit=None):
+    """The command that starts a lane's configured command in the project at root: one whose first word is the bare
+    word COMMAND_WORD, as ["qk", "unittest", ...], runs the rest by the selected toolkit's bin/qk with the project
+    named (queuekeeper_command), and any other command runs as it is. The bare word always means Queuekeeper's own
+    command, never a project's scripts/qk copy, so a lane runs the toolkit the run selected. qk run, the queue's
+    reruns and its preflight runs make it as the command starts, on the Mac that runs it, so that a lane sent to
+    another Mac names that Mac's toolkit; receipts and the readings of a lane keep the configured words. A project
+    retiring its copy of the launcher (vocaro/queuekeeper#20) needs no wrapper of its own for lanes, which, named
+    anything but qk, silently lost what reads Queuekeeper's command by that name (vocaro/queuekeeper#340)."""
+    if isinstance(command, list) and command[:1] == [COMMAND_WORD]:
+        return queuekeeper_command(root, command[1:], toolkit)
+    return command
+
+
+def queuekeeper_at(command, subcommand):
+    """The index in command of subcommand as the Queuekeeper subcommand it runs, or None: subcommand right after a
+    word whose name is qk (the bare word, bin/qk or a project's launcher), or after that word's --project option, as
+    launched and queuekeeper_command place it. What reads a lane as qk unittest or qk docs check reads it so."""
+    if not isinstance(command, list) or not all(isinstance(word, str) for word in command): return None
+    for index, word in enumerate(command[:-1]):
+        if PurePosixPath(word).name != COMMAND_WORD: continue
+        at = index + 1
+        if command[at] == "--project": at += 2
+        elif command[at].startswith("--project="): at += 1
+        if at < len(command) and command[at] == subcommand: return at
+    return None
 
 
 def implicit_command(root, name, toolkit=None):
