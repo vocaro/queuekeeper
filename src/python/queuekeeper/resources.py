@@ -2560,19 +2560,21 @@ def now_lines(reading, at=None):
                 if waiter.get("position") is not None: kind += f", priority place {waiter['position']}"
                 waited = f"waited {duration(waiter['waitedSeconds'])}" if waiter.get("waitedSeconds") is not None \
                     else "waited for an unknown time"
+                reason = waiter.get("reason")
+                if reason and waiter.get("stale"):
+                    reason += f" (as of {duration(waiter['sampledSeconds'])} ago: stale)"
                 if sender := waiter.get("heldFor"):
                     why = f"place held for work sent by {sender}"
+                    if reason:
+                        why += f"; {reason}"
                 elif waiter.get("away"):
                     asked = waiter.get("lastAskedSeconds")
                     why = ("place kept while away, last asked " + (f"{duration(asked)} ago" if asked is not None else "at an unknown time")
                            + ("; it holds later work back" if waiter.get("holdsBack")
                               else "; it no longer holds later work back" if waiter.get("holdsBack") is False else "")
                            + "; no reason recorded")
-                elif not waiter.get("reason"):
-                    why = "asking, with no reason recorded (a toolkit older than its record, or before its first refusal)"
                 else:
-                    why = waiter["reason"]
-                    if waiter.get("stale"): why += f" (as of {duration(waiter['sampledSeconds'])} ago: stale)"
+                    why = reason or "asking, with no reason recorded (a toolkit older than its record, or before its first refusal)"
                 status = "; its process could not be checked" if waiter.get("process") == "unknown" else ""
                 lines.append(f"    {waiter['label']}: {kind}, PID {waiter['pid']}, {waited}: {why}{status}")
                 if whence(waiter.get("origin")): lines.append(f"      from {whence(waiter['origin'])}")

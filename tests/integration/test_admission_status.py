@@ -254,9 +254,10 @@ class HoldersTests(Namespace):
         folder = self.directory / resources.WAITS
         folder.mkdir()
         observer_pid, observer_start = os.getpid() + 1, "Mon Nov 23 12:00:00 2026"
+        reason = "all guaranteed slots are busy"
         (folder / "observation.json").write_text(json.dumps({
             "schemaVersion": 1, "identity": identity, "pid": observer_pid, "start": observer_start,
-            "request": "observed", "reason": "all guaranteed slots are busy", "sampledAt": time.time(),
+            "request": "observed", "reason": reason, "sampledAt": time.time(),
         }))
         files = tree(self.temp.name)
         words, output = [], []
@@ -264,18 +265,22 @@ class HoldersTests(Namespace):
             self.assertEqual(resources.now_main(["--here"], out=words.append), 0)
             self.assertEqual(resources.now_main(["--here", "--json"], out=output.append), 0)
         self.assertEqual(sum("Farm gate:" in line for line in words), 1)
-        self.assertIn("place held for work sent by studio", "\n".join(words))
+        self.assertIn(f"place held for work sent by studio; {reason}", "\n".join(words))
         host, = json.loads(output[0])["hosts"]
         waiter, = host["waiters"]
         self.assertEqual((waiter["heldFor"], waiter["kind"], waiter["position"]), ("studio", "wholeHost", 1))
         self.assertEqual((waiter["pid"], waiter["process"], waiter["away"], waiter["holdsBack"]),
                          (os.getpid(), "running", True, True))
-        self.assertEqual(waiter["reason"], "all guaranteed slots are busy")
+        self.assertEqual(waiter["reason"], reason)
         self.assertEqual(host["holders"], [])
 
         # A reused observation PID must not lend its reason or request to the still-live keeper.
+        words.clear()
         with patch.object(offload_host, "census", return_value={os.getpid(): self.start, observer_pid: self.start}):
             keeper, = self.read()["waiters"]
+            self.assertEqual(resources.now_main(["--here"], out=words.append), 0)
+        self.assertIn("place held for work sent by studio", "\n".join(words))
+        self.assertNotIn(reason, "\n".join(words))
         self.assertEqual((keeper["pid"], keeper["process"], keeper["heldFor"], keeper["holdsBack"]),
                          (os.getpid(), "running", "studio", True))
         self.assertIsNone(keeper["reason"])
@@ -581,6 +586,26 @@ class WaiterTests(Namespace):
         self.assertLessEqual(int(printed[0][0]), took)
         self.assertIsNotNone(waiter["waitedSeconds"])
         self.assertEqual(self.records(), [])
+
+    def test_an_exclusive_waiter_shows_its_priority_place_and_refusal_reason(self):
+        held = self.hold_slots()
+        admission = resources.Admission("Exclusive benchmark", exclusive=True, timeout=stretched(30))
+        with contextlib.redirect_stderr(StringIO()):
+            try:
+                thread, outcome = self.waiting(admission)
+                reading = self.read()
+            finally:
+                for fd in held: os.close(fd)
+            thread.join(stretched(30))
+        self.assertTrue(outcome.get("admitted"), outcome)
+        waiter, = reading["waiters"]
+        self.assertEqual((waiter["kind"], waiter["position"], waiter["refusal"]), ("exclusive", 1, "slots"))
+        self.assertIsNotNone(waiter["waitedSeconds"])
+        lines = resources.now_lines({"hosts": [{**reading, "name": "this Mac"}]})
+        line, = [line for line in lines if "Exclusive benchmark:" in line]
+        self.assertIn("exclusive with the model, priority place 1", line)
+        self.assertIn(waiter["reason"], line)
+        self.assertIn("exclusive work needs every slot", line)
 
     def test_its_record_goes_when_it_times_out_or_is_stopped(self):
         held = self.hold_slots()
