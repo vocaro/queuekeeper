@@ -127,9 +127,9 @@ class StretchTests(unittest.TestCase):
             self.assertEqual(timeout, 120)
             raise subprocess.TimeoutExpired(command, timeout)
         lease = type("Lease", (), {"check": lambda self, restoring=False: None, "scopes": [[]]})()
-        with patch.object(state.os, "getloadavg", side_effect=[(1,) * 3, (7.45,) * 3]), \
+        with patch.object(state.os, "getloadavg", side_effect=[(7.45,) * 3]), \
                 patch.object(state.os, "cpu_count", return_value=10), \
-                patch.object(state.waiting, "busy_now", side_effect=[50.0, 100.0]), \
+                patch.object(state.waiting, "busy_now", side_effect=[100.0]), \
                 patch.object(state.subprocess, "run", side_effect=timed_out), \
                 self.assertRaises(state.TransitionFailed) as failed:
             state._set(lease, False, lambda: True, state._toggle)
@@ -137,16 +137,28 @@ class StretchTests(unittest.TestCase):
                     "with the CPU 100% busy)")
         self.assertIn(evidence, str(failed.exception))
         self.assertIn(evidence, lease.scopes[-1][0])
-        self.assertNotIn("load of 1 on", str(failed.exception))
 
     def test_a_verification_timeout_reports_its_own_reading(self):
         lease = type("Lease", (), {"check": lambda self, restoring=False: None, "scopes": [[]]})()
-        with patch.object(state.os, "getloadavg", return_value=(7.45,) * 3), \
+        clock = [0]
+
+        def slow_key():
+            clock[0] += 15
+
+        def load():
+            return (1,) * 3 if clock[0] == 0 else (7.45,) * 3
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch.object(state.os, "getloadavg", side_effect=load), \
                 patch.object(state.os, "cpu_count", return_value=10), \
-                patch.object(state.waiting, "busy_now", return_value=100.0), \
-                patch.object(state.time, "monotonic", side_effect=[0, 120]), \
+                patch.object(state.waiting, "busy_now", side_effect=lambda: 50.0 if clock[0] == 0 else 100.0), \
+                patch.object(state.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(state.time, "sleep", side_effect=sleep), \
                 self.assertRaises(state.TransitionFailed) as failed:
-            state._set(lease, False, lambda: True, lambda: None)
+            state._set(lease, False, lambda: True, slow_key, poll=1)
+        self.assertEqual(clock[0], 135)
         self.assertIn("VoiceOver did not reach off within 120s", str(failed.exception))
         self.assertIn("(stretched 24 times, by a one-minute load of 7.45 on 10 cores with the CPU 100% busy)",
                       str(failed.exception))

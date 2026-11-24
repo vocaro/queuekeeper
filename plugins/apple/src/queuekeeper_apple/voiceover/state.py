@@ -273,9 +273,6 @@ def _set(lease, desired, reader, toggle, *, restoring=False, wait=None, poll=POL
     """Reach desired with one checked Command-F5. A failure inside a preserved() scope, or while restoring,
     is the scope's to restore; only one with no scope to restore it marks the lease uncertain at once."""
     if type(desired) is not bool: raise ValueError("VoiceOver target must be on or off")
-    # The verification wait has its own reading. The key command takes a fresh reading when it runs (#43).
-    reading = stretch_reading() if wait is None else None
-    if reading is not None: wait = stretched(WAIT, reading)
     if _known(lease, reader, restoring=restoring) == desired: return
     if desired:
         _wait_to_enable(lease, ready or _ready_to_enable, restoring=restoring, wait=ready_wait, poll=poll)
@@ -284,6 +281,9 @@ def _set(lease, desired, reader, toggle, *, restoring=False, wait=None, poll=POL
     lease.check(restoring=restoring)
     try:
         toggle()
+        # A slow key command can outlast the conditions it started under. Sample at verification's start.
+        reading = stretch_reading() if wait is None else None
+        if reading is not None: wait = stretched(WAIT, reading)
         deadline = time.monotonic() + wait
         while True:
             try:
