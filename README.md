@@ -160,6 +160,30 @@ log, which opens in **Logs** with its failures marked.
 
 See [the user guide](doc/user_guide.md#the-dashboard) for details.
 
+## Notifications
+
+Queuekeeper can tell you when a queue needs you, so you don't have to keep the dashboard open.
+It sends an alert when a queue holds for a cause only you can fix, when an entry comes back, and
+when a check finds a queue stuck. It sends each alert once. With the
+[signed queue launcher](doc/user_guide.md#the-signed-queue-launcher), the check runs every two
+minutes, even with no session open.
+
+```sh
+qk visibility enable notify
+qk notify set imessage to you@example.com   # also reach your phone
+qk notify test --scheduled                  # prove the scheduled check reaches you
+```
+
+<p align="center">
+  <img src="assets/notifications.svg" alt="A Mac desktop with two Queuekeeper banners in its corner: lumen-ios&#39;s queue held for its owner because the remote refused its key, and an orbit-game entry that came back when its gate failed. Behind them, a terminal shows qk notify status with the banner and iMessage channels on, then the iMessage channel turned off and on again." width="100%">
+</p>
+
+A macOS banner is on by default. An iMessage, a command of your own or a webhook (such as
+Slack's) can reach you away from your Mac. Each channel turns on and off by itself with
+`qk notify enable` and `qk notify disable`. Each kind of alert does too.
+
+See [the user guide](doc/user_guide.md#the-notify-feature) for details.
+
 ## Plugins
 
 A plugin teaches Queuekeeper a platform. A project switches one on by listing its package in the

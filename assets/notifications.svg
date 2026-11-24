@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 480" role="img" aria-labelledby="t d" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="t">Queuekeeper notifications</title>
+  <desc id="d">A Mac desktop with two Queuekeeper banners in its corner: lumen-ios's queue held for its owner because the remote refused its key, and an orbit-game entry that came back when its gate failed. Behind them, a terminal shows qk notify status with the banner and iMessage channels on, then the iMessage channel turned off and on again.</desc>
+
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b0e15"/>
+      <stop offset="1" stop-color="#1a2130"/>
+    </linearGradient>
+    <linearGradient id="wallpaper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d2a44"/>
+      <stop offset="0.55" stop-color="#2b2350"/>
+      <stop offset="1" stop-color="#14304a"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="480" rx="18" fill="url(#sky)"/>
+
+  <!-- Mac -->
+  <rect x="16" y="16" width="1248" height="448" rx="14" fill="url(#wallpaper)" stroke="#3a4256" stroke-width="2"/>
+  <path d="M30 16H1250a14 14 0 0 1 14 14V52H16V30a14 14 0 0 1 14-14z" fill="#0d111a" fill-opacity="0.75"/>
+  <text x="40" y="40" font-size="15" font-weight="600" fill="#ece8da">Terminal</text>
+  <g font-size="15" fill="#c9cdd8"><text x="124" y="40">Shell</text><text x="180" y="40">Edit</text><text x="226" y="40">View</text><text x="280" y="40">Window</text><text x="356" y="40">Help</text></g>
+  <text x="1240" y="40" text-anchor="end" font-size="15" fill="#c9cdd8">Tue 9:47 AM</text>
+
+  <!-- a terminal window, dimmed, in the background -->
+  <g transform="translate(64 84) scale(1.45) translate(-70 -150)">
+  <g opacity="0.55">
+    <rect x="70" y="150" width="380" height="250" rx="10" fill="#10141d" stroke="#3a4256"/>
+    <circle cx="88" cy="166" r="5" fill="#ff5f57"/><circle cx="104" cy="166" r="5" fill="#febc2e"/><circle cx="120" cy="166" r="5" fill="#28c840"/>
+    <g font-family="ui-monospace, Menlo, monospace" font-size="12" fill="#aab1c2">
+      <text x="88" y="200">$ qk notify status</text>
+      <text x="104" y="222" fill="#7dea8a">on</text><text x="136" y="222" fill="#7dea8a">banner</text>
+      <text x="104" y="240" fill="#7dea8a">on</text><text x="136" y="240" fill="#7dea8a">imessage</text>
+      <text x="104" y="258">off</text><text x="136" y="258">command</text>
+      <text x="104" y="276">off</text><text x="136" y="276">webhook</text>
+      <text x="88" y="306">$ qk notify disable imessage</text>
+      <text x="88" y="324">imessage is off</text>
+      <text x="88" y="354">$ qk notify enable imessage</text>
+      <text x="88" y="372">imessage is on</text>
+    </g>
+  </g>
+  </g>
+
+  <!-- banners -->
+  <g transform="translate(800 72) scale(1.28) translate(-440 -116)">
+  <g filter="url(#shadow)">
+    <rect x="440" y="116" width="344" height="92" rx="16" fill="#2a3142" fill-opacity="0.96" stroke="#4a5266"/>
+    <rect x="456" y="132" width="34" height="34" rx="8" fill="#3b4459"/>
+    <path d="M473 139l9 16h-18z" fill="#f2b95a"/>
+    <rect x="472" y="146" width="2" height="5" fill="#2a3142"/><rect x="472" y="152.5" width="2" height="2" fill="#2a3142"/>
+    <text x="502" y="142" font-size="13.5" font-weight="700" fill="#ece8da">Queue held for you</text>
+    <text x="768" y="142" text-anchor="end" font-size="11.5" fill="#8b93a7">now</text>
+    <text x="502" y="160" font-size="12.5" font-weight="600" fill="#c9cdd8">lumen-ios</text>
+    <text x="502" y="178" font-size="12.5" fill="#c9cdd8">For the owner, since nobody else can fix it:</text>
+    <text x="502" y="195" font-size="12.5" fill="#c9cdd8">the remote refused its key</text>
+  </g>
+  </g>
+  <g transform="translate(800 205) scale(1.28) translate(-440 -220)">
+  <g filter="url(#shadow)">
+    <rect x="440" y="220" width="344" height="76" rx="16" fill="#2a3142" fill-opacity="0.96" stroke="#4a5266"/>
+    <rect x="456" y="236" width="34" height="34" rx="8" fill="#3b4459"/>
+    <path d="M465 253a8 8 0 1 1 3 6" fill="none" stroke="#ff8a7a" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M462 248l3 6l5-4" fill="none" stroke="#ff8a7a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="502" y="246" font-size="13.5" font-weight="700" fill="#ece8da">Entry came back</text>
+    <text x="768" y="246" text-anchor="end" font-size="11.5" fill="#8b93a7">2m ago</text>
+    <text x="502" y="264" font-size="12.5" font-weight="600" fill="#c9cdd8">orbit-game</text>
+    <text x="502" y="282" font-size="12.5" fill="#c9cdd8">add-thrust-curve: its gate failed</text>
+  </g>
+  </g>
+</svg>
