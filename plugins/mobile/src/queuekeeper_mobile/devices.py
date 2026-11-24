@@ -292,6 +292,38 @@ def reserve_numbered(prefix, available, reserve):
     return next(reserve_candidates((key for key in keys if available(key)), reserve))
 
 
+def reset_candidates(candidates, reserve, lease, reset, *, abandon):
+    """Yield each candidate's lease and its reset's result once reserved and reset, in the pool's candidate order.
+
+    lease(candidate, revision) makes the lease of a reserved candidate, and reset(lease) brings that member back to
+    its kind's template under the reservation, or decides not to, by the platform's own steps; the caller reads its
+    result and stops at the lease it keeps. A failure or stop inside reset, an interrupt among them, calls
+    abandon(lease), which releases the member or keeps it for recovery, and is raised again: a pool never hands
+    back a member it left half reset."""
+    for candidate, revision in reserve_candidates(candidates, reserve):
+        taken = lease(candidate, revision)
+        try:
+            result = reset(taken)
+        except BaseException:
+            abandon(taken)
+            raise
+        yield taken, result
+
+
+def create_numbered(prefix, available, reserve, create, *, abandon):
+    """Return what create(key, revision) makes of the lowest available pool key once reserved: a new member, cloned
+    from its kind's template or made by the platform's own steps.
+
+    A failure or stop inside create calls abandon(key, revision, error), which releases the name or keeps it for
+    recovery, and is raised again."""
+    key, revision = reserve_numbered(prefix, available, reserve)
+    try:
+        return create(key, revision)
+    except BaseException as error:
+        abandon(key, revision, error)
+        raise
+
+
 def release_confirmed(record, key, *, owner, outcome, restoration, unchanged, stop, kept):
     """Release owner's reservation of a pool member once its platform confirms the member stopped; whether it did.
 

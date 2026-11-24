@@ -188,6 +188,43 @@ class PoolReservations(unittest.TestCase):
         self.assertEqual(reserved, ["first", "second"])
         self.assertEqual(list(candidates), [("third", 3)])
 
+    def test_a_reset_runs_under_each_reservation_and_a_stop_in_it_abandons_that_member(self):
+        reset, abandoned = [], []
+
+        def reset_member(lease):
+            reset.append(lease)
+            if lease[0] == "third": raise KeyboardInterrupt
+            return lease[0] != "first"
+
+        def reserve(candidate):
+            if candidate == "second": raise devices.Refused("another run got there first")
+            return len(reset) + 1
+
+        members = devices.reset_candidates(["first", "second", "third", "fourth"], reserve,
+                                           lambda candidate, revision: (candidate, revision), reset_member,
+                                           abandon=abandoned.append)
+        # The caller reads each result and passes over a member whose reset said no.
+        self.assertEqual(next(members), (("first", 1), False))
+        with self.assertRaises(KeyboardInterrupt):
+            next(members)
+        self.assertEqual((reset, abandoned), ([("first", 1), ("third", 2)], [("third", 2)]))
+
+    def test_a_new_member_is_made_under_the_lowest_free_number_and_a_failure_abandons_its_name(self):
+        abandoned = []
+
+        def create(key, revision):
+            if key == "Pool 3": raise RuntimeError("the clone failed")
+            return key, revision
+
+        made = devices.create_numbered("Pool ", lambda key: key != "Pool 1", lambda key: 7, create,
+                                       abandon=lambda *args: abandoned.append(args))
+        self.assertEqual(made, ("Pool 2", 7))
+        with self.assertRaisesRegex(RuntimeError, "the clone failed"):
+            devices.create_numbered("Pool ", lambda key: key not in ("Pool 1", "Pool 2"), lambda key: 8, create,
+                                    abandon=lambda *args: abandoned.append(args))
+        self.assertEqual([(key, revision, str(error)) for key, revision, error in abandoned],
+                         [("Pool 3", 8, "the clone failed")])
+
 
 class Shards(unittest.TestCase):
     def test_units_go_longest_first_into_the_emptiest_shard_and_unknown_ones_count_the_median(self):

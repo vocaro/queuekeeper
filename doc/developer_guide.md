@@ -1633,8 +1633,11 @@ device identifiers or live session details.
 
 The Apple simulator pool and the Android emulator pool share their reservation steps from this module
 (vocaro/queuekeeper#246): `reserve_candidates` and `reserve_numbered` take the next free or new member
-when another session wins a race, and `release_confirmed` releases a member only after its platform
-confirms a fresh stop of the unchanged reservation, keeping it for recovery otherwise.
+when another session wins a race; `reset_candidates` resets each reserved member by its platform's
+steps and `create_numbered` makes a new one, abandoning a member or name whose reset or creation fails or is
+stopped, so that a pool never hands back a member it left half reset; and `release_confirmed` releases a
+member only after its platform confirms a fresh stop of the unchanged reservation, keeping it for recovery
+otherwise.
 
 - **A coordination record, not a mutex.** Each change takes an exclusive lock, reads the record fresh,
   refuses unless the entry is at the caller's revision (and, for an update or release, still the

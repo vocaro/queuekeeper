@@ -263,34 +263,33 @@ class Pool:
         running = set(avd.running().values())
         members = self.members(image, device, listed)
         candidates = (name for _, name in sorted(members.items()) if name not in exclude and self._free(name, running))
-        chosen = next(device_record.reserve_candidates(
-            candidates, lambda name: self._reserve(name, purpose, keptState=bool(keep_state)),
+
+        def reset(lease):
+            if not keep_state:
+                avd.delete(lease.key, folder=self.folder)
+                avd.clone(template, lease.key, folder=self.folder)
+
+        chosen = next(device_record.reset_candidates(
+            candidates, lambda name: self._reserve(name, purpose, keptState=bool(keep_state)), Lease, reset,
+            abandon=lambda lease: self.release(lease, outcome=f"Its reset failed before {purpose}"),
         ), None)
         if chosen is not None:
-            name, revision = chosen
-            lease = Lease(name, revision)
-            if not keep_state:
-                try:
-                    avd.delete(name, folder=self.folder)
-                    avd.clone(template, name, folder=self.folder)
-                except BaseException:
-                    self.release(lease, outcome=f"Its reset failed before {purpose}")
-                    raise
-            return lease
+            return chosen[0]
         occupied = set(members.values())
-        name, revision = device_record.reserve_numbered(
+
+        def create(name, revision):
+            avd.clone(template, name, folder=self.folder)
+            return Lease(name, revision, created=True)
+
+        lease = device_record.create_numbered(
             f"{self.name}_{label(image, device)}_",
             lambda name: name not in occupied and name not in exclude and self._free(name, running),
-            lambda name: self._reserve(name, purpose, created=True),
+            lambda name: self._reserve(name, purpose, created=True), create,
+            abandon=lambda name, revision, _error: self.record.release(
+                name, owner=self.owner, revision=revision, outcome=f"Not created for {purpose}",
+                restoration="Nothing was started"),
         )
-        lease = Lease(name, revision, created=True)
-        try:
-            avd.clone(template, name, folder=self.folder)
-        except BaseException:
-            self.record.release(name, owner=self.owner, revision=revision, outcome=f"Not created for {purpose}",
-                                restoration="Nothing was started")
-            raise
-        self.said(f"CREATED {name} from {template}")
+        self.said(f"CREATED {lease.key} from {template}")
         return lease
 
     def held(self, key=None, serial=None):

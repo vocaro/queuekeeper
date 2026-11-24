@@ -286,6 +286,20 @@ class Taking(unittest.TestCase):
         self.assertEqual(again.key, lease.key)
         self.assertFalse((member / "left-by-the-run").exists())
 
+    def test_a_stop_during_a_reset_or_a_creation_releases_the_member_it_reserved(self):
+        lease = self.pool.take(IMAGE, "pixel_8", purpose="first")
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+        with patch.object(avd, "clone", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.pool.take(IMAGE, "pixel_8", purpose="second")
+        entry = self.record.entry(lease.key)
+        self.assertEqual((devices.condition(entry), entry["run"]), ("released", "Its reset failed before second"))
+        held = self.pool.take(IMAGE, "pixel_8", purpose="third")
+        with patch.object(avd, "clone", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.pool.take(IMAGE, "pixel_8", purpose="fourth")
+        entry = self.record.entry("Demo_Pixel_8_API_36_2")
+        self.assertEqual((devices.condition(entry), entry["run"]), ("released", "Not created for fourth"))
+        self.assertEqual(devices.condition(self.record.entry(held.key)), "held")
+
     def test_a_number_reserved_between_selection_and_claim_is_skipped(self):
         template = self.template()
         occupied, contested, released = (f"Demo_Pixel_8_API_36_{number}" for number in (1, 2, 3))

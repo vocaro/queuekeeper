@@ -861,34 +861,45 @@ class Pool:
                                                             for entry in entries_for(member, record).values()))
         details = {"preservation": preservation or (KEPT_STATE if keep_state else PRESERVATION)}
         if keep_state: details["keptState"] = True
-        for member, revision in device_record.reserve_candidates(
-            candidates, lambda member: self._reserve(member.name, purpose, member.udid, taken=True, **details),
-        ):
-            lease = Lease(member.name, member.udid, revision, kept=keep_state)
+        reserved = {}
+
+        def lease_of(member, revision):
+            reserved[member.udid] = member
+            return Lease(member.name, member.udid, revision, kept=keep_state)
+
+        def reset(lease):
+            """(erased, why) once the member is reset, erased or kept as asked, or None when it was booted since
+            the listing, its reservation kept for recovery."""
             erased, why = None, None
-            try:
-                # The listing predates the reservation. Never reset, erase or boot a device booted since then.
-                if self.state(member.udid) != "Shutdown":
-                    self.log(f"{member.name} is no longer shut down; its reservation is kept for recovery")
-                    continue
-                if erase:
-                    erased, why = self.run("erase", member.udid), ERASE_ASKED
-                elif not keep_state:
-                    source, why = self.template(device_type, runtime, member.label, purpose, settled=True, use="copy")
-                    done = False
-                    if source is not None:
-                        try:
-                            done, why = self.reset(lease, source, purpose=purpose)
-                        finally:
-                            # The copy reads the shut-down template and changes nothing in it.
-                            self.release(source, outcome=f"{'Copied' if done else 'Not copied'} into {member.name} "
-                                                         f"for {purpose}", shutdown=False)
-                    if not done:
-                        erased = self.run("erase", member.udid)
-            except BaseException:
-                # A stop before the lease is handed back releases it once the member is shut down.
-                self.release(lease, outcome=f"Stopped before {purpose}", shutdown=False)
-                raise
+            # The listing predates the reservation. Never reset, erase or boot a device booted since then.
+            if self.state(lease.udid) != "Shutdown":
+                self.log(f"{lease.key} is no longer shut down; its reservation is kept for recovery")
+                return None
+            if erase:
+                erased, why = self.run("erase", lease.udid), ERASE_ASKED
+            elif not keep_state:
+                source, why = self.template(device_type, runtime, reserved[lease.udid].label, purpose,
+                                            settled=True, use="copy")
+                done = False
+                if source is not None:
+                    try:
+                        done, why = self.reset(lease, source, purpose=purpose)
+                    finally:
+                        # The copy reads the shut-down template and changes nothing in it.
+                        self.release(source, outcome=f"{'Copied' if done else 'Not copied'} into {lease.key} "
+                                                     f"for {purpose}", shutdown=False)
+                if not done:
+                    erased = self.run("erase", lease.udid)
+            return erased, why
+
+        for lease, result in device_record.reset_candidates(
+            candidates, lambda member: self._reserve(member.name, purpose, member.udid, taken=True, **details),
+            lease_of, reset,
+            # A stop before the lease is handed back releases it once the member is shut down.
+            abandon=lambda lease: self.release(lease, outcome=f"Stopped before {purpose}", shutdown=False),
+        ):
+            if result is None: continue
+            member, (erased, why) = reserved[lease.udid], result
             if erased is not None and erased.returncode != 0:
                 self.release(lease, outcome=f"Erase failed before {purpose}: {erased.stderr.strip()}", shutdown=False)
                 continue
@@ -917,14 +928,7 @@ class Pool:
             current = self.record.entry(key)
             return key not in names and (current is None or device_record.condition(current) == "released")
 
-        key, revision = device_record.reserve_numbered(
-            f"{self.name} {label} ", available,
-            lambda key: self._reserve(key, purpose, taken=True, preservation=preservation, created=True),
-        )
-        try:
-            return self._create(key, revision, device_type, runtime, purpose=purpose, label=label,
-                                preservation=preservation, erase=erase)
-        except BaseException as error:
+        def abandon(key, _revision, error):
             # A stop or failure after the reservation and before a UDID was recorded: release the
             # name unless a device of that name now exists, which keeps it for recovery.
             current = self.record.entry(key) or {}
@@ -935,7 +939,14 @@ class Pool:
                                     # An exception is truthy even when its message is empty.
                                     outcome=f"Not created: {str(error) or type(error).__name__}",
                                     restoration="Nothing was created")
-            raise
+
+        return device_record.create_numbered(
+            f"{self.name} {label} ", available,
+            lambda key: self._reserve(key, purpose, taken=True, preservation=preservation, created=True),
+            lambda key, revision: self._create(key, revision, device_type, runtime, purpose=purpose, label=label,
+                                               preservation=preservation, erase=erase),
+            abandon=abandon,
+        )
 
     def _create(self, key, revision, device_type, runtime, *, purpose, label, preservation, erase=False):
         # Another session may have created the name between the listing and the reservation.
