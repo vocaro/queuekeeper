@@ -220,6 +220,86 @@ class Command(Folder):
         self.assertIn("qk 20260101T000000Z-1", said)
 
 
+class ThisMac(Folder):
+    """A run on this Mac is checked here whichever of the Mac's names it recorded, and sleep is told apart from a
+    stall (vocaro/queuekeeper#347)."""
+
+    def setUp(self):
+        super().setUp()
+        # This Mac as the issue saw it: its LocalHostName, and a kernel host name that changed across a sleep.
+        self.enterContext(patch.object(run_progress, "this_mac", return_value="Trevors-MacBook-Pro-715"))
+        self.enterContext(patch.object(run_progress.socket, "gethostname", return_value="Trevors-MacBook-Pro-715"))
+
+    def run_recorded(self, **record):
+        # A base of its own for each, since one process's folders made in one second share a name.
+        folder = run_progress.new_folder(Path(tempfile.mkdtemp(dir=self.root)))
+        run_progress.write(folder / run_progress.RECORD, {"pid": os.getpid(), "command": ["qk", "unittest"],
+                                                          "started": 1000.0, "ended": None, "status": None, **record})
+        return folder
+
+    def test_a_live_run_here_is_running_whichever_of_this_macs_names_it_recorded(self):
+        for host in ("Trevors-MacBook-Pro-715.local", "Trevors-MacBook-Pro-715", "trevors-macbook-pro-715.local.", None):
+            with self.subTest(host=host):
+                folder = self.run_recorded(host=host)
+                self.assertTrue(run_progress.running(folder))
+                said = "\n".join(run_progress.describe(folder, now=1060.0, awake_now=None))
+                self.assertIn(f"running for 1m00s, process {os.getpid()}", said)
+                self.assertNotIn("not running", said)
+        # The kernel's name now, when the LocalHostName is another, is this Mac's too.
+        with patch.object(run_progress.socket, "gethostname", return_value="Mac.lan"):
+            self.assertTrue(run_progress.running(self.run_recorded(host="Mac.lan")))
+
+    def test_a_run_here_that_ended_without_a_status_is_still_said_to_have(self):
+        ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True)
+        pid = int(ended.stdout)
+        for host in ("Trevors-MacBook-Pro-715.local", "Trevors-MacBook-Pro-715"):
+            with self.subTest(host=host):
+                folder = self.run_recorded(host=host, pid=pid)
+                self.assertFalse(run_progress.running(folder))
+                self.assertIn(f"  not running: process {pid} on {host} ended without a status",
+                              run_progress.describe(folder))
+
+    def test_a_run_on_another_mac_is_not_checked_here(self):
+        folder = self.run_recorded(host="build-host.local")
+        self.assertFalse(run_progress.running(folder))
+        self.assertIn(f"  not running here: process {os.getpid()} is on build-host.local, another Mac, which this one "
+                      "cannot check", run_progress.describe(folder))
+
+    def test_a_record_names_this_mac_by_its_local_host_name_and_reads_both_clocks(self):
+        with patch.object(run_progress, "awake", return_value=42.0):
+            record = run_progress.started_record(["qk"])
+        self.assertEqual((record["host"], record["startedAwake"]), ("Trevors-MacBook-Pro-715", 42.0))
+
+    def test_a_running_run_says_how_long_this_mac_slept_during_it_and_since_it_last_moved(self):
+        # Started at wall 1000 with the awake clock at 500; an hour later on the wall, this Mac has slept 12 minutes.
+        folder = self.run_recorded(host="Trevors-MacBook-Pro-715.local", startedAwake=500.0)
+        run_progress.write(folder / run_progress.STATE, {"started": 1000.0, "updated": 3000.0, "updatedAwake": 2500.0})
+        said = run_progress.describe(folder, now=4600.0, awake_now=500.0 + 3600 - 720)
+        self.assertIn(f"  running for 1h00m (48m00s awake: this Mac slept 12m00s of it), process {os.getpid()}", said)
+        # Of the 26m40s since STATE last moved, the Mac slept 12m00s.
+        self.assertTrue(any(line.startswith("  last moved 26m40s ago (14m40s awake: this Mac slept 12m00s of it), at ")
+                            for line in said), said)
+
+    def test_an_ended_run_says_how_long_this_mac_slept_during_it(self):
+        folder = self.run_recorded(host="Trevors-MacBook-Pro-715", startedAwake=500.0, ended=4600.0,
+                                   endedAwake=500.0 + 3600 - 720, status=0)
+        self.assertTrue(any(line.endswith("with status 0, after 1h00m (48m00s awake: this Mac slept 12m00s of it)")
+                            for line in run_progress.describe(folder)))
+
+    def test_no_sleep_is_named_without_both_clocks_across_a_restart_or_for_a_short_drift(self):
+        cases = {"no awake reading": ({}, 4600.0, 4100.0), "restart": ({"startedAwake": 9000.0}, 4600.0, 100.0),
+                 "drift": ({"startedAwake": 500.0}, 4600.0, 500.0 + 3600 - 30)}
+        for case, (record, now, awake_now) in cases.items():
+            with self.subTest(case):
+                said = "\n".join(run_progress.describe(self.run_recorded(**record), now=now, awake_now=awake_now))
+                self.assertIn(f"  running for 1h00m, process {os.getpid()}", said)
+                self.assertNotIn("slept", said)
+
+    def test_a_run_on_another_mac_is_not_said_to_have_slept_by_this_macs_clocks(self):
+        folder = self.run_recorded(host="build-host", startedAwake=500.0, ended=4600.0, endedAwake=500.0, status=0)
+        self.assertNotIn("slept", "\n".join(run_progress.describe(folder)))
+
+
 class Unittest(Folder):
     def test_qk_unittest_names_its_folder_first_and_keeps_its_progress_there_though_piped(self):
         (self.root / "test_one.py").write_text(textwrap.dedent("""

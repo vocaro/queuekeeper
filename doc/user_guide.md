@@ -3554,7 +3554,9 @@ Keep a long run's progress readable while it runs:
   `.build/queuekeeper/runs/`, where `progress.log` gains a line as each test process ends.
 - **`qk progress`** reports on a run from another shell: what it runs, how long, the tests
   finished and failed, and when it last moved. `qk progress FOLDER` reads one run, and `--all`
-  reads every one kept.
+  reads every one kept. A run on this Mac counts as running whichever of the Mac's names it
+  recorded, with or without `.local`. When this Mac slept during a run, or since it last moved,
+  the time beside it says how much of it was awake and how long the Mac slept.
 
 `qk run` keeps each lane's log in `.build/queuekeeper/LANE/run.log`.
 

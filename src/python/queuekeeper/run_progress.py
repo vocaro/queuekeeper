@@ -17,6 +17,7 @@ but new processes in `ps`. The folder holds:
 import argparse
 import contextlib
 from datetime import datetime, timezone
+import functools
 import json
 import os
 from pathlib import Path
@@ -28,12 +29,16 @@ import sys
 import threading
 import time
 
+from . import offload_host
+
 RUNS = ".build/queuekeeper/runs"
 # Names the folder an admitted runner made to the run it admits on this Mac, so that both keep their files in one.
 VARIABLE = "QUEUEKEEPER_PROGRESS_DIR"
 LOG, STATE, OUTPUT, RECORD = "progress.log", "progress.json", "output.log", "run.json"
 # Ended runs' folders kept, the newest; a running one's is never removed.
 KEPT = 20
+# Seconds of sleep a stretch must span before `qk progress` names it: the two clocks drift apart by far less.
+SLEPT_NOTED = 60
 
 
 def stamp(now=None):
@@ -94,13 +99,50 @@ def alive(pid):
     return True
 
 
+@functools.cache
+def this_mac():
+    """This Mac's name as a run records it: its LocalHostName (offload_host.mac_name), which stays as it is while the
+    kernel's host name, socket.gethostname(), follows the network and can change during a run, as it did from
+    Trevors-MacBook-Pro-715.local to another name across a sleep (vocaro/queuekeeper#347)."""
+    return offload_host.mac_name()
+
+
+def here(host):
+    """Whether host, as a run recorded it, names this Mac: its LocalHostName or the kernel's host name now, with or
+    without .local, case aside. None, which an older record without a host has, is this Mac's."""
+    if host is None: return True
+    if not isinstance(host, str): return False
+    names = {name.rstrip(".").lower().removesuffix(".local") for name in (this_mac(), socket.gethostname()) if name}
+    return host.rstrip(".").lower().removesuffix(".local") in names
+
+
 def running(folder):
     """Whether folder's run has not ended and its process lives: the outer, admitted runner's when it has one."""
     for name in (RECORD, STATE):
         found = read(Path(folder) / name)
         if found is not None:
-            return found.get("ended") is None and found.get("host") in (None, socket.gethostname()) and alive(found.get("pid"))
+            return found.get("ended") is None and here(found.get("host")) and alive(found.get("pid"))
     return False
+
+
+def awake():
+    """Seconds this Mac has been awake since it started: mach_absolute_time's clock, which stops while the Mac sleeps,
+    as time.time() does not. Its readings compare only on the Mac and in the boot that took them."""
+    return time.clock_gettime(time.CLOCK_UPTIME_RAW)
+
+
+def slept(wall, woke, now, awake_now):
+    """Seconds this Mac slept between one reading of both clocks, wall and woke, and a later one, now and awake_now:
+    how much further the wall clock moved than the awake clock. None when a reading is missing, or when the awake
+    clock went back, as it does across a restart; 0 when the sleep was too short to name (SLEPT_NOTED)."""
+    if not all(type(value) in (int, float) for value in (wall, woke, now, awake_now)) or awake_now < woke: return None
+    gap = (now - wall) - (awake_now - woke)
+    return gap if gap >= SLEPT_NOTED else 0
+
+
+def asleep(sleep, seconds):
+    """What a stretch of seconds said with span() adds when this Mac slept for sleep of them: nothing when it did not."""
+    return f" ({span(seconds - sleep)} awake: this Mac slept {span(sleep)} of it)" if sleep else ""
 
 
 def moved(base, since=None):
@@ -147,8 +189,9 @@ def logs_moved(base, since=None):
 
 
 def started_record(command):
-    return {"pid": os.getpid(), "host": socket.gethostname(), "command": command, "cwd": os.getcwd(),
-            "started": time.time(), "ended": None, "status": None}
+    """A run's record as it starts, with both clocks read, so that a reader on this Mac can tell how long it slept."""
+    return {"pid": os.getpid(), "host": this_mac(), "command": command, "cwd": os.getcwd(),
+            "started": time.time(), "startedAwake": awake(), "ended": None, "status": None}
 
 
 class Tracker:
@@ -156,7 +199,8 @@ class Tracker:
 
     def __init__(self, folder, command):
         self.folder, self.lock, self.summary = Path(folder), threading.Lock(), None
-        self.state = {**started_record(command), "phase": "discovering", "updated": time.time(), "processes": None,
+        self.state = {**started_record(command), "phase": "discovering", "updated": time.time(),
+                      "updatedAwake": awake(), "processes": None,
                       "tests": None, "jobs": None, "finished": 0, "ran": 0, "failed": [], "unmeasured": [],
                       "running": {}, "last": None}
         with self.lock:
@@ -166,7 +210,8 @@ class Tracker:
 
     def planned(self, processes, tests, jobs):
         with self.lock:
-            self.state.update(phase="running", processes=processes, tests=tests, jobs=jobs, updated=time.time())
+            self.state.update(phase="running", processes=processes, tests=tests, jobs=jobs, updated=time.time(),
+                              updatedAwake=awake())
             with (self.folder / LOG).open("a") as log:
                 print(f"[{stamp()}] {tests} tests in {processes} processes, {jobs} at a time", file=log)
             write(self.folder / STATE, self.state)
@@ -189,7 +234,7 @@ class Tracker:
             state["ran"] += result["ran"]
             if result["status"] is None: state["unmeasured"].append(name)
             elif result["status"] != 0: state["failed"].append(name)
-            state.update(updated=now, last={"name": name, "result": result["result"], "at": now})
+            state.update(updated=now, updatedAwake=awake(), last={"name": name, "result": result["result"], "at": now})
             line = (f"[{stamp(now)}] {state['finished']} of {state['processes']} processes, {state['ran']} tests, "
                     f"{len(state['failed'])} failed, {len(state['unmeasured'])} unmeasured, {len(state['running'])} "
                     f"running: {name}: {result['result']} ({result['ran']} tests, {result['seconds']:.1f}s)")
@@ -200,8 +245,9 @@ class Tracker:
 
     def end(self, status, summary=None):
         with self.lock:
-            now = time.time()
-            self.state.update(phase="ended", ended=now, status=status, updated=now, running={})
+            now, woke = time.time(), awake()
+            self.state.update(phase="ended", ended=now, endedAwake=woke, status=status, updated=now,
+                              updatedAwake=woke, running={})
             with (self.folder / LOG).open("a") as log:
                 print(f"[{stamp(now)}] {summary or 'ended'}; status {status}", file=log)
             write(self.folder / STATE, self.state)
@@ -263,7 +309,7 @@ def admitted(command, environment=os.environ):
         if previous is None: environment.pop(VARIABLE, None)
         else: environment[VARIABLE] = previous
         with contextlib.suppress(OSError):
-            write(folder / RECORD, {**record, "ended": time.time(), "status": outcome["status"]})
+            write(folder / RECORD, {**record, "ended": time.time(), "endedAwake": awake(), "status": outcome["status"]})
 
 
 def tracker(command):
@@ -287,23 +333,29 @@ def span(seconds):
     return f"{hours}h{rest // 60:02d}m" if hours else f"{rest // 60}m{rest % 60:02d}s" if seconds >= 60 else f"{seconds}s"
 
 
-def describe(folder, now=None):
-    """The lines `qk progress` prints for folder's run."""
+def describe(folder, now=None, awake_now=None):
+    """The lines `qk progress` prints for folder's run. A run on this Mac whose files read both clocks says how long
+    this Mac slept during it, and since it last moved, beside what the wall clock gives (vocaro/queuekeeper#347)."""
     now = time.time() if now is None else now
+    awake_now = awake() if awake_now is None else awake_now
     folder = Path(folder)
     outer, inner = read(folder / RECORD), read(folder / STATE)
     head = outer or inner or {}
     lines = [str(folder)]
     if head.get("command"): lines.append(f"  command: {shlex.join(head['command'])}")
-    begun = head.get("started")
+    begun, woke, mine = head.get("started"), head.get("startedAwake"), here(head.get("host"))
     if head.get("ended") is not None:
+        sleep = slept(begun, woke, head["ended"], head.get("endedAwake")) if mine else None
         lines.append(f"  ended {stamp(head['ended'])} with status {head.get('status')}, after "
-                     f"{span(head['ended'] - begun) if begun else 'an unknown time'}")
+                     f"{span(head['ended'] - begun) + asleep(sleep, head['ended'] - begun) if begun else 'an unknown time'}")
     elif running(folder):
-        lines.append(f"  running for {span(now - begun) if begun else 'an unknown time'}, process {head.get('pid')}")
+        sleep = slept(begun, woke, now, awake_now)
+        lines.append(f"  running for {span(now - begun) + asleep(sleep, now - begun) if begun else 'an unknown time'}, "
+                     f"process {head.get('pid')}")
     else:
-        lines.append(f"  not running: process {head.get('pid')} on {head.get('host')} ended without a status, or "
-                     "runs on another Mac")
+        lines.append(f"  not running: process {head.get('pid')} on {head.get('host')} ended without a status" if mine
+                     else f"  not running here: process {head.get('pid')} is on {head.get('host')}, another Mac, which this "
+                          "one cannot check")
     if inner and inner.get("processes") is not None:
         lines.append(f"  {inner['finished']} of {inner['processes']} processes, {inner['ran']} of {inner['tests']} "
                      f"tests, {len(inner['failed'])} failed, {len(inner['unmeasured'])} unmeasured, {inner['jobs']} "
@@ -321,7 +373,11 @@ def describe(folder, now=None):
         if not inner or inner.get("processes") is None:
             # A run on another Mac: its finished processes are the headings in its output here.
             lines.extend(f"  {line}" for line in output_facts(output))
-    if moved: lines.append(f"  last moved {span(now - moved)} ago, at {stamp(moved)}")
+    if moved:
+        # STATE's updates read both clocks; output printed after the last of them did not, so goes as the wall says.
+        sleep = (slept(moved, inner.get("updatedAwake"), now, awake_now)
+                 if mine and inner and moved == inner.get("updated") else None)
+        lines.append(f"  last moved {span(now - moved)} ago{asleep(sleep, now - moved)}, at {stamp(moved)}")
     last = (inner or {}).get("last")
     if last: lines.append(f"  last finished: {last['name']}: {last['result']}")
     return lines
