@@ -60,10 +60,16 @@ def set_mode(serial, wanted, settle=SETTLE, sleep=time.sleep):
     return read == wanted, f"zen_mode reads {read or 'nothing'}"
 
 
-def silence(serial):
+def silence(serial, *, restore_to=None):
     """Turn on Do Not Disturb for a run; what the entry's notifications record: the mode before, so that restore puts
     it back, and whether the silencing was confirmed."""
     before = mode(serial)
+    if restore_to is not None and before != "off":
+        # A previous adb request may have taken effect despite the reported failure.
+        # Reading priority on retry confirms that request without transferring ownership to the device.
+        held = before == SILENT
+        return {"silence": "requested" if held else "failed", "before": restore_to,
+                "detail": f"zen_mode reads {before or 'nothing'}", "confirmed": held, "restore": "pending"}
     if before is None:
         # Nothing was changed, so there is nothing to put back.
         return {"silence": "failed", "detail": "zen_mode could not be read over adb", "confirmed": False,

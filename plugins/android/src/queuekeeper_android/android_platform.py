@@ -89,9 +89,11 @@ class Android(platforms.Platform):
         """Turn on Do Not Disturb over adb and read it back; the mode before is recorded so that release puts it
         back. A device already in Do Not Disturb is left, as the owner's."""
         serial = entry["device"]
+        previous = entry.get("notifications") or {}
+        restore_to = previous.get("before") if previous.get("restore") == "pending" else None
         entry = record.notifications(key, owner=owner, revision=revision,
                                      value={"silence": "requesting", "restore": "pending", "at": devices.now()})
-        outcome = device_notifications.silence(serial)
+        outcome = device_notifications.silence(serial, restore_to=restore_to)
         if outcome["silence"] == "owner":
             outcome = {**outcome, "restore": "not needed", "by": "the device", "at": devices.now()}
         entry = record.notifications(key, owner=owner, revision=entry["revision"], value=outcome)

@@ -142,6 +142,32 @@ class DoNotDisturb(unittest.TestCase):
                                               said=said.append)
         self.assertEqual((self.zen, entry["notifications"]["restore"]), ("0", "done"))
 
+    def test_retry_after_a_lost_silence_reply_keeps_the_original_restore_pending(self):
+        entry = self.record.reserve("AndroidPhone", owner="a", revision=0, purpose="p", release_by=later(),
+                                    device=PIXEL)
+        shell = adb.shell
+
+        def lose_silence_reply(serial, *words, **options):
+            result = shell(serial, *words, **options)
+            if words == ("cmd", "notification", "set_dnd", "priority"):
+                raise adb.Failed("the adb reply was lost")
+            return result
+
+        with patch.object(adb, "shell", side_effect=lose_silence_reply):
+            entry = devices.silence_notifications(self.record, "AndroidPhone", owner="a",
+                                                  revision=entry["revision"], said=lambda text: None)
+        self.assertEqual(self.zen, "1")
+        self.assertEqual(entry["notifications"]["silence"], "failed")
+        entry = devices.silence_notifications(self.record, "AndroidPhone", owner="a",
+                                              revision=entry["revision"], said=lambda text: None)
+        notifications = entry["notifications"]
+        self.assertEqual((notifications["silence"], notifications["before"], notifications["restore"]),
+                         ("requested", "off", "pending"))
+        self.assertEqual(self.commands.count(("cmd", "notification", "set_dnd", "priority")), 1)
+        entry = devices.restore_notifications(self.record, "AndroidPhone", owner="a",
+                                              revision=entry["revision"], said=lambda text: None)
+        self.assertEqual((self.zen, entry["notifications"]["restore"]), ("0", "done"))
+
     def test_a_device_already_in_do_not_disturb_is_left_as_the_owner_s(self):
         self.zen = "3"
         entry = self.record.reserve("AndroidPhone", owner="a", revision=0, purpose="p", release_by=later(),
