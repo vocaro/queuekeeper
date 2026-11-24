@@ -1740,9 +1740,10 @@ class SimulatorMatrixTests(unittest.TestCase):
     def test_a_lane_that_ends_with_its_separator_takes_a_filter_from_eng_run(self):
         matrix = [sys.executable, str(ENG), "simulator-tests", "--unadmitted", "--scheme", "Package-Tests", "--runtime", "iOS-27-0",
                   "--device", "iPhone-17-Pro", "--device", "iPad-Air-13-inch-M4"]
-        # The pool's name comes from the project's configuration.
+        # The pool's name comes from the project's configuration, which switches on the plugin that reads it: the
+        # --project given after the launcher's names the project whose plugins load (vocaro/queuekeeper#345).
         (self.root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "Project",
-            "simulatorPool": "Project", "lanes": {
+            "plugins": ["queuekeeper_apple"], "simulatorPool": "Project", "lanes": {
             "ios-tests": {"command": [*matrix, "--"], "minimumTests": 6}, "unseparated": {"command": matrix}}}))
         run = lambda lane: subprocess.run([sys.executable, str(ENG), "--project", str(self.root), "run", lane, "--",
                                            "-only-testing:T/C"], cwd=self.root, capture_output=True, text=True,

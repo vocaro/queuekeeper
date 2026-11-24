@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
@@ -236,6 +237,64 @@ class MessageCommandTests(unittest.TestCase):
                     "since": 0, "written": 0}))
                 [warning] = lane_wait.admission_warnings(project, at=10)
                 self.assertIn(f"`{launcher} admissions now` shows who holds", warning)
+
+
+class SecondProjectTests(unittest.TestCase):
+    """A project's scripts/qk names its own project first, so a --project the user gives it comes second. That one
+    names the project to run on, for a plugin's command as for a core one: a plugin's command ran on neither and
+    failed with an unrelated parse error, "unrecognized arguments" (vocaro/queuekeeper#345)."""
+    KIT = textwrap.dedent("""
+        import json
+        from queuekeeper import plugins
+        def where(argv, project):
+            print(json.dumps({"kit": NAME, "project": project, "argv": argv}))
+            return 0
+        def parsed(root, args, config):
+            print(json.dumps({"kit": NAME, "project": str(root), "config": config and config["name"],
+                              "word": args.word}))
+            return 0
+        def register():
+            plugins.COMMANDS["kit-where"] = ("say which project's kit ran, and on which project", where)
+            plugins.PARSED_COMMANDS["kit-parsed"] = ("the same, parsed", lambda parser: parser.add_argument("word"),
+                                                     parsed, True)
+    """)
+
+    def setUp(self):
+        self.base = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.launching, self.named = self.base / "launching", self.base / "named"
+        for project in (self.launching, self.named):
+            (project / "src/python/kit").mkdir(parents=True)
+            (project / "src/python/kit/__init__.py").write_text("")
+            (project / "src/python/kit/hooks.py").write_text(f"NAME = {project.name!r}\n{self.KIT}")
+            (project / "queuekeeper.json").write_text(json.dumps(
+                {"schemaVersion": 1, "name": project.name, "lanes": {},
+                 "plugins": [{"module": "kit.hooks", "path": "src/python"}]}))
+        (self.launching / "scripts").mkdir()
+        shutil.copy(ROOT / "scripts/qk", self.launching / "scripts/qk")
+
+    def qk(self, *arguments):
+        result = subprocess.run([sys.executable, str(self.launching / "scripts/qk"), *arguments],
+                                env=host_isolation.reduced(os.environ, QUEUEKEEPER_ROOT=str(ROOT)),
+                                cwd=self.launching, capture_output=True, text=True, timeout=stretched(60))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    def test_a_plugins_own_command_runs_the_named_projects_plugin_on_it(self):
+        for given in (["--project", str(self.named)], [f"--project={self.named}"]):
+            with self.subTest(given=given):
+                self.assertEqual(self.qk(*given, "kit-where", "status"),
+                                 {"kit": "named", "project": str(self.named), "argv": ["status"]})
+
+    def test_a_command_the_core_parses_runs_on_the_named_project(self):
+        self.assertEqual(self.qk("--project", str(self.named), "kit-parsed", "status"),
+                         {"kit": "named", "project": str(self.named), "config": "named", "word": "status"})
+
+    def test_without_a_second_project_the_launchers_own_is_run_on(self):
+        # Negative control: the launcher's project, its plugin and its configuration.
+        self.assertEqual(self.qk("kit-where", "status"),
+                         {"kit": "launching", "project": str(self.launching), "argv": ["status"]})
+        self.assertEqual(self.qk("kit-parsed", "status"), {"kit": "launching", "project": str(self.launching),
+                                                           "config": "launching", "word": "status"})
 
 
 if __name__ == "__main__":

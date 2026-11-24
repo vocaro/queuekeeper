@@ -3776,7 +3776,9 @@ or disable the channel while device lanes run: a message arriving mid-test can f
 `qk notify test` sends from your own session. To see an alert arrive the way a real one does,
 from the [signed queue launcher's](#the-signed-queue-launcher) scheduled check with no session
 open, leave a request for that check in the launcher's project. Run it from that project, whose
-own `scripts/qk` already names the project, so add no `--project`:
+own `scripts/qk` already names the project, so add no `--project`. A `--project` given to a
+project's `scripts/qk` names the project every command runs on, a plugin's too, and loads that
+project's plugins in place of the launcher's own:
 
 ```sh
 cd ~/path/to/project

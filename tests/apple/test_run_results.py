@@ -361,7 +361,10 @@ class KeepTests(unittest.TestCase):
     def lane(self, *command):
         project = self.root / "project"
         project.mkdir()
-        (project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "lanes": {"smoke": {"command": list(command)}}}))
+        # The plugin that reports kept results is the project's: the --project after the launcher's names whose
+        # plugins load (vocaro/queuekeeper#345).
+        (project / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "P", "plugins": ["queuekeeper_apple"],
+                                                              "lanes": {"smoke": {"command": list(command)}}}))
         finished = subprocess.run([sys.executable, str(ENG), "--project", str(project), "run", "smoke"], cwd=project,
                                   capture_output=True, text=True, env=os.environ)
         return finished, project / ".build/queuekeeper/smoke/results"

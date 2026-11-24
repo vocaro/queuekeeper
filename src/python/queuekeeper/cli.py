@@ -1255,10 +1255,24 @@ def admitted_run(root, argv, first):
         return BUSY
 
 
+def one_project(words):
+    """words with their leading --project options made one, the last of them. A project's scripts/qk names its own
+    project first, so a --project the user gives it comes second and names the project to run on. Every reader of
+    argv below takes the first, and argparse the last, so a plugin's command, which only the first reaches, failed
+    to parse while a core command ran on the second (vocaro/queuekeeper#345)."""
+    index, project = 0, None
+    while index < len(words):
+        if words[index] == "--project" and index + 1 < len(words): project, index = words[index + 1], index + 2
+        elif words[index].startswith("--project="): project, index = words[index].split("=", 1)[1], index + 1
+        else: break
+    return words if index < 2 or project is None else ["--project", project, *words[index:]]
+
+
 def main(argv=None):
+    # A second --project, after the one a launcher gives, names the project for every command alike.
+    words = argv = one_project(sys.argv[1:] if argv is None else list(argv))
     # Claude Code's hooks and their setup read no project configuration and load no plugin, so that a plugin that
     # fails to load never stops a session, and a hook that runs before each command starts fast (agent_hooks).
-    words = sys.argv[1:] if argv is None else list(argv)
     first = 2 if words[:1] == ["--project"] else 1 if words[:1] and words[0].startswith("--project=") else 0
     project = words[1] if first == 2 else words[0].split("=", 1)[1] if first == 1 else None
     if words[first:first + 1] == ["hook"]: return agent_hooks.main(words[first + 1:], project)
@@ -1389,7 +1403,9 @@ def pin_run(argv):
               "folder's commit where the run starts", file=sys.stderr, flush=True)
         return USAGE
     root = Path(given[1] if first == 2 else given[0].split("=", 1)[1] if first == 1 else ".").resolve()
-    names = project_siblings(root)
+    # A queuekeeper.json that cannot be read pins nothing: the command reads it next and says what is wrong with it.
+    try: names = project_siblings(root)
+    except (OSError, ValueError, AttributeError): return None
     exact = sibling_revisions(names)
     if admitting and not exact: return None
     if not exact: names = sibling_declarations(root)
