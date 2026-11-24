@@ -2753,6 +2753,18 @@ def main(root, config, args):
     if args.operation == "setup":
         return setup(host, args.formulae, args.imports or [], args.check, args.runtimes, root=root)
     if args.operation == "foreground": return foreground_report(host, args.capture_runner)
+    if args.operation in ("run", "admit") and args.device:
+        # Devices the owner declared go to a Mac that reaches them by a declared way: the one asked for, when it does,
+        # or else the farm's Mac that takes work now and reaches them by the ways he declared first
+        # (vocaro/queuekeeper#211). Their reservations stay this Mac's and go with the run.
+        reached = plugins.DEVICES.placement(args.device, args.lane if args.operation == "run" else "the command",
+                                            away=True, on=called(host) if args.host else None,
+                                            among=None if args.host else [called(each) for each in farm.destinations()])
+        if reached is not None:
+            for line in reached["lines"]: print(line, file=sys.stderr, flush=True)
+            if reached["status"] == "hold": return MISCONFIGURED
+            if reached["status"] is not None: return resources.BUSY
+            host = farm.destination(reached["mac"])
     slot, slot_wait = checkout_request(args)
     if args.operation == "run":
         lane = config.get("lanes", {}).get(args.lane)

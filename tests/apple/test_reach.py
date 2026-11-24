@@ -365,5 +365,163 @@ class Absence(Recorded):
         self.assertIn("iPad's device declaration is wrong", warnings[0])
 
 
+class Placement(Recorded):
+    """Where a run on declared devices may start: a Mac that reaches each by a declared way, the earliest declared way
+    first, with each fallback said (vocaro/queuekeeper#211, devices step 3). Synthetic Macs: owner-mac, this one,
+    which holds the reservations, and studio."""
+
+    T0, declare, readings, judge = Absence.T0, Absence.declare, Absence.readings, Absence.judge
+
+    # The owner's decision of 2026-11-20: both by cable, then the network; the iPad always there, the iPhone may be away.
+    OWNERS = {"iPad": {"reach": ["cable", "network"], "absent": "error"},
+              "iPhone": {"reach": ["cable", "network"], "absent": "offline"}}
+
+    def place(self, here, there, at, keys=("iPad", "iPhone"), declarations=None, **options):
+        value = self.declare(**(declarations or self.OWNERS))
+        _found, answer = self.judge(value, here, there, at)
+        items = [item for item in answer["devices"] if item["key"] in keys and "absence" in item]
+        kept = reach._read_history(reach.history_path(self.path))["devices"]
+        return reach.place(items, kept, "owner-mac", now=self.T0 + at, **options)
+
+    def test_the_owners_devices_run_here_by_cable_and_go_to_another_mac_by_the_network(self):
+        found = self.place(CABLE, NETWORK, 0)
+        self.assertEqual((found["state"], found["mac"], found["ways"], found["fallback"]),
+                         ("run", "owner-mac", {"iPad": "cable", "iPhone": "cable"}, []))
+        # Sent away, by `qk remote run --device`, the run goes to studio by the network, which is a fallback.
+        found = self.place(CABLE, NETWORK, 1, away=True)
+        self.assertEqual((found["state"], found["mac"], found["ways"]),
+                         ("run", "studio", {"iPad": "network", "iPhone": "network"}))
+        self.assertEqual(found["fallback"], ["iPad by network, not by cable, which only owner-mac reaches it by",
+                                             "iPhone by network, not by cable, which only owner-mac reaches it by"])
+
+    def test_a_mac_that_reaches_a_device_only_by_a_way_not_declared_does_not_qualify(self):
+        declarations = {"iPad": {"reach": ["network"], "absent": "error"}}
+        found = self.place(CABLE, NETWORK, 0, keys=("iPad",), declarations=declarations)
+        self.assertEqual(found["state"], "elsewhere")
+        self.assertEqual(found["macs"], ["studio"])
+        self.assertEqual(found["said"], ["iPad is reached by a declared way only from studio"])
+        found = self.place(CABLE, NETWORK, 1, keys=("iPad",), declarations=declarations, away=True)
+        self.assertEqual((found["state"], found["mac"], found["fallback"]), ("run", "studio", []))
+
+    def test_the_earliest_declared_way_ranks_first_and_this_mac_runs_what_it_reaches_saying_the_fallback(self):
+        found = self.place(NETWORK, CABLE, 0)
+        self.assertEqual((found["state"], found["mac"], found["ways"]["iPad"]), ("run", "owner-mac", "network"))
+        self.assertIn("iPad by network, not by cable, which only studio reaches it by", found["fallback"])
+        self.assertEqual(self.place(NETWORK, CABLE, 1, away=True)["ways"], {"iPad": "cable", "iPhone": "cable"})
+        # A Mac asked for that does not reach them, or one the run may not use, is no choice.
+        self.assertEqual(self.place(NETWORK, CABLE, 2, away=True, on="studio")["mac"], "studio")
+        self.assertEqual(self.place(NETWORK, CABLE, 3, away=True, among=[])["state"], "elsewhere")
+        found = self.place(CABLE, without(without(NETWORK, TABLET), PHONE), 4, away=True, on="studio")
+        self.assertEqual((found["state"], found["macs"]), ("elsewhere", ["owner-mac"]))
+
+    def test_one_drop_of_a_preferred_way_waits_the_settle_time_before_a_fallback(self):
+        self.assertEqual(self.place(CABLE, NETWORK, 0)["ways"]["iPad"], "cable")
+        found = self.place(NETWORK, NETWORK, 30)
+        self.assertEqual(found["state"], "wait")
+        self.assertIn("iPad's cable on owner-mac has not answered for 0s", found["said"][0])
+        self.assertEqual(self.place(NETWORK, NETWORK, 30 + reach.SETTLE - 1)["state"], "wait")
+        found = self.place(NETWORK, NETWORK, 30 + reach.SETTLE)
+        self.assertEqual((found["state"], found["mac"], found["ways"]["iPad"]), ("run", "owner-mac", "network"))
+        self.assertIn("iPad by network, not by cable, by which no Mac reaches it now", found["fallback"])
+        # A way never seen on a Mac makes no wait: owner-mac's network was not seen before the cable went.
+
+    def test_an_unreachable_device_holds_when_declared_always_there_and_is_offline_otherwise(self):
+        gone = (without(CABLE, TABLET), without(NETWORK, TABLET))
+        self.place(CABLE, NETWORK, 0)
+        self.assertEqual(self.place(*gone, 10)["state"], "wait")
+        found = self.place(*gone, 10 + reach.SETTLE)
+        self.assertEqual(found["state"], "hold")
+        self.assertIn("iPad, declared always reachable, is reached by no Mac", found["said"][0])
+        away = (without(CABLE, PHONE), without(NETWORK, PHONE))
+        self.place(CABLE, NETWORK, 1000)
+        self.place(*away, 1010)
+        found = self.place(*away, 1010 + reach.SETTLE)
+        self.assertEqual(found["state"], "offline")
+        self.assertIn("iPhone is offline since", found["said"][0])
+        # A Mac not read leaves the run waiting, not placed by half a reading.
+        found = self.place(CABLE, RuntimeError("no route"), 2000)
+        self.assertEqual(found["state"], "run")
+        found = self.place(without(CABLE, PHONE), RuntimeError("no route"), 2001, keys=("iPhone",))
+        self.assertEqual(found["state"], "wait")
+
+    def test_devices_no_one_mac_reaches_together_are_not_run(self):
+        found = self.place(without(CABLE, PHONE), without(NETWORK, TABLET), 0)
+        self.assertEqual(found["state"], "elsewhere")
+        self.assertEqual(found["said"], ["no one Mac reaches iPad and iPhone by a declared way: iPad from owner-mac; "
+                                         "iPhone from studio"])
+
+    def run_placement(self, listings, **options):
+        """reach.placement over a sequence of (here, there) listings, one per reading, time moving on POLL each."""
+        clock = {"now": self.T0}
+        readings = iter(listings)
+
+        def read():
+            here, there = next(readings)
+            return self.readings(here, there)
+
+        def sleep(seconds): clock["now"] += seconds
+        with patch.object(reach.time, "time", side_effect=lambda: clock["now"]), \
+                patch.object(reach.time, "monotonic", side_effect=lambda: clock["now"]), \
+                patch.object(reach.time, "sleep", side_effect=sleep), \
+                contextlib.redirect_stderr(StringIO()) as error:
+            found = reach.placement(self.path, ["iPad", "iPhone"], "device", read=read, **options)
+        return found, error.getvalue()
+
+    def test_placement_waits_while_a_way_settles_then_runs_saying_where_and_how(self):
+        self.declare(**self.OWNERS)
+        found, _error = self.run_placement([(CABLE, NETWORK)])
+        self.assertEqual(found["status"], None)
+        self.assertEqual(found["lines"], ["queuekeeper: device runs on owner-mac, which reaches iPad by cable, iPhone "
+                                          "by cable"])
+        self.assertEqual(found["receipt"], {"mac": "owner-mac", "ways": {"iPad": "cable", "iPhone": "cable"},
+                                            "fallback": []})
+        # The cable drops: the run waits the settle time, then falls back to the network and says so.
+        drops = [(NETWORK, NETWORK)] * (reach.SETTLE // reach.POLL + 2)
+        found, error = self.run_placement(drops)
+        self.assertIn("queuekeeper: device waits for its devices: iPad's cable on owner-mac", error)
+        self.assertEqual(found["status"], None)
+        self.assertEqual(found["receipt"]["ways"], {"iPad": "network", "iPhone": "network"})
+        self.assertIn("queuekeeper: device falls back: iPad by network, not by cable", "\n".join(found["lines"]))
+
+    def test_placement_says_what_to_run_when_only_another_mac_reaches_the_devices(self):
+        self.declare(**self.OWNERS)
+        found, _error = self.run_placement([(without(without(CABLE, TABLET), PHONE), NETWORK)])
+        self.assertEqual(found["status"], "not run")
+        self.assertIn("are reached by a declared way only from studio. Its devices are reserved in this Mac's record: "
+                      "hold them here and send the run with `qk remote run --device iPad --device iPhone --host studio "
+                      "device`", found["lines"][0])
+        # A Mac not read past the settle time leaves the run not run, with no verdict.
+        found, _error = self.run_placement([(without(CABLE, PHONE), RuntimeError("no route"))] * 30)
+        self.assertEqual(found["status"], "not run")
+        self.assertIn("did not settle within", found["lines"][0])
+
+    def test_placement_holds_for_a_device_declared_always_there_and_leaves_an_undeclared_run_as_it_was(self):
+        self.declare(**self.OWNERS)
+        gone = (without(CABLE, TABLET), without(NETWORK, TABLET))
+        self.run_placement([(CABLE, NETWORK)])
+        found, _error = self.run_placement([gone] * 30)
+        self.assertEqual(found["status"], "hold")
+        self.assertIn("It runs once a Mac reaches the device by a declared way", found["lines"][0])
+        self.write(self.entries())
+        with patch.object(reach, "readings") as read:
+            self.assertIsNone(reach.placement(self.path, ["iPad"], "device"))
+            self.declare(iPhone=self.OWNERS["iPhone"])
+            self.assertIsNone(reach.placement(self.path, ["iPad"], "device"))
+        read.assert_not_called()
+
+    def test_doctor_warns_of_a_cable_the_owner_expected_that_has_not_answered_for_the_settle_time(self):
+        value = self.declare(iPad={"reach": ["cable", "network"], "cableOn": "owner-mac", "absent": "error"})
+        self.judge(value, CABLE, NETWORK, 0)
+        self.judge(value, without(CABLE, TABLET), NETWORK, 10)
+        kept = reach._read_history(reach.history_path(self.path))["devices"]
+        _found, answer = self.judge(value, without(CABLE, TABLET), NETWORK, 20)
+        self.assertEqual(reach.cable_findings(answer, kept, self.T0 + 20), [])
+        _found, answer = self.judge(value, without(CABLE, TABLET), NETWORK, 10 + reach.SETTLE)
+        warnings = reach.cable_findings(answer, kept, self.T0 + 10 + reach.SETTLE)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn(f"iPad's cable on owner-mac has not answered since {reach.stamp(self.T0 + 10)}", warnings[0])
+        self.assertIn("studio by network", warnings[0])
+
+
 if __name__ == "__main__":
     unittest.main()

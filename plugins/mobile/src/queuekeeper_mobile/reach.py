@@ -5,7 +5,8 @@ a Mac may reach it, in his order, and what it means when no Mac does (vocaro/que
 The owner declares; Queuekeeper reads. What a Mac reads never adds a device to the farm or takes one out: a device
 that nobody declared is listed as seen and never used, and a declared one that no Mac reaches stays in the record
 with its reservation. A declaration is kept beside the record's entries, under the entry's key, as the owner's
-notification setup is, so declaring changes no entry and no holder's revision.
+notification setup is, so declaring changes no entry and no holder's revision. A run on declared devices starts
+only on a Mac that reaches each of them by a declared way (place, placement).
 
 Reach is how the platform's tool says the device is attached: a cable or the network. A simulator or an emulator is
 left out. Each platform's listing says how it reads that (the Apple plugin's device_listing, the Android plugin's android_platform)."""
@@ -17,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 from queuekeeper import offload_host
@@ -359,6 +361,7 @@ def findings(record):
         if not found or found["absent"] != "error": continue
         if found["state"] == "unreachable": errors.append(found["text"])
         elif found["state"] == "unknown": warnings.append(found["text"])
+    warnings += cable_findings(answer, _read_history(history_path(record))["devices"])
     return errors, warnings
 
 
@@ -369,3 +372,144 @@ def health(record):
     if value is None: return []
     return [{"name": item["key"], **{name: item["absence"][name] for name in ("state", "absent", "since", "text")}}
             for item in judged(value, record)["devices"] if "absence" in item]
+
+
+# Seconds between readings while a device run waits for a device, or for a way it prefers, to settle.
+POLL = 15
+
+
+def _way_settling(item, kept, best, now, settle):
+    """Why a way that item's declaration lists before best, the index of the earliest way any Mac reaches its device
+    by now, is settling: seen on a Mac and missing there for less than settle seconds, so that one drop causes no
+    fallback; or None."""
+    for way in item["declaration"]["reach"][:best]:
+        for mark, seen in (kept.get("ways") or {}).items():
+            mac, _slash, marked = mark.rpartition("/")
+            if marked != way or seen.get("seenAt") is None or seen.get("missingSince") is None: continue
+            missing = now - seen["missingSince"]
+            if missing < settle:
+                return (f"{item['key']}'s {way} on {mac} has not answered for {missing:.0f}s, and a run waits "
+                        f"{settle}s before it uses a way declared after it")
+    return None
+
+
+def place(items, kept, here, now=None, settle=SETTLE, *, away=False, on=None, among=None):
+    """Where a run on the declared devices items may start (vocaro/queuekeeper#211). items are judged's items, each
+    with its absence; kept is the remembered history by UDID (remember); here is this Mac's name. A Mac qualifies
+    when it reaches every one of the devices by a way its declaration lists. The one whose ways come earliest in the
+    declarations ranks first, and between equals the readings' order decides: this Mac, then the farm's in order.
+    Without away the run starts on this Mac, which holds the reservations, when it qualifies; away asks for another
+    Mac, the first that qualifies, or on, by name; among, when given, names the Macs it may choose from.
+
+    The answer's state is run, with the Mac in mac, the way to each device in ways and each fallback to a later way
+    in fallback; elsewhere, when no Mac the run may use qualifies, with those that do in macs; wait, while a device
+    or a way it prefers is settling or a Mac was not read; or hold or offline, when a device is unreachable and its
+    declaration makes that an error or allows it. said says why, as phrases."""
+    now = time.time() if now is None else now
+    lost = [item for item in items if item["absence"]["state"] == "unreachable"]
+    if lost:
+        error = any(item["absence"]["absent"] == "error" for item in lost)
+        return {"state": "hold" if error else "offline", "said": [item["absence"]["text"] for item in lost]}
+    reached = {}
+    for item in items:
+        ways = item["declaration"]["reach"]
+        reached[item["key"]] = {seen["mac"]: ways.index(seen["way"]) for seen in item["seen"]
+                                if seen["state"] == "reached"}
+    waiting = [item["absence"]["text"] for item in items if item["absence"]["state"] in ("settling", "unknown")]
+    for item in items:
+        best = min(reached[item["key"]].values(), default=len(item["declaration"]["reach"]))
+        settling = _way_settling(item, kept.get(item["device"]) or {}, best, now, settle)
+        if settling: waiting.append(settling)
+    if waiting: return {"state": "wait", "said": waiting}
+    order = [seen["mac"] for seen in items[0]["seen"]]
+    every = sorted((mac for mac in order if all(mac in by for by in reached.values())),
+                   key=lambda mac: (sum(by[mac] for by in reached.values()), order.index(mac)))
+    usable = [mac for mac in every if not (away and mac == here)]
+    if on is not None: usable = [mac for mac in usable if mac.lower() == on.lower()]
+    if among is not None: usable = [mac for mac in usable if mac.lower() in {name.lower() for name in among}]
+    if not away and here not in every: usable = []
+    if not usable:
+        keys = " and ".join(reached)
+        if every:
+            said = f"{keys} {'is' if len(reached) == 1 else 'are'} reached by a declared way only from {', '.join(every)}"
+        else:
+            said = f"no one Mac reaches {keys} by a declared way: " + "; ".join(
+                f"{key} from {', '.join(by) or 'none'}" for key, by in reached.items())
+        return {"state": "elsewhere", "macs": every, "said": [said]}
+    mac = here if not away else usable[0]
+    ways = {item["key"]: item["declaration"]["reach"][reached[item["key"]][mac]] for item in items}
+    fallback = []
+    for item in items:
+        index = reached[item["key"]][mac]
+        if index == 0: continue
+        better = [other for other, at in reached[item["key"]].items() if at < index]
+        fallback.append(f"{item['key']} by {ways[item['key']]}, not by {' or '.join(item['declaration']['reach'][:index])}"
+                        + (f", which only {', '.join(better)} reaches it by" if better else
+                           ", by which no Mac reaches it now"))
+    said = [f"on {mac}, which reaches " + ", ".join(f"{key} by {way}" for key, way in ways.items())]
+    return {"state": "run", "mac": mac, "ways": ways, "fallback": fallback, "said": said}
+
+
+def placement(record, keys, name, *, away=False, on=None, among=None, read=None, settle=SETTLE, poll=POLL):
+    """Where a run of name on the devices of keys may start, as their declarations in the record at path record
+    allow (place); None when the record declares none of them or defers physical devices, which leaves the run as
+    it was. read, when given, returns the Macs' readings in place of readings(). While a device or a way it prefers
+    is settling, this reads again every poll seconds, for at most settle seconds and one poll more; past that the
+    run is not run.
+
+    The answer: {"status": None to run, "hold" when a device declared always reachable is reached by no Mac, or
+    "not run"; "mac", the Mac the run starts on; "lines", what to say; "receipt", what its receipt keeps}."""
+    started = time.monotonic()
+    said_waiting = False
+    while True:
+        value = declared_value(record)
+        if value is None or not any(key in value[DECLARATIONS] for key in keys): return None
+        answer = judged(value, record, read() if read is not None else None, settle=settle)
+        items = [item for item in answer["devices"] if item["key"] in keys and "absence" in item]
+        if not items: return None
+        found = place(items, _read_history(history_path(record))["devices"], mac_here(), settle=settle, away=away,
+                      on=on, among=among)
+        if found["state"] != "wait" or time.monotonic() - started >= settle + poll: break
+        if not said_waiting:
+            print(f"queuekeeper: {name} waits for its devices: {'; '.join(found['said'])}", file=sys.stderr, flush=True)
+            said_waiting = True
+        time.sleep(poll)
+    why = "; ".join(found["said"])
+    if found["state"] == "run":
+        lines = [f"queuekeeper: {name} runs {why}"]
+        lines += [f"queuekeeper: {name} falls back: {text}" for text in found["fallback"]]
+        return {"status": None, "mac": found["mac"], "lines": lines,
+                "receipt": {"mac": found["mac"], "ways": found["ways"], "fallback": found["fallback"]}}
+    if found["state"] == "hold":
+        said = (f"{name} not run: {why}. It runs once a Mac reaches the device by a declared way; `qk devices status` "
+                "says what each Mac reads")
+        return {"status": "hold", "mac": None, "receipt": None, "lines": [f"queuekeeper: {said}"]}
+    if found["state"] == "offline":
+        said = f"{name} not run: {why}. No verdict counts against the commits"
+    elif found["state"] == "wait":
+        said = f"{name} not run: its devices did not settle within {settle + poll}s: {why}"
+    else:
+        said = f"{name} not run: {why}"
+        if found["macs"] and not away:
+            flags = " ".join(f"--device {key}" for key in keys)
+            said += (f". Its devices are reserved in this Mac's record: hold them here and send the run with "
+                     f"`qk remote run {flags} --host {found['macs'][0]} {name}`")
+    return {"status": "not run", "mac": None, "receipt": None, "lines": [f"queuekeeper: {said}"]}
+
+
+def cable_findings(answer, kept, now=None, settle=SETTLE):
+    """The warnings doctor gives of a declared device whose cable is expected on a Mac (cableOn) and has not
+    answered there for settle seconds while the device is reached some other way: the owner expected the cable."""
+    now = time.time() if now is None else now
+    found = []
+    for item in answer["devices"]:
+        declaration, absence_ = item["declaration"], item.get("absence")
+        if not absence_ or absence_["state"] != "reached" or not declaration.get("cableOn"): continue
+        marks = (kept.get(item["device"]) or {}).get("ways") or {}
+        mark = next((seen for name, seen in marks.items()
+                     if name.lower() == f"{declaration['cableOn']}/cable".lower()), None)
+        if mark is None or mark.get("missingSince") is None or now - mark["missingSince"] < settle: continue
+        last = f", last {stamp(mark['seenAt'])}" if mark.get("seenAt") else ""
+        found.append(f"{item['key']}'s cable on {declaration['cableOn']} has not answered since "
+                     f"{stamp(mark['missingSince'])}{last}; it is reached another way: {seen_text(item['seen'])}")
+    return found

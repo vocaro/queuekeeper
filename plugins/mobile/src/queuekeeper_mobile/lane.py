@@ -23,6 +23,11 @@ class Devices(leases.Devices):
         from .settings import lane_devices
         return lane_devices(lane)
 
+    def placement(self, keys, name, *, away=False, on=None, among=None):
+        from queuekeeper import offload_host
+        from . import reach
+        return reach.placement(offload_host.record_path(), keys, name, away=away, on=on, among=among)
+
     def observations(self):
         from .observations import read_devices
         return read_devices()

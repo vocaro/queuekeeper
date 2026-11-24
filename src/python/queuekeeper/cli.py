@@ -2057,6 +2057,18 @@ def perform(argv, report):
             if reason is None and unsent:
                 reason = unsent
                 print(f"queuekeeper: {args.lane} runs on this Mac: {unsent}", file=sys.stderr, flush=True)
+            # A lane on physical devices the owner declared runs only on a Mac that reaches them by a declared way,
+            # and says which way and any fallback (vocaro/queuekeeper#211). Their reservations are this Mac's, so it
+            # runs here or, with them carried, by `qk remote run --device`. A device declared always reachable that
+            # no Mac reaches holds a queue; one that may be away leaves the lane not run. Work another Mac sent, or
+            # nested in an admission, was placed where it started.
+            reached = None
+            if lane_devices(lane) and not inherited and not os.environ.get(remote.DISPATCHER):
+                reached = plugins.DEVICES.placement(lane_devices(lane), args.lane)
+                if reached is not None:
+                    for line in reached["lines"]: print(line, file=sys.stderr, flush=True)
+                    if reached["status"] == "hold": return remote.MISCONFIGURED
+                    if reached["status"] is not None: return BUSY
             offered = None
             if beside is not None:
                 if reason or unsent or unadmitted(lane):
@@ -2084,6 +2096,8 @@ def perform(argv, report):
             directory = lane_directory(held, root, args.lane)
             receipt = {"project": source_identity(root), "toolkit": source_identity(TOOLKIT_ROOT),
                        "policy": policy_commit, **placement(reason)}
+            # The Mac that reaches the lane's declared devices, the way to each, and each fallback (vocaro/queuekeeper#211).
+            if reached is not None: receipt["deviceReach"] = reached["receipt"]
             # The commit of each folder beside the project that this run loads its plugins from (pins).
             if pins.held(): receipt["siblings"] = pins.recorded(pins.held())
             # A run of the whole lane, which a pass of counts for its commit once kept (concluded).

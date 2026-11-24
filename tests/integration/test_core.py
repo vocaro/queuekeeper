@@ -6263,3 +6263,98 @@ class EntryPointTests(unittest.TestCase):
             mode, _, _, path = line.split(maxsplit=3)
             if (root / path).read_bytes().startswith(b"#!"):
                 self.assertEqual(mode, "100755", path)
+
+
+class DeviceReachTests(unittest.TestCase):
+    """A lane on a device the owner declared runs only on a Mac that reaches it by a declared way, and says how
+    (vocaro/queuekeeper#211). Synthetic Macs, owner-mac (this one) and studio, read as told, and a synthetic iPhone."""
+    setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
+    project, marker, run_lane = LaneLabelTests.project, LaneLabelTests.marker, LaneLabelTests.run_lane
+    PHONE = "00008130-001A2C3E0C38001C"
+
+    def lane(self, absent="offline", missing_since=None):
+        """Beta's device lane on the iPhone, declared cable then network, in a record of this test's own."""
+        from queuekeeper_mobile import reach
+        record = Path(self.temp.name) / "device-handoff.json"
+        for patcher in (patch.dict(os.environ, {devices.OVERRIDE: str(record), devices.OWNER: "session-a"}),
+                        patch.object(reach, "mac_here", return_value="owner-mac")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        record.write_text(json.dumps({"vocaroDeviceHandoff": 1, "revision": 1, "devices": {
+            "iPhone": {"device": self.PHONE, "state": "released", "revision": 1}},
+            "declarations": {"iPhone": {"reach": ["cable", "network"], "absent": absent}}}))
+        if missing_since is not None:
+            reach.history_path(record).write_text(json.dumps({"version": 1, "devices": {self.PHONE: {
+                "reachedAt": None, "missingSince": missing_since, "ways": {}}}}))
+        ran = self.marker(Path("Beta"), "device", "ran")
+        return self.project("Beta", device={"command": [sys.executable, "-c", f"open({str(ran)!r}, 'w')"],
+                                            "resource": "heavy", "here": "a physical device", "timeout": 120,
+                                            "devices": ["iPhone"]}), ran
+
+    def reads(self, here=None, there=None):
+        """Each Mac's reading: the way it reaches the iPhone, or None for not listing it."""
+        from queuekeeper_mobile import reach
+
+        def one(mac, host, way):
+            found = {} if way is None else {self.PHONE: {
+                "way": way, "transport": "wired" if way == "cable" else "localNetwork", "kind": "iPhone",
+                "model": "iPhone", "name": "iPhone"}}
+            return {"mac": mac, "host": host, "readAt": 0, "devices": found, "seconds": 0.1}
+        return patch.object(reach, "readings", return_value=[one("owner-mac", None, here),
+                                                             one("studio", "studio.test", there)])
+
+    def test_a_lane_this_mac_reaches_by_cable_runs_and_its_receipt_says_how(self):
+        root, ran = self.lane()
+        with self.reads(here="cable", there="network"):
+            status, error = self.run_lane(root, "device")
+        self.assertEqual(status, 0, error)
+        self.assertTrue(ran.exists())
+        self.assertIn("queuekeeper: device runs on owner-mac, which reaches iPhone by cable", error)
+        receipt = json.loads((root / ".build/queuekeeper/device/source.json").read_text())
+        self.assertEqual(receipt["deviceReach"], {"mac": "owner-mac", "ways": {"iPhone": "cable"}, "fallback": []})
+
+    def test_a_lane_only_another_mac_reaches_is_not_run_and_says_how_to_send_it(self):
+        root, ran = self.lane()
+        with self.reads(there="network"):
+            status, error = self.run_lane(root, "device")
+        self.assertEqual(status, resources.BUSY, error)
+        self.assertFalse(ran.exists())
+        self.assertIn("`qk remote run --device iPhone --host studio device`", error)
+
+    def test_a_device_declared_always_there_that_no_mac_reaches_holds_the_lane(self):
+        root, ran = self.lane(absent="error", missing_since=time.time() - 1000)
+        with self.reads():
+            status, error = self.run_lane(root, "device")
+        self.assertEqual(status, remote.MISCONFIGURED, error)
+        self.assertIn("iPhone, declared always reachable, is reached by no Mac", error)
+        self.assertFalse(ran.exists())
+
+    def test_a_device_that_may_be_away_leaves_the_lane_not_run_when_no_mac_reaches_it(self):
+        root, ran = self.lane(missing_since=time.time() - 1000)
+        with self.reads():
+            status, error = self.run_lane(root, "device")
+        self.assertEqual(status, resources.BUSY, error)
+        self.assertIn("iPhone is offline since", error)
+        self.assertFalse(ran.exists())
+
+    def test_remote_run_goes_to_the_mac_that_reaches_the_device_and_refuses_one_that_does_not(self):
+        root, _ran = self.lane()
+        farm_fixture.use(self, farm_fixture.mac("other.test", "other"), farm_fixture.mac("studio.test", "studio"))
+        sent = []
+
+        def execute(root, config, host, *rest, **options):
+            sent.append(host)
+            return 0
+        with self.reads(here="cable", there="network"), \
+                patch.object(remote.plugins.DEVICES, "lease", return_value=None), \
+                patch.object(remote, "execute", side_effect=execute), \
+                contextlib.redirect_stderr(StringIO()) as error:
+            self.assertEqual(cli.main(["--project", str(root), "remote", "run", "--device", "iPhone", "device"]), 0,
+                             error.getvalue())
+            self.assertEqual(sent, ["studio.test"])
+            self.assertIn("device falls back: iPhone by network, not by cable, which only owner-mac reaches it by",
+                          error.getvalue())
+            self.assertEqual(cli.main(["--project", str(root), "remote", "run", "--device", "iPhone", "--host", "other",
+                                       "device"]), resources.BUSY)
+        self.assertEqual(sent, ["studio.test"])
+        self.assertIn("is reached by a declared way only from owner-mac, studio", error.getvalue())

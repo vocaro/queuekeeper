@@ -2897,7 +2897,8 @@ device session on the Mac, so Queuekeeper names it and never runs it.
 
 A device belongs to the farm, not to a Mac: one on Wi-Fi is reachable from every Mac, one on a cable from
 one. The owner declares what should be true of each device, and Queuekeeper reports what each Mac
-actually reaches. Declarations only report: they place no lane and change no entry.
+actually reaches. Declarations change no entry. They decide where a run on the device may start, as
+described below.
 
 ```sh
 qk devices declare iPad --by owner --reach network --absent error
@@ -2919,6 +2920,33 @@ declared way for 300 seconds, counted from the first reading that missed it. The
 `error` is an error in `qk doctor`, in `qk queue health`'s Devices sign and in `status`; one declared
 `offline` is reported as offline, with no error or alert. If a Mac could not be read, the device is
 "not known" rather than unreachable.
+
+**Where a run on a declared device starts.** A lane whose `devices`, or device pass, names a declared
+device runs only on a Mac that reaches every such device by a declared way. Before it is admitted,
+`qk run` reads every Mac and prints the Mac and the way to each device. Its receipt keeps them as
+`deviceReach`:
+
+- **This Mac reaches them.** The lane runs here, where its reservations are. When this Mac reaches a
+  device only by a way declared later than the first, the run prints `falls back:`. It also names any
+  Mac that reaches the device by the earlier way.
+- **Only another Mac reaches them.** The lane is not run (exit 75, no verdict). It names the Mac and
+  the command that sends the lane there with its reservations: `qk remote run --device KEY --host MAC
+  LANE`.
+- **`qk remote run --device` and `qk remote admit --device`** go to a Mac that reaches the devices.
+  With `--host`, the named Mac must reach them, or the command is refused (exit 75). Without `--host`,
+  Queuekeeper chooses the farm's Mac that takes work now and reaches them by the earliest declared
+  ways. The farm's order breaks ties.
+- **A drop is not a fallback.** A run waits when an earlier declared way was seen recently but has been
+  missing for less than 300 seconds. It also waits while a device is settling or a Mac could not be
+  read. It reads again every 15 seconds for at most 315 seconds; if the device is still unsettled, the
+  lane is not run.
+- **No Mac reaches it.** A device declared `error` stops the lane with exit 78, which a merge queue
+  holds for, saying why. A device declared `offline` leaves the lane not run (exit 75), with no verdict
+  on any commit.
+
+A device that is not declared, or declared wrongly, leaves the lane where it was placed before. `qk
+doctor` also warns when the cable a declaration expects on a Mac (`--cable-on`) has not answered there
+for 300 seconds while the device is reached another way.
 
 ### The simulator pool
 

@@ -141,6 +141,15 @@ class Devices:
         """The reservations named by a lane, or none without a device provider."""
         return []
 
+    def placement(self, keys, name, *, away=False, on=None, among=None):
+        """Where a run of name on the devices of keys may start, as the owner declared how a Mac may reach each
+        (vocaro/queuekeeper#211), or None when none of them is declared, which leaves the run where it was placed.
+        Otherwise {"status", "mac", "lines", "receipt"}: status None runs it on mac, saying lines and keeping receipt
+        in its receipt; "hold" and "not run" do not run it, saying lines. Without away the run starts on this Mac;
+        away asks for another Mac, on for that one by its name in the farm, and among names the Macs it may choose.
+        It may wait while a device settles."""
+        return None
+
     def take_window(self):
         """The device window an enclosing run leased to this command, read once, or None."""
         return None

@@ -1614,7 +1614,8 @@ The rules above cite these by their labels.
   with a reason. Physical-device reservations have their own constraint. The sending Mac's
   record holds the reservation, and an explicit remote device dispatch carries it. `qk devices
   declare` records the expected ways to reach a device and how to report its absence. `qk devices
-  status` reports those readings. The declarations are for reach and absence reporting today.
+  status` reports those readings. A run on a declared device starts only on a Mac that reaches it
+  by a declared way.
 
 The November 19 follow-up ([#232](https://github.com/vocaro/queuekeeper/issues/232)) measured 8%
 whole-host occupancy on the workstation and 15% on build-host, against 40% and 11% on November 15.
@@ -1822,6 +1823,18 @@ changes nothing, and a record with no declarations is not read. `reach.SETTLE`, 
 longer than any listing (3 seconds at most) or a Wi-Fi rejoin after sleep, and shorter than the 600
 seconds after which `qk queue health` calls a gate's wait slow, so a missing device is named before the
 wait is. The clock starts at the first reading that misses the device, never at the last one that saw it.
+
+**Placement** (`reach.place` and `reach.placement`, through `plugins.DEVICES.placement`). `qk run` calls it
+for a lane with devices before any offer, unless another Mac sent the run or it is nested in an admission.
+`qk remote run|admit --device` calls it to choose or check the Mac it sends to. A Mac qualifies when it
+reaches every declared device of the run by a declared way. Ranking adds each device's way index in its
+declaration, then follows reading order: this Mac first, then the farm's order. Reservations stay in
+this Mac's record, so `qk run` runs here whenever this Mac qualifies, even if another Mac ranks higher,
+and reports the fallback. Otherwise it names the `qk remote run --device` command. An earlier way that
+was seen and has been missing for less than `SETTLE` makes the run wait, so one drop never causes a
+fallback (`POLL` is 15 s; the wait is at most `SETTLE + POLL`). An unreachable `error` device returns
+`MISCONFIGURED`, which a queue holds for; an `offline` one returns `BUSY`. `reach.cable_findings` gives
+`doctor` its warning for an expected cable missing for `SETTLE`.
 
 ### Device pass timing
 
