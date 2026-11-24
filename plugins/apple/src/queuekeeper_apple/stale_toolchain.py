@@ -107,4 +107,6 @@ def host_fault(results):
     try: lines = (Path(results) / FAULT).read_text(errors="replace").splitlines()
     except OSError: return None
     lines = [line for line in lines if line.strip()]
-    return lines[-1] if lines else None
+    if not lines: return None
+    from queuekeeper.plugins import HOST_BUILD_CACHE, HostFault
+    return HostFault(lines[-1], HOST_BUILD_CACHE)

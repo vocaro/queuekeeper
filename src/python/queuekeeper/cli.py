@@ -1934,7 +1934,8 @@ def perform(argv, report):
                 held.enter_context(direct_status.tracking(root, args.lane))
             lane_wait.begin(root, args.lane, project_name(root, config), bool(lane.get("wholeHost")))
             # Keep the queue's placement scope at the outer lane.
-            queue_gate = bool(os.environ.pop(remote.QUEUE_GATE, None))
+            queue_context = os.environ.pop(remote.QUEUE_GATE, None)
+            queue_gate = bool(queue_context)
             exclude = os.environ.pop(remote.QUEUE_GATE_EXCLUDE, None)
             release = os.environ.pop(remote.QUEUE_GATE_RELEASE, None)
             beside = (exclude, Path(release)) if queue_gate and exclude and release else None
@@ -1990,6 +1991,8 @@ def perform(argv, report):
                 declined = remote.here_unfit(bool(lane.get("wholeHost")), admission_of(lane) == "exclusive",
                                              **{**remote.lane_needs(config["lanes"], args.lane), "foreground": False})
             if declined is not None and not (args.offload_only or args.offload_wait) and beside is None:
+                if args.here and queue_context == remote.QUEUE_GATE_RETRY_HERE:
+                    return declined_everywhere(args.lane, f"the local retry cannot run here, and {declined}")
                 if args.here or args.serial:
                     asked = "--here" if args.here else "--serial runs the serial reference here"
                     raise ValueError(f"{args.lane} not run: it runs on this Mac ({asked}), and {declined}")
@@ -2401,6 +2404,7 @@ def perform(argv, report):
                 return lane_results.UNMEASURED
             faulted = host_faulted(args.lane, status, receipt, directory / "results")
             if faulted is not None:
+                if isinstance(faulted, plugins.HostFault): receipt["hostFaultKind"] = faulted.kind
                 concluded(lane_results.UNMEASURED, unmeasured=[faulted], error=faulted, hostFault=True)
                 return lane_results.UNMEASURED
             if status == lane_results.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):

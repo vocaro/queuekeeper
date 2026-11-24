@@ -4812,6 +4812,14 @@ class RemoteTests(unittest.TestCase):
         else: path.unlink(missing_ok=True)
         return path
 
+    def test_a_queue_retry_here_that_is_refused_by_changed_settings_gives_no_verdict(self):
+        self.mac_settings("HEAVY_SLOT_DIR", takes={"wholeHost": False})
+        with patch.dict(os.environ, {remote.QUEUE_GATE: remote.QUEUE_GATE_RETRY_HERE}):
+            status, output, error = self.run_here("--here", "suites")
+        self.assertEqual(status, remote.MISCONFIGURED, output + error)
+        self.assertIn("the local retry cannot run here, and this Mac takes no whole-host gates", error)
+        self.assertFalse((self.project / ".build/queuekeeper/suites").exists())
+
     def test_a_lane_runs_only_on_a_mac_whose_settings_take_its_kind(self):
         """The owner's decision, 2026-11-17 (vocaro/queuekeeper#211): a Mac's settings say which kinds of work it
         takes, and placement keeps to them on every Mac, the one a command starts on included."""

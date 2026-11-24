@@ -163,6 +163,8 @@ LOST_ACCESS = 69
 # Set by a queue worker on the `qk run` of a gate's lane, the one `qk run` that stops for LOST_ACCESS. That `qk run`
 # takes it out of its environment, so that no lane it runs here, nor what that lane starts, stops for it.
 QUEUE_GATE = "QUEUEKEEPER_QUEUE_GATE"
+# An automatic local retry treats a change in this Mac's settings as a no-verdict refusal.
+QUEUE_GATE_RETRY_HERE = "retry-here"
 QUEUE_GATE_EXCLUDE = "QUEUEKEEPER_QUEUE_GATE_EXCLUDE"
 QUEUE_GATE_RELEASE = "QUEUEKEEPER_QUEUE_GATE_RELEASE"
 # Use an argument so an older toolkit refuses the scoped run before it can offer work.

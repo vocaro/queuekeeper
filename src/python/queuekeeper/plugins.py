@@ -12,6 +12,18 @@ class Unavailable(RuntimeError):
     unmeasured, not failed."""
 
 
+class HostFault(str):
+    """A host-fault explanation with a stable kind that newer workers can recognize."""
+
+    def __new__(cls, words, kind):
+        explanation = super().__new__(cls, words)
+        explanation.kind = kind
+        return explanation
+
+
+HOST_BUILD_CACHE = "host-build-cache"
+
+
 # Each () -> {variable: value}: what the environment holds while a command runs.
 COMMAND_ENVIRONMENT = []
 # Each (environment, root) -> environment: wrappers for the command, in registration order.
@@ -24,8 +36,8 @@ SANDBOX_REFUSALS = []
 # Each (log text) -> the program that applied a sandbox of its own inside a lane's, which macOS refused, or None: what
 # a sandboxed lane's failed run says of it (sandbox.observed). The Apple plugin names xcodebuild and SwiftPM.
 SANDBOX_NESTED = []
-# Each (results) -> why a lane's failed run was its Mac's fault and not the commits', or None, from what its commands
-# left in its results folder: the run ends unmeasured, saying so (host_fault). The Apple plugin names a build plan
+# Each (results) -> why a failed run was its Mac's fault, as text or a HostFault with a recognized kind, or None.
+# The result comes from what the lane's commands left in its results folder. The Apple plugin names a build plan
 # that kept a Metal Toolchain mount macOS has since replaced (vocaro/queuekeeper#281).
 HOST_FAULTS = []
 # Each (root, config): called before a lane or an admitted command is placed; a ValueError refuses the run.

@@ -2697,6 +2697,62 @@ class NoVerdict(Fixture):
                 source.write_text(json.dumps({**outer, "result": {**returned, **overrides}}))
                 self.assertFalse(mq.gate_host_fault(run, receipt.with_name("run.log"), "tested", began))
 
+    def remote_build_cache_fault(self, head, began, **evidence):
+        return {"head": head, "commit": head, "dispatched": began + 1, "host": "fixture-remote", "lane": "gate",
+                "local": {"name": "Fixture-Sender"}, "result": {
+                    "stage": "work", "exitStatus": mq.lane_results.UNMEASURED, "stopped": False,
+                    "host": {"name": "Fixture-Receiver"}, "receipt": {
+                        "project": {"revision": head}, "outcome": "unmeasured", "hostFault": True,
+                        "hostFaultKind": mq.plugins.HOST_BUILD_CACHE, "mac": "Fixture-Receiver",
+                        "dispatchedFrom": "Fixture-Sender", **evidence}}}
+
+    def test_a_local_retry_needs_recognized_evidence_from_the_matching_remote_host_and_lane(self):
+        worker, _, receipt = self.stopped_worker()
+        began = worker.lane_now[1]
+        run = self.dispatch_of(worker, None)
+        source = run / "source.json"
+        evidence = self.remote_build_cache_fault("tested", began)
+        read = lambda receiver=("fixture-remote", "gate"): mq.gate_host_fault(
+            run, receipt.with_name("run.log"), "tested", began, receiver=receiver)
+        source.write_text(json.dumps(evidence))
+        self.assertTrue(read())
+        self.assertFalse(read(("another-mac", "gate")))
+        self.assertFalse(read(("fixture-remote", "another-lane")))
+        for changes in ({"hostFaultKind": None}, {"hostFaultKind": "other-host-cause"},
+                        {"mac": "Other-Receiver"}, {"dispatchedFrom": "Other-Sender"}):
+            with self.subTest(changes=changes):
+                source.write_text(json.dumps(self.remote_build_cache_fault("tested", began, **changes)))
+                self.assertFalse(read())
+        source.write_text(json.dumps({**evidence, "dispatched": began - 1}))
+        self.assertFalse(read())
+
+    def test_a_confirmed_remote_build_cache_fault_retries_here_and_still_counts(self):
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        dispatch = self.base / "remote-gate"
+        dispatch.mkdir()
+
+        def remote_dispatch(root, lane, began):
+            if lane != "gate" or self.gates() != 1: return None, None
+            head = run(root, "git", "rev-parse", "HEAD")
+            (dispatch / "source.json").write_text(json.dumps(self.remote_build_cache_fault(head, began)))
+            return dispatch, "fixture-remote"
+
+        settled = []
+        def settle(worker, _what, *, macs):
+            settled.append(macs()[0])
+
+        with self.no_verdict_for(1), self.commands() as commands, \
+                patch.object(mq.remote, "dispatch", side_effect=remote_dispatch), \
+                patch.object(mq.remote, "here_unfit", return_value=None), \
+                patch.object(mq.Worker, "settle", settle), contextlib.redirect_stdout(io.StringIO()) as said:
+            self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(settled, [[None]])
+        self.assertEqual(self.lane_runs(commands), [["python3", "scripts/qk", "run", "gate"],
+                                                  ["python3", "scripts/qk", "run", "--here", "gate"]])
+        self.assertIn(f"run 1 of at most {mq.NO_VERDICT_RUNS}", said.getvalue())
+
     def test_a_no_verdict_send_back_quotes_the_error_its_own_receipt_records(self):
         """A lane that reached its own limit: the real qk run, its real receipt, and a log that just stops (#288)."""
         config = self.config()

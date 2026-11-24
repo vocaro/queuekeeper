@@ -3925,12 +3925,16 @@ class Removal:
         return self.look()
 
 
-def gate_host_fault(dispatch, lane_log, head, began):
-    """Whether this gate's terminal lane receipt attributes its unmeasured outcome to the Mac."""
+def gate_host_fault(dispatch, lane_log, head, began, *, receiver=None):
+    """Whether this gate's terminal lane receipt attributes its unmeasured outcome to the Mac.
+
+    With (destination, lane) as receiver, require a recognized host-specific cause and matching sender
+    and receiver identities before changing the placement of a retry."""
     path = (dispatch or lane_log.parent) / "source.json"
     try:
         if path.stat().st_mtime < began: return False
         receipt = json.loads(path.read_text())
+        if receiver is not None and dispatch is None: return False
         if dispatch is not None:
             if receipt["dispatched"] < began or receipt["head"] != head or receipt["commit"] != head: return False
             result = receipt["result"]
@@ -3938,6 +3942,14 @@ def gate_host_fault(dispatch, lane_log, head, began):
             if result.get("stage") != "work" or result.get("exitStatus") != lane_results.UNMEASURED \
                     or result.get("stopped") is not False or result.get("error"):
                 return False
+            if receiver is not None:
+                sender, mac = receipt["local"]["name"], result["host"]["name"]
+                inner = result["receipt"]
+                if (receipt["host"], receipt["lane"]) != receiver or not isinstance(sender, str) or not sender \
+                        or not isinstance(mac, str) or not mac or mac == sender \
+                        or inner.get("mac") != mac or inner.get("dispatchedFrom") != sender \
+                        or inner.get("hostFaultKind") != plugins.HOST_BUILD_CACHE:
+                    return False
             receipt = result["receipt"]
         return receipt["project"]["revision"] == head and receipt["outcome"] == "unmeasured" \
             and receipt.get("hostFault") is True
@@ -3955,6 +3967,7 @@ class Worker:
         self.locked_screens = 0  # the runs in a row a screen locked during
         self.only_host_faults = True  # every no-verdict attempt in this retry series has host fault evidence
         self.retrying = tuple(progress.get("retrying", ())) if progress else ()  # the batch that gave no verdict
+        self.local_retry_lane = progress.get("local_retry_lane") if progress else None
         # The commits whose gate --fail-fast cut short gated again once, as their failed tests all passed alone
         # (rerun), and whether the last rerun asked for that.
         self.regated, self.regate = set(), False
@@ -4037,6 +4050,7 @@ class Worker:
         if self.locked_screens: progress["locked_screens"] = self.locked_screens
         if self.no_verdicts or self.locked_screens: progress["only_host_faults"] = self.only_host_faults
         if self.retrying: progress["retrying"] = list(self.retrying)
+        if self.local_retry_lane is not None: progress["local_retry_lane"] = self.local_retry_lane
         return progress
 
     def look(self, host, said, here="the host"):
@@ -4060,6 +4074,8 @@ class Worker:
         """([each eligible Mac, None for this one], why them) for the settle wait before a retry. Placement can
         change while the lane waits for admission, so each look reads capacity anew."""
         lanes, lane = config.get("lanes", {}), runner.lane_now[0] if runner.lane_now else None
+        if lane is not None and lane == self.local_retry_lane:
+            return [None], f"this Mac for the next {lane} attempt after a confirmed host build-cache fault"
         if lane not in lanes: return [runner.ran_on], None
         try: hosts = farm.destinations()
         except ValueError: hosts = ()
@@ -4794,6 +4810,7 @@ class Worker:
         self.tooling = None
         self.altered_files = self.altered_paths = None
         self.gate_host_fault = None
+        self.gate_remote_host_fault = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
         if quick is None: quick = self.checks
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
@@ -4857,6 +4874,8 @@ class Worker:
             began = time.time()  # wall clock, to match the dispatch records' start times
             started = time.monotonic()  # for the gate's measured duration
             placed = tuple(where)
+            retry_here = not placed and lane == self.local_retry_lane and self.retrying == tuple(self.gating)
+            if retry_here: placed = ("--here",)
             self.lane_now = (lane, began, placed)
             admission = Admission(self.checkout, lane, began).start() if lane == budgets.GATE else None
             sampler = BusySampler(self.checkout, lane, began, admission).start() if lane == budgets.GATE else None
@@ -4881,13 +4900,15 @@ class Worker:
             try:
                 try:
                     status_ = processes.run(command, cwd=self.checkout, log_path=log, timeout=LANE_LIMIT,
-                                            env={**env, remote.QUEUE_GATE: "1"}, cancel=removal)
+                                            env={**env, remote.QUEUE_GATE: remote.QUEUE_GATE_RETRY_HERE
+                                                 if retry_here else "1"}, cancel=removal)
                 finally: watch.finish()
             except processes.TimedOut as error:
                 loads.stopped.set()
                 if sampler: sampler.stopped.set()
                 if admission: admission.stopped.set()
                 self.unlocked.discard(lane)
+                if retry_here: self.local_retry_lane = None
                 self.ran_on = remote.dispatched(self.checkout, lane, began)
                 self.ran_where = self.mac(lane, began)
                 if isinstance(error, processes.Canceled) and removal.gone:
@@ -4922,7 +4943,9 @@ class Worker:
                 # A candidate may launch an older qk that refuses the scope before it can run the lane.
                 status_ = resources.BUSY
             # It ran, unless no Mac admitted it or a host's configuration stopped it: it is placed as before next.
-            if status_ not in UNRUN: self.unlocked.discard(lane)
+            if status_ not in UNRUN:
+                self.unlocked.discard(lane)
+            if retry_here and status_ != resources.BUSY: self.local_retry_lane = None
             # What the lane printed: here in its own file; on another Mac in its dispatch's run.log, whose qk
             # unittest summary names the failed tests that rerun reruns alone.
             printed = lane_log if ran is None else ran / "run.log"
@@ -4955,6 +4978,9 @@ class Worker:
                 self.failed_lane = lane
                 if status_ == lane_results.UNMEASURED and gate_host_fault(ran, lane_log, tested, began):
                     self.gate_host_fault = log
+                    if ran is not None and self.ran_on and gate_host_fault(
+                            ran, lane_log, tested, began, receiver=(self.ran_on, lane)):
+                        self.gate_remote_host_fault = log
                 # Its results folder came back beside what it printed, here or from another Mac.
                 self.failed_results = printed.parent / "results"
                 self.tooling = self.tool_unstarted(lane, began, status_, ran, log)
@@ -6922,6 +6948,8 @@ class Worker:
         any other entry; else batch less the docs-only entries, which wait for a round of their own (without_docs),
         unless a bisect is going on; else batch. A round of docs entries is alone, so that its outcome leaves a bisect
         where it was, and jumped holds, by entry, the older entries each goes ahead of (back_in_line)."""
+        if self.local_retry_lane is not None and self.retrying == tuple(entry["id"] for entry in batch):
+            return batch
         docs = docs_first(waiting, config, self.own_paths)
         ids = {entry["id"] for entry in docs}
         if docs and any(entry["id"] not in ids for entry in batch):
@@ -7079,6 +7107,7 @@ class Worker:
         self.no_verdicts = self.locked_screens = 0
         self.only_host_faults = True
         self.retrying = ()
+        self.local_retry_lane = None
 
     def send_back_no_verdict(self, applied, log, reason, runner, **fields):
         """Finish the affected entries without attributing a test failure, and preserve a read-only diagnosis."""
@@ -7171,6 +7200,19 @@ class Worker:
             reason = f"{gave}, the most queue.noVerdictRuns allows ({runs})" + runner.shared_timing(result, config)
             fields = {"failureKind": "host"} if self.only_host_faults else {}
             return self.send_back_no_verdict(applied, log, reason, runner, **fields)
+        if log is not None and getattr(runner, "gate_remote_host_fault", None) == log:
+            lane = runner.failed_lane
+            lanes = config.get("lanes", {})
+            settings = lanes.get(lane)
+            if settings is not None and not settings.get("foreground"):
+                try:
+                    declined = remote.here_unfit(bool(settings.get("wholeHost")), admission(settings) == "exclusive",
+                                                **remote.lane_needs(lanes, lane))
+                except ValueError as error:
+                    declined = str(error)
+                if declined is None:
+                    self.local_retry_lane = lane
+                    self.say(f"{lane}: the next attempt goes only to this Mac after the confirmed host build-cache fault")
         self.say(f"no verdict (exit {result})" + (f" from {runner.ran_on}" if runner.ran_on else "")
                  + f", run {self.no_verdicts} of at most {runs}"
                  # Name the reason an attempt could not start or measure the lane while retries remain.

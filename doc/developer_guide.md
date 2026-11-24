@@ -519,6 +519,11 @@ events, and goes on to later entries. Newly arrived entries have their own retry
   (an hour), for the Mac it could run on to read a CPU busy share under its `busyLimit` and
   normal memory pressure (`resources.pressure`). With another Mac configured it reads the Macs the
   retry could use (`remote.retry_macs`); another Mac is asked over SSH.
+- **Confirmed remote build-cache faults.** When the exact remote attempt completes unmeasured and
+  its lane receipt attributes that result to the receiving Mac's build cache, the next attempt
+  runs with `--here` if this Mac's settings allow it and the lane does not need the foreground.
+  This still counts toward `queue.noVerdictRuns`. An older receipt with only `hostFault`, an
+  interrupted dispatch, or an unmatched receiver leaves placement unchanged.
 - **Locked screens.** An exit 3, or a lane at its limit, whose last screen reading (receipt's
   `screenAfter`, else the log's last `screen:` line) shows a lock does not count; the lane runs next
   as `qk run --unlocked-screen LANE`. `LOCKED_SCREEN_RUNS` (5) runs in a row that started unlocked
