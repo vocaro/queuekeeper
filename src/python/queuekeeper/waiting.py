@@ -20,6 +20,9 @@ FIXED_LEAST = 20
 # The calls that wait on a child process or an event with a `timeout=`: subprocess's and Popen's, and threading's.
 WAITS = {"communicate", "wait", "run", "check_output", "check_call", "call"}
 EXEMPT = "wall-clock:"
+# The stretch a project that cannot import Queuekeeper writes itself, from the standard library: the load per core,
+# at least 1, which stretched reads too, without its doubt of a low load beside a saturated CPU (#342).
+STDLIB_STRETCH = "max(1, os.getloadavg()[0] / os.cpu_count())"
 # A literal `monotonic() + N` deadline in a script that does not parse; not `+ 2 * LIMIT`, whose bound is a name.
 DEADLINE = re.compile(r"monotonic\(\)\s*\+\s*(?:\d+(?:\.\d*)?|\.\d+)(?![\w.]|\s*[*/])")
 SHOWN = 5
@@ -316,5 +319,7 @@ def doctor_warnings(root):
     return [f"{len(found)} test line(s) bound a wait by fixed wall-clock time, a `monotonic() + N` deadline or a "
             f"`timeout=` of {FIXED_LEAST} s or more (including defaults passed to a wait), which a busy host can "
             f"use up while the work still progresses: {shown}{more}. Use queuekeeper.waiting.wait_until with a "
-            "progress probe for long or variable work. Use waiting.stretched for a short command's hang guard. "
+            "progress probe for long or variable work. Use waiting.stretched for a short command's hang guard; "
+            "a project that cannot import Queuekeeper multiplies that bound by the load per core instead, "
+            f"`{STDLIB_STRETCH}`, from the standard library. "
             f"A bound that is the behavior under test or a cleanup's grace period says so with `# {EXEMPT} REASON`"]

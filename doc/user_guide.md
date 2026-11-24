@@ -1631,6 +1631,20 @@ progress. For a command that normally finishes in seconds and only needs protect
 use a timeout such as `timeout=waiting.stretched(30)`. Process probes that call `ps` can add
 substantial overhead on a busy Mac.
 
+A project that cannot import Queuekeeper, such as one whose code may depend only on the
+standard library, can stretch a hang guard itself by the one-minute load per core:
+
+```python
+import os
+
+timeout = 30 * max(1, os.getloadavg()[0] / os.cpu_count())
+```
+
+`waiting.stretched` uses the same factor. It also doubts a load under one per core while the CPU
+is 95% or more busy, and then stretches the bound 24 times; the standard-library version does not.
+Keep `# wall-clock: REASON` for bounds that are the behavior under test or a cleanup's grace
+period, not for hang guards.
+
 In [BreezEPUB's purchase preparation test](https://github.com/vocaro/BreezEPUB/issues/67), the
 fake lane normally took about 2 seconds. The same admitted runs alternated a `ps`-based
 progress wait with `subprocess.run(..., timeout=30)`.
@@ -1648,6 +1662,7 @@ See [#92](https://github.com/vocaro/queuekeeper/issues/92) for the measurements.
 
 `qk doctor` flags fixed waits in tracked Python tests and their fixture source, including a
 literal `timeout` default of 20 seconds or more passed directly to a recognized wait.
+Its advice names both `waiting.stretched` and the standard-library factor above.
 Use `# wall-clock: REASON` on a bound that measures the behavior under test or specifies a
 cleanup grace period.
 

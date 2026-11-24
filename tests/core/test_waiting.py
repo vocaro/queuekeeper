@@ -333,6 +333,19 @@ subprocess.check_output(["true"],  # wall-clock: says why on its first line
             self.assertIn("`monotonic() + N` deadline", warning)
             self.assertIn("progress probe for long or variable work", warning)
             self.assertIn("waiting.stretched for a short command's hang guard", warning)
+            # A project that cannot import Queuekeeper gets a standard-library route as well (#342).
+            self.assertIn(f"cannot import Queuekeeper multiplies that bound by the load per core instead, "
+                          f"`{waiting.STDLIB_STRETCH}`", warning)
+
+    def test_the_standard_library_stretch_matches_stretched(self):
+        """The expression the warning gives a project that cannot import Queuekeeper stretches a bound as
+        waiting.stretched does at a load that is believed, using only os (#342)."""
+        quiet(self)
+        for load, cores in [(0.5, 10), (10, 10), (217, 10), (590, 18)]:
+            with self.subTest(load=load, cores=cores), patch("os.getloadavg", return_value=(load, 0, 0)), \
+                    patch("os.cpu_count", return_value=cores):
+                factor = eval(waiting.STDLIB_STRETCH, {"__builtins__": {"max": max}, "os": os})
+                self.assertEqual(30 * factor, waiting.stretched(30))
 
     def found(self, text):
         """The line numbers fixed_waits lists for a test file holding this text."""
