@@ -18,7 +18,7 @@ import traceback
 
 from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, count_history, disk, docs, plugins, farm, gate_reuse, git_hooks, git_state, host_health, lane_coverage, lane_report, lane_results, lane_timing, lane_wait, merge_queue, offload_host, \
     direct_status, launcher_patch, parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
-from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, launched, plugins_of, lane_to_run, load, parse as parse_configuration, \
+from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, launched, plugins_of, lane_to_run, load, parse as parse_configuration, qk_said, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
     project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
@@ -131,8 +131,8 @@ def out_of_space(lane, why):
     commits' (lane_results.OUT_OF_SPACE), and return UNMEASURED, which the lane then exits with."""
     print(f"{lane_results.OUT_OF_SPACE}{lane} on {this_mac()}: {' '.join(str(why).split())}", file=sys.stderr)
     print(f"queuekeeper: unmeasured: {lane} ran out of disk space on {this_mac()}, which says nothing of the commits it "
-          "ran; `python3 scripts/qk disk` lists what takes the space and `python3 scripts/qk disk --delete` removes "
-          "what nobody owns", file=sys.stderr, flush=True)
+          f"ran; `{qk_said('disk')}` lists what takes the space and "
+          f"`{qk_said('disk --delete')}` removes what nobody owns", file=sys.stderr, flush=True)
     return lane_results.UNMEASURED
 
 
@@ -1490,7 +1490,7 @@ def perform(argv, report):
     hook = commands.add_parser("pre-push", help="a pre-push hook: run the lanes the project names for the paths a push "
         "changes, the docs lanes for a docs-only push, queue.lanes or gate for any other and none for a push that "
         "changes no path, and refuse the push "
-        "when one fails or is unmeasured; a project's hook is `exec python3 scripts/qk pre-push \"$@\"`")
+        f"when one fails or is unmeasured; a project's hook is `exec {qk_said('pre-push')} \"$@\"`")
     hook.add_argument("remote", nargs="*", help="the remote's name and URL, as Git gives a pre-push hook")
     run = commands.add_parser("run", usage="%(prog)s [-h] [--expect N] [--repeat N [--erase|--template] [--only TEST]] "
         "lane [-- ARGUMENTS ...]\n       %(prog)s --status lane [--run-id ID]",

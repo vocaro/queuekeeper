@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from queuekeeper import disk, offload_host, plugins, remote
+from queuekeeper.config import qk_said
 from . import disk as apple_disk
 from .simulators import pool as simulator_pool
 
@@ -68,7 +69,7 @@ def compare_toolchains(report, developer):
         report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
                                 "`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
                                 "defaults uses and copying any other to the Mac that lacks it, and it could not here: "
-                                "see its `runtimes:` lines, or run `python3 scripts/qk remote setup --runtimes`")
+                                f"see its `runtimes:` lines, or run `{qk_said('remote setup --runtimes')}`")
 
 
 def fix_hosts(root, hosts):

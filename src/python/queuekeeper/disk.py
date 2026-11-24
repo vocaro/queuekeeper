@@ -33,7 +33,7 @@ import subprocess
 import sys
 import time
 
-from .config import TOOLKIT_ROOT
+from .config import TOOLKIT_ROOT, qk_said
 
 CANDIDATE, OWNER, KEPT = "candidate", "owner", "kept"
 STATUS_ORDER = {CANDIDATE: 0, OWNER: 1, KEPT: 2}
@@ -121,10 +121,11 @@ def floor_words(floor, variable, whence):
     return f"{floor:g} GiB ({whence}; {variable} overrides it)"
 
 
-def short_of_space(setting, paths=(DATA_VOLUME,), configured=None):
+def short_of_space(setting, paths=(DATA_VOLUME,), configured=None, root=None):
     """Why the volumes that hold paths have less free space than setting's floor (free_floor, with configured), in
     words that name the volume, what it has free, the floor and where it comes from, or None when each has enough. A
-    volume whose usage cannot be read is never short: a missing reading stops no work."""
+    volume whose usage cannot be read is never short: a missing reading stops no work. The commands it names run
+    Queuekeeper as the project at root runs it (config.qk_words)."""
     floor, variable, whence = free_floor(setting, configured)
     seen = set()
     for path in paths:
@@ -137,7 +138,7 @@ def short_of_space(setting, paths=(DATA_VOLUME,), configured=None):
         found = volume_usage(path)
         if found is None or found[2] >= floor * GIB: continue
         return (f"the volume of {path} has {human(found[2])} free, below {floor_words(floor, variable, whence)}; "
-                "`python3 scripts/qk disk --delete` removes what nobody owns, and `python3 scripts/qk disk` lists "
+                f"`{qk_said('disk --delete', root)}` removes what nobody owns, and `{qk_said('disk', root)}` lists "
                 "what takes the space")
     return None
 

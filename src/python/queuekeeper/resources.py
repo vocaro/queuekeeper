@@ -89,6 +89,7 @@ import time
 import uuid
 
 from . import lane_timing, lane_wait
+from .config import qk_said
 
 TOKEN = "QUEUEKEEPER_RESOURCE_TOKEN"
 # `qk run --if-free` waits this many seconds for admission, then exits with BUSY (EX_TEMPFAIL)
@@ -1141,7 +1142,7 @@ class Admission:
         value = self._recorded()
         if value is None:
             self.refusal, self.waiting = "guard", (f"the guard {self.guard} is unreadable or not in admission's format "
-                                                   "and requires inspection; `python3 scripts/qk admissions recover` lists it")
+                                                   f"and requires inspection; `{qk_said('admissions recover')}` lists it")
             return None
         for identity, owner in list(value["owners"].items()):
             condition, how = liveness(owner)
@@ -1197,7 +1198,7 @@ class Admission:
         described = [f"the guard entry of {str(owner.get('label') or 'an unnamed owner')[:LABEL_LIMIT]}, PID {owner['pid']}, is "
                      f"{'uncertain' if owner.get('uncertain') else 'dead'} and requires inspection ({why}), and is "
                      f"counted as {held(slots, model)}" for _identity, owner, why, slots, model in self.counted]
-        return "; ".join(described) + (f"; `python3 scripts/qk admissions recover` lists "
+        return "; ".join(described) + (f"; `{qk_said('admissions recover')}` lists "
                                        f"{'it' if len(described) == 1 else 'them'}")
 
     def _refused_beside_stranded(self):
@@ -2535,7 +2536,7 @@ def now_lines(reading, at=None):
                           "left of it" if holder["process"] == "ended"
                           else "; its process could not be checked: admission frees its slots at its next attempt"
                           if holder["process"] == "unknown"
-                          else "; stranded: uncertain, counted until recovered (`python3 scripts/qk admissions recover`)"
+                          else f"; stranded: uncertain, counted until recovered (`{qk_said('admissions recover')}`)"
                           if holder.get("stranded") else "")
                 lines.append(f"    {holder['label']}: {kind}, {where}, PID {holder['pid']}, {held}{status}")
                 if whence(holder.get("origin")): lines.append(f"      from {whence(holder['origin'])}")
@@ -2601,9 +2602,12 @@ def now_main(argv=None, out=print, read=None):
     return 0 if all(host.get("state") in ("observed", "notConfigured") for host in reading["hosts"]) else 1
 
 
-# What recovery tells a person to do about an entry it leaves.
-BY_HAND = ("check by hand that nothing its owner started still runs, then remove its entry with `python3 scripts/qk "
-           "admissions remove OWNER --why TEXT`")
+def by_hand():
+    """What recovery tells a person to do about an entry it leaves."""
+    return ("check by hand that nothing its owner started still runs, then remove its entry with "
+            f"`{qk_said(['admissions', 'remove', 'OWNER', '--why', 'TEXT'])}`")
+
+
 # Why recovery leaves an entry it cannot prove finished, as reclaim says it: the entries `qk admissions remove` may
 # remove once a person has checked them, unlike one whose owner or a process it names still runs.
 UNRECORDED, UNVOUCHED = "it has no process record", "its process record cannot vouch for every command"
@@ -3020,7 +3024,7 @@ def recover(owner=None, out=print):
                              "uncertain, and its owner has ended" if entry.get("uncertain") else "its owner has ended")
                 out(f"  {identity} {shown(entry)}: PID {entry['pid']}, {entry_age(entry)}, {condition}; "
                     f"{'a' if recorded(identity) else 'no'} process record")
-            out("Recover one with `python3 scripts/qk admissions recover OWNER`, OWNER its PID or identity.")
+            out(f"Recover one with `{qk_said('admissions recover OWNER')}`, OWNER its PID or identity.")
             return 0
         identity = named(guard, owners, owner, out)
         if identity is None:
@@ -3079,7 +3083,7 @@ def reclaim(guard, state, identity, automatic=False):
     unrecorded = (f"{name} has no process record, so its entry stays: an older toolkit admitted it, its record could "
                   "not be written, or its caller runs its own commands without recording them, as an older push keeper "
                   "does; a push keeper's owner.json, in its checkout's transaction lock, lists each command it ran. To "
-                  f"recover it, {BY_HAND}."), UNRECORDED
+                  f"recover it, {by_hand()}."), UNRECORDED
     if path is None or not path.is_file():
         return (False, *unrecorded)
     try:
@@ -3088,7 +3092,7 @@ def reclaim(guard, state, identity, automatic=False):
         return (False, *unrecorded)
     except ValueError as error:
         return False, (f"{name}'s process record cannot vouch for every command, so its entry stays: {error}. To "
-                       f"recover it, {BY_HAND}."), UNVOUCHED
+                       f"recover it, {by_hand()}."), UNVOUCHED
     if left:
         listing = subprocess.run(["ps", "-o", "pid,ppid,pgid,lstart,args", "-p", ",".join(map(str, sorted(left)))],
                                  capture_output=True, text=True).stdout.rstrip()

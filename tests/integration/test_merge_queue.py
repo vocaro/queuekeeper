@@ -2131,13 +2131,31 @@ class NoVerdict(Fixture):
         self.assertTrue(held.startswith("for a session, not the owner: a lane ran out of disk space"), held)
         self.assertIn("gate on this Mac (Fixture-Mac): the volume of /System/Volumes/Data has 1.0 GiB free", held)
         self.assertIn("no entry is sent back", held)
-        self.assertIn("qk disk --delete", held)
+        # The fixture project holds its copy of the launcher, which the hold names (vocaro/queuekeeper#339).
+        self.assertIn("free space with `python3 scripts/qk disk --delete`, or by removing what `python3 scripts/qk disk` "
+                      "lists, then resume the queue", held)
         # Space freed and the queue resumed, the entry lands.
         self.status.unlink()
         Path(f"{self.status}.screen").unlink()
         with patch.object(mq.Queue, "start"), patch("builtins.print"): mq.resume(self.repo)
         self.work()
         self.assertEqual(self.state(identifier)["state"], "landed")
+
+    def test_the_disk_full_hold_of_a_project_without_the_launcher_copy_names_the_installed_qk(self):
+        """vocaro/queuekeeper#339: a project that dropped scripts/qk (vocaro/queuekeeper#20) acts on the hold with the
+        installed qk, since `python3 scripts/qk` names a file it does not have."""
+        self.status.write_text("3")
+        Path(f"{self.status}.screen").write_text(f"{mq.lane_results.OUT_OF_SPACE}gate on this Mac (Fixture-Mac): the "
+                                                 "volume of /System/Volumes/Data has 1.0 GiB free")
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        (self.repo / "scripts/qk").unlink()
+        with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.work(), 0)
+        self.assertEqual(self.state(identifier)["state"], "queued")
+        held = mq.Queue(self.repo).held()
+        self.assertIn("free space with `qk disk --delete`, or by removing what `qk disk` lists, then resume the queue",
+                      held)
+        self.assertNotIn("scripts/qk", held)
 
     def test_a_lane_that_waited_for_disk_space_says_so_in_its_no_verdict(self):
         worker = mq.Worker(mq.Queue(self.repo))

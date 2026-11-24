@@ -34,6 +34,7 @@ import sys
 import tempfile
 
 from queuekeeper import farm, plugins, lane_results, host_context, offload_host, remote
+from queuekeeper.config import qk_said, qk_words
 
 DEFAULT = "~/Library/Keychains/login.keychain-db"
 # Seconds each of the check's commands, and the question to another Mac, may take.
@@ -80,9 +81,9 @@ def check_commands(location, path, identity, sender=None):
     """The post-check's commands: in the automation's context on another Mac, through qk remote
     from the Mac that sends work there, and in a shell on the target, which checks that shell's
     session only. sender names the Mac that sends work to the target when the target is this Mac."""
-    check = ["python3", "scripts/qk", "keychain", "check", "--keychain", path,
+    check = [*qk_words(), "keychain", "check", "--keychain", path,
              *(["--identity", identity] if identity else [])]
-    through = shlex.join(["python3", "scripts/qk", "remote", "admit", "--", *check])
+    through = shlex.join([*qk_words(), "remote", "admit", "--", *check])
     lines = []
     if location.where == "farm Mac":
         lines.append((f"from this Mac, as qk remote runs work on {location.mac}", through))
@@ -167,8 +168,8 @@ def recover(path=DEFAULT, target=None, identity=None, out=print, ask=None):
         out(f"  {where}:\n    {command}")
     if location.where == "farm Mac" or sender:
         out(f"An unlock in a Terminal reaches that Terminal's session only, never an qk remote run. For every run on "
-            f"{location.mac} to unlock its login keychain itself, run `python3 scripts/qk keychain keep-unlocked "
-            f"--target {location.mac}` once instead.")
+            f"{location.mac} to unlock its login keychain itself, run "
+            f"`{qk_said(['keychain', 'keep-unlocked', '--target', location.mac])}` once instead.")
     return 0
 
 
@@ -339,8 +340,8 @@ def unlock_for_run(root, unlock=None):
     kept = root / offload_host.KEYCHAIN_PASSWORD
     if not kept.is_file(): return None
     path = Path.home() / offload_host.KEYCHAINS / offload_host.LOGIN_KEYCHAIN
-    fix = (f"on the Mac that sends work here, run `python3 scripts/qk keychain keep-unlocked --target "
-           f"{offload_host.mac_name()}` and type this Mac's "
+    fix = (f"on the Mac that sends work here, run "
+           f"`{qk_said(['keychain', 'keep-unlocked', '--target', offload_host.mac_name()])}` and type this Mac's "
            f"login password at its prompt, or delete {kept} to send work without the unlock")
     if not path.is_file(): raise offload_host.Refusal(f"{kept} holds the password of {path}, which is not there", fix)
     try:

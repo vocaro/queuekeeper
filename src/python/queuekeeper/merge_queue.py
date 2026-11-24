@@ -64,7 +64,7 @@ from . import add_only_json, count_history, events, gate_reuse, git_state, lande
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, launched, queuekeeper_at, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
-    project_siblings, sibling_revisions, siblings_in, stays, toolkit_command, full_run, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
+    project_siblings, qk_said, sibling_revisions, siblings_in, stays, toolkit_command, full_run, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
 
 MAIN = "refs/remotes/origin/main"
 FETCH = ["fetch", "--no-tags", "origin", f"refs/heads/main:{MAIN}"]
@@ -1859,7 +1859,7 @@ def stuck(gate, at=None):
     if not isinstance(since, (int, float)) or not gate.get("stranded") or (at or time.time()) - since < STUCK_SECONDS:
         return None
     return (f"stuck: the gate has waited {ago(since, at)} for admission held up by dead or uncertain guard entries that "
-            "admission has not recovered; `python3 scripts/qk admissions recover` lists them")
+            f"admission has not recovered; `{qk_said('admissions recover')}` lists them")
 
 
 def latest(*times):
@@ -2361,8 +2361,8 @@ def _land(root, args, directory=None, details=None):
     elsewhere = None if args.repo or directory is None else other_repository(root, directory)
     if elsewhere is not None:
         if details is not None: details["refused"] = "current directory belongs to another repository"
-        print(f"queuekeeper: this queuekeeper lands {root}, but the current directory is in {elsewhere}: run that "
-              "checkout's own scripts/qk land, or name the commit with --repo", file=sys.stderr)
+        print(f"queuekeeper: this queuekeeper lands {root}, but the current directory is in {elsewhere}: run "
+              f"`{qk_said('land', elsewhere, anywhere=True)}`, or name the commit with --repo", file=sys.stderr)
         return 1
     target = root
     if args.repo:
@@ -2689,7 +2689,7 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     queue.start()
     if not quiet_wait:
         print("nothing else is needed for it to land; to be told at once if it comes back, run as a background "
-              f"command: python3 {shlex.quote(str(root))}/scripts/qk queue wait {identifier}")
+              f"command: {qk_said(['queue', 'wait', identifier], root, anywhere=True)}")
     return identifier
 
 
@@ -3381,7 +3381,7 @@ def admission_hints(root, at=None):
         since = gate.get("waitingSince")
         waited = f" {ago(since, at)}" if isinstance(since, (int, float)) else ""
         hints.append(f"the {role} gate's {gate.get('lane') or 'lane'} has waited{waited} for {gate.get('waiting')}; "
-                     "`python3 scripts/qk admissions now` shows who holds and who waits for admission on each Mac")
+                     f"`{qk_said('admissions now', root)}` shows who holds and who waits for admission on each Mac")
     return hints
 
 
@@ -3438,7 +3438,7 @@ def idle_waits(root, at=None, busy=None, read=None):
                          f"there holds it back, not load. Holders: {named}{freed} (vocaro/queuekeeper#89)",
             **({"reclaimed": reclaimed} if reclaimed else {}),
             "remedy": "ask the session that owns each holder, found by its worktree, whether its run is still needed: "
-                      "stopping it is that session's to do; `python3 scripts/qk admissions now` shows the same",
+                      f"stopping it is that session's to do; `{qk_said('admissions now', root)}` shows the same",
             "gate": role, "mac": mac, "waitingSince": since, "cpuBusy": share, "busyLimit": limit, "holders": holders})
     return findings, notes
 
@@ -3476,7 +3476,7 @@ def quiet_findings(reported):
                     "signal": "quiet admission holder",
                     "diagnosis": f"{mac}: {holder_words(holder)}",
                     "remedy": "ask the session that owns the holder to check its run; "
-                              "`python3 scripts/qk admissions now` shows its current progress",
+                              f"`{qk_said('admissions now')}` shows its current progress",
                     "mac": mac, "holder": holder})
     return findings, notes
 
@@ -5207,7 +5207,7 @@ class Worker:
             # A check that failed on a full disk says nothing of the batch: qk run, admitted, judges it as the host's
             # (vocaro/queuekeeper#162).
             from . import disk
-            with contextlib.suppress(ValueError): short = disk.short_of_space(disk.RUN_FREE, (disk.DATA_VOLUME, str(self.checkout)))
+            with contextlib.suppress(ValueError): short = disk.short_of_space(disk.RUN_FREE, (disk.DATA_VOLUME, str(self.checkout)), root=self.checkout)
         if short:
             self.say(f"{lane}: exited {status_} unadmitted with the disk short of space ({short}): running it admitted")
             return None
@@ -7280,8 +7280,8 @@ class Worker:
             self.reset_no_verdict()
             queue.hold(worded(SESSION, f"a lane ran out of disk space{runner.ran_where}: {full}. That is the "
                                        "host's, not the batch's, and no entry is sent back: free space with "
-                                       "`python3 scripts/qk disk --delete`, or by removing what `python3 "
-                                       f"scripts/qk disk` lists, then resume the queue; see {log}"))
+                                       f"`{qk_said('disk --delete', queue.root)}`, or by removing what "
+                                       f"`{qk_said('disk', queue.root)}` lists, then resume the queue; see {log}"))
             return NO_VERDICT_OUTCOME
         self.only_host_faults &= getattr(runner, "gate_host_fault", None) == log and log is not None
         crash = getattr(runner, "gate_system_crash", None)
@@ -9173,7 +9173,7 @@ def refusal(tip, found, base, root):
     if found["touching"]:
         many = len(found["touching"]) > 1
         words += (f". To be told when {'they leave' if many else 'it leaves'} the queue, run as a background command: "
-                  f"python3 {shlex.quote(str(root))}/scripts/qk queue wait {' '.join(found['touching'])}, which says "
+                  f"{qk_said(['queue', 'wait', *found['touching']], root, anywhere=True)}, which says "
                   f"whether {'they all' if many else 'it'} landed, so rebase, or came back, so `qk land` may apply it "
                   "as it is" + (f"; `qk land --wait` waits for {'them' if many else 'it'} itself and checks again"
                                 if found["waits"] else ""))

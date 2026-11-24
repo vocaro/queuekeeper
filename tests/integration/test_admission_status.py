@@ -960,7 +960,7 @@ class CommandTests(unittest.TestCase):
             (folder / "gone.json").write_text(json.dumps({**record, "pid": 2 ** 30}))
             (warning,) = lane_wait.admission_warnings(root)
         self.assertRegex(warning, r"^lane gate has waited 9\ds for admission on this Mac: all 3 guaranteed slots are busy; "
-                         r"`python3 scripts/qk admissions now`")
+                         r"`qk admissions now`")
 
     def test_an_isolated_namespace_needs_here(self):
         # host_isolation names an isolated namespace for every test.

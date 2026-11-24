@@ -1081,6 +1081,31 @@ def toolkit_command(root, words, toolkit=None):
     return queuekeeper_command(root, words, toolkit)
 
 
+def qk_words(root=None, anywhere=False):
+    """The words that start Queuekeeper in the project at root, as a message tells a person or a session to run it:
+    `python3 scripts/qk` when the project holds its launcher, else the installed `qk`. With anywhere, for a command
+    run from any directory, they name root: `python3 ROOT/scripts/qk`, else `qk --project ROOT`. root is by default
+    the project this runs in, the nearest directory at or above the current one that holds a launcher or a .git.
+    A project may drop its copy of the launcher (vocaro/queuekeeper#20), and then a message that named
+    `python3 scripts/qk`, as the disk-full hold did, named a file it does not have (vocaro/queuekeeper#339)."""
+    if root is None:
+        try: here = Path.cwd()
+        except OSError: return [COMMAND_WORD]
+        root = next((folder for folder in (here, *here.parents)
+                     if (folder / LAUNCHER).is_file() or (folder / ".git").exists()), None)
+        if root is None: return [COMMAND_WORD]
+    root = Path(root)
+    if (root / LAUNCHER).is_file(): return ["python3", str(root.resolve() / LAUNCHER) if anywhere else LAUNCHER]
+    return [COMMAND_WORD, "--project", str(root.resolve())] if anywhere else [COMMAND_WORD]
+
+
+def qk_said(words, root=None, anywhere=False):
+    """The command line that runs Queuekeeper's words, a string such as "disk --delete" or a list of words, in the
+    project at root, as a message names it (qk_words)."""
+    words = shlex.split(words) if isinstance(words, str) else list(words)
+    return shlex.join([*qk_words(root, anywhere), *words])
+
+
 def queuekeeper_command(root, words, toolkit=None):
     """The command that runs Queuekeeper's words on the project at root by the toolkit's own bin/qk, with the Python
     that runs this Queuekeeper, and the project named: the toolkit is toolkit, else the one QUEUEKEEPER_ROOT names,

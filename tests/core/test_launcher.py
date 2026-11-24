@@ -164,5 +164,79 @@ class EarlierLauncherTests(unittest.TestCase):
         self.assertIn("No module named 'queuekeeper_apple'", result.stderr)
 
 
+class MessageCommandTests(unittest.TestCase):
+    """What Queuekeeper's messages tell a person or a session to run names `python3 scripts/qk` only in a project that
+    holds that copy of the launcher, and the installed `qk` in one that dropped it (vocaro/queuekeeper#339)."""
+
+    def setUp(self):
+        from queuekeeper import config
+        self.config = config
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        self.with_copy, self.without = base / "with-copy", base / "without"
+        for project in (self.with_copy, self.without):
+            (project / ".git").mkdir(parents=True)
+            (project / "deep/down").mkdir(parents=True)
+        (self.with_copy / "scripts").mkdir()
+        shutil.copyfile(ROOT / "scripts/qk", self.with_copy / "scripts/qk")
+        self.base = base
+
+    def in_directory(self, folder):
+        before = os.getcwd()
+        os.chdir(folder)
+        self.addCleanup(os.chdir, before)
+
+    def test_a_message_names_the_copy_only_in_a_project_that_holds_it(self):
+        said = self.config.qk_said
+        self.assertEqual(said("disk --delete", self.with_copy), "python3 scripts/qk disk --delete")
+        self.assertEqual(said("disk --delete", self.without), "qk disk --delete")
+        self.assertEqual(said(["admissions", "remove", "OWNER", "--why", "TEXT"], self.without),
+                         "qk admissions remove OWNER --why TEXT")
+
+    def test_a_command_run_from_anywhere_names_the_project(self):
+        said = self.config.qk_said
+        self.assertEqual(said(["queue", "wait", "qk1"], self.with_copy, anywhere=True),
+                         f"python3 {self.with_copy}/scripts/qk queue wait qk1")
+        self.assertEqual(said(["queue", "wait", "qk1"], self.without, anywhere=True),
+                         f"qk --project {self.without} queue wait qk1")
+        spaced = self.base / "a project"
+        (spaced / ".git").mkdir(parents=True)
+        self.assertEqual(said("land", spaced, anywhere=True), f"qk --project '{spaced}' land")
+
+    def test_by_default_it_reads_the_project_the_command_runs_in(self):
+        for project, expected in ((self.with_copy, "python3 scripts/qk disk"), (self.without, "qk disk")):
+            for folder in (project, project / "deep/down"):
+                with self.subTest(folder=folder):
+                    self.in_directory(folder)
+                    self.assertEqual(self.config.qk_said("disk"), expected)
+        outside = self.base / "outside"
+        outside.mkdir()
+        self.in_directory(outside)
+        self.assertEqual(self.config.qk_words(), ["qk"])
+
+    def test_the_disk_and_admission_advice_follow_the_project(self):
+        from unittest.mock import patch
+        from queuekeeper import disk, lane_wait
+        with patch.dict(os.environ, {"QUEUEKEEPER_START_FREE_GB": "30"}), \
+                patch.object(disk, "volume_usage", return_value=(100 * disk.GIB, 99 * disk.GIB, disk.GIB)):
+            for project, launcher in ((self.with_copy, "python3 scripts/qk"), (self.without, "qk")):
+                with self.subTest(project=project.name):
+                    short = disk.short_of_space(disk.START_FREE, (str(project),), root=project)
+                    self.assertIn(f"`{launcher} disk --delete` removes what nobody owns, and `{launcher} disk` lists",
+                                  short)
+                    if launcher == "qk": self.assertNotIn("scripts/qk", short)
+        for project, launcher in ((self.with_copy, "python3 scripts/qk"), (self.without, "qk")):
+            with self.subTest(project=project.name):
+                waits = project / ".build/queuekeeper" / lane_wait.WAITS
+                waits.mkdir(parents=True)
+                (waits / "gate.json").write_text(json.dumps({
+                    "schemaVersion": 1, "kind": lane_wait.ADMISSION, "reason": "all 3 guaranteed slots are busy",
+                    "mac": "this Mac", "offer": None, "stranded": False, "pid": os.getpid(), "admitted": False,
+                    "since": 0, "written": 0}))
+                [warning] = lane_wait.admission_warnings(project, at=10)
+                self.assertIn(f"`{launcher} admissions now` shows who holds", warning)
+
+
 if __name__ == "__main__":
     unittest.main()
