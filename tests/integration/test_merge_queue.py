@@ -9875,6 +9875,20 @@ class Refusals(Fixture):
         self.assertIn("Expecting property name", done.stderr)
         self.assertNotIn("has no queuekeeper.json", done.stderr)
 
+    def test_commands_explain_when_a_checkout_is_behind_the_published_adoption(self):
+        self.without_configuration()
+        run(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        run(self.repo, "git", "checkout", "-q", "--detach", "HEAD^")
+        launcher = [sys.executable, str(ROOT / "bin/qk")]
+        for words in (["run", "gate"], ["admit", "--", "true"], ["doctor", "--check-only"]):
+            with self.subTest(words=words):
+                done = subprocess.run([*launcher, *words], cwd=self.repo, capture_output=True, text=True)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("origin/main has one", done.stderr)
+                self.assertIn("the checkout is behind the commit that added it", done.stderr)
+                self.assertIn("Update the checkout to origin/main", done.stderr)
+                self.assertNotIn("restore queuekeeper.json from HEAD", done.stderr)
+
     def test_a_deleted_working_configuration_is_not_reported_as_behind_adoption(self):
         configuration = self.repo / "queuekeeper.json"
         configuration.unlink()
