@@ -62,8 +62,13 @@ class Host:
             if "click button" in script:
                 button = re.search(r'click button "([^"]+)"', script).group(1)
                 place = re.search(r"is \{(-?\d+), (-?\d+)\} and .* is \{(\d+), (\d+)\}", script).groups()
+                app = re.search(r'tell process "([^"]+)"', script).group(1)
+                assert "my alertText(window_) is expectedText" in script
+                expected = environment[crash_alerts.PRESS_TEXT]
                 for alert in self.alerts:
-                    if [str(n) for n in alert["frame"]] == list(place) and self.pressable:
+                    if alert["app"] == app and [str(n) for n in alert["frame"]] == list(place) \
+                            and "\x1f".join(alert["texts"]) + "\x1f" == expected \
+                            and button in alert["buttons"] and self.pressable:
                         self.alerts.remove(alert)
                         self.pressed.append((alert["app"], button))
                         return "pressed"
@@ -157,6 +162,17 @@ class AlertTests(HostTest):
                 self.assertEqual(cleared, alerts)
                 self.assertEqual(left, [])
                 self.assertEqual(len(self.host.pressed), 25)
+
+    def test_an_owner_prompt_that_replaces_a_crash_report_at_the_same_frame_is_left_alone(self):
+        report = {**CRASH, "buttons": ["OK"]}
+        replacement = {**ACCESS, "frame": report["frame"]}
+        self.host.alerts = [replacement]
+        snapshots = iter(([report], [replacement]))
+        cleared, left = crash_alerts.clear(self.said.append, windows=lambda: next(snapshots))
+        self.assertEqual((cleared, left), ([], [replacement]))
+        self.assertEqual(self.host.alerts, [replacement])
+        self.assertEqual(self.host.pressed, [])
+        self.assertEqual(self.said, [])
 
     def test_a_successful_press_that_leaves_or_returns_the_same_alert_is_bounded(self):
         with patch.object(crash_alerts, "press", return_value=True) as pressed:

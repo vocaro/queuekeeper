@@ -1068,17 +1068,37 @@ def crash_dialog_record():
                 or Path(pwd.getpwuid(os.getuid()).pw_dir) / CRASH_DIALOG_RECORD)
 
 
-# Lists each window of the processes that raise system alerts as one line: the process, the window's
-# x, y, width and height, its texts and its buttons, the last two separated by the unit separator.
-ALERTS_SCRIPT = """on joined(found)
+# Both the alert listing and the crash-report press read a window's text in the same order.
+ALERT_TEXT_SCRIPT = """on joined(found)
     set out to ""
     repeat with item_ in found
         try
-            set out to out & (item_ as text) & (ASCII character 31)
+            set value_ to item_ as text
+            if value_ is not "" and value_ is not "missing value" then
+                set out to out & value_ & (ASCII character 31)
+            end if
         end try
     end repeat
     return out
 end joined
+
+on alertText(window_)
+    set texts to ""
+    tell application "System Events"
+        try
+            set texts to my joined(value of static texts of window_)
+        end try
+        try
+            set texts to texts & my joined({name of window_})
+        end try
+    end tell
+    return texts
+end alertText
+"""
+
+# Lists each window of the processes that raise system alerts as one line: the process, the window's
+# x, y, width and height, its texts and its buttons, the last two separated by the unit separator.
+ALERTS_SCRIPT = ALERT_TEXT_SCRIPT + """\
 set out to ""
 tell application "System Events"
     repeat with name_ in {%s}
@@ -1087,13 +1107,7 @@ tell application "System Events"
                 repeat with window_ in windows
                     set place to position of window_
                     set extent to size of window_
-                    set texts to ""
-                    try
-                        set texts to my joined(value of static texts of window_)
-                    end try
-                    try
-                        set texts to texts & (name of window_ as text) & (ASCII character 31)
-                    end try
+                    set texts to my alertText(window_)
                     set labels to ""
                     try
                         set labels to my joined(name of buttons of window_)

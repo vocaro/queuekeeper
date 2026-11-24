@@ -53,6 +53,7 @@ ATTEMPTS = 10
 # The buttons that dismiss a crash-report alert, in preference order. Reopen starts the app again and
 # Report… opens another window; neither is pressed.
 DISMISS = ("Ignore", "OK")
+PRESS_TEXT = "QUEUEKEEPER_CRASH_REPORT_TEXT"
 CRASH = re.compile(r"quit unexpectedly|unexpectedly quit|crashed", re.IGNORECASE)
 # The process an alert's text names as the one that quit: "Crasher944 quit unexpectedly.", or "The application
 # Finder quit unexpectedly."
@@ -103,17 +104,28 @@ def glance():
 
 
 def press(alert, button):
-    """Press button on alert's window, found again by its process and frame; whether System Events pressed it."""
+    """Press only on a current crash-report window matching the observed process, frame and text."""
+    if button not in DISMISS or dismissal(alert) != button:
+        return False
+    expected = "\x1f".join(alert["texts"]) + "\x1f"
+    if "\0" in expected:
+        return False
     x, y, width, height = alert["frame"]
-    script = f"""tell application "System Events" to tell process "{alert['app']}"
+    script = offload_host.ALERT_TEXT_SCRIPT + f"""\
+set expectedText to system attribute "{PRESS_TEXT}"
+tell application "System Events" to tell process "{alert['app']}"
     repeat with window_ in windows
         if (position of window_ as list) is {{{x}, {y}}} and (size of window_ as list) is {{{width}, {height}}} then
-            click button "{button}" of window_
-            return "pressed"
+            considering case
+                if my alertText(window_) is expectedText and exists button "{button}" of window_ then
+                    click button "{button}" of window_
+                    return "pressed"
+                end if
+            end considering
         end if
     end repeat
 end tell"""
-    return run(["osascript", "-e", script]) == "pressed"
+    return run(["osascript", "-e", script], {**os.environ, PRESS_TEXT: expected}) == "pressed"
 
 
 class Blocked(Exception):

@@ -198,6 +198,8 @@ os.environ["HEAVY_BUSY_LIMIT"] = "1000"
 # of either floor sets its own.
 os.environ["QUEUEKEEPER_START_FREE_GB"] = os.environ["QUEUEKEEPER_RUN_FREE_GB"] = "0"
 os.environ["QUEUEKEEPER_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
+# A crash-alert press gives its own expected text to osascript. Strip any inherited value from the tests.
+os.environ.pop("QUEUEKEEPER_CRASH_REPORT_TEXT", None)
 os.environ['QUEUEKEEPER_DEVICE_LOG_WATCH'] = "off"
 os.environ['QUEUEKEEPER_QUIT_OPENED_APPS'] = "off"
 # Nor does any command a test runs start an upkeep of the device record apart from itself (queuekeeper_mobile.upkeep,
