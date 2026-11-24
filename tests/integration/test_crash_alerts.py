@@ -619,6 +619,17 @@ class LaneTests(HostTest):
                 self.assertEqual(self.device_record.entry(devices.FOREGROUND)["state"], "released")
         self.assertEqual(self.host.pressed, [])
 
+    def test_a_local_network_prompt_blocks_a_lane_after_the_crash_report_is_cleared(self):
+        self.host.alerts = [CRASH, LOCAL_NETWORK]
+        status, error = self.qk("run", "--here", "ui-mac")
+        self.assertEqual(status, lane_results.UNMEASURED, error)
+        self.assertIn(LOCAL_NETWORK["texts"][0], error)
+        self.assertEqual(self.host.pressed, [("UserNotificationCenter", "Ignore")])
+        self.assertEqual(self.host.alerts, [LOCAL_NETWORK])
+        self.assertFalse(self.ran.exists())
+        self.assertEqual(self.host.value, "basic")
+        self.assertEqual(self.device_record.entry(devices.FOREGROUND)["state"], "released")
+
     def test_a_lane_that_fails_under_an_alert_raised_during_it_is_unmeasured(self):
         real = crash_alerts.Run.look
         def look(run, **options):
