@@ -222,20 +222,14 @@ class Pool:
     def release(self, lease, *, outcome):
         """Stop the emulator and release the reservation once the stop is confirmed; otherwise keep it for recovery
         and return False."""
-        try:
-            current = self.record.entry(lease.key)
-            if current is None or current.get("ownerChatID") != self.owner or \
-                    device_record.condition(current) == "released":
-                raise device_record.Refused("the reservation changed")
+        def stop(current):
             if lease.serial is None and current.get("serial"): lease.serial = current["serial"]
-            if not self.stop(lease):
-                raise device_record.Refused("its emulator still runs")
-            self.record.release(lease.key, owner=self.owner, revision=current["revision"], outcome=outcome,
-                                restoration="Confirmed the emulator stopped")
-        except (OSError, ValueError, RuntimeError, TimeoutError) as error:
-            self.said(f"{lease.key}: reservation kept for recovery: {error}")
-            return False
-        return True
+            return None if self.stop(lease) else "its emulator still runs"
+
+        return device_record.release_confirmed(
+            self.record, lease.key, owner=self.owner, outcome=outcome, restoration="Confirmed the emulator stopped",
+            unchanged=lambda current: device_record.condition(current) != "released", stop=stop,
+            kept=lambda error: self.said(f"{lease.key}: reservation kept for recovery: {error}"))
 
     # Taking.
     def take(self, image=IMAGE, device=DEVICE, *, purpose, keep_state=False, attempts=ATTEMPTS,

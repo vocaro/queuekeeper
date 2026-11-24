@@ -292,6 +292,26 @@ def reserve_numbered(prefix, available, reserve):
     return next(reserve_candidates((key for key in keys if available(key)), reserve))
 
 
+def release_confirmed(record, key, *, owner, outcome, restoration, unchanged, stop, kept):
+    """Release owner's reservation of a pool member once its platform confirms the member stopped; whether it did.
+
+    unchanged(entry) says whether the entry is still the lease's, beyond its owner. stop(entry) stops the member
+    and returns None once a fresh observation confirms it stopped, or why it could not confirm that. A changed
+    reservation or an unconfirmed stop keeps the reservation for recovery, never released over a running member:
+    kept(error) hears why, and this returns False."""
+    try:
+        current = record.entry(key)
+        if current is None or current.get("ownerChatID") != owner or not unchanged(current):
+            raise Refused("the reservation changed")
+        if (why := stop(current)) is not None:
+            raise Refused(why)
+        record.release(key, owner=owner, revision=current["revision"], outcome=outcome, restoration=restoration)
+    except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+        kept(error)
+        return False
+    return True
+
+
 class Record(reservations.Record):
     """The record with what the mobile plugins keep in it: physical devices, which one Mac's record holds for
     both, the line a session waits in for a paired one, and the owner's notifications on it."""

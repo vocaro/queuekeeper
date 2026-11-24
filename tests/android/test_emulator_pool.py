@@ -215,6 +215,21 @@ class Taking(unittest.TestCase):
             self.assertFalse(self.pool.release(lease, outcome="done"))
         self.assertEqual(devices.condition(self.record.entry(lease.key)), "held")
 
+    def test_a_release_of_a_changed_reservation_keeps_it_and_leaves_the_emulator_running(self):
+        lease = self.pool.take(IMAGE, "pixel_8", purpose="first")
+        other = emulator_pool.Pool("Demo", "session-b", record=self.record, folder=self.folder,
+                                   said=lambda text: None)
+        with patch.object(avd, "stop") as stop:
+            self.assertFalse(other.release(lease, outcome="done"))
+        stop.assert_not_called()
+        self.assertEqual(self.running.get(lease.serial), lease.key)
+        self.assertEqual(devices.condition(self.record.entry(lease.key)), "held")
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+        self.assertNotIn(lease.serial, self.running)
+        with patch.object(avd, "stop") as stop:
+            self.assertFalse(self.pool.release(lease, outcome="again"))
+        stop.assert_not_called()
+
     def test_a_member_that_does_not_boot_is_released_and_another_tried_once(self):
         # The first member's emulator never finishes booting, however long it is waited for.
         with patch.object(adb, "wait_booted", lambda serial, timeout: not self.running[serial].endswith("_1")), \

@@ -1012,21 +1012,17 @@ class Pool:
     def release(self, lease, *, outcome, shutdown=True):
         """Shut the member down and release the unchanged reservation once a fresh observation
         confirms it; otherwise the reservation is kept for recovery and this returns False."""
-        try:
-            current = self.record.entry(lease.key)
-            if current is None or current.get("revision") != lease.revision or \
-                    current.get("ownerChatID") != self.owner or str(current.get("device")).upper() != lease.udid:
-                raise device_record.Refused("the reservation changed")
+        def stop(_current):
             if shutdown: self.run("shutdown", lease.udid, timeout=300)
             state = self.state(lease.udid)
-            if state != "Shutdown":
-                raise device_record.Refused(f"its state is {state}, not Shutdown")
-            self.record.release(lease.key, owner=self.owner, revision=lease.revision, outcome=outcome,
-                                restoration="Confirmed the exact simulator is Shutdown")
-        except (OSError, ValueError, RuntimeError, TimeoutError) as error:
-            self.log(f"{lease.key} ({lease.udid}): reservation kept for recovery: {error}")
-            return False
-        return True
+            return None if state == "Shutdown" else f"its state is {state}, not Shutdown"
+
+        return device_record.release_confirmed(
+            self.record, lease.key, owner=self.owner, outcome=outcome,
+            restoration="Confirmed the exact simulator is Shutdown",
+            unchanged=lambda current: current.get("revision") == lease.revision
+            and str(current.get("device")).upper() == lease.udid, stop=stop,
+            kept=lambda error: self.log(f"{lease.key} ({lease.udid}): reservation kept for recovery: {error}"))
 
     def held(self, udid):
         """This owner's lease on a member, from the record, for a release by another process."""

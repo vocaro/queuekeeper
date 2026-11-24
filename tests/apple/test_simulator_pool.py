@@ -431,6 +431,18 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(self.make("me").release(self.make("me").held(udid), outcome="done"))
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["state"], "released")
 
+    def test_a_release_from_an_older_revision_keeps_the_reservation_and_shuts_nothing_down(self):
+        udid = self.simctl.add("Project Duo 1")
+        lease = self.pool.take(DUO, RUNTIME, purpose="Tests")
+        self.simctl("boot", udid)
+        self.pool.extend(udid)  # Another process of the same owner moves the reservation on.
+        self.assertFalse(self.pool.release(lease, outcome="done"))
+        self.assertEqual(self.pool.state(udid), "Booted")
+        self.assertEqual(devices.condition(devices.Record(self.path).entry("Project Duo 1")), "held")
+        self.assertIn("Project Duo 1 (%s): reservation kept for recovery: the reservation changed" % udid, self.log)
+        self.assertTrue(self.pool.release(self.pool.held(udid), outcome="done"))
+        self.assertEqual(self.pool.state(udid), "Shutdown")
+
     def edit_entry(self, key, **fields):
         """Change a record entry's fields in place, as another process's reservation would have left them."""
         value = json.loads(self.path.read_text())

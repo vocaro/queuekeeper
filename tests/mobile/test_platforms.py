@@ -141,6 +141,33 @@ class Record(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "FakePhone"):
             self.record.take("tablet", owner="a", purpose="p", release_by=later(), timeout=1)
 
+    def test_a_pool_release_waits_for_a_confirmed_stop_of_the_unchanged_reservation(self):
+        entry = self.record.reserve("Pool Kind 1", owner="a", revision=0, purpose="p", release_by=later(),
+                                    device="sim:1")
+        stops, kept = [], []
+
+        def release(owner="a", unchanged=lambda current: True, stopped=True):
+            def stop(current):
+                stops.append(current["revision"])
+                return None if stopped else "it still runs"
+            return devices.release_confirmed(self.record, "Pool Kind 1", owner=owner, outcome="done",
+                                             restoration="Confirmed it stopped", unchanged=unchanged, stop=stop,
+                                             kept=kept.append)
+
+        # Another owner's release, or one the platform says no longer matches the lease, stops nothing.
+        self.assertFalse(release(owner="b"))
+        self.assertFalse(release(unchanged=lambda current: False))
+        self.assertEqual(stops, [])
+        # An unconfirmed stop keeps the reservation for recovery.
+        self.assertFalse(release(stopped=False))
+        self.assertEqual(devices.condition(self.record.entry("Pool Kind 1")), "held")
+        self.assertEqual([str(error) for error in kept],
+                         ["the reservation changed", "the reservation changed", "it still runs"])
+        self.assertTrue(release())
+        released = self.record.entry("Pool Kind 1")
+        self.assertEqual(stops, [entry["revision"], entry["revision"]])
+        self.assertEqual((devices.condition(released), released["run"]), ("released", "done"))
+
     def test_reach_merges_every_platform_s_listing(self):
         found, _seconds = reach.read_here()
         self.assertEqual(set(found), {"FAKE-1"})
