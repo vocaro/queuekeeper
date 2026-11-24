@@ -570,6 +570,21 @@ class RemoteReportingTests(unittest.TestCase):
     def setUp(self):
         self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
+    def test_a_transport_diagnostic_does_not_consume_replayed_output(self):
+        output = BytesIO()
+        frames = remote.Frames(self.folder, BytesIO(), output, (), "fake")
+        diagnostic = b"Timeout, server fake not responding.\n"
+        with contextlib.redirect_stdout(StringIO()) as terminal:
+            frames.take(b"O before the drop\n")
+            frames.take(diagnostic)
+            frames.rewind()
+            frames.take(b"O before the drop\n")
+            frames.take(b"O first output after the drop\n")
+        expected = b"before the drop\n" + diagnostic + b"first output after the drop\n"
+        self.assertEqual(output.getvalue(), expected)
+        self.assertEqual(terminal.getvalue().encode(), expected)
+        self.assertEqual(frames.stray, diagnostic.decode().strip())
+
     def test_a_group_or_a_log_not_begun_gets_a_heartbeat_that_says_so(self):
         now = [0.0]
         def said(group, *lines):
@@ -2719,6 +2734,7 @@ class RemoteTests(unittest.TestCase):
         record = self.stand_in_foreground()
         marker = self.checkout(0) / ".build/foreground-command-started"
         connections = Path(self.temp.name) / "foreground-connections"
+        completion = "foreground command finished after the drop"
         command = ("from pathlib import Path; import time\n"
                    f"marker = Path({str(marker)!r})\n"
                    "marker.parent.mkdir(exist_ok=True)\n"
@@ -2727,12 +2743,15 @@ class RemoteTests(unittest.TestCase):
                    f"deadline = time.monotonic() + {stretched(60)}\n"
                    "while not dropped.exists() and time.monotonic() < deadline: time.sleep(0.05)\n"
                    "assert dropped.exists(), 'the fake SSH connection did not drop'\n"
-                   "print('foreground command finished after the drop')\n")
+                   # The foreground announcement prints the command itself before it runs.
+                   "print('foreground command finished', 'after the drop')\n")
         with self.dropping(marker, FAKE_CONNECTIONS=str(connections)):
             status, output, error = self.qk("remote", "admit", "--foreground", "--checkout-slot", "0",
                                             "--time-limit", str(stretched(60)), "--", sys.executable, "-c", command)
         self.assertEqual(status, 0, output + error)
-        self.assertEqual(output.count("foreground command finished after the drop"), 1)
+        self.assertEqual(output.splitlines().count(completion), 1, output)
+        kept = self.project / ".build/queuekeeper/remote/admit/output.log"
+        self.assertEqual(kept.read_text().splitlines().count(completion), 1)
         self.assertIn("the connection to fake ended; the run goes on there", error)
         receipt = self.slot_receipt("admit")
         self.assertGreaterEqual(receipt["connection"]["reconnections"], 1)

@@ -1940,9 +1940,13 @@ class Frames:
                     (self.staging / damaged).unlink()
                     print(f"remote: {damaged} came back damaged and was not kept", file=sys.stderr, flush=True)
         elif kind == b"O " or not self.again:
-            if kind != b"O ": self.stray = last_line(line.decode(errors="replace")) or self.stray
-            data = self.once("output", data if kind == b"O " else line)
-            if data and kind == b"O " and self.progress is not None: self.progress.group_output(data)
+            if kind == b"O ":
+                data = self.once("output", data)
+                if data and self.progress is not None: self.progress.group_output(data)
+            else:
+                # The journal never replays unframed transport diagnostics.
+                self.stray = last_line(line.decode(errors="replace")) or self.stray
+                data = line
             self.output.write(data)
             write(sys.stdout, data)
         return kind
