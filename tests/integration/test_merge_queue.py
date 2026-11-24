@@ -13097,6 +13097,35 @@ class Stacked(Fixture):
         self.assertEqual(run(self.repo, "git", "rev-parse", f"{self.state(first)['landedAs']}^"), guide["landedAs"])
         self.assertLessEqual({"hold", "doc"}, self.main_files())
 
+    def test_a_docs_entry_with_a_named_check_waits_for_a_running_code_gate(self):
+        config = self.config()
+        named = self.base / "named-runs"
+        named_status = self.base / "named-status"
+        named_status.write_text("0")  # Count the named check without holding it on the code gate's marker.
+        config["lanes"]["named"] = {"command": ["python3", "lane.py", str(named), str(named_status)]}
+        config["queue"]["unread"]["paths"]["README.md"] = {"why": "the named check reads it", "lanes": ["named"]}
+        self.publish(config, "Name a check for the README")
+        self.commit("hold", "a")
+        self.commit("README.md", "guide", "# Guide\n")
+        [first] = self.add("a")
+        looked = threading.Event()
+        docs_beside = mq.Worker.docs_beside
+
+        def look(worker, config, applied):
+            saw_guide = any(entry["branch"] == "guide" for entry in worker.queue.all())
+            docs_beside(worker, config, applied)
+            if saw_guide:
+                looked.set()
+
+        log = self.worked("guide", lambda _: looked.is_set(), patch.object(mq.Worker, "docs_beside", look))
+        code, guide = self.state(first), self.added("guide")
+        self.assertEqual((code["state"], guide["state"]), ("landed", "landed"), log)
+        self.assertEqual(self.gates(), 1, log)
+        self.assertEqual(guide["docsOnly"], ["docs", "named"], log)
+        self.assertEqual(len(named.read_text()), 1)
+        self.assertNotIn("gatedOn", guide)
+        self.assertEqual(run(self.repo, "git", "rev-parse", f"{guide['landedAs']}^"), code["landedAs"])
+
     def test_a_docs_entry_lands_beside_the_gate_of_an_entry_put_first(self):
         """An entry qk land --front put on its own stacks nothing behind it, but a docs entry that arrives during its
         gate still lands beside it: the old worker gated such an entry with no watch, so the docs entry waited it out."""

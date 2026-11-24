@@ -581,8 +581,9 @@ take exclusive admission for the measurement. See [Choosing the request](#choosi
 
 ### Documentation changes
 
-An entry that changes only documentation skips the code gate. It lands in seconds on the
-preflight lanes and the documentation lanes, beside any code gate that is running.
+An entry that changes only documentation skips the code gate. It runs the preflight lanes and
+the documentation lanes. It can land beside a running code gate when that gate's result can carry
+over the changed paths. A document that names extra checks waits for the running gate to settle.
 
 - **Documentation** is Markdown in the usual places: the root `README.md`, `CONTRIBUTING.md` and
   `CHANGELOG.md`, and `.md` or `.markdown` files under `doc/` and `docs/`.
@@ -592,7 +593,7 @@ preflight lanes and the documentation lanes, beside any code gate that is runnin
 - **`qk land` says which gate an entry will ride**, after the `queued ID` line. For an entry that
   rides the code gate, it names the first path that is not documentation.
 - **Land unrelated document changes on their own.** Commit them on a separate branch from
-  `origin/main` so they land without waiting for code. Keep them in one entry when the document
+  `origin/main` so they can use the documentation lanes. Keep them in one entry when the document
   describes what the code change does.
 - **A docs-only landing is not a full gate** of the pushed commit, and it skips the pre-push hook,
   so put required documentation checks in the documentation lanes.
@@ -601,7 +602,7 @@ preflight lanes and the documentation lanes, beside any code gate that is runnin
 
 `queue.unread`, read only from `main`, decides two things with one list: whether a batch may skip
 the gate (every path it changes is unread), and whether a passed result still stands when `main`
-moves under it (every path `main` gained is unread and untouched by the batch).
+moves under it (every path `main` gained is unread, untouched by the batch, and names no extra checks).
 
 ```json
 "queue": {

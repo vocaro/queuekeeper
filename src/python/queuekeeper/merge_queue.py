@@ -889,9 +889,10 @@ def named_said(named):
 def docs_first(entries, config, changed_by, blocked=(), gating=()):
     """The entries, oldest first, that land on the docs lanes ahead of the rest (vocaro-engineering#394): each one
     queued, put first by no option of qk land, whose own commits change only docs paths (docs_lanes), no path that an
-    older entry staying in line changes, nor one of blocked, the paths of a batch gating now; and none of the entries it
-    waits for (its waitsFor, from a run of its docs lanes that failed ahead of them) still in entries or in gating, the
-    identifiers of that batch. An entry left in line holds
+    older entry staying in line changes, nor one of blocked, the paths of a batch gating now. While gating, the
+    result must carry over every path the docs entry changes. None of the entries it waits for (its waitsFor, from
+    a run of its docs lanes that failed ahead of them) can still be in entries or in gating, the identifiers of the
+    active batch. An entry left in line holds
     back every later entry that changes one of its paths, so that two entries that change a path in common keep their
     order, and integration and conflict detection stay what they were."""
     held, taken = set(blocked), []
@@ -900,7 +901,8 @@ def docs_first(entries, config, changed_by, blocked=(), gating=()):
         paths = changed_by(entry)
         if entry["state"] == QUEUED and not (entry.get("front") or entry.get("noGate")) \
                 and not present & set(entry.get("waitsFor", ())) and not paths & held \
-                and docs_lanes(config, sorted(paths)):
+                and docs_lanes(config, sorted(paths)) \
+                and (not gating or all(carried_over(path, config, blocked) for path in paths)):
             taken.append(entry)
         else: held |= paths
     return taken
@@ -940,9 +942,9 @@ def offerable(config, lanes):
 def carried_over(path, config, batch_files):
     """Whether main changing path leaves a passed batch's result standing: a path no code lane reads, by main's
     queue.unread (config.unread), and one the batch does not touch. It is the same reading that lets a batch of such
-    paths skip the gate, so a docs entry that lands beside a gate (Worker.docs_beside) never stops its pass carrying
-    over. A path whose queue.unread.paths entry names lanes is read by those lanes, so it never carries over
-    unchecked: main gaining it gates again (vocaro/queuekeeper#27)."""
+    paths skip the gate. A path whose queue.unread.paths entry names lanes is read by those lanes, so it cannot
+    carry over by this rule (vocaro/queuekeeper#27). Docs scheduling uses this check before landing beside a
+    running gate (vocaro/queuekeeper#338)."""
     return path not in batch_files and unread(config, path) and not unread_named(config, [path])
 
 
@@ -6970,9 +6972,8 @@ class Worker:
 
     def docs_beside(self, config, applied):
         """Land the docs-only entries waiting behind applied, the batch gating now, beside its gate, on the docs lanes
-        in a checkout of their own (DOCS_SUFFIX): each one that docs_first takes with applied's paths blocked, whose
-        paths, unread by main's queue.unread and none of applied's, a passed batch carries over (carried_over), so
-        that applied's pass then carries over what they add to main (Worker.carry). None goes while an entry put first
+        in a checkout of their own (DOCS_SUFFIX). docs_first selects entries whose changed paths let the code result
+        carry over, including the requirement that the paths name no extra checks. None goes while an entry put first
         by qk land, or a batch that passed, waits to go first. One whose docs lanes fail waits in line for applied and the older entries (waitsFor). None goes
         beside a project's first landing, since the docs lanes are main's and main has no configuration yet."""
         if not has_config(self.queue.main_checkout, MAIN): return

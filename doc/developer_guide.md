@@ -199,9 +199,10 @@ checkout has no `scripts/qk`, the worker uses Queuekeeper's own `bin/qk`.
   except whole-host gates.
 - **Documentation.** A batch whose every path is unread by `queue.unread` runs the docs lanes and
   no gate. The worker keeps docs-only entries out of code batches: queued beside code, they land
-  first in a round of their own; while a code batch gates, a docs-only entry that shares none of
-  its paths lands beside it in the `-docs` checkout, polled every `STACK_POLL`. A docs-only entry
-  goes ahead of an older entry only when they share no path. One that fails its docs lanes ahead of
+  first in a round of their own; while a code batch gates, a docs-only entry can land beside it
+  in the `-docs` checkout, polled every `STACK_POLL`, when every changed path carries over.
+  A path that names extra checks waits for the gate to settle. A docs-only entry goes ahead of
+  an older entry only when they share no path. One that fails its docs lanes ahead of
   older entries may need one of them, so it records them as `waitsFor` and goes back in line
   behind them.
 - **Gate lanes by path.** `lanes_of` runs only the gate lanes `config.affected_lanes` selects, by the
@@ -1490,8 +1491,8 @@ each uses.
 26. A bisect's halves gate at once on two different Macs, and entries arriving during a gate are
     gated on its tip on any Mac but the one that admitted it. *The next gate is under way before this
     one lands.*
-27. A docs-only entry never rides a code gate, and passes an older entry only when they share no
-    path.
+27. A docs-only entry never rides a code gate. It passes an older entry only when they share no
+    path, and it passes a running gate only when its changed paths let that result carry over.
 28. The worker runs preflight lanes and the docs check without admission; one that runs past a
     minute runs again admitted. *Checks that take seconds should not wait behind gates for slots.*
 29. A run with no verdict blames nobody and reruns once the Mac settles. Three in a row send
