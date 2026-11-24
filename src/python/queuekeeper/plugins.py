@@ -101,6 +101,10 @@ class Foreground:
         """The lines that say what another Mac reported of its capture approvals."""
         return []
 
+    def capture_runner_problem(self, found, runner):
+        """The reason the exact runner's capture approval cannot be confirmed, or None when it can."""
+        return "checking a runner's direct screen-capture approval requires the Mac desktop plugin"
+
 
 class Devices:
     """What a plugin does with the devices a run uses: the windows it waits in around a lane's run and an

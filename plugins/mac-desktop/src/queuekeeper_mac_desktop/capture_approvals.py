@@ -60,6 +60,23 @@ def stage(built, stable, running):
     return stable
 
 
+def runner_problem(found, runner, now=None):
+    """Why this exact stable runner cannot pass a read-only approval check before building."""
+    path = Path(runner)
+    directory = Path(RUNNERS).parts
+    if (not path.is_absolute() or ".." in path.parts or str(path) != runner or path.suffix != ".app"
+            or path.parts[-len(directory) - 2:-2] != directory):
+        return "--capture-runner needs the exact absolute stable runner .app path on the receiving Mac"
+    if found is None:
+        return f"cannot read the direct screen-capture approval for {runner}. Check the report on the receiving Mac."
+    now = now or datetime.now(timezone.utc)
+    for item in found:
+        if item["app"] == runner and datetime.fromisoformat(item["lapses"]) > now:
+            return None
+    return (f"no unexpired direct screen-capture approval recorded for {runner}. "
+            "Plan an attended capture so the owner can review the macOS prompt.")
+
+
 def report(found, now=None):
     """What `qk remote foreground` says of these approvals: a line for each, lapsed or not. They are the owner's
     to renew, at the prompt, about once a month (owner's decision, 2026-11-06), and never stop admission."""

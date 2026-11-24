@@ -1851,10 +1851,20 @@ Code: `queuekeeper_apple/simulators/pool.py` and `template.py`.
   reruns up to `guard.BANNER_ATTEMPTS` times, with `before_again` setting the stopped attempt aside.
 - **Capture approvals** (`capture_approvals.py`). macOS keys each direct-capture approval by the app's
   path in `~/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist`, regardless of
-  signature, and lapses it 30 days after the prompt; only an MDM restriction stops the renewal, which the
-  owner declined. `stable_runner_path(PROJECT, BUNDLE)`, `stage` (a `ditto` copy, refused while one runs
-  from it) and `rebind` (the xctestrun's paths) launch runners from one path per Mac. Reading the plist is
-  harmless; never edit it.
+  signature, and lapses it 30 days after the prompt. On an unmanaged Mac, a manually installed profile
+  cannot disable this recurring alert. Apple makes the
+  [screen-capture alert restriction](https://github.com/apple/device-management/blob/release/mdm/profiles/com.apple.applicationaccess.yaml)
+  available through [device management](https://developer.apple.com/documentation/macos-release-notes/macos-15_1-release-notes).
+  The [ScreenCapture privacy policy](https://developer.apple.com/documentation/devicemanagement/privacypreferencespolicycontrol/services-data.dictionary)
+  controls access to the display and cannot grant it. Apple limits the
+  [persistent content capture entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.persistent-content-capture)
+  to VNC apps with Apple's approval. The
+  [ScreenCaptureKit picker](https://developer.apple.com/documentation/ScreenCaptureKit) lets the user
+  select the source interactively. The owner chose attended renewal for direct capture on the unmanaged Mac.
+  `stable_runner_path(PROJECT, BUNDLE)`, `stage` (a `ditto` copy, refused while one runs from it) and
+  `rebind` (the xctestrun's paths) launch runners from one path per Mac.
+  `qk remote foreground --capture-runner PATH` checks the exact runner's record before a caller builds.
+  The check only reads the plist.
   Keep `CAPTURE_RUNNERS`, the project directory and the bundle name stable across rebuilds and checkout
   slots. The stable-path test pins the directory layout, and the signing test checks that staging
   preserves the copied bundle's signature. If a change moves the launch path, tell the owner to

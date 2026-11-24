@@ -2998,6 +2998,17 @@ If the runner's line is absent or lapsed, plan an attended first capture so the 
 macOS prompt. If the approval record cannot be read, its status is unknown. The foreground readiness
 verdict covers the host settings and lease, while the approval lines report the recorded prompt dates.
 
+To check the runner before a build, set `runner_path` to its absolute stable path on the receiving
+Mac, then use the same host for both commands:
+
+```sh
+qk remote foreground --host HOST --capture-runner "$runner_path" &&
+  qk remote run --host HOST LANE
+```
+
+The check exits 78 when the exact runner's record is absent, lapsed, or cannot be read. It reads
+recorded prompt dates and leaves the macOS consent decision with the owner.
+
 #### Running and waiting
 
 - **Results.** A lane writes what must come back, transcripts included, in the folder named by

@@ -1640,6 +1640,8 @@ def perform(argv, report):
         "Mac VoiceOver and Mac UI tests, started over SSH, each with the owner's fix, and which run holds its "
         f"foreground; exit 0 when the host is configured, {remote.MISCONFIGURED} when its settings need attention, "
         "or 2 when the lease needs attended recovery or cannot be verified")
+    remote_foreground.add_argument("--capture-runner", metavar="PATH", help="also require an unexpired direct "
+        "screen-capture approval record for this exact absolute stable runner .app path on the other Mac")
     remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the farm's other Macs the "
         "same simulator runtimes of the Xcode at this Mac's developer directory, as qk doctor does: a runtime only "
         "one Mac has is deleted there when no simulator but Xcode's defaults uses it, and otherwise its disk image "

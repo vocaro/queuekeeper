@@ -2608,7 +2608,7 @@ def main(root, config, args):
     host = chosen(args.host)
     if args.operation == "setup":
         return setup(host, args.formulae, args.imports or [], args.check, args.runtimes, root=root)
-    if args.operation == "foreground": return foreground_report(host)
+    if args.operation == "foreground": return foreground_report(host, args.capture_runner)
     slot, slot_wait = checkout_request(args)
     if args.operation == "run":
         lane = config.get("lanes", {}).get(args.lane)
@@ -2830,9 +2830,10 @@ def local_network_prompt(dialogs):
                for alert in (dialogs or {}).get("alerts") or ())
 
 
-def foreground_report(host):
+def foreground_report(host, capture_runner=None):
     """Print what another Mac lacks for foreground work started over SSH, each with the owner's fix, and who
-    holds its foreground. A lease needing attended recovery is refused as it is by admission."""
+    holds its foreground. A lease needing attended recovery is refused as it is by admission.
+    A caller can also require an unexpired approval record for its exact stable capture runner."""
     found = ask(host, {"foreground": True})
     entry = found.get("entry")
     condition = found.get("condition")
@@ -2868,6 +2869,11 @@ def foreground_report(host):
         return MISCONFIGURED
     if condition in ("orphan", "uncertain", "unknown"):
         return 2
+    if capture_runner is not None:
+        problem = plugins.FOREGROUND.capture_runner_problem(found.get("captureApprovals"), capture_runner)
+        if problem is not None:
+            print(f"- {problem}")
+            return MISCONFIGURED
     if local_network_prompt(dialogs):
         print("SSH setup is ready. A Local Network consent prompt blocks foreground work. "
               f"Have the owner review it on {called(host)} before trying again.")

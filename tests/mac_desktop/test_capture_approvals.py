@@ -2,6 +2,7 @@
 import contextlib
 from datetime import datetime, timezone
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401  Keeps every test out of the host's heavy-work admission.
+from host_isolation import stretched
 from queuekeeper import offload_host, remote
 from queuekeeper_mac_desktop import capture_approvals
 
@@ -49,10 +51,14 @@ class StableRunnerTests(unittest.TestCase):
 
     def test_stage_replaces_the_previous_copy(self):
         with tempfile.TemporaryDirectory() as root:
-            stable = Path(root) / "stable" / RUNNER
-            capture_approvals.stage(make_runner(Path(root) / "a", "first"), stable, [])
-            capture_approvals.stage(make_runner(Path(root) / "b", "second"), stable, [])
-            self.assertEqual((stable / "Contents/MacOS/runner").read_text(), "second")
+            home = Path(root) / "home"
+            stable = capture_approvals.stable_runner_path("App", RUNNER, home)
+            for slot, marker in enumerate(("first", "second")):
+                built = make_runner(Path(root) / "checkouts" / str(slot), marker)
+                bound = capture_approvals.rebind({"TestHostPath": str(built)},
+                                                built, capture_approvals.stage(built, stable, []))
+                self.assertEqual(bound["TestHostPath"], str(stable))
+                self.assertEqual((stable / "Contents/MacOS/runner").read_text(), marker)
             self.assertTrue((stable / "Contents/Frameworks/link").is_symlink())
             self.assertEqual([path.name for path in stable.parent.iterdir()], [RUNNER])
 
@@ -134,6 +140,88 @@ class LapseTests(unittest.TestCase):
         self.assertIn("sshd-keygen-wrapper lapsed 2026-11-29 18:36 UTC", after[0])
         self.assertIn("cannot be read", capture_approvals.report(None)[0])
         self.assertEqual(capture_approvals.report([]), [])
+
+    def test_remote_foreground_preflight_checks_only_the_requested_stable_runner(self):
+        self.write(self.entries)
+        found = offload_host.screen_capture_approvals(home=self.home)
+        runner = str(capture_approvals.stable_runner_path("App", RUNNER, self.home))
+        other_runner = str(capture_approvals.stable_runner_path("Another", RUNNER, self.home))
+        before = datetime(2026, 11, 10, tzinfo=timezone.utc)
+        lapse = datetime(2026, 12, 7, 2, 46, 41, tzinfo=timezone.utc)
+        cases = (
+            (found, runner, before, 0, "Ready for foreground work"),
+            (found, runner, lapse, remote.MISCONFIGURED, "no unexpired direct screen-capture approval"),
+            (found, other_runner, before, remote.MISCONFIGURED, "no unexpired direct screen-capture approval"),
+            (found, "/usr/libexec/sshd-keygen-wrapper", before, remote.MISCONFIGURED, "exact absolute stable runner"),
+            (None, runner, before, remote.MISCONFIGURED, "cannot read the direct screen-capture approval"),
+        )
+        for records, path, now, status, message in cases:
+            answer = {"mac": "Second", "problems": [], "entry": None, "captureApprovals": records}
+            with self.subTest(path=path, date=now, records=records is not None), \
+                 patch.object(remote, "ask", return_value=answer) as ask, \
+                 patch.object(capture_approvals, "datetime", wraps=datetime) as clock, \
+                 contextlib.redirect_stdout(StringIO()) as output:
+                clock.now.return_value = now
+                self.assertEqual(remote.foreground_report("build-host", path), status)
+            ask.assert_called_once_with("build-host", {"foreground": True})
+            self.assertIn(message, output.getvalue())
+
+    def test_cli_preflight_blocks_remote_run_before_its_build(self):
+        toolkit = Path(__file__).resolve().parents[2]
+        launcher = toolkit / "bin/qk"
+        project = self.home / "project"
+        project.mkdir()
+        built = self.home / "build-started"
+        reply = self.home / "foreground.json"
+        (project / "queuekeeper.json").write_text(json.dumps({
+            "schemaVersion": 1, "name": "App", "plugins": ["queuekeeper_mac_desktop"],
+            "lanes": {"capture": {"command": ["/usr/bin/touch", str(built)],
+                                  "resource": "heavy", "foreground": True}},
+        }))
+        # Both shell commands enter the real CLI. Only the receiver reply and build dispatch are synthetic.
+        harness = self.home / "qk_with_fake_receiver.py"
+        harness.write_text("""import json
+from pathlib import Path
+import runpy
+import subprocess
+import sys
+from unittest.mock import patch
+
+launcher, reply, *words = sys.argv[1:]
+sys.path.insert(0, str(Path(launcher).parents[1] / "src/python"))
+from queuekeeper import remote
+
+def build(_root, config, _host, work, **options):
+    return subprocess.call(config["lanes"][work[-1]]["command"])
+
+sys.argv = [launcher, *words]
+with patch.object(remote, "ask", return_value=json.loads(Path(reply).read_text())), \
+     patch.object(remote, "execute", side_effect=build), \
+     patch.object(remote, "offering_here", side_effect=lambda _name, send: send()), \
+     patch.object(remote, "ssh", side_effect=AssertionError("unexpected connection")):
+    runpy.run_path(launcher, run_name="__main__")
+""")
+        runner = str(capture_approvals.stable_runner_path("App", RUNNER, self.home))
+        command = (
+            '"$1" "$2" "$3" "$4" --project "$5" remote foreground --host fake --capture-runner "$6" && '
+            '"$1" "$2" "$3" "$4" --project "$5" remote run --host fake capture'
+        )
+        before = "2000-01-01T00:00:00+00:00"
+        after = "2100-01-01T00:00:00+00:00"
+        for lapse in (None, before, after):
+            with self.subTest(lapse=lapse):
+                approvals = [] if lapse is None else [{"app": runner, "allowed": before, "lapses": lapse}]
+                reply.write_text(json.dumps({"mac": "Fake", "problems": [], "entry": None,
+                                             "captureApprovals": approvals}))
+                result = subprocess.run(
+                    ["/bin/sh", "-c", command, "preflight", sys.executable, str(harness), str(launcher), str(reply),
+                     str(project), runner], capture_output=True, text=True, timeout=stretched(30),
+                )
+                ready = lapse == after
+                self.assertEqual(result.returncode, 0 if ready else remote.MISCONFIGURED, result.stderr)
+                self.assertEqual(built.exists(), ready)
+                if not ready:
+                    self.assertEqual(result.stdout.count("Plan an attended capture"), 1, result.stdout)
 
     def test_eng_remote_foreground_lists_them_without_changing_its_verdict(self):
         found = [{"app": "/usr/libexec/sshd-keygen-wrapper", "allowed": "2026-10-30T18:36:00+00:00",

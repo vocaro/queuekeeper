@@ -65,6 +65,9 @@ class Foreground(plugins.Foreground):
     def capture_lines(self, found):
         return capture_approvals.report(found)
 
+    def capture_runner_problem(self, found, runner):
+        return capture_approvals.runner_problem(found, runner)
+
 
 def notifications_arguments(parser):
     parser.add_argument("--dismiss", action="store_true", help="close the windows' notifications; needs that "
