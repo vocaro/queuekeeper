@@ -1986,16 +1986,25 @@ def spelled_seconds(seconds):
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
 
 
-def clock_line(config, lane, arguments=()):
-    """The direct lane's timeout, its test allowance when supplied by a plugin, and the heartbeat cadence."""
+def clock_line(config, lane, arguments=(), slowest=None):
+    """The direct lane's timeout, its test allowance when supplied by a plugin or else declared by the lane
+    (testAllowance, for a script that sets its own), its slowest measured step when it has one (slowest, as
+    lane_timing.slowest_step gives it), and the heartbeat cadence."""
     settings = config.get("lanes", {}).get(lane, {})
     limits = f"its timeout is {parallel.lane_timeout(settings, arguments):g}s"
     words = settings.get("command")
     if not isinstance(words, list): words = []
     allowance = plugins.lane_test_allowance(words, arguments)
+    declared = settings.get("testAllowance") if isinstance(settings, dict) else None
     if allowance is not None:
         limits += f" and the default test allowance is set to {allowance}s"
-    return f"{lane}'s log is arriving: {limits}; a heartbeat every {PROGRESS_INTERVAL:g}s says whether the log has grown"
+    elif type(declared) is int and declared > 0:
+        limits += f" and its declared test allowance is {declared}s"
+    said = f"{lane}'s log is arriving: {limits}; a heartbeat every {PROGRESS_INTERVAL:g}s says whether the log has grown"
+    if slowest is not None:
+        said += f", and names a quiet interval longer than its slowest measured step, " \
+                f"{spelled_seconds(slowest['seconds'])} over its last {slowest['samples']} passing runs there"
+    return said
 
 
 class Progress:
@@ -2004,10 +2013,15 @@ class Progress:
     never says a run is working: a reader compares its numbers. Nothing here can end the run: a stderr that has closed
     ends these lines, not the lane (a redirect's reader that left, say). A group's launcher reports member starts
     and ends. Only recognized device stages are relayed from member logs as they grow; the complete logs come back
-    when the group ends (group_files). Nothing judges a stall yet: that needs each
-    lane's slowest measured step, which leaves part of #320 open."""
-    def __init__(self, lane, host, members, clock_said, clock=time.monotonic):
+    when the group ends (group_files). A single lane's heartbeat names a wait for its next progress line longer than
+    its slowest measured step (slowest, lane_timing.slowest_step on host): the longest such wait in its recent passing
+    runs, which widest_step() measures for this run. That is a report, never a stop: ending a stalled lane is
+    vocaro/queuekeeper#70's measured policy. A connection that was lost (disconnected) neither judges nor measures, since
+    its log's lines then arrive late or in a burst."""
+    def __init__(self, lane, host, members, clock_said, clock=time.monotonic, slowest=None):
         self.lane, self.host, self.clock_said, self.clock = lane, host, clock_said, clock
+        self.slowest = slowest if not members else None
+        self.first, self.widest, self.lost = None, 0.0, False
         self.members, self.started, self.ended = frozenset(members), {}, set()
         self.member_stages = {}
         self.last_member_end = None
@@ -2027,14 +2041,30 @@ class Progress:
         """Note a line of the lane's log (bytes), and relay it if it is a progress line."""
         moment = self.clock()
         if not self.lines and not self.members: self.tell("clock", self.clock_said)
+        if self.first is None: self.first = moment
         self.lines, self.latest = self.lines + 1, moment
         text = progress_text(data)
         if (match := PROGRESS_LINE.match(text)) is None: return
+        self.widest = max(self.widest, moment - self.quiet_since())
         device = offload_host.device_stage(data)
         report = f"{device[0]}: {device[1]}" if device else match[0].strip(" :")
         direct_status.observe(host=self.host, state="receiver reported progress", stage=report)
         self.last = (text, moment)
         self.reported(text)
+
+    def quiet_since(self):
+        """When the wait for the next progress line began: the last one's arrival, else the log's first line's."""
+        return self.last[1] if self.last is not None else self.first
+
+    def disconnected(self):
+        """The connection ended before the run did: from here its lines arrive late, so nothing is judged or measured."""
+        self.lost = True
+
+    def widest_step(self):
+        """The longest wait between progress lines over this run's log, its end included, in seconds; None when this
+        run cannot measure one: a group, a log with no progress line, or a connection that was lost."""
+        if self.members or self.lost or self.last is None or self.latest is None: return None
+        return max(self.widest, self.latest - self.last[1])
 
     def reported(self, text):
         if self.relayed < PROGRESS_LINES:
@@ -2147,7 +2177,34 @@ class Progress:
                         f"at least {spelled_seconds(elapsed)} of lane work had elapsed"
         if self.last is not None:
             said += f"; last progress line {spelled_seconds(moment - self.last[1])} ago: {self.last[0]}"
+        if self.slowest is not None and not self.lost and self.first is not None \
+                and (quiet := moment - self.quiet_since()) > self.slowest["seconds"]:
+            said += f"; no progress line for {spelled_seconds(quiet)}, longer than its slowest measured step of " \
+                    f"{spelled_seconds(self.slowest['seconds'])} over its last {self.slowest['samples']} passing runs " \
+                    f"on {self.host}, so it may have stalled; nothing here stops it"
+            direct_status.observe(host=self.host, state="receiver quiet past its slowest measured step")
         self.tell("heartbeat", f"{self.lane} on {self.host}, {since} in: {said}")
+
+
+def slowest_step(root, config, lane, host):
+    """Lane's slowest measured step on host from this Mac's timing history (lane_timing.slowest_step), or None,
+    as when the history cannot be read."""
+    from . import lane_timing
+    try:
+        name = config.get("name") or (git_state.main_checkout(root) or Path(root)).name
+        return lane_timing.slowest_step(name, lane, host)
+    except Exception:  # noqa: BLE001 - a history that cannot be read judges nothing
+        return None
+
+
+def record_step(root, config, lane, host, seconds):
+    """Keep a passing run's longest wait between progress lines in this Mac's timing history; never fails the run."""
+    from . import lane_timing
+    try:
+        name = config.get("name") or (git_state.main_checkout(root) or Path(root)).name
+        lane_timing.record_step(name, lane, host, seconds)
+    except Exception:  # noqa: BLE001 - lane_timing.append says on stderr why a history was not written
+        pass
 
 
 def timing_marks(root, config):
@@ -2375,7 +2432,11 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
     record = remember_dispatch(journal, host) if detached is not None else None
     # A lane's log comes as it grows. An `qk admit` command's output comes on stdout, live, already.
     group = config.get("lanes", {}).get(lane, {}).get("parallel") or ()
-    progress = Progress(name, host, group, clock_line(config, lane, arguments)) if lane is not None else None
+    # Only a whole single lane's passing run measures its slowest step, so only one is judged against it.
+    measured = lane is not None and not group and not arguments and expect is None and not serial
+    slowest = slowest_step(root, config, lane, host) if measured else None
+    progress = Progress(name, host, group, clock_line(config, lane, arguments, slowest), slowest=slowest) \
+        if lane is not None else None
     lane_wait.sent(host)
     if progress is not None: direct_status.observe(host=host, state="offered", stage=None)
     with (staging / "run.log").open("wb") as log, (staging / "output.log").open("wb") as output:
@@ -2428,6 +2489,7 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
             wait, within which a connection says it to another Mac."""
             print(f"remote: the connection to {host} ended; the run goes on there, and this dispatch reconnects to "
                   "collect it", file=sys.stderr, flush=True)
+            if progress is not None: progress.disconnected()
             limit, tries = time.monotonic() + detached + REATTACH_GRACE, 0
             while frames.result is None and not frames.gone:
                 if stop_wanted(): limit = min(limit, stopping + STOP_WAIT)
@@ -2529,6 +2591,9 @@ def execute(root, config, host, work, *, lane=None, arguments=(), expect=None, d
         raise RuntimeError(f"{host}: {result['error']}")
     status = result["exitStatus"]
     remote = result["host"]
+    if measured and status == 0 and not result.get("stopped") and result.get("stage") == "work" \
+            and reconnections is None and (widest := progress.widest_step()) is not None:
+        record_step(root, config, lane, host, widest)
     if lane is not None and not (sent or {}).get("saidDroppedEnvironment"):
         if dropped := dropped_environment(config, lane, result, developer):
             print(f"remote: {lane} was dispatched to {called(host)} without sending this Mac's environment variables "

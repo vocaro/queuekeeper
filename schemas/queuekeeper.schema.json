@@ -154,7 +154,8 @@
                 "notice",
                 "disk",
                 "inputs",
-                "environmentInputs"
+                "environmentInputs",
+                "testAllowance"
               ]
             }
           },
@@ -251,6 +252,11 @@
             "type": "boolean"
           },
           "timeout": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "testAllowance": {
+            "description": "The seconds the lane's own script allows one test, such as the XCTest allowance a script that runs xcodebuild test passes itself. A direct run on another Mac shows it in its clock line, which cannot read it from the script. A runner whose plugin reads its allowance from its arguments, such as qk simulator-tests, shows that instead. It sets no limit",
             "type": "integer",
             "minimum": 1
           },

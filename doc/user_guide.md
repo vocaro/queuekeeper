@@ -1048,6 +1048,7 @@ The most useful settings:
 | `failedTests` | Lets the queue rerun a non-Python lane's failed tests ([When a batch fails](#when-a-batch-fails)) |
 | `stall` | Reports, and optionally stops, a lane that has gone quiet ([Time limits](#time-limits-and-the-gates-budget)) |
 | `timing` | Warns while a lane runs past its usual time, and optionally fails it past a threshold ([Time limits](#time-limits-and-the-gates-budget)) |
+| `testAllowance` | Seconds the lane's own script allows one test, shown in a direct run's clock on another Mac ([Following a direct run](#following-a-direct-run-on-another-mac)) |
 | `notice` | What an agent is shown when the lane's timeout, stall bound or timing threshold stops it |
 | `disk` | `{"startFreeGB": N}`, the lane's own free-space floor before admission ([Free disk space](#free-disk-space)) |
 
@@ -1494,8 +1495,9 @@ Every run has two limits, so a hang ends instead of holding a slot:
 
 - **Each test** has one, so a hung test fails by itself. `qk simulator-tests` gives XCTest a
   per-test allowance (`--test-allowance`, 600 s). A script that runs `xcodebuild test` itself
-  passes `-test-timeouts-enabled YES` and an allowance too, and a Swift Testing suite gives its
-  tests a `.timeLimit`.
+  passes `-test-timeouts-enabled YES` and an allowance too, and declares it in the lane's
+  `testAllowance` so that a run's clock can show it. A Swift Testing suite gives its tests a
+  `.timeLimit`.
 - **Each command** has one: a lane's `timeout`, `qk admit --time-limit`,
   `qk simulator-tests --test-timeout`, or `--timeout` for each process of `qk unittest` and
   `qk xctest`. A lane or `qk admit` command that sets none stops after 2 hours, and a
@@ -2286,9 +2288,17 @@ For a long `qk run` or `qk remote run`, save both streams to a file of its own
 (`qk run LANE > run.log 2>&1`) and read that file from another shell. The sending Mac writes
 `remote: clock`, `remote: progress` and `remote: heartbeat` lines to stderr. The clock gives the
 effective lane timeout and, for a direct simulator-tests command when known, its default XCTest
-test allowance. Progress lines report stages the lane logs, such as the device it started
-testing. A heartbeat comes about every five minutes during quiet output and reports whether
-the log grew and how long ago the last recognized stage arrived. Before a single lane's first
+test allowance, or else the lane's declared `testAllowance`. Progress lines report stages the
+lane logs, such as the device it started testing. A heartbeat comes about every five minutes during quiet output and reports whether
+the log grew and how long ago the last recognized stage arrived.
+Each passing whole run of a single lane records on the sending Mac its longest wait for a
+progress line, from the log's first line to its last, by lane and receiving Mac. Once five such
+runs are recorded, the clock names the slowest of the latest twenty, and a heartbeat whose wait
+for the next progress line is longer says the lane may have stalled. `qk run --status` then shows
+`receiver quiet past its slowest measured step` until the next progress line. This is a report:
+nothing stops the lane. A run with arguments, a group, or a run whose connection dropped is
+neither judged nor measured. `qk timing stale LANE` clears these measurements along with the
+lane's baseline. Before a single lane's first
 log line, its heartbeat can also say when the sender heard that the receiver was waiting or had
 admitted the work. Admission can precede the first test. While the original connection is open,
 the heartbeat can also relay a recently received elapsed-work observation for a single

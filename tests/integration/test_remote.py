@@ -32,7 +32,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper.checkout import source_paths
-from queuekeeper import budgets, cli, config, farm, lane_report, lane_results, merge_queue, offload_host, processes, remote, resources
+from queuekeeper import budgets, cli, config, farm, lane_report, lane_results, lane_timing, merge_queue, offload_host, processes, remote, resources
 from queuekeeper_apple import device_notifications, disk as apple_disk, doctor as apple_doctor
 from queuekeeper_mobile import devices, leases
 from queuekeeper import disk as disk_module, plugins
@@ -704,6 +704,53 @@ class RemoteReportingTests(unittest.TestCase):
         self.assertEqual(output.getvalue() + error.getvalue(), "")
         with patch.object(plugins, "TEST_ALLOWANCE", [lambda words: 90 if words == command[3:] + ["--flag"] else None]):
             self.assertIn("the default test allowance is set to 90s;", said("pool", "--flag"))
+
+    def test_the_clock_line_names_a_declared_allowance_and_the_slowest_measured_step(self):
+        lanes = {"script": {"command": ["sh", "scripts/test-ios.sh"], "timeout": 12300, "testAllowance": 600}}
+        with patch.object(plugins, "LANE_TEST_ALLOWANCE", []):
+            said = remote.clock_line({"lanes": lanes}, "script")
+            self.assertIn("its timeout is 12300s and its declared test allowance is 600s;", said)
+            self.assertNotIn("slowest", said)
+            said = remote.clock_line({"lanes": lanes}, "script", slowest={"seconds": 812, "samples": 7})
+            self.assertIn("names a quiet interval longer than its slowest measured step, 13m 32s over its last 7 "
+                          "passing runs there", said)
+        with patch.object(plugins, "LANE_TEST_ALLOWANCE", [lambda words, extra: 45]):
+            self.assertIn("the default test allowance is set to 45s;", remote.clock_line({"lanes": lanes}, "script"))
+            self.assertNotIn("declared", remote.clock_line({"lanes": lanes}, "script"))
+
+
+    def test_a_quiet_past_the_slowest_measured_step_is_named_and_a_long_working_step_is_not(self):
+        now = [0.0]
+        slowest = {"seconds": 600, "samples": 5}
+        def run(*steps, lost=False):
+            """steps: (seconds to wait, a line or None), then a heartbeat after each wait."""
+            progress = remote.Progress("lane", "mini", (), "its clock", clock=lambda: now[0], slowest=slowest)
+            with contextlib.redirect_stderr(StringIO()) as error:
+                progress.arrived(b"heavy: admitted\n")
+                if lost: progress.disconnected()
+                for wait, line in steps:
+                    now[0] += wait
+                    if line is not None: progress.arrived(line)
+                    progress.beat()
+            return progress, [said for said in error.getvalue().splitlines() if "heartbeat" in said]
+        progress, beats = run((300, b"TOOK iPhone-17-Pro\n"), (300, None), (300, b"PASS iPhone-17-Pro\n"),
+                              (300, None), (299, b"Testing: iPad-Pro-11-inch\n"))
+        self.assertTrue(beats)
+        self.assertFalse([said for said in beats if "stalled" in said], beats)  # slow, working, within its step
+        self.assertEqual(progress.widest_step(), 600)
+        progress, beats = run((300, b"TOOK iPhone-17-Pro\n"), (300, None), (300, None), (300, None))
+        self.assertNotIn("stalled", beats[2], "a wait as long as the slowest step is no stall")
+        self.assertIn("no progress line for 15m 00s, longer than its slowest measured step of 10m 00s over its last "
+                      "5 passing runs on mini, so it may have stalled; nothing here stops it", beats[3])
+        quiet = run((300, None), (301, None))[1]
+        self.assertIn("no progress line for 10m 01s", quiet[-1], "the wait counts from the log's first line")
+        progress, beats = run((300, b"TOOK iPhone-17-Pro\n"), (900, None), lost=True)
+        self.assertFalse([said for said in beats if "stalled" in said], beats)
+        self.assertIsNone(progress.widest_step(), "a lost connection measures nothing")
+        group = remote.Progress("group", "mini", ("member",), "its clock", clock=lambda: now[0], slowest=slowest)
+        self.assertIsNone(group.slowest)
+        self.assertIsNone(group.widest_step())
+
 
     def test_the_clock_line_asks_plugins_which_runner_sets_a_test_allowance(self):
         command, arguments = ["other-runner", "tests"], ("--limit", "45")
@@ -1437,6 +1484,29 @@ class RemoteTests(unittest.TestCase):
                 for process in processes:
                     out, error = process.communicate(timeout=stretched(12))
                     self.assertEqual(process.returncode, 0, out + error)
+
+    def test_a_passing_whole_direct_run_records_its_slowest_step_which_the_next_runs_clock_names(self):
+        settings = self.project / "queuekeeper.json"
+        config = json.loads(settings.read_text())
+        config["lanes"]["steps"] = {"command": [sys.executable, "-c", "print('TEST one'); print('PASS one')"],
+                                    "timeout": 900, "testAllowance": 600}
+        settings.write_text(json.dumps(config))
+        commit_all(self.project)
+        status, output, error = self.qk("remote", "run", "steps")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("its timeout is 900s and its declared test allowance is 600s;", error)
+        self.assertNotIn("slowest", error)
+        steps = [entry for entry in lane_timing.read() if entry.get("event") == "step"]
+        self.assertEqual([(entry["lane"], entry["host"]) for entry in steps], [("steps", "fake")], steps)
+        status, output, error = self.qk("remote", "run", "steps", "--", "chosen")
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(len([entry for entry in lane_timing.read() if entry.get("event") == "step"]), 1,
+                         "a run with arguments measures nothing")
+        for _ in range(lane_timing.FEWEST): lane_timing.record_step(steps[0]["project"], "steps", "fake", 75)
+        status, output, error = self.qk("remote", "run", "steps")
+        self.assertEqual(status, 0, output + error)
+        self.assertIn("slowest measured step, 1m 15s over its last 6 passing runs there", error)
+
 
     def test_the_remote_clock_reports_the_scaled_limit_and_appended_simulator_allowance(self):
         launcher = self.project / "scripts/qk"

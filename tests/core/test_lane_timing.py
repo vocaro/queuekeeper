@@ -45,6 +45,24 @@ class BaselineTests(unittest.TestCase):
             self.assertIsNone(lane_timing.baseline("P", "gate"))
             self.assertEqual(lane_timing.stale_marks("P"), {"gate": 300, "*": 400})
 
+    def test_the_slowest_step_is_the_longest_wait_of_recent_passing_runs_on_that_host(self):
+        with tempfile.TemporaryDirectory() as tmp, history(tmp):
+            for index, seconds in enumerate([120, 300, 90, 200]):
+                self.assertTrue(lane_timing.record_step("P", "gate", "mini", seconds, at=100 + index))
+            self.assertIsNone(lane_timing.slowest_step("P", "gate", "mini"), "fewer than FEWEST runs measure nothing")
+            self.assertFalse(lane_timing.record_step("P", "gate", "mini", -1))
+            self.assertFalse(lane_timing.record_step("P", "gate", "", 60))
+            lane_timing.record_step("P", "gate", "mini", 150, at=110)
+            lane_timing.record_step("P", "gate", "studio", 999, at=111)
+            lane_timing.record_step("Other", "gate", "mini", 999, at=112)
+            lane_timing.record("P", "gate", 999, at=113)
+            self.assertEqual(lane_timing.slowest_step("P", "gate", "mini"), {"seconds": 300, "samples": 5})
+            self.assertIsNone(lane_timing.baseline("P", "gate"), "a step is no run")
+            for index in range(lane_timing.RECENT): lane_timing.record_step("P", "gate", "mini", 60, at=200 + index)
+            self.assertEqual(lane_timing.slowest_step("P", "gate", "mini")["seconds"], 60)
+            lane_timing.mark_stale("P", ["gate"], "split the suite", at=300)
+            self.assertIsNone(lane_timing.slowest_step("P", "gate", "mini"))
+
     def test_marks_a_dispatch_carried_count_as_this_macs_own(self):
         with tempfile.TemporaryDirectory() as tmp, history(tmp):
             for index in range(5): lane_timing.record("P", "gate", 30, at=100 + index)
@@ -76,15 +94,16 @@ class SettingTests(unittest.TestCase):
     def test_timing_notice_and_a_stalls_notice_are_checked(self):
         self.parsed(timing={"warn": False, "fail": "+25%", "minSamples": 5}, notice="ask the owner first")
         self.parsed(stall={"seconds": 5, "notice": "a quiet build is a hang"})
+        self.assertEqual(self.parsed(testAllowance=600)["testAllowance"], 600)
         for lane in ({"timing": {"fail": "25%"}}, {"timing": {"warn": 1}}, {"timing": {"minSamples": 4}},
                      {"timing": {"other": 1}}, {"timing": "+25%"}, {"notice": " "}, {"notice": 5},
-                     {"stall": {"seconds": 5, "notice": ""}}):
+                     {"stall": {"seconds": 5, "notice": ""}}, {"testAllowance": 0}, {"testAllowance": "600"}):
             with self.subTest(lane=lane), self.assertRaises(ValueError): self.parsed(**lane)
 
     def test_the_schema_lists_the_new_keys(self):
         schema = json.loads((Path(cli.TOOLKIT_ROOT) / "schemas/queuekeeper.schema.json").read_text())
         text = json.dumps(schema)
-        for key in ('"timing"', '"notice"', '"minSamples"'): self.assertIn(key, text)
+        for key in ('"timing"', '"notice"', '"minSamples"', '"testAllowance"'): self.assertIn(key, text)
 
     def test_the_notice_is_the_stalls_then_the_lanes_then_the_default(self):
         self.assertEqual(lane_timing.notice({}), lane_timing.DEFAULT_NOTICE)

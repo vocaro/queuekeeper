@@ -16,6 +16,8 @@ updates the live record and warns once in its log and on qk run's standard error
 A lane group has no timing of its
 own: each of its members is timed against its own baseline as it runs in the group, records its own passing runs and
 says its own warnings, which the group's live record holds together, one entry per member (vocaro/queuekeeper#284).
+A direct run on another Mac also records here, on the Mac that sent it, its longest wait between progress lines
+(record_step), whose slowest a later run's heartbeat names a longer quiet against (slowest_step, vocaro/queuekeeper#66).
 A lane may also give a fail threshold
 relative to its baseline ("timing": {"fail": "+25%"} or "+2m"), which applies once the baseline has the lane's
 minSamples runs (MIN_SAMPLES by default): past it the lane is stopped, as a stall is, and fails, as a lane that got
@@ -156,6 +158,27 @@ def record(project, lane, seconds, commit=None, at=None):
     if not number(seconds) or seconds <= 0: return False
     return append({"event": "run", "time": round(time.time() if at is None else at, 3), "project": project,
                    "lane": lane, "seconds": round(seconds, 1), **({"commit": commit} if commit else {})})
+
+
+def record_step(project, lane, host, seconds, at=None):
+    """A passing whole run of lane on another Mac, host, went at most seconds between the progress lines its log
+    showed on this Mac, counting from its log's first line to its last (remote.Progress). It is kept rounded up to
+    a tenth of a second, so that lines that came together still count as a measured run."""
+    if not number(seconds) or seconds < 0 or not isinstance(host, str) or not host: return False
+    return append({"event": "step", "time": round(time.time() if at is None else at, 3), "project": project,
+                   "lane": lane, "host": host, "seconds": max(math.ceil(seconds * 10) / 10, 0.1)})
+
+
+def slowest_step(project, lane, host, entries=None):
+    """Lane's slowest measured step on host: {"seconds", "samples"}, the longest quiet interval between progress lines
+    over its newest RECENT passing runs there since its last stale mark, or None with fewer than FEWEST of them."""
+    entries = read() if entries is None else entries
+    since = stale_since(stale_marks(project, entries), lane)
+    steps = [entry["seconds"] for entry in entries
+             if entry.get("event") == "step" and entry.get("project") == project and entry.get("lane") == lane
+             and entry.get("host") == host and number(entry.get("seconds")) and entry["seconds"] > 0
+             and (since is None or entry["time"] > since)][-RECENT:]
+    return {"seconds": max(steps), "samples": len(steps)} if len(steps) >= FEWEST else None
 
 
 def mark_stale(project, lanes, reason, at=None):

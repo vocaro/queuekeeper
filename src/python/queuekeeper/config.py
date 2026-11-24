@@ -151,7 +151,8 @@ def load(root):
 LANE_KEYS = frozenset({"command", "resource", "minimumTests", "timeout", "foreground", "here", "model", "display",
                        "budgetMinutes", "wholeHost", "apps", "unlockedScreen", "devices", "compileFirst",
                        "deviceRunMinutes", "stall", "unity", "arguments", "idioms", "dimensions", "exactTests",
-                       "failedTests", "labels", "sandbox", "timing", "notice", "disk", "inputs", "environmentInputs"})
+                       "failedTests", "labels", "sandbox", "timing", "notice", "disk", "inputs", "environmentInputs",
+                       "testAllowance"})
 # The lane keys above that a plugin shipped here adds (hooks.LANE_KEYS), by its module: a project that uses one
 # without the plugin is told which to switch on.
 PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_unity", "devices": "queuekeeper_mobile",
@@ -242,7 +243,7 @@ def parse(source):
                     not isinstance(variable, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable)
                     for variable in names) or len(names) != len(set(names)):
                 raise ValueError(f"{name}.environmentInputs must list distinct shell variable names")
-        for key in ["minimumTests", "timeout"]:
+        for key in ["minimumTests", "timeout", "testAllowance"]:
             if key in lane and (type(lane[key]) is not int or lane[key] <= 0):
                 raise ValueError(f"{name}.{key} must be a positive integer")
         if lane.get("exactTests") and "minimumTests" not in lane:

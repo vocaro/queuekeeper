@@ -1341,6 +1341,14 @@ failure's words first. A dispatch carries this Mac's
 stale marks in its plan (`timingStale`), which the other Mac reads from `QUEUEKEEPER_TIMING_STALE`.
 `budgets.gate_warnings` drops entries settled before the gate's mark.
 
+The sending Mac of a direct remote run appends a `step` line (`project`, `lane`, `host`, `seconds`)
+for each passing whole single-lane run whose connection held: `remote.Progress.widest_step`, the
+longest wait between recognized progress lines as they arrived here, from the log's first line to
+its last. `lane_timing.slowest_step` takes the largest of the newest 20 for that lane and host after
+its latest stale mark, given at least 5. The clock line names it, and `Progress.beat` reports a
+longer wait and sets the direct-status state, but never stops the lane: that policy belongs to
+vocaro/queuekeeper#70.
+
 ### How agents' tools stop commands
 
 Measured with the probes below. The rule that follows for every agent is in the [user
