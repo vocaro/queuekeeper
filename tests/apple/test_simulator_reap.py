@@ -918,6 +918,15 @@ class ReapTests(unittest.TestCase):
         self.assertEqual(self.looks, 2)
         self.assertKept(report, "second check.*is live")
 
+    def test_a_reservation_without_process_evidence_at_the_second_check_is_kept(self):
+        # The simulator can still look old and unaccounted for when a reservation appears.
+        self.between = lambda: self.reserve(expectedReleaseBy=self.DUE)
+        report = self.reap()
+        self.assertKept(report, "second check.*records no process")
+        self.assertIsNone(report["problem"], report)
+        self.assertEqual((report["recoverable"], report["released"]), ([], []))
+        self.assertEqual(devices.Record(self.record).entry(NAME)["state"], "reserved")
+
     def test_a_simulator_gone_or_rebooted_between_the_checks_is_not_stopped(self):
         self.between = lambda: self.table.clear() or self.process(1, 0, "launchd")
         self.assertKept(self.reap(), "no longer lists it")
