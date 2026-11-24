@@ -2380,8 +2380,13 @@ def admission_report(hosts):
     for host in hosts:
         for checkpoint in host.get("checkpoints") or []:
             tree = checkpoint.get("runsIn")
-            if tree and checkpoint.get("lane"):
-                by_tree[tree] = None if tree in by_tree else {**checkpoint, "host": host["name"]}
+            if not tree:
+                continue
+            # A checkpoint preparing its first lane can already advertise this path.
+            if tree in by_tree or not checkpoint.get("lane"):
+                by_tree[tree] = None
+            else:
+                by_tree[tree] = {**checkpoint, "host": host["name"]}
     for host in hosts:
         for holder in host.get("holders") or []:
             tree = (holder.get("origin") or {}).get("worktree")

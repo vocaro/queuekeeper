@@ -810,6 +810,19 @@ class CommandTests(unittest.TestCase):
                                          macs=lambda: macs)
         self.assertEqual(found["hosts"][1]["holders"][0]["checkpoint"], {**checkpoint, "host": "studio"})
 
+    def test_a_starting_checkpoint_makes_a_worktree_path_on_two_macs_ambiguous(self):
+        active = {"project": "Alpha", "commit": "0123456789abcdef", "runsIn": "/tmp/eng-checkpoint/Alpha",
+                  "lane": "build", "index": 2, "count": 4}
+        starting = {**active, "commit": "fedcba9876543210", "lane": None, "index": 0}
+        holder = {"origin": {"worktree": active["runsIn"]}, "process": "running"}
+        entries = {"mini": self.reading(holders=[holder], checkpoints=[starting]),
+                   "studio": self.reading(checkpoints=[active])}
+        found = resources.admissions_now(read_here=self.reading, read_there=lambda host, _: entries[host],
+                                         macs=lambda: [farm_fixture.mac(name) for name in entries])
+        _, mini, studio = found["hosts"]
+        self.assertEqual((mini["checkpoints"], studio["checkpoints"]), ([starting], [active]))
+        self.assertNotIn("checkpoint", mini["holders"][0])
+
     def test_a_farm_checkpoint_without_a_slot_is_visible_beside_unknown_and_empty_readings(self):
         checkpoint = {"project": "Alpha", "commit": "0123456789abcdef", "runsIn": "/private/Alpha",
                       "lane": None, "index": 0, "count": 4}
