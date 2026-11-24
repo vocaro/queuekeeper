@@ -2225,6 +2225,12 @@ review it, then use `git apply --check PATCH` and `git apply PATCH` in the same 
 If the launcher has project-specific changes or the stock copy cannot be identified, review and
 refresh it by hand. The source checkout's `bin/qk` works even when the copied launcher cannot start.
 
+To queue a reviewed stock patch without putting it in your branch or index, save it as a file
+and run `qk launcher-patch --queue PATCH` from the project checkout. Both checkouts must be at
+their fetched `origin/main`. The command compares the file with the stock update again, creates
+a commit that changes only `scripts/qk`, and submits that commit through the normal `qk land`
+route. If the queue refuses it, the command prints the commit to check or retry.
+
 After refreshing the copy, run `python3 scripts/qk --version` to check that the launcher starts
 with the project's Python. Combine launcher updates where practical and land them through the
 project's existing gate. Include the launcher in the `inputs` of lanes that read it, including
