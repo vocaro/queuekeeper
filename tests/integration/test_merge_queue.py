@@ -8565,6 +8565,40 @@ class SharedCheckout(Fixture):
         self.assertNotIn("fast-forwarded", said)
         self.assertNotIn("as it is:", said)
 
+    def test_a_worker_and_apple_shim_using_a_toolkit_copy_do_not_hold_the_shared_checkout(self):
+        copy = self.base / "queuekeeper-workers" / "consumer" / self.repo.name
+        copy.parent.mkdir(parents=True)
+        run(self.repo, "git", "worktree", "add", "-q", "--detach", str(copy), "origin/main")
+        pinned = run(copy, "git", "rev-parse", "HEAD")
+        consumer = self.base / "consumer"
+        consumer.mkdir()
+        shim_path = Path("plugins/apple/src/queuekeeper_apple/_shims/xcodebuild")
+
+        def worker(toolkit):
+            command = mq.Queue(self.repo).command(toolkit)
+            command[-1] = str(consumer)
+            return mq.disk.Process(pid=42, command="Python", cwd=str(consumer), args=" ".join(command))
+
+        def shim(toolkit):
+            return mq.disk.Process(pid=43, command="Python", cwd=str(consumer),
+                                   args=f"python3 {toolkit / shim_path}")
+
+        with patch.object(mq.disk, "census", return_value=[worker(copy), shim(copy)]):
+            before, after, main, said = self.land()
+        self.assertNotEqual(before, main)
+        self.assertEqual(after, main)
+        self.assertEqual(run(copy, "git", "rev-parse", "HEAD"), pinned)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+
+        # Either process is enough to hold the checkout when only its toolkit path changes.
+        cases = (([worker(self.repo), shim(copy)], 42), ([worker(copy), shim(self.repo)], 43))
+        for processes, holder in cases:
+            with self.subTest(holder=holder), patch.object(mq.disk, "census", return_value=processes):
+                before, after, main, said = self.land()
+                self.assertNotEqual(before, main)
+                self.assertEqual(after, before)
+                self.assertIn(f"{mq.IN_USE}: PID {holder} (Python), argument ", said)
+
 
 # What git prints, over HTTPS and SSH, when it did not reach GitHub.
 UNREACHED = {
