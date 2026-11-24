@@ -438,9 +438,32 @@ def toolkit_code():
     return found
 
 
-def toolkit_variables():
-    """Every variable of the toolkit's prefixes that its code names."""
-    return sorted({name for path in toolkit_code() for name in VARIABLE.findall(path.read_text())})
+def toolkit_variables(paths=None, root=TOOLKIT):
+    """Every variable of the toolkit's prefixes that the code in paths (the toolkit's) names, as {name: ["file:line", ...]}
+    in the order of the names.
+
+    A variable's name is text the code holds, so a name counts where it is written in a string, in any string: one
+    read or written in os.environ or given in env=, one a constant holds and the code reads it by (UNLOCKED =
+    "QUEUEKEEPER_KEYCHAIN_UNLOCKED"), one in a shell command or an f-string, or one a docstring names. It counts as a
+    keyword argument's name too, as in dict(os.environ, QUEUEKEEPER_X="1"). An identifier is not one: a constant, a
+    function or an attribute named QUEUEKEEPER_* (vocaro/queuekeeper#346), and nor is a comment."""
+    found = {}
+    for path in toolkit_code() if paths is None else paths:
+        for node in ast.walk(ast.parse(path.read_text(), str(path))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str): names = VARIABLE.findall(node.value)
+            elif isinstance(node, ast.keyword) and node.arg and VARIABLE.fullmatch(node.arg): names = [node.arg]
+            else: continue
+            for name in names: found.setdefault(name, []).append(f"{path.relative_to(root)}:{node.lineno}")
+    return dict(sorted(found.items()))
+
+
+def unlisted(found, names):
+    """Why the variables in names, which code names where found says, fail: what to do about each kind of name."""
+    where = "; ".join(f"{name} at {', '.join(found.get(name, ['?']))}" for name in names)
+    return (f"{where}: the code names these as environment variables, and tests/host_isolation.py neither sets, clears "
+            "nor lists them. Clear each one a run sets there, or list it in INHERITED with why a suite may inherit it. "
+            "Only a name written in a string or as a keyword argument's name counts, never a Python constant's own "
+            "name; if the string names a constant rather than a variable, reword the string.")
 
 
 # A name an environment holds, as the code writes it.
@@ -567,9 +590,44 @@ class InheritedVariableTests(unittest.TestCase):
         self.assertIn(host_isolation.keychain.UNLOCKED, names)
         left = self.left(dict.fromkeys([*names, self.CONTROL], self.PLANTED))
         # The control, a variable neither set nor listed, is the only one found.
-        self.assertEqual(self.unexplained(left), [self.CONTROL])
+        unexplained = self.unexplained(left)
+        self.assertEqual(unexplained, [self.CONTROL], unlisted(names, [name for name in unexplained if name != self.CONTROL]))
         self.assertNotIn(host_isolation.keychain.UNLOCKED, left)
         for name in host_isolation.ISOLATION: self.assertNotEqual(left.get(name), self.PLANTED, name)
+
+    def test_a_constant_of_the_prefix_is_no_variable_and_a_variable_the_code_reads_fails_until_it_is_listed(self):
+        # Both directions (vocaro/queuekeeper#346): identifiers of the prefix are not read as variables, and each way the
+        # code reads or writes a variable still finds it.
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory) / "planted.py"
+            module.write_text(textwrap.dedent('''\
+                import os, subprocess
+                QUEUEKEEPER_PLANTED_CONSTANT = "qk"
+                HEAVY_PLANTED_CONSTANT = 3
+                def QUEUEKEEPER_PLANTED_FUNCTION(QUEUEKEEPER_PLANTED_PARAMETER): return os.QUEUEKEEPER_PLANTED_ATTRIBUTE
+                # QUEUEKEEPER_PLANTED_COMMENT
+                NAME = "QUEUEKEEPER_PLANTED_BY_NAME"
+                os.environ.get(NAME, QUEUEKEEPER_PLANTED_CONSTANT)
+                os.environ["QUEUEKEEPER_PLANTED_SUBSCRIPT"]
+                os.environ.get("QUEUEKEEPER_PLANTED_GET")
+                os.getenv("HEAVY_PLANTED_GETENV")
+                subprocess.run(["true"], env={**os.environ, "QUEUEKEEPER_PLANTED_ENV": "1"})
+                subprocess.run(["true"], env=dict(os.environ, QUEUEKEEPER_PLANTED_KEYWORD="1"))
+                subprocess.run(["sh", "-c", f"QUEUEKEEPER_PLANTED_SHELL=1 {NAME}"])
+                '''))
+            found = toolkit_variables([module], Path(directory))
+        self.assertEqual(list(found), ["HEAVY_PLANTED_GETENV", "QUEUEKEEPER_PLANTED_BY_NAME", "QUEUEKEEPER_PLANTED_ENV",
+                                       "QUEUEKEEPER_PLANTED_GET", "QUEUEKEEPER_PLANTED_KEYWORD", "QUEUEKEEPER_PLANTED_SHELL",
+                                       "QUEUEKEEPER_PLANTED_SUBSCRIPT"])
+        self.assertEqual(found["QUEUEKEEPER_PLANTED_GET"], ["planted.py:9"])
+        left = self.left(dict.fromkeys(found, self.PLANTED))
+        self.assertEqual(self.unexplained(left), list(found))
+        # The failure says where the code names each one and what to do in host_isolation.
+        why = unlisted(found, self.unexplained(left))
+        for words in ("QUEUEKEEPER_PLANTED_GET at planted.py:9", "tests/host_isolation.py", "INHERITED", "constant"):
+            self.assertIn(words, why)
+        with patch.dict(host_isolation.INHERITED, dict.fromkeys(found, "listed for the control")):
+            self.assertEqual(self.unexplained(left), [])
 
     def test_every_variable_of_another_name_the_toolkit_sets_for_a_child_is_cleared_or_listed(self):
         found = child_variables(toolkit_code())

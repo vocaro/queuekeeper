@@ -1290,7 +1290,9 @@ which no allow rule matches, is for the rest, after a person has checked by hand
 the guard and `HEAVY_SLOT_DIR`; `test_host_isolation` fails a module that doesn't. A test that
 starts `qk` with its own `env=` builds it from `os.environ` or `host_isolation.reduced`, or passes
 `--unadmitted`. `host_isolation` clears every `QUEUEKEEPER_*` and `HEAVY_*` variable a run sets, or
-lists it in `INHERITED` with why that is safe. A variable of another name, such as a dispatch's
+lists it in `INHERITED` with why that is safe. The test that holds it to this (`toolkit_variables`) reads a name
+of those prefixes where the code writes it in a string or as a keyword argument's name, not a Python constant
+named with the prefix. A variable of another name, such as a dispatch's
 `DEVELOPER_DIR`, is found where the code writes it into a child's environment (`child_variables`,
 which says what it cannot see) and is held to the same rule. A test that mocks `subprocess.run` and admits work
 sets its own `HEAVY_SLOT_DIR`.
