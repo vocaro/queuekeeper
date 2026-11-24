@@ -92,6 +92,15 @@ assert plugins.HOST_INVENTORY_CHECKS == []
 assert plugins.COMMAND_KEPT_HERE == []
 assert not hasattr(remote, "simulators")
 assert plugins.kept_here(["xcrun", "simctl", "boot", "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"]) is None
+# Without the Apple plugin, `qk remote setup --runtimes` is refused before it reaches another Mac.
+assert plugins.REMOTE_SETUP_RUNTIMES == []
+assert not any(hasattr(remote, name) for name in ("match_runtimes", "runtime_plan", "download_command"))
+try:
+    remote.setup("fixture", [], [], True, runtimes=True)
+except ValueError as refusal:
+    assert "no plugin loaded here provides it" in str(refusal), refusal
+else:
+    raise AssertionError("--runtimes was not refused")
 with (
     patch.object(remote, "connection", return_value={}),
     patch.object(remote, "slow_connection", return_value=None),

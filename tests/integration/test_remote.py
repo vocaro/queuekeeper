@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 from queuekeeper.checkout import source_paths
 from queuekeeper import budgets, cli, config, farm, lane_report, lane_results, lane_timing, merge_queue, offload_host, processes, remote, resources
 from queuekeeper_apple import device_notifications, disk as apple_disk, doctor as apple_doctor
+from queuekeeper_apple.simulators import runtimes as simulator_runtimes
 from queuekeeper_mobile import devices, leases
 from queuekeeper import disk as disk_module, plugins
 from queuekeeper import waiting
@@ -9336,7 +9337,7 @@ class DoctorFixTests(unittest.TestCase):
             dict(update or {"state": "current", "path": "kit"}), missing)
         with patch.object(remote, "compare_hosts", return_value=again) as compare, \
                 patch.object(remote, "update_there", side_effect=updating), \
-                patch.object(remote, "match_runtimes", side_effect=lambda host, check: calls.append((host, check)) or
+                patch.object(simulator_runtimes, "match_runtimes", side_effect=lambda host, check: calls.append((host, check)) or
                              print("runtimes: progress")) as match, \
                 patch.object(apple_doctor.simulator_pool, "reap_reports", return_value=[("this Mac", self.REPORT)]) as reap, \
                 patch.object(apple_doctor, "delete_defaults", return_value=["removed: U iPhone 17"]), \
@@ -9431,7 +9432,7 @@ class DoctorFixTests(unittest.TestCase):
 
     def test_every_test_gets_a_doctor_that_changes_neither_mac(self):
         self.assertIsNot(cli.fix_hosts, host_isolation.FIX_HOSTS)
-        with patch.object(remote, "match_runtimes") as match, patch.object(apple_doctor.simulator_pool, "reap_reports") as reap, \
+        with patch.object(simulator_runtimes, "match_runtimes") as match, patch.object(apple_doctor.simulator_pool, "reap_reports") as reap, \
                 patch.object(apple_doctor, "delete_defaults") as defaults:
             self.assertEqual(cli.fix_hosts(Path("/project"), {"errors": [], "runtimesDiffer": True}),
                              {"errors": [], "reaped": [], "deletedDefaults": []})
@@ -9494,7 +9495,7 @@ class RemoteRuntimeTests(unittest.TestCase):
         for name in ("DEVELOPER_DIR", "FAKE_CUT", "FAKE_ADD_FAIL"): os.environ.pop(name, None)
         # The real volumes' free space decides nothing here; the space test sets its own margin.
         self.patches = [patch.object(remote, "developer_directory", return_value=str(self.developer)),
-                        patch.object(remote, "RUNTIME_MARGIN", 0)]
+                        patch.object(simulator_runtimes, "RUNTIME_MARGIN", 0)]
         for item in self.patches: item.start()
 
     def tearDown(self):
@@ -9880,7 +9881,7 @@ class RemoteRuntimeTests(unittest.TestCase):
                 if done >= size // 2: raise processes.Interrupted(signal.SIGTERM, f"while copying {runtime}")
             return report
         # Small reads, so the stop comes halfway through the image.
-        with patch.object(offload_host, "CHUNK", 1 << 16), patch.object(remote, "reporter", stopping):
+        with patch.object(offload_host, "CHUNK", 1 << 16), patch.object(simulator_runtimes, "reporter", stopping):
             for direction, here, there in [("to another Mac", [("iOS 27.1", "24A94401")], []),
                                            ("from another Mac", [], [("iOS 27.0", "24A5423a")])]:
                 with self.subTest(direction):
@@ -9897,7 +9898,7 @@ class RemoteRuntimeTests(unittest.TestCase):
     def test_a_copy_that_would_leave_too_little_free_space_is_refused_before_it_starts(self):
         self.give("here", [("iOS 27.0", "24A434"), ("iOS 27.1", "24A94401")])
         self.give("there", THERE_RUNTIMES)
-        with patch.object(remote, "RUNTIME_MARGIN", 1 << 62):
+        with patch.object(simulator_runtimes, "RUNTIME_MARGIN", 1 << 62):
             status, output, error = self.qk("--check")
             self.assertEqual(status, 1, output + error)
             self.assertIn("runtimes: iOS 27.1 (24A94401), 0.0 GiB: would be refused on fake: ", output)

@@ -1664,7 +1664,8 @@ def perform(argv, report):
     remote_setup.add_argument("--runtimes", action="store_true", help="instead, give this Mac and the farm's other Macs the "
         "same simulator runtimes of the Xcode at this Mac's developer directory, as qk doctor does: a runtime only "
         "one Mac has is deleted there when no simulator but Xcode's defaults uses it, and otherwise its disk image "
-        "is copied over SSH to the Mac that lacks it; it exits 0 only when both list the same")
+        "is copied over SSH to the Mac that lacks it; it exits 0 only when both list the same. A platform plugin "
+        "provides it, such as the Apple plugin; without one it is refused")
     for choice in (remote_run, remote_admit, remote_setup, remote_foreground):
         choice.add_argument("--host", help="the farm's Mac to reach, by its name in `qk farm list`, or an SSH "
                             "destination (default: the first Mac of the farm that takes work now)")

@@ -944,6 +944,15 @@ UUID where a simulator goes: a destination's `id=`, a word after `simctl`, or `-
 argument (`queuekeeper_apple/simulators/commands.py`). Without the plugin, a UUID keeps no
 command here.
 
+`qk remote setup --runtimes` asks the first function in `plugins.REMOTE_SETUP_RUNTIMES`. The Apple
+plugin registers its plan and its order there (`queuekeeper_apple/simulators/runtimes.py`): which
+runtime each Mac lacks, and whether it is deleted, copied as its disk image or downloaded by its
+build. `qk doctor` runs the same plan when the runtimes differ. Core `remote.py` keeps the
+transport: what each Mac lists, `runtime_lock`, and the copy and download over SSH. Without the
+plugin, the core refuses `--runtimes`. A core with the hook needs a matching Apple plugin, since an
+older plugin's doctor calls `remote.match_runtimes`, which the core no longer has. The plugin works
+with an older core, which keeps its own plan for `--runtimes`.
+
 ### What comes back
 
 - **Output** streams back as written, into `.build/queuekeeper/remote/LANE/`. Each dispatch also

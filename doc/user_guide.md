@@ -2066,7 +2066,8 @@ qk remote setup --runtimes [--check]
 ```
 
 Run it at setup and whenever either Mac gains a runtime; `qk doctor` runs it itself when the
-runtimes differ. It makes the Macs hold the same runtimes of this Mac's Xcode:
+runtimes differ. The Apple plugin provides it; a project without that plugin gets a refusal. It
+makes the Macs hold the same runtimes of this Mac's Xcode:
 
 - A runtime on one Mac only that nothing uses (no pin and no device record names it) is deleted
   there. One that is used is copied across over SSH as a disk image, so a beta Apple no longer

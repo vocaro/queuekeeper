@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import host_isolation  # noqa: F401 -- first, as every test module
 
-from queuekeeper import plugins
+from queuekeeper import plugins, remote
 
 # What each stand-in plugin's register appends its own name to.
 REGISTERED = []
@@ -150,6 +150,16 @@ class SharedHookTests(unittest.TestCase):
             self.assertEqual(plugins.kept_here(command), "it names simctl")
         with patch.object(plugins, "COMMAND_KEPT_HERE", []):
             self.assertIsNone(plugins.kept_here(command))
+
+    def test_the_first_plugin_that_evens_out_runtimes_answers_remote_setup_runtimes(self):
+        calls = []
+        first = lambda host, check: calls.append(("first", host, check)) or 3
+        with patch.object(plugins, "REMOTE_SETUP_RUNTIMES", [first, lambda host, check: calls.append("later")]):
+            self.assertEqual(remote.setup("fake", [], [], False, runtimes=True), 3)
+            # Formulae or modules alongside are refused before any plugin is asked.
+            with self.assertRaisesRegex(ValueError, "evens out only the simulator runtimes"):
+                remote.setup("fake", ["numpy"], [], False, runtimes=True)
+        self.assertEqual(calls, [("first", "fake", False)])
 
     def test_every_plugin_recovers_and_reports(self):
         calls = []

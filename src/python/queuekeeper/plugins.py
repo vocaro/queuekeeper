@@ -203,6 +203,10 @@ REMOTE_ENVIRONMENT = []
 # Each () -> (prefix, shell line, report): a probe sent in the remote setup login shell. report receives the
 # text after prefix and returns (line to print, passed).
 REMOTE_SETUP_CHECKS = []
+# Each (host, check) -> the exit status of `qk remote setup --runtimes`, which gives this Mac and host the same
+# simulator runtimes, or with check says what it would do; the first registered answers, and with none the core
+# refuses --runtimes (remote.setup). The Apple plugin evens out the runtimes of the Xcode this Mac selects.
+REMOTE_SETUP_RUNTIMES = []
 # Each (results): prints what a lane kept in its results folder.
 REPORT_RESULTS = []
 # Each (command) -> why another Mac cannot run an admitted command as it runs here because its words name something

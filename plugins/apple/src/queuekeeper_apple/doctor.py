@@ -11,7 +11,7 @@ import sys
 from queuekeeper import disk, offload_host, plugins, remote
 from queuekeeper.config import qk_said
 from . import disk as apple_disk
-from .simulators import pool as simulator_pool
+from .simulators import pool as simulator_pool, runtimes as simulator_runtimes
 
 
 def remote_setup_xcode():
@@ -64,7 +64,7 @@ def compare_toolchains(report, developer):
         report["unchecked"].append(f"the simulator runtimes, which simctl did not list on "
                                    f"{'this Mac' if here.get('runtimes') is None else host}")
     elif here["runtimes"] != there["runtimes"]:
-        differences = remote.runtime_differences(here["runtimes"], there["runtimes"], host)
+        differences = simulator_runtimes.runtime_differences(here["runtimes"], there["runtimes"], host)
         report["runtimesDiffer"] = True
         report["errors"].append(f"the simulator runtimes of the Xcode at {developer} differ: {'; '.join(differences)}; "
                                 "`qk doctor` evens them out itself, deleting a runtime that no simulator but Xcode's "
@@ -74,12 +74,12 @@ def compare_toolchains(report, developer):
 
 def fix_hosts(root, hosts):
     """What `doctor` fixes of remote.compare_hosts' report itself (the owner's decision, 2026-11-03): runtimes that
-    differ, which it evens out (remote.match_runtimes) and then compares again; stale pool simulators on the
-    Macs, which it shuts down (simulators.pool.reap_reports) and lists in reaped; and Xcode's default simulators
+    differ, which it evens out (simulators.runtimes.match_runtimes) and then compares again; stale pool simulators on
+    the Macs, which it shuts down (simulators.pool.reap_reports) and lists in reaped; and Xcode's default simulators
     on this Mac, which it deletes as `disk --delete` does, checking each again first, and lists in
     deletedDefaults. Its progress goes to standard error, so that standard output stays the report."""
     if hosts.pop("runtimesDiffer", False):
-        with contextlib.redirect_stdout(sys.stderr): remote.match_runtimes(hosts["host"], check=False)
+        with contextlib.redirect_stdout(sys.stderr): simulator_runtimes.match_runtimes(hosts["host"], check=False)
         hosts = remote.compare_hosts(hosts["host"])
         hosts.pop("runtimesDiffer", None)
     # Another Mac only when it answered the comparison: one away is no error, and is not waited for.
@@ -294,6 +294,10 @@ def register():
     # An older core compares the Apple inventory directly.
     if inventory_checks is not None and compare_toolchains not in inventory_checks:
         inventory_checks.append(compare_toolchains)
+    setup_runtimes = getattr(plugins, "REMOTE_SETUP_RUNTIMES", None)
+    # An older core evens out the runtimes for `qk remote setup --runtimes` itself.
+    if setup_runtimes is not None and simulator_runtimes.match_runtimes not in setup_runtimes:
+        setup_runtimes.append(simulator_runtimes.match_runtimes)
     if fix_hosts not in plugins.HOST_FIXES: plugins.HOST_FIXES.append(fix_hosts)
     if simulator_warnings not in plugins.DOCTOR: plugins.DOCTOR.append(simulator_warnings)
     plugins.DOCTOR_WITHOUT_REPAIRS[simulator_warnings] = simulator_warnings
