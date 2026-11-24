@@ -70,7 +70,7 @@ import zlib
 
 from . import direct_status, disk, plugins, lane_results, lane_wait, offload_host, parallel, pins, place_holder, processes, resources, git_state
 from . import count_history, window_placement
-from .config import TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_declarations, sibling_folders, unadmitted, unlocked_screen
+from .config import LABEL, TOOLKIT_ROOT, exclusive_refusal, needed_labels, sibling_declarations, sibling_folders, unadmitted, unlocked_screen
 from . import farm
 from .resources import BUSY, FREE_WAIT
 
@@ -2581,6 +2581,18 @@ def commit_arguments(declarations):
     return commits
 
 
+def command_labels(args):
+    """The explicit host labels of an admitted one-off command."""
+    labels = tuple(dict.fromkeys(getattr(args, "label", None) or ()))
+    if any(not LABEL.fullmatch(label) for label in labels):
+        raise ValueError("--label names a host label: lowercase words joined by hyphens, such as unity-license")
+    return labels
+
+
+def command_label_arguments(labels):
+    return [word for label in labels for word in ("--label", label)]
+
+
 def main(root, config, args):
     if args.operation == "passed":
         receipt = passed(root, args.lane, args.commit)
@@ -2633,6 +2645,17 @@ def main(root, config, args):
         (["--time-limit", f"{args.time_limit:g}"] if args.time_limit is not None else [])
     refused = exclusive_refusal(config, command) if args.exclusive else None
     if refused: raise ValueError(f"qk remote admit --exclusive refused: {refused}")
+    labels = command_labels(args)
+    if labels:
+        # Check before preparing a checkout or running its provision lane. The receiving admit checks again.
+        try:
+            missing = unfit(capacity_there(host), called(host), labels=labels)
+        except Unavailable as error:
+            missing = f"cannot verify required host labels on {called(host)}: {error}"
+        if missing is not None:
+            print(f"queuekeeper: the command not run: {missing}", file=sys.stderr, flush=True)
+            return lane_results.UNMEASURED
+    kind += command_label_arguments(labels)
     commits = commit_arguments(getattr(args, "git_commit", None) or [])
     held = plugins.DEVICES.lease(args.device or [], args.device_owner, command, root=root,
                                      budget=args.time_limit, commits=commits)
@@ -3464,7 +3487,7 @@ def local_environment(environment=None):
     return None
 
 
-def first_command(root, config, command, kind):
+def first_command(root, config, command, kind, *, labels=()):
     """Offer `qk admit`'s command to another Mac to start now, once, as first() offers a lane,
     to run in the directory of its checkout that matches the current one here; return the Offer. Another
     Mac cannot run it as it runs here when its directory is outside the checkout or one Git
@@ -3496,7 +3519,7 @@ def first_command(root, config, command, kind):
         refused = local_paths(command, top) or ignored_inputs(command, top, directory) or local_environment()
     # Another Mac's admission takes it now or declines it, as `qk run --if-free` does a lane. There it runs
     # where it was sent, since it runs for the Mac that sent it (DISPATCHER).
-    work = ["admit", *kind, "--if-free", "--", *command]
+    work = ["admit", *kind, *command_label_arguments(labels), "--if-free", "--", *command]
 
     def send(host, sent):
         # What the command changed in the checkout there comes back and is applied here (brought_back).
@@ -3504,7 +3527,7 @@ def first_command(root, config, command, kind):
                          subdirectory=None if relative in (None, ".") else relative, sent=sent, changes=True)
         return brought_back(root, sent, status)
     offered = Offer("the command", "`qk admit --here`", send, refused, exclusive="--exclusive" in kind,
-                    model="--model" in kind)
+                    model="--model" in kind, labels=labels)
     offered.make()
     return offered
 

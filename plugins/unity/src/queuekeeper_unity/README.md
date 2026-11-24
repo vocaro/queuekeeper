@@ -62,8 +62,12 @@ Set it in each Mac's `mac-settings.json` as described under
 label out. A lane whose results differ by GPU can require both `unity-license` and a chip label,
 such as `apple-m5-max`.
 
-Labels apply when Queuekeeper places a named lane. For a one-off Unity command or a script that
-starts Unity, use `qk admit --here -- COMMAND` on a Mac where batch licensing has been verified.
+For a one-off Unity command or a script that starts Unity, use
+`qk admit --label unity-license -- COMMAND`. The command runs only on a Mac with the label.
+Add `--here` to keep it on the invoking Mac, or use `qk remote admit --label unity-license -- COMMAND`
+for a specific dispatch. In either case the Mac checks its own label before starting the command.
+Queuekeeper relies on the label you set after verifying batch licensing; it cannot infer from a
+plain command whether it will start Unity.
 
 ## Flaky tests
 
@@ -135,7 +139,8 @@ unity: 1 passed, 1 failed
 test alone ([Flaky tests](#flaky-tests)), and exits 3 when no such test ran.
 
 Started outside a lane, it is admitted and placed first, as `qk admit` would run it. To require
-the `unity-license` label, use it as the command of a named lane with that label.
+the `unity-license` label, run it as a named lane with that label or as a command under
+`qk admit --label unity-license --`.
 `--unadmitted` after `test` runs it with no admission, on this Mac.
 
 ```bash

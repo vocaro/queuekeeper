@@ -1666,6 +1666,8 @@ qk admit -- xcodebuild test -scheme SCHEME -destination "platform=iOS Simulator,
 
 `qk admit` runs the command in the current directory with its output on the terminal, records a
 receipt in `.build/queuekeeper/admit/`, and may run it on another Mac unless you add `--here`.
+Use `--label NAME` for a command requiring a host capability recorded in its Mac settings. Repeat
+the option to require several labels. The Mac checks those labels before it starts the command.
 `--timeout SECONDS` bounds the wait for admission (5,400 s by default). With `qk admit --here`,
 the command gets its full `--time-limit SECONDS` (2 hours by default) once it starts. If local
 admission times out, no command starts and `qk admit` exits 75. For a
@@ -3197,7 +3199,10 @@ cannot, the lane ends unmeasured rather than failed.
 To restrict placement to Macs with verified batch licensing, add `"labels": ["unity-license"]` to
 the named lane. Verify licensing with an admitted batch run in the session context the lane uses
 before [labeling the Mac](../plugins/unity/src/queuekeeper_unity/README.md#lanes). For a one-off
-command that starts Unity, use `qk admit --here -- COMMAND` on a Mac where that check passed.
+command that starts Unity, use `qk admit --label unity-license -- COMMAND` so admission can place
+it on a verified Mac. Add `--here` to keep it on this Mac, or use
+`qk remote admit --label unity-license -- COMMAND` for an explicit dispatch. Plain admission
+cannot tell which commands start Unity.
 
 A second session on a Mac:
 

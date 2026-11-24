@@ -1024,6 +1024,7 @@ def admit(root, args, config=None, *, device_window=None):
     config = config if config is not None else load(root)
     refused = exclusive_refusal(config, command) if args.exclusive else None
     if refused: raise ValueError(f"qk admit --exclusive refused: {refused}")
+    labels = remote.command_labels(args)
     kind = ["--exclusive"] if args.exclusive else ["--model"] if args.model else []
     # Only a limit of its own goes to another Mac, whose toolkit may not take the option.
     if args.time_limit != processes.DEFAULT_LIMIT: kind += ["--time-limit", f"{args.time_limit:g}"]
@@ -1051,14 +1052,28 @@ def admit(root, args, config=None, *, device_window=None):
     declined = remote.here_unfit(exclusive=args.exclusive, model=args.model) \
         if (args.exclusive or args.model) and not inherited and not os.environ.get(remote.DISPATCHER) \
         and not os.environ.get(SELF_LANE) else None
+    # Labels are an explicit requirement even inside an inherited admission or a received dispatch.
+    missing = remote.here_unfit(labels=labels) if labels else None
+    if reason is not None and missing is not None:
+        print(f"queuekeeper: the command not run: it runs on this Mac ({reason}), and {missing}",
+              file=sys.stderr, flush=True)
+        return lane_results.UNMEASURED
     if declined is not None and reason is not None:
         raise ValueError(f"the command not run: it runs on this Mac ({reason}), and {declined}")
     offered = None
     if reason is None:
         # The Mac with spare capacity for it and the most headroom (remote.first_command, admitted_here).
-        offered = remote.first_command(root, config, command, kind)
-        if not isinstance(offered.status, str): return offered.status
+        offered = remote.first_command(root, config, command, kind, labels=labels)
+        if not isinstance(offered.status, str):
+            if missing is not None and offered.status == remote.MISCONFIGURED and offered.hosts \
+                    and all(host in offered.unfit for host in offered.hosts):
+                return lane_results.UNMEASURED
+            return offered.status
         reason = offered.status
+        if missing is not None:
+            print(f"queuekeeper: the command not run: {missing}, and no other Mac took it: {reason}",
+                  file=sys.stderr, flush=True)
+            return BUSY if offered.busy is not None else lane_results.UNMEASURED
         if declined is not None:
             print(f"queuekeeper: the command not run: {declined}, and no other Mac took it: {reason}", file=sys.stderr,
                   flush=True)
@@ -1544,6 +1559,8 @@ def perform(argv, report):
     kind.add_argument("--model", action="store_true", help="hold one slot and the host's model lock, which one "
                       "model run holds at a time: on-device generation, on this Mac or in a simulator, another local "
                       "generative model on the GPU, or Core ML whose compute units include the GPU")
+    admission.add_argument("--label", action="append", metavar="NAME",
+                         help="require a label on the Mac that runs the command; repeat for each required label")
     admission.add_argument("--foreground", action="store_true", help="the command takes the screen, keyboard, "
         "pointer, focus or speech, as Mac VoiceOver and Mac UI tests do: on another Mac queuekeeper holds its foreground for "
         "the command, waiting while another run holds it; on this Mac the session must hold mac-foreground within "
@@ -1652,6 +1669,8 @@ def perform(argv, report):
     kind = remote_admit.add_mutually_exclusive_group()
     kind.add_argument("--exclusive", action="store_true", help="hold every slot of another Mac")
     kind.add_argument("--model", action="store_true", help="hold one slot and the model lock of another Mac")
+    remote_admit.add_argument("--label", action="append", metavar="NAME",
+                         help="require a label on the Mac that runs the command; repeat for each required label")
     remote_admit.add_argument("--foreground", action="store_true", help="hold another Mac's foreground for the "
         "command, as Mac VoiceOver and Mac UI tests need, waiting while another run holds it")
     remote_admit.add_argument("--app", action="append", metavar="NAME", help="with --foreground, the app under "

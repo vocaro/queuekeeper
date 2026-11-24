@@ -4898,6 +4898,44 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(status, 0, output + error)
         self.assertIn("queuekeeper: the command runs on this Mac", error)
 
+    def test_a_one_off_command_requires_the_label_on_the_mac_that_runs_it(self):
+        self.mac_settings("FAKE_SLOTS", labels=["gpu"])
+        self.mac_settings("HEAVY_SLOT_DIR", labels=[])
+        label = ("--label", "unity-license")
+        command = (sys.executable, "-c", "print('started synthetic editor', flush=True)")
+        for route in ((), ("--here",)):
+            with self.subTest(route=route):
+                status, stdout, error = self.admit_in(self.project, *route, *label, "--", *command)
+                self.assertEqual(status, lane_results.UNMEASURED, stdout + error)
+                self.assertNotIn("started synthetic editor", stdout)
+                self.assertIn("lacks the label unity-license", error)
+        with patch.object(remote, "execute", wraps=remote.execute) as dispatch:
+            status, stdout, error = self.qk("remote", "admit", *label, "--", *command)
+        dispatch.assert_not_called()
+        self.assertEqual(status, lane_results.UNMEASURED, stdout + error)
+        self.assertNotIn("started synthetic editor", stdout)
+        self.assertIn("lacks the label unity-license", error)
+
+        # An out-of-date capacity reading must not override the receiving Mac's own current settings.
+        with patch.object(remote, "capacity_there", return_value={"labels": ["unity-license"]}):
+            status, stdout, error = self.qk("remote", "admit", *label, "--", *command)
+        self.assertEqual(status, lane_results.UNMEASURED, stdout + error)
+        self.assertNotIn("started synthetic editor", stdout)
+        self.assertIn("lacks the label unity-license", stdout + error)
+
+        self.mac_settings("FAKE_SLOTS", labels=["unity-license"])
+        said = f"import os; print('ran for', os.environ.get({remote.DISPATCHER!r}) or 'nobody', flush=True)"
+        status, stdout, error = self.admit_in(self.project, *label, "--", sys.executable, "-c", said)
+        self.assertEqual(status, 0, stdout + error)
+        self.assertIn("ran for ", stdout)
+        self.assertNotIn("ran for nobody", stdout)
+
+        self.mac_settings("HEAVY_SLOT_DIR", labels=["unity-license"])
+        status, stdout, error = self.admit_in(self.project, "--here", *label, "--", sys.executable, "-c", said)
+        self.assertEqual(status, 0, stdout + error)
+        receipt = json.loads((self.project / ".build/queuekeeper/admit/source.json").read_text())
+        self.assertEqual((receipt["ranOn"], receipt["hereBecause"]), ("this Mac", "qk admit --here"))
+
     def test_a_lane_runs_only_on_a_mac_that_has_the_labels_it_needs(self):
         settings = json.loads((self.project / "queuekeeper.json").read_text())
         settings["lanes"]["gate"]["labels"] = ["unity-license"]
