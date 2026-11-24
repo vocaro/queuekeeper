@@ -3609,11 +3609,13 @@ or disable the channel while device lanes run: a message arriving mid-test can f
 
 `qk notify test` sends from your own session. To see an alert arrive the way a real one does,
 from the [signed queue launcher's](#the-signed-queue-launcher) scheduled check with no session
-open, leave a request for that check from the launcher's project:
+open, leave a request for that check in the launcher's project. Run it from that project, whose
+own `scripts/qk` already names the project, so add no `--project`:
 
 ```sh
-qk --project ~/path/to/project notify test --scheduled                  # every channel that is on
-qk --project ~/path/to/project notify test --scheduled --channel imessage
+cd ~/path/to/project
+scripts/qk notify test --scheduled                    # every channel that is on
+scripts/qk notify test --scheduled --channel imessage
 ```
 
 Within about two minutes the check sends one test notice and `notify.log` records which channels
