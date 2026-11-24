@@ -2662,14 +2662,19 @@ class NoVerdict(Fixture):
         worker, _, receipt = self.stopped_worker()
         began = worker.lane_now[1]
         run = self.dispatch_of(worker, None)
-        outer = {"head": "tested", "commit": "tested", "dispatched": began + 1,
-                 "result": {"receipt": {"project": {"revision": "tested"}, "outcome": "unmeasured",
-                                        "hostFault": True}}}
+        returned = {"stage": "work", "exitStatus": mq.lane_results.UNMEASURED, "stopped": False,
+                    "receipt": {"project": {"revision": "tested"}, "outcome": "unmeasured", "hostFault": True}}
+        outer = {"head": "tested", "commit": "tested", "dispatched": began + 1, "result": returned}
         source = run / "source.json"
         source.write_text(json.dumps(outer))
         self.assertTrue(mq.gate_host_fault(run, receipt.with_name("run.log"), "tested", began))
         self.assertFalse(mq.gate_host_fault(run, receipt.with_name("run.log"), "another", began))
         self.assertFalse(mq.gate_host_fault(run, receipt.with_name("run.log"), "tested", began + 2))
+        for overrides in ({"stage": "provision"}, {"exitStatus": 0}, {"stopped": True}, {"stopped": None},
+                          {"error": "result collection failed"}, {"receipt": None}):
+            with self.subTest(overrides=overrides):
+                source.write_text(json.dumps({**outer, "result": {**returned, **overrides}}))
+                self.assertFalse(mq.gate_host_fault(run, receipt.with_name("run.log"), "tested", began))
 
     def test_a_no_verdict_send_back_quotes_the_error_its_own_receipt_records(self):
         """A lane that reached its own limit: the real qk run, its real receipt, and a log that just stops (#288)."""

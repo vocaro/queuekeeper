@@ -3902,7 +3902,12 @@ def gate_host_fault(dispatch, lane_log, head, began):
         receipt = json.loads(path.read_text())
         if dispatch is not None:
             if receipt["dispatched"] < began or receipt["head"] != head or receipt["commit"] != head: return False
-            receipt = receipt["result"]["receipt"]
+            result = receipt["result"]
+            # The receiving Mac can return a lane receipt even when it stopped the dispatch or never reached work.
+            if result.get("stage") != "work" or result.get("exitStatus") != lane_results.UNMEASURED \
+                    or result.get("stopped") is not False or result.get("error"):
+                return False
+            receipt = result["receipt"]
         return receipt["project"]["revision"] == head and receipt["outcome"] == "unmeasured" \
             and receipt.get("hostFault") is True
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
