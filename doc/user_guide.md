@@ -3017,6 +3017,13 @@ verdict covers the host settings and lease, while the approval lines report the 
   `qk devices update mac-foreground --launched BUNDLE`; on any other Mac only the last two. Anything
   else new is left running and reported in the log and the entry's `appsQuit`. Windows the run opened in
   apps already running stay.
+- **Windows created by a driver** can be recorded on its foreground lease. Capture the lease revision,
+  application PID and process start, and an app-specific window token from the creation call. Use
+  `qk devices record-window --owner SESSION --revision N --pid PID --start START --token TOKEN`.
+  Use the process start from `ps -p PID -o lstart=`, stripping surrounding whitespace. Keep window
+  titles and content out of the token. A successful recording advances the lease revision and does
+  not close the window. If the revision is stale, verify that the same lease and window still belong
+  to the run before using a newer revision.
 - **Crash-report alerts** ("APP quit unexpectedly.") would take the run's clicks. For every foreground
   run Queuekeeper turns crash dialogs off and puts the exact setting back afterward, and clears any crash
   report on screen with Ignore or OK before and during the run. It never presses Reopen or Report…, and

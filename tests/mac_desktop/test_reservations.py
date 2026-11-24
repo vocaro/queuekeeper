@@ -88,6 +88,47 @@ class ForegroundCommandTests(unittest.TestCase):
         self.assertEqual(recovered["condition"], "released")
         self.assertEqual(recovered["entry"]["recovery"]["verified"], "the screen was checked")
 
+    def test_a_window_is_recorded_only_on_the_creators_foreground_revision(self):
+        record = reservations.Record()
+        key = reservations.FOREGROUND
+        entry = record.reserve(key, owner="creator", revision=0, purpose="window test", release_by=later())
+        revision = str(entry["revision"])
+        window = ("--pid", "42", "--start", "observed start", "--token", "window-7")
+        with patch.object(reservations, "process_start", return_value="other start"):
+            code, _output, error = self.cli("record-window", "--owner", "creator", "--revision", revision, *window)
+            self.assertEqual(code, 2)
+            self.assertIn("no longer has the recorded process start", error)
+        self.assertEqual(record.entry(key), entry)
+        with patch.object(reservations, "process_start", return_value="observed start"):
+            code, _output, error = self.cli("record-window", "--owner", "another-run", "--revision", revision, *window)
+            self.assertEqual(code, 2)
+            self.assertIn("is held by creator", error)
+            self.assertEqual(record.entry(key), entry)
+            code, output, error = self.cli("record-window", "--owner", "creator", "--revision", revision, *window)
+            self.assertEqual(code, 0, error)
+            recorded = json.loads(output)["entry"]
+        self.assertEqual(recorded["openedWindows"], [{"pid": 42, "start": "observed start", "token": "window-7"}])
+        released = record.release(key, owner="creator", revision=recorded["revision"], outcome="passed",
+                                  restoration="verified", frontmost="restored")
+        next_lease = record.reserve(key, owner="creator", revision=released["revision"],
+                                    purpose="new window test", release_by=later())
+        code, _output, error = self.cli("record-window", "--owner", "creator", "--revision", revision, *window)
+        self.assertEqual(code, 2)
+        self.assertIn("is at revision", error)
+        self.assertNotIn("openedWindows", record.entry(key))
+        self.assertEqual(record.entry(key), next_lease)
+
+    def test_general_record_changes_cannot_forge_a_window_record(self):
+        record = reservations.Record()
+        key = reservations.FOREGROUND
+        with self.assertRaisesRegex(ValueError, "the record writes openedWindows itself"):
+            record.reserve(key, owner="creator", revision=0, purpose="window test", release_by=later(),
+                           details={"openedWindows": []})
+        entry = record.reserve(key, owner="creator", revision=0, purpose="window test", release_by=later())
+        with self.assertRaisesRegex(ValueError, "the record writes openedWindows itself"):
+            record.update(key, owner="creator", revision=entry["revision"], openedWindows=[])
+        self.assertEqual(record.entry(key), entry)
+
     def test_device_actions_are_not_offered_without_a_device_plugin(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()) as error:
             reservations.main(["take", "iPhone"])

@@ -56,7 +56,8 @@ DEFERRED = "physicalDevicesRecordedOn"
 # Written only by the record's own operations, which say who changed ownership and why.
 MANAGED = {"revision", "ownerChatID", "lastOwnerChatID", "previousLease", "recovery", "importedFrom",
            "importedVersions", "uncertainReason", "hostProcessStart", "approval", "ownedProcesses", "frontmost",
-           "launchedApps", "appsQuit", "notifications", "runRecoveries", "runRecoveryFailed", offload_host.PHYSICAL_DEVICE}
+           "launchedApps", "appsQuit", "openedWindows", "notifications", "runRecoveries", "runRecoveryFailed",
+           offload_host.PHYSICAL_DEVICE}
 # Sessions waiting in line for an entry, by its key, kept beside the entries.
 QUEUES = "queues"
 # Seconds between looks at an entry while `take` waits for it.
@@ -375,6 +376,24 @@ class Record:
             return entry
         return self._change(key, revision, change)
 
+    def record_window(self, *, owner, revision, pid, start, token):
+        """Record a creator-supplied window token on precisely the foreground lease the creator used."""
+        if type(pid) is not int or pid <= 0 or not isinstance(start, str) or not start.strip():
+            raise ValueError("a window record needs the application's positive PID and process start")
+        if not isinstance(token, str) or not token.strip() or not token.isprintable():
+            raise ValueError("a window record needs a nonempty, printable window token from the creator")
+        window = {"pid": pid, "start": start, "token": token}
+
+        def change(current, _record):
+            _require_foreground(owner, current)
+            if process_start(pid) != start:
+                raise Refused(f"the application at PID {pid} no longer has the recorded process start")
+            windows = current.get("openedWindows", [])
+            if window not in windows:
+                windows = [*windows, window]
+            return {**current, "openedWindows": windows}
+        return self._change(FOREGROUND, revision, change)
+
     def release(self, key, *, owner, revision, outcome, restoration, frontmost=None, apps_quit=None):
         """Release the caller's own entry with its terminal outcome and restoration checks.
 
@@ -486,10 +505,13 @@ def require_foreground(owner, record=None):
     release, which the session agreed with the owner. On a Mac whose settings say it takes foreground work
     (takes_foreground), queuekeeper holds the entry for the run and names it in QUEUEKEEPER_DEVICE_OWNER
     (foreground.slot), and the run may outlast its expected release."""
+    entry = (record or Record()).load()["devices"].get(FOREGROUND) if owner else None
+    return _require_foreground(owner, entry)
+
+
+def _require_foreground(owner, entry):
     if not owner:
         raise Refused(f"name the session whose {FOREGROUND} reservation covers this work (--owner or {OWNER})")
-    value = (record or Record()).load()
-    entry = value["devices"].get(FOREGROUND)
     state = condition(entry) if entry is not None else "released"
     if state == "released":
         raise Refused(f"nobody holds {FOREGROUND}; " + ("queuekeeper reserves it for each run" if takes_foreground() else
@@ -652,6 +674,12 @@ def add_actions(commands, *, status_help="every entry's condition and the held e
                         help="a process this session launched, which release waits for")
     update.add_argument("--launched", action="append", metavar="BUNDLE", default=[],
                         help="an app this session launched on the device, which release says it quit")
+    window = commands.add_parser("record-window", help="record a window the foreground run created")
+    window.add_argument("--owner", required=True)
+    window.add_argument("--revision", type=int, required=True)
+    window.add_argument("--pid", type=int, required=True, help="the application's process ID")
+    window.add_argument("--start", required=True, help="the application's process start as ps -o lstart= prints it")
+    window.add_argument("--token", required=True, help="the app-specific window token obtained by its creator")
     release = commands.add_parser("release", help="release your own entry")
     release.add_argument("key")
     release.add_argument("--owner", required=True)
@@ -694,6 +722,9 @@ def act(args, record, *, restore=None, said=None):
             raise ValueError("update takes --set FIELD=JSON, --own PID or --launched BUNDLE")
         report(args.key, record.update(args.key, owner=args.owner, revision=args.revision, own=args.own,
                                        launched=args.launched, **fields(args.set)))
+    elif args.action == "record-window":
+        report(FOREGROUND, record.record_window(owner=args.owner, revision=args.revision, pid=args.pid,
+                                                start=args.start, token=args.token))
     elif args.action == "release":
         report(args.key, record.release(args.key, owner=args.owner, revision=args.revision, outcome=args.outcome,
                                         restoration=args.restoration, frontmost=args.frontmost,
