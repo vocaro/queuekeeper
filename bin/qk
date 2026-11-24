@@ -22,6 +22,18 @@ if sys.version_info < (3, 14):
 os.environ.pop("QUEUEKEEPER_LAUNCHER_PYTHON", None)
 
 home = Path(__file__).resolve().parents[1]
+# QUEUEKEEPER_ROOT names the Queuekeeper checkout the run selected, such as a merge queue worker's copy, which
+# its lanes and the commands they start must load: another checkout's qk, the installed one, hands over to it,
+# rather than load a second Queuekeeper that a project's hooks refuse (vocaro/queuekeeper#340). The checkout handed
+# to marks its handover, so that it never hands over again.
+named = os.environ.get("QUEUEKEEPER_ROOT")
+followed = os.environ.pop("QUEUEKEEPER_FOLLOWED_ROOT", None)
+if named and followed is None:
+    selected = Path(named).expanduser().resolve()
+    if selected != home and (selected / "bin/qk").is_file() \
+            and (selected / "src/python/queuekeeper/cli.py").is_file():
+        os.environ["QUEUEKEEPER_FOLLOWED_ROOT"] = str(selected)
+        os.execv(sys.executable, [sys.executable, str(selected / "bin/qk"), *sys.argv[1:]])
 sys.path.insert(0, str(home / "src/python"))
 try:
     from queuekeeper.checkout import activate

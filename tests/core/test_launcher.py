@@ -90,6 +90,45 @@ class BootstrapTests(unittest.TestCase):
                             git.unlink()
 
 
+class FollowedRootTests(unittest.TestCase):
+    """bin/qk, the installed qk among them, hands over to the checkout QUEUEKEEPER_ROOT names when that is another
+    checkout, as a merge queue worker's copy is to its lanes, rather than load a second Queuekeeper that a project's
+    hooks refuse (vocaro/queuekeeper#340)."""
+    SELECTED = ("#!/usr/bin/env python3\nimport json, os, sys\n"
+                "print(json.dumps({'argv': sys.argv[1:], 'followed': os.environ.get('QUEUEKEEPER_FOLLOWED_ROOT')}))\n")
+
+    def setUp(self):
+        self.base = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.selected = self.base / "selected"
+        (self.selected / "bin").mkdir(parents=True)
+        (self.selected / "bin/qk").write_text(self.SELECTED)
+        (self.selected / "src/python/queuekeeper").mkdir(parents=True)
+        (self.selected / "src/python/queuekeeper/cli.py").write_text("")
+
+    def qk(self, **variables):
+        environment = host_isolation.reduced(os.environ, **variables)
+        return subprocess.run([sys.executable, str(ROOT / "bin/qk"), "--project", str(self.base), "--version"],
+                              env=environment, cwd=self.base, capture_output=True, text=True, timeout=stretched(60))
+
+    def test_it_hands_over_to_the_selected_checkout_once(self):
+        result = self.qk(QUEUEKEEPER_ROOT=str(self.selected))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"argv": ["--project", str(self.base), "--version"],
+                                                     "followed": str(self.selected)})
+
+    def test_it_runs_itself_when_there_is_nothing_else_to_hand_over_to(self):
+        # Negative controls: its own checkout named, a folder that is no Queuekeeper checkout, and a handover
+        # already made, which never hands over again.
+        (self.base / "bin").mkdir()
+        (self.base / "bin/qk").write_text(self.SELECTED)
+        for variables in ({"QUEUEKEEPER_ROOT": str(ROOT)}, {"QUEUEKEEPER_ROOT": str(self.base)},
+                          {"QUEUEKEEPER_ROOT": str(self.selected), "QUEUEKEEPER_FOLLOWED_ROOT": str(ROOT)}):
+            with self.subTest(variables=variables):
+                result = self.qk(**variables)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertRegex(result.stdout.strip(), r"^\d+\.\d+")
+
+
 class EarlierLauncherTests(unittest.TestCase):
     """A project's scripts/qk from before the plugins left the core puts only src/python on the import path and
     calls cli.main. Thirteen projects carry one, and each must run a current Queuekeeper (vocaro-engineering#497)."""

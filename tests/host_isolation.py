@@ -380,6 +380,8 @@ INHERITED = {
                     OWNER_SWITCH),
     cli.parallel.SHARD_VARIABLE: "qk unittest's mark on the test processes it starts, which this module reads above to "
                                  "know the run is accounted for; a suite a test starts gets the mark from its own qk unittest",
+    "QUEUEKEEPER_FOLLOWED_ROOT": "bin/qk sets it only to hand over to the checkout QUEUEKEEPER_ROOT names, which takes "
+                                 "it out before it runs anything, so no command it starts inherits it",
     "QUEUEKEEPER_LAUNCHER_PYTHON": "scripts/qk and bin/qk set it only to run themselves again under another Python, and "
                                    "take it out before they run anything, so no command they start inherits it",
 }

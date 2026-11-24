@@ -2274,8 +2274,9 @@ Explicit commands in the project still run as written. To remove a copy:
    write the bare word `qk` first, as in `["qk", "unittest", "-s", "tests"]`. `qk run` starts it
    as the selected Queuekeeper checkout's `bin/qk` with `--project`, so no wrapper is needed
    ([Lanes](user_guide.md#lanes)). A script that a lane runs and that calls Queuekeeper itself,
-   such as a shell script, invokes `"$QUEUEKEEPER_ROOT/bin/qk"` when that variable is set, with
-   the installed `qk` as the local fallback. If a lane command runs such a wrapper in place of
+   such as a shell script, can call the installed `qk`. Every checkout's `bin/qk` hands over to
+   the checkout that `QUEUEKEEPER_ROOT` names when that is another Queuekeeper checkout, and marks
+   the handover in `QUEUEKEEPER_FOLLOWED_ROOT` so that it happens once. If a lane command runs such a wrapper in place of
    Queuekeeper, name the wrapper `qk`, such as `scripts/lane/qk`: Queuekeeper recognizes its own
    command by that name for single-test reruns, `qk run LANE -- NAME` and the docs lane.
    Check the commands in the worker's environment on each Mac that can run the lanes.

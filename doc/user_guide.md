@@ -1069,7 +1069,9 @@ The most useful settings:
   sent to another Mac runs that Mac's checkout. A project's own `scripts/qk` copy does not take
   the bare word. Queuekeeper recognizes its own command by a word named `qk`. That is how it reruns
   a failed test alone and runs `qk run LANE -- NAME`, so a project script that starts
-  Queuekeeper for a lane must be named `qk` too, such as `scripts/lane/qk`.
+  Queuekeeper for a lane must be named `qk` too, such as `scripts/lane/qk`. A script inside a lane
+  can call the installed `qk`: any checkout's `bin/qk` hands over to the checkout that
+  `QUEUEKEEPER_ROOT` names, such as the merge queue worker's copy, when that is another checkout.
 
 ### Receipts and outcomes
 
