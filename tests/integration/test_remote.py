@@ -41,9 +41,8 @@ import host_isolation
 from host_isolation import stretched
 from test_support import farm as farm_fixture
 
-# Each test in a process of its own under `qk unittest`'s default module split: most are in RemoteTests, and
-# whole, the module's real queuekeeper runs against a fake second Mac took 450 s on a quiet host, bounding the toolkit's
-# suite alone.
+# Shard the fake-farm dispatch tests individually: together their real Queuekeeper runs can bound the suite.
+# RemoteReportingTests groups the short, in-process controls separately.
 shard_by = "test"
 
 # remote.advertised as it is, before any test patches it.
@@ -562,6 +561,274 @@ class ChannelWriterTests(unittest.TestCase):
             remote.heartbeat(Channel(), 0)
         # Alive at the first two looks, ended at the third: one heartbeat, between them.
         self.assertEqual(said, [b""])
+
+
+class RemoteReportingTests(unittest.TestCase):
+    # These in-process controls need neither a fake farm nor a separate process each.
+    serial_group = "remote-reporting"
+
+    def setUp(self):
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_a_group_or_a_log_not_begun_gets_a_heartbeat_that_says_so(self):
+        now = [0.0]
+        def said(group, *lines):
+            with contextlib.redirect_stderr(StringIO()) as error:
+                progress = remote.Progress("lane", "fake", group, "its clock", clock=lambda: now[0])
+                for line in lines: progress.arrived(line)
+                now[0] += remote.PROGRESS_INTERVAL - 1
+                progress.beat()
+                self.assertEqual(error.getvalue().count("heartbeat"), 0)  # not due yet
+                now[0] += 1
+                progress.beat()
+            return error.getvalue()
+        self.assertIn("no line of its log yet", said(()))
+        group = said(("member",), b"Taking: not a group's own\n")
+        self.assertIn("no member starts without an end report", group)
+        self.assertNotIn("clock", group)
+        self.assertNotIn("grew", group)
+
+    def test_a_group_heartbeat_counts_received_ends_without_repeating_details_or_replays(self):
+        now = [0.0]
+        progress = remote.Progress("group", "fake", ("ended", "omitted", "active"), "its clock",
+                                   clock=lambda: now[0])
+        frames = remote.Frames(self.folder, BytesIO(), BytesIO(), (), "fake", progress)
+        reports = (b"O NOT SELECTED omitted\n", b"O RUN ended\n",
+                   b"O FAIL ended (3s, status 1): /private/member.log\n", b"O RUN active\n",
+                   b'M {"member":"active","stage":"Testing","device":"iPad-Pro-11"}\n')
+        with contextlib.redirect_stderr(StringIO()) as error:
+            for line in reports: frames.take(line)
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+            frames.rewind()
+            for line in reports: frames.take(line)
+            frames.take(b"O PASS undeclared (2s, status 0): /private/other.log\n")
+            frames.take(b'M {"member":"ended","stage":"Testing","device":"iPhone-17-Pro"}\n')
+            frames.take(b'M {"member":"active","stage":"Testing","device":"private-identifier"}\n')
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+        relay, first, second = error.getvalue().splitlines()
+        self.assertTrue(relay.endswith("active: Testing: iPad-Pro-11"), relay)
+        self.assertIn("member end reports: 2 of 3, latest ended (fail, 5m 00s ago)", first)
+        self.assertIn("member end reports: 2 of 3, latest ended (fail, 10m 00s ago)", second)
+        self.assertIn("members reported started, with no end yet: active "
+                      "(10m 00s ago; last stage Testing: iPad-Pro-11, 10m 00s ago)", second)
+        self.assertNotIn("/private/", error.getvalue())
+
+    def test_a_direct_heartbeat_before_log_output_reports_only_observed_wait_and_admission(self):
+        now = [0.0]
+        progress = remote.Progress("lane", "fake", (), "its clock", clock=lambda: now[0])
+        frames = remote.Frames(self.folder, BytesIO(), BytesIO(), (), "fake", progress)
+        waiting = b'W {"kind":"admission","reason":"a reason kept in the wait record"}\n'
+        admitted = b'W {"kind":null,"admitted":true}\n'
+        with contextlib.redirect_stderr(StringIO()) as error:
+            frames.take(waiting)
+            frames.take(b'W {"progress":[]}\n')
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+            frames.take(admitted)
+            now[0] += remote.PROGRESS_INTERVAL - 1
+            frames.rewind()
+            for line in (waiting, b'W {"progress":[]}\n', admitted): frames.take(line)
+            now[0] += 1
+            progress.beat()
+            frames.take(b'W null\n')
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+        waiting_beat, admitted_beat, cleared_beat = error.getvalue().splitlines()
+        self.assertIn("no line of its log yet; receiver reported a wait for admission 5m 00s ago", waiting_beat)
+        self.assertIn("no line of its log yet; receiver reported admission 5m 00s ago", admitted_beat)
+        self.assertNotIn("a reason kept in the wait record", error.getvalue())
+        self.assertNotIn("receiver reported", cleared_beat)
+        self.assertEqual(frames.log.getvalue(), b"")
+
+    def test_a_series_may_run_unattended_for_its_scaled_limit(self):
+        # qk run limits a --repeat series to N times its lane's timeout, on any Mac, so a dropped connection must
+        # not end it sooner. The control: a run with no series keeps the lane's own bound.
+        config = {"lanes": {"tests": {"command": ["x"], "timeout": 100}}}
+        seconds = lambda *arguments: remote.detached_seconds(config, "tests", ["run", "tests", *arguments])
+        self.assertEqual(seconds(), 100 + remote.UNATTENDED_WAIT)
+        self.assertEqual(seconds("--", "--repeat", "3"), 300 + remote.UNATTENDED_WAIT)
+
+    def test_elapsed_work_heartbeat_reports_only_recent_observations_on_the_original_connection(self):
+        now = [0.0]
+        progress = remote.Progress("lane", "fake", (), "its clock", clock=lambda: now[0])
+        frames = remote.Frames(self.folder, BytesIO(), BytesIO(), (), "fake", progress)
+        sample = b'W {"workObservation":{"lane":"lane","elapsedSeconds":60}}\n'
+        wrong = b'W {"workObservation":{"lane":"provision","elapsedSeconds":120}}\n'
+        next_sample = b'W {"workObservation":{"lane":"lane","elapsedSeconds":90}}\n'
+        with contextlib.redirect_stderr(StringIO()) as error:
+            now[0] = remote.PROGRESS_INTERVAL - 4
+            for frame in (sample, wrong): frames.take(frame)
+            now[0] += 4
+            progress.beat()
+            now[0] += remote.PROGRESS_INTERVAL
+            frames.take(sample)  # A repeated bucket cannot renew its age.
+            progress.beat()
+            frames.rewind()
+            for frame in (sample, wrong, sample, next_sample): frames.take(frame)
+            now[0] += remote.PROGRESS_INTERVAL
+            progress.beat()
+        observed, stale, replayed = error.getvalue().splitlines()
+        self.assertIn("last receiver observation (heard 4s ago): at least 1m 00s of lane work had elapsed", observed)
+        self.assertNotIn("receiver observation", stale)
+        self.assertNotIn("receiver observation", replayed)
+        self.assertIsNone(progress.work_observation)
+
+    def test_the_clock_line_names_a_lanes_timeout_and_only_a_stated_test_allowance(self):
+        command = ["python3", "scripts/qk", "simulator-tests", "--scheme", "A",
+                   "--runtime", "iOS-27-2", "--device", "iPhone-17-Pro"]
+        lanes = {"plain": {"command": ["sh", "scripts/test-ios.sh", "simulator-tests"], "timeout": 12300},
+                 "pool": {"command": command, "timeout": 900},
+                 "set": {"command": [*command, "--test-allowance", "45"]},
+                 "forwarded": {"command": [*command, "--"]},
+                 "malformed": {"command": {"launcher": "queuekeeper"}}}
+        said = lambda lane, *arguments: remote.clock_line({"lanes": lanes}, lane, arguments)
+        self.assertIn("its timeout is 12300s;", said("plain"))
+        self.assertNotIn("allowance", said("plain"))
+        self.assertNotIn("allowance", said("malformed"))
+        self.assertIn("its timeout is 900s and the default test allowance is set to 600s;", said("pool"))
+        self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s and the default test allowance is set to 45s;", said("set"))
+        self.assertIn("its timeout is 2700s and the default test allowance is set to 30s;",
+                      said("pool", "--repeat", "3", "--test-allowance=30"))
+        self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s and the default test allowance is set to 30s;",
+                      said("set", "--test-allowance", "30"))
+        self.assertIn("the default test allowance is set to 600s;",
+                      said("forwarded", "--test-allowance", "30"))
+        self.assertNotIn("allowance", said("pool", "--build-only"))
+        self.assertNotIn("allowance", said("forwarded", "-test-timeouts-enabled", "NO"))
+        self.assertNotIn("allowance", said("forwarded", "-default-test-execution-time-allowance", "30"))
+        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
+            self.assertIn("its timeout is 900s;", said("pool", "--test-allowance"))
+            self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s;", said("forwarded", "--repeat", "invalid"))
+        self.assertEqual(output.getvalue() + error.getvalue(), "")
+        with patch.object(plugins, "TEST_ALLOWANCE", [lambda words: 90 if words == command[3:] + ["--flag"] else None]):
+            self.assertIn("the default test allowance is set to 90s;", said("pool", "--flag"))
+
+    def test_the_clock_line_asks_plugins_which_runner_sets_a_test_allowance(self):
+        command, arguments = ["other-runner", "tests"], ("--limit", "45")
+        config = {"lanes": {"tests": {"command": command, "timeout": 900}}}
+        with patch.object(plugins, "LANE_TEST_ALLOWANCE", []):
+            self.assertNotIn("allowance", remote.clock_line(config, "tests", arguments))
+
+        def allowance(words, extra):
+            self.assertEqual(words, command)
+            self.assertEqual(extra, arguments)
+            return 45
+
+        with patch.object(plugins, "LANE_TEST_ALLOWANCE", [allowance]):
+            self.assertIn("its timeout is 900s and the default test allowance is set to 45s;",
+                          remote.clock_line(config, "tests", arguments))
+
+    def test_progress_output_is_bounded_and_counts_for_no_reader_of_a_log(self):
+        with patch.object(remote, "PROGRESS_LINES", 3), contextlib.redirect_stderr(StringIO()) as error:
+            progress = remote.Progress("lane", "fake", (), "its clock")
+            for index in range(10): progress.arrived(f"Testing: {index} ".encode() + b"x" * 2000 + b"\n")
+        lines = error.getvalue().splitlines()
+        # The clock, three lines, and the one that says they stop.
+        self.assertEqual(len(lines), 5, lines)
+        self.assertIn("3 progress lines shown", lines[-1])
+        self.assertTrue(all(len(line) < remote.PROGRESS_WIDTH + 60 for line in lines), lines)
+        self.assertEqual(progress.last[0][:10], "Testing: 9")
+        for text, shown in [(b"Passed: iPad: Executed 7 tests, 2 skipped", "Passed: iPad: executed 7 tests, 2 skipped"),
+                            (b"Passed: Test run with 3 tests in 1 suite passed", "Passed: test run with 3 tests in 1 suite passed"),
+                            # The whole of a line whose form still counts is cut to its first word.
+                            (b"Failed: a ... skipped 'Unmeasured: the host'", "Failed:"),
+                            (b"Unmeasured: the screen is locked", "Unmeasured: the screen is locked"),
+                            (b"Testing: \x1b[1mbold\r", "Testing:  [1mbold")]:
+            with self.subTest(text):
+                self.assertEqual(remote.progress_text(text), shown)
+                self.assertIsNone(lane_results.counted(shown))
+                self.assertEqual(lane_results.unmeasured_tests(shown), [])
+        # The queue's reader of a gate's parts ignores these lines beside the lines it counts.
+        table = "== left: PASS (2 tests, 1.5s)\n"
+        for line in ["remote: heartbeat 2026-11-09T06:19:31Z: gate on fake, 5m 00s in: its log grew by 1 line, the latest 1s ago",
+                     "remote: progress 2026-11-09T06:19:31Z: Testing: iPad"]:
+            self.assertEqual(budgets.parts(f"{line}\n{table}{line}\n"), budgets.parts(table))
+
+    def test_a_closed_stderr_ends_the_progress_lines_and_not_the_run(self):
+        class Closed:
+            def write(self, text): raise BrokenPipeError
+            def flush(self): pass
+        with contextlib.redirect_stderr(Closed()):
+            progress = remote.Progress("lane", "fake", (), "its clock")
+            progress.arrived(b"Testing: iPad\n")
+            progress.arrived(b"Testing: iPhone\n")
+        self.assertTrue(progress.closed)
+        self.assertEqual(progress.lines, 2)
+
+    def test_a_dispatch_stopped_before_its_work_began_is_no_pass(self):
+        # A bound that passed once the provision lane had passed and before the work began left the lane's 0 as
+        # the run's status under load (#317); such a run is 1, as one stopped before any command is.
+        for result, status in [({"stage": "provision", "exitStatus": 0, "stopped": True}, 1),
+                               ({"exitStatus": None, "stopped": True}, 1),
+                               ({"stage": "provision", "exitStatus": -15, "stopped": True}, 143),
+                               ({"stage": "work", "exitStatus": -15, "stopped": True}, 143),
+                               ({"stage": "work", "exitStatus": 3, "stopped": False}, 3),
+                               # The work's own pass stands, with a stop that came as it ended too.
+                               ({"stage": "work", "exitStatus": 0, "stopped": True}, 0),
+                               ({"stage": "work", "exitStatus": 0, "stopped": False}, 0)]:
+            with self.subTest(result):
+                self.assertEqual(remote.exit_status(result), status)
+
+    def test_what_a_connection_s_end_means_turns_on_the_journal_and_the_dispatcher_having_heard_the_run(self):
+        def reset():
+            offload_host._stop.clear()
+            offload_host._stop_details.clear()
+            offload_host._attached.clear()
+            offload_host._received.clear()
+            offload_host._detached_at = None
+        self.addCleanup(reset)
+        journal = object()
+        for held, attached, received, stopped, detached in [(None, True, False, True, False),
+                                                            (journal, False, False, True, False),
+                                                            (journal, True, False, False, True),
+                                                            (journal, True, True, False, False)]:
+            with self.subTest(held=held, attached=attached, received=received), \
+                    patch.object(offload_host, "_journal", held):
+                reset()
+                if attached: offload_host._attached.set()
+                if received: offload_host._received.set()
+                offload_host.connection_ended()
+                self.assertEqual(offload_host._stop.is_set(), stopped)
+                self.assertEqual(offload_host._detached_at is not None, detached)
+                self.assertEqual(offload_host._stop_details.get("reason"),
+                                 "the dispatch connection ended" if stopped else None)
+
+    def test_a_signal_followed_by_a_disconnect_keeps_the_signal_as_the_first_observed_stop(self):
+        self.addCleanup(offload_host._stop.clear)
+        self.addCleanup(offload_host._stop_details.clear)
+        offload_host.stop_signal(signal.SIGTERM, None)
+        offload_host.connection_ended()
+        self.assertTrue(offload_host._stop.is_set())
+        self.assertEqual(offload_host._stop_details["reason"],
+                         "the dispatch host process received SIGTERM (sender unknown)")
+
+    def test_a_lost_run_names_sleep_only_when_this_mac_slept_and_ssh_only_for_its_own_failure(self):
+        output = Path("/build/output.log")
+        cases = [((255, "Timeout, server fake not responding.", 10.0, 1300.0), "ssh exited 255: Timeout", "slept for 1290 s"),
+                 ((255, "Timeout, server fake not responding.", 10.0, 10.0 + remote.SLEEP_NOTED - 0.5), "ssh exited 255:",
+                  None),
+                 ((255, None, None, 50.0), "(ssh exited 255);", None),
+                 ((1, "a line of the shell's", 10.0, 10.0), "(ssh exited 1);", None)]
+        for (status, said, before, after), cause, sleep in cases:
+            with self.subTest(status=status, said=said, before=before, after=after), \
+                    patch.object(remote, "asleep", return_value=after):
+                message = remote.lost("fake", status, said, 0, before, output)
+            self.assertIn(cause, message)
+            self.assertIn("dispatched at 1970-01-01 00:00:00 UTC and lost at ", message)
+            self.assertIn("The run is unmeasured", message)
+            if sleep: self.assertIn(f"this Mac {sleep} of that", message)
+            else: self.assertNotIn("slept", message)
+            if status != 255: self.assertNotIn(said, message)
+
+    def test_this_macs_sleep_reads_as_a_difference_that_does_not_run_while_it_is_awake(self):
+        first = remote.asleep()
+        if first is None: self.skipTest("this system has no pair of clocks that differ by sleep")
+        time.sleep(0.2)
+        # Awake, the clock that runs through sleep and the one that stops for it keep together, within a tolerance
+        # stretched by load for a pause between the two readings. The 0.2 s nap stays fixed: it is no bound.
+        self.assertLess(abs(remote.asleep() - first), stretched(0.05))
 
 
 class RemoteTests(unittest.TestCase):
@@ -1171,156 +1438,6 @@ class RemoteTests(unittest.TestCase):
                     out, error = process.communicate(timeout=stretched(12))
                     self.assertEqual(process.returncode, 0, out + error)
 
-    def test_a_group_or_a_log_not_begun_gets_a_heartbeat_that_says_so(self):
-        now = [0.0]
-        def said(group, *lines):
-            with contextlib.redirect_stderr(StringIO()) as error:
-                progress = remote.Progress("lane", "fake", group, "its clock", clock=lambda: now[0])
-                for line in lines: progress.arrived(line)
-                now[0] += remote.PROGRESS_INTERVAL - 1
-                progress.beat()
-                self.assertEqual(error.getvalue().count("heartbeat"), 0)  # not due yet
-                now[0] += 1
-                progress.beat()
-            return error.getvalue()
-        self.assertIn("no line of its log yet", said(()))
-        group = said(("member",), b"Taking: not a group's own\n")
-        self.assertIn("no member starts without an end report", group)
-        self.assertNotIn("clock", group)
-        self.assertNotIn("grew", group)
-
-    def test_a_group_heartbeat_counts_received_ends_without_repeating_details_or_replays(self):
-        now = [0.0]
-        progress = remote.Progress("group", "fake", ("ended", "omitted", "active"), "its clock",
-                                   clock=lambda: now[0])
-        frames = remote.Frames(Path(self.temp.name), BytesIO(), BytesIO(), (), "fake", progress)
-        reports = (b"O NOT SELECTED omitted\n", b"O RUN ended\n",
-                   b"O FAIL ended (3s, status 1): /private/member.log\n", b"O RUN active\n",
-                   b'M {"member":"active","stage":"Testing","device":"iPad-Pro-11"}\n')
-        with contextlib.redirect_stderr(StringIO()) as error:
-            for line in reports: frames.take(line)
-            now[0] += remote.PROGRESS_INTERVAL
-            progress.beat()
-            frames.rewind()
-            for line in reports: frames.take(line)
-            frames.take(b"O PASS undeclared (2s, status 0): /private/other.log\n")
-            frames.take(b'M {"member":"ended","stage":"Testing","device":"iPhone-17-Pro"}\n')
-            frames.take(b'M {"member":"active","stage":"Testing","device":"private-identifier"}\n')
-            now[0] += remote.PROGRESS_INTERVAL
-            progress.beat()
-        relay, first, second = error.getvalue().splitlines()
-        self.assertTrue(relay.endswith("active: Testing: iPad-Pro-11"), relay)
-        self.assertIn("member end reports: 2 of 3, latest ended (fail, 5m 00s ago)", first)
-        self.assertIn("member end reports: 2 of 3, latest ended (fail, 10m 00s ago)", second)
-        self.assertIn("members reported started, with no end yet: active "
-                      "(10m 00s ago; last stage Testing: iPad-Pro-11, 10m 00s ago)", second)
-        self.assertNotIn("/private/", error.getvalue())
-
-    def test_a_direct_heartbeat_before_log_output_reports_only_observed_wait_and_admission(self):
-        now = [0.0]
-        progress = remote.Progress("lane", "fake", (), "its clock", clock=lambda: now[0])
-        frames = remote.Frames(Path(self.temp.name), BytesIO(), BytesIO(), (), "fake", progress)
-        waiting = b'W {"kind":"admission","reason":"a reason kept in the wait record"}\n'
-        admitted = b'W {"kind":null,"admitted":true}\n'
-        with contextlib.redirect_stderr(StringIO()) as error:
-            frames.take(waiting)
-            frames.take(b'W {"progress":[]}\n')
-            now[0] += remote.PROGRESS_INTERVAL
-            progress.beat()
-            frames.take(admitted)
-            now[0] += remote.PROGRESS_INTERVAL - 1
-            frames.rewind()
-            for line in (waiting, b'W {"progress":[]}\n', admitted): frames.take(line)
-            now[0] += 1
-            progress.beat()
-            frames.take(b'W null\n')
-            now[0] += remote.PROGRESS_INTERVAL
-            progress.beat()
-        waiting_beat, admitted_beat, cleared_beat = error.getvalue().splitlines()
-        self.assertIn("no line of its log yet; receiver reported a wait for admission 5m 00s ago", waiting_beat)
-        self.assertIn("no line of its log yet; receiver reported admission 5m 00s ago", admitted_beat)
-        self.assertNotIn("a reason kept in the wait record", error.getvalue())
-        self.assertNotIn("receiver reported", cleared_beat)
-        self.assertEqual(frames.log.getvalue(), b"")
-
-    def test_a_series_may_run_unattended_for_its_scaled_limit(self):
-        # qk run limits a --repeat series to N times its lane's timeout, on any Mac, so a dropped connection must
-        # not end it sooner. The control: a run with no series keeps the lane's own bound.
-        config = {"lanes": {"tests": {"command": ["x"], "timeout": 100}}}
-        seconds = lambda *arguments: remote.detached_seconds(config, "tests", ["run", "tests", *arguments])
-        self.assertEqual(seconds(), 100 + remote.UNATTENDED_WAIT)
-        self.assertEqual(seconds("--", "--repeat", "3"), 300 + remote.UNATTENDED_WAIT)
-
-    def test_elapsed_work_heartbeat_reports_only_recent_observations_on_the_original_connection(self):
-        now = [0.0]
-        progress = remote.Progress("lane", "fake", (), "its clock", clock=lambda: now[0])
-        frames = remote.Frames(Path(self.temp.name), BytesIO(), BytesIO(), (), "fake", progress)
-        sample = b'W {"workObservation":{"lane":"lane","elapsedSeconds":60}}\n'
-        wrong = b'W {"workObservation":{"lane":"provision","elapsedSeconds":120}}\n'
-        next_sample = b'W {"workObservation":{"lane":"lane","elapsedSeconds":90}}\n'
-        with contextlib.redirect_stderr(StringIO()) as error:
-            now[0] = remote.PROGRESS_INTERVAL - 4
-            for frame in (sample, wrong): frames.take(frame)
-            now[0] += 4
-            progress.beat()
-            now[0] += remote.PROGRESS_INTERVAL
-            frames.take(sample)  # A repeated bucket cannot renew its age.
-            progress.beat()
-            frames.rewind()
-            for frame in (sample, wrong, sample, next_sample): frames.take(frame)
-            now[0] += remote.PROGRESS_INTERVAL
-            progress.beat()
-        observed, stale, replayed = error.getvalue().splitlines()
-        self.assertIn("last receiver observation (heard 4s ago): at least 1m 00s of lane work had elapsed", observed)
-        self.assertNotIn("receiver observation", stale)
-        self.assertNotIn("receiver observation", replayed)
-        self.assertIsNone(progress.work_observation)
-
-    def test_the_clock_line_names_a_lanes_timeout_and_only_a_stated_test_allowance(self):
-        command = ["python3", "scripts/qk", "simulator-tests", "--scheme", "A",
-                   "--runtime", "iOS-27-2", "--device", "iPhone-17-Pro"]
-        lanes = {"plain": {"command": ["sh", "scripts/test-ios.sh", "simulator-tests"], "timeout": 12300},
-                 "pool": {"command": command, "timeout": 900},
-                 "set": {"command": [*command, "--test-allowance", "45"]},
-                 "forwarded": {"command": [*command, "--"]},
-                 "malformed": {"command": {"launcher": "queuekeeper"}}}
-        said = lambda lane, *arguments: remote.clock_line({"lanes": lanes}, lane, arguments)
-        self.assertIn("its timeout is 12300s;", said("plain"))
-        self.assertNotIn("allowance", said("plain"))
-        self.assertNotIn("allowance", said("malformed"))
-        self.assertIn("its timeout is 900s and the default test allowance is set to 600s;", said("pool"))
-        self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s and the default test allowance is set to 45s;", said("set"))
-        self.assertIn("its timeout is 2700s and the default test allowance is set to 30s;",
-                      said("pool", "--repeat", "3", "--test-allowance=30"))
-        self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s and the default test allowance is set to 30s;",
-                      said("set", "--test-allowance", "30"))
-        self.assertIn("the default test allowance is set to 600s;",
-                      said("forwarded", "--test-allowance", "30"))
-        self.assertNotIn("allowance", said("pool", "--build-only"))
-        self.assertNotIn("allowance", said("forwarded", "-test-timeouts-enabled", "NO"))
-        self.assertNotIn("allowance", said("forwarded", "-default-test-execution-time-allowance", "30"))
-        with contextlib.redirect_stdout(StringIO()) as output, contextlib.redirect_stderr(StringIO()) as error:
-            self.assertIn("its timeout is 900s;", said("pool", "--test-allowance"))
-            self.assertIn(f"its timeout is {processes.DEFAULT_LIMIT:g}s;", said("forwarded", "--repeat", "invalid"))
-        self.assertEqual(output.getvalue() + error.getvalue(), "")
-        with patch.object(plugins, "TEST_ALLOWANCE", [lambda words: 90 if words == command[3:] + ["--flag"] else None]):
-            self.assertIn("the default test allowance is set to 90s;", said("pool", "--flag"))
-
-    def test_the_clock_line_asks_plugins_which_runner_sets_a_test_allowance(self):
-        command, arguments = ["other-runner", "tests"], ("--limit", "45")
-        config = {"lanes": {"tests": {"command": command, "timeout": 900}}}
-        with patch.object(plugins, "LANE_TEST_ALLOWANCE", []):
-            self.assertNotIn("allowance", remote.clock_line(config, "tests", arguments))
-
-        def allowance(words, extra):
-            self.assertEqual(words, command)
-            self.assertEqual(extra, arguments)
-            return 45
-
-        with patch.object(plugins, "LANE_TEST_ALLOWANCE", [allowance]):
-            self.assertIn("its timeout is 900s and the default test allowance is set to 45s;",
-                          remote.clock_line(config, "tests", arguments))
-
     def test_the_remote_clock_reports_the_scaled_limit_and_appended_simulator_allowance(self):
         launcher = self.project / "scripts/qk"
         launcher.parent.mkdir()
@@ -1340,43 +1457,6 @@ class RemoteTests(unittest.TestCase):
                 self.assertEqual(status, 0, output + error)
                 self.assertIn("its timeout is 2700s and the default test allowance is set to 45s;", error)
                 self.assertEqual(json.loads(receipt.read_text())["result"]["receipt"]["timeout"], 2700)
-
-    def test_progress_output_is_bounded_and_counts_for_no_reader_of_a_log(self):
-        with patch.object(remote, "PROGRESS_LINES", 3), contextlib.redirect_stderr(StringIO()) as error:
-            progress = remote.Progress("lane", "fake", (), "its clock")
-            for index in range(10): progress.arrived(f"Testing: {index} ".encode() + b"x" * 2000 + b"\n")
-        lines = error.getvalue().splitlines()
-        # The clock, three lines, and the one that says they stop.
-        self.assertEqual(len(lines), 5, lines)
-        self.assertIn("3 progress lines shown", lines[-1])
-        self.assertTrue(all(len(line) < remote.PROGRESS_WIDTH + 60 for line in lines), lines)
-        self.assertEqual(progress.last[0][:10], "Testing: 9")
-        for text, shown in [(b"Passed: iPad: Executed 7 tests, 2 skipped", "Passed: iPad: executed 7 tests, 2 skipped"),
-                            (b"Passed: Test run with 3 tests in 1 suite passed", "Passed: test run with 3 tests in 1 suite passed"),
-                            # The whole of a line whose form still counts is cut to its first word.
-                            (b"Failed: a ... skipped 'Unmeasured: the host'", "Failed:"),
-                            (b"Unmeasured: the screen is locked", "Unmeasured: the screen is locked"),
-                            (b"Testing: \x1b[1mbold\r", "Testing:  [1mbold")]:
-            with self.subTest(text):
-                self.assertEqual(remote.progress_text(text), shown)
-                self.assertIsNone(lane_results.counted(shown))
-                self.assertEqual(lane_results.unmeasured_tests(shown), [])
-        # The queue's reader of a gate's parts ignores these lines beside the lines it counts.
-        table = "== left: PASS (2 tests, 1.5s)\n"
-        for line in ["remote: heartbeat 2026-11-09T06:19:31Z: gate on fake, 5m 00s in: its log grew by 1 line, the latest 1s ago",
-                     "remote: progress 2026-11-09T06:19:31Z: Testing: iPad"]:
-            self.assertEqual(budgets.parts(f"{line}\n{table}{line}\n"), budgets.parts(table))
-
-    def test_a_closed_stderr_ends_the_progress_lines_and_not_the_run(self):
-        class Closed:
-            def write(self, text): raise BrokenPipeError
-            def flush(self): pass
-        with contextlib.redirect_stderr(Closed()):
-            progress = remote.Progress("lane", "fake", (), "its clock")
-            progress.arrived(b"Testing: iPad\n")
-            progress.arrived(b"Testing: iPhone\n")
-        self.assertTrue(progress.closed)
-        self.assertEqual(progress.lines, 2)
 
     def test_a_whole_lane_counts_only_for_its_exact_commit_and_a_failure_is_its_status(self):
         self.assertEqual(self.qk("remote", "run", "fail")[0], 3)
@@ -2045,20 +2125,6 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(devices.condition(entry), "held")
         self.assertRegex(entry["run"]["outcome"], r"^stopped at its [1-5]s bound, then exit [1-9]")
         self.assertGreater(entry["revision"], held["revision"])
-
-    def test_a_dispatch_stopped_before_its_work_began_is_no_pass(self):
-        # A bound that passed once the provision lane had passed and before the work began left the lane's 0 as
-        # the run's status under load (#317); such a run is 1, as one stopped before any command is.
-        for result, status in [({"stage": "provision", "exitStatus": 0, "stopped": True}, 1),
-                               ({"exitStatus": None, "stopped": True}, 1),
-                               ({"stage": "provision", "exitStatus": -15, "stopped": True}, 143),
-                               ({"stage": "work", "exitStatus": -15, "stopped": True}, 143),
-                               ({"stage": "work", "exitStatus": 3, "stopped": False}, 3),
-                               # The work's own pass stands, with a stop that came as it ended too.
-                               ({"stage": "work", "exitStatus": 0, "stopped": True}, 0),
-                               ({"stage": "work", "exitStatus": 0, "stopped": False}, 0)]:
-            with self.subTest(result):
-                self.assertEqual(remote.exit_status(result), status)
 
     def test_a_bounded_run_on_the_farm_mac_takes_its_reservation_from_the_lease(self):
         self.hold()
@@ -3003,39 +3069,6 @@ class RemoteTests(unittest.TestCase):
         finally:
             self.reap(lane)
 
-    def test_what_a_connection_s_end_means_turns_on_the_journal_and_the_dispatcher_having_heard_the_run(self):
-        def reset():
-            offload_host._stop.clear()
-            offload_host._stop_details.clear()
-            offload_host._attached.clear()
-            offload_host._received.clear()
-            offload_host._detached_at = None
-        self.addCleanup(reset)
-        journal = object()
-        for held, attached, received, stopped, detached in [(None, True, False, True, False),
-                                                            (journal, False, False, True, False),
-                                                            (journal, True, False, False, True),
-                                                            (journal, True, True, False, False)]:
-            with self.subTest(held=held, attached=attached, received=received), \
-                    patch.object(offload_host, "_journal", held):
-                reset()
-                if attached: offload_host._attached.set()
-                if received: offload_host._received.set()
-                offload_host.connection_ended()
-                self.assertEqual(offload_host._stop.is_set(), stopped)
-                self.assertEqual(offload_host._detached_at is not None, detached)
-                self.assertEqual(offload_host._stop_details.get("reason"),
-                                 "the dispatch connection ended" if stopped else None)
-
-    def test_a_signal_followed_by_a_disconnect_keeps_the_signal_as_the_first_observed_stop(self):
-        self.addCleanup(offload_host._stop.clear)
-        self.addCleanup(offload_host._stop_details.clear)
-        offload_host.stop_signal(signal.SIGTERM, None)
-        offload_host.connection_ended()
-        self.assertTrue(offload_host._stop.is_set())
-        self.assertEqual(offload_host._stop_details["reason"],
-                         "the dispatch host process received SIGTERM (sender unknown)")
-
     def test_a_connection_that_takes_no_bytes_does_not_hold_up_the_run(self):
         blocked, written = threading.Event(), threading.Event()
         def hang(_data):
@@ -3288,24 +3321,6 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("finished", output)
         self.assertNotIn("nothing from the dispatcher", output + error)
 
-    def test_a_lost_run_names_sleep_only_when_this_mac_slept_and_ssh_only_for_its_own_failure(self):
-        output = Path("/build/output.log")
-        cases = [((255, "Timeout, server fake not responding.", 10.0, 1300.0), "ssh exited 255: Timeout", "slept for 1290 s"),
-                 ((255, "Timeout, server fake not responding.", 10.0, 10.0 + remote.SLEEP_NOTED - 0.5), "ssh exited 255:",
-                  None),
-                 ((255, None, None, 50.0), "(ssh exited 255);", None),
-                 ((1, "a line of the shell's", 10.0, 10.0), "(ssh exited 1);", None)]
-        for (status, said, before, after), cause, sleep in cases:
-            with self.subTest(status=status, said=said, before=before, after=after), \
-                    patch.object(remote, "asleep", return_value=after):
-                message = remote.lost("fake", status, said, 0, before, output)
-            self.assertIn(cause, message)
-            self.assertIn("dispatched at 1970-01-01 00:00:00 UTC and lost at ", message)
-            self.assertIn("The run is unmeasured", message)
-            if sleep: self.assertIn(f"this Mac {sleep} of that", message)
-            else: self.assertNotIn("slept", message)
-            if status != 255: self.assertNotIn(said, message)
-
     def test_a_connection_this_mac_slept_through_says_so_rather_than_that_the_farm_mac_is_away(self):
         # As at 22:13 UTC on 2026-10-27: another Mac accepted queuekeeper's first connection, this Mac slept
         # for 210 s with it open, and ssh timed out two minutes after this Mac woke. queuekeeper said to wake
@@ -3329,14 +3344,6 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("the SSH exchange timed out; to fix it, see whether fake is overloaded or its sshd is stuck",
                       error)
         self.assertNotIn("slept", error)
-
-    def test_this_macs_sleep_reads_as_a_difference_that_does_not_run_while_it_is_awake(self):
-        first = remote.asleep()
-        if first is None: self.skipTest("this system has no pair of clocks that differ by sleep")
-        time.sleep(0.2)
-        # Awake, the clock that runs through sleep and the one that stops for it keep together, within a tolerance
-        # stretched by load for a pause between the two readings. The 0.2 s nap stays fixed: it is no bound.
-        self.assertLess(abs(remote.asleep() - first), stretched(0.05))
 
     def test_a_census_that_fails_is_reported_and_stops_no_run(self):
         with patch.object(remote, "census_command", return_value="sh -c 'echo census broke >&2; exit 3'"):
