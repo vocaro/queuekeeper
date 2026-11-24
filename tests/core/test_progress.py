@@ -177,34 +177,48 @@ class MonitorTests(unittest.TestCase):
             self.assertIn(str(log), retained["lastLogUnavailable"]["error"])
             self.assertNotIn("lastLogUnavailable", monitor.last)
 
-    def test_cpu_failures_reset_coverage_and_retain_bounded_evidence_only_in_the_receipt(self):
+    def test_cpu_timing_and_failure_details_stay_in_the_retained_receipt(self):
         birth = "Tue Nov 10 12:30:00 2026"
         read = subprocess.CompletedProcess([], 0, f"123 {birth} 00:01.25\n", "")
-        denied = subprocess.CompletedProcess([], 1, "", "permission denied")
         timeout = subprocess.TimeoutExpired("ps", 1, stderr=b"x" * 2048 + b"private tail")
+        clock = [0]
+        results = iter([(0.125, read), (0.0625, read), (0.75, timeout), (0.25, read)])
+
+        def query(*_args, **_kwargs):
+            elapsed, result = next(results)
+            clock[0] += elapsed
+            if isinstance(result, Exception):
+                raise result
+            return result
+
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "run.log"
             log.touch()
             live = Path(directory) / "live.json"
             monitor = progress.Monitor({"seconds": 1, "action": "stop"}, log, None)
             monitor.live_paths = [live]
-            with patch.object(progress.subprocess, "run", side_effect=[read, denied, timeout, read]), \
+            with patch.object(progress.subprocess, "run", side_effect=query), \
+                    patch.object(progress.time, "monotonic", side_effect=lambda: clock[0]), \
                     patch.object(lane_progress, "publish") as publish:
                 for moment in range(4):
-                    with patch.object(progress.time, "monotonic", return_value=moment), \
-                            patch.object(progress.time, "time", return_value=moment):
-                        identities = {123: birth, 124: birth} if moment == 2 else {123: birth}
+                    clock[0] = moment
+                    with patch.object(progress.time, "time", return_value=moment):
+                        identities = {123: birth, 124: birth} if moment in (1, 2) else {123: birth}
                         self.assertIsNone(monitor.observe(identities))
                 monitor.finish("exit-0")
                 for args in publish.call_args_list:
+                    self.assertNotIn("cpuQueryTiming", args.args[0])
                     self.assertNotIn("cpuUnavailableSamples", args.args[0])
                     self.assertNotIn("lastCpuUnavailable", args.args[0])
             retained = json.loads(monitor.status.read_text())
-            self.assertEqual(retained["cpuUnavailableSamples"], {"process-list-failed": 1, "process-list-timeout": 1})
+            self.assertEqual(retained["cpuQueryTiming"], {"samples": 2, "totalSeconds": 0.375, "maximumSeconds": 0.25})
+            self.assertEqual(retained["cpuUnavailableSamples"], {"missing-identity": 1, "process-list-timeout": 1})
+            self.assertEqual(retained["samplingGapSamples"], 0)
             self.assertEqual(retained["unobservableSamples"], 2)
             self.assertEqual(retained["observedSeconds"], 0)
             evidence = retained["lastCpuUnavailable"]
             self.assertEqual(evidence["reason"], "process-list-timeout")
+            self.assertEqual(evidence["elapsedSeconds"], 0.75)
             self.assertEqual(evidence["requested"], [{"pid": 123, "start": birth}, {"pid": 124, "start": birth}])
             self.assertEqual(evidence["stderr"], "x" * progress.DIAGNOSTIC_LIMIT + " [truncated]")
 

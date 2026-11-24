@@ -96,6 +96,7 @@ class Monitor:
         self.began = time.time()
         self.maximum, self.samples, self.unobservable = 0, 0, 0
         self.sampling_gaps = 0
+        self.cpu_query_timing = {"samples": 0, "totalSeconds": 0.0, "maximumSeconds": 0.0}
         self.cpu_unavailable_samples, self.last_cpu_unavailable = {}, None
         self.log_unavailable_samples, self.last_log_unavailable = {}, None
         self.publication_failures, self.last_publication_failure = 0, None
@@ -113,7 +114,13 @@ class Monitor:
         if not force and now < self.next: return None
         self.next = now + INTERVAL
         work = {pid: " ".join(start.split()) for pid, start in identities.items() if pid not in excluded}
+        query_began = time.monotonic()
         readings = cpu(work, unavailable=self.record_cpu_unavailable)
+        if readings is not None:
+            elapsed = max(0.0, time.monotonic() - query_began)
+            self.cpu_query_timing["samples"] += 1
+            self.cpu_query_timing["totalSeconds"] += elapsed
+            self.cpu_query_timing["maximumSeconds"] = max(self.cpu_query_timing["maximumSeconds"], elapsed)
         try:
             stat = self.log.stat()
             output = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
@@ -194,6 +201,7 @@ class Monitor:
         temporary = self.status.with_name(self.status.name + ".tmp-" + self.run)
         try:
             retained = {**self.last, "samplingGapSamples": self.sampling_gaps,
+                        "cpuQueryTiming": self.cpu_query_timing,
                         "cpuUnavailableSamples": self.cpu_unavailable_samples,
                         "logUnavailableSamples": self.log_unavailable_samples,
                         "publicationFailures": self.publication_failures,
