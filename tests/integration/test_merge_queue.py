@@ -1400,7 +1400,7 @@ class Doctor(UnittestGate):
         self.assertTrue(found["healthy"])
 
     def test_a_gate_waiting_for_admission_points_to_eng_admissions_now_without_a_finding(self):
-        # vocaro-engineering#342: a pointer, not a report: doctor reads no admission and stays healthy.
+        # vocaro-engineering#342: a brief wait gets a pointer and does not make a finding.
         self.commit("tests/test_new.py", "new", ISOLATED)
         self.add("new")
         queue = mq.Queue(self.repo)
@@ -1408,8 +1408,8 @@ class Doctor(UnittestGate):
             "lane": "gate", "waiting": "admission on this Mac: all 3 guaranteed slots are busy",
             "waitingKind": "admission", "waitingSince": time.time() - 120}))
         from queuekeeper import offload_host, remote
-        with patch.object(offload_host, "admissions_now", side_effect=AssertionError("read")), \
-                patch.object(remote, "admissions_there", side_effect=AssertionError("asked")):
+        with patch.object(offload_host, "admissions_now", return_value=self.reading()), \
+                patch.object(remote, "admissions_there", return_value=self.reading()):
             status_, said, found = self.doctor()
         self.assertEqual((status_, found["healthy"], found["findings"]), (0, True, []))
         self.assertIn("qk queue doctor: healthy", said)
@@ -1500,8 +1500,9 @@ class Doctor(UnittestGate):
         ]}
         unknown = {**holder, "identity": "u", "process": "unknown", "progress": [{**quiet, "lane": "dead-reporter"}]}
         stranded = {**holder, "identity": "s", "stranded": True, "progress": [{**quiet, "lane": "stranded-run"}]}
-        with patch.object(offload_host, "admissions_now", return_value=self.reading(holder, unknown, stranded)):
+        with patch.object(offload_host, "admissions_now", return_value=self.reading(holder, unknown, stranded)) as here:
             status_, said, report = self.doctor()
+        self.assertEqual(here.call_count, 2, "one admission read each for text and JSON")
         self.assertEqual(status_, 1)
         expected = "quicklook-ipad observed quiet for 620s (stall bound 600s)"
         finding, = report["findings"]
@@ -1512,26 +1513,46 @@ class Doctor(UnittestGate):
             self.assertNotIn(f"{lane} observed quiet", said)
         self.assertEqual((self.snapshot(), queue.round_state()["gates"]), (before, account))
 
+    def test_doctor_reports_a_verified_quiet_holder_on_an_idle_queue(self):
+        quiet = {"lane": "quicklook-ipad", "state": "quiet", "quietSeconds": 620.0, "thresholdSeconds": 600}
+        holder = {**self.QUICK_LOOK, "progress": [quiet]}
+        working = {**holder, "progress": [{**quiet, "state": "observing", "quietSeconds": 20.0}]}
+        unknown = {**holder, "process": "unknown"}
+        stranded = {**holder, "stranded": True}
+        before = self.snapshot()
+        with patch.object(mq.farm, "destinations", return_value=("studio",)), \
+                patch.object(mq.lane_wait, "farm_mac", return_value="Studio"), \
+                patch.object(offload_host, "admissions_now", return_value=self.reading(working, unknown, stranded)), \
+                patch.object(mq.remote, "admissions_there", return_value=self.reading(holder)):
+            status_, said, report = self.doctor(working=False)
+        self.assertEqual((status_, report["healthy"], report["waiting"], report["worker"]), (1, False, 0, False), said)
+        finding, = report["findings"]
+        self.assertEqual((finding["signal"], finding["mac"], finding["holder"]),
+                         ("quiet admission holder", "Studio", holder))
+        self.assertIn("Studio:", finding["diagnosis"])
+        self.assertIn("quicklook-ipad observed quiet for 620s (stall bound 600s)", said)
+        self.assertEqual(self.snapshot(), before)
+
     def test_a_gate_waiting_long_on_a_busy_mac_or_briefly_on_an_idle_one_is_no_finding(self):
-        # The negative control: a Mac at or above its busy limit is busy, and its holders are not read.
+        # A wait on a busy Mac is no finding. The separate progress read shows no quiet holders.
         self.waiting_gate(45)
         from queuekeeper import remote
-        never = (patch.object(offload_host, "admissions_now", side_effect=AssertionError("read")),
-                 patch.object(remote, "admissions_there", side_effect=AssertionError("asked")))
+        empty = (patch.object(offload_host, "admissions_now", return_value=self.reading()),
+                 patch.object(remote, "admissions_there", return_value=self.reading()))
         self.busy_of.return_value = (90.0, 75.0, "this Mac")
-        with never[0], never[1]: status_, said, found = self.doctor()
+        with empty[0], empty[1]: status_, said, found = self.doctor()
         self.assertEqual((status_, found["findings"]), (0, []), said)
         self.assertIn("note: the main gate's gate has waited 45m", said)
         # A busy share that cannot be read is unknown, never idle: a note, no finding.
         self.busy_of.return_value = None
-        with never[0], never[1]: status_, said, found = self.doctor()
+        with empty[0], empty[1]: status_, said, found = self.doctor()
         self.assertEqual((status_, found["findings"]), (0, []), said)
         self.assertIn("whether this Mac has spare CPU is unknown, as its busy share could not be read", said)
         # Under the bound, an idle Mac's wait is read no further.
         self.busy_of.return_value = (25.0, 75.0, "this Mac")
         mq.Queue(self.repo).note(lambda state: state["gates"]["main"].update(
             waitingSince=time.time() - mq.IDLE_WAIT_SECONDS + 60))
-        with never[0], never[1]: self.assertEqual(self.doctor()[2]["findings"], [])
+        with empty[0], empty[1]: self.assertEqual(self.doctor()[2]["findings"], [])
 
     def test_a_gate_waiting_for_the_farm_mac_reads_its_holders_there_or_says_unknown(self):
         self.waiting_gate(30, mac="build-host")

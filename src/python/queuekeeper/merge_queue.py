@@ -3217,15 +3217,13 @@ def gate_logs(queue, lanes, working):
 
 
 def doctor(root, as_json=False):
-    """`qk queue doctor`: print diagnose's findings, and idle_waits', or that the queue is healthy. 0 when it finds the
-    queue healthy, 1 when it finds anything."""
+    """`qk queue doctor`: report queue, admission, and host findings. 0 when healthy, 1 when it finds anything."""
     findings, waiting, working = diagnose(root)
     hints = admission_hints(root) + checkout_hints(root) if working else []
-    if working:
-        held_back, unknown = idle_waits(root)
-        findings, hints = findings + held_back, hints + unknown
-    short, unknown = memory_findings()
-    findings, hints = findings + short, hints + unknown
+    held_back, wait_notes = idle_waits(root) if working else ([], [])
+    quiet, quiet_notes = quiet_findings({lane_wait.host_of(finding["mac"]) for finding in held_back})
+    short, memory_notes = memory_findings()
+    findings, hints = findings + held_back + quiet + short, hints + wait_notes + quiet_notes + memory_notes
     if as_json:
         print(json.dumps({"healthy": not findings, "waiting": len(waiting), "worker": working, "findings": findings,
                           "hints": hints}, indent=2))
@@ -3361,6 +3359,46 @@ def holders_on(host):
     return holders, None, reclaimed
 
 
+def quiet_findings(reported):
+    """Report verified quiet holders even when no gate waits on them. A Mac's long-wait finding already names
+    its holders, so do not read or report them twice (vocaro/queuekeeper#70)."""
+    findings, notes = [], []
+    try: hosts = farm.destinations()
+    except ValueError: hosts = ()
+    for mac, host in ((lane_wait.HERE, None), *((lane_wait.farm_mac(host), host) for host in hosts)):
+        if host in reported: continue
+        holders, why, _ = holders_on(host)
+        if holders is None:
+            notes.append(f"quiet admission holders on {mac} could not be checked: {why}")
+            continue
+        for holder in holders:
+            if isinstance(holder, dict) and quiet_lanes(holder):
+                findings.append({
+                    "signal": "quiet admission holder",
+                    "diagnosis": f"{mac}: {holder_words(holder)}",
+                    "remedy": "ask the session that owns the holder to check its run; "
+                              "`python3 scripts/qk admissions now` shows its current progress",
+                    "mac": mac, "holder": holder})
+    return findings, notes
+
+
+def quiet_lanes(holder):
+    """Only the live, attributable, currently over-bound observations in an admission reading."""
+    progress = holder.get("progress")
+    if holder.get("process") != "running" or holder.get("stranded") or not isinstance(progress, list):
+        return []
+    words = []
+    # The admission reading has checked the holder and each reporter's process identity and the sample's age.
+    for record in progress:
+        if not isinstance(record, dict) or record.get("state") != "quiet": continue
+        quiet, bound = record.get("quietSeconds"), record.get("thresholdSeconds")
+        if type(quiet) not in (int, float) or type(bound) is not int or not 0 < bound <= quiet < float("inf"):
+            continue
+        lane = record.get("lane") or "a lane"
+        words.append(f"{lane} observed quiet for {round(quiet)}s (stall bound {bound}s)")
+    return words
+
+
 def holder_words(holder):
     """An admission holder's command, PID, hold time, CPU use, origin and measured quiet lanes."""
     held = holder.get("heldSeconds")
@@ -3372,20 +3410,11 @@ def holder_words(holder):
     elif isinstance(cpu, (int, float)): used = f"CPU {cpu:g}% of one core, with what it started"
     else: used = "CPU use unknown"
     origin = resources.whence(holder.get("origin"))
-    quiet_lanes = []
-    # The admission reading has checked the holder and each reporter's process identity and the sample's age.
-    if process == "running" and not holder.get("stranded") and isinstance(holder.get("progress"), list):
-        for record in holder["progress"]:
-            if not isinstance(record, dict) or record.get("state") != "quiet": continue
-            quiet, bound = record.get("quietSeconds"), record.get("thresholdSeconds")
-            if type(quiet) not in (int, float) or type(bound) is not int or not 0 < bound <= quiet < float("inf"):
-                continue
-            lane = record.get("lane") or "a lane"
-            quiet_lanes.append(f"{lane} observed quiet for {round(quiet)}s (stall bound {bound}s)")
+    quiet = quiet_lanes(holder)
     return (f"{holder.get('label') or 'an unnamed owner'} (PID {holder.get('pid')}, held "
             + (resources.duration(held) if isinstance(held, (int, float)) else "for an unknown time")
             + f", {used}, " + (f"from {origin}" if origin else "where its work comes from was not recorded")
-            + (f"; {'; '.join(quiet_lanes)}" if quiet_lanes else "") + ")")
+            + (f"; {'; '.join(quiet)}" if quiet else "") + ")")
 
 
 def reclaimed_words(item):
