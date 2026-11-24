@@ -7792,6 +7792,70 @@ class ToolkitCopy(Fixture):
         self.assertNotIn("moving to the toolkit", said.getvalue())
         self.assertEqual(self.seen.read_text().split("\n")[0], str(self.copy))
 
+    def fresh(self):
+        """The toolkit a session would start this queue's worker from, and what the worker log says of it."""
+        log = io.StringIO()
+        return mq.Queue(self.repo).fresh_toolkit(log), log.getvalue()
+
+    def test_a_fresh_worker_starts_from_the_copy_while_the_shared_checkout_has_edits(self):
+        """A session's edit in progress in the shared checkout made every fresh worker import it, or fail to
+        (vocaro/queuekeeper#179): the worker starts from its own copy, at a landed commit, instead."""
+        with contextlib.redirect_stdout(io.StringIO()): self.gate_once("a")
+        self.assertEqual(self.fresh(), (self.kit, ""))  # the negative control: a clean shared checkout on main
+        (self.kit / "src/python/queuekeeper/cli.py").write_text("raise ImportError('an edit in progress')\n")
+        toolkit, said = self.fresh()
+        self.assertEqual(toolkit, self.copy)
+        head = run(self.copy, "git", "rev-parse", "HEAD")
+        self.assertEqual(said, f"queue: starting the worker from its copy of the toolkit at {self.copy}, {head[:12]}, "
+                               f"since {self.kit} has uncommitted changes\n")
+        # And a session's start runs the worker from there.
+        self.commit("b", "b")
+        self.add("b")
+        started, real = [], subprocess.Popen
+        def popen(command, *arguments, **options):
+            # Git and the import check still run; only the worker, in a session of its own, is not started.
+            if not options.get("start_new_session"): return real(command, *arguments, **options)
+            started.append(command)
+            return SimpleNamespace(wait=lambda: 0)
+        queue = mq.Queue(self.repo)
+        with patch.object(mq.Queue, "start_with_launcher", return_value=False), \
+                patch.object(mq.subprocess, "Popen", side_effect=popen):
+            queue.start()
+        self.assertEqual(started, [queue.command(self.copy)])
+        self.assertIn(f"starting the worker from its copy of the toolkit at {self.copy}",
+                      (queue.directory / "worker.log").read_text())
+
+    def test_a_fresh_worker_starts_from_the_copy_while_the_shared_checkout_is_off_main(self):
+        with contextlib.redirect_stdout(io.StringIO()): self.gate_once("a")
+        run(self.kit, "git", "checkout", "-q", "-b", "work")
+        toolkit, said = self.fresh()
+        self.assertEqual(toolkit, self.copy)
+        self.assertTrue(said.endswith(f"since {self.kit} is not on main\n"), said)
+
+    def test_with_no_usable_copy_a_fresh_worker_starts_from_the_shared_checkout_and_says_why(self):
+        (self.kit / "edit").write_text("x")
+        self.assertEqual(self.fresh(), (self.kit, f"queue: starting the worker from {self.kit}, which has uncommitted "
+                                                  "changes, since this queue has no copy of it yet\n"))
+        with contextlib.redirect_stdout(io.StringIO()): self.gate_once("a")
+        (self.copy / "edit").write_text("x")
+        toolkit, said = self.fresh()
+        self.assertEqual(toolkit, self.kit)
+        self.assertTrue(said.endswith(f"since this queue has a copy at {self.copy} with uncommitted changes\n"), said)
+        (self.copy / "edit").unlink()
+        (self.copy / "src/python/queuekeeper/cli.py").write_text("raise ImportError('broken')\n")
+        run(self.copy, "git", "commit", "-qam", "Break the copy")
+        broken = run(self.copy, "git", "rev-parse", "HEAD")
+        toolkit, said = self.fresh()
+        self.assertEqual(toolkit, self.kit)
+        self.assertIn(f"since this queue has a copy at {self.copy} whose commit {broken[:12]} does not start: "
+                      "importing it exited 1", said)
+
+    def test_an_explicit_toolkit_root_starts_the_fresh_worker_from_the_loaded_toolkit(self):
+        with contextlib.redirect_stdout(io.StringIO()): self.gate_once("a")
+        (self.kit / "edit").write_text("x")
+        os.environ["QUEUEKEEPER_ROOT"] = str(self.kit)
+        self.assertEqual(self.fresh(), (self.kit, ""))
+
     def knowing(self, key):
         """A landed toolkit commit whose config module accepts the lane key that this toolkit's own refuses."""
         other = self.base / f"other-knows-{key}"

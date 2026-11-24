@@ -59,7 +59,8 @@ from xml.etree import ElementTree
 
 from . import budgets, disk, plugins, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
-from . import add_only_json, count_history, events, gate_reuse, landed_cleanup, pre_push, recovery, restartable, worktree_ownership
+from . import add_only_json, count_history, events, gate_reuse, git_state, landed_cleanup, pre_push, recovery, restartable, \
+    worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
@@ -2246,13 +2247,59 @@ class Queue:
         print(f"queue: signed launcher {label} could not start ({error}); starting a session worker", file=log, flush=True)
         return False
 
+    def toolkit_copy(self, common, own):
+        """Where this queue's worker keeps its own copy of the toolkit (Worker.toolkit), for the toolkit whose Git
+        directory is common; own says this is the toolkit's own queue."""
+        # Beside the queue's checkout, which already has the toolkit's own name.
+        if own: return self.home / f"{self.main_checkout.name}-toolkit"
+        # Named as the toolkit's main checkout is, which a project's relative path names from its own checkout.
+        kit = Path(common)
+        return self.home / (kit.parent.name if kit.name == ".git" else Path(TOOLKIT_ROOT).resolve().name)
+
+    def fresh_toolkit(self, log):
+        """The toolkit a session starts this queue's worker from (start): the Queuekeeper the session loaded, unless
+        that is a main checkout with uncommitted changes or off main, and the worker's own copy (Worker.toolkit) is a
+        clean checkout of the same repository whose commit starts. The shared checkout is where Queuekeeper was
+        developed, so a fresh worker imported a session's edits in progress, or could not import at all, before its
+        first round moved it to the copy: every project's queue at once, on 2026-11-15 (vocaro/queuekeeper#179).
+        The copy only ever moves to a landed commit, and the round moves the worker on from it as from any other
+        toolkit. With no usable copy, as before a queue's first round, the loaded Queuekeeper is used and the log
+        says why. An explicit QUEUEKEEPER_ROOT stands, as Worker.toolkit leaves it."""
+        if os.environ.get(TOOLKIT_VARIABLE): return TOOLKIT_ROOT
+        if git_state.shared_changes(TOOLKIT_ROOT): unlanded = "has uncommitted changes"
+        elif git_state.off_main(TOOLKIT_ROOT): unlanded = "is not on main"
+        else: return TOOLKIT_ROOT
+        common = git(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if common.returncode: return TOOLKIT_ROOT
+        own = common.stdout.strip() == text(self.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        copy = self.toolkit_copy(common.stdout.strip(), own)
+        theirs = git(copy, "rev-parse", "--path-format=absolute", "--git-common-dir") if (copy / ".git").exists() \
+            else None
+        head = git(copy, "rev-parse", "--verify", "-q", "HEAD") if theirs else None
+        if not theirs or theirs.returncode or theirs.stdout.strip() != common.stdout.strip() or head.returncode:
+            why = "has no copy of it yet"
+        elif text(copy, "--no-optional-locks", "status", "--porcelain", "--untracked-files=normal"):
+            why = f"has a copy at {copy} with uncommitted changes"
+        else:
+            head = head.stdout.strip()
+            failed = starts(copy, head)
+            why = failed and f"has a copy at {copy} whose commit {head[:12]} does not start: {failed}"
+        if why:
+            print(f"queue: starting the worker from {TOOLKIT_ROOT}, which {unlanded}, since this queue {why}",
+                  file=log, flush=True)
+            return TOOLKIT_ROOT
+        print(f"queue: starting the worker from its copy of the toolkit at {copy}, {head[:12]}, since "
+              f"{TOOLKIT_ROOT} {unlanded}", file=log, flush=True)
+        return copy
+
     def start(self):
         """Start a worker apart from this session, so that it outlives the session's turn and its
-        task stop. One that finds another working exits at once."""
+        task stop. One that finds another working exits at once. It starts from the toolkit fresh_toolkit selects."""
         if self.held() or not self.waiting() or self.working(): return
         with (self.directory / "worker.log").open("a") as log:
             if self.start_with_launcher(log): return
-            started = subprocess.Popen(self.command(TOOLKIT_ROOT), cwd=self.main_checkout, stdin=subprocess.DEVNULL,
+            started = subprocess.Popen(self.command(self.fresh_toolkit(log)), cwd=self.main_checkout,
+                                       stdin=subprocess.DEVNULL,
                                        stdout=log, stderr=subprocess.STDOUT, env=environment(), start_new_session=True)
             # It is meant to outlive this process, which must not wait for it, but one that ends first
             # stays a zombie child until reaped: a long-lived caller, `qk land --wait` or a test run, sees it.
@@ -4214,13 +4261,7 @@ class Worker:
                      f"stacked on {self.stacked.base[:12]} with the toolkit at {self.code[:12]} that gated it, and "
                      "stacks nothing on it")
             return
-        if own:
-            # Beside the queue's checkout, which already has the toolkit's own name.
-            copy = self.queue.home / f"{self.queue.main_checkout.name}-toolkit"
-        else:
-            # Named as the toolkit's main checkout is, which a project's relative path names from its own checkout.
-            kit = Path(common.stdout.strip())
-            copy = self.queue.home / (kit.parent.name if kit.name == ".git" else Path(TOOLKIT_ROOT).resolve().name)
+        copy = self.queue.toolkit_copy(common.stdout.strip(), own)
         old = self.queue.old_checkout.with_name(f"{self.queue.old_checkout.name}-toolkit")
         self.place(TOOLKIT_ROOT, copy, old, "the merge queue's copy of the toolkit")
         # A stacked gate runs with the copy as it is: it is thrown away before the copy moves (vocaro-engineering#241).

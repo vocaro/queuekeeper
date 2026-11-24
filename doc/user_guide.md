@@ -235,8 +235,9 @@ To give the signed agent its own stable Queuekeeper worktree, pass `--toolkit-ro
 `qk queue launcher-plist`. The command checks that the checkout is clean and its commit can import
 the worker. The generated agent starts from that path and sets `QUEUEKEEPER_ROOT` so the worker and
 its lanes keep using it as Queuekeeper's `main` advances. Keep the worktree clean and at that path.
-The option applies to the generated LaunchAgent. A session starting its own worker still uses the
-Queuekeeper that session loaded.
+The option applies to the generated LaunchAgent. A session starting its own worker uses the
+Queuekeeper that session loaded, unless that is a shared checkout with uncommitted changes or off
+`main`: then the worker starts from its queue's own copy of Queuekeeper when that copy can start it.
 
 #### Removing the launcher
 

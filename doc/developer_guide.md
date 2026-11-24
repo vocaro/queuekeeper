@@ -305,6 +305,13 @@ inputs a provisioning lane made. Older `../NAME-queue` checkouts move here by th
   and the carry-over checks run with `QUEUEKEEPER_ROOT` naming it. A landed Queuekeeper commit so
   reaches every project's next round; a lagging shared checkout reaches none. A `QUEUEKEEPER_ROOT`
   set where the worker started is left alone.
+- **A fresh worker avoids an unlanded shared checkout.** A session's `qk land`, `qk queue wait` or
+  `qk queue resume` starts the worker from the Queuekeeper that session loaded, unless that is a
+  main checkout with uncommitted changes or off `main`. Then it starts from the queue's `TOOLKIT`
+  copy, when that copy is clean and its commit imports the worker, and `worker.log` says
+  `starting the worker from its copy of the toolkit`. With no usable copy, as before a queue's
+  first round, the log says why and the loaded Queuekeeper is used. A `QUEUEKEEPER_ROOT` set where
+  the session runs stands. The signed launcher keeps the toolkit its plist names.
 - **The worker follows its copy.** A worker whose code came from another commit restarts from the
   copy, with the same arguments and bisect, before touching any entry, so an old worker never
   refuses a setting the new code accepts. Queuekeeper's own worker puts the move off for one round
@@ -2106,8 +2113,9 @@ it off: a project fixes its own hits before turning it on.
 - **Keep the main checkout clean.** `qk doctor` also warns about staged changes, unstaged changes
   and untracked files in the loaded main checkout. Inspect the changes with `git status` in
   that checkout and preserve the work in a linked worktree. Ignored files and edits in linked
-  worktrees do not trigger this warning. If an import fails before the command starts, `bin/qk`
-  and current copies of `scripts/qk` name the main checkout before the traceback. Inspect that
+  worktrees do not trigger this warning. A worker that a session starts meanwhile starts from its
+  queue's copy instead ([The Queuekeeper a worker runs](#the-queuekeeper-a-worker-runs)). If an
+  import fails before the command starts, `bin/qk` and current copies of `scripts/qk` name the main checkout before the traceback. Inspect that
   checkout with Git directly. To start from a known-good Queuekeeper worktree, set `QUEUEKEEPER_ROOT`
   to its path when running the project's `scripts/qk`, or run that worktree's `bin/qk` with `--project`
   pointing to the project checkout. See [Copies in each project](#copies-in-each-project) for how to
