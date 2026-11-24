@@ -2269,6 +2269,13 @@ Explicit commands in the project still run as written. To remove a copy:
    needs the worker's selected Queuekeeper revision, invoke `"$QUEUEKEEPER_ROOT/bin/qk"` from
    its shell wrapper when that variable is set, with the installed `qk` as the local fallback.
    Check the commands in the worker's environment on each Mac that can run the lanes.
+   The project's pre-push hook needs the same fallback when it calls Queuekeeper. The worker runs
+   the hook itself, through `git hook run pre-push` with the round's environment (`pre_push`),
+   and then pushes with `--no-verify`, so `QUEUEKEEPER_ROOT` names the worker's copy. A hook that
+   runs the installed `qk` loads `~/Development/queuekeeper` instead, and a pinned plugin such as
+   vocaro-engineering's refuses because Queuekeeper "was already loaded from another checkout"
+   (exit 70). That happens after the gate has passed, so the landing fails at the push. Hooks that
+   only a developer runs, such as post-checkout or a SessionStart hook, can use the installed `qk`.
 2. Remove the copy on the project branch. From that checkout, run `qk doctor`, verify the
    affected lanes through admission and land the migration through the project's queue.
    Check the landing to confirm the worker ran the expected lanes without the copy.
