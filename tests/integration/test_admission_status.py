@@ -253,23 +253,33 @@ class HoldersTests(Namespace):
 
         folder = self.directory / resources.WAITS
         folder.mkdir()
+        observer_pid, observer_start = os.getpid() + 1, "Mon Nov 23 12:00:00 2026"
         (folder / "observation.json").write_text(json.dumps({
-            "schemaVersion": 1, "identity": identity, "pid": os.getpid(), "start": self.start,
+            "schemaVersion": 1, "identity": identity, "pid": observer_pid, "start": observer_start,
             "request": "observed", "reason": "all guaranteed slots are busy", "sampledAt": time.time(),
         }))
         files = tree(self.temp.name)
-        words = []
-        self.assertEqual(resources.now_main(["--here"], out=words.append), 0)
+        words, output = [], []
+        with patch.object(offload_host, "census", return_value={os.getpid(): self.start, observer_pid: observer_start}):
+            self.assertEqual(resources.now_main(["--here"], out=words.append), 0)
+            self.assertEqual(resources.now_main(["--here", "--json"], out=output.append), 0)
         self.assertEqual(sum("Farm gate:" in line for line in words), 1)
         self.assertIn("place held for work sent by studio", "\n".join(words))
-        output = []
-        self.assertEqual(resources.now_main(["--here", "--json"], out=output.append), 0)
         host, = json.loads(output[0])["hosts"]
         waiter, = host["waiters"]
         self.assertEqual((waiter["heldFor"], waiter["kind"], waiter["position"]), ("studio", "wholeHost", 1))
-        self.assertEqual((waiter["process"], waiter["away"], waiter["holdsBack"]), ("running", True, True))
+        self.assertEqual((waiter["pid"], waiter["process"], waiter["away"], waiter["holdsBack"]),
+                         (os.getpid(), "running", True, True))
         self.assertEqual(waiter["reason"], "all guaranteed slots are busy")
         self.assertEqual(host["holders"], [])
+
+        # A reused observation PID must not lend its reason or request to the still-live keeper.
+        with patch.object(offload_host, "census", return_value={os.getpid(): self.start, observer_pid: self.start}):
+            keeper, = self.read()["waiters"]
+        self.assertEqual((keeper["pid"], keeper["process"], keeper["heldFor"], keeper["holdsBack"]),
+                         (os.getpid(), "running", "studio", True))
+        self.assertIsNone(keeper["reason"])
+        self.assertIsNone(keeper["request"])
         self.assertEqual(tree(self.temp.name), files)
 
     def test_a_farm_place_requires_a_live_keeper_and_a_recent_renewal(self):
