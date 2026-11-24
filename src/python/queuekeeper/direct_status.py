@@ -12,6 +12,11 @@ from . import lane_progress
 
 ACTIVE = ContextVar("direct_lane_status", default=None)
 RUN_ID = re.compile(r"[0-9a-f]{32}")
+# What the receiver said of the running work itself, which shows it already admitted.
+PROGRESS, QUIET = "receiver reported progress", "receiver quiet past its slowest measured step"
+# A generic admission, as the wait relay and the run's own record each publish it. Its frame can arrive after the
+# work's own reports, which it must not then hide (vocaro/queuekeeper#344).
+ADMISSION = frozenset(("admitted", "receiver reported admission"))
 
 
 def directory(root):
@@ -40,9 +45,12 @@ def tracking(root, lane):
 
 
 def observe(**fields):
-    """Save only supplied observations. No status reader is needed for the run to proceed."""
+    """Save only supplied observations. No status reader is needed for the run to proceed. A generic admission
+    heard after the work's own report, its progress or a quiet past its slowest step, leaves that report shown. An
+    explicit wait, or a fresh dispatch attempt's `offered`, which clears the stage, still replaces it."""
     if (active := ACTIVE.get()) is None: return
     path, record = active
+    if record.get("state") in (PROGRESS, QUIET) and fields.get("state") in ADMISSION: return
     if all(record.get(key) == value for key, value in fields.items()): return
     updated = {**record, **fields, "observedAt": time.time()}
     try: lane_progress.write(path, updated)

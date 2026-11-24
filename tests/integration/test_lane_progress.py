@@ -263,6 +263,56 @@ class LiveProgress(unittest.TestCase):
             direct_status.observe(state="admitted")
             self.assertEqual(direct_status.records(folder, "check")[0]["state"], "admitted")
 
+    def remote_status(self, folder, members, frames_in_order):
+        """The direct status after one dispatch attempt's frames arrive here in the given order, through the
+        writers a dispatch uses: its `offered`, Frames.take, Progress and lane_wait's record."""
+        with patch.dict(os.environ, {lane_wait.VARIABLE: str(self.wait(folder))}), \
+                patch.object(lane_progress, "starts", return_value={os.getpid(): "born"}), \
+                direct_status.tracking(folder, "pair"), contextlib.redirect_stderr(StringIO()):
+            progress = remote.Progress("pair", "build-host", members, "its clock", clock=lambda: 0.0)
+            frames = remote.Frames(Path(folder), BytesIO(), BytesIO(), (), "build-host", progress)
+            direct_status.observe(host="build-host", state="offered", stage=None)
+            states = []
+            for frame in frames_in_order:
+                frames.take(frame)
+                found, = direct_status.records(folder, "pair")
+                states.append((found["host"], found["state"], found.get("stage")))
+            return states
+
+    def test_a_late_admission_frame_keeps_the_verified_progress_it_arrived_after(self):
+        admitted = b'W {"kind":null,"admitted":true}\n'
+        progress_state = ("build-host", "receiver reported progress")
+        for members, reports, stage in (
+                (("narrated",), (b"O RUN narrated\n", b'M {"member":"narrated","stage":"Testing","device":"iPad-Pro-11"}\n'),
+                 "narrated: Testing: iPad-Pro-11"),
+                ((), (b"L Testing: iPad-Pro-11\n",), "Testing")):
+            with self.subTest(members=members), tempfile.TemporaryDirectory() as folder:
+                # Progress first: the generic admission arriving after it changes neither the state nor the stage.
+                late = self.remote_status(folder, members, (*reports, admitted, admitted))
+                self.assertEqual(late[-3:], [(*progress_state, stage)] * 3)
+                self.assertNotIn("(DEF)", json.dumps(late))
+            with self.subTest(members=members, order="admission first"), tempfile.TemporaryDirectory() as folder:
+                prompt = self.remote_status(folder, members, (admitted, *reports))
+                self.assertEqual(prompt[0], ("build-host", "receiver reported admission", None))
+                self.assertEqual(prompt[-1], (*progress_state, stage))
+
+    def test_explicit_waits_and_fresh_dispatches_still_replace_verified_progress(self):
+        stage = b"L Testing: iPad-Pro-11\n"
+        with tempfile.TemporaryDirectory() as folder:
+            states = self.remote_status(folder, (), (stage, b'W {"kind":"screen","reason":"locked"}\n',
+                                                     b'W {"kind":null,"admitted":true}\n'))
+            self.assertEqual([state for _, state, _ in states], ["receiver reported progress",
+                                                                 "receiver reported a wait for an unlocked screen",
+                                                                 "receiver reported admission"])
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(lane_progress, "starts", return_value={os.getpid(): "born"}), \
+                direct_status.tracking(folder, "pair"):
+            direct_status.observe(host="build-host", state=direct_status.PROGRESS, stage="Testing: iPad-Pro-11")
+            # A fresh dispatch attempt reports its own state, and its admission is no longer masked.
+            direct_status.observe(host="build-host", state="offered", stage=None)
+            direct_status.observe(host="build-host", state="admitted")
+            self.assertEqual(direct_status.records(folder, "pair")[0]["state"], "admitted")
+
     def test_optional_publication_failure_and_ended_cleanup_preserve_retained_status(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/"live.json"

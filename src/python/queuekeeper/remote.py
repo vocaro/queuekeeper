@@ -2052,7 +2052,7 @@ class Progress:
         self.widest = max(self.widest, moment - self.quiet_since())
         device = offload_host.device_stage(data)
         report = f"{device[0]}: {device[1]}" if device else match[0].strip(" :")
-        direct_status.observe(host=self.host, state="receiver reported progress", stage=report)
+        direct_status.observe(host=self.host, state=direct_status.PROGRESS, stage=report)
         self.last = (text, moment)
         self.reported(text)
 
@@ -2112,7 +2112,7 @@ class Progress:
         words = f"{stage}: {device}"
         self.member_stages[name] = (words, self.clock())
         report = f"{progress_text(name.encode())[:45]}: {words}"
-        direct_status.observe(host=self.host, state="receiver reported progress", stage=report)
+        direct_status.observe(host=self.host, state=direct_status.PROGRESS, stage=report)
         self.reported(report)
 
     def member_heartbeat(self, name, began, moment):
@@ -2186,7 +2186,7 @@ class Progress:
             said += f"; no progress line for {spelled_seconds(quiet)}, longer than its slowest measured step of " \
                     f"{spelled_seconds(self.slowest['seconds'])} over its last {self.slowest['samples']} passing runs " \
                     f"on {self.host}, so it may have stalled; nothing here stops it"
-            direct_status.observe(host=self.host, state="receiver quiet past its slowest measured step")
+            direct_status.observe(host=self.host, state=direct_status.QUIET)
         self.tell("heartbeat", f"{self.lane} on {self.host}, {since} in: {said}")
 
 

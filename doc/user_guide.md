@@ -2337,7 +2337,9 @@ From another shell in the sending checkout, `qk run --status LANE` reads the lat
 for live direct runs of that lane. Use `--run-id ID` with an ID from its output to select one
 when runs overlap. The lookup reads local files only and leaves the run alone. For local
 runs it shows the invocation's last reported phase. For remote runs it can also show the
-last stage received from the matching dispatch, with the reported device kind when available.
+last stage received from the matching dispatch, with the reported device kind when available. Once the
+receiver has reported progress, a late report that it admitted the work leaves the progress shown;
+an explicit wait or a fresh dispatch attempt still replaces it.
 
 From the project checkout, `qk admissions now` shows which Mac is holding or waiting for
 admission and why. `qk progress FOLDER` reads a runner's record when its output announced a
