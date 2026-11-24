@@ -1675,8 +1675,10 @@ def dispatcher_dead(pid, start):
     """Whether the dispatcher a record names is proven gone: no process has its PID, or one that started at another
     time does, as after a reboot. A process that started when it did is alive, however long it has been asleep, and
     a PID that cannot be read proves nothing."""
-    try: return resources.process_start(pid) != start
-    except (OSError, ValueError, subprocess.SubprocessError): return False
+    if type(pid) is not int or pid <= 0 or not resources.collapsed(start):
+        return False
+    try: return resources.ended({"pid": pid, "start": start})
+    except (OSError, OverflowError, ValueError, subprocess.SubprocessError): return False
 
 
 def stop_dead_dispatches():

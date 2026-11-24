@@ -3161,6 +3161,20 @@ class RemoteTests(unittest.TestCase):
             os.kill(lane, 0)
             self.assertIsNone(dispatcher.poll())
 
+    def test_an_unreadable_dispatcher_leaves_its_run_and_recovery_record_alone(self):
+        path = remote.dispatch_records() / "dispatch.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"journal": "dispatch", "host": "fake", "pid": 1234, "start": "Mon Jan  1 00:00:00 2001"}
+        path.write_text(json.dumps(record))
+        unreadable = subprocess.CompletedProcess([], 1, "", "permission denied")
+        with patch.object(resources.os, "kill"), patch.object(resources.subprocess, "run", return_value=unreadable), \
+                patch.object(resources, "kernel_start", side_effect=PermissionError("process start is unreadable")), \
+                patch.object(remote, "ssh") as connect, contextlib.redirect_stderr(StringIO()) as error:
+            remote.stop_dead_dispatches()
+        connect.assert_not_called()
+        self.assertEqual(error.getvalue(), "")
+        self.assertEqual(json.loads(path.read_text()), record)
+
     def test_a_record_whose_pid_another_process_now_has_is_told_from_its_dispatcher_by_start_time(self):
         # A kill -0 would read the dispatcher as alive for as long as the other process lasts, as after a reboot.
         other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
