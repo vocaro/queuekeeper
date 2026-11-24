@@ -5903,6 +5903,115 @@ exec {shlex.quote(real)} "$@"
         self.assertFalse((self.checkout(0) / ".build/queuekeeper/gate/source.json").exists())
         self.assertFalse((self.project / ".build/queuekeeper/gate/source.json").exists())
 
+    def test_paired_bisect_and_isolation_stack_use_three_macs_and_release_admission(self):
+        homes = durable_scratch()
+        self.addCleanup(homes.cleanup)
+        root = Path(homes.name)
+        mini = root / "mini"
+        mini.mkdir()
+        (root / "mini.tmp").mkdir()
+        (root / "mini.busy-limit").write_text("2000")
+        (root / "fake.busy-limit").write_text("3000")
+        release = root / "release"
+        starts = {role: root / role for role in ("older", "newer", "later")}
+        script = (
+            "import json, os, time\n"
+            "from pathlib import Path\n"
+            "if Path('older').exists() and Path('newer').exists() and not Path('later').exists():\n"
+            "    print('Ran 1 tests')\n"
+            "    raise SystemExit(1)\n"
+            "role = next(role for role in ('later', 'older', 'newer') if Path(role).exists())\n"
+            f"root = Path({str(root)!r})\n"
+            "start = root / role\n"
+            "if not start.exists():\n"
+            "    temporary = start.with_suffix('.starting')\n"
+            "    temporary.write_text(json.dumps([os.environ['HEAVY_SLOT_DIR'], os.getpid()]))\n"
+            "    temporary.rename(start)\n"
+            f"    deadline = time.monotonic() + {stretched(75)}\n"
+            "    while not (root / 'release').exists() and time.monotonic() < deadline:\n"
+            "        time.sleep(0.05)\n"
+            "print('Ran 1 tests')\n"
+            "raise SystemExit(1 if role == 'older' else 0)\n"
+        )
+        config_file = self.project / "queuekeeper.json"
+        settings = {"schemaVersion": 1, "name": "Example", "lanes": {
+            "gate": {"command": [sys.executable, "-c", script], "resource": "heavy", "wholeHost": True,
+                     "minimumTests": 1, "timeout": int(stretched(90))}}}
+        config_file.write_text(json.dumps(settings))
+        base = commit_all(self.project)
+        git(self.project, "branch", "-M", "main")
+        git(self.project, "config", "user.name", "Test")
+        git(self.project, "config", "user.email", "test@example.com")
+        origin = self.project.parent / "origin.git"
+        git(self.project, "clone", "-q", "--bare", ".", str(origin))
+        git(self.project, "remote", "add", "origin", str(origin))
+        for role in starts:
+            git(self.project, "switch", "-q", "-c", role, base)
+            (self.project / role).touch()
+            commit_all(self.project)
+        git(self.project, "switch", "-q", "main")
+
+        readers = {"here": offload_host.admissions_now, "fake": lambda: remote.admissions_there("fake"),
+                   "mini": lambda: remote.admissions_there("mini")}
+        farm_fixture.write("fake", "mini")
+        with patch.dict(os.environ, {"FAKE_HOMES": str(root), "FAKE_ALIASES": "mini",
+                                     "QUEUEKEEPER_ROOT": str(self.toolkit)}), \
+                patch.object(merge_queue.Queue, "start"), patch.object(merge_queue, "STACK_POLL", 0.1), \
+                contextlib.redirect_stdout(StringIO()) as queue_log:
+            entries = [merge_queue.add(self.project, role) for role in ("older", "newer")]
+            queue = merge_queue.Queue(self.project)
+            worker = merge_queue.Worker(queue)
+            self.assertTrue(worker.round(), queue_log.getvalue())
+            self.assertEqual((worker.limit, worker.suspects), (1, 2), queue_log.getvalue())
+            entries.append(merge_queue.add(self.project, "later"))
+            observations, gate_processes, locations = {}, {}, set()
+            failures = []
+
+            def measure():
+                try:
+                    self.until(lambda: all(path.exists() for path in starts.values()),
+                               "the two halves and their isolation stack did not all start")
+                    for path in starts.values():
+                        directory, pid = json.loads(path.read_text())
+                        locations.add(directory)
+                        gate_processes[pid] = None
+                    gate_processes.update(offload_host.census(gate_processes) or {})
+                    observations.update((host, read()) for host, read in readers.items())
+                except Exception as error:
+                    failures.append(error)
+                finally:
+                    release.touch()
+
+            watcher = threading.Thread(target=measure, daemon=True)
+            watcher.start()
+            try:
+                self.assertTrue(worker.round(), queue_log.getvalue())
+            finally:
+                watcher.join(timeout=stretched(80))
+                release.touch()
+                worker.drop_stacked("the synthetic exercise ended")
+            self.assertFalse(watcher.is_alive(), queue_log.getvalue())
+            if failures:
+                raise AssertionError(queue_log.getvalue()) from failures[0]
+            self.assertEqual(locations,
+                             {os.environ["HEAVY_SLOT_DIR"], os.environ["FAKE_SLOTS"], str(root / "mini.slots")},
+                             queue_log.getvalue())
+            self.assertEqual(len(gate_processes), 3)
+            self.assertTrue(all(gate_processes.values()), "all three lanes must still be running during the overlap")
+            for host, reading in observations.items():
+                with self.subTest(host=host):
+                    self.assertEqual(reading["state"], "observed", reading["reasons"])
+                    self.assertEqual([holder["process"] for holder in reading["holders"]], ["running"])
+            self.assertTrue(worker.round(), queue_log.getvalue())
+            self.assertEqual([queue.read(entry)["state"] for entry in entries],
+                             [merge_queue.FAILED, merge_queue.LANDED, merge_queue.LANDED], queue_log.getvalue())
+            self.assertEqual(offload_host.census(gate_processes), {}, "no measured gate process should remain")
+            for host, read in readers.items():
+                with self.subTest(after=host):
+                    reading = read()
+                    self.assertEqual((reading["state"], reading["holders"], reading["waiters"]),
+                                     ("observed", [], []), reading["reasons"])
+
     def test_a_bisect_hands_off_to_this_mac_only_after_the_remote_refuses_admission(self):
         released = self.project.parent / "older-finished"
         real_execute, capacity = remote.execute, remote.capacity_there
