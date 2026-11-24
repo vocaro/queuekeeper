@@ -451,9 +451,11 @@ The worker tries the cheap explanations before the expensive one:
 
 Steps 1 and 2 read test names from `qk unittest`, the bundled Python test runner, and are skipped
 when more than five tests failed. A lane whose command is `qk unity test` gets step 1 from the
-[Unity plugin](../plugins/unity/src/queuekeeper_unity/README.md#flaky-tests), and never step 2.
-Any other lane, including Xcode lanes for now, gets step 1 only if it declares `failedTests`, and
-never step 2:
+[Unity plugin](../plugins/unity/src/queuekeeper_unity/README.md#flaky-tests), and one whose command
+is `qk simulator-tests` gets it from the
+[Apple plugin](../plugins/apple/src/queuekeeper_apple/README.md#flaky-xcode-tests), for XCTest and
+Swift Testing tests alike; neither gets step 2. Any other lane, including an Xcode lane that runs
+xcodebuild from a script of its own, gets step 1 only if it declares `failedTests`, and never step 2:
 
 ```json
 "gate": {
@@ -474,7 +476,8 @@ never step 2:
   is bisected.
 
 A `qk unity test` lane's failed tests are named by the plugin from Unity's `results.xml` and rerun
-with `qk unity test --filter TEST`, so its `failedTests` gives `paths` alone, such as
+with `qk unity test --filter TEST`, and a `qk simulator-tests` lane's from the records it keeps and
+rerun as an exact series of that test alone, so each one's `failedTests` gives `paths` alone, such as
 `"failedTests": {"paths": ["lab/Assets/", "lab/Packages/"]}`. Without it, the lane's flakes are
 still recorded, and the batch is bisected.
 
@@ -1467,8 +1470,9 @@ activities titled `PREFIX N s`. Keep a system trace in the results when a test r
 since the next run on that Mac replaces the logs.
 
 Use `qk results history LANE TEST` to see one exact test ID across that lane's retained Xcode
-results. Use the ID printed by `qk results keep` or the `identifierURL` in the kept JSON when Xcode
-supplied one. The URL distinguishes tests with the same printed ID. When a printed ID matches
+results, and its flake history. Use the ID printed by `qk results keep`, the `identifierURL` in the
+kept JSON when Xcode supplied one, or its `TARGET/SUITE/METHOD`, the name the merge queue gives a
+flaky Xcode test. The URL distinguishes tests with the same printed ID. When a printed ID matches
 different recorded identities, the totals list each URL and any observations without a URL
 separately. Each observation names its commit and result file, so results from different
 shards or simulators can be distinguished.
@@ -1478,7 +1482,15 @@ attempt beside the latest run's, `COMMIT/LANE.attempts/N/`, so a gate that faile
 at one commit shows both, and each line names its attempt when a commit has more than one. Each
 lane keeps its newest 20 earlier attempts at a commit, and pruning a commit's results removes its
 attempts too. Results kept before attempts were kept show only the latest run at their commit.
-The merge queue records proven flakes separately.
+
+The flake history follows the totals. For each identity it gives the share of measured runs (passed
+or failed) that failed, and the share of commits at which one result file, the same device or shard,
+both failed and passed the test across attempts: the same code giving both outcomes. A device that
+fails where another passes is not counted, since that can be a real difference between them. Last, it
+counts the flakes the merge queue proved for the test in any lane, each a test that failed a gate and
+passed alone on every rerun, with their commits: the `Flaky-test:` trailers on `origin/main` and the
+queue's `test.flaky` events, which also hold the flakes of batches that did not land, for as long as
+the [event journal](#the-event-journal) keeps them.
 
 #### A pytest lane
 

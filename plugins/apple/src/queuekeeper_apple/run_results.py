@@ -16,6 +16,10 @@ It exits 0 once it has read the bundle's outcomes, whether or not a lane gave it
 status queuekeeper reads as unmeasured, when the bundle is missing, unreadable or holds no test case, which NAME.json's
 bundleUnread and the output say; and 1 when nothing could be written or NAME is already kept in that directory.
 A result bundle is never copied, and nothing is kept outside the lane's results/, whose rules bound it.
+
+`history` prints each kept outcome of one test in a lane's retained results, then its flake history: its failure
+rate over the runs that measured it, the share of commits at which one result file both failed and passed it across
+attempts, and the flakes the merge queue proved for it (flakes.proven).
 """
 import argparse
 from collections import Counter, defaultdict
@@ -28,6 +32,7 @@ import sys
 
 from queuekeeper import lane_results, remote
 from queuekeeper.parallel import RESULTS_VARIABLE
+from . import flakes
 from .simulators import matrix
 
 # The order of a run's totals.
@@ -121,14 +126,21 @@ def keep(log, bundle, name, status, results=None, out=print, *, activity_prefixe
     return lane_results.UNMEASURED if unread is not None else 0
 
 
+def rate(part, whole):
+    return f"{100 * part / whole:.0f}%" if whole else "no rate"
+
+
 def history(root, lane, test, out=print):
-    """Print observations of an exact test ID or Xcode identifier URL in one lane's retained results: each run's
-    at each commit, a rerun at the same commit as an attempt of its own (remote.kept_runs)."""
+    """Print observations of an exact test ID, Xcode identifier URL or TARGET/SUITE/METHOD selector in one lane's
+    retained results: each run's at each commit, a rerun at the same commit as an attempt of its own
+    (remote.kept_runs). Then its flake history: how often it failed of the runs that measured it, at how many
+    commits one result file both failed and passed it across attempts, and the flakes the merge queue proved,
+    the tests that failed a gate and passed alone (flakes.proven, vocaro/queuekeeper#2)."""
     try: folders = remote.all_kept_results(remote.store(root)).get(lane, [])
     except (OSError, RuntimeError) as error:
         print(f"queuekeeper results: cannot read the project's retained results: {error}", file=sys.stderr)
         return 1
-    outcomes = defaultdict(Counter)
+    outcomes, seen, names = defaultdict(Counter), defaultdict(lambda: defaultdict(set)), {test}
     for folder in folders:
         runs = remote.kept_runs(folder)
         for attempt, results in runs:
@@ -139,14 +151,19 @@ def history(root, lane, test, out=print):
                     record = json.loads(path.read_text())
                     if not isinstance(record, dict): raise ValueError("expected a result record")
                     if record.get("keptBy") not in (KEPT_BY, "qk simulator-tests") or record.get("bundleUnread"): continue
-                    found = [(case.get("identifierURL"), case["outcome"], case_line(str(path.relative_to(results)), case))
-                             for case in record["tests"] if test in (case["test"], case.get("identifierURL"))]
+                    file = str(path.relative_to(results))
+                    found = [(case.get("identifierURL"), case["outcome"], case_line(file, case))
+                             for case in record["tests"]
+                             if test in (case["test"], case.get("identifierURL"), flakes.selector(case.get("identifierURL")))]
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     out(f"queuekeeper: {path} could not be read: {error!r}")
                     continue
                 for identity, outcome, line in found:
                     key = identity if isinstance(identity, str) and identity else None
                     outcomes[key][outcome] += 1
+                    # The same result file at one commit, across its attempts: the same device or shard, the same code.
+                    seen[key][(folder.parent.name, file)].add(outcome)
+                    names.add(flakes.selector(key) or test)
                     out(f"{where} {line}")
     separate = len(outcomes) > 1
     if not outcomes:
@@ -156,8 +173,17 @@ def history(root, lane, test, out=print):
     for identity, counts in sorted(outcomes.items(), key=lambda item: item[0] or ""):
         heading = f"{lane} ({identity or 'without an identifier URL'})" if separate else lane
         out(f"{heading}: " + ", ".join(f"{counts[outcome]} {outcome}" for outcome in OUTCOMES))
+        measured = counts["passed"] + counts["failed"]
+        commits = {commit for commit, _ in seen[identity]}
+        mixed = {commit for (commit, _), found in seen[identity].items() if {"passed", "failed"} <= found}
+        out(f"{heading}: failed {counts['failed']} of {measured} measured runs ({rate(counts['failed'], measured)}); "
+            f"failed and passed in one result file at {len(mixed)} of {len(commits)} commits "
+            f"({rate(len(mixed), len(commits))})")
     out("Showing every kept attempt at each retained commit; a commit kept before attempts were kept shows only "
-        "its latest run. The queue records proven flakes separately.")
+        "its latest run.")
+    proved = [commit for name, commit in flakes.proven(root) if name in names]
+    out(f"{test}: {len(proved)} flake{'' if len(proved) == 1 else 's'} the merge queue proved, failing a gate and "
+        "passing alone on every rerun, in any lane" + (f": at {', '.join(proved)}" if proved else ""))
     return 0
 
 
@@ -173,9 +199,11 @@ def main(argv, project=None):
     keeping.add_argument("--results", type=Path, help=f"where to keep them (default: {RESULTS_VARIABLE}, the lane's results/)")
     keeping.add_argument("--activity-timing-prefix", action="append", default=[], metavar="PREFIX",
                          help='keep test activities titled "PREFIX N s" (repeatable)')
-    historical = actions.add_parser("history", help="show a test's outcomes in a lane's retained Xcode results")
+    historical = actions.add_parser("history", help="show a test's outcomes in a lane's retained Xcode results, and "
+                                    "its flake history")
     historical.add_argument("lane", help="lane that kept the results")
-    historical.add_argument("test", help="exact test ID, as printed by qk results keep, or identifierURL from kept JSON")
+    historical.add_argument("test", help="exact test ID, as printed by qk results keep, identifierURL from kept JSON, "
+                            "or TARGET/SUITE/METHOD, as the merge queue names a flaky Xcode test")
     args = parser.parse_args(argv)
     if args.action == "history": return history(Path(project or ".").resolve(), args.lane, args.test)
     if not re.fullmatch(r"[\w.-]+", args.name): parser.error("--name must be a plain name")

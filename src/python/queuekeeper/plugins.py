@@ -315,16 +315,18 @@ class Reruns:
 
     rerun is the argv, run in the checkout, that reruns one test alone, with {test} for its name. failed(results) is
     ([test], None), the names, in order, of the tests failed by the run whose results folder is results; or (None, why
-    it names none). It raises nothing."""
+    it names none). It raises nothing. no_verdict, when true, says that the rerun exits as qk's own runners do, so
+    that an unmeasured or unstarted rerun gives no verdict, as a qk unittest rerun's does, and is not a real failure."""
 
-    def __init__(self, rerun, failed):
-        self.rerun, self.failed = list(rerun), failed
+    def __init__(self, rerun, failed, no_verdict=False):
+        self.rerun, self.failed, self.no_verdict = list(rerun), failed, no_verdict
 
 
 # Each (lane) -> a Reruns for a lane, a lane's settings in queuekeeper.json, whose command runs tests the plugin reads,
 # or None. The merge queue then reruns a failed run's tests alone before a bisect, as it does a qk unittest lane's, and
-# records one that passes alone as a flake (vocaro/queuekeeper#109). The Unity plugin reads a qk unity test lane's. The
-# lane may not have been checked yet: one it cannot read gives None.
+# records one that passes alone as a flake (vocaro/queuekeeper#109). The Unity plugin reads a qk unity test lane's, and
+# the Apple plugin a qk simulator-tests lane's (vocaro/queuekeeper#2). The lane may not have been checked yet: one it
+# cannot read gives None.
 RERUNS = []
 
 

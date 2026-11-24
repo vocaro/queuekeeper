@@ -496,6 +496,44 @@ class SimulatorMatrixTests(unittest.TestCase):
         self.assertEqual(self.series_record()["isolatedTest"]["observations"], [
             {"run": 1, "identifierURL": identity, "outcome": "failed"}])
 
+    def test_an_exact_series_counts_only_runs_whose_bundle_shows_the_test_alone(self):
+        # The merge queue's rerun of a failed Xcode test (queuekeeper_apple.flakes, vocaro/queuekeeper#2).
+        identity = "test://com.apple.xcode/App/AppTests/Smoke/testOpens()"
+        selector = "AppTests/Smoke/testOpens()"
+        # A run number that never comes has the stand-in count its runs, which FAKE_MISSING_CASE_RUN reads.
+        env = {"FAKE_ISOLATED_BUNDLE": identity, "FAKE_FAIL_RUN": "iPhone-17-Pro:99"}
+        status, output = self.run_series("--", "--repeat", "1", "--erase", "--exact", "--only", selector, **env)
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.series_record()["isolatedTest"]["observations"], [
+            {"run": 1, "identifierURL": identity, "outcome": "passed"}])
+        (self.state / "runs-iPhone-17-Pro").unlink()
+        # A run that exits 0 with no such case in its bundle passed nothing: unmeasured, which gives no verdict.
+        status, output = self.run_series("--repeat", "2", "--erase", "--exact", "--only", selector, **env,
+                                         FAKE_MISSING_CASE_RUN="2")
+        self.assertEqual(status, lane_results.UNMEASURED, output)
+        self.assertEqual([run["outcome"] for run in self.series_record()["eachRun"]], ["passed", "unmeasured"])
+        self.assertIn(f"its result bundle does not show {selector} alone", output)
+        (self.state / "runs-iPhone-17-Pro").unlink()
+        status, output = self.run_series("--repeat", "1", "--erase", "--exact", "--only", selector,
+                                         **{**env, "FAKE_FAIL_RUN": "iPhone-17-Pro:1"})
+        self.assertEqual(status, 1, output)
+
+    def test_an_exact_series_that_cannot_isolate_its_test_runs_nothing_and_is_unmeasured(self):
+        selector = "AppTests/Smoke/testOpens()"
+        for arguments in (("--repeat", "1", "--exact", "--only", selector),
+                          ("--repeat", "1", "--erase", "--exact", "--only", "AppTests/testOpens()"),
+                          ("--repeat", "1", "--erase", "--exact", "--only", selector, "--", "-test-iterations", "2")):
+            with self.subTest(arguments=arguments):
+                status, output = self.run_series(*arguments, FAKE_ISOLATED_BUNDLE="test://com.apple.xcode/App/" + selector)
+                self.assertEqual(status, lane_results.UNMEASURED, output)
+                self.assertIn("--exact needs one --only TARGET/SUITE/METHOD", output)
+        self.assertFalse((self.state / "xcodebuild.log").exists() and self.ran_tests())
+
+    def test_exact_needs_a_series(self):
+        status, output = self.run_series("--exact")
+        self.assertEqual(status, 2, output)
+        self.assertIn("--template, --only and --exact say how a series runs", output)
+
     def test_an_isolated_outcome_rejects_other_cases_even_when_the_display_name_matches(self):
         selector = "AppTests/Smoke/testOpens"
         identity = "test://com.apple.xcode/App/AppTests/Smoke/testOpens"

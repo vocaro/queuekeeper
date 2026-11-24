@@ -74,6 +74,7 @@
     "queuekeeper_apple.devices",
     "queuekeeper_apple.disk",
     "queuekeeper_apple.doctor",
+    "queuekeeper_apple.flakes",
     "queuekeeper_apple.lane",
     "queuekeeper_apple.observations",
     "queuekeeper_apple.run_results",

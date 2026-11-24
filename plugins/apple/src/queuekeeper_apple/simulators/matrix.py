@@ -54,7 +54,10 @@ template with --template, which leaves a run unmeasured when the pool could only
 --, so that `qk run LANE --repeat N` reaches this through the arguments a lane appends, on any Mac; --only TEST
 then replaces the lane's own selection. Each run keeps its own outcome, test counts and one-minute load at its start
 and end, printed one line each, added up on the "Repeat series:" line and kept in series.json. Any failed run fails
-the series, and a run that did not happen is unmeasured, never passed.
+the series, and a run that did not happen is unmeasured, never passed. With one --only TARGET/SUITE/METHOD and --erase
+or --template, series.json's isolatedTest keeps each run whose fresh bundle shows that exact test alone; --exact, which
+may also follow the --, leaves every other run unmeasured, so that the series passes or fails only on runs that show
+it, as the merge queue's rerun of a failed test needs (queuekeeper_apple.flakes, vocaro/queuekeeper#2).
 """
 import argparse
 import contextlib
@@ -164,6 +167,10 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
                         "each; it may also follow --. A lane's --shards is set aside: each run is one test process on each member")
     parser.add_argument("--only", action="append", default=[], metavar="TEST", help="with --repeat: run only this "
                         "test, in place of the run's own -only-testing and -skip-testing arguments; repeat for each")
+    parser.add_argument("--exact", action="store_true", help="with --repeat, one --only TARGET/SUITE/METHOD and "
+                        "--erase or --template: a run passes or fails only when its fresh result bundle shows that "
+                        "exact test alone with that outcome, and is otherwise unmeasured, as the merge queue's rerun "
+                        "of a failed test needs")
     parser.add_argument("--app-accessibility", action="store_true", help="switch UIKit's and SwiftUI's own "
                         "accessibility on in each member's app processes once it has booted, for tests hosted in an "
                         "app that read system views; a device whose setting does not read on fails")
@@ -201,8 +208,8 @@ def parse(argv, *, parser_factory=argparse.ArgumentParser):
     for name in ("jobs", "build_jobs", "workers", "shards", "boot_timeout", "test_timeout", "test_allowance", "repeat"):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} needs at least 1")
-    if args.repeat is None and (args.template or args.only):
-        parser.error("--template and --only say how a series runs: give --repeat N too")
+    if args.repeat is None and (args.template or args.only or args.exact):
+        parser.error("--template, --only and --exact say how a series runs: give --repeat N too")
     if args.repeat is not None and args.build_only: parser.error("--repeat runs tests, and --build-only runs none")
     args.set_aside_shards = None
     if args.repeat is not None and args.shards:
@@ -231,9 +238,11 @@ def series_options(args, parser_factory):
     fresh.add_argument("--erase", action="store_true")
     fresh.add_argument("--template", action="store_true")
     parser.add_argument("--only", action="append", default=[])
+    parser.add_argument("--exact", action="store_true")
     asked, rest = parser.parse_known_args(args.passed[at:])
     args.passed = [*args.passed[:at], *rest]
     args.repeat, args.only = asked.repeat, [*args.only, *asked.only]
+    args.exact = args.exact or asked.exact
     if asked.erase or asked.template:
         args.erase, args.template, args.keep_state = asked.erase, asked.template, False
 
@@ -1179,6 +1188,8 @@ def taken(pool, run, kind, runtime, purpose, keep_state=False, erase=False, labe
 FAILURES = re.compile(r"Executed \d+ tests?, with (?:\d+ tests? skipped and )?(\d+) failures?")
 # Each run's record and the series' summary, beside its logs and, under a lane, in results/simulator-tests/.
 SERIES_RECORD = "series.json"
+# A selector a series can isolate: TARGET/SUITE/METHOD, a Swift Testing method's with its empty parentheses.
+ISOLATED_SELECTOR = re.compile(r"[\w.-]+/[\w.-]+/\w+(?:\(\))?")
 SERIES_OUTCOMES = ("passed", "failed", "skipped", "unmeasured")
 
 
@@ -1270,10 +1281,14 @@ def series(run, pool, args, kinds):
     built once, on the first round's destination. Each run's outcome stands apart, a run that could not take its
     member, or that the series stopped before, counts unmeasured, and a failed build ends the series there. Returns
     the series' status, and reports it however the series ended."""
-    if (len(kinds) == len(args.only) == 1 and not args.workers and (args.erase or args.template)
-            and args.passed == [f"-only-testing:{args.only[0]}"]
-            and re.fullmatch(r"[\w.-]+/[\w.-]+/\w+(?:\(\))?", args.only[0])):
+    if ((len(kinds) == 1 or args.exact) and len(args.only) == 1 and not args.workers and (args.erase or args.template)
+            and args.passed == [f"-only-testing:{args.only[0]}"] and ISOLATED_SELECTOR.fullmatch(args.only[0])):
         run.isolated_selector = args.only[0]
+    if args.exact and not run.isolated_selector:
+        # No run could show the one test alone, so none could pass or fail it.
+        run.say("SERIES: --exact needs one --only TARGET/SUITE/METHOD, --erase or --template, no --workers and no "
+                "other test arguments, so no run can show that exact test alone: unmeasured, and nothing ran")
+        return lane_results.UNMEASURED
     purpose = f"qk simulator-tests {args.scheme}, repeat series"
     asked = [(number, kind, f"{kind}-run{number}") for number in range(1, args.repeat + 1) for kind in kinds]
     members, built = {}, None
@@ -1307,6 +1322,12 @@ def series(run, pool, args, kinds):
                       "outcome": run_outcome(status, tests), "status": status, "seconds": run.durations.get(label),
                       "load": run.loads.get(label), "tests": tests,
                       "detail": run.details.get(label) or ("this run did not happen" if status is None else None)}
+            measure = run.isolated.get(label) if run.isolated_selector else None
+            if args.exact and result["outcome"] != "unmeasured" and not (measure and measure["outcome"] == result["outcome"]):
+                # Exit statuses alone cannot show that the selector ran that one test (vocaro/queuekeeper#2).
+                result["outcome"], run.results[label] = "unmeasured", lane_results.UNMEASURED
+                result["detail"] = "; ".join(filter(None, [result["detail"], f"its result bundle does not show "
+                                                           f"{run.isolated_selector} alone, so --exact leaves it unmeasured"]))
             runs.append(result)
             counts = ", ".join(f"{tests[name]} {name}" for name in SERIES_OUTCOMES) if tests is not None else "no test counts"
             where = f"{result['member']} ({result['udid']}), {result['reset']}" if lease else "no member"
@@ -1321,7 +1342,8 @@ def series(run, pool, args, kinds):
             for result in runs:
                 measure = run.isolated.get(result["label"])
                 if measure and measure["outcome"] == result["outcome"]:
-                    observations.append({"run": result["run"], **measure})
+                    observations.append({"run": result["run"], **({"device": result["device"]} if len(kinds) > 1 else {}),
+                                         **measure})
             record["isolatedTest"] = {"selector": run.isolated_selector, "runtime": args.runtime,
                                       "observations": observations}
         keep_series(run, record)

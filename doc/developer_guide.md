@@ -455,7 +455,10 @@ with `failedTests`. A plugin can stand in for a lane's `results` and `rerun`: a 
 reruns one test and a function that names the failed tests from the lane's results folder.
 `merge_queue.declared_failures` takes it when the lane's `failedTests` has no `results`, and
 `config.failed_tests_setting` then takes `paths` alone. The Unity plugin gives one for a
-`qk unity test` lane (vocaro/queuekeeper#109).
+`qk unity test` lane (vocaro/queuekeeper#109), and the Apple plugin one for a `qk simulator-tests`
+lane (`queuekeeper_apple.flakes`, vocaro/queuekeeper#2). A `Reruns` whose `no_verdict` is true exits
+as qk's runners do, so that an unmeasured or unstarted rerun gives no verdict, as a `qk unittest`
+rerun's does, and is not taken for a real failure.
 
 - **Rerun alone.** The worker reads the failed test IDs from unittest's `FAIL:` and `ERROR:` lines,
   waits for the Mac to settle, and reruns each alone with the lane's `-s`, `-p`, `-t`, `--split`,

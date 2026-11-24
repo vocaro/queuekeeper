@@ -57,7 +57,10 @@ parentheses. For example, add `--repeat 2 --erase --only 'AppTests/Smoke/testOpe
 `isolatedTest` observations in `series.json` include a pass or failure from a run only when its
 fresh bundle shows that exact, single case. Use the recorded identifier URL to match cases across
 runs. Missing, ambiguous, skipped and parameterized cases do not supply an observation. A failed
-run still fails the series. These observations do not change merge queue verdicts.
+run still fails the series. Add `--exact` to count only those observations: any other run is
+unmeasured, so the series passes or fails only on runs that show the one test alone. `--exact` may
+list several device types, and then each observation names its device. The merge queue's rerun of
+a failed test uses it ([Flaky Xcode tests](#flaky-xcode-tests)).
 
 ### A simulator's SpringBoard or backboardd that crashes
 
@@ -70,6 +73,45 @@ them. Any other failed test or issue, a result whose tests could not be read, or
 the run failed. `QUEUEKEEPER_DIAGNOSTIC_REPORTS` replaces the folder, with folders separated by colons.
 The merge queue gates such a lane once more and holds when it crashes again
 ([No verdict is not a failure](../../../../doc/user_guide.md#no-verdict-is-not-a-failure)).
+
+## Flaky Xcode tests
+
+When a gate lane whose command is `qk simulator-tests` fails, the merge queue reruns its failed
+XCTest and Swift Testing tests alone before a bisect, as it does a `qk unittest` lane's (the user
+guide's [When a batch fails](../../../../doc/user_guide.md#when-a-batch-fails)):
+
+1. The plugin names each failed test from the records the run kept in the lane's results, by the
+   `TARGET/SUITE/METHOD` of its identifier URL. It names none, and the batch bisects at once, when
+   a device or shard kept no record, its bundle was not read, it was unmeasured, it failed with no
+   failed test case or left a case unmeasured, or a failed case has no identifier URL naming one
+   plain method, as a parameterized or nested suite's does not. More than five failed tests also
+   bisect at once.
+2. Each is rerun alone, up to three times, with the lane's own command and
+   `--repeat 1 --erase --exact --only TEST`: on a freshly erased simulator of each of the lane's
+   device types, a run passes or fails only when its own result bundle shows that one test alone
+   with that outcome. Any other rerun is unmeasured and gives no verdict, and the batch bisects.
+3. A test that fails again alone is a real failure, and the batch is bisected. A test that passes
+   every rerun is a flake, recorded as a Python one is: on the entries, in a `Flaky-test:` trailer
+   and on the tracker.
+4. The batch lands on its flakes only if it changes none of the paths the lane's tests depend on,
+   which the lane lists in `failedTests`. The queue reads a Python test's imports to know what it
+   depends on, but it cannot read a Swift target's inputs, so this list is the only proof: give it
+   every source, test, resource, package and project file the scheme builds from.
+
+```json
+"gate": {
+  "command": ["python3", "scripts/qk", "simulator-tests", "--scheme", "App", "--runtime", "iOS-27-0",
+              "--device", "iPhone-17-Pro", "--"],
+  "failedTests": {"paths": ["App/", "AppTests/", "App.xcodeproj/", "Package.swift", "Package.resolved"]}
+}
+```
+
+A lane that lists no paths still has its flakes recorded, and is then bisected. A lane whose
+command uses `--workers`, `--repeat`, `--build-only` or any test argument but `-only-testing` and
+`-skip-testing`, or runs xcodebuild from a script of its own, gets no reruns from the plugin; such
+a script can declare its own `failedTests` with a JUnit XML file and a rerun command.
+`qk results history LANE TEST` reports each test's flake history
+([qk simulator-tests](../../../../doc/user_guide.md#qk-simulator-tests)).
 
 ## Swift package tests
 

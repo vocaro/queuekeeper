@@ -6183,8 +6183,8 @@ class Worker:
         as a qk unittest lane's is, and when every rerun passes, each is a flake, recorded as any, and the batch lands
         only when none of its commits changes one of the lane's paths, the files its tests depend on; a lane that lists
         none bisects. A failure that a rerun confirms bisects, as no output names an entry to blame. A lane whose plugin
-        names its failed tests (plugins.Reruns), as a qk unity test lane's, has them named and rerun by the plugin, and
-        is weighed the same way."""
+        names its failed tests (plugins.Reruns), as a qk unity test lane's or a qk simulator-tests lane's, has them
+        named and rerun by the plugin, and is weighed the same way."""
         lane, settings = declared
         folder = self.failed_results
         # A group's lanes each write under results/LANE/.
@@ -6209,8 +6209,11 @@ class Worker:
             return None
         # A bare qk runs this worker's toolkit, as the gate's qk run ran it (config.launched).
         template = launched(reruns.rerun if reruns else settings["rerun"], self.checkout, self.toolkit_root())
+        # A plugin whose rerun exits as qk's runners do has an unmeasured or unstarted rerun give no verdict, as a qk
+        # unittest one's does (plugins.Reruns.no_verdict, vocaro/queuekeeper#2).
         ran = self.rerun_each(tests, lambda test: [word.replace("{test}", test) for word in template], applied, head,
-                              log, round_name)
+                              log, round_name, no_verdict_codes=UNITTEST_RERUN_NO_VERDICT
+                              if reruns and getattr(reruns, "no_verdict", False) else ())
         if ran is None: return None
         flakes, real = ran
         if real:
