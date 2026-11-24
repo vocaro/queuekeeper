@@ -3638,6 +3638,17 @@ recovery](developer_guide.md#state-and-recovery) for how the worker handles each
   The process list describes one reading. A process outside the list has no reported size.
   To measure growth, compare separate readings of the same process instance on the same Mac.
   A PID can be reused after a process exits.
+
+  To sample `fseventsd` without relying on its memory rank, run this on the affected Mac at each observation.
+
+  ```sh
+  date -u +%FT%TZ
+  LC_ALL=C TZ=UTC ps -A -o pid=,lstart=,rss=,comm= | awk '$NF ~ /(^|\/)fseventsd$/'
+  ```
+
+  Keep the UTC time and the output together. Compare resident memory in KiB only for rows with
+  the same PID and start time on that Mac. An empty reading supplies no measurement. Use
+  separate writer or subscriber evidence for attribution.
 - **`qk queue health`** gives one verdict on whether the queue is healthy and when the waiting
   entries should land, from five signs: progress of running gates, time since the last landing,
   each Mac's reachability and memory, connected devices, and how many recent entries came back.
