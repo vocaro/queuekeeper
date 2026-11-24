@@ -335,7 +335,8 @@ is on `main`, clean, behind, holds no commit of its own (a commit made there and
 found by `git cherry` and passed with `git reset --keep`), and no process started from it still
 runs. Sessions under `.claude/worktrees/`, Git's own directory, the signed launcher, and processes
 registered in `queuekeeper-restartable/PID.json` (such as `qk serve`, which execs the new code when
-HEAD moves) do not count. A checkout left only for running processes is retried every 30 seconds
+HEAD moves, and the Apple plugin's `xcodebuild` and `swift` wrappers while their build runs, having
+loaded all they run until it ends) do not count. A checkout left only for running processes is retried every 30 seconds
 while nothing waits, and `qk queue status` and `qk queue doctor` name up to five holders. A checkout
 left for any other reason is a person's to settle; a session never stashes, resets or edits it to
 make it follow. Nothing here holds the queue, and none of it keeps the queue from reading idle: while

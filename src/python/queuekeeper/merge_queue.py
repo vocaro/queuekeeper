@@ -4551,8 +4551,9 @@ class Worker:
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             return f"{UNKNOWN_USE}: {error}"
         launchers = self.launchers(users)
-        # A process that restarts itself once the checkout moves, as the dashboard's server, holds nothing back
-        # (restartable, vocaro/queuekeeper#159).
+        # A process that restarts itself once the checkout moves, as the dashboard's server, or is pinned to what
+        # it loaded, as an Apple build wrapper while its build runs, holds nothing back (restartable,
+        # vocaro/queuekeeper#159).
         moving = restartable.passed(shared)
         users = [use for use in users if not (use[0].pid in launchers and use[1] == "argument") and use[0].pid not in moving]
         self.holders = users

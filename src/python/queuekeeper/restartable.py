@@ -8,6 +8,10 @@ process may instead register here and watch the checkout: once its HEAD moves, t
 exec, with the same command from the new code. The follow then passes over each process registered here (passed),
 as the owner allowed: "qk scripts and code should be free to restart as needed" (2026-11-17).
 
+A process that loads nothing more from the checkout for a while may register for that while too, pinned to what it
+loaded: the Apple plugin's build-tool wrapper does so while a build runs (queuekeeper_apple.stale_modules.pinned), in
+the same form, since other projects' builds through the shared checkout's wrapper kept it behind on their own.
+
 A registration is a file under the checkout's Git directory, FOLDER/PID.json, naming the process and when it
 started, as ps says, so that a PID used again by another process is never passed over."""
 import json

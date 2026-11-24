@@ -9,9 +9,16 @@ the message names, inside the checkout the lane runs in, and runs once more. It 
 A failed run that could not spawn a tool from a Metal Toolchain mount macOS has since replaced is handled
 the same way, by stale_toolchain (vocaro/queuekeeper#281).
 
+While a build tool runs, its wrapper has loaded all it runs then, so the Queuekeeper checkout it was started from may
+move under it. Run from a main checkout, such as the shared one other projects' lanes reach it through, it registers
+for that time as a process the checkout's follow of origin/main passes over (pinned, queuekeeper.restartable), so
+that those builds no longer keep the shared checkout behind (vocaro/queuekeeper#159).
+
 Standard library only: it starts with every build a lane runs.
 """
 
+import contextlib
+import json
 import os
 from pathlib import Path
 import re
@@ -37,6 +44,10 @@ NOTICE = "queuekeeper: STALE MODULES"
 MARKER = b"queuekeeper_apple import stale_modules"
 # The words of the output lines a failed run is judged by: a stale module's and a failed spawn's.
 WATCHED = (STALE_MODULE.encode(), stale_toolchain.SPAWN.encode())
+# Where a checkout records the processes its follow of origin/main passes over, under its Git directory, in the form
+# queuekeeper.restartable reads (FOLDER, passed): {"pid", "started" as `ps -o lstart=` says, "what"}.
+PINS = "queuekeeper-restartable"
+PINNED = "a lane's {tool} through the Apple plugin's wrapper, which loads nothing more while it runs"
 
 
 def shim(path):
@@ -64,6 +75,55 @@ def folders(text, root, cwd="."):
         if cache is None or cache == root or root not in cache.parents: continue
         if cache not in found: found.append(cache)
     return found
+
+
+def pins():
+    """Where the checkout holding this wrapper records pinned processes (PINS), or None unless it is a main checkout:
+    a linked worktree's wrapper, or an installed copy's, never holds the shared checkout back."""
+    root = Path(__file__).resolve().parents[4]
+    variables = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    try:
+        done = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--show-toplevel",
+                               "--git-dir", "--git-common-dir"], capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL, env={**variables, "GIT_OPTIONAL_LOCKS": "0"})
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = done.stdout.splitlines()
+    if done.returncode or len(found) != 3: return None
+    top, own, common = found
+    if Path(top).resolve() != root or Path(own).resolve() != Path(common).resolve(): return None
+    return Path(common) / PINS
+
+
+def started(pid):
+    """When the process pid started, as queuekeeper.restartable.started reads it, or None."""
+    try:
+        done = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() or None
+
+
+@contextlib.contextmanager
+def pinned(tool, folder):
+    """Record this process in folder, from pins(), while the block runs tool, and remove the record after."""
+    pid, path = os.getpid(), None
+    began = started(pid) if folder is not None else None
+    if began:
+        try:
+            folder.mkdir(exist_ok=True)
+            # Written whole under another name first: the follow removes a record it cannot read.
+            draft, path = folder / f".{pid}.draft", folder / f"{pid}.json"
+            draft.write_text(json.dumps({"pid": pid, "started": began, "what": PINNED.format(tool=tool)}) + "\n")
+            os.replace(draft, path)
+        except OSError:
+            path = None
+    try:
+        yield
+    finally:
+        if path is not None:
+            with contextlib.suppress(OSError): path.unlink()
 
 
 def attempt(command):
@@ -138,7 +198,8 @@ def main(tool, arguments):
     root = os.environ.get(ROOT_VARIABLE)
     if preserved := stale_packages.refresh_moved_build(tool, arguments, root):
         say(f"{stale_packages.REFRESH}: preserved {preserved}; rebuilding at the configured path (#201)")
-    status, errors = attempt(command)
+    kept = pins()
+    with pinned(tool, kept): status, errors = attempt(command)
     if status == 0: return status
     if root and 0 < status < 128 and (warning := stale_packages.warning(tool, arguments, root)): say(warning)
     if not errors: return status
@@ -153,7 +214,7 @@ def main(tool, arguments):
     for folder in removed: shutil.rmtree(folder, ignore_errors=True)
     say(f"{NOTICE}: {tool} failed with \"{STALE_MODULE}\"; removed {', '.join(map(str, removed))}; running it once "
         "more (vocaro-engineering#267)")
-    status, again = attempt(command)
+    with pinned(tool, kept): status, again = attempt(command)
     say(f"{NOTICE}: the rerun of {tool} ended with status {status}" +
         (", the same error again, so it is not run a third time" if status != 0 and again else ""))
     record(tool, removed, status)
@@ -174,7 +235,7 @@ def toolchain(tool, command, gone, root, status):
     say(f"{stale_toolchain.NOTICE}: {tool} could not start a tool from the Metal Toolchain mount {', '.join(gone)}, "
         f"which is gone from this Mac; removed the build plans that name it, {', '.join(map(str, removed))}; running "
         f"it once more ({stale_toolchain.ISSUE})")
-    status, again = attempt(command)
+    with pinned(tool, pins()): status, again = attempt(command)
     still = status != 0 and stale_toolchain.mounts(again)
     say(f"{stale_toolchain.NOTICE}: the rerun of {tool} ended with status {status}" +
         (", the same error again, so it is not run a third time" if still else ""))

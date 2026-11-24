@@ -3,6 +3,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -13,7 +14,7 @@ import unittest
 from unittest.mock import patch
 import host_isolation
 from host_isolation import stretched
-from queuekeeper import cli, config, processes, resources
+from queuekeeper import cli, config, processes, resources, restartable
 from queuekeeper_apple import stale_modules
 
 SHIM = stale_modules.SHIMS / "xcodebuild"
@@ -196,6 +197,62 @@ class Wrapper(Fixture):
                     while time.monotonic() < deadline:
                         os.kill(int(pid.read_text()), 0)
                         time.sleep(0.05)
+
+
+class Pinned(Fixture):
+    """vocaro/queuekeeper#159: other projects' lanes reach the wrappers through the shared checkout, whose follow of
+    origin/main waited for every build they ran. While its build tool runs, a wrapper started from a main checkout is
+    recorded there as one the follow passes over (queuekeeper.restartable), and the record goes when the build ends."""
+
+    def setUp(self):
+        super().setUp()
+        self.toolkit = self.root / "toolkit"
+        package = self.toolkit / "plugins/apple/src/queuekeeper_apple"
+        shutil.copytree(Path(stale_modules.__file__).parent, package, ignore=shutil.ignore_patterns("__pycache__"))
+        self.git(self.toolkit, "init", "-q", "-b", "main")
+        self.git(self.toolkit, "add", "-A")
+        self.git(self.toolkit, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "toolkit")
+
+    @staticmethod
+    def git(where, *args):
+        subprocess.run(["git", "-C", str(where), *args], check=True, capture_output=True, timeout=stretched(30))
+
+    def building(self, toolkit):
+        """The pid of toolkit's xcodebuild wrapper, started on a build that runs until stopped, once it runs."""
+        pid = self.root / f"pid-{toolkit.name}"
+        variables = {**self.variables("sleep"), "STANDIN_PID": str(pid)}
+        wrapper = toolkit / "plugins/apple/src/queuekeeper_apple/_shims/xcodebuild"
+        process = subprocess.Popen([sys.executable, str(wrapper), "build"], cwd=self.checkout, env=variables, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, start_new_session=True)
+        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
+        deadline = time.monotonic() + stretched(30)
+        while not pid.exists() or not pid.read_text():
+            self.assertLess(time.monotonic(), deadline, "the stand-in never started")
+            time.sleep(0.05)
+        return process, int(pid.read_text())
+
+    def test_a_running_build_is_passed_over_by_the_follow_and_forgotten_once_it_ends(self):
+        self.assertEqual(stale_modules.PINS, restartable.FOLDER)
+        self.assertEqual(stale_modules.started(os.getpid()), restartable.started(os.getpid()))
+        process, tool = self.building(self.toolkit)
+        self.assertEqual(restartable.passed(self.toolkit),
+                         {process.pid: "a lane's xcodebuild through the Apple plugin's wrapper, which loads nothing "
+                                       "more while it runs"})
+        os.kill(tool, signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=stretched(30)), 128 + signal.SIGTERM)
+        self.assertEqual(restartable.passed(self.toolkit), {})
+        self.assertEqual(list((self.toolkit / ".git" / stale_modules.PINS).iterdir()), [])
+
+    def test_a_wrapper_in_a_linked_worktree_records_nothing(self):
+        """The negative control: a session's worktree never holds the shared checkout back, so its wrapper, as this
+        suite's own, leaves nothing in the Git directory it shares."""
+        linked = self.root / "linked"
+        self.git(self.toolkit, "worktree", "add", "-q", "--detach", str(linked))
+        process, tool = self.building(linked)
+        self.assertEqual(restartable.passed(self.toolkit), {})
+        self.assertFalse((self.toolkit / ".git" / stale_modules.PINS).exists())
+        os.kill(tool, signal.SIGTERM)
+        process.wait(timeout=stretched(30))
 
 
 class Lane(Fixture):

@@ -8896,7 +8896,8 @@ class SharedCheckout(Fixture):
         self.assertEqual(run(copy, "git", "rev-parse", "HEAD"), pinned)
         self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
 
-        # Either process is enough to hold the checkout when only its toolkit path changes.
+        # Either process is enough to hold the checkout when only its toolkit path changes. (A real wrapper from the
+        # checkout records itself as pinned while its build runs; see the test after this one.)
         cases = (([worker(self.repo), shim(copy)], 42), ([worker(copy), shim(self.repo)], 43))
         for processes, holder in cases:
             with self.subTest(holder=holder), patch.object(mq.disk, "census", return_value=processes):
@@ -8904,6 +8905,39 @@ class SharedCheckout(Fixture):
                 self.assertNotEqual(before, main)
                 self.assertEqual(after, before)
                 self.assertIn(f"{mq.IN_USE}: PID {holder} (Python), argument ", said)
+
+    def test_another_projects_build_through_the_checkouts_apple_wrapper_does_not_hold_it_back(self):
+        """vocaro/queuekeeper#159: on 2026-11-17 the shared checkout stayed behind for other projects' builds alone,
+        each run through its `_shims/xcodebuild`. A real wrapper from the checkout, its build running, is pinned there
+        and passed over; with its record gone, the same process holds the checkout back."""
+        import queuekeeper_apple
+        package = Path(queuekeeper_apple.__file__).parent
+        shutil.copytree(package, self.repo / "plugins/apple/src/queuekeeper_apple",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        with (self.repo / ".git/info/exclude").open("a") as exclude: exclude.write("plugins/\n")
+        tools, project = self.base / "tools", self.base / "other-project"
+        tools.mkdir()
+        project.mkdir()
+        host_isolation.executable(tools / "xcodebuild", "#!/bin/sh\nexec sleep 300\n")
+        wrapper = self.repo / "plugins/apple/src/queuekeeper_apple/_shims/xcodebuild"
+        build = subprocess.Popen([sys.executable, str(wrapper), "build"], cwd=project, start_new_session=True, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,
+                                 env={**os.environ, "PATH": os.pathsep.join([str(tools), os.environ.get("PATH", "")])})
+        self.addCleanup(lambda: build.poll() is None and os.killpg(build.pid, signal.SIGKILL))
+        record = mq.restartable.folder(self.repo) / f"{build.pid}.json"
+        deadline = time.monotonic() + stretched(30)
+        while not record.exists():
+            self.assertLess(time.monotonic(), deadline, "the wrapper never recorded its build")
+            self.assertIsNone(build.poll(), "the wrapper ended")
+            time.sleep(0.05)
+        before, after, main, said = self.land()
+        self.assertNotEqual(before, main)
+        self.assertEqual(after, main)
+        self.assertIn(f"fast-forwarded {self.repo} from {before[:12]} to {main[:12]}", said)
+        record.unlink()
+        before, after, main, said = self.land()
+        self.assertEqual(after, before)
+        self.assertRegex(said, rf"{mq.IN_USE}: PID {build.pid} \([\w.]+\), argument \S*/_shims/xcodebuild")
 
 
 # What git prints, over HTTPS and SSH, when it did not reach GitHub.

@@ -45,8 +45,13 @@ def state_file(tool, arguments, cwd):
 
 def moved_from(root):
     """The matching checkout at the farm's previous root, even if a link now leads here."""
-    from queuekeeper.offload_host import EARLIER_ROOT
-    from queuekeeper.remote import ROOT
+    # After a failed build the toolkit may have moved under the wrapper (stale_modules.pinned): with no core to
+    # read, nothing is taken to have moved.
+    try:
+        from queuekeeper.offload_host import EARLIER_ROOT
+        from queuekeeper.remote import ROOT
+    except ImportError:
+        return None
 
     home = Path.home().resolve()
     current = (home / ROOT / "checkouts").resolve()
