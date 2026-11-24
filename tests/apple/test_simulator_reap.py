@@ -332,6 +332,107 @@ class ReapTests(unittest.TestCase):
                 self.assertNamed(report, key=key, hold=hold)
                 self.assertEqual(self.record.read_bytes(), before)
 
+    def deleted(self):
+        """setUp's simulator deleted while held: simctl here lists only another device, CoreSimulator keeps no
+        folder for it, and no process of it runs (vocaro/queuekeeper#195)."""
+        self.table.clear()
+        self.process(105000, 1, "/usr/bin/other")
+        self.names.pop(UDID)
+        self.names[OTHER], self.states[OTHER] = "Elsewhere Phone", "Shutdown"
+
+    def assertReleasedAbsent(self, report, key=NAME):
+        self.assertEqual(([item["key"] for item in report["released"]], report["recoverable"]), ([key], []), report)
+        entry = devices.Record(self.record).entry(key)
+        self.assertEqual((entry["revision"], entry["ownerChatID"], entry["lastOwnerChatID"], entry["state"]),
+                         (8, None, "session", "released"))
+        recovery = entry["recovery"]
+        self.assertEqual((recovery["by"], recovery["condition"]), ("reap", "held"))
+        self.assertEqual(recovery["qualified"], "its release passed, and its simulator no longer exists")
+        self.assertIn(f"PID {HOLDER}", recovery["verified"])
+        self.assertIn(f"expected release, {self.DUE}, had passed", recovery["verified"])
+        self.assertIn(f"simctl listed 1 other devices but not {UDID}, and CoreSimulator kept no folder "
+                      f"{self.home / offload_host.DEVICES / UDID}", recovery["verified"])
+        releases = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([line["event"] for line in releases if line.get("key") == key], ["releasing", "released"])
+        self.assertEqual(releases[-1]["verified"], recovery["verified"])
+        self.assertIn(f"released {key} ({UDID})", "\n".join(remote.reap_lines("fake", report, listing=False)))
+
+    def test_a_held_entry_whose_simulator_no_longer_exists_is_released(self):
+        # vocaro/queuekeeper#195: BreezEPUB iPhone 17 Pro 3 stayed held after its process went and its release
+        # passed, because simctl no longer listed its simulator, and only a hand recovery released it.
+        self.deleted()
+        self.reserve(**self.held_entry())
+        before = self.record.read_bytes()
+        dry = self.reap(dry_run=True)
+        self.assertEqual([item["key"] for item in dry["released"]], [NAME], dry)
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertReleasedAbsent(self.reap())
+        self.assertEqual(self.stops, [])
+
+    def test_a_deleted_templates_entry_is_released(self):
+        self.deleted()
+        self.reserve(TEMPLATE, **self.held_entry())
+        self.assertReleasedAbsent(self.reap(), key=TEMPLATE)
+
+    def test_a_reused_pid_of_a_deleted_simulators_holder_is_a_process_that_has_gone(self):
+        self.deleted()
+        self.process(HOLDER, 1, "/usr/bin/other", start="Mon Feb  2 00:00:00 2026")
+        self.reserve(**self.held_entry())
+        self.assertReleasedAbsent(self.reap())
+
+    def test_a_deleted_simulators_live_holder_keeps_its_entry(self):
+        self.deleted()
+        self.process(HOLDER, 1, "/usr/bin/holder", start="Thu Jan  1 00:00:00 2026")
+        self.reserve(**self.held_entry())
+        before = self.record.read_bytes()
+        report = self.reap()
+        self.assertEqual((report["recoverable"], report["released"]), ([], []), report)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_an_unlisted_simulator_without_proof_that_it_is_gone_stays_held(self):
+        future = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3600))
+        def folder(): (self.home / offload_host.DEVICES / UDID).mkdir(parents=True)
+        def unreadable(): self.simctl_fails = True
+        def garbled():
+            self.listed = lambda command, listed=self.listed: (
+                '{"devices": "none"}' if command[:3] == ["xcrun", "simctl", "list"] else listed(command))
+        def nothing(): self.names.clear()
+        def unlisting(): self.listed_self = False
+        def held_too():
+            self.record.write_text(json.dumps({**json.loads(self.record.read_text()), "devices": {
+                **json.loads(self.record.read_text())["devices"],
+                "another key": {"device": UDID, "ownerChatID": "other", "state": "reserved", "revision": 3}}}))
+        cases = [
+            ("its folder remains", folder, {}, f"simctl here does not list {UDID}, but its folder .* remains"),
+            ("simctl's output cannot be read", unreadable, {}, "simctl did not list its devices"),
+            ("simctl's output is no listing", garbled, {}, "simctl did not list its devices"),
+            ("simctl lists no device", nothing, {}, "lists no device at all"),
+            ("no pool's name", None, {"key": "Elsewhere Duo 1"}, "neither a member's nor a warmed template's"),
+            ("its release not due", None, {"due": future, offload_host.ALONE: True},
+             "its release is not due until"),
+            ("a listing without this reap", unlisting, {}, "does not show this reap's own process"),
+            ("another entry holds it", held_too, {}, "its device is also held as another key"),
+            ("its run went to another Mac", None, {"run": {"host": "build-host", "startedAt": self.DUE}},
+             "its run went to build-host"),
+        ]
+        for name, arrange, more, hold in cases:
+            with self.subTest(name):
+                self.setUp()
+                # setUp leaves an instance's own listing, such as garbled's, in place.
+                vars(self).pop("listed", None)
+                self.deleted()
+                key = more.pop("key", NAME)
+                self.reserve(key, **self.held_entry(**more))
+                if arrange: arrange()
+                before = self.record.read_bytes()
+                report = self.reap()
+                self.assertEqual(report["released"], [], report)
+                held = [item for item in report["recoverable"] if item["key"] == key]
+                self.assertEqual(len(held), 1, report)
+                self.assertRegex(held[0]["hold"], hold)
+                self.assertEqual(self.record.read_bytes(), before)
+                self.assertFalse(self.log.exists())
+
     def test_another_entry_holding_the_device_leaves_both(self):
         self.states[UDID] = "Shutdown"
         self.record.write_text(json.dumps({"vocaroDeviceHandoff": 1, "revision": 1, "devices": {

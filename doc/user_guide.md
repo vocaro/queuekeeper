@@ -2958,7 +2958,10 @@ device if it does not read back. It does nothing for a hostless test bundle.
 
 **Cleanup.** `qk simulator-pool reap [--dry-run] [--here]` shuts down a member or template left booted
 for two hours that nothing accounts for; it also runs before work goes to another Mac and in
-`qk doctor`. A member unused for an hour may be deleted, except each kind's lowest-numbered one, which
+`qk doctor`. It also releases a reservation whose process is gone, by PID and start, and whose release
+time has passed, once its simulator is shut down, or once simctl lists other devices but not it and its
+CoreSimulator folder is gone. Anything it cannot prove, it leaves held and names with a `qk devices recover`
+command. A member unused for an hour may be deleted, except each kind's lowest-numbered one, which
 goes only when you ask (`qk simulator-pool prune` or `qk disk`) and every member of the kind has been
 unused for 7 days. `qk simulator-pool list` shows each member and template and whether it may be pruned.
 

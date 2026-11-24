@@ -3318,11 +3318,41 @@ def replace_record(record):
     finally: os.close(directory)
 
 
+def device_folder(udid):
+    """The folder CoreSimulator keeps a simulator in on this Mac, as Path, whether or not it exists."""
+    return Path.home() / DEVICES / udid
+
+
+def absent_hold(key, udid, simulators, pools, item):
+    """Why release_hold must leave an entry whose simulator simctl here does not list, or None when the
+    simulator is shown not to exist on this Mac: simctl listed other devices, so that its listing was a real
+    one; CoreSimulator keeps no folder for the UDID; the entry is a pool member's or warmed template's by
+    name; and its expected release has passed. recoverable has already shown its recorded processes gone by
+    PID and start. A simulator deleted while held, as `xcrun simctl delete` or a reinstall does, can then be
+    held by nothing, and a hand recovery was the only way out (vocaro/queuekeeper#195)."""
+    unlisted = f"simctl here does not list {udid}"
+    if not simulators: return f"{unlisted}, and lists no device at all, so its absence shows nothing"
+    try:
+        os.lstat(device_folder(udid))
+        return f"{unlisted}, but its folder {device_folder(udid)} remains"
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        return f"{unlisted}, and whether its folder {device_folder(udid)} remains could not be read ({error})"
+    # A template's name carries its runtime, the one simctl would have listed it on.
+    template = TEMPLATE.fullmatch(key)
+    if pool_of(key, pools, template["runtime"] if template else "")[0] is None:
+        return (f"{unlisted}, and its name is neither a member's nor a warmed template's of the pools "
+                + ", ".join(sorted(pools)))
+    if item.get("early"): return f"{unlisted}, and its release is not due until {item['due']}"
+    return None
+
+
 def release_hold(item, entries, table, simulators, pools, stopping=(), *, discover_templates=False):
     """Why release_dead must leave one entry recoverable found, or None when this Mac proves it dead: a pool
-    simulator's reservation, of the device simctl here lists under that name and shows Shutdown, whose run
-    went to no other Mac, and which no other entry of the device still holds, with this reap's own process
-    in the listing that shows the others gone. recoverable has already shown that every process the entry
+    simulator's reservation, of the device simctl here lists under that name and shows Shutdown, or that
+    absent_hold shows no longer exists on this Mac, whose run went to no other Mac, and which no other entry
+    of the device still holds, with this reap's own process in the listing that shows the others gone. recoverable has already shown that every process the entry
     records is gone, by PID and start, and that its expected release has passed. A dry run passes in stopping
     the devices it would shut down first, which it judges as if they were Shutdown."""
     key, entry = item["key"], entries[item["key"]]
@@ -3333,20 +3363,23 @@ def release_hold(item, entries, table, simulators, pools, stopping=(), *, discov
     if isinstance(run, dict) and run.get("host"):
         return f"its run went to {run['host']}, whose processes this Mac cannot check"
     device = simulators.get(udid)
-    if device is None: return f"simctl here does not list {udid}"
-    if device.get("name") != key: return f"simctl lists {udid} as {device.get('name')!r}, not {key!r}"
-    if pool_of(key, pools, device.get("runtime") or "")[0] is None:
-        origin = template_provenance(device) if discover_templates else None
-        if not origin or identities([origin["holder"]]) != identities([entry.get(HOLDER)]):
-            return "it is neither a member nor a warmed template of the pools " + ", ".join(sorted(pools))
-    if device.get("state") != "Shutdown" and udid not in stopping:
-        return f"simctl shows it {device.get('state') or 'in no state'}, not Shutdown"
+    if device is None:
+        why = absent_hold(key, udid, simulators, pools, item)
+        if why: return why
+    elif device.get("name") != key: return f"simctl lists {udid} as {device.get('name')!r}, not {key!r}"
     for other, held in entries.items():
         if other != key and str(held.get("device") or "").upper() == udid and \
                 (held.get("state") != "released" or held.get("activeRun") or held.get("uncertain")):
             return f"its device is also held as {other}"
     if os.getpid() not in table:
         return "the process listing does not show this reap's own process, so it cannot show another is gone"
+    if device is None: return None
+    if pool_of(key, pools, device.get("runtime") or "")[0] is None:
+        origin = template_provenance(device) if discover_templates else None
+        if not origin or identities([origin["holder"]]) != identities([entry.get(HOLDER)]):
+            return "it is neither a member nor a warmed template of the pools " + ", ".join(sorted(pools))
+    if device.get("state") != "Shutdown" and udid not in stopping:
+        return f"simctl shows it {device.get('state') or 'in no state'}, not Shutdown"
     if item.get("early") and entry.get(ALONE) is not True:
         return (f"its release is not due until {item['due']}, and it does not record that only its holder held it, "
                 "as `qk simulator-pool take`'s does not: that command's session holds the member by its word, and a "
@@ -3438,12 +3471,16 @@ def release_dead(found, entries, table, pools, listed, dry_run, stopping=None, *
         pids = ", ".join(f"PID {pid}" + (f" (started {start})" if start else "") for pid, start in identities(recorded))
         due = (f"its expected release, {item['due']}, had not passed, but it recorded that only its holder held "
                f"it, and {item['checked']}" if item.get("early") else f"its expected release, {item['due']}, had passed")
-        shown = (f"simctl would show {str(entry['device']).upper()} Shutdown once this reap stopped it"
-                 if dry_run and str(entry["device"]).upper() in stopping
-                 else f"simctl showed {str(entry['device']).upper()} Shutdown")
+        udid = str(entry["device"]).upper()
+        absent = udid not in simulators
+        shown = (f"simctl listed {len(simulators)} other devices but not {udid}, and CoreSimulator kept no folder "
+                 f"{device_folder(udid)}, so the simulator no longer exists on this Mac" if absent
+                 else f"simctl would show {udid} Shutdown once this reap stopped it"
+                 if dry_run and udid in stopping else f"simctl showed {udid} Shutdown")
+        qualified = "early: nothing accounts for its owner" if item.get("early") else "its release passed"
         item.update(verified=f"reap on this Mac found {pids} no longer running, by PID and start in ps; {due}; and "
                              f"{shown}",
-                    qualified="early: nothing accounts for its owner" if item.get("early") else "its release passed",
+                    qualified=f"{qualified}, and its simulator no longer exists" if absent else qualified,
                     condition="orphan" if entry.get("activeRun") else "held")
     if dry_run:
         return [{**item, "dryRun": True} for item in ready], left
