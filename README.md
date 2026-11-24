@@ -2,8 +2,6 @@
   <img src="assets/banner.svg" alt="Queuekeeper" width="100%">
 </p>
 
-*Your Macs keep watch over `main`.*
-
 Queuekeeper is a merge queue and build farm for one developer working with AI coding agents. It
 runs on that developer's own machines instead of in the cloud. Agents hand it commits; it batches
 them, tests each batch once on whichever machine has room, and pushes to `main` only what passed.
