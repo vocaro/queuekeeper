@@ -2516,13 +2516,12 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse(self.checkout(1).exists())
         self.assertFalse(self.checkout(0).exists())
 
-    def test_a_foreground_dispatch_can_be_canceled_while_waiting_without_touching_the_holder(self):
-        # Real dispatch, checkout and lease handling; only desktop/VoiceOver I/O is a stand-in.
-        source = self.toolkit / "src/python/queuekeeper"
-        waiter = Path(self.temp.name) / "foreground-waiter.pid"
+    def stand_in_foreground(self, waiter=None):
+        """Keep the real foreground reservation and replace only desktop and VoiceOver I/O."""
+        waited = f"    Path({str(waiter)!r}).write_text(str(os.getpid()))\n" if waiter is not None else ""
         with (self.toolkit / "plugins/mac-desktop/src/queuekeeper_mac_desktop/foreground.py").open("a") as fixture:
             fixture.write("\ndef problems():\n    from pathlib import Path\n"
-                          f"    Path({str(waiter)!r}).write_text(str(os.getpid()))\n    return []\n"
+                          f"{waited}    return []\n"
                           "front = lambda: None\n")
         with (self.toolkit / "plugins/apple/src/queuekeeper_apple/voiceover/state.py").open("a") as fixture:
             fixture.write("\n@contextlib.contextmanager\ndef preserved(*args, **kwargs):\n    yield\n")
@@ -2534,6 +2533,11 @@ class RemoteTests(unittest.TestCase):
         record.defer(offload_host.mac_name())
         # The second Mac takes foreground work, by its own settings (vocaro/queuekeeper#211).
         self.mac_settings("FAKE_SLOTS", takes={"foreground": True})
+        return record
+
+    def test_a_foreground_dispatch_can_be_canceled_while_waiting_without_touching_the_holder(self):
+        waiter = Path(self.temp.name) / "foreground-waiter.pid"
+        record = self.stand_in_foreground(waiter)
         marker = self.checkout(1) / ".build/foreground-command-started"
         command = [sys.executable, "-c", "from pathlib import Path; "
                    "Path('.build/foreground-command-started').touch()"]
@@ -2574,6 +2578,34 @@ class RemoteTests(unittest.TestCase):
                 if cancel:
                     record.release(devices.FOREGROUND, owner="other foreground run", revision=held["revision"],
                                    outcome="fixture done", restoration="fixture checked", frontmost="restored")
+
+    def test_foreground_admit_without_a_device_collects_the_same_run_after_a_drop(self):
+        record = self.stand_in_foreground()
+        marker = self.checkout(0) / ".build/foreground-command-started"
+        connections = Path(self.temp.name) / "foreground-connections"
+        command = ("from pathlib import Path; import time\n"
+                   f"marker = Path({str(marker)!r})\n"
+                   "marker.parent.mkdir(exist_ok=True)\n"
+                   "with marker.open('x'): pass\n"
+                   "dropped = marker.with_suffix('.dropped')\n"
+                   f"deadline = time.monotonic() + {stretched(60)}\n"
+                   "while not dropped.exists() and time.monotonic() < deadline: time.sleep(0.05)\n"
+                   "assert dropped.exists(), 'the fake SSH connection did not drop'\n"
+                   "print('foreground command finished after the drop')\n")
+        with self.dropping(marker, FAKE_CONNECTIONS=str(connections)):
+            status, output, error = self.qk("remote", "admit", "--foreground", "--checkout-slot", "0",
+                                            "--time-limit", str(stretched(60)), "--", sys.executable, "-c", command)
+        self.assertEqual(status, 0, output + error)
+        self.assertEqual(output.count("foreground command finished after the drop"), 1)
+        self.assertIn("the connection to fake ended; the run goes on there", error)
+        receipt = self.slot_receipt("admit")
+        self.assertGreaterEqual(receipt["connection"]["reconnections"], 1)
+        self.assertEqual(receipt["connection"]["reconnections"], len(connections.read_text().splitlines()))
+        self.assertEqual(receipt["result"]["exitStatus"], 0)
+        self.assertFalse(receipt["result"]["stopped"])
+        self.assertEqual(record.entry(devices.FOREGROUND)["state"], "released")
+        self.assertFalse(Path(os.environ["FAKE_GATE"] + ".warm-push-guard").exists())
+        self.assertEqual(self.journals(), [])
 
     @patch.object(remote, "CHECKOUTS", 2)
     def test_work_on_the_farm_mac_leaves_no_bytecode_in_its_checkout(self):

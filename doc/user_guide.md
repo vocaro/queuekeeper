@@ -2273,7 +2273,8 @@ verdict.
 
 Once the sender has acknowledged a run's journal, a run without a device lease can continue on
 the other Mac if your Mac sleeps or the connection drops. The sender reconnects to collect the
-same run's result. Stopping a run here asks the other Mac to stop it, including on reconnection.
+same run's result. This also applies to `qk remote admit --foreground` without a device lease.
+Stopping a run here asks the other Mac to stop it, including on reconnection.
 A run with a device lease, or whose journal was never acknowledged, stops when its connection
 ends or the sender is silent past its bound.
 
