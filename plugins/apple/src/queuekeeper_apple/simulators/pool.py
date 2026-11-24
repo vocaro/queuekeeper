@@ -633,14 +633,17 @@ class Pool:
         if len(found) > 1:
             return None, f"{len(found)} simulators are named {key}; none is {used} or replaced"
         existing = found[0] if found else None
-        current, waited = self.record.entry(key), 0
-        while current is not None and device_record.condition(current) != "released" and waited < wait:
-            self.sleep(TEMPLATE_POLL)
-            waited += TEMPLATE_POLL
+
+        def unheld():
             current = self.record.entry(key)
-        if current is not None and device_record.condition(current) != "released":
-            if waited: self.log(f"WAITED {waited} s for {key}, still held")
-            return None, f"{key} is {device_record.condition(current)} by {current.get('ownerChatID')}"
+            if current is not None and device_record.condition(current) != "released":
+                raise device_record.Held(f"{key} is {device_record.condition(current)} by {current.get('ownerChatID')}")
+            return current
+        try:
+            current = device_record.await_template(unheld, wait=wait, poll=TEMPLATE_POLL, sleep=self.sleep)
+        except device_record.Held as held:
+            if held.waited: self.log(f"WAITED {held.waited} s for {key}, still held")
+            return None, str(held)
         current_now, why = template_current(existing, current, builds) if existing is not None else (False, None)
         if refresh and existing is not None:
             current_now, why = False, "qk simulator-pool template --refresh asked for a new one"
@@ -660,20 +663,23 @@ class Pool:
         except device_record.Refused as error:
             return None, f"{key}: {error}"
         lease = Lease(key, existing.udid if existing else None, revision)
-        try:
+
+        def find(lease):
             # A fresh observation under the reservation: never clone, delete or boot a device booted since.
             if existing is not None and self.state(existing.udid) != "Shutdown":
-                return None, f"{key} is no longer shut down; its reservation is kept for recovery"
-            if usable:
-                return lease, None
+                raise device_record.Unprepared(f"{key} is no longer shut down; its reservation is kept for recovery")
+            return (lease, None) if usable else None
+
+        def create(lease):
+            nonlocal why
             if existing is not None:
                 if existing.kind != (device_type, runtime): why = f"it is a {existing.device_type}, not a {device_type}"
                 deleted = self.run("delete", existing.udid, timeout=300)
                 if deleted.returncode != 0 or self.state(existing.udid) is not None:
                     self.release(lease, outcome=f"Not replaced: simctl delete exited {deleted.returncode}",
                                  shutdown=False)
-                    return None, (f"{key} ({existing.udid}) could not be replaced: simctl delete exited "
-                                  f"{deleted.returncode}")
+                    raise device_record.Unprepared(f"{key} ({existing.udid}) could not be replaced: simctl delete "
+                                                   f"exited {deleted.returncode}")
                 self.log(f"REPLACED the template {key} ({existing.udid}): {why}")
                 lease.revision = self.record.update(key, owner=self.owner, revision=lease.revision, device=None,
                                                     replaced={"udid": existing.udid, "why": why,
@@ -689,7 +695,8 @@ class Pool:
                         self.record.release(key, owner=self.owner, revision=lease.revision,
                                             outcome="Not warmed: the template was not created",
                                             restoration="Nothing was created")
-                    return None, f"simctl create {key} failed with status {created.returncode}: {created.stderr.strip()}"
+                    raise device_record.Unprepared(f"simctl create {key} failed with status {created.returncode}: "
+                                                   f"{created.stderr.strip()}")
                 udid = stored[0]
             lease.udid = udid
             entry = self.record.update(key, owner=self.owner, revision=lease.revision, device=udid,
@@ -702,21 +709,26 @@ class Pool:
                     with marker.open("x") as stream:
                         json.dump({"version": 1, "pool": self.name, "udid": udid, "name": key, "runtime": runtime,
                                    "holder": entry[device_record.HOLDER]}, stream)
-            self.log(f"WARMING the template {key} ({udid}): boot, VoiceOver until it speaks, then the system's voices "
-                     "twice with a reboot between")
+
+        def warm(lease):
+            self.log(f"WARMING the template {key} ({lease.udid}): boot, VoiceOver until it speaks, then the system's "
+                     "voices twice with a reboot between")
             try:
-                warmth = self.warm(udid, runtime, simctl=self.run, boot_timeout=boot_timeout,
-                                   voiceover_limit=voiceover_limit, voices_limit=voices_limit)
+                return self.warm(lease.udid, runtime, simctl=self.run, boot_timeout=boot_timeout,
+                                 voiceover_limit=voiceover_limit, voices_limit=voices_limit)
             except warmed.WarmFailed as error:
                 self.release(lease, outcome=f"Not warmed: {error}")
-                return None, f"{key} ({udid}) was not warmed: {error}"
+                raise device_record.Unprepared(f"{key} ({lease.udid}) was not warmed: {error}") from None
+
+        def ready(lease, warmth):
+            udid = lease.udid
             lease.revision = self.record.update(key, owner=self.owner, revision=lease.revision, template={
                 "udid": udid, "deviceType": device_type, "runtime": runtime, "installedBuilds": builds,
                 "warmedAt": self.clock().isoformat(), **warmth})["revision"]
             self.run("shutdown", udid, timeout=300)
             if self.state(udid) != "Shutdown":
                 self.release(lease, outcome="Warmed, but its shutdown could not be confirmed", shutdown=False)
-                return None, f"{key} ({udid}) was warmed, but its shutdown could not be confirmed"
+                raise device_record.Unprepared(f"{key} ({udid}) was warmed, but its shutdown could not be confirmed")
             # Read once it is shut down, when the system has written what the copy will take.
             data = (self.entries().get(udid) or {}).get("dataPath")
             clonable, reason = template_current(Template(key, udid, label, device_type, runtime, "Shutdown", data=data),
@@ -724,7 +736,7 @@ class Pool:
             if not clonable:
                 # Never cloned: the next creation replaces it.
                 self.release(lease, outcome=f"Warmed, not cloned: {reason}", shutdown=False)
-                return None, f"{key} ({udid}) is not {used}: {reason}"
+                raise device_record.Unprepared(f"{key} ({udid}) is not {used}: {reason}")
             voices = warmth.get("voices") or {}
             self.log(f"WARMED the template {key} ({udid}) on runtime build {warmth['runtimeBuild']}: "
                      f"{warmth.get('voiceOver')}; voices: {voices.get('outcome')}")
@@ -732,10 +744,11 @@ class Pool:
                 # A reset needs settled voices. The template keeps its first boot and VoiceOver's start, so new
                 # members are cloned from it; the command, with the full limits, replaces it.
                 self.release(lease, outcome=f"Warmed, voices not settled: {voices.get('outcome')}", shutdown=False)
-                return None, (f"{key} ({udid}): {template_settled(self.record.entry(key))[1]} within the take's "
-                              f"limits; {self.refresh_hint(device_type, runtime)}")
+                raise device_record.Unprepared(f"{key} ({udid}): {template_settled(self.record.entry(key))[1]} "
+                                               f"within the take's limits; {self.refresh_hint(device_type, runtime)}")
             return lease, None
-        except BaseException as error:
+
+        def abandon(lease, error):
             if lease.udid is not None:
                 self.release(lease, outcome=f"Stopped while preparing the template for {purpose}")
             else:
@@ -750,7 +763,12 @@ class Pool:
                 else:
                     self.log(f"{key}: stopped with a device of its name stored but not recorded; its reservation "
                              "is kept for recovery")
-            raise
+
+        try:
+            return device_record.prepare_template(lease, find=find, create=create, warm=warm, ready=ready,
+                                                  abandon=abandon)
+        except device_record.Unprepared as error:
+            return None, str(error)
 
     @staticmethod
     def refresh_hint(device_type, runtime):

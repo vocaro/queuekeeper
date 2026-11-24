@@ -1741,6 +1741,40 @@ class PoolTests(unittest.TestCase):
         self.assertNotIn("clonedFrom", devices.Record(self.path).entry(made.key))
         self.assertTrue(any("still pointed into another device" in line and "so it was erased" in line for line in self.log))
 
+    def test_a_take_waits_for_a_template_another_session_holds_and_copies_it_once_released(self):
+        warm = Warm()
+        pool = self.make("me", warm=warm)
+        free = self.simctl.add("Project Duo 1")
+        template = "Project Duo template (iOS-27-1)"
+        pool.release(pool.take(DUO, RUNTIME, purpose="Tests"), outcome="done")
+        record = devices.Record(self.path)
+        warmed = record.entry(template)
+        source = warmed["device"]
+        # Another session holds it to copy from it, as a take does: its warm-up's record stays with it.
+        record.reserve(template, owner="another session", revision=warmed["revision"], device=source,
+                       purpose="Copy the template for its tests", details={"template": warmed["template"]},
+                       release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+        slept = []
+
+        def sleep(seconds):
+            # The other session finishes its own copy while this one waits.
+            slept.append(seconds)
+            if len(slept) == 2:
+                record = devices.Record(self.path)
+                record.release(template, owner="another session", revision=record.entry(template)["revision"],
+                               outcome="Copied into its member", restoration="checked")
+
+        waiter = simulator_pool.Pool("Project", owner="me", record=devices.Record(self.path), run=self.simctl,
+                                     log=self.log.append, clock=lambda: NOW, warm=warm, sleep=sleep)
+        lease = waiter.take(DUO, RUNTIME, purpose="Tests")
+        self.assertEqual(slept, [simulator_pool.TEMPLATE_POLL] * 2)
+        self.assertEqual((lease.udid, lease.reset, len(warm.calls)), (free, template, 1))
+        self.assertEqual(self.simctl.origin(free), f"warmed {source}")
+        self.assertFalse(any(line.startswith("WAITED") for line in self.log), self.log)
+        held = devices.Record(self.path).entry(template)
+        self.assertEqual((held["state"], held["run"]), ("released", "Copied into Project Duo 1 for Tests"))
+        self.assertTrue(waiter.release(lease, outcome="done"))
+
     def test_a_take_falls_back_to_an_erase_and_says_why_when_no_template_can_be_copied(self):
         warm = Warm()
         pool = self.make("me", warm=warm)

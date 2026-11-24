@@ -39,6 +39,8 @@ HOLD = timedelta(hours=2)
 BOOT_TIMEOUT = 600
 # A template's first boot, which installs and optimizes the image's packages.
 TEMPLATE_BOOT_TIMEOUT = 1200
+# Seconds between looks at a template another run holds, which a take waits for up to the template's boot and its own.
+TEMPLATE_POLL = 5
 # The settings a template is given before it is shut down: animations off, as Espresso's guide asks for.
 QUIET = (("global", "window_animation_scale", "0"), ("global", "transition_animation_scale", "0"),
          ("global", "animator_duration_scale", "0"))
@@ -141,23 +143,28 @@ class Pool:
         """The kind's warmed template's name, made and warmed first when it has none: its first boot runs once, under
         a reservation of its own, so that two sessions never warm one together."""
         name = self.template_name(image, device)
-        deadline = time.monotonic() + TEMPLATE_BOOT_TIMEOUT + BOOT_TIMEOUT
-        while True:
+
+        def ready_or_reserved():
             listed = avd.listed(self.folder)
-            if name in listed and (Path(listed[name]["path"]) / WARMED).exists(): return name
+            if name in listed and (Path(listed[name]["path"]) / WARMED).exists(): return None
             try:
-                revision = self._reserve(name, f"warm the template for {purpose}")
-                break
+                return self._reserve(name, f"warm the template for {purpose}")
             except device_record.Refused as error:
                 # Another run warms it now, or copies it: wait for that to end, as a member's take waits for nothing.
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"the template {name} stayed held: {error}") from None
-                time.sleep(5)
-        lease = Lease(name, revision)
+                raise device_record.Held(str(error)) from None
         try:
+            revision = device_record.await_template(ready_or_reserved, wait=TEMPLATE_BOOT_TIMEOUT + BOOT_TIMEOUT,
+                                                    poll=TEMPLATE_POLL, sleep=time.sleep, clock=time.monotonic)
+        except device_record.Held as error:
+            raise TimeoutError(f"the template {name} stayed held: {error}") from None
+        if revision is None: return name
+
+        def create(_lease):
             if name not in avd.listed(self.folder):
                 self.said(f"CREATE template {name} from {image} as {device}")
                 avd.create(name, image, device, folder=self.folder)
+
+        def warm(lease):
             self.said(f"WARM {name}: its first boot, limit {TEMPLATE_BOOT_TIMEOUT}s")
             started = self.start(lease, timeout=TEMPLATE_BOOT_TIMEOUT)
             if not started:
@@ -167,11 +174,15 @@ class Pool:
             time.sleep(3)
             if not self.stop(lease):
                 raise RuntimeError(f"the template {name}'s emulator did not stop after its first boot")
+
+        def ready(_lease, _warmth):
             (Path(avd.listed(self.folder)[name]["path"]) / WARMED).write_text(json.dumps(
                 {"image": image, "device": device, "warmedAt": device_record.now(), "by": self.owner}) + "\n")
-        except BaseException:
-            self.release(lease, outcome=f"Warming failed for {purpose}")
-            raise
+
+        lease = Lease(name, revision)
+        device_record.prepare_template(lease, create=create, warm=warm, ready=ready,
+                                       abandon=lambda lease, _error: self.release(
+                                           lease, outcome=f"Warming failed for {purpose}"))
         self.release(lease, outcome=f"Warmed for {purpose}")
         return name
 

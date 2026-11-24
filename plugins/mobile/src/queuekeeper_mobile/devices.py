@@ -324,6 +324,59 @@ def create_numbered(prefix, available, reserve, create, *, abandon):
         raise
 
 
+class Held(Refused):
+    """Another owner holds a pool's template, as while another process warms it or copies from it. waited is how
+    long await_template waited for it."""
+    waited = 0
+
+
+class Unprepared(Exception):
+    """A step of a template's preparation stopped it short, why, and has already released the template's
+    reservation or kept it for recovery."""
+
+
+def await_template(attempt, *, wait, poll, sleep, clock=None):
+    """attempt()'s result once no other owner holds the pool's template.
+
+    attempt reads the template's state and finds it ready, or reserves it, by the platform's own steps, and raises
+    Held while another owner holds it. It is tried again every poll seconds up to wait seconds, measured by clock
+    when it is given, else by the polls slept; past wait the last Held is raised, its waited the seconds waited."""
+    started, waited = (clock() if clock is not None else None), 0
+    while True:
+        try:
+            return attempt()
+        except Held as held:
+            if clock is not None: waited = clock() - started
+            if waited >= wait:
+                held.waited = waited
+                raise
+        sleep(poll)
+        if clock is None: waited += poll
+
+
+def prepare_template(lease, *, create, warm, ready, abandon, find=None):
+    """Prepare the pool's template that lease holds under its reservation, by the platform's own steps; the
+    caller's result.
+
+    find(lease) returns that result, as it is, when the template held is ready already, else None. Then
+    create(lease) makes the template, replacing one that is not ready when the platform does; warm(lease) takes
+    it through its first boot, settles it and shuts it down, and returns what is known of its warming; and
+    ready(lease, warmth) records that the template is ready and returns the caller's result. A step that raises
+    Unprepared has already released the reservation or kept it, and Unprepared is raised again as it is; any
+    other failure or stop calls abandon(lease, error), which releases it or keeps it for recovery, and is raised
+    again: a pool never leaves a template it half made under no reservation."""
+    try:
+        if find is not None and (found := find(lease)) is not None:
+            return found
+        create(lease)
+        return ready(lease, warm(lease))
+    except Unprepared:
+        raise
+    except BaseException as error:
+        abandon(lease, error)
+        raise
+
+
 def release_confirmed(record, key, *, owner, outcome, restoration, unchanged, stop, kept):
     """Release owner's reservation of a pool member once its platform confirms the member stopped; whether it did.
 

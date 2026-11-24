@@ -276,6 +276,56 @@ class Taking(unittest.TestCase):
                          ("avd:Demo_Pixel_8_API_36_1", first.serial, "session-a"))
         self.assertEqual(devices.condition(self.record.entry("Demo_Pixel_8_API_36_template")), "released")
 
+    def test_a_take_waits_for_a_template_another_session_warms_and_clones_it_without_warming_again(self):
+        name = "Demo_Pixel_8_API_36_template"
+        deadline = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        held = self.record.reserve(name, owner="session-b", revision=0, device=f"avd:{name}",
+                                   purpose="warm the template for its tests", release_by=deadline)
+        slept = []
+
+        def sleep(seconds):
+            # The other session finishes its warm-up while this one waits.
+            slept.append(seconds)
+            if len(slept) == 1:
+                (make_avd(self.folder, name) / emulator_pool.WARMED).write_text(json.dumps({}))
+                self.record.release(name, owner="session-b", revision=held["revision"], outcome="Warmed for its tests",
+                                    restoration="checked")
+
+        with patch.object(emulator_pool.time, "sleep", sleep), patch.object(avd, "create") as create:
+            lease = self.pool.take(IMAGE, "pixel_8", purpose="Tests")
+        self.assertEqual(slept[0], emulator_pool.TEMPLATE_POLL)
+        create.assert_not_called()
+        self.assertEqual((lease.key, self.boots), ("Demo_Pixel_8_API_36_1", [lease.serial]))
+        entry = self.record.entry(name)
+        self.assertEqual((devices.condition(entry), entry["run"]), ("released", "Warmed for its tests"))
+
+    def test_a_take_gives_up_on_a_template_held_past_its_wait_and_reserves_nothing(self):
+        name = "Demo_Pixel_8_API_36_template"
+        deadline = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        self.record.reserve(name, owner="session-b", revision=0, device=f"avd:{name}",
+                            purpose="warm the template for its tests", release_by=deadline)
+        with patch.object(emulator_pool, "TEMPLATE_BOOT_TIMEOUT", 0), patch.object(emulator_pool, "BOOT_TIMEOUT", 0), \
+                self.assertRaisesRegex(TimeoutError, f"the template {name} stayed held: "):
+            self.pool.take(IMAGE, "pixel_8", purpose="Tests")
+        self.assertEqual(set(self.record.load()["devices"]), {name})
+        self.assertEqual(self.record.entry(name)["ownerChatID"], "session-b")
+        self.assertEqual(self.boots, [])
+
+    def test_a_template_whose_first_boot_fails_is_released_unwarmed_and_warmed_by_the_next_take(self):
+        # A first boot given no time at all does not finish.
+        with patch.object(emulator_pool, "TEMPLATE_BOOT_TIMEOUT", 0), \
+                self.assertRaisesRegex(RuntimeError, "first boot did not finish"):
+            self.pool.take(IMAGE, "pixel_8", purpose="first")
+        name = "Demo_Pixel_8_API_36_template"
+        entry = self.record.entry(name)
+        self.assertEqual((devices.condition(entry), entry["run"]), ("released", "Warming failed for first"))
+        self.assertFalse((Path(avd.listed(self.folder)[name]["path"]) / emulator_pool.WARMED).exists())
+        self.assertEqual(self.running, {})
+        lease = self.pool.take(IMAGE, "pixel_8", purpose="second")
+        self.assertTrue((Path(avd.listed(self.folder)[name]["path"]) / emulator_pool.WARMED).exists())
+        self.assertEqual(self.record.entry(name)["run"], "Warmed for second")
+        self.assertEqual(lease.key, "Demo_Pixel_8_API_36_1")
+
     def test_a_released_member_is_taken_again_and_reset_from_the_template(self):
         lease = self.pool.take(IMAGE, "pixel_8", purpose="first")
         member = Path(avd.listed(self.folder)[lease.key]["path"])

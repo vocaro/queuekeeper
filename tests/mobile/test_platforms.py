@@ -226,6 +226,82 @@ class PoolReservations(unittest.TestCase):
                          [("Pool 3", 8, "the clone failed")])
 
 
+class PoolTemplates(unittest.TestCase):
+    def test_a_waiter_tries_again_each_poll_while_another_owner_holds_the_template(self):
+        tries, slept = [], []
+
+        def attempt():
+            tries.append(len(slept))
+            if len(tries) < 3: raise devices.Held("Pool template is held by another session")
+            return "reserved"
+
+        self.assertEqual(devices.await_template(attempt, wait=10, poll=2, sleep=slept.append), "reserved")
+        self.assertEqual((tries, slept), ([0, 1, 2], [2, 2]))
+
+    def test_a_waiter_gives_up_past_its_wait_by_the_polls_slept_or_by_its_clock(self):
+        slept = []
+
+        def held():
+            raise devices.Held("Pool template is held by another session")
+
+        with self.assertRaisesRegex(devices.Held, "held by another session") as raised:
+            devices.await_template(held, wait=6, poll=2, sleep=slept.append)
+        self.assertEqual((raised.exception.waited, slept), (6, [2, 2, 2]))
+        # No wait at all: one look, no sleep.
+        slept.clear()
+        with self.assertRaises(devices.Held) as raised:
+            devices.await_template(held, wait=0, poll=2, sleep=slept.append)
+        self.assertEqual((raised.exception.waited, slept), (0, []))
+        # Measured by a clock, the time spent in each attempt counts too.
+        now = [100.0]
+
+        def slow():
+            now[0] += 4
+            raise devices.Held("still warming")
+
+        with self.assertRaises(devices.Held) as raised:
+            devices.await_template(slow, wait=10, poll=5, sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+                                   clock=lambda: now[0])
+        self.assertEqual(raised.exception.waited, 13)
+
+    def test_a_template_is_found_or_made_warmed_and_recorded_under_its_reservation(self):
+        steps = []
+
+        def step(name, result=None):
+            return lambda *args: steps.append((name, *args)) or result
+
+        made = devices.prepare_template("lease", find=step("find"), create=step("create"), warm=step("warm", "warmth"),
+                                        ready=step("ready", "ready"), abandon=step("abandon"))
+        self.assertEqual(made, "ready")
+        self.assertEqual(steps, [("find", "lease"), ("create", "lease"), ("warm", "lease"),
+                                 ("ready", "lease", "warmth")])
+        # A template ready already is handed back as it is.
+        steps.clear()
+        self.assertEqual(devices.prepare_template("lease", find=step("find", "current"), create=step("create"),
+                                                  warm=step("warm"), ready=step("ready"), abandon=step("abandon")),
+                         "current")
+        self.assertEqual(steps, [("find", "lease")])
+
+    def test_a_step_that_stops_short_keeps_its_own_release_and_any_other_failure_abandons_the_template(self):
+        abandoned = []
+
+        def unprepared(_lease):
+            raise devices.Unprepared("the template was warmed, but its shutdown could not be confirmed")
+
+        with self.assertRaisesRegex(devices.Unprepared, "shutdown could not be confirmed"):
+            devices.prepare_template("lease", create=lambda lease: None, warm=lambda lease: {}, ready=lambda *_: None,
+                                     find=unprepared, abandon=lambda *args: abandoned.append(args))
+        self.assertEqual(abandoned, [])
+
+        def stopped(_lease):
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            devices.prepare_template("lease", create=lambda lease: None, warm=stopped, ready=lambda *_: None,
+                                     abandon=lambda *args: abandoned.append(args))
+        self.assertEqual([(lease, type(error)) for lease, error in abandoned], [("lease", KeyboardInterrupt)])
+
+
 class Shards(unittest.TestCase):
     def test_units_go_longest_first_into_the_emptiest_shard_and_unknown_ones_count_the_median(self):
         packed = shards.packed(["a", "b", "c", "d", "e"], {"a": 10, "b": 6, "c": 4, "d": 1}, 2)
