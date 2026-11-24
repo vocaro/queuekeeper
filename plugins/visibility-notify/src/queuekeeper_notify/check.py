@@ -10,6 +10,10 @@ Once a channel accepts it, it is told again only after it has gone and come back
 found is kept beside the journal:
 
     <common>/queuekeeper-queue/visibility-notify-check.json   each finding's first sighting, and whether it was told
+    <common>/queuekeeper-queue/visibility-notify-test.json    a test the next look sends (`qk notify test --scheduled`)
+
+A requested test is sent by the next look and removed before it is sent, so it goes once, from the same process
+and schedule as a real alert, and notify.log says how each channel took it.
 """
 import fcntl
 import json
@@ -20,7 +24,7 @@ import time
 from queuekeeper import git_state, merge_queue, visibility
 from . import channels, deliver, rules
 
-STATE, LOCK = "visibility-notify-check.json", "visibility-notify-check.lock"
+STATE, LOCK, TEST = "visibility-notify-check.json", "visibility-notify-check.lock", "visibility-notify-test.json"
 EVERY, PERSIST = 120, 300
 RULE = "stuck"
 # A hold is told as its event, and an entry that came back unchanged is its author's to deal with.
@@ -50,18 +54,54 @@ def spawn():
     It returns at once and does nothing where the folder has no queue."""
     if visibility.switched_off(): return
     on = rules.chosen(deliver.settings())
-    if RULE not in on and "held-owner" not in on: return
     folder = Path.cwd()
     root = git_state.main_checkout(folder) or folder
     directory = directory_of(root)
     if not directory.is_dir(): return
-    if RULE not in on and not (deliver.read_cursor(directory) or {}).get(deliver.HOLD_RETRY): return
+    if RULE not in on and "held-owner" not in on and not (directory / TEST).exists(): return
+    if (RULE not in on and not (deliver.read_cursor(directory) or {}).get(deliver.HOLD_RETRY)
+            and not (directory / TEST).exists()): return
     mark = directory / STATE
     try:
         if time.time() - mark.stat().st_mtime < EVERY: return
         os.utime(mark)  # before the look starts, so that commands started together start one
     except OSError: write(directory, {"findings": {}})
     deliver.start("--check", str(root))
+
+
+def request_test(root, channel=None):
+    """Ask the next look at the repository at root to send a test notice, through channel alone if given."""
+    directory = directory_of(root)
+    if not directory.is_dir(): raise ValueError(f"{root} has no queue for a scheduled check to look at")
+    path = directory / TEST
+    staged = path.with_suffix(f".{os.getpid()}.tmp")
+    staged.write_text(json.dumps({"channel": channel, "requested": round(time.time(), 3)}) + "\n")
+    os.replace(staged, path)
+    return path
+
+
+def send_requested_test(directory, found, now):
+    """Send the test a request in directory asks for, once: the request is removed first. Return how many
+    channels took it, or None when nothing was requested."""
+    path = Path(directory) / TEST
+    try:
+        request = json.loads(path.read_text())
+        path.unlink()
+    except FileNotFoundError: return None
+    except (OSError, ValueError) as error:
+        path.unlink(missing_ok=True)
+        deliver.log(f"a scheduled test request could not be read and was dropped: {error}")
+        return None
+    channel = request.get("channel") if isinstance(request, dict) else None
+    only = [channel] if isinstance(channel, str) else None
+    notice = rules.test_notice(deliver.repository_of(directory), now, scheduled=True)
+    tried = [name for name, _, _ in channels.on(found) if only is None or name in only]
+    sent, refused, uncertain = deliver.send(notice, found, only=only)
+    accepted = [name for name in tried if name not in refused and name not in uncertain]
+    deliver.log(f"scheduled test notice of {deliver.repository_of(directory)} (process {os.getpid()}): "
+                + (f"sent through {', '.join(accepted)}" if accepted else "sent through no channel"))
+    for words in (*refused.values(), *uncertain.values()): deliver.log(words)
+    return sent
 
 
 def check(root, now=None, diagnose=None):
@@ -73,6 +113,7 @@ def check(root, now=None, diagnose=None):
     try: deliver.retry_owner_hold(directory, now)
     except OSError as error: deliver.log(f"the owner-hold retry for {root} stopped: {error}")
     found = deliver.settings()
+    send_requested_test(directory, found, now)
     with (directory / LOCK).open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         before = read(directory).get("findings", {})

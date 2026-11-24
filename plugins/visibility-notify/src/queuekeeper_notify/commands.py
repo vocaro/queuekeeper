@@ -67,9 +67,7 @@ def test(repository, only=None, out=print):
     """Send a notice that says it is a test through each channel that is on, or through only, and say how each
     went: 0 when every one sent it, 1 when one refused it or none is on."""
     found = deliver.settings()
-    notice = {"rule": "test", "level": rules.NORMAL, "title": "Queuekeeper test notice",
-              "body": "Notifications from this queue reach you here", "repository": repository,
-              "event": {"v": 1, "id": "test", "time": round(time.time(), 3), "kind": "notify.test"}}
+    notice = rules.test_notice(repository, time.time())
     names = [only] if only else channels.available()
     failed = sent = 0
     for name in names:
@@ -105,6 +103,9 @@ def main(argv, project=None):
     for name in ("channel", "key"): removing.add_argument(name)
     trying = operations.add_parser("test", help="send a test notice through each channel that is on")
     trying.add_argument("--channel", help="through this channel alone")
+    trying.add_argument("--scheduled", action="store_true", help="leave a request that the next check this "
+                        "project's queue commands or signed launcher start sends the test, as it would a real alert; "
+                        "notify.log says how each channel went")
     operations.add_parser("check", help="look now for a queue that is stuck, as `qk queue doctor` does, and "
                           "tell of what has lasted, as the commands that reach the hosts do by themselves every two "
                           "minutes: 0 when nothing is found, 1 for a queue finding, 2 when the check fails")
@@ -123,6 +124,12 @@ def main(argv, project=None):
             print(f"{args.channel}'s {args.key} is {'set' if args.operation == 'set' else 'removed'}")
             return 0
         # Named as a delivery names it: by the repository's main checkout, not by a linked worktree of it.
+        if args.operation == "test" and args.scheduled:
+            if args.channel and args.channel not in channels.available():
+                raise ValueError(f"notify has no channel named {args.channel}: {', '.join(channels.available())}")
+            path = check.request_test(git_state.main_checkout(root) or root, args.channel)
+            print(f"the next scheduled check sends the test; its outcome goes to {deliver.log_path()} ({path})")
+            return 0
         if args.operation == "test": return test((git_state.main_checkout(root) or root).name, args.channel)
         if args.operation == "check":
             findings, told = check.check(git_state.main_checkout(root) or root)

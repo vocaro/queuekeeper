@@ -49,6 +49,14 @@ def finding_notice(finding, repository):
             "body": cut(f"{finding.get('diagnosis')}. Next: {finding.get('remedy')}"), "finding": finding}
 
 
+def test_notice(repository, now, scheduled=False):
+    """The notice `qk notify test` sends, now or, scheduled, from the next check the queue's commands start."""
+    body = ("The scheduled queue check sent this, as it sends a real alert" if scheduled
+            else "Notifications from this queue reach you here")
+    return {"rule": "test", "level": NORMAL, "title": "Queuekeeper test notice", "body": body, "repository": repository,
+            "event": {"v": 1, "id": "test", "time": round(now, 3), "kind": "notify.test"}}
+
+
 def cut(text):
     text = " ".join(str(text).split())
     return text if len(text) <= BODY_LIMIT else text[:BODY_LIMIT - 1] + "…"

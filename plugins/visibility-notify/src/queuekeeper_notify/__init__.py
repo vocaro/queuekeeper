@@ -1,4 +1,4 @@
-"""Tells the owner when the queue needs them: a banner, a command or a webhook: `qk notify`.
+"""Tells the owner when the queue needs them: a banner, an iMessage, a command or a webhook: `qk notify`.
 
 Each time the queue writes an event that a rule is on for, the process that wrote it starts another, apart from
 itself, that reads the journal from where the last one stopped and sends a notice of each such event through every

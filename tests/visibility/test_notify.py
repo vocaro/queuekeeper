@@ -22,7 +22,7 @@ import host_isolation  # noqa: F401 -- first, as every test module
 from queuekeeper import cli, events, plugins, merge_queue as mq, visibility
 import queuekeeper_notify as notify
 from queuekeeper_notify import channels, check, commands, deliver, rules
-from queuekeeper_notify.channels import banner, command, webhook
+from queuekeeper_notify.channels import banner, command, imessage, webhook
 from test_support import queue as test_merge_queue
 
 DEFAULT = rules.chosen({})
@@ -122,8 +122,51 @@ class Channels(Settings, unittest.TestCase):
         self.base = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.base, True)
 
-    def test_the_three_channels_are_found_by_name(self):
-        self.assertEqual(channels.available(), ["banner", "command", "webhook"])
+    def test_the_four_channels_are_found_by_name(self):
+        self.assertEqual(channels.available(), ["banner", "command", "imessage", "webhook"])
+
+    def test_imessage_is_off_until_an_address_is_set_and_switches_apart_from_the_banner(self):
+        for config in ({}, {"to": ""}, {"to": "  "}, {"to": 3}):
+            with self.subTest(config=config): self.assertIn("no address is set", imessage.ready(config))
+        with patch.object(imessage.sys, "platform", "linux"):
+            self.assertEqual(imessage.ready({"to": "me@example.invalid"}), "iMessage is for macOS")
+        both = {"channels": {"imessage": {"to": "me@example.invalid"}}}
+        with patch.object(sys, "platform", "darwin"), patch.object(imessage.shutil, "which", return_value="/x"), \
+                patch.object(banner.shutil, "which", return_value="/x"):
+            self.assertEqual([name for name, _, _ in channels.on(both)], ["banner", "imessage"])
+            both["channels"]["banner"] = {"enabled": False}
+            self.assertEqual([name for name, _, _ in channels.on(both)], ["imessage"])
+            both["channels"] = {"banner": {}, "imessage": {"to": "me@example.invalid", "enabled": False}}
+            self.assertEqual([name for name, _, _ in channels.on(both)], ["banner"])
+
+    def test_imessage_passes_the_address_and_text_as_arguments_and_never_as_script(self):
+        ran = []
+        def run(command_, **how):
+            ran.append((command_, how))
+            return subprocess.CompletedProcess(command_, 0, "", "")
+        hostile = {**NOTICE, "title": 'a" & (do shell script "x") & "'}
+        with patch.object(imessage.subprocess, "run", run):
+            imessage.send(hostile, {"to": " me@example.invalid "})
+        argv, how = ran[0]
+        self.assertEqual(argv[0], imessage.OSASCRIPT)
+        self.assertEqual(argv[-2:], ["me@example.invalid", f"project: {hostile['title']}. {NOTICE['body']}"])
+        self.assertNotIn("do shell script", " ".join(argv[:-2]))
+        self.assertIn("service type = iMessage", " ".join(argv[:-2]))
+        self.assertEqual((how["timeout"], how["stdin"]), (imessage.LIMIT, subprocess.DEVNULL))
+
+    def test_imessage_refused_control_of_messages_is_definite_and_other_errors_are_uncertain(self):
+        config = {"to": "me@example.invalid"}
+        refused = subprocess.CompletedProcess([], 1, "", "execution error: Not authorized to send Apple events "
+                                              "to Messages. (-1743)\n")
+        with patch.object(imessage.subprocess, "run", return_value=refused), \
+                self.assertRaisesRegex(channels.NotDelivered, "Automation"):
+            imessage.send(NOTICE, config)
+        failed = subprocess.CompletedProcess([], 1, "", "execution error: Messages got an error (-1708)\n")
+        with patch.object(imessage.subprocess, "run", return_value=failed), self.assertRaisesRegex(RuntimeError, "-1708"):
+            imessage.send(NOTICE, config)
+        with patch.object(imessage.subprocess, "run", side_effect=FileNotFoundError("absent")), \
+                self.assertRaises(channels.NotDelivered):
+            imessage.send(NOTICE, config)
 
     def test_a_channel_is_on_when_it_is_ready_and_not_turned_off(self):
         argv, _ = self.recorder(self.base)
@@ -375,6 +418,23 @@ class Spawning(Settings, unittest.TestCase):
         self.popen.assert_not_called()
 
 
+class SpawningForATest(Settings, test_merge_queue.Fixture):
+    def test_a_requested_test_starts_a_look_even_with_every_rule_that_looks_turned_off(self):
+        self.configure(rules_={"stuck": False, "held-owner": False})
+        mq.Queue(self.repo)
+        started = patch.object(deliver, "start")
+        popen = started.start()
+        self.addCleanup(started.stop)
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.repo)
+        check.spawn()
+        popen.assert_not_called()
+        check.request_test(self.repo)
+        check.spawn()
+        self.assertEqual(popen.call_args.args[0], "--check")
+
+
 class Checking(Settings, test_merge_queue.Fixture):
     """The look for a queue that is stuck without an event, with findings of the test's and a channel that keeps
     what it is sent."""
@@ -446,6 +506,45 @@ class Checking(Settings, test_merge_queue.Fixture):
         self.look(0.0)
         self.assertEqual(self.look(check.PERSIST)[1], 0)
         self.assertEqual(self.sent, [])
+
+    def test_a_requested_test_is_sent_once_by_the_next_look_and_logged(self):
+        check.request_test(self.repo)
+        self.assertEqual(self.look(1000.0), ([], 0))
+        notice_, = self.sent
+        self.assertEqual((notice_["rule"], notice_["title"], notice_["repository"]),
+                         ("test", "Queuekeeper test notice", "project"))
+        self.assertIn("scheduled queue check", notice_["body"])
+        self.assertFalse((self.directory / check.TEST).exists())
+        self.assertIn("scheduled test notice of project", deliver.log_path().read_text())
+        self.assertIn("sent through kept", deliver.log_path().read_text())
+        self.look(1100.0)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_requested_test_for_one_channel_goes_through_that_one_alone(self):
+        other = []
+        both = [("kept", types.SimpleNamespace(send=lambda notice_, config: self.sent.append(notice_)), {}),
+                ("other", types.SimpleNamespace(send=lambda notice_, config: other.append(notice_)), {})]
+        with patch.object(channels, "on", lambda found: both):
+            check.request_test(self.repo, "other")
+            self.look(1000.0)
+        self.assertEqual((len(self.sent), len(other)), (0, 1))
+
+    def test_a_requested_test_a_channel_refuses_is_logged_and_not_repeated(self):
+        def refuse(notice_, config): raise channels.NotDelivered("Messages refused")
+        with patch.object(channels, "on", lambda found: [("broken", types.SimpleNamespace(send=refuse), {})]):
+            check.request_test(self.repo)
+            self.look(1000.0)
+            self.look(1100.0)
+        logged = deliver.log_path().read_text()
+        self.assertIn("sent through no channel", logged)
+        self.assertEqual(logged.count("Messages refused"), 1)
+
+    def test_an_unreadable_test_request_is_dropped_and_logged(self):
+        (self.directory / check.TEST).write_text("{not json")
+        self.look(1000.0)
+        self.assertEqual(self.sent, [])
+        self.assertFalse((self.directory / check.TEST).exists())
+        self.assertIn("could not be read and was dropped", deliver.log_path().read_text())
 
     def test_a_finding_retries_after_every_channel_refuses(self):
         def refuse(notice_, config): raise channels.NotDelivered("no route")
@@ -815,6 +914,23 @@ class Command(Settings, unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("no channel is on, so the test went nowhere", printed)
         self.assertEqual(self.command("test", "--channel", "banner")[0], 1)
+
+    def test_a_scheduled_test_leaves_a_request_for_the_next_look_and_sends_nothing_now(self):
+        argv, kept = self.recorder(self.base)
+        self.configure(command={"argv": argv})
+        (self.base / ".git" / "queuekeeper-queue").mkdir(parents=True)
+        status, printed, _ = self.command("test", "--scheduled", "--channel", "command")
+        self.assertEqual(status, 0)
+        self.assertIn("the next scheduled check sends the test", printed)
+        self.assertFalse(kept.exists())
+        request = json.loads((self.base / ".git" / "queuekeeper-queue" / check.TEST).read_text())
+        self.assertEqual(request["channel"], "command")
+        self.assertEqual(self.command("test", "--scheduled", "--channel", "nope")[0], 2)
+
+    def test_a_scheduled_test_needs_a_queue(self):
+        status, _, errors = self.command("test", "--scheduled")
+        self.assertEqual(status, 2)
+        self.assertIn("has no queue for a scheduled check", errors)
 
     def test_it_is_no_command_while_the_feature_is_off(self):
         visibility.switch("notify", False)

@@ -3551,6 +3551,7 @@ qk notify check           # look for a stuck queue now
 |---|---|---|
 | `banner` | Posts a macOS notification | On a Mac, unless turned off |
 | `command` | Runs your command with the notice as JSON on standard input | Its `argv` is set |
+| `imessage` | Sends an iMessage through Messages on this Mac | Its `to` address is set |
 | `webhook` | Posts the notice as JSON (with a Slack-friendly `text` key) to your URL | Its `url` is set |
 
 ```sh
@@ -3560,6 +3561,34 @@ qk notify set webhook url https://example.com/hook
 qk notify set command argv '["/usr/local/bin/tell-me", "--queue"]'
 qk notify unset webhook url
 ```
+
+Each channel turns on and off by itself. To hear about the queue at the Mac and on your phone,
+keep the banner and add an iMessage to your own Apple ID:
+
+```sh
+qk notify set imessage to you@example.com   # the address Messages sends to
+qk notify disable imessage                  # banners only, for now
+qk notify enable imessage                   # both again
+```
+
+An iMessage reaches every device signed in to that address. Keep test iPhones and iPads off it,
+or disable the channel while device lanes run: a message arriving mid-test can fail the run.
+
+#### Check that an unattended alert arrives
+
+`qk notify test` sends from your own session. To see an alert arrive the way a real one does,
+from the [signed queue launcher's](#the-signed-queue-launcher) scheduled check with no session
+open, leave a request for that check from the launcher's project:
+
+```sh
+qk --project ~/path/to/project notify test --scheduled                  # every channel that is on
+qk --project ~/path/to/project notify test --scheduled --channel imessage
+```
+
+Within about two minutes the check sends one test notice and `notify.log` records which channels
+took it. The first iMessage makes macOS ask whether Queuekeeper may control Messages. Allow it
+at the Mac, or in System Settings, Privacy & Security, Automation, then request the test again.
+Until you allow it, iMessage alerts do not arrive, and `notify.log` says why.
 
 Good to know:
 

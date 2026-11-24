@@ -1977,7 +1977,9 @@ The three features are the examples:
 
 - **watch** is one file.
 - **notify** has rules and channels. A rule is an entry in `rules.py`; a channel is a module in
-  `notify/channels/` with `ready(config)` and `send(notice, config)`.
+  `notify/channels/` with `ready(config)` and `send(notice, config)`. `qk notify test --scheduled`
+  leaves `visibility-notify-test.json` in the queue directory; the next check sends it once, so an
+  alert's whole unattended path can be proved without making the queue stuck.
 - **dashboard** has panels. A panel is `panels/NAME.py`, with `TITLE`, `ORDER`,
   `data(repository, query)` and optionally `everywhere(repositories, query)` and `summary`, and
   `panels/NAME.js`, which draws what they return. A panel that fails shows its fault in its own
