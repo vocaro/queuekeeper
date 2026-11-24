@@ -114,11 +114,11 @@ def qualified(prefix, name):
 
 
 def simctl(*arguments, timeout=600):
-    """xcrun simctl's result, never raising for its status. A command past its limit reads 124."""
+    """xcrun simctl's result, with a typed deadline that retains its historical status 124."""
     try:
         return subprocess.run(["xcrun", "simctl", *arguments], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(arguments, 124, "", f"timed out after {timeout} s")
+        return lifecycle.SimctlTimeout(arguments, timeout)
 
 
 default_owner = device_record.default_owner

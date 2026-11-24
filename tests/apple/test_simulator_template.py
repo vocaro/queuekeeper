@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401
-from queuekeeper_apple.simulators import template
+from queuekeeper_apple.simulators import lifecycle, pool, template
 
 UDID = "2BBC94CE-0D99-4A08-9763-269B5711AC97"
 RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
@@ -68,8 +68,9 @@ class Device:
         if arguments[0] == "boot": self.boots += 1
         if arguments[0] == "bootstatus": self.clock.sleep(2)
         status = {"boot": self.boot, "bootstatus": self.bootstatus if self.boots < 2 else self.reboot}.get(arguments[0], 0)
-        error = f"timed out after {timeout} s" if status == 124 else "failed" if status else ""
-        return subprocess.CompletedProcess(arguments, status, "", error)
+        if status == 124:
+            return lifecycle.SimctlTimeout(arguments, timeout)
+        return subprocess.CompletedProcess(arguments, status, "", "failed" if status else "")
 
     @staticmethod
     def assertion(holds, detail):
@@ -252,6 +253,7 @@ class WarmTests(unittest.TestCase):
 
     def test_a_boot_that_fails_or_reaches_its_limit_is_no_template(self):
         for name, options, message in (("boot", {"boot": 164}, "simctl boot exited 164"),
+                                       ("boot limit", {"boot": 124}, "simctl boot reached its 120 s limit"),
                                        ("limit", {"bootstatus": 124}, "did not finish within 600 s")):
             with self.subTest(name):
                 clock = Clock()
@@ -365,6 +367,34 @@ class WarmTests(unittest.TestCase):
                 self.assertIn("[cut:", outcome)
                 self.assertNotIn("\n", outcome)
                 self.assertLess(len(outcome), 430)
+
+    def test_simctl_native_exit_124_and_wrapper_deadline_keep_distinct_boot_evidence(self):
+        arguments = ("bootstatus", UDID, "-b")
+        native = subprocess.CompletedProcess(arguments, 124, "", "timed out after 600 s")
+        with mock.patch.object(subprocess, "run", side_effect=[native, subprocess.TimeoutExpired(arguments, 600)]):
+            returned = pool.simctl(*arguments)
+            timed_out = pool.simctl(*arguments)
+        self.assertIs(returned, native)
+        self.assertEqual((timed_out.returncode, timed_out.stderr), (native.returncode, native.stderr))
+        for result, first, reboot in (
+            (native, "simctl bootstatus exited 124: timed out after 600 s", "exited 124: timed out after 600 s"),
+            (timed_out, "the boot did not finish within 600 s", "reached its 600 s limit"),
+        ):
+            with self.subTest(result=type(result).__name__):
+                clock = Clock()
+                device = Device(clock)
+                run = device.simctl
+
+                def simctl(*args, timeout):
+                    return result if args == arguments else run(*args, timeout=timeout)
+
+                with mock.patch.object(device, "simctl", new=simctl):
+                    with self.assertRaisesRegex(template.WarmFailed, first):
+                        self.warm(device, clock)
+                    voices = template.settle_voices(UDID, simctl=device.simctl, tool=TOOL, limit=300,
+                                                    boot_timeout=600, clock=clock)
+                self.assertFalse(voices["settled"])
+                self.assertEqual(voices["outcome"], f"the reboot between the uses stopped when `simctl bootstatus -b` {reboot}")
 
     def test_the_voices_are_used_whatever_voiceover_did(self):
         for name, options in (("cues", dict(cues="1")), ("mute", dict(volumes=[60] * 1000)), ("silent", dict(speaks_after=None))):

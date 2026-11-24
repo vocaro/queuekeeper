@@ -7,6 +7,14 @@ import subprocess
 import uuid
 
 
+class SimctlTimeout(subprocess.CompletedProcess):
+    """The pool wrapper's observed deadline, carrying its historical status and stderr."""
+
+    def __init__(self, arguments, seconds):
+        super().__init__(arguments, 124, "", f"timed out after {seconds} s")
+        self.seconds = seconds
+
+
 def command(*arguments, timeout=120):
     return subprocess.check_output(["xcrun", "simctl", *arguments], text=True, timeout=timeout).strip()
 

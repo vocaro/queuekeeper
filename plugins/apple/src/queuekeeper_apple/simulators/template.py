@@ -28,7 +28,7 @@ import tempfile
 import time
 
 from ..sources import BUILD_ROOT, ROOT, source_path
-from . import runtime_identity
+from . import lifecycle, runtime_identity
 from .speech import CUE_DOMAIN, CUE_KEY
 
 # What the speech extension logs for each phrase VoiceOver speaks, in VoiceOver's vot log; the first one says VoiceOver has its voice.
@@ -186,8 +186,8 @@ def settle_voices(udid, *, simctl, tool, limit, boot_timeout, clock=time.monoton
         output = " ".join((rebooted.stderr or rebooted.stdout or "").split())
         if len(output) > 300:
             output = f"{output[:150]} [cut: {len(output) - 300} characters] {output[-150:]}"
-        if rebooted.returncode == 124 and output == f"timed out after {timeout} s":
-            detail = f"reached its {timeout} s limit"
+        if isinstance(rebooted, lifecycle.SimctlTimeout):
+            detail = f"reached its {rebooted.seconds} s limit"
         else:
             detail = f"exited {rebooted.returncode}: {output or 'no output'}"
         step = " ".join(("simctl", command, *flags))
@@ -223,12 +223,15 @@ def warm(udid, runtime, *, simctl, devicectl=devicectl, stream=log_stream, boot_
     settled the template. The caller shuts the template down, however this ends."""
     started = clock()
     booted = simctl("boot", udid, timeout=120)
+    if isinstance(booted, lifecycle.SimctlTimeout):
+        raise WarmFailed(f"simctl boot reached its {booted.seconds} s limit")
     if booted.returncode:
         raise WarmFailed(f"simctl boot exited {booted.returncode}: {(booted.stderr or booted.stdout).strip()}")
     finished = simctl("bootstatus", udid, "-b", timeout=boot_timeout)
+    if isinstance(finished, lifecycle.SimctlTimeout):
+        raise WarmFailed(f"the boot did not finish within {finished.seconds} s")
     if finished.returncode:
-        raise WarmFailed(f"the boot did not finish within {boot_timeout} s" if finished.returncode == 124 else
-                         f"simctl bootstatus exited {finished.returncode}: {finished.stderr.strip()}")
+        raise WarmFailed(f"simctl bootstatus exited {finished.returncode}: {finished.stderr.strip()}")
     record = {"bootSeconds": round(clock() - started, 1)}
 
     def query(*arguments):
