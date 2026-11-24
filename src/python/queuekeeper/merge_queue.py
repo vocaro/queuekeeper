@@ -59,7 +59,7 @@ from xml.etree import ElementTree
 
 from . import budgets, disk, plugins, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
-from . import add_only_json, count_history, events, gate_reuse, git_state, landed_cleanup, pre_push, recovery, restartable, \
+from . import add_only_json, count_history, events, gate_reuse, git_state, health, landed_cleanup, pre_push, recovery, restartable, \
     worktree_ownership
 from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, launched, queuekeeper_at, \
@@ -3458,8 +3458,14 @@ def holders_on(host):
     return holders, None, reclaimed
 
 
+# How long the files a running holder's work writes may go unchanged before queue doctor notes it: as long as a running
+# gate may show no movement before queue health calls it stuck (health.SILENT). A display rule, never a stopping bound.
+UNMOVED_NOTE = health.SILENT
+
+
 def quiet_findings(reported):
-    """Report verified quiet holders even when no gate waits on them. A Mac's long-wait finding already names
+    """Report verified quiet holders even when no gate waits on them, and note each running holder that declares no
+    `stall` whose files have not moved for UNMOVED_NOTE (unmoved_for). A Mac's long-wait finding already names
     its holders, so do not read or report them twice (vocaro/queuekeeper#70)."""
     findings, notes = [], []
     try: hosts = farm.destinations()
@@ -3478,7 +3484,24 @@ def quiet_findings(reported):
                     "remedy": "ask the session that owns the holder to check its run; "
                               f"`{qk_said('admissions now')}` shows its current progress",
                     "mac": mac, "holder": holder})
+            elif isinstance(holder, dict) and unmoved_for(holder) is not None:
+                # No lane of it declares `stall`, so no measured bound judges it: a note, never a finding.
+                notes.append(f"unmoved admission holder on {mac}: {holder_words(holder)}: longer than the "
+                             f"{resources.duration(UNMOVED_NOTE)} a running gate may go unmoved; report only, as no "
+                             "measured bound applies to it (vocaro/queuekeeper#70): ask the session that owns it to "
+                             "check its run")
     return findings, notes
+
+
+def unmoved_for(holder):
+    """How long the files a running holder's work writes have gone unchanged (offload_host.holder_activity), when that
+    is at least UNMOVED_NOTE and no observation of its own covers it; else None."""
+    activity = holder.get("activity")
+    if holder.get("process") != "running" or holder.get("stranded") or holder.get("progress") or \
+            not isinstance(activity, dict):
+        return None
+    quiet = activity.get("quietSeconds")
+    return quiet if type(quiet) in (int, float) and UNMOVED_NOTE <= quiet < float("inf") else None
 
 
 def quiet_lanes(holder):
@@ -3510,10 +3533,11 @@ def holder_words(holder):
     else: used = "CPU use unknown"
     origin = resources.whence(holder.get("origin"))
     quiet = quiet_lanes(holder)
+    moved = resources.activity_words(holder.get("activity")) if process == "running" else None
     return (f"{holder.get('label') or 'an unnamed owner'} (PID {holder.get('pid')}, held "
             + (resources.duration(held) if isinstance(held, (int, float)) else "for an unknown time")
             + f", {used}, " + (f"from {origin}" if origin else "where its work comes from was not recorded")
-            + (f"; {'; '.join(quiet)}" if quiet else "") + ")")
+            + (f"; {'; '.join(quiet)}" if quiet else "") + (f"; {moved}" if moved else "") + ")")
 
 
 def reclaimed_words(item):

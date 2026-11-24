@@ -2253,6 +2253,55 @@ def holder_progress(guard, identity, at):
     return found
 
 
+# Where a holder's work writes as it goes, as run_progress keeps it, which this file cannot import: below the directory
+# it was admitted in, `qk unittest`'s progress folders (RUNS) and `qk run`'s lanes' logs (LANES, LANE_LOGS), and the
+# files of a progress folder. A test keeps them the same as run_progress's. A reading looks at the newest
+# HOLDER_RUN_FOLDERS progress folders and stats at most HOLDER_FILES files a holder.
+HOLDER_RUNS, HOLDER_LANES = ".build/queuekeeper/runs", ".build/queuekeeper"
+HOLDER_LANE_LOGS = ("*/run.log", "*/lanes/*.log", ".runs/*/*/run.log", ".runs/*/*/lanes/*.log")
+HOLDER_RUN_FILES = ("progress.log", "progress.json", "output.log", "run.json")
+HOLDER_RUN_FOLDERS, HOLDER_FILES, HOLDER_PATH = 32, 512, 1024
+
+
+def holder_activity(owner, since, at):
+    """How long the files a running holder's work writes have gone unchanged, for a holder whose lanes declare no
+    `stall` and so publish no observation (holder_progress, vocaro/queuekeeper#70): {"quietSeconds", "source"}. Its
+    guard entry names the directory it was admitted in and, for a runner admitted for a bare command, its progress
+    folder (resources.work_place). The files are that folder's, those of each progress folder under the directory
+    (HOLDER_RUNS) and its lanes' logs (HOLDER_LANE_LOGS), each counted only from since, its admission. quietSeconds
+    is from the latest change to one of them, or from since when none changed, and source names which kind changed
+    last, or is None. None when its entry names no directory, as an older toolkit's does, or since is unknown and
+    nothing changed. It reads file times only, so it is evidence of movement and never a verdict: work that
+    computes or waits without writing looks quiet, and another run in the same directory moves it too. Nothing here
+    stops anything."""
+    def usable(path): return isinstance(path, str) and 0 < len(path) <= HOLDER_PATH and os.path.isabs(path)
+    directory, folder = owner.get("directory"), owner.get("progressRun")
+    if not usable(directory): return None
+    found, counted = [], [0]
+
+    def look(paths, what):
+        for path in paths:
+            if counted[0] >= HOLDER_FILES: return
+            counted[0] += 1
+            try: changed = os.stat(path).st_mtime
+            except OSError: continue
+            if since is None or changed >= since: found.append((changed, what))
+
+    if usable(folder): look([os.path.join(folder, name) for name in HOLDER_RUN_FILES], "its progress folder")
+    runs = os.path.join(directory, HOLDER_RUNS)
+    try: names = sorted(name for name in os.listdir(runs) if not name.startswith("."))[-HOLDER_RUN_FOLDERS:]
+    except OSError: names = []
+    look([os.path.join(runs, name, file) for name in reversed(names) for file in HOLDER_RUN_FILES],
+         "a run's progress folder")
+    lanes = glob.escape(os.path.join(directory, HOLDER_LANES))
+    for pattern in HOLDER_LANE_LOGS:
+        try: look(sorted(glob.glob(os.path.join(lanes, pattern)))[:HOLDER_FILES], "a lane's log")
+        except OSError: continue
+    when, what = max(found) if found else (since, None)
+    if when is None: return None
+    return {"quietSeconds": round(max(0.0, at - when), 1), "source": what}
+
+
 def reclaimed_lately(at):
     """The holders admission freed in the NOW_RECLAIMED_SECONDS before at, their owners ended or unknown
     (resources.free_holder), newest first, at most NOW_RECLAIMED, from the end of this Mac's admission log: each with
@@ -2479,6 +2528,9 @@ def admissions_now(at=None):
                             "guaranteed": [slot for slot in held if slots is None or slot < slots],
                             "extra": [slot for slot in held if slots is not None and slot >= slots],
                             "process": process, "progress": progress,
+                            # When the files its work writes last changed, for one whose lanes publish no observation.
+                            "activity": holder_activity(owner, since, at)
+                            if process == "running" and owner.get("uncertain") is not True else None,
                             # One whose process has ended or cannot be confirmed running, admission frees at its next
                             # attempt, stopping what is left of it (vocaro/queuekeeper#23).
                             "reclaimable": process in ("ended", "unknown"),

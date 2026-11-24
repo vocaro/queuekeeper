@@ -1874,6 +1874,18 @@ shown as unknown, never idle. A holder whose process has ended is shown as ended
 it at its next attempt. A live whole-host queue place held while its lane waits elsewhere names
 the sending Mac in the waiting list and as `heldFor` in JSON.
 
+Each running holder also says when it last made progress. A lane with `stall` reports its own
+quiet interval ([Quiet lanes](#time-limits-and-the-gates-budget)). For every other holder,
+`qk admissions now` reads when the files its work writes last changed, since it was admitted:
+lane logs and `qk unittest` progress folders below the directory it was admitted in, and the
+progress folder of a runner admitted for a bare command. The line names the kind of file that
+changed last, or says that nothing has changed since admission. JSON gives the same as the
+holder's `activity`: `quietSeconds` and `source`. This reads file times only. Work that computes
+or waits without writing looks quiet, and another run in the same directory makes it look
+active. A holder admitted by an older version names no directory, so its progress isn't observed.
+`qk queue doctor` adds a note, never a finding, for a holder whose files haven't changed for
+15 minutes, the time a running gate may go without movement. Nothing here stops a holder.
+
 A fresh, verified JSON waiter can include `lane`, the configured name of a whole single lane
 fixed to this Mac by `--here` or the lane's `here` setting. The field is optional. Groups,
 filtered runs, raw commands, dispatches and older records have no lane field. It identifies the

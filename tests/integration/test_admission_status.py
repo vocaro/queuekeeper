@@ -20,9 +20,12 @@ import host_isolation
 from test_support import farm as farm_fixture
 from host_isolation import stretched
 
-from queuekeeper import config, offload_host, place_holder, processes, remote, resources
+from queuekeeper import config, offload_host, place_holder, processes, remote, resources, run_progress
 
 
+# What `qk admissions now` says of a running holder with neither a `stall` observation nor a directory to read.
+UNOBSERVED = ("      progress: not observed (no lane of it declares `stall`, and its entry names no directory whose files "
+              "to read)")
 # cpu_use itself, which Namespace replaces for every reading so that the host's load cannot make one partial.
 CPU_USE = offload_host.cpu_use
 
@@ -350,7 +353,7 @@ class HoldersTests(Namespace):
                       "ago; longest quiet 150s; 900 samples, 3 unobservable", lines)
         self.assertIn("      progress: swift on build-host: quiet 120s of its 600s bound; last progress 120s ago; "
                       "longest quiet 150s; 900 samples, 3 unobservable", lines)
-        self.assertIn("      progress: not observed (only a lane that declares `stall` publishes it)", lines)
+        self.assertIn(UNOBSERVED, lines)
         self.assertEqual(sum("progress:" in line for line in lines), 3)
         # A ps that cannot say leaves every holder's progress unknown, never quiet.
         with patch.object(offload_host, "census", return_value=None):
@@ -364,7 +367,7 @@ class HoldersTests(Namespace):
                          state="quiet", quietSeconds=700.0)
         owner = {os.getpid(): " ".join(self.start.split())}
         unknown = {**owner, reporter: None}
-        empty = "      progress: not observed (only a lane that declares `stall` publishes it)"
+        empty = UNOBSERVED
         for census, state, progress, line in (
                 (unknown, "partial", None, "      progress: unknown"),
                 (owner, "observed", [], empty),
@@ -387,6 +390,123 @@ class HoldersTests(Namespace):
         cut = offload_host.bounded(reading)
         self.assertLessEqual(len(json.dumps(cut)), offload_host.NOW_BYTES)
         self.assertEqual(cut["state"], "partial")
+
+
+class HolderActivityTests(Namespace):
+    """vocaro/queuekeeper#70: a holder whose lanes declare no `stall` publishes no observation, so `qk admissions now`
+    reads when the files its work writes last changed, below the directory its guard entry names: its own progress
+    folder, a run's progress folder, or a lane's log. It is evidence only: nothing it reads ends anything."""
+
+    def setUp(self):
+        super().setUp()
+        self.work = Path(self.temp.name) / "work"
+        self.admitted = time.time() - 600
+        self.runs, self.lanes = self.work / run_progress.RUNS, self.work / run_progress.LANES
+
+    def write(self, path, age):
+        """A file at path last changed age seconds ago."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n")
+        at = time.time() - age
+        os.utime(path, (at, at))
+        return path
+
+    def holder(self, **fields):
+        admitted = datetime.fromtimestamp(self.admitted, timezone.utc).isoformat(timespec="seconds")
+        self.holders({"a": self.owner("Alpha unittest", admitted=admitted, **fields)}, slots=[(0, "a")])
+        (found,) = self.read()["holders"]
+        return found
+
+    def test_the_latest_change_since_admission_says_when_a_holder_last_moved(self):
+        directory = str(self.work)
+        # Before admission: an earlier run's log and progress folder, which say nothing of this holder.
+        self.write(self.lanes / "gate" / "run.log", 3600)
+        self.write(self.runs / "20260101T000000Z-1" / run_progress.STATE, 3600)
+        self.holder(directory=directory)
+        before = tree(self.temp.name)
+        (quiet,) = self.read()["holders"]
+        self.assertEqual(tree(self.temp.name), before, "a reading changes no file")
+        self.assertIsNone(quiet["activity"]["source"])
+        self.assertAlmostEqual(quiet["activity"]["quietSeconds"], 600, delta=5)
+        self.assertEqual(resources.progress_lines(quiet),
+                         ["      progress: nothing its work writes has changed in the 10m00s since it was admitted"])
+        # Each kind of file, written since admission, moves it; the latest names which.
+        for path, age, source in (
+                (self.lanes / "gate" / "run.log", 300, "a lane's log"),
+                (self.lanes / "gate" / "lanes" / "swift.log", 200, "a lane's log"),
+                (self.lanes / ".runs" / "gate" / "1" / "run.log", 150, "a lane's log"),
+                (self.runs / "20260101T000100Z-2" / run_progress.STATE, 100, "a run's progress folder"),
+                (self.runs / "20260101T000100Z-2" / run_progress.OUTPUT, 40, "a run's progress folder")):
+            with self.subTest(path=str(path.relative_to(self.work))):
+                self.write(path, age)
+                found = self.holder(directory=directory)
+                self.assertEqual(found["activity"]["source"], source)
+                self.assertAlmostEqual(found["activity"]["quietSeconds"], age, delta=5)
+        self.assertRegex(resources.progress_lines(found)[0], r"^      progress: a run's progress folder last changed "
+                                                             r"\d+s ago$")
+        # A runner admitted for a bare command names its own folder, kept anywhere, which counts as well.
+        folder = Path(self.temp.name) / "elsewhere"
+        self.write(folder / run_progress.OUTPUT, 5)
+        found = self.holder(directory=directory, progressRun=str(folder))
+        self.assertEqual(found["activity"]["source"], "its progress folder")
+        self.assertAlmostEqual(found["activity"]["quietSeconds"], 5, delta=5)
+
+    def test_a_holder_with_no_usable_directory_or_that_does_not_run_reads_nothing(self):
+        self.write(self.lanes / "gate" / "run.log", 10)
+        # An older toolkit's entry names no directory, and a relative one names none it can read.
+        for fields in ({}, {"directory": "work"}, {"directory": "/" + "x" * 2000}):
+            with self.subTest(fields=fields):
+                found = self.holder(**fields)
+                self.assertIsNone(found["activity"])
+                self.assertEqual(resources.progress_lines(found), [UNOBSERVED])
+        # One whose process has ended, or that is uncertain, is not read either.
+        self.assertIsNone(self.holder(directory=str(self.work), start="Thu Jan  1 00:00:00 1970")["activity"])
+        self.assertIsNone(self.holder(directory=str(self.work), uncertain=True)["activity"])
+        # Unknown admission time with nothing changed is unknown, never quiet.
+        self.assertIsNone(offload_host.holder_activity({"directory": str(Path(self.temp.name) / "none")}, None,
+                                                       time.time()))
+        # A directory is a string in admission's format, or the guard is refused, never read.
+        self.assertIsNone(resources.entries({"vocaroEngineering": 1, "owners": {"a": self.owner("x", directory=1)}}))
+
+    def test_a_stall_observation_and_its_holders_files_are_both_shown(self):
+        self.write(self.lanes / "gate" / "run.log", 30)
+        Path(str(self.guard) + ".progress", "a").mkdir(parents=True)
+        Path(str(self.guard) + ".progress", "a", "pytest.json").write_text(json.dumps({
+            "run": "r", "phase": "running", "observedAt": time.time(), "reporter": os.getpid(),
+            "reporterStart": self.start, "lane": "pytest", "host": "here", "state": "observing", "quietSeconds": 2.0,
+            "thresholdSeconds": 600, "maximumQuietSeconds": 3.0, "lastProgressAt": time.time() - 2, "samples": 9,
+            "unobservableSamples": 0}))
+        lines = resources.progress_lines(self.holder(directory=str(self.work)))
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("      progress: pytest on here: quiet 2s of its 600s bound"))
+        self.assertRegex(lines[1], r"^      progress: a lane's log last changed \d+s ago$")
+
+    def test_admission_names_where_its_work_runs(self):
+        folder = Path(self.temp.name) / "progress"
+        folder.mkdir()
+        self.work.mkdir()
+        before = os.getcwd()
+        os.chdir(self.work)
+        self.addCleanup(os.chdir, before)
+        with patch.dict(os.environ, {run_progress.VARIABLE: str(folder)}), contextlib.redirect_stderr(StringIO()), \
+                resources.Admission("python3 scripts/x.py", timeout=0) as admission:
+            entry = json.loads(self.guard.read_text())["owners"][admission.identity]
+            self.write(self.lanes / "gate" / "run.log", 0)
+            (holder,) = self.read()["holders"]
+        self.assertEqual((entry["directory"], entry["progressRun"]), (os.path.realpath(self.work), str(folder)))
+        self.assertEqual(holder["activity"]["source"], "a lane's log")
+        # A folder that is not there is left out, and so is a path too long to read.
+        with patch.dict(os.environ, {run_progress.VARIABLE: str(folder / "gone")}):
+            self.assertEqual(resources.work_place(), {"directory": os.getcwd()})
+        with patch.object(os, "getcwd", return_value="/" + "x" * 2000):
+            self.assertEqual(resources.work_place({}), {})
+
+    def test_the_paths_it_reads_are_run_progress_s(self):
+        """offload_host imports nothing of the toolkit, so it keeps its own copy of where runs write."""
+        self.assertEqual((offload_host.HOLDER_RUNS, offload_host.HOLDER_LANES, offload_host.HOLDER_LANE_LOGS),
+                         (run_progress.RUNS, run_progress.LANES, run_progress.LANE_LOGS))
+        self.assertEqual(set(offload_host.HOLDER_RUN_FILES),
+                         {run_progress.LOG, run_progress.STATE, run_progress.OUTPUT, run_progress.RECORD})
 
 
 class FailedCensusTests(Namespace):

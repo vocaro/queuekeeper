@@ -2562,7 +2562,7 @@ class ResourceTests(unittest.TestCase):
             written = guard.read_text()
             entry = json.loads(written)["owners"][held.identity]
             # The entry admission writes, which each case changes.
-            self.assertEqual(set(entry), {"pid", "start", "label", "exclusive", "model", "admitted", "origin"})
+            self.assertEqual(set(entry), {"pid", "start", "label", "exclusive", "model", "admitted", "origin", "directory"})
             # The positive controls, first, so that no case before them can hold a slot: the guard as admission
             # wrote it, beside an older toolkit's entry, which has no model or admission time, or with a field a
             # newer toolkit may add, admits work beside it and nested work.

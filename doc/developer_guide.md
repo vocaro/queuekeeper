@@ -789,6 +789,15 @@ The user guide's [Receipts and outcomes](user_guide.md#receipts-and-outcomes) an
   Other destinations can still receive the observation, and the failure does not reset its quiet interval.
   Stopping rechecks output and CPU, uses the supervisor's TERM and KILL, and reports `Stalled` as
   unmeasured only after the owned tree has ended.
+- **Holder activity.** A holder whose lanes declare no `stall` publishes no observation. Its guard
+  entry names where it runs instead (`resources.work_place`): `directory`, the working directory
+  at admission, and `progressRun`, the progress folder of a runner admitted for a bare command
+  (`run_progress.VARIABLE`). `offload_host.holder_activity` stats that folder's files, the newest
+  progress folders under `directory`, and its lane logs, counting only changes since admission.
+  It reports `quietSeconds` and the `source` that changed last. It has its own copy of
+  `run_progress`'s paths because it can't import the toolkit, and a test keeps them equal. It
+  reads file times only: it never stops anything. Queue doctor notes a holder whose files haven't
+  moved for `merge_queue.UNMOVED_NOTE` (`health.SILENT`) and makes no finding of it.
 
 `qk doctor --check-only` skips repairs and invokes only plugin callbacks that opt in through
 `plugins.DOCTOR_WITHOUT_REPAIRS`. A read-only callback maps to itself. A normal callback that

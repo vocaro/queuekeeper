@@ -1533,6 +1533,37 @@ class Doctor(UnittestGate):
         self.assertIn("quicklook-ipad observed quiet for 620s (stall bound 600s)", said)
         self.assertEqual(self.snapshot(), before)
 
+    def test_doctor_notes_a_holder_whose_files_have_not_moved_and_finds_nothing(self):
+        """vocaro/queuekeeper#70: a holder that declares no `stall` is judged by no measured bound, so its files'
+        silence past a running gate's is a note that changes nothing, never a finding."""
+        unmoved = {**self.QUICK_LOOK, "progress": [], "activity": {"quietSeconds": 1500.0, "source": "a lane's log"}}
+        moving = {**unmoved, "identity": "m", "pid": 4243, "activity": {"quietSeconds": 30.0, "source": "a lane's log"}}
+        never = {**unmoved, "identity": "n", "pid": 4244, "activity": {"quietSeconds": 2400.0, "source": None}}
+        # Negative controls: one its own stall observation covers, one that does not run, a stranded one, and one whose
+        # entry named no directory.
+        observed = {**unmoved, "identity": "o", "pid": 4245, "progress": [{"lane": "x", "state": "observing"}]}
+        ended = {**unmoved, "identity": "e", "pid": 4246, "process": "ended"}
+        stranded = {**unmoved, "identity": "s", "pid": 4247, "stranded": True}
+        unnamed = {**unmoved, "identity": "u", "pid": 4248, "activity": None}
+        before = self.snapshot()
+        with patch.object(mq.farm, "destinations", return_value=()), \
+                patch.object(offload_host, "admissions_now",
+                             return_value=self.reading(unmoved, moving, never, observed, ended, stranded, unnamed)):
+            status_, said, report = self.doctor(working=False)
+        self.assertEqual((status_, report["healthy"], report["findings"]), (0, True, []), said)
+        notes = [hint for hint in report["hints"] if hint.startswith("unmoved admission holder")]
+        self.assertEqual(len(notes), 2, notes)
+        self.assertIn("unmoved admission holder on this Mac: python3 scripts/qk run quicklook-ipad (PID 4242, held "
+                      "5h00m, CPU 3% of one core, with what it started, from repository BreezEPUB, branch quicklook, "
+                      "worktree /Users/x/.claude/worktrees/quicklook-ipad, session local_1; a lane's log last changed "
+                      "25m00s ago): longer than the 15m00s a running gate may go unmoved; report only", notes[0])
+        self.assertIn("(PID 4244,", notes[1])
+        self.assertIn("nothing its work writes has changed in the 40m00s since it was admitted", notes[1])
+        self.assertIn("note: unmoved admission holder on this Mac", said)
+        self.assertEqual(self.snapshot(), before)
+        # The time a holder's files last moved is named wherever doctor names the holder.
+        self.assertIn("; a lane's log last changed 30s ago)", mq.holder_words(moving))
+
     def test_a_gate_waiting_long_on_a_busy_mac_or_briefly_on_an_idle_one_is_no_finding(self):
         # A wait on a busy Mac is no finding. The separate progress read shows no quiet holders.
         self.waiting_gate(45)

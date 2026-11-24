@@ -170,7 +170,8 @@ def guard_path(environment):
 # four; an entry may lack the others, which later toolkits added or which mark it. A field named in neither,
 # such as a newer toolkit may add, is read past.
 FIELDS, LATER = {"pid": int, "start": str, "label": str, "exclusive": bool}, {"model": bool, "admitted": str, "uncertain": bool,
-                                                                                "wholeHost": bool, "origin": dict}
+                                                                                "wholeHost": bool, "origin": dict,
+                                                                                "directory": str, "progressRun": str}
 # Where work that asks for admission comes from, as JSON: another Mac's runs of a dispatch read it from the Mac that
 # sent them (remote.dispatch), since their own checkout is a copy that names no session (work_origin).
 ORIGIN = "QUEUEKEEPER_ADMISSION_ORIGIN"
@@ -221,6 +222,26 @@ def coding_agent(environment=None):
         session = next((environment[variable] for variable in variables if environment.get(variable)), None)
         if session: return {"agent": name, "agentSession": session[:ORIGIN_LIMIT]}
     return {}
+
+
+# The longest path a guard entry names for where its work runs (work_place); a longer one is left out, not cut.
+PLACE_LIMIT = 1024
+
+
+def work_place(environment=None):
+    """Where the work a new admission runs writes as it goes, for `qk admissions now` and `qk queue doctor` to say when
+    it last moved, though it declares no `stall` (offload_host.holder_activity, vocaro/queuekeeper#70): the directory
+    it was admitted in (directory), under which `qk run` keeps its lanes' logs and `qk unittest` its progress folders
+    (run_progress), and, for a runner admitted for a bare command, the progress folder it already keeps
+    (run_progress.VARIABLE, progressRun). Each is an absolute path; one it cannot read, or longer than PLACE_LIMIT,
+    is left out. It never raises."""
+    from . import run_progress
+    environment = os.environ if environment is None else environment
+    found = {}
+    with contextlib.suppress(OSError): found["directory"] = os.getcwd()
+    folder = environment.get(run_progress.VARIABLE)
+    if folder and os.path.isdir(folder): found["progressRun"] = os.path.abspath(folder)
+    return {key: path for key, path in found.items() if os.path.isabs(path) and len(path) <= PLACE_LIMIT}
 
 
 def whence(origin):
@@ -1583,7 +1604,8 @@ class Admission:
                                                    "exclusive": self.exclusive, "model": self.model,
                                                    "admitted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                                    **({"wholeHost": True} if self.whole_host else {}),
-                                                   **({"origin": self.origin} if self.origin else {})}
+                                                   **({"origin": self.origin} if self.origin else {}),
+                                                   **work_place()}
                 publish_guard(self.guard, state)
             except BaseException:
                 # An interrupt can follow the guard's atomic rename. Keep the opening record if the guard
@@ -2432,15 +2454,26 @@ def admissions_now(here_only=False, read_here=None, read_there=None, macs=None):
     return admission_report(hosts + readings)
 
 
+def activity_words(activity):
+    """When the files a holder's work writes last changed (offload_host.holder_activity), in words, or None."""
+    if not isinstance(activity, dict) or type(activity.get("quietSeconds")) not in (int, float): return None
+    quiet, source = duration(activity["quietSeconds"]), activity.get("source")
+    return (f"{source} last changed {quiet} ago" if isinstance(source, str)
+            else f"nothing its work writes has changed in the {quiet} since it was admitted")
+
+
 def progress_lines(holder):
-    """A running holder's progress as its leaves observe it (offload_host.holder_progress), a line each; that
-    nothing is observed for one whose leaves publish none; nothing for a holder that does not run, or whose
-    reading has no progress, such as an older toolkit's. A quiet interval is evidence, never a verdict
-    (vocaro/queuekeeper#70)."""
+    """A running holder's progress as its leaves observe it (offload_host.holder_progress), a line each, and when
+    the files its work writes last changed (offload_host.holder_activity); that nothing is observed for one with
+    neither; nothing for a holder that does not run, or whose reading has no progress, such as an older toolkit's.
+    A quiet interval is evidence, never a verdict (vocaro/queuekeeper#70)."""
     if holder.get("process") != "running" or "progress" not in holder: return []
-    observations = holder["progress"]
-    if observations is None: return ["      progress: unknown"]
-    if not observations: return ["      progress: not observed (only a lane that declares `stall` publishes it)"]
+    observations, moved = holder["progress"], activity_words(holder.get("activity"))
+    moved = [f"      progress: {moved}"] if moved else []
+    if observations is None: return ["      progress: unknown", *moved]
+    if not observations:
+        return moved or ["      progress: not observed (no lane of it declares `stall`, and its entry names no "
+                         "directory whose files to read)"]
     def seconds(value): return f"{value:.0f}s" if type(value) in (int, float) else "an unknown time"
     lines = []
     for record in observations:
@@ -2454,7 +2487,7 @@ def progress_lines(holder):
                      f"{now}; last progress {'at an unknown time' if last is None else seconds(last) + ' ago'}; "
                      f"longest quiet {seconds(record.get('maximumQuietSeconds'))}; {record.get('samples')} samples, "
                      f"{record.get('unobservableSamples')} unobservable")
-    return lines
+    return lines + moved
 
 
 def reclaimed_lines(reclaimed):
