@@ -199,10 +199,10 @@ PINS_STARTED = "pins.json"
 STARTS_LIMIT = 120
 # How many of a failed run's last lines qk land's refusal quotes (preflight_before_queued, vocaro-engineering#283).
 PREFLIGHT_SHOWN = 40
-# qk land's emergency options, in every repository, by the entry field each sets: an entry tested next as a batch
+# qk land's ordering options, by the entry field each sets. Its emergency options are an entry tested next as a batch
 # of its own, and one landed alone on the preflight lanes without the gate, whose written reason --why gives (owner's
-# decision, 2026-11-04, vocaro-engineering#163). Neither is routine.
-OPTIONS = {"front": "--front", "noGate": "--no-gate"}
+# decision, 2026-11-04, vocaro-engineering#163). --alone keeps its normal place and reserves its paths (#194).
+OPTIONS = {"front": "--front", "noGate": "--no-gate", "alone": "--alone"}
 # The trailer an ungated landing adds to its tip, so that main's history says so (Worker.mark_ungated).
 UNGATED = "Landed-without-gate"
 # While a bisect goes on, the newer half of its suspects gates beside the older half, at once, in a second checkout,
@@ -500,11 +500,11 @@ def lapse_words(closure):
             "closer renews it with `qk queue close --extend`")
 
 
-def closed_refusal(tip, closure, also=""):
+def closed_refusal(tip, closure):
     """The refusal of tip by a queue closed to new entries (vocaro/queuekeeper#32): nothing was queued, the entries
     already in the queue finish, and the queue reopens by itself at the closure's deadline (#286), or sooner when
     whoever closed it reopens it. Any session may reopen a closure whose closer is gone."""
-    return Refused(f"{tip[:12]} is not queued: the queue is {closed_words(closure)}{also}. Entries already in it "
+    return Refused(f"{tip[:12]} is not queued: the queue is {closed_words(closure)}. Entries already in it "
                    f"finish, and {lapse_words(closure)}. Whoever closed it runs `qk queue reopen` once done; if that "
                    "session is gone, any session may. Run `qk land` again once `qk queue closed` exits 1",
                    closed=closure)
@@ -857,14 +857,16 @@ def ungated_lanes(config):
     return preflighted(config)
 
 
-def ahead(front, no_gate, why):
+def ahead(front, no_gate, why, *, alone=False):
     """The entry fields qk land's options set, or a refusal: --no-gate needs a written reason, --why, which the
     landing records everywhere it says it skipped the gate; --front takes one too, but needs none."""
+    if alone and (front or no_gate):
+        raise ValueError("--alone takes its normal turn with a gate, so use it without --front or --no-gate")
     if no_gate and not (why and why.strip()):
         raise ValueError("--no-gate needs a written reason: `qk land --no-gate --why TEXT`, which the entry, the log, "
                          "the landed commit's trailer and `qk queue status` record")
     if why and not (front or no_gate): raise ValueError("--why is the reason for --front or --no-gate")
-    flags = {name: True for name, wanted in (("front", front), ("noGate", no_gate)) if wanted}
+    flags = {name: True for name, wanted in (("front", front), ("noGate", no_gate), ("alone", alone)) if wanted}
     # On one line, as a trailer needs.
     if flags and why and why.strip(): flags["aheadWhy"] = " ".join(why.split())
     return flags
@@ -900,7 +902,7 @@ def docs_first(entries, config, changed_by, blocked=(), gating=()):
     present = {entry["id"] for entry in entries} | set(gating)
     for entry in entries:
         paths = changed_by(entry)
-        if entry["state"] == QUEUED and not (entry.get("front") or entry.get("noGate")) \
+        if entry["state"] == QUEUED and not any(entry.get(option) for option in OPTIONS) \
                 and not present & set(entry.get("waitsFor", ())) and not paths & held \
                 and docs_lanes(config, sorted(paths)) \
                 and (not gating or all(carried_over(path, config, blocked) for path in paths)):
@@ -1976,14 +1978,23 @@ class Queue:
         with self.locked():
             current = self.read(entry["id"]) or entry
             if current["state"] not in WAITING: return current
-            current.pop("publishing", None)  # a settled entry's push is answered
-            current.pop("pushedBefore", None)  # and so is each it kept (Worker.reconcile)
-            current.update(state=state, settled=time.time(), **fields)
-            self.save(current)
-        self.emit(f"entry.{state}", entry=current["id"], subject=current.get("subject"),
-                  **{key: current.get(key) for key in EVENT_FIELDS})
-        if state in (LANDED, REMOVED): git(self.root, "update-ref", "-d", f"refs/queuekeeper/queue/{entry['id']}")
+            self.settle_locked(current, state, **fields)
+        self.announce_settled(current)
         return current
+
+    def settle_locked(self, current, state, **fields):
+        """Write a terminal entry while the caller holds the queue lock."""
+        current.pop("publishing", None)  # a settled entry's push is answered
+        current.pop("pushedBefore", None)  # and so is each it kept (Worker.reconcile)
+        current.update(state=state, settled=time.time(), **fields)
+        self.save(current)
+
+    def announce_settled(self, entry):
+        """Journal a terminal transition and drop the ref when nothing needs it after the lock is released."""
+        state = entry["state"]
+        self.emit(f"entry.{state}", entry=entry["id"], subject=entry.get("subject"),
+                  **{key: entry.get(key) for key in EVENT_FIELDS})
+        if state in (LANDED, REMOVED): git(self.root, "update-ref", "-d", f"refs/queuekeeper/queue/{entry['id']}")
 
     def record(self, entry, **fields):
         """Fields of a waiting entry's record, for the entry nobody has removed meanwhile."""
@@ -2363,7 +2374,7 @@ def _land(root, args, directory=None, details=None):
         try:
             identifier = add(target, args.reference or "HEAD", args.note, quiet_wait=args.wait,
                              front=getattr(args, "front", False), no_gate=getattr(args, "no_gate", False),
-                             why=getattr(args, "why", None))
+                             why=getattr(args, "why", None), alone=getattr(args, "alone", False))
             break
         except Refused as error:
             if details is not None:
@@ -2502,21 +2513,37 @@ def entry_identifier(queue, branch, subject, message=""):
     raise RuntimeError("could not allocate a unique queue entry ID")
 
 
-def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False, why=None):
+def check_reserved_paths(waiting, paths, branch, tip):
+    """Refuse a later entry before it can displace an active --alone entry, including a replacement from its branch."""
+    for entry in waiting:
+        if not entry.get("alone"):
+            continue
+        overlap = paths & set(entry["reservedPaths"])
+        if branch == entry.get("branch") and branch not in (None, "", "main", "HEAD"):
+            raise Refused(f"{tip[:12]} is not queued: {entry['id']} from {branch} waits with --alone; "
+                          "follow it or remove it explicitly before replacing it", [entry["id"]])
+        if overlap:
+            raise Refused(f"{tip[:12]} is not queued: {entry['id']} ({entry.get('branch') or entry['tip'][:12]}) "
+                          f"holds {min(overlap)} with --alone until it settles or is removed", [entry["id"]])
+
+
+def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False, why=None, *, alone=False):
     """Put the commits reference has and origin/main lacks in the queue, and return at once with the
     entry's ID, or None when there is nothing to queue. Whether it may be queued is what a round would
     find: origin/main's settings, and origin/main's lanes or, until it has any, the commit's, or the commit's
     settings while origin/main has no queuekeeper.json, as for a project's first landing (#10), and the round's
     integration of it after the entries ahead of it, which a conflict refuses before it is queued (check). front and
     no_gate, qk land's emergency options --front and --no-gate, and why, the reason --why gives (ahead), go
-    in the entry; an entry already queued with the same tip takes them. A queue closed to new entries (Queue.close)
+    in the entry; an entry already queued with the same tip takes them. --alone tests its submission against main,
+    keeps its normal place in line, then runs as a separate round while holding its paths against later entries.
+    A queue closed to new entries (Queue.close)
     refuses every new entry, one with --front or --no-gate and one that would replace its branch's earlier entry
     included, and leaves what it has as it was; a tip it already holds is no new entry, and is followed as before.
     While origin has no main at all, as a repository created empty has, the entry creates it: the worker gates its tip
     alone and pushes it only while main is still absent (Worker.first_landing, #10). Such an entry is refused unless
     its tip has a queuekeeper.json naming a gate lane, which gates it less what only main may say, and while another
     entry waits, which creates main first; nor can it land without the gate."""
-    flags = ahead(front, no_gate, why)
+    flags = ahead(front, no_gate, why, alone=alone)
     queue = Queue(root)
     present = fetch_main(root, say=lambda words: print(f"queue: {words}", file=sys.stderr))
     tip = text(root, "rev-parse", "--verify", f"{reference}^{{commit}}")
@@ -2570,8 +2597,10 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
         waiting = [entry for entry in queue.all() if entry["state"] in WAITING]
         same = next((entry for entry in waiting if entry["tip"] == tip), None)
     if same:
+        if (alone and not same.get("alone")) or (same.get("alone") and (front or no_gate)):
+            raise Refused(f"{same['id']} already holds {tip[:12]}; --alone cannot be changed on a queued entry")
         print(f"{same['id']} already holds {tip[:12]} ({same['state']})")
-        if flags: promote(queue, same, flags)
+        if flags and not same.get("alone"): promote(queue, same, flags)
         queue.start()
         return same["id"]
     # A closed queue takes nothing new, whatever its options, and replaces nothing (vocaro/queuekeeper#32): before the
@@ -2580,6 +2609,9 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     queue.lapse()
     closure = queue.closed()
     if closure: raise closed_refusal(tip, closure)
+    changed = {path for path in git(root, "log", "--no-walk", "--format=", "--name-only", "--no-renames", "-z",
+                                    *commits, check=True).stdout.split("\0") if path}
+    check_reserved_paths(waiting, changed, branch, tip)
     # A branch added again replaces what it added before; main names nobody's work in particular.
     replaced = [entry for entry in waiting
                 if branch and branch not in ("main", "HEAD") and entry.get("branch") == branch]
@@ -2596,41 +2628,54 @@ def add(root, reference, note=None, quiet_wait=False, front=False, no_gate=False
     # A landing that creates main has nothing to integrate onto, nor preflight lanes, which only main may name.
     if present:
         check(root, queue, {"id": "new", "tip": tip, "commits": commits},
-              [] if front else round_order([entry for entry in waiting if entry not in replaced]), front)
+              [] if front or alone else round_order([entry for entry in waiting if entry not in replaced]), front)
         # Then the preflight lanes, on its commits replayed onto origin/main, which take seconds where a slip costs a
         # round.
         preflight_before_queued(root, queue, tip, gating)
     # Which gate it will ride, found before anything is queued, so that no slip here leaves it queued unsaid (#118).
     # The round reads main's settings, or the batch's less what only main may say (settings), as gating stands for.
-    riding = None if no_gate else rides(config if gating is config else as_batch(config_at(root, tip)), {
-        path for path in text(root, "log", "--no-walk", "--format=", "--name-only", "--no-renames",
-                              *commits).splitlines() if path})
-    for entry in replaced:
-        remove(queue, entry["id"], quiet=True)
-        print(f"queue: replaced {entry['id']}, the branch's earlier commits", file=sys.stderr)
-        if entry["state"] == TESTING: print(f"queue: {stopping(queue, entry)}", file=sys.stderr)
-    now = time.time()
+    riding = None if no_gate else rides(config if gating is config else as_batch(config_at(root, tip)), changed)
     subject = text(root, "log", "-1", "--format=%s", tip)
     # A closing keyword cannot refer to an issue number in the next commit's message.
     message = text(root, "log", "-z", "--format=%B", f"{base}..{tip}" if present else tip)
     entry = {"id": None, "tip": tip, "base": base, "commits": commits, "branch": branch or None, "note": note,
-             "subject": subject, "submitted": now, "state": QUEUED,
-             "directory": str(root), **resources.coding_agent(), **({"replays": replays} if merges else {}), **flags}
+             "subject": subject, "state": QUEUED, "directory": str(root), **resources.coding_agent(),
+             **({"replays": replays} if merges else {}), **flags}
+    if alone: entry["reservedPaths"] = sorted(changed)
     # Fingerprinting is advisory. A missing patch ID must never stop a submission or its eventual settlement.
     with contextlib.suppress(OSError, subprocess.SubprocessError, UnicodeError):
         if identity := patch_of(root, entry): entry["patchId"] = identity
     if not no_gate and (candidates := gate_reuse.candidates(root, config, submitted_tip)):
         entry["gateCandidates"] = candidates
+    removed = []
     with queue.locked():
-        # Closed since the check above: Queue.close takes this lock, so no entry is saved once it has returned.
+        # Check again before replacing anything: a closure or --alone entry could have arrived during preflight.
         closure = queue.closed()
-        if closure:
-            raise closed_refusal(tip, closure, "".join(
-                f"; {entry['id']}, the branch's earlier commits, was taken out before it closed" for entry in replaced))
+        if closure: raise closed_refusal(tip, closure)
+        current = queue.waiting()
+        check_reserved_paths(current, changed, branch, tip)
         identifier = entry_identifier(queue, branch, subject, message)
-        entry["id"] = identifier
+        entry.update(id=identifier, submitted=time.time())
         text(root, "update-ref", f"refs/queuekeeper/queue/{identifier}", tip)
-        queue.save(entry)
+        replace_ids = {older["id"] for older in replaced}
+        try:
+            for older in current:
+                if older["id"] not in replace_ids: continue
+                settled = dict(older)
+                owner = entry.get("agentSession")
+                confirmed = {"confirmed": time.time()} if owner and owner == older.get("agentSession") else {}
+                queue.settle_locked(settled, REMOVED, **confirmed)
+                removed.append((older, settled))
+            queue.save(entry)
+        except OSError:
+            for older, _ in removed:
+                queue.save(older)
+            git(root, "update-ref", "-d", f"refs/queuekeeper/queue/{identifier}")
+            raise
+    for older, settled in removed:
+        queue.announce_settled(settled)
+        print(f"queue: replaced {older['id']}, the branch's earlier commits", file=sys.stderr)
+        if older["state"] == TESTING: print(f"queue: {stopping(queue, older)}", file=sys.stderr)
     queue.emit("entry.queued", entry=identifier, subject=entry["subject"], commits=len(commits), branch=entry["branch"],
                note=note, **flags)
     print(f"queued {identifier}: {len(commits)} commit(s), {entry['subject']}")
@@ -2744,8 +2789,9 @@ def check(root, queue, entry, ahead, front):
 
 def asked_for(name):
     """What an entry's option, a name of OPTIONS, does, for qk land's lines and `qk queue status`."""
-    return ("is tested next, ahead of everything waiting, as a batch of its own" if name == "front" else
-            "lands alone on the preflight lanes, without the gate, and is recorded as ungated")
+    return {"front": "is tested next, ahead of everything waiting, as a batch of its own",
+            "noGate": "lands alone on the preflight lanes, without the gate, and is recorded as ungated",
+            "alone": "takes its turn as a batch of its own and holds its paths until it settles"}[name]
 
 
 def because(entry):
@@ -2762,11 +2808,11 @@ def promote(queue, entry, flags):
     with queue.locked():
         current = queue.read(entry["id"])
         testing = bool(current) and current["state"] == TESTING and all({**current, **flags}.get(name)
-                                                                         for name in OPTIONS)
-        if current and (current["state"] == QUEUED or testing):
+                                                                         for name in ("front", "noGate"))
+        if current and not current.get("alone") and (current["state"] == QUEUED or testing):
             current.update(flags)
             queue.save(current)
-    if current and (current["state"] == QUEUED or testing):
+    if current and not current.get("alone") and (current["state"] == QUEUED or testing):
         for name in OPTIONS:
             if name in flags: print(f"queue: {entry['id']} now {asked_for(name)}{because(current)}")
         if testing:
@@ -6706,21 +6752,22 @@ class Worker:
         """This round's batch of waiting, oldest first. A batch that passed comes first, to push. Then the oldest
         entry qk land --front put first, alone, one that lands without the gate too before any other
         (vocaro/queuekeeper#26); then the oldest entries, as many as a bisect allows, up to the first one qk land
-        --no-gate lands alone, or that entry alone when it is the oldest. alone says whether the batch is one entry an
-        option put on its own, whose outcome leaves a bisect where it was."""
+        --alone or --no-gate puts on its own, or that entry alone when it is the oldest. alone says whether the
+        batch is one entry an option put on its own, whose outcome leaves a bisect where it was."""
         batch = waiting[:self.limit] if self.limit else waiting
         self.alone = False
         if any(entry["state"] == PASSED for entry in batch): return batch
         first = next((entry for entry in waiting if entry.get("front") and entry.get("noGate")), None) \
             or next((entry for entry in waiting if entry.get("front")), None)
-        if first is None and batch and batch[0].get("noGate"): first = batch[0]
+        if first is None and batch and (batch[0].get("noGate") or batch[0].get("alone")): first = batch[0]
         if first is not None:
             self.alone = True
             return [first]
         if self.retrying and tuple(entry["id"] for entry in batch[:len(self.retrying)]) == self.retrying:
             # Entries that arrived after the gate belong to a later batch, with their own retry budget.
             batch = batch[:len(self.retrying)]
-        return batch[:next((index for index, entry in enumerate(batch) if entry.get("noGate")), len(batch))]
+        return batch[:next((index for index, entry in enumerate(batch) if entry.get("noGate") or entry.get("alone")),
+                           len(batch))]
 
     def round(self):
         queue = self.queue
@@ -6761,7 +6808,8 @@ class Worker:
         config = self.settings(base, head)
         queue.mark(applied, TESTING)
         self.say(f"testing {len(applied)} entr{'y' if len(applied) == 1 else 'ies'} at {head[:12]} on {base[:12]}"
-                 + (" at the front of the queue, as qk land --front asked" if applied[0].get("front") else ""))
+                 + (" at the front of the queue, as qk land --front asked" if applied[0].get("front") else
+                    " as a batch of its own, as qk land --alone asked" if applied[0].get("alone") else ""))
         ungated = self.ungated(applied, config)
         self.ungating = bool(ungated)
         # Without renames, so that a file moved into a docs path also names the path it left.
@@ -6812,7 +6860,7 @@ class Worker:
             self.lane_now = None
             try: result, log = self.watched(self, config, lanes, base, head, applied,
                                             lambda: self.gate(lanes, round_name, **only), stacks=isolating,
-                                            isolating=isolating)
+                                            isolating=isolating, docs=not applied[0].get("alone"))
             except BaseException:
                 if self.early: self.early.finish(False)
                 raise
@@ -7507,7 +7555,7 @@ class Worker:
         if not ids <= {entry["id"] for entry in waiting}: return
         if isolating: ids.update(entry["id"] for entry in waiting[:self.suspects])
         fresh = [entry for entry in waiting if entry["id"] not in ids]
-        if not fresh or any(entry.get("front") or entry.get("noGate") or entry["state"] != QUEUED for entry in fresh):
+        if not fresh or any(any(entry.get(option) for option in OPTIONS) or entry["state"] != QUEUED for entry in fresh):
             return
         if parallel:
             fresh = fresh[:len(parallel)]
@@ -7664,7 +7712,7 @@ class Worker:
         either runs the docs lanes in each (docs_also, vocaro/queuekeeper#122)."""
         if self.alone or docs or ungated or not self.limit or self.suspects <= len(batch): return None
         rest = waiting[len(batch):self.suspects]
-        if not rest or any(entry.get("front") or entry.get("noGate") or entry["state"] == PASSED for entry in rest):
+        if not rest or any(any(entry.get(option) for option in OPTIONS) or entry["state"] == PASSED for entry in rest):
             return None
         lanes = lanes_of(config, set(changed).union(*(self.own_paths(entry) for entry in rest)))
         why = offerable(config, lanes)
@@ -9261,6 +9309,8 @@ def options(parser):
                         "the pre-push hook, without the gate, and record it as ungated, which the next gate on main "
                         "covers. Needs --why; tell the owner you used it and why. With --front it lands next: ahead "
                         "of a round whose gate waits to start, or once a gate already running finishes")
+    parser.add_argument("--alone", action="store_true", help="test it in its own round at its usual place in line; "
+                        "hold every path it changes until it settles or is removed")
     parser.add_argument("--why", metavar="TEXT", help="the reason for --front or --no-gate, which --no-gate requires: "
                         "the entry, the log, the landed commit's trailer and `qk queue status` record it")
 
@@ -9382,14 +9432,14 @@ def main(root, args):
             details = {"root": root}
             def submit():
                 details["id"] = add(root, args.reference, args.note, quiet_wait=True,
-                                    front=args.front, no_gate=args.no_gate, why=args.why)
+                                    front=args.front, no_gate=args.no_gate, why=args.why, alone=args.alone)
                 return 0
             return agent_cli.execute(root, "queue.add", submit, reference=args.reference, details=details)
         return agent_cli.execute(root, "queue.wait",
                                  lambda: wait(root, args.id[0], args.limit) if len(args.id) == 1
                                  else wait_for(root, args.id, args.limit), identifiers=args.id)
     if args.operation == "add":
-        try: add(root, args.reference, args.note, front=args.front, no_gate=args.no_gate, why=args.why)
+        try: add(root, args.reference, args.note, front=args.front, no_gate=args.no_gate, why=args.why, alone=args.alone)
         except Refused as error:
             print(f"queuekeeper: {error}", file=sys.stderr)
             return 1

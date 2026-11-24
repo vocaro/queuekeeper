@@ -375,10 +375,9 @@ still need a manual resolution. This setting does not change which gate lanes ru
 
 For a wide change such as a folder move, use the refusal's file paths and entry IDs to find the
 overlap. Split independent edits into smaller landings where possible. If the move has to land as
-one change, agree on a short pause in overlapping submissions with their sessions, let existing
-overlapping entries settle, then rebase onto `origin/main` and land the move. A `qk land --wait`
-that is waiting for conflicting entries has yet to queue your change, so other submissions can
-still get ahead of it.
+one change, [give it its own round](#giving-a-wide-change-its-own-round) to hold its paths while
+earlier entries settle. An ordinary `qk land --wait` waiting for conflicting entries has yet to
+queue your change, so other submissions can still get ahead of it.
 
 If an entry ahead appears to need your fix to pass its gate, read its lane log to confirm the
 failure. Land the smallest fix first if you can split it from the overlapping edits, then land
@@ -860,6 +859,23 @@ does not help, since the second is still judged by `main` as it was.
 - **A pre-push hook outside the queue's checkout.** When `core.hooksPath` is absolute and names
   the main checkout's hooks, the worker runs that copy. Keep what it reads working for one landing
   and drop it in a second. A send-back for its refusal names the folder it ran from.
+
+### Giving a wide change its own round
+
+Use `qk land --alone --wait` for a change whose files keep colliding with other work. It keeps its
+place in line and gets a round of its own on the project's usual checks. Queuekeeper checks the
+submission against `origin/main`, then integrates it again after older entries settle.
+
+Once that entry is queued, later submissions that change any of its paths wait for it. For a
+move, both the old and new paths are held. A plain submission reports the holding entry and
+the path. A submission with `--wait` waits for that entry and checks the queue again. Disjoint
+submissions can still join the queue.
+
+The paths are held while the entry is queued, testing or awaiting publication. It releases
+them when it lands, comes back, or is withdrawn with `qk queue remove ID`. If earlier work
+lands changes that conflict with it, Queuekeeper sends it back for a rebase as usual. The
+same tip follows the existing entry. Withdraw it before changing its options or replacing it
+with a different commit. An entry that uses `--alone` cannot also use the emergency options.
 
 ### Emergencies
 

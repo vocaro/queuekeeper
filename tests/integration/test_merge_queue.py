@@ -7097,6 +7097,96 @@ class AheadOfTheQueue(Fixture):
         self.assertEqual(self.state(c)["state"], "landed")
         self.assertEqual(self.gates(), 2)
 
+    def test_alone_waits_for_older_entries_and_has_a_gate_of_its_own(self):
+        self.commit("older", "older")
+        self.commit("wide", "wide")
+        self.commit("later", "later")
+        older = self.add_with("older")
+        # Exercise the land command's option in addition to the queue worker.
+        with patch.object(mq.Queue, "start"), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()), patch.object(cli.plugins, "recover"), \
+                contextlib.chdir(self.repo):
+            self.assertEqual(cli.main(["--project", str(self.repo), "land", "wide", "--alone"]), 0)
+        wide = next(e["id"] for e in mq.Queue(self.repo).waiting() if e["branch"] == "wide")
+        later = self.add_with("later")
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (older, wide, later)], ["landed", "queued", "queued"])
+        self.rounds()
+        self.assertEqual([self.state(i)["state"] for i in (wide, later)], ["landed", "queued"])
+        self.assertEqual(self.gates(), 2)
+        self.assertIn("gatedOn", self.state(wide))
+        self.rounds()
+        self.assertEqual(self.state(later)["state"], "landed")
+        self.assertEqual(self.gates(), 3)
+
+    def test_a_move_holds_both_paths_until_the_entry_is_removed(self):
+        self.commit("old.txt", "setup")
+        run(self.repo, "git", "push", "-q", "origin", "setup:main")
+        run(self.repo, "git", "checkout", "-q", "-b", "move", "origin/main")
+        run(self.repo, "git", "mv", "old.txt", "new.txt")
+        run(self.repo, "git", "commit", "-qm", "Move the specimen")
+        move = self.add_with("move", alone=True)
+        self.assertEqual(self.state(move)["reservedPaths"], ["new.txt", "old.txt"])
+        for branch, name in (("old", "old.txt"), ("new", "new.txt")):
+            with self.subTest(name=name):
+                self.commit(name, branch, content="later contents")
+                with self.assertRaises(mq.Refused) as caught:
+                    self.add_with(branch)
+                self.assertEqual(caught.exception.waits_for, [move])
+                self.assertIn(name, str(caught.exception))
+        queue = mq.Queue(self.repo)
+        self.assertEqual([entry["id"] for entry in queue.waiting()], [move])
+        mq.remove(queue, move, quiet=True)
+        self.assertEqual(self.state(move)["state"], mq.REMOVED)
+        self.assertEqual(self.state(self.add_with("old"))["state"], mq.QUEUED)
+
+    def test_a_reservation_arriving_during_preflight_does_not_replace_an_earlier_entry(self):
+        self.commit("path.txt", "ordinary", content="older")
+        self.commit("path.txt", "move", content="holder")
+        earlier = self.add_with("ordinary")
+        original = self.state(earlier)
+        self.commit("path.txt", "ordinary", content="newer")
+        real = mq.preflight_before_queued
+
+        def before(*args):
+            with patch.object(mq, "preflight_before_queued", side_effect=real):
+                holder.append(self.add_with("move", alone=True))
+            return real(*args)
+
+        holder = []
+        with patch.object(mq, "preflight_before_queued", side_effect=before), self.assertRaises(mq.Refused) as caught:
+            self.add_with("ordinary")
+        self.assertEqual(caught.exception.waits_for, holder)
+        self.assertIn("holds path.txt with --alone", str(caught.exception))
+        self.assertEqual(self.state(earlier), original)
+        self.assertEqual([e["id"] for e in mq.Queue(self.repo).waiting()], [earlier, *holder])
+        self.rounds(2)
+        # An older entry can still create a real conflict; the terminal send-back releases the protection.
+        self.assertEqual(self.state(earlier)["state"], mq.LANDED)
+        self.assertEqual(self.state(holder[0])["state"], mq.CONFLICT)
+        self.commit("path.txt", "ordinary", content="rebased")
+        self.assertEqual(self.state(self.add_with("ordinary"))["state"], mq.QUEUED)
+
+    def test_a_replacement_whose_entry_cannot_be_saved_restores_the_old_entry(self):
+        self.commit("path.txt", "will-replace", content="old")
+        earlier = self.add_with("will-replace")
+        original = self.state(earlier)
+        refs = run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue")
+        newer = self.commit("path.txt", "will-replace", content="new")
+        real = mq.Queue.save
+
+        def save(queue, entry):
+            if entry["tip"] == newer:
+                raise OSError("cannot write the new entry")
+            return real(queue, entry)
+
+        with patch.object(mq.Queue, "save", autospec=True, side_effect=save), \
+                self.assertRaisesRegex(OSError, "cannot write the new entry"):
+            self.add_with("will-replace", alone=True)
+        self.assertEqual(self.state(earlier), original)
+        self.assertEqual(run(self.repo, "git", "for-each-ref", "refs/queuekeeper/queue"), refs)
+        self.assertEqual([entry["id"] for entry in mq.Queue(self.repo).all()], [earlier])
+
     def test_front_and_no_gate_together_land_at_once(self):
         self.commit("a", "a"); self.commit("fix", "fix")
         [a] = self.add("a")
@@ -14144,18 +14234,13 @@ class ClosedQueue(Fixture):
             error = self.refused("one")
         self.assertEqual(error.closed["by"], self.BY)
         queue.reopen()
-        # Past the point where a replaced entry is taken out, the refusal says that it was.
+        # A closure that arrives during a replacement's check leaves the earlier entry in place.
         earlier, = self.add("one")
         self.amended("one")
-        real = mq.remove
-        def removed_then_closed(*arguments, **options):
-            real(*arguments, **options)
-            queue.close(self.WHY, self.BY)
-        with patch.object(mq, "remove", side_effect=removed_then_closed), patch.object(mq.Queue, "start"), \
-                patch("builtins.print"), self.assertRaises(mq.Refused) as caught:
-            mq.add(self.repo, "one")
-        self.assertIn(f"{earlier}, the branch's earlier commits, was taken out before it closed", str(caught.exception))
-        self.assertEqual([entry["state"] for entry in queue.all()], [mq.REMOVED])
+        with patch.object(mq, "check", side_effect=lambda *_: queue.close(self.WHY, self.BY)):
+            error = self.refused("one")
+        self.assertEqual(error.closed["by"], self.BY)
+        self.assertEqual(self.state(earlier)["state"], mq.QUEUED)
 
     def test_a_closure_that_cannot_be_read_still_closes_the_queue(self):
         self.commit("a.txt", "one")
