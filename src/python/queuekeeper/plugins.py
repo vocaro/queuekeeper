@@ -205,6 +205,9 @@ REMOTE_ENVIRONMENT = []
 REMOTE_SETUP_CHECKS = []
 # Each (results): prints what a lane kept in its results folder.
 REPORT_RESULTS = []
+# Each (command) -> why another Mac cannot run an admitted command as it runs here because its words name something
+# of this Mac's alone, or None (remote.first_command). The Apple plugin names a simulator of this Mac's pool.
+COMMAND_KEPT_HERE = []
 # Each (words) -> the default allowance in seconds for one simulator test, or None, from the runner's arguments.
 TEST_ALLOWANCE = []
 # Each (command, arguments) -> the default allowance in seconds for one test, or None. command is the lane's
@@ -257,6 +260,14 @@ def system_crash(results, log, began, ended):
         try: found = crash(results, log, began, ended)
         except Exception: continue
         if isinstance(found, dict) and found.get("words"): return found
+    return None
+
+
+def kept_here(command):
+    """The first reason a plugin gives that command's words keep it on this Mac, in the order registered, or None."""
+    for keep in COMMAND_KEPT_HERE:
+        reason = keep(command)
+        if reason: return reason
     return None
 
 

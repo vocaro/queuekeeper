@@ -8054,42 +8054,6 @@ class AdmissionsThereTests(unittest.TestCase):
                          ("build-host", "unknown", None, None))
 
 
-class SimulatorPositionTests(unittest.TestCase):
-    """admit --verify keeps a command here for a UUID only where a simulator goes (#142)."""
-
-    def test_a_uuid_in_a_simulator_position_names_a_simulator(self):
-        for command in [["xcodebuild", "-destination", f"id={DUO.lower()}"],
-                        ["xcodebuild", "-destination", f"platform=iOS Simulator,id={DUO}"],
-                        ["xcodebuild", "-destination", f"'platform=iOS Simulator,id={DUO},arch=arm64'"],
-                        [f"-destination=id={DUO}"],
-                        ["xcrun", "simctl", "boot", DUO.lower()],
-                        ["xcrun simctl boot", DUO],
-                        ["/usr/bin/xcrun", "simctl", "spawn", f'"{DUO}"', "launchctl", "list"],
-                        ["/bin/sh", "-c", f"xcrun simctl shutdown {DUO}; true"],
-                        ["tool", "--device", DUO.lower()],
-                        ["tool", f"--device={DUO}"]]:
-            with self.subTest(command):
-                self.assertEqual(remote.simulators(command), {DUO})
-
-    def test_a_uuid_elsewhere_names_no_simulator(self):
-        scratchpad = f"/private/tmp/claude-501/-Users-owner-project/{DUO.lower()}/scratchpad/venv/bin/python"
-        for command in [[scratchpad, "-m", "unittest"],
-                        [sys.executable, f"/tmp/{DUO}/out.json"],
-                        ["tool", f"{DUO}.xcresult"],
-                        [f"--run={DUO}-1"],
-                        [f"--build-id={DUO}"],
-                        [f"session-{DUO}"],
-                        [f"/tmp/id={DUO}"],
-                        ["tool", DUO],
-                        ["--devices", DUO],
-                        ["--device", f"/tmp/{DUO}"],
-                        # A word after simctl's command ends is another command's.
-                        ["/bin/sh", "-c", f"xcrun simctl list && tool {DUO}"],
-                        [scratchpad, "-m", "pytest", "-k", "simctl"]]:
-            with self.subTest(command):
-                self.assertEqual(remote.simulators(command), set())
-
-
 class DispatchResultsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

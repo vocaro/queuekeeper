@@ -3539,32 +3539,6 @@ def lane_offer(root, config, lane, arguments, expect, fallback, queue_gate, excl
     return offered
 
 
-# A simulator's identifier, a UUID, as a word of uppercased text: a member of this Mac's pool.
-SIMULATOR = re.compile(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}")
-# A destination's id= key, as `-destination id=UUID` or `platform=iOS Simulator,id=UUID` gives it, at the
-# start of a word or after a comma or `=` of the destination: not the end of another key, such as --build-id=.
-DESTINATION = re.compile(rf"(?:\A|[,=])ID=({SIMULATOR.pattern})(?=\Z|,)")
-# What ends one command of a shell's words, after which a UUID no longer follows simctl.
-SEPARATOR = re.compile(r"[;&|\n()]+")
-
-
-def simulators(command):
-    """The simulator identifiers command names, uppercased: a UUID where a simulator goes, as a destination's
-    id=, any word after `simctl` in the same shell command, or --device's argument. One inside a path, such
-    as an interpreter in a session's scratchpad (#116, #142), or in another word or argument names none."""
-    found = set()
-    for part in SEPARATOR.split(" ".join(map(str, command)).upper()):
-        words = [word.strip("'\"") for word in part.split()]
-        simctl = False
-        for previous, word in zip([None, *words], words):
-            found.update(DESTINATION.findall(word))
-            value = word.removeprefix("--DEVICE=") if previous != "--DEVICE" else word
-            if SIMULATOR.fullmatch(value) and (simctl or previous == "--DEVICE" or value != word):
-                found.add(value)
-            simctl = simctl or word == "SIMCTL" or word.endswith("/SIMCTL")
-    return found
-
-
 # Where the system tools a command starts or uses as an interpreter live, the same on the Macs: a path under one of
 # these names no file of this Mac's alone (local_paths). /dev too, for /dev/null in a shell's redirection.
 # A root itself, spelled without its slash as PATH=/usr/bin:/bin spells it, is shared too (#379), though /binary is not.
@@ -3654,8 +3628,9 @@ def first_command(root, config, command, kind, *, labels=()):
     """Offer `qk admit`'s command to another Mac to start now, once, as first() offers a lane,
     to run in the directory of its checkout that matches the current one here; return the Offer. Another
     Mac cannot run it as it runs here when its directory is outside the checkout or one Git
-    ignores, which the commit sent lacks, or when its words name this checkout's path, a simulator by
-    its identifier, or a hardware UDID (devices.named), all of which are this Mac's, a path of this Mac's
+    ignores, which the commit sent lacks, or when its words name this checkout's path, what a plugin keeps
+    here (plugins.kept_here), such as a simulator by its identifier, or a hardware UDID (devices.named), all of
+    which are this Mac's, a path of this Mac's
     alone (local_paths) or a file Git ignores (ignored_inputs), or when this Mac's environment sets TEST_RUNNER_ variables or DEVELOPER_DIR
     (local_environment); a device goes
     to another Mac only under a reservation `qk remote admit --device` carries. kind is
@@ -3673,8 +3648,8 @@ def first_command(root, config, command, kind, *, labels=()):
         refused = f"its directory {relative} is one Git ignores, which another Mac's checkout lacks"
     elif str(top) in words:
         refused = f"it names this checkout's path {top}, which another Mac's checkout is not"
-    elif simulators(command):
-        refused = "it names a simulator by its identifier, a member of this Mac's pool"
+    elif kept := plugins.kept_here(command):
+        refused = kept
     elif named:
         refused = (f"it names the hardware UDID {', '.join(named)}, which another Mac uses only under a "
                    "reservation `qk remote admit --device` carries from here")

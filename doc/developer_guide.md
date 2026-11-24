@@ -938,6 +938,12 @@ registers its comparison when the core provides the inventory hook. An older cor
 the comparison itself. A core with the hook needs a matching Apple plugin for doctor to
 report the Xcode and runtime differences.
 
+`qk admit` asks `plugins.COMMAND_KEPT_HERE` whether a command's words name something of this Mac's
+alone before it offers the command to another Mac. The Apple plugin answers for a simulator's
+UUID where a simulator goes: a destination's `id=`, a word after `simctl`, or `--device`'s
+argument (`queuekeeper_apple/simulators/commands.py`). Without the plugin, a UUID keeps no
+command here.
+
 ### What comes back
 
 - **Output** streams back as written, into `.build/queuekeeper/remote/LANE/`. Each dispatch also

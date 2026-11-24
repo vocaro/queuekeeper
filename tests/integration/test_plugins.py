@@ -143,6 +143,14 @@ class SharedHookTests(unittest.TestCase):
         with patch.object(plugins, "TEST_ALLOWANCE", [lambda words: None]):
             self.assertIsNone(plugins.test_allowance(["swift", "test"]))
 
+    def test_the_first_plugin_that_keeps_a_command_here_says_why_and_none_keeps_it_without_one(self):
+        command = ["xcrun", "simctl", "boot", "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"]
+        with patch.object(plugins, "COMMAND_KEPT_HERE", [lambda words: None, lambda words: f"it names {words[1]}",
+                                                         lambda words: "later"]):
+            self.assertEqual(plugins.kept_here(command), "it names simctl")
+        with patch.object(plugins, "COMMAND_KEPT_HERE", []):
+            self.assertIsNone(plugins.kept_here(command))
+
     def test_every_plugin_recovers_and_reports(self):
         calls = []
         with patch.object(plugins, "RECOVER", [lambda: calls.append("a"), lambda: calls.append("b")]), \

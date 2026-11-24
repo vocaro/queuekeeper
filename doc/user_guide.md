@@ -2219,9 +2219,9 @@ qk remote passed LANE [--commit REV]     # exit 0 if the whole lane passed at ex
 - **`qk admit` stays here**, saying why, when another Mac could not run the command as it runs
   here: its directory is outside the checkout or ignored by Git; its arguments name a path only
   this Mac has (this checkout's absolute path, `/tmp`, a scratchpad, anything under `~`, an
-  existing ignored file such as a scratch script, a pool simulator or a physical device); or the
-  environment sets `DEVELOPER_DIR` or a `TEST_RUNNER_` variable. System paths such as `/usr` and
-  `/opt/homebrew` do not count.
+  existing ignored file such as a scratch script, a physical device, or with the Apple plugin a pool
+  simulator); or the environment sets `DEVELOPER_DIR` or a `TEST_RUNNER_` variable. System paths
+  such as `/usr` and `/opt/homebrew` do not count.
 - **Redirected standard input.** `qk admit` keeps commands fed by a pipe, a here-document or an
   input file on this Mac and passes that input to the command. Closed input and `/dev/null` still
   allow offloading. A command explicitly sent with `qk remote admit` gets no caller input. To use

@@ -8,7 +8,7 @@ from queuekeeper import plugins
 from queuekeeper_mobile import platforms
 from . import app_builds, app_registrations, apple_platform, run_results, xctest_shards
 from queuekeeper_mac_desktop import foreground, reservations
-from .simulators import matrix, pool as simulator_pool
+from .simulators import commands as simulator_commands, matrix, pool as simulator_pool
 from .voiceover import state as voiceover_state
 
 
@@ -37,6 +37,10 @@ def register():
                         (plugins.TEST_ALLOWANCE, matrix.default_test_allowance),
                         (plugins.LANE_TEST_ALLOWANCE, matrix.lane_test_allowance)):
         if hook not in hooks: hooks.append(hook)
+    kept_here = getattr(plugins, "COMMAND_KEPT_HERE", None)
+    # An older core recognizes a simulator in a command's words itself.
+    if kept_here is not None and simulator_commands.kept_here not in kept_here:
+        kept_here.append(simulator_commands.kept_here)
     # Each runs tests itself, so one started outside an admission is admitted first (cli.bare_runner).
     plugins.RUNNERS.update({("simulator-tests",), ("xctest",)})
     plugins.COMMANDS.update({

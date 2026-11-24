@@ -88,6 +88,10 @@ from unittest.mock import patch
 from queuekeeper import cli, config, plugins, remote
 assert config.PLUGINS == ()
 assert plugins.HOST_INVENTORY_CHECKS == []
+# Without the Apple plugin, a simulator's identifier keeps no admitted command on this Mac.
+assert plugins.COMMAND_KEPT_HERE == []
+assert not hasattr(remote, "simulators")
+assert plugins.kept_here(["xcrun", "simctl", "boot", "5B0E6C51-2D3A-4F7B-9C1E-0A4B8D2F6E13"]) is None
 with (
     patch.object(remote, "connection", return_value={}),
     patch.object(remote, "slow_connection", return_value=None),
