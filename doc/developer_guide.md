@@ -932,6 +932,9 @@ report the Xcode and runtime differences.
 - **Passes by commit.** A whole lane's receipt is kept by commit in the repository's Git
   directory, with its `results/` beside it, so `qk remote passed` answers from any worktree. A
   whole lane run here at a clean commit by a clean toolkit is kept too, with `ranOn` `this Mac`.
+  The latest run's receipt replaces an earlier one's, but the earlier run's kept results move,
+  with its receipt, into a numbered attempt, `LANE.attempts/N/`, which `remote.kept_runs` reads
+  for per-test history (`qk results history`).
 - **The receipt** records `commit` and `head` (different only for a snapshot), the toolkit's
   commits, `ranOn`, `mac`, and for a farm run `host`, `farmMac` and `macId` (the hardware UUID).
   The other Mac's own receipt is nested inside, naming the sender in `dispatchedFrom`. Older

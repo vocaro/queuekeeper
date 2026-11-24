@@ -122,27 +122,32 @@ def keep(log, bundle, name, status, results=None, out=print, *, activity_prefixe
 
 
 def history(root, lane, test, out=print):
-    """Print observations of an exact test ID or Xcode identifier URL in one lane's retained results."""
+    """Print observations of an exact test ID or Xcode identifier URL in one lane's retained results: each run's
+    at each commit, a rerun at the same commit as an attempt of its own (remote.kept_runs)."""
     try: folders = remote.all_kept_results(remote.store(root)).get(lane, [])
     except (OSError, RuntimeError) as error:
         print(f"queuekeeper results: cannot read the project's retained results: {error}", file=sys.stderr)
         return 1
     outcomes = defaultdict(Counter)
     for folder in folders:
-        for path in sorted(folder.rglob(f"{matrix.KEPT}/*.json")):
-            try:
-                record = json.loads(path.read_text())
-                if not isinstance(record, dict): raise ValueError("expected a result record")
-                if record.get("keptBy") not in (KEPT_BY, "qk simulator-tests") or record.get("bundleUnread"): continue
-                found = [(case.get("identifierURL"), case["outcome"], case_line(str(path.relative_to(folder)), case))
-                         for case in record["tests"] if test in (case["test"], case.get("identifierURL"))]
-            except (OSError, ValueError, KeyError, TypeError) as error:
-                out(f"queuekeeper: {path} could not be read: {error!r}")
-                continue
-            for identity, outcome, line in found:
-                key = identity if isinstance(identity, str) and identity else None
-                outcomes[key][outcome] += 1
-                out(f"{folder.parent.name[:12]} {line}")
+        runs = remote.kept_runs(folder)
+        for attempt, results in runs:
+            # A commit with one kept run prints as it did before attempts were kept.
+            where = folder.parent.name[:12] + (f" attempt {attempt}" if len(runs) > 1 or attempt > 1 else "")
+            for path in sorted(results.rglob(f"{matrix.KEPT}/*.json")):
+                try:
+                    record = json.loads(path.read_text())
+                    if not isinstance(record, dict): raise ValueError("expected a result record")
+                    if record.get("keptBy") not in (KEPT_BY, "qk simulator-tests") or record.get("bundleUnread"): continue
+                    found = [(case.get("identifierURL"), case["outcome"], case_line(str(path.relative_to(results)), case))
+                             for case in record["tests"] if test in (case["test"], case.get("identifierURL"))]
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    out(f"queuekeeper: {path} could not be read: {error!r}")
+                    continue
+                for identity, outcome, line in found:
+                    key = identity if isinstance(identity, str) and identity else None
+                    outcomes[key][outcome] += 1
+                    out(f"{where} {line}")
     separate = len(outcomes) > 1
     if not outcomes:
         out(f"{lane}: no retained result names {test}")
@@ -151,7 +156,8 @@ def history(root, lane, test, out=print):
     for identity, counts in sorted(outcomes.items(), key=lambda item: item[0] or ""):
         heading = f"{lane} ({identity or 'without an identifier URL'})" if separate else lane
         out(f"{heading}: " + ", ".join(f"{counts[outcome]} {outcome}" for outcome in OUTCOMES))
-    out("Showing the latest kept results of each retained commit. The queue records proven flakes separately.")
+    out("Showing every kept attempt at each retained commit; a commit kept before attempts were kept shows only "
+        "its latest run. The queue records proven flakes separately.")
     return 0
 
 

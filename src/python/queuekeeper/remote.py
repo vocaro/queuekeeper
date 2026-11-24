@@ -1237,6 +1237,82 @@ def kept_results(kept, lane):
     return kept / f"{lane}.results"
 
 
+def kept_attempts(kept, lane):
+    """Where the store keeps, beside the lane's receipt at a commit, the results of the lane's earlier runs there:
+    a numbered folder for each, ATTEMPT/receipt.json and ATTEMPT/results/, numbered from 1 in the order they ran
+    (keep_attempt). A rerun at the same commit appends an attempt in place of replacing the earlier run's."""
+    return kept / f"{lane}.attempts"
+
+
+# The most earlier attempts kept for one lane at one commit; the oldest past it go, and the store says so. Gates rerun
+# at one commit far fewer times than this, and each attempt holds at most KEPT_RESULTS_LIMIT.
+KEPT_ATTEMPTS = 20
+
+
+def attempts(folder):
+    """The numbered attempts in a lane's attempts folder (kept_attempts), as [(number, folder)], oldest first."""
+    try: found = [(int(path.name), path) for path in Path(folder).iterdir()
+                  if path.name.isdigit() and path.is_dir() and not path.is_symlink()]
+    except OSError: return []
+    return sorted(found)
+
+
+def keep_attempt(kept, lane):
+    """Move the lane's kept results at a commit, with the receipt that names them, into the next numbered attempt
+    (kept_attempts), so that the run replacing them leaves them readable. Two runs keeping at once each take a number
+    of their own; one that finds the results already moved keeps nothing."""
+    folder = kept_results(kept, lane)
+    if not folder.is_dir() or folder.is_symlink(): return None
+    base = kept_attempts(kept, lane)
+    base.mkdir(exist_ok=True)
+    number = (attempts(base) or [(0, None)])[-1][0] + 1
+    while True:
+        own = base / str(number)
+        try:
+            own.mkdir()
+            break
+        except FileExistsError:
+            number += 1
+    with contextlib.suppress(OSError): shutil.copy2(kept / f"{lane}.json", own / "receipt.json")
+    try: folder.rename(own / "results")
+    except OSError:
+        shutil.rmtree(own, ignore_errors=True)
+        return None
+    for _, old in attempts(base)[:-KEPT_ATTEMPTS]:
+        shutil.rmtree(old, ignore_errors=True)
+        print(f"remote: removed {old}, each lane keeping its newest {KEPT_ATTEMPTS} earlier attempts at a commit",
+              file=sys.stderr, flush=True)
+    return own
+
+
+def kept_runs(folder):
+    """Every run's kept results at one commit, for a folder all_kept_results lists, as [(attempt, results folder)],
+    oldest first: each earlier attempt's (keep_attempt), then the latest run's, whose number follows theirs. A run
+    kept before attempts were kept is attempt 1, and each run before it is lost."""
+    lane = kept_lane(folder)
+    earlier = attempts(kept_attempts(folder.parent, lane))
+    runs = [(number, own / "results") for number, own in earlier if (own / "results").is_dir()]
+    latest = kept_results(folder.parent, lane)
+    if latest.is_dir() and not latest.is_symlink():
+        runs.append(((earlier[-1][0] if earlier else 0) + 1, latest))
+    return runs
+
+
+def kept_lane(folder):
+    """The lane of a LANE.results or LANE.attempts folder."""
+    name = Path(folder).name
+    for suffix in (".results", ".attempts"):
+        if name.endswith(suffix): return name[:-len(suffix)]
+    return name
+
+
+def kept_folders(folder):
+    """A folder all_kept_results lists and, for LANE.results, its sibling LANE.attempts when there is one: what
+    pruning it removes."""
+    beside = kept_attempts(folder.parent, kept_lane(folder))
+    return [folder] + ([beside] if beside != folder and beside.is_dir() and not beside.is_symlink() else [])
+
+
 # The rule by which qk disk reclaims kept results (vocaro-engineering#218): a lane's results stay at its newest
 # KEPT_RESULTS_PER_LANE commits, and at every commit whose run is under KEPT_RESULTS_DAYS old. Receipts are never
 # pruned: they are small, and eng release, checkpoints and `qk remote passed` read them.
@@ -1247,21 +1323,27 @@ KEPT_RESULTS_RULE = (f"keeps each lane's results at its newest {KEPT_RESULTS_PER
 
 
 def kept_results_at(folder):
-    """When a commit's LANE.results/ was kept: its receipt's time, which keep replaces with it, else its own."""
-    receipt = folder.parent / (folder.name[:-len(".results")] + ".json")
+    """When a commit's LANE.results/ or LANE.attempts/ was kept: its receipt's time, which keep replaces with it, else its own."""
+    receipt = folder.parent / (kept_lane(folder) + ".json")
     try: return receipt.stat().st_mtime
     except OSError: return folder.stat().st_mtime
 
 
 def all_kept_results(base):
-    """Every LANE.results/ in a store, as {LANE: [folder, newest first]}."""
+    """Every LANE.results/ in a store, as {LANE: [folder, newest first]}, and every LANE.attempts/ at a commit whose
+    latest run kept no results, so that earlier attempts there are read and pruned too (kept_runs, kept_folders)."""
     found = {}
     if not Path(base).is_dir(): return found
     for commit in Path(base).iterdir():
         if commit.name.startswith(".") or not commit.is_dir() or commit.is_symlink(): continue
         for folder in commit.glob("*.results"):
             if folder.is_dir() and not folder.is_symlink():
-                found.setdefault(folder.name[:-len(".results")], []).append(folder)
+                found.setdefault(kept_lane(folder), []).append(folder)
+        for folder in commit.glob("*.attempts"):
+            lane = kept_lane(folder)
+            if folder.is_dir() and not folder.is_symlink() and not kept_results(commit, lane).is_dir() \
+                    and attempts(folder):
+                found.setdefault(lane, []).append(folder)
     for lane, folders in found.items():
         folders.sort(key=lambda folder: (kept_results_at(folder), folder.parent.name), reverse=True)
     return found
@@ -1275,15 +1357,18 @@ def results_past_rule(base, now=None):
 
 
 def prune_results(base, now=None):
-    """Remove the kept results past KEPT_RESULTS_RULE, leaving every receipt, and return their paths. Each is
-    first renamed aside, so a run keeping that lane's results at that commit meanwhile keeps its own."""
+    """Remove the kept results past KEPT_RESULTS_RULE, with their commit's earlier attempts, leaving every receipt, and
+    return their paths. Each is first renamed aside, so a run keeping that lane's results at that commit meanwhile keeps its own."""
     pruned = []
-    for folder in results_past_rule(base, now):
-        aside = folder.parent / f".{folder.name}.pruned.{os.getpid()}"
-        try: folder.rename(aside)
-        except OSError: continue
-        shutil.rmtree(aside, ignore_errors=True)
-        pruned.append(folder)
+    for found in results_past_rule(base, now):
+        gone = False
+        for folder in kept_folders(found):
+            aside = folder.parent / f".{folder.name}.pruned.{os.getpid()}"
+            try: folder.rename(aside)
+            except OSError: continue
+            shutil.rmtree(aside, ignore_errors=True)
+            gone = gone or folder == found
+        if gone: pruned.append(found)
     return pruned
 
 
@@ -1305,12 +1390,14 @@ def keep(kept, lane, receipt, results=None):
     for a reader beside a run of the lane at this commit that ends at once. With results, the run's
     results/ folder, what it holds is kept beside it, in LANE.results/ (kept_results), in place of an
     earlier run's, and the receipt's keptResults names it: per-test lines and times that another Mac's
-    checkout slot or the next run here would overwrite (vocaro-engineering#218). A run that wrote nothing
-    there, or more than KEPT_RESULTS_LIMIT, keeps none, and an earlier run's go."""
+    checkout slot or the next run here would overwrite (vocaro-engineering#218). An earlier run's kept
+    results, with its receipt, become an attempt of their own (keep_attempt), so that a rerun at one
+    commit adds to the per-test history rather than replacing it (vocaro/queuekeeper#2). A run that wrote
+    nothing there, or more than KEPT_RESULTS_LIMIT, keeps none of its own."""
     kept.mkdir(parents=True, exist_ok=True)
     folder, pid = kept_results(kept, lane), os.getpid()
-    fresh, previous = kept / f".{lane}.results.{pid}", kept / f".{lane}.results.{pid}.previous"
-    for path in (fresh, previous): shutil.rmtree(path, ignore_errors=True)
+    fresh = kept / f".{lane}.results.{pid}"
+    shutil.rmtree(fresh, ignore_errors=True)
     files = [path for path in Path(results).rglob("*") if path.is_file() and not path.is_symlink()] \
         if results is not None and Path(results).is_dir() else []
     size = sum(path.stat().st_size for path in files)
@@ -1328,10 +1415,9 @@ def keep(kept, lane, receipt, results=None):
               f"they stay only in {results}", file=sys.stderr, flush=True)
     partial = kept / f".{lane}.json.{pid}"
     partial.write_text(json.dumps(receipt, indent=2) + "\n")
-    with contextlib.suppress(FileNotFoundError): folder.rename(previous)
+    keep_attempt(kept, lane)
     if fresh.is_dir(): fresh.rename(folder)
     partial.replace(kept / f"{lane}.json")
-    shutil.rmtree(previous, ignore_errors=True)
 
 
 def keep_here(root, lane, receipt, status, whole=True, results=None):

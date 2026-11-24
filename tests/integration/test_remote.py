@@ -3930,7 +3930,7 @@ class RemoteTests(unittest.TestCase):
         self.assertIn(f"Its results are kept in {kept / 'nesting.results'}", output)
         # The nested lane's own results stay where they were, in the slot's checkout.
         self.assertEqual((self.checkout(0) / ".build/queuekeeper/noted/results/note.txt").read_text(), "noted")
-        # The negative control: a lane that writes nothing in results/ keeps none, and the earlier run's go.
+        # The negative control: a lane that writes nothing in results/ keeps none of its own.
         status, output, error = self.qk("run", "check")
         self.assertEqual(status, 0, output + error)
         self.assertNotIn("keptResults", json.loads((kept / "check.json").read_text()))
@@ -3990,36 +3990,64 @@ class RemoteTests(unittest.TestCase):
         self.assertNotIn("remote: load on ", error)
         self.assertEqual(sum(line.startswith("  load: ") for line in error.splitlines()), 1, error)
 
-    def test_keep_keeps_a_runs_results_beside_its_receipt_in_place_of_an_earlier_runs(self):
+    def test_keep_keeps_a_runs_results_beside_its_receipt_and_an_earlier_runs_as_an_attempt(self):
         base = Path(self.temp.name) / "keeping"
         kept, results = base / "store/COMMIT", base / "results"
         (results / "suites/ios-tests").mkdir(parents=True)
         (results / "suites/ios-tests/shard.log").write_text("✔ Test \"t\" passed after 0.7 seconds.\n")
-        remote.keep(kept, "gate", {"lane": "gate"}, results)
+        remote.keep(kept, "gate", {"lane": "gate", "run": 1}, results)
         self.assertEqual(json.loads((kept / "gate.json").read_text())["keptResults"], "gate.results")
         self.assertIn("passed after 0.7", (kept / "gate.results/suites/ios-tests/shard.log").read_text())
-        # A later run replaces them whole: nothing of the earlier run's stays beside the later's.
+        self.assertFalse((kept / "gate.attempts").exists())
+        # A later run's results replace them beside the receipt, and the earlier run's, with its receipt, become
+        # attempt 1 rather than going (#2).
         shutil.rmtree(results)
         (results / "other").mkdir(parents=True)
         (results / "other/note.txt").write_text("later")
-        remote.keep(kept, "gate", {"lane": "gate"}, results)
+        remote.keep(kept, "gate", {"lane": "gate", "run": 2}, results)
         self.assertEqual(sorted(str(p.relative_to(kept)) for p in kept.rglob("*") if p.is_file()),
-                         ["gate.json", "gate.results/other/note.txt"])
-        # A run with no results/, or an empty one, keeps none, and the earlier run's go.
+                         ["gate.attempts/1/receipt.json", "gate.attempts/1/results/suites/ios-tests/shard.log",
+                          "gate.json", "gate.results/other/note.txt"])
+        self.assertEqual(json.loads((kept / "gate.attempts/1/receipt.json").read_text())["run"], 1)
+        self.assertEqual(json.loads((kept / "gate.json").read_text())["run"], 2)
+        self.assertEqual([(number, path.relative_to(kept)) for number, path in remote.kept_runs(kept / "gate.results")],
+                         [(1, Path("gate.attempts/1/results")), (2, Path("gate.results"))])
+        # A run with no results/, or an empty one, keeps none of its own, and the earlier run's stay as an attempt.
         for missing in (None, base / "absent", base / "empty"):
             with self.subTest(missing=missing):
                 if missing is not None and missing.name == "empty": missing.mkdir(exist_ok=True)
+                # Keeping results moves any still beside the receipt into an attempt too.
+                before = len(remote.attempts(kept / "gate.attempts")) + (kept / "gate.results").is_dir()
                 remote.keep(kept, "gate", {"lane": "gate"}, results)
                 remote.keep(kept, "gate", {"lane": "gate"}, missing)
                 self.assertNotIn("keptResults", json.loads((kept / "gate.json").read_text()))
                 self.assertFalse((kept / "gate.results").exists())
+                self.assertEqual(len(remote.attempts(kept / "gate.attempts")), before + 1)
+                self.assertTrue((remote.attempts(kept / "gate.attempts")[-1][1] / "results/other/note.txt").is_file())
         # More than the limit keeps none, and says where they stay.
         with patch.object(remote, "KEPT_RESULTS_LIMIT", 3), \
                 contextlib.redirect_stderr(StringIO()) as said:
             remote.keep(kept, "gate", {"lane": "gate"}, results)
         self.assertFalse((kept / "gate.results").exists())
         self.assertIn(f"stay only in {results}", said.getvalue())
-        self.assertEqual(sorted(p.name for p in kept.iterdir()), ["gate.json"])
+        self.assertEqual(sorted(p.name for p in kept.iterdir()), ["gate.attempts", "gate.json"])
+        # A commit whose latest run kept nothing is still listed, by its attempts, so they are read and pruned.
+        self.assertEqual(remote.all_kept_results(kept.parent), {"gate": [kept / "gate.attempts"]})
+        self.assertEqual([number for number, _ in remote.kept_runs(kept / "gate.attempts")], [1, 2, 3, 4, 5])
+
+    def test_keep_keeps_a_lanes_newest_attempts_at_a_commit(self):
+        base = Path(self.temp.name) / "attempts"
+        kept, results = base / "store/COMMIT", base / "results"
+        results.mkdir(parents=True)
+        (results / "note.txt").write_text("run")
+        with patch.object(remote, "KEPT_ATTEMPTS", 2), contextlib.redirect_stderr(StringIO()) as said:
+            for run in range(5): remote.keep(kept, "gate", {"lane": "gate", "run": run}, results)
+        # Numbers keep counting, so a removed attempt's number is never reused.
+        self.assertEqual([number for number, _ in remote.attempts(kept / "gate.attempts")], [3, 4])
+        self.assertEqual([json.loads((own / "receipt.json").read_text())["run"]
+                          for _, own in remote.attempts(kept / "gate.attempts")], [2, 3])
+        self.assertEqual([number for number, _ in remote.kept_runs(kept / "gate.results")], [3, 4, 5])
+        self.assertIn("each lane keeping its newest 2 earlier attempts at a commit", said.getvalue())
 
     def test_a_group_on_the_farm_mac_brings_each_lanes_log_and_receipt_back(self):
         results = self.project / ".build/queuekeeper/remote/pair"
@@ -7787,6 +7815,24 @@ class KeptResultsPruneTests(unittest.TestCase):
         self.assertEqual([path.name for path in self.base.glob("*/.*")], [])
         # Within the rule, a second prune removes nothing more.
         self.assertEqual(remote.prune_results(self.base, self.now), [])
+
+    def test_pruning_a_commits_results_removes_its_earlier_attempts_too(self):
+        days = remote.KEPT_RESULTS_DAYS
+        gate = [self.kept(f"c{index:02}", "gate", days + index) for index in range(remote.KEPT_RESULTS_PER_LANE + 1)]
+        # The oldest commit ran twice, and the newest ran three times, its latest keeping no results.
+        oldest = gate[-1]
+        self.kept(oldest.parent.name, "gate", days * 3)
+        remote.keep(self.base / "c00", "gate", {"lane": "gate"}, self.results)
+        remote.keep(self.base / "c00", "gate", {"lane": "gate"})
+        newest = self.base / "c00/gate.attempts"
+        self.assertEqual(remote.all_kept_results(self.base)["gate"][0], newest)
+        self.assertTrue((oldest.parent / "gate.attempts/1/results").is_dir())
+        self.assertEqual(remote.results_past_rule(self.base, self.now), [oldest])
+        self.assertEqual(remote.prune_results(self.base, self.now), [oldest])
+        self.assertFalse(oldest.exists())
+        self.assertFalse((oldest.parent / "gate.attempts").exists())
+        self.assertTrue((oldest.parent / "gate.json").exists())
+        self.assertEqual([number for number, _ in remote.kept_runs(newest)], [1, 2])
 
     def test_a_store_with_no_kept_results_prunes_nothing(self):
         self.assertEqual(remote.results_past_rule(self.base), [])

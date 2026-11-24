@@ -4,6 +4,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
-from queuekeeper import cli, lane_results, parallel
+from queuekeeper import cli, lane_results, parallel, remote
 from queuekeeper_apple import run_results
 from queuekeeper_apple.simulators import matrix
 import host_isolation
@@ -157,6 +158,34 @@ class KeepTests(unittest.TestCase):
         self.assertIn("could not be read", output)
         for excluded in ("testOpensAgain", "foreign", "other-lane"):
             self.assertNotIn(excluded, output)
+
+    def test_history_reads_each_attempt_a_rerun_at_one_commit_kept(self):
+        store, commit = self.root / "store", "c" * 40
+        results = self.root / "run-results"
+
+        def run(outcome):
+            shutil.rmtree(results, ignore_errors=True)
+            (results / matrix.KEPT).mkdir(parents=True)
+            (results / matrix.KEPT / "iPhone.json").write_text(json.dumps({
+                "run": "iPhone", "keptBy": run_results.KEPT_BY, "bundleUnread": None,
+                "tests": [{"test": "Smoke/testOpens()", "outcome": outcome, "seconds": 1}]}))
+            remote.keep(store / commit, "ios-tests", {"lane": "ios-tests"}, results)
+
+        # The gate failed, then passed on a rerun at the same commit: both stay, and history counts both.
+        run("failed")
+        run("passed")
+        lines = []
+        with patch.object(run_results.remote, "store", return_value=store):
+            self.assertEqual(run_results.history(self.root, "ios-tests", "Smoke/testOpens()", lines.append), 0)
+        self.assertIn(f"{commit[:12]} attempt 1 simulator-tests/iPhone.json: failed 1.000s Smoke/testOpens()", lines)
+        self.assertIn(f"{commit[:12]} attempt 2 simulator-tests/iPhone.json: passed 1.000s Smoke/testOpens()", lines)
+        self.assertIn("ios-tests: 1 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured", lines)
+        # A third run that kept no results leaves both attempts readable.
+        remote.keep(store / commit, "ios-tests", {"lane": "ios-tests"})
+        again = []
+        with patch.object(run_results.remote, "store", return_value=store):
+            self.assertEqual(run_results.history(self.root, "ios-tests", "Smoke/testOpens()", again.append), 0)
+        self.assertIn("ios-tests: 1 passed, 1 failed, 0 skipped, 0 expected failure, 0 unmeasured", again)
 
     def test_history_distinguishes_no_retained_observations(self):
         lines = []

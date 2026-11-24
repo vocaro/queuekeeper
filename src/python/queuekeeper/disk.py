@@ -447,8 +447,9 @@ def project_workspace(host, workspace):
 
 def kept_results(host, usage, sizes):
     """Each repository's lane results kept by commit beside its receipts, .git/queuekeeper/remote/COMMIT/
-    LANE.results/ (remote.keep), counted, with those past their rule (remote.KEPT_RESULTS_RULE) as one candidate,
-    which `qk remote prune-results` removes, leaving every receipt (vocaro-engineering#218)."""
+    LANE.results/ and earlier attempts' LANE.attempts/ (remote.keep), counted, with those past their rule
+    (remote.KEPT_RESULTS_RULE) as one candidate, which `qk remote prune-results` removes, leaving every receipt
+    (vocaro-engineering#218)."""
     from . import remote  # remote imports this module
     items = []
     for main in main_checkouts(host):
@@ -465,11 +466,12 @@ def kept_results(host, usage, sizes):
                               None, idle))
         elif gone:
             items.append(Item("kept-results", str(base), CANDIDATE, f"{counted}; {len(gone)} past the rule, which "
-                              f"{remote.KEPT_RESULTS_RULE}", sum(sizes.of(folder) for folder in gone),
+                              f"{remote.KEPT_RESULTS_RULE}", sum(sizes.of(part) for folder in gone for part in remote.kept_folders(folder)),
                               ["python3", str(TOOLKIT_ROOT / "bin/qk"), "remote", "prune-results", str(main)], idle))
         else:
             items.append(Item("kept-results", str(base), KEPT, f"{counted}; none past the rule, which "
-                              f"{remote.KEPT_RESULTS_RULE}", sum(sizes.of(folder) for folders in found.values() for folder in folders),
+                              f"{remote.KEPT_RESULTS_RULE}", sum(sizes.of(part) for folders in found.values() for folder in folders
+                                                       for part in remote.kept_folders(folder)),
                               None, idle))
     return items
 

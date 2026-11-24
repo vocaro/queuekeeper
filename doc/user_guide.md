@@ -1434,8 +1434,13 @@ supplied one. The URL distinguishes tests with the same printed ID. When a print
 different recorded identities, the totals list each URL and any observations without a URL
 separately. Each observation names its commit and result file, so results from different
 shards or simulators can be distinguished.
-These observations come from the latest whole run kept at each commit and reflect the results
-still on disk. The merge queue records proven flakes separately.
+These observations come from every whole run kept at each commit and reflect the results still on
+disk. A rerun at the same commit keeps the earlier run's results, with its receipt, as a numbered
+attempt beside the latest run's, `COMMIT/LANE.attempts/N/`, so a gate that failed and then passed
+at one commit shows both, and each line names its attempt when a commit has more than one. Each
+lane keeps its newest 20 earlier attempts at a commit, and pruning a commit's results removes its
+attempts too. Results kept before attempts were kept show only the latest run at their commit.
+The merge queue records proven flakes separately.
 
 #### A pytest lane
 
@@ -3795,7 +3800,7 @@ open file or an argument inside it. The rules for each category:
 | SwiftPM's cache | Its clones and artifacts, which SwiftPM fetches again |
 | Caches of macOS tools (`~/Library/Caches`) | Idle and unused: `com.apple.python` (the system Python's bytecode) and `com.microsoft.VSCode.ShipIt` (VS Code's past update downloads). `Homebrew` (current downloads `brew cleanup` keeps) is an owner item. No other cache there is listed |
 | Unity projects' `Library`, `Temp` and `Logs` | Idle, no editor has the project open, and Git ignores the folder and tracks nothing in it. Otherwise kept |
-| Kept lane results | Beyond each lane's newest 10 commits and older than 14 days; removed by `qk remote prune-results CHECKOUT`. Receipts are never removed |
+| Kept lane results | Beyond each lane's newest 10 commits and older than 14 days; removed, with that commit's earlier attempts, by `qk remote prune-results CHECKOUT`. Receipts are never removed |
 | Pinned checkouts | Unused by any run for a week and by any process; removed by `qk disk --prune-pins` |
 
 **No runtime is removed while any simulator on this Mac runs or is reserved**, on any runtime: they
