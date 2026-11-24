@@ -243,6 +243,22 @@ def host_faulted(lane, status, receipt, results):
     return words
 
 
+def system_crashed(lane, status, receipt, results, log, began):
+    """What shows that a run of lane that ended with status, which began at began, an epoch time, failed only because
+    a simulator's system process crashed, as a plugin corroborated it, or None, after saying so
+    (plugins.SYSTEM_CRASHES).
+    On 2026-11-12 a SpringBoard crash under a BreezEPUB gate sent back a change that had nothing to do with it
+    (vocaro/queuekeeper#12)."""
+    if began is None or status in (0, lane_results.UNMEASURED, USAGE) or status in merge_queue.NO_VERDICT \
+            or receipt.get("notStarted") or compile_failed(receipt):
+        return None
+    found = plugins.system_crash(results, log, began, time.time())
+    if found is None: return None
+    print(f"queuekeeper: unmeasured: {lane} failed on {this_mac()} for the Mac's fault, which says nothing of the "
+          f"commits it ran: {found['words']}", file=sys.stderr, flush=True)
+    return found
+
+
 def failed_short(status, admission, tree):
     """Why a run that ended with status, a failure, failed for want of disk space, or None: a write of its admission
     found the disk full, or the disk is short of QUEUEKEEPER_RUN_FREE_GB now that it has ended. A command that fails
@@ -2081,6 +2097,9 @@ def perform(argv, report):
             admission = None
             # remote.asleep()'s reading as the lane's command starts, for the sleep its run spans (slept_since).
             asleep_began = None
+            # When the lane's command started, an epoch time: the start of the window whose crash reports count
+            # (system_crashed).
+            command_began = None
             # checkout_state's reading as the lane's command starts in this checkout, for the move it checks for once
             # the run, or a group's lane, ends (moved, vocaro/queuekeeper#310). None for a run in a worktree of what
             # was sent, which nothing else moves.
@@ -2243,6 +2262,7 @@ def perform(argv, report):
                         with patch_environment({SELF_LANE: args.lane}):
                             began = started_here(root, args.lane, receipt)
                             asleep_began = remote.asleep()
+                            command_began = time.time()
                             result = execute()
                     else:
                         with contextlib.ExitStack() as stack:
@@ -2333,6 +2353,7 @@ def perform(argv, report):
                             if closed is not None: return closed
                             began = started_here(root, args.lane, receipt) if tree == root else None
                             asleep_began = remote.asleep()
+                            command_began = time.time()
                             result = execute(admission.interrupted)
                             # A failed build ran no test an alert could have disturbed.
                             if alerts is not None and not compile_failed(receipt): result = alerts.judged(result)
@@ -2413,6 +2434,12 @@ def perform(argv, report):
             if faulted is not None:
                 if isinstance(faulted, plugins.HostFault): receipt["hostFaultKind"] = faulted.kind
                 concluded(lane_results.UNMEASURED, unmeasured=[faulted], error=faulted, hostFault=True)
+                return lane_results.UNMEASURED
+            crash = system_crashed(args.lane, status, receipt, directory / "results", log, command_began)
+            if crash is not None:
+                words = crash["words"]
+                concluded(lane_results.UNMEASURED, unmeasured=[words], error=words, hostFault=True,
+                          systemCrash={key: value for key, value in crash.items() if key != "words"})
                 return lane_results.UNMEASURED
             if status == lane_results.UNMEASURED and (reads_screen or SCREEN_LOCKED.search(log)):
                 unmeasured_screen(args.lane, receipt)

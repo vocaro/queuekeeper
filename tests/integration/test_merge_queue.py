@@ -1940,6 +1940,104 @@ class PassingTestsFailedGate(Fixture):
         self.assertIn("gate failed though qk unittest's verdict was OK", why)
 
 
+# A stand-in smoke lane, run by the real qk run with the Apple plugin. Each gate takes the next word of the fixture's
+# plan file: pass passes; crash fails its one test with XCTest's SpringBoard crash and leaves the simulator's crash
+# report in the fixture's reports folder; uncorroborated fails so with no report; mixed adds a test that failed an
+# assertion (vocaro/queuekeeper#12).
+CRASHING_LANE = """import datetime, json, os, sys, time
+from pathlib import Path
+base = Path(os.environ["QUEUEKEEPER_FIXTURE_BASE"])
+with (base / "gates").open("a") as counter: counter.write("x")
+run = len((base / "gates").read_text())
+plan = (base / "plan").read_text().split() if (base / "plan").exists() else []
+mode = plan[run - 1] if run <= len(plan) else "pass"
+if mode == "pass": sys.exit(0)
+udid = "6A1B2C3D-0000-4000-8000-00000000ABCD"
+tests = [{"test": "ReadingTests/testRelaunch()", "outcome": "failed", "seconds": 3.0,
+          "issues": [{"message": "Critical process SpringBoard crashed in (null)"}]}]
+if mode == "mixed":
+    tests.append({"test": "ReadingTests/testScroll()", "outcome": "failed", "seconds": 1.0,
+                  "issues": [{"message": "XCTAssertEqual failed: (1) is not equal to (2)"}]})
+kept = Path(os.environ["QUEUEKEEPER_RESULTS_DIR"]) / "simulator-tests"
+kept.mkdir(parents=True, exist_ok=True)
+(kept / "smoke.json").write_text(json.dumps({"run": "smoke", "keptBy": "qk simulator-tests", "status": 65,
+    "summary": {"devicesAndConfigurations": [{"device": {"deviceId": udid}}]}, "tests": tests}))
+if mode != "uncorroborated":
+    stamp = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S.%f %z")
+    (base / "reports" / f"SpringBoard-{run}.ips").write_text(
+        json.dumps({"app_name": "SpringBoard", "timestamp": stamp}) + "\\n"
+        + json.dumps({"procName": "SpringBoard", "coalitionName": "com.apple.CoreSimulator.SimDevice." + udid}))
+for test in tests: print("Test Case '-[" + test["test"].replace("/", " ").replace("()", "") + "]' failed (1.000 seconds).")
+sys.exit(65)
+"""
+
+
+class SystemProcessCrash(Fixture):
+    """The owner's decision on vocaro/queuekeeper#12: a gate lane whose only failures are a simulator's SpringBoard
+    crash, corroborated by its crash report, gives no verdict and gates again once; a second such crash at the same
+    commit holds the queue for a session; anything less stays a failure."""
+
+    def gated(self, *plan):
+        config = self.config()
+        config["plugins"] = ["queuekeeper_apple"]
+        config["lanes"]["gate"]["command"] = ["python3", "-c", CRASHING_LANE]
+        self.publish(config)
+        (self.base / "plan").write_text(" ".join(plan))
+        reports = self.base / "reports"
+        reports.mkdir()
+        self.commit("a", "a")
+        [identifier] = self.add("a")
+        with patch.dict(os.environ, {"QUEUEKEEPER_DIAGNOSTIC_REPORTS": str(reports)}), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            self.work()
+        return identifier, said.getvalue()
+
+    def crashes(self):
+        return events.read(mq.Queue(self.repo).directory, kinds=["gate.system-crash"])
+
+    def test_a_corroborated_crash_gates_again_and_lands(self):
+        identifier, said = self.gated("crash", "pass")
+        self.assertEqual(self.gates(), 2)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "landed", said)
+        self.assertIsNone(mq.Queue(self.repo).held())
+        [crash] = entry["systemCrashes"]
+        self.assertEqual((crash["lane"], crash["process"], crash["simulator"]),
+                         ("gate", "SpringBoard", "6A1B2C3D-0000-4000-8000-00000000ABCD"))
+        self.assertEqual(crash["report"], str(self.base / "reports" / "SpringBoard-1.ips"))
+        self.assertIn("gates again once the Mac settles", said)
+        self.assertEqual(len(self.crashes()), 1)
+        self.assertEqual(agent_results.entry_result(mq.Queue(self.repo), entry)["systemCrashes"], [crash])
+
+    def test_a_second_crash_at_the_same_commit_holds_for_a_session(self):
+        identifier, said = self.gated("crash", "crash", "pass")
+        self.assertEqual(self.gates(), 2, said)
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "queued", said)
+        first, second = entry["systemCrashes"]
+        self.assertEqual(first["tree"], second["tree"])
+        held = mq.Queue(self.repo).held()
+        self.assertTrue(held.startswith("for a session, not the owner: gate failed at "), held)
+        self.assertIn("a second time for that lane and commit", held)
+        for report in ("SpringBoard-1.ips", "SpringBoard-2.ips"): self.assertIn(report, held)
+        self.assertEqual(len(self.crashes()), 2)
+
+    def test_a_crash_message_with_no_crash_report_stays_failed(self):
+        identifier, said = self.gated("uncorroborated", "pass")
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed", said)
+        self.assertNotIn("systemCrashes", entry)
+        self.assertNotIn("noVerdict", entry)
+        self.assertEqual(self.crashes(), [])
+
+    def test_a_crash_beside_another_failure_stays_failed(self):
+        identifier, said = self.gated("mixed", "pass")
+        entry = self.state(identifier)
+        self.assertEqual(entry["state"], "failed", said)
+        self.assertNotIn("systemCrashes", entry)
+        self.assertEqual(self.crashes(), [])
+
+
 class NoVerdict(Fixture):
     @contextlib.contextmanager
     def no_verdict_for(self, runs, status="3"):

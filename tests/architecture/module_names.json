@@ -92,6 +92,7 @@
     "queuekeeper_apple.stale_modules",
     "queuekeeper_apple.stale_packages",
     "queuekeeper_apple.stale_toolchain",
+    "queuekeeper_apple.system_crash",
     "queuekeeper_apple.voiceover",
     "queuekeeper_apple.voiceover.guard",
     "queuekeeper_apple.voiceover.state",

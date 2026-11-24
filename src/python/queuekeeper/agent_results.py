@@ -152,6 +152,7 @@ def entry_result(queue, entry):
             "flakes": [{**flake, "reruns": {"status": "passed", "count": len(flake["rerunLogs"])
                                            if "rerunLogs" in flake else None}}
                        for flake in entry.get("flakes", [])],
+            "systemCrashes": entry.get("systemCrashes", []),
             "artifacts": artifacts, "gates": gates,
             "resultsSummary": (entry.get("gate") or {}).get("results"),
             **({"gateExecution": execution} if (execution := entry.get("gateExecution")) else {}),

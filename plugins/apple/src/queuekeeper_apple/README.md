@@ -59,6 +59,18 @@ fresh bundle shows that exact, single case. Use the recorded identifier URL to m
 runs. Missing, ambiguous, skipped and parameterized cases do not supply an observation. A failed
 run still fails the series. These observations do not change merge queue verdicts.
 
+### A simulator's SpringBoard or backboardd that crashes
+
+A run whose only failures are XCTest's `Critical process SpringBoard crashed` or
+`Critical process backboardd crashed` is unmeasured, not failed, once a crash report corroborates it:
+that simulator, named by its UDID in the result bundle, has a crash report of the process in
+`~/Library/Logs/DiagnosticReports` captured during the run. The run's message names the report. The
+plugin reads the results that `qk simulator-tests` and `qk results keep` keep, so a lane must keep
+them. Any other failed test or issue, a result whose tests could not be read, or no such report keeps
+the run failed. `QUEUEKEEPER_DIAGNOSTIC_REPORTS` replaces the folder, with folders separated by colons.
+The merge queue gates such a lane once more and holds when it crashes again
+([No verdict is not a failure](../../../../doc/user_guide.md#no-verdict-is-not-a-failure)).
+
 ## Swift package tests
 
 `swift test --parallel` reports a skipped XCTest test as passed and prints no total.

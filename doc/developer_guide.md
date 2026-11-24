@@ -546,6 +546,16 @@ events, and goes on to later entries. Newly arrived entries have their own retry
   lane means Queuekeeper could not start: the worker starts its own checkout with `--version`, with
   and without the batch, within `START_LIMIT` (60 s). If only the batch breaks it, the batch is
   bisected; otherwise the queue holds for a session.
+- **A system process's crash.** `cli.system_crashed` asks `plugins.SYSTEM_CRASHES` whether a failed
+  lane failed only because a simulator's system process crashed. The Apple plugin
+  (`queuekeeper_apple.system_crash`) answers when every failure the kept results, failure records and
+  log name is XCTest's `Critical process SpringBoard|backboardd crashed` and a crash report of that
+  process names the simulator's UDID and was captured inside the run. The lane ends unmeasured with
+  `hostFault` and `systemCrash` in its receipt, which `gate_system_crash` reads, here or from another
+  Mac's dispatch. `Worker.system_crash` keeps each occurrence in the batch's entries' `systemCrashes`
+  and emits `gate.system-crash`. The first for a lane and tested commit, told apart by its tree since each round picks the batch
+  again, settles and gates again
+  outside `queue.noVerdictRuns`; a second holds for a session, naming both (vocaro/queuekeeper#12).
 - **Disk space.** A lane that ends with `queuekeeper: out of disk space:` holds at once.
 - **Sleep.** A lane that fails while its Mac sleeps over 5 s during its command, as a lid closed on
   battery does, ends unmeasured (exit 3), and its receipt's error and `sleptSeconds` say how long:
@@ -2037,6 +2047,7 @@ fault in its gate lane receipt. A missing value leaves the cause unknown.
 | `gate.began` | A lane of a gate started | `lane`, `round`, `role`, `head`, `entries` |
 | `gate.ended` | A lane of a gate ended | `lane`, `round`, `role`, `status` (an exit status, `withdrawn` or `canceled`), `log`, `mac`, `seconds` |
 | `gate.stuck` | A gate's wait for admission is held up by dead entries | `lane`, `role`, `why`, `waitingSince` |
+| `gate.system-crash` | A gate lane failed only because a simulator's system process crashed | `lane`, `commit`, `process`, `simulator`, `report`, `mac`, `entries`, `again` (a second at that commit, which holds) |
 | `batch.passed` | A batch's lanes passed, before its push | `head`, `base`, `entries` |
 | `batch.pushed` | A batch was pushed to `main`, or a push without an answer was found there (`reconciled`) | `head`, `base`, `entries`, `ungated`, `reconciled` |
 | `test.flaky` | A failed test passed alone | `test`, `commit`, `issue`, `landed`, `entries` |

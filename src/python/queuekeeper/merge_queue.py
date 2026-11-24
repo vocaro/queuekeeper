@@ -2923,6 +2923,10 @@ def describe(entry):
         line += (f"\n         flaky: {flake['test']} failed the gate at {flake['commit'][:12]} and passed alone "
                  f"{len(flake['rerunLogs'])} times"
                  + (f"; {flake['issue']}" if flake.get("issue") else f"; not on the tracker: {flake.get('trackerError')}"))
+    for crash in entry.get("systemCrashes", []):
+        line += (f"\n         system crash: {crash.get('lane')} at {str(crash.get('commit'))[:12]}: "
+                 f"{crash.get('process')} crashed on the simulator {crash.get('simulator')} on {crash.get('mac')}; "
+                 f"{crash.get('report')}")
     if entry.get("why"): line += f"\n         {entry['why']}"
     if entry.get("removedWhy"): line += f"\n         removed: {entry['removedWhy']}"
     if entry.get("log"): line += f"\n         log: {entry['log']}"
@@ -4020,23 +4024,23 @@ class Removal:
         return self.look()
 
 
-def gate_host_fault(dispatch, lane_log, head, began, *, receiver=None):
-    """Whether this gate's terminal lane receipt attributes its unmeasured outcome to the Mac.
+def gate_fault_receipt(dispatch, lane_log, head, began, *, receiver=None):
+    """This gate's terminal lane receipt, when it attributes its unmeasured outcome to the Mac, else None.
 
     With (destination, lane) as receiver, require a recognized host-specific cause and matching sender
     and receiver identities before changing the placement of a retry."""
     path = (dispatch or lane_log.parent) / "source.json"
     try:
-        if path.stat().st_mtime < began: return False
+        if path.stat().st_mtime < began: return None
         receipt = json.loads(path.read_text())
-        if receiver is not None and dispatch is None: return False
+        if receiver is not None and dispatch is None: return None
         if dispatch is not None:
-            if receipt["dispatched"] < began or receipt["head"] != head or receipt["commit"] != head: return False
+            if receipt["dispatched"] < began or receipt["head"] != head or receipt["commit"] != head: return None
             result = receipt["result"]
             # The receiving Mac can return a lane receipt even when it stopped the dispatch or never reached work.
             if result.get("stage") != "work" or result.get("exitStatus") != lane_results.UNMEASURED \
                     or result.get("stopped") is not False or result.get("error"):
-                return False
+                return None
             if receiver is not None:
                 sender, mac = receipt["local"]["name"], result["host"]["name"]
                 inner = result["receipt"]
@@ -4044,13 +4048,26 @@ def gate_host_fault(dispatch, lane_log, head, began, *, receiver=None):
                         or not isinstance(mac, str) or not mac or mac == sender \
                         or inner.get("mac") != mac or inner.get("dispatchedFrom") != sender \
                         or inner.get("hostFaultKind") != plugins.HOST_BUILD_CACHE:
-                    return False
+                    return None
             receipt = result["receipt"]
-        return receipt["project"]["revision"] == head and receipt["outcome"] == "unmeasured" \
-            and receipt.get("hostFault") is True
+        if receipt["project"]["revision"] == head and receipt["outcome"] == "unmeasured" \
+                and receipt.get("hostFault") is True:
+            return receipt
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return False
+        pass
+    return None
 
+
+def gate_host_fault(dispatch, lane_log, head, began, *, receiver=None):
+    """Whether this gate's terminal lane receipt attributes its unmeasured outcome to the Mac (gate_fault_receipt)."""
+    return gate_fault_receipt(dispatch, lane_log, head, began, receiver=receiver) is not None
+
+
+def gate_system_crash(dispatch, lane_log, head, began):
+    """The system process crash this gate's terminal lane receipt says was all that failed the lane
+    (cli.system_crashed), or None (vocaro/queuekeeper#12)."""
+    crash = (gate_fault_receipt(dispatch, lane_log, head, began) or {}).get("systemCrash")
+    return crash if isinstance(crash, dict) and crash.get("process") and crash.get("simulator") else None
 
 class Worker:
     def __init__(self, queue, progress=None):
@@ -4901,6 +4918,7 @@ class Worker:
         self.altered_files = self.altered_paths = None
         self.gate_host_fault = None
         self.gate_remote_host_fault = None
+        self.gate_system_crash = None
         removal = Removal(self.queue, self.gating, cancel, first=self.first_ungated)
         if quick is None: quick = self.checks
         for identifier in self.gating: self.queue.record({"id": identifier}, stopsWhenRemoved=REMOVAL_POLL)
@@ -5071,6 +5089,8 @@ class Worker:
                     if ran is not None and self.ran_on and gate_host_fault(
                             ran, lane_log, tested, began, receiver=(self.ran_on, lane)):
                         self.gate_remote_host_fault = log
+                    crash = gate_system_crash(ran, lane_log, tested, began)
+                    if crash is not None: self.gate_system_crash = (log, lane, tested, crash)
                 # Its results folder came back beside what it printed, here or from another Mac.
                 self.failed_results = printed.parent / "results"
                 self.tooling = self.tool_unstarted(lane, began, status_, ran, log)
@@ -7264,6 +7284,9 @@ class Worker:
                                        f"scripts/qk disk` lists, then resume the queue; see {log}"))
             return NO_VERDICT_OUTCOME
         self.only_host_faults &= getattr(runner, "gate_host_fault", None) == log and log is not None
+        crash = getattr(runner, "gate_system_crash", None)
+        if crash is not None and crash[0] == log and log is not None:
+            return self.system_crash(config, applied, log, runner, *crash[1:])
         locked = runner.screen_locked(result, log)
         if locked:
             self.only_host_faults = False
@@ -7316,6 +7339,56 @@ class Worker:
         # Every retry waits, so that none starts into the load that voided the run before it, or another Mac's.
         busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
         if busy: return self.send_back_no_verdict(applied, log, f"{gave}, and {busy}", runner)
+        return NO_VERDICT_OUTCOME
+
+    def system_crash(self, config, applied, log, runner, lane, commit, crash):
+        """What becomes of applied after lane, gating commit, failed only because a simulator's system process crashed,
+        which a crash report corroborates (cli.system_crashed): the occurrence is kept in each entry's systemCrashes
+        and the journal; the first for this lane and commit gates again once the Mac settles, outside
+        queue.noVerdictRuns, and a second holds the queue for a session (the owner's decision, vocaro/queuekeeper#12).
+        A commit is told apart by its tree: each round picks the batch onto main again, which makes the same changes
+        on the same main a commit of another name."""
+        queue = self.queue
+        where = runner.ran_on or f"this Mac ({offload_host.mac_name()})"
+        try:
+            tree = git(runner.checkout, "rev-parse", "--verify", "--quiet", f"{commit}^{{tree}}").stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            tree = ""
+        occurrence = {"lane": lane, "commit": commit, "tree": tree or commit, "process": crash["process"], "simulator": crash["simulator"],
+                      "report": crash.get("report"), "captured": crash.get("captured"), "tests": crash.get("tests"),
+                      "mac": where, "log": str(log), "at": time.time()}
+        earlier = []
+        for entry in applied:
+            current = queue.read(entry["id"]) or {}
+            for seen in current.get("systemCrashes", []):
+                if seen.get("lane") == lane and seen.get("tree", seen.get("commit")) == occurrence["tree"] \
+                        and seen not in earlier:
+                    earlier.append(seen)
+            queue.record(entry, systemCrashes=current.get("systemCrashes", []) + [occurrence])
+        queue.emit("gate.system-crash", lane=lane, commit=commit, process=crash["process"],
+                   simulator=crash["simulator"], report=crash.get("report"), mac=where,
+                   entries=[entry["id"] for entry in applied], again=bool(earlier) or None)
+        def said(seen):
+            return (f"{seen['process']} on the simulator {seen['simulator']} on {seen.get('mac')} at "
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(seen.get('at') or 0))}, crash report "
+                    f"{seen.get('report')}, log {seen.get('log')}")
+        if earlier:
+            self.reset_no_verdict()
+            queue.hold(worded(SESSION, f"{lane} failed at {commit[:12]} only because a simulator's system process "
+                                       "crashed, a second time for that lane and commit, the same changes on the same "
+                                       f"main: first {said(earlier[-1])}; "
+                                       f"then {said(occurrence)}. A commit gates again only once after such a crash, "
+                                       "and no entry is sent back: read the crash reports for why the simulator's "
+                                       "process crashes, such as the Mac's load or a change that crashes it, fix or "
+                                       f"rule that out, then resume the queue; see {log}"))
+            return NO_VERDICT_OUTCOME
+        self.say(f"no verdict: {lane} failed{runner.ran_where} only because the simulator {crash['simulator']}'s "
+                 f"{crash['process']} crashed, which its crash report {crash.get('report')} corroborates; it gates "
+                 f"again once the Mac settles, and a second such crash at {commit[:12]} holds the queue")
+        busy = self.settle("the lanes run", macs=lambda: self.retry_macs(config, runner))
+        if busy:
+            return self.send_back_no_verdict(applied, log, f"{lane} failed only because a simulator's "
+                                             f"{crash['process']} crashed, and {busy}", runner, failureKind="host")
         return NO_VERDICT_OUTCOME
 
     def voided_gate(self, config, applied, log, runner, cause, at_once):

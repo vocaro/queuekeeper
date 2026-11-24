@@ -198,6 +198,9 @@ os.environ["HEAVY_BUSY_LIMIT"] = "1000"
 # of either floor sets its own.
 os.environ["QUEUEKEEPER_START_FREE_GB"] = os.environ["QUEUEKEEPER_RUN_FREE_GB"] = "0"
 os.environ["QUEUEKEEPER_CRASH_DIALOG_RECORD"] = str(ROOT / "crash-dialog.json")
+# No lane a test runs reads this Mac's real crash reports for a simulator's system process (vocaro/queuekeeper#12): a
+# test that needs one writes it in a folder of its own and names that.
+os.environ["QUEUEKEEPER_DIAGNOSTIC_REPORTS"] = str(ROOT / "diagnostic-reports")
 # A crash-alert press gives its own expected text to osascript. Strip any inherited value from the tests.
 os.environ.pop("QUEUEKEEPER_CRASH_REPORT_TEXT", None)
 os.environ['QUEUEKEEPER_DEVICE_LOG_WATCH'] = "off"
@@ -341,7 +344,7 @@ cli.fix_hosts = unfixed
 ISOLATION = {name: os.environ[name] for name in (
     "HEAVY_SLOT_DIR", "QUEUEKEEPER_GATE_LOCK_FILE", "HEAVY_QUIET_SECONDS", "HEAVY_BUSY_LIMIT", "QUEUEKEEPER_START_FREE_GB",
     "QUEUEKEEPER_RUN_FREE_GB",
-    "QUEUEKEEPER_CRASH_DIALOG_RECORD", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
+    "QUEUEKEEPER_CRASH_DIALOG_RECORD", "QUEUEKEEPER_DIAGNOSTIC_REPORTS", 'QUEUEKEEPER_DEVICE_LOG_WATCH', offload_host.SCROLL_BARS_RECORDING,
     offload_host.HEALTH_RECORDING, "QUEUEKEEPER_EVIDENCE_RETRY", cli.REAP_SWITCH, offload_host.PINS_DIRECTORY, 'QUEUEKEEPER_QUIT_OPENED_APPS', 'QUEUEKEEPER_DEVICE_UPKEEP',
     'QUEUEKEEPER_OWNER_NOTICE', TOLD,
     remote.RESPONSIBLE, "QUEUEKEEPER_DEVICE_LISTING", "QUEUEKEEPER_ADB_LISTING", "QUEUEKEEPER_DEVICE_PROBE",

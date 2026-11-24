@@ -567,6 +567,17 @@ take exclusive admission for the measurement. See [Choosing the request](#choosi
   A project changes the bound on `main` with `"queue": {"noVerdictRuns": N}`. A verdict or a
   change in the batch starts the count again. If no eligible Mac settles within an hour, the
   worker sends back the batch at that point.
+- **A simulator's system process that crashed** gets one more run. When a lane's only failures are
+  XCTest's `Critical process SpringBoard crashed` or the same for `backboardd`, and that simulator has
+  a crash report of the process from during the run, the lane ends unmeasured
+  ([the Apple plugin](../plugins/apple/src/queuekeeper_apple/README.md#a-simulators-springboard-or-backboardd-that-crashes)
+  reads both). The worker waits for the Mac to settle and gates again, outside `noVerdictRuns`. A second
+  such crash in the same lane at the same commit, the same changes on the same `main`, does not gate a
+  third time: the queue holds for a session, and the hold names the process, both crash reports and
+  both logs. Read the reports for why the process crashed, such as the Mac's load or a change that
+  crashes it, and resume once that is fixed or ruled out. Each crash is kept in the entry's `systemCrashes`, shown by `qk queue status`
+  and `qk queue result --json`, and in the event journal as `gate.system-crash`, so repeats stay
+  visible. A crash message without its report, or beside any other failure, stays a failure.
 - **A screen that locked during the run** has a separate count. The lane next runs only on an
   unlocked Mac. Five runs in a row that start unlocked and end locked send back the batch.
 - **A lane whose command could not start** (exit 127), and **a lane Queuekeeper itself could not

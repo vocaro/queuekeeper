@@ -40,6 +40,12 @@ SANDBOX_NESTED = []
 # The result comes from what the lane's commands left in its results folder. The Apple plugin names a build plan
 # that kept a Metal Toolchain mount macOS has since replaced (vocaro/queuekeeper#281).
 HOST_FAULTS = []
+# Each (results, log, began, ended) -> what shows that a lane's failed run failed only because a simulator's system
+# process crashed, or None: {"words", "process", "simulator", "report", "captured", "tests"}, from its results folder,
+# its log's text and its command's start and end, epoch times. The run ends unmeasured, and the merge queue gates it
+# again once, holding the queue when it happens again at the same commit (system_crash). The Apple plugin reads
+# XCTest's "Critical process SpringBoard crashed" and the simulator's crash report (vocaro/queuekeeper#12).
+SYSTEM_CRASHES = []
 # Each (root, config): called before a lane or an admitted command is placed; a ValueError refuses the run.
 BEFORE_LANE = []
 # Each (root, config): called on the Mac that runs an admitted lane or command, before its command starts.
@@ -241,6 +247,16 @@ def host_fault(results):
         try: words = fault(results)
         except Exception: continue
         if words: return words
+    return None
+
+
+def system_crash(results, log, began, ended):
+    """The first corroborated system process crash a plugin finds to be all that failed the run whose results folder
+    is results, or None. A reader that cannot read raises nothing here: the run keeps its own verdict."""
+    for crash in SYSTEM_CRASHES:
+        try: found = crash(results, log, began, ended)
+        except Exception: continue
+        if isinstance(found, dict) and found.get("words"): return found
     return None
 
 

@@ -43,6 +43,7 @@ KINDS = {
     "gate.began": "{lane} began at {head}",
     "gate.ended": "{lane} exited {status}{where}",
     "gate.stuck": "{lane} is {why}",
+    "gate.system-crash": "{lane} at {commit} failed only because {process} crashed on the simulator {simulator}",
     "batch.passed": "passed at {head}: {entries}",
     "batch.pushed": "pushed {head}: {entries}",
     "test.flaky": "flaky: {test} at {commit}",
