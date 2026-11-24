@@ -41,7 +41,7 @@ import subprocess
 import tempfile
 import time
 
-from . import disk, offload_host, resources
+from . import disk, git_state, offload_host, resources
 
 SCHEMA = 1
 # Under the repository's common Git directory, beside the queue's entries.
@@ -61,9 +61,8 @@ RECLAIMED, FORGOTTEN, KEPT = "reclaimed", "forgotten", "kept"
 
 def run_git(directory, *arguments, check=False, input=None):
     """Git in directory with no hook, and without what a hook's environment would aim at another checkout."""
-    local = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL).stdout.split()
-    env = {key: value for key, value in os.environ.items() if key not in set(local)}
+    local = git_state.local_variables()
+    env = {key: value for key, value in os.environ.items() if key not in local}
     done = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-C", str(directory), *arguments],
                           capture_output=True, text=True, env=env, timeout=GIT_TIMEOUT,
                           **({"input": input} if input is not None else {"stdin": subprocess.DEVNULL}))

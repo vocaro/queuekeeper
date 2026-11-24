@@ -399,10 +399,8 @@ def environment():
     """The environment without what a hook or an admission left in it: a pushing session's GIT_DIR
     would aim the worker's Git at its own checkout, and an inherited admission token would run the
     lanes as nested work whose owner has gone."""
-    names = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL)
     # Nor the pin set of a run the worker was started from inside: each round makes its own (Worker.pin).
-    drop = set(names.stdout.split()) | {resources.TOKEN, pins.VARIABLE}
+    drop = git_state.local_variables() | {resources.TOKEN, pins.VARIABLE}
     return {key: value for key, value in os.environ.items() if key not in drop}
 
 

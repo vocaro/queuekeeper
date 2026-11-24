@@ -58,6 +58,21 @@ class GitTests(Fixture):
             self.assertNotIn("GIT_DIR", git_state.environment())
             self.assertEqual(git_state.git(self.checkout, "symbolic-ref", "--short", "HEAD"), "main")
 
+    def test_git_is_asked_once_for_the_variables_that_aim_it_at_a_repository(self):
+        # Asked before every Git command, it cost the merge queue a process start each (vocaro/queuekeeper#257).
+        real, asked = subprocess.run, []
+        def counted(command, *arguments, **options):
+            if command[1:] == ["rev-parse", "--local-env-vars"]: asked.append(command)
+            return real(command, *arguments, **options)
+        with patch.dict(git_state.LOCAL_VARIABLES, clear=True), patch.object(git_state.subprocess, "run", counted):
+            first = git_state.local_variables()
+            self.assertIn("GIT_DIR", first)
+            self.assertIn("GIT_WORK_TREE", first)
+            with patch.dict(os.environ, {"GIT_DIR": str(self.root / "elsewhere")}):
+                self.assertNotIn("GIT_DIR", git_state.environment())
+            self.assertEqual(git_state.local_variables(), first)
+        self.assertEqual(len(asked), 1)
+
 
 class MainCheckoutTests(Fixture):
     def test_a_linked_worktree_names_its_main_checkout_and_the_main_checkout_none(self):

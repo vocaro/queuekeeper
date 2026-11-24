@@ -1,20 +1,37 @@
 """What Git says of a checkout: how far it is behind origin/main, whether it is off main, and its worktrees."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 UPSTREAM = "refs/remotes/origin/main"
 GIT_TIMEOUT = 10
 
 
+# What each git that PATH finds answers to `git rev-parse --local-env-vars`: a list built into Git, so asked once in a
+# process rather than before each Git command, which started a process of its own every time (vocaro/queuekeeper#257).
+LOCAL_VARIABLES = {}
+
+
+def local_variables(timeout=None):
+    """The variables that aim Git at a repository, GIT_DIR and the like, as `git rev-parse --local-env-vars` names
+    them. A failed answer is not kept; git that cannot start raises as subprocess.run does."""
+    found = shutil.which("git")
+    if found in LOCAL_VARIABLES: return LOCAL_VARIABLES[found]
+    done = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=timeout)
+    names = frozenset(done.stdout.split())
+    if found and done.returncode == 0 and names: LOCAL_VARIABLES[found] = names
+    return names
+
+
 def environment():
     """The environment without a hook's GIT_DIR and the like, which would aim Git at another checkout."""
     try:
-        names = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
-                               stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT).stdout.split()
+        names = local_variables(GIT_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
-        names = []
-    return {key: value for key, value in os.environ.items() if key not in set(names)}
+        names = frozenset()
+    return {key: value for key, value in os.environ.items() if key not in names}
 
 
 def git(directory, *arguments):
