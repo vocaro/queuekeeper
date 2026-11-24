@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/python"))
-from queuekeeper import cli, lane_wait, offload_host, remote, resources, wait_history
+from queuekeeper import cli, lane_timing, lane_wait, offload_host, remote, resources, wait_history
 from queuekeeper_mac_desktop import foreground
 import host_isolation
 
@@ -799,6 +799,22 @@ class Relay(unittest.TestCase):
     def test_a_garbled_record_sends_nothing(self):
         self.path.write_text("{oops")
         self.assertEqual(self.run_relay(lambda waiter: None), [])
+
+    def test_the_first_remote_run_reports_elapsed_work_without_a_baseline(self):
+        live = Path(str(self.path) + lane_timing.LIVE)
+        lane_timing.Pace("gate", {}, "P", entries=[], live=live, clock=lambda: 200)
+        frames = []
+        done = Mock()
+        done.is_set.side_effect = [False, False, True]
+        with patch.object(offload_host, "emit", side_effect=lambda kind, data: frames.append(json.loads(data))), \
+                patch.object(offload_host.time, "monotonic", side_effect=[247, 260]), \
+                patch.object(offload_host, "WAIT_POLL", 0):
+            offload_host.relay_wait(self.path, done, True, (os.getpid(), 199))
+        self.assertEqual(frames, [
+            {"workObservation": {"lane": "gate", "elapsedSeconds": 30}},
+            {"workObservation": {"lane": "gate", "elapsedSeconds": 60}},
+            {"timing": None, "workObservation": None},
+        ])
 
     def test_elapsed_remote_work_comes_from_the_current_process_and_step(self):
         frames = []

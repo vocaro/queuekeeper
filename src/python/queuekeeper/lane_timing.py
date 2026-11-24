@@ -245,7 +245,12 @@ class Pace:
         self.live = live if live is not None else live_path()
         self.began, self.started, self.warned, self.failed = clock(), time.time(), None, None
         if self.live is not None and group is None: clear_live(self.live)
-        if self.base is not None: self.publish("baseline")
+        if self.base is not None:
+            self.publish("baseline")
+        elif self.live is not None and group is None:
+            # The receiver can attest to elapsed work even before it has enough passes for a baseline.
+            write_live(self.live, {"lane": self.name, "state": "started", "startedMonotonic": self.began,
+                                   "timingReporter": os.getpid()})
 
     def active(self):
         """Whether there is anything to watch: a baseline to warn against, or a threshold to fail past."""

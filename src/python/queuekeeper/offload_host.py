@@ -4636,7 +4636,7 @@ def timing_state(path):
         record = json.loads(data) if len(data) <= 65536 else None
     except (OSError, ValueError): return None
     return record if isinstance(record, dict) and (isinstance(record.get("words"), str)
-                                                    or record.get("state") == "baseline") else None
+                                                    or record.get("state") in ("baseline", "started")) else None
 
 
 def progress_state(path):
@@ -4697,13 +4697,14 @@ def relay_wait(path, done, work, timing_owner=None):
             if timing is not None:
                 began = timing.pop("startedMonotonic", None)
                 reporter = timing.pop("timingReporter", None)
-                state = {**(state or {}), "timing": timing}
+                if timing.get("state") != "started":
+                    state = {**(state or {}), "timing": timing}
                 # Only the dispatched qk process can attest to its work. Old slot records, provision and nested
                 # commands can share this path, and cannot establish its start.
                 if not finished and timing_owner is not None and reporter == timing_owner[0] \
                         and type(began) in (float, int) and timing_owner[1] <= began <= (now := time.monotonic()):
                     elapsed = int(now - began) // WORK_OBSERVATION_SECONDS * WORK_OBSERVATION_SECONDS
-                    state["workObservation"] = {"lane": timing.get("lane"), "elapsedSeconds": elapsed}
+                    state = {**(state or {}), "workObservation": {"lane": timing.get("lane"), "elapsedSeconds": elapsed}}
             live_work = state.get("workObservation") if state else None
             if last_work is not None and live_work is None:
                 state = {**(state or {"timing": None}), "workObservation": None}

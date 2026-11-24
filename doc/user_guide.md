@@ -2263,8 +2263,9 @@ the log grew and how long ago the last recognized stage arrived. Before a single
 log line, its heartbeat can also say when the sender heard that the receiver was waiting or had
 admitted the work. Admission can precede the first test. While the original connection is open,
 the heartbeat can also relay a recently received elapsed-work observation for a single
-whole lane with timing history. It gives the time measured on the receiver, rounded down to
-30 seconds, and how long ago the sender heard it. It measures elapsed lane work only.
+whole lane, even when the receiver has too little timing history for a baseline. It gives the time
+measured on the receiver, rounded down to 30 seconds, and how long ago the sender heard it.
+It measures elapsed lane work only.
 A parallel group's heartbeat names the
 members whose starts have been reported and whose endings have yet to arrive, with the elapsed
 time since each reported start. It also gives the number of members with reported endings

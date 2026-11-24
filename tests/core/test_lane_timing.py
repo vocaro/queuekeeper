@@ -312,7 +312,7 @@ class ShownTests(unittest.TestCase):
             root = Path(tmp)
             there, here = root / "there.json", root / "here.json"
             lane_timing.Pace("gate", {}, "P", live=Path(str(there) + lane_timing.LIVE))
-            self.assertIsNone(offload_host.timing_state(there), "a lane with no baseline sends none")
+            self.assertIsNone(lane_timing.live(there), "a lane with no baseline publishes no timing estimate")
             for seconds in [55, 60, 65, 70, 90]: lane_timing.record("P", "gate", seconds)
             lane_timing.Pace("gate", {}, "P", live=Path(str(there) + lane_timing.LIVE))
             with patch.dict(os.environ, {lane_wait.VARIABLE: str(here)}):
