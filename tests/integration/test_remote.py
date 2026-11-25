@@ -4851,7 +4851,10 @@ class RemoteTests(unittest.TestCase):
                 self.until(lambda: not self.places_there(), "the place outlived the lane's start on a Mac")
             # Still waiting after all, the lane takes its place again, at its arrival.
             self.until(lambda: places.hold() or self.places_there(), "the place was not taken again")
-            self.assertEqual(self.places_there()[0]["queuedAt"] // 60, place["queuedAt"] // 60)
+            # The holder there sets the arrival from the age it is sent, so it moves by the time the age takes to
+            # arrive; a comparison by the minute failed when that crossed a minute's end. 45 s, half the lane's 90 s
+            # wait, still tells its arrival from the time it was taken again.
+            self.assertLess(abs(self.places_there()[0]["queuedAt"] - place["queuedAt"]), 45)
             places.leave()
             self.assertEqual(self.places_there(), [])
             self.assertEqual(places.holders, {})
