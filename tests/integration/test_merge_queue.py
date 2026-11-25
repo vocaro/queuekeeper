@@ -5576,6 +5576,154 @@ class DefaultDocsOnly(Fixture):
             self.assertIsNone(worker.quick("gate", self.base / "gate.log"))
         run_.assert_not_called()
 
+    # MathMLLayout's docs lane: its own command, light, with a timeout of 10 s (vocaro/queuekeeper#255).
+    ENG_DOCS = {"command": ["python3", "scripts/eng", "docs", "check"], "resource": "light", "timeout": 10}
+    LINKS = {"command": ["python3", "links.py"], "resource": "light", "timeout": 30}
+
+    def quick_project(self, docs=None, links=None, listed=True):
+        """Give main scripts/eng and links.py, checks that pass, a docs lane docs, and a lane links, which a docs-only
+        batch runs too and queue.quick lists when listed. Return main's configuration."""
+        (self.repo / "scripts").mkdir(exist_ok=True)
+        for name in ("scripts/eng", "links.py"):
+            (self.repo / name).write_text("print('Documentation checks passed')\n")
+            run(self.repo, "git", "add", name)
+        config = self.config()
+        config["lanes"]["docs"] = docs or self.ENG_DOCS
+        config["lanes"]["links"] = links or self.LINKS
+        config.setdefault("queue", {})["unread"] = {"lanes": ["docs", "links"] if listed else ["docs"]}
+        if listed: config["queue"]["quick"] = ["links"]
+        self.publish(config, "Add quick checks")
+        return config
+
+    def quick_worker(self, config):
+        worker = mq.Worker(mq.Queue(self.repo))
+        worker.checkout = self.base / "checkout"
+        worker.checkout.mkdir(exist_ok=True)
+        (worker.checkout / "queuekeeper.json").write_text(json.dumps(config))
+        return worker
+
+    def beside_whole_host(self):
+        """Work the queue while a whole-host lane holds this Mac, as in
+        test_a_docs_only_batch_does_not_wait_behind_a_whole_host_lane: the holder lets go after PATIENCE, which fails
+        the test, so only work run unadmitted ends before it. What the worker said."""
+        from queuekeeper import resources
+        environment = {"HEAVY_SLOT_DIR": str(self.base / "slots"), "HEAVY_SLOTS": "2", "HEAVY_SLOTS_MAX": "3",
+                       "HEAVY_SETTLE_SECONDS": "0"}
+        held, release, released_early = threading.Event(), threading.Event(), []
+        def hold():
+            with contextlib.redirect_stderr(io.StringIO()), resources.Admission("gate", whole_host=True, timeout=0):
+                held.set()
+                if not release.wait(stretched(60)): released_early.append(True)
+        with patch.dict(os.environ, environment):
+            holder = threading.Thread(target=hold, name="whole-host lane", daemon=True)
+            holder.start()
+            self.assertTrue(held.wait(stretched(30)))
+            os.environ.pop(resources.TOKEN, None)  # the worker is no work nested in the holder's admission
+            said = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(said): self.assertEqual(self.work(), 0)
+            finally:
+                release.set()
+                holder.join()
+        self.assertEqual(released_early, [], said.getvalue())
+        return said.getvalue()
+
+    def test_a_quick_check_runs_beside_a_whole_host_lane(self):
+        """vocaro/queuekeeper#255: a lane queue.quick lists, light, one command with a timeout of a minute or less, runs
+        unadmitted as the docs check does, so a whole-host lane holding this Mac does not hold it back."""
+        self.quick_project()
+        self.commit("doc/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        said = self.beside_whole_host()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.state(identifier)["docsOnly"], ["docs", "links"])
+        for lane in ("docs", "links"):
+            self.assertIn(f"{lane} exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
+
+    def test_a_projects_light_docs_lane_runs_beside_a_whole_host_lane(self):
+        """vocaro/queuekeeper#255: on 2026-11-23 MathMLLayout's docs lane, `python3 scripts/eng docs check`, light with
+        a timeout of 10 s, waited 25m29s for admission behind whole-host work, since only `qk docs check` ran
+        unadmitted. A project's own docs lane that is a quick check needs no listing in queue.quick."""
+        self.quick_project(listed=False)
+        self.commit("doc/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        real, started = mq.processes.run, []
+        def recorded(command, **options):
+            started.append(list(command))
+            return real(command, **options)
+        with patch.object(mq.processes, "run", recorded): said = self.beside_whole_host()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn(["python3", "scripts/eng", "docs", "check"], started)
+        self.assertIn("docs exited 0 in the queue's checkout, unadmitted, as a check that takes seconds", said)
+
+    def test_a_quick_check_that_reaches_its_limit_runs_admitted(self):
+        """The control: a quick check that does not end within DOCS_CHECK_LIMIT runs again through qk run, admitted."""
+        self.quick_project()
+        self.commit("doc/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        real, started = mq.processes.run, []
+        def slow(command, **options):
+            started.append(list(command))
+            if command == ["python3", "links.py"]:
+                self.assertEqual(options["timeout"], mq.DOCS_CHECK_LIMIT)
+                raise mq.processes.TimedOut("the fixture's slow check")
+            return real(command, **options)
+        said = io.StringIO()
+        with patch.object(mq.processes, "run", slow), contextlib.redirect_stdout(said): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertIn(["python3", "scripts/qk", "run", "links"], started)
+        self.assertIn(f"links: did not end unadmitted within {mq.DOCS_CHECK_LIMIT}s", said.getvalue())
+        self.assertIn("links exited 0 on this Mac", said.getvalue())
+
+    def test_a_lane_that_is_no_quick_check_takes_admission(self):
+        """A docs lane that is heavy, has no timeout or one over a minute, or is a group of lanes, runs through qk run,
+        admitted, and so does a lane queue.quick lists on main that the batch's own configuration made heavy or
+        stopped listing."""
+        config = self.config()
+        config["lanes"].update(member={"command": ["true"]}, links=self.LINKS)
+        config.setdefault("queue", {})["quick"] = ["links"]
+        eng = self.ENG_DOCS["command"]
+        self.assertEqual(self.quick_worker({**config, "lanes": {**config["lanes"], "docs": self.ENG_DOCS}})
+                         .quick_command("docs"), eng)
+        self.assertEqual(self.quick_worker(config).quick_command("links"), ["python3", "links.py"])
+        for what, docs in {"heavy": {**self.ENG_DOCS, "resource": "heavy"},
+                           "no resource": {"command": eng, "timeout": 10},
+                           "no timeout": {"command": eng, "resource": "light"},
+                           "a long timeout": {**self.ENG_DOCS, "timeout": 61},
+                           "whole host": {**self.ENG_DOCS, "wholeHost": True},
+                           "a group": {"parallel": ["member"], "resource": "light"}}.items():
+            with self.subTest(what):
+                links = docs if "parallel" in docs else {**docs, "command": ["python3", "links.py"]}
+                lanes = {**config["lanes"], "docs": docs, "links": links}
+                # Configuration refuses queue.quick listing such a lane, so a batch that made it so lists it no longer
+                # though main does; the batch's configuration parses, so that no lane is refused only for a failed load.
+                with self.assertRaisesRegex(ValueError, "queue.quick names links"):
+                    configuration.parse(json.dumps({**config, "lanes": lanes}))
+                batch = {**config, "lanes": lanes, "queue": {}}
+                configuration.parse(json.dumps(batch))
+                worker = self.quick_worker(batch)
+                self.assertIsNone(worker.quick_command("docs"))
+                self.assertIsNone(worker.quick_command("links"))
+        self.assertIsNone(self.quick_worker({**config, "queue": {}}).quick_command("links"))
+        # Main's own: quick_lanes names the lane for a docs-only batch and a code batch alike.
+        self.assertEqual(mq.quick_lanes(config), {"docs", "links"})
+        self.assertEqual(mq.quick_lanes(config, code=True), {"docs", "links"})
+        # And through a round: a docs lane with a timeout over a minute waits for admission.
+        self.quick_project(docs={**self.ENG_DOCS, "timeout": 120})
+        self.commit("doc/guide.md", "guide", "# Guide\n")
+        [identifier] = self.add("guide")
+        real, started = mq.processes.run, []
+        def recorded(command, **options):
+            started.append(list(command))
+            return real(command, **options)
+        said = io.StringIO()
+        with patch.object(mq.processes, "run", recorded), contextlib.redirect_stdout(said): self.work()
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertNotIn(eng, started)
+        self.assertIn(["python3", "scripts/qk", "run", "docs"], started)
+        self.assertIn("docs exited 0 on this Mac", said.getvalue())
+        self.assertIn("links exited 0 in the queue's checkout, unadmitted", said.getvalue())
+
     def test_broken_links_in_the_default_docs_folder_are_rejected(self):
         self.commit("docs/guide.md", "guide", "[missing](missing.md)\n")
         [identifier] = self.add("guide")

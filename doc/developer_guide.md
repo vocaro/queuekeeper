@@ -185,9 +185,12 @@ therefore names that Mac's checkout. `config.queuekeeper_at` reads Queuekeeper's
   reused at a new commit supplies a test-count baseline there, in a separate file beside actual
   runs. The passed verdict and publication marker preserve the source through push recovery.
   [Reusing a passing local gate](user_guide.md#reusing-a-passing-local-gate) describes opt-in.
-- **Short checks skip admission.** The preflight lanes and `qk docs check` run in the worker's
-  checkout without admission, so seconds of checking never wait behind a whole-host gate. One that
-  passes `DOCS_CHECK_LIMIT` (60 s) runs again admitted. `qk run` provisions the checkout that
+- **Short checks skip admission.** The preflight lanes, `qk docs check` and quick checks run in
+  the worker's checkout without admission, so seconds of checking never wait behind a whole-host
+  gate. One that passes `DOCS_CHECK_LIMIT` (60 s) runs again admitted. `config.quick_check` says
+  whether a lane is a quick check (light, one command, a `timeout` within `QUICK_LIMIT`), and
+  `Worker.quick_command` applies it to the batch's own lane, so a branch that makes the lane heavy
+  is admitted. `qk run` provisions the checkout that
   runs each admitted lane. An ordinary code round needs no separate provision pass in the
   worker checkout, which may be on a different Mac from the gate.
   In a docs-only round, quick checks run directly on the checked-out files. If a documentation
@@ -1573,8 +1576,13 @@ each uses.
     one lands.*
 27. A docs-only entry never rides a code gate. It passes an older entry only when they share no
     path, and it passes a running gate only when its changed paths let that result carry over.
-28. The worker runs preflight lanes and the docs check without admission; one that runs past a
-    minute runs again admitted. *Checks that take seconds should not wait behind gates for slots.*
+28. The worker runs preflight lanes, the docs check and quick checks without admission; one that
+    runs past a minute runs again admitted. A quick check is a light lane of one command with a
+    `timeout` of 60 s or less that `queue.quick` lists, or the project's own `docs` lane meeting
+    the same test; a gate lane never is one. *Checks that take seconds should not wait behind gates
+    for slots. The cost is up to a minute of unmeasured CPU beside a whole-host gate, one check at
+    a time per worker; whole-host gates' `cpuBusy` or no-verdict reruns rising while quick checks
+    overlap them would prove it wrong* ([#255](https://github.com/vocaro/queuekeeper/issues/255)).
 29. A run with no verdict blames nobody and reruns once the Mac settles. Three in a row send
     back the batch. Runs voided by a locked screen have a separate limit of five.
 30. `--front` and `--no-gate` are for emergencies, with the reason recorded.

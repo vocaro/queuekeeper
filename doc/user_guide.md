@@ -426,6 +426,37 @@ Queuekeeper has no spelling check of its own, and runs no lane first because of 
 project that wants one brings its own, such as vocaro-engineering's `eng spelling` above
 ([vocaro/queuekeeper#69](https://github.com/vocaro/queuekeeper/issues/69)).
 
+### Quick checks
+
+A check that takes seconds should not wait behind a whole-host gate for admission. The worker
+runs a *quick check* in its own checkout without admission, as it runs the preflight lanes and
+`qk docs check`. A lane is a quick check when it is `"resource": "light"`, a single command, and
+has a `timeout` of 60 s or less, and either `queue.quick` on `main` lists it or it is the
+project's own `docs` lane:
+
+```json
+"lanes": {
+  "docs": {"command": ["python3", "scripts/eng", "docs", "check"], "resource": "light", "timeout": 10},
+  "links": {"command": ["python3", "scripts/check-links.py"], "resource": "light", "timeout": 30},
+  "gate": {"command": ["..."]}
+},
+"queue": {"quick": ["links"], "unread": {"lanes": ["docs", "links"]}}
+```
+
+- **The worker runs it only where a round already would**, such as among a docs-only batch's
+  lanes. `queue.quick` changes how a lane runs, not which lanes run.
+- **One that runs past a minute runs again admitted**, so a slow check is never a failure.
+- **It counts only from `main`**, and only while the entry's own `queuekeeper.json` still lists
+  it and its lane still meets the test. A branch that makes the lane heavy has it admitted.
+- **Configuration refuses an entry that doesn't meet the test**: a lane that isn't light, a lane
+  group or a lane with keys such as `wholeHost` or `foreground`, a `timeout` that is missing or
+  over 60 s, and the gate, `provision` or a lane of `queue.lanes`, which always take admission.
+- **A `docs` lane needs no listing.** A `docs` lane that doesn't meet the test, such as one with
+  no `timeout`, runs admitted unless its command is `qk docs check`.
+
+Gates are never quick checks, however short. The rule and its cost are in the developer guide's
+[scheduling rules](developer_guide.md#rules-in-force) (rule 28).
+
 ### When a batch fails
 
 The worker tries the cheap explanations before the expensive one:
@@ -986,8 +1017,8 @@ landing alone, and says so. After that commit lands, every later entry is gated 
 settings.
 
 Settings that loosen what the queue checks count only from `main`, even on the first landing:
-`queue.hookCoveredBy`, `queue.unread`, `queue.preflight`, `queue.fullRun`, `queue.addOnlyJson`
-and each lane's `inputs`. Land the configuration through the full checks once. A preflight
+`queue.hookCoveredBy`, `queue.unread`, `queue.preflight`, `queue.quick`, `queue.fullRun`,
+`queue.addOnlyJson` and each lane's `inputs`. Land the configuration through the full checks once. A preflight
 lane takes effect after its configuration reaches `main`.
 
 A repository created empty has no `main` at all. Its first `qk land` creates it: the worker gates

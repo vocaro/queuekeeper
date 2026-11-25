@@ -81,6 +81,56 @@ class Configuration(unittest.TestCase):
         self.assertNotIn("timeout", config.lane_to_run(given, "other", Path(".")))
 
 
+class QuickChecks(unittest.TestCase):
+    """queue.quick: light lanes of one command with a timeout of a minute or less, which the merge queue's worker runs
+    unadmitted as it runs the preflight lanes and qk docs check (vocaro/queuekeeper#255)."""
+
+    def test_quick_names_light_lanes_of_one_command_and_a_short_timeout(self):
+        lanes = {"links": {"command": ["python3", "links.py"], "resource": "light", "timeout": 60},
+                 "docs": {"command": ["python3", "scripts/eng", "docs", "check"], "resource": "light", "timeout": 10}}
+        given = project(lanes, {"quick": ["links", "docs"]})
+        self.assertEqual(config.quick(given), ["links", "docs"])
+        self.assertEqual(config.quick(project(lanes)), [])
+        self.assertEqual(config.quick(project(lanes, {"quick": []})), [])
+        for lane in lanes.values(): self.assertIsNone(config.quick_check(lane))
+        self.assertEqual(config.QUICK_LIMIT, mq.DOCS_CHECK_LIMIT)
+        self.assertIn("quick", mq.MAIN_ONLY)
+
+    def test_what_quick_refuses(self):
+        light = {"command": ["true"], "resource": "light", "timeout": 10}
+        lanes = {"lint": light, "provision": light, "heavy": {**light, "resource": "heavy"},
+                 "unsaid": {"command": ["true"], "timeout": 10}, "slow": {**light, "timeout": 61},
+                 "endless": {"command": ["true"], "resource": "light"}, "whole": {**light, "wholeHost": True},
+                 "shown": {**light, "foreground": True}, "member": light,
+                 "both": {"parallel": ["member"], "resource": "light"}, "self": {**light, "resource": "self"}}
+        refused = {
+            "a lane that is not configured": ({"quick": ["missing"]}, "no configured lane"),
+            "the gate": ({"quick": ["gate"]}, "always take admission"),
+            "provision": ({"quick": ["provision"]}, "always take admission"),
+            "one of queue.lanes": ({"quick": ["lint"], "lanes": ["lint"]}, "always take admission"),
+            "a heavy lane": ({"quick": ["heavy"]}, 'it is not "resource": "light"'),
+            "a lane with no resource": ({"quick": ["unsaid"]}, 'it is not "resource": "light"'),
+            "a long timeout": ({"quick": ["slow"]}, "its timeout is not 60 seconds or less"),
+            "no timeout": ({"quick": ["endless"]}, "its timeout is not 60 seconds or less"),
+            "a whole-host lane": ({"quick": ["whole"]}, "it has wholeHost"),
+            "a foreground lane": ({"quick": ["shown"]}, "it has foreground"),
+            "a lane group": ({"quick": ["both"]}, "it is not one command"),
+            "a self lane": ({"quick": ["self"]}, 'it is not "resource": "light"'),
+            "a name twice": ({"quick": ["lint", "lint"]}, "distinct lane names"),
+            "not a list": ({"quick": "lint"}, "distinct lane names"),
+        }
+        for what, (queue, words) in refused.items():
+            with self.subTest(what), self.assertRaisesRegex(ValueError, f"queue.quick .*{words}"): project(lanes, queue)
+        self.assertEqual(config.quick(project(lanes, {"quick": ["lint"]})), ["lint"])
+
+    def test_the_schema_knows_the_setting(self):
+        schema = json.loads((Path(__file__).resolve().parents[2] / "schemas/queuekeeper.schema.json").read_text())
+        quick = schema["properties"]["queue"]["properties"]["quick"]
+        self.assertEqual((quick["type"], quick["uniqueItems"], quick["items"]),
+                         ("array", True, {"type": "string", "minLength": 1}))
+        self.assertIn("Read from main", quick["description"])
+
+
 class QueueLanes(unittest.TestCase):
     def setUp(self):
         self.lanes = {"lint": check(["true"]), "format": check(["true"]), "provision": check(["true"]),

@@ -725,6 +725,15 @@
             "minLength": 1
           }
         },
+        "quick": {
+          "description": "Quick checks: lanes the merge queue's worker runs in its checkout without admission, as it runs the preflight lanes and qk docs check, wherever a round runs them. Each must be \"resource\": \"light\", one command (no lane group, foreground, whole-host, model or unlocked-screen lane) and give a timeout of 60 or less, and none may be gate, provision or one of queue.lanes. One that runs past 60 s runs again admitted. A project's own docs lane meeting the same test is a quick check without being listed. [] or leaving it out for none. Read from main",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "carryOverChecks": {
           "description": "Commands that must pass on the rebased tree before a passed result carries over a move of main; any other outcome gates again, with no blame",
           "type": "array",

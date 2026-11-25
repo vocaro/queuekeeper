@@ -61,7 +61,7 @@ from . import budgets, disk, plugins, farm, host_health, lane_results, landing_p
     resources
 from . import add_only_json, count_history, events, gate_reuse, git_state, health, landed_cleanup, pre_push, recovery, restartable, \
     worktree_ownership
-from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, \
+from .config import DOCS, IMPLICIT_DOCS, NOT_PREFLIGHT, PREFLIGHT_LIMIT, QUICK_LIMIT, quick, quick_check, \
     PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission, implicit_command, launched, queuekeeper_at, \
     lane_to_run, load, names_path, needed_labels, parse, preflight, project_checkout, \
     project_siblings, qk_said, sibling_revisions, siblings_in, stays, toolkit_command, full_run, affected_by, affected_lanes, gate_lanes, lane_inputs, matches, member_inputs, selected_members, selects_by, skips_by_inputs, unlocked_screen, unread, unread_declared, unread_lanes, unread_named
@@ -240,11 +240,12 @@ NO_ROOM = "no Mac but the batch's"
 # beside the gate in a checkout of its own with this suffix (Worker.docs_beside), and the code batch's pass carries over
 # the documents main gained (Worker.carry). It goes ahead of an older entry only when the two change no path in common.
 DOCS_SUFFIX = "-docs"
-# The seconds a preflight lane or `qk docs check` may run unadmitted, in the worker's checkout, as a batch's lane
-# (Worker.quick): a docs-only batch's since vocaro-engineering#394, and a code batch's since vocaro/queuekeeper#169,
+# The seconds a preflight lane, `qk docs check` or a quick check (config.quick_check: a lane queue.quick lists or a
+# light docs lane of its own, since vocaro/queuekeeper#255) may run unadmitted, in the worker's checkout, as a batch's
+# lane (Worker.quick): a docs-only batch's since vocaro-engineering#394, and a code batch's since vocaro/queuekeeper#169,
 # whose round of 2026-11-15 waited 34 min 33 s for admission to check spelling and 8 min 3 s to check docs. The spelling and docs checks took 0.2-1.3 s on this Mac at a load of
 # 15-44 on 2026-11-11; one that reaches this limit runs again admitted, as any lane, so a slow check is never a failure.
-DOCS_CHECK_LIMIT = 60
+DOCS_CHECK_LIMIT = QUICK_LIMIT
 # The seconds Queuekeeper may take to start in the worker's checkout, loading the project's plugins and running no
 # lane, when the worker asks whether a batch's commits are why it could not start (Worker.starts,
 # vocaro/queuekeeper#158). A start that reaches this limit says nothing, and the queue holds as it would unasked.
@@ -776,9 +777,10 @@ def behind_main_config(root, tip, said):
 
 
 # The settings only main may give, since each loosens what the queue checks: the pre-push hook a lane covers, the
-# paths that skip the gate, as each gate lane's inputs do too (as_batch), and the preflight lanes, which can be none. A batch whose lanes the queue runs, because main
+# paths that skip the gate, as each gate lane's inputs do too (as_batch), the preflight lanes, which can be none, and
+# the quick checks, which skip admission (vocaro/queuekeeper#255). A batch whose lanes the queue runs, because main
 # names none yet, gives none of them (#10, vocaro/queuekeeper#69).
-MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "fullRun", "addOnlyJson", "reuseGate")
+MAIN_ONLY = ("hookCoveredBy", "unread", "preflight", "quick", "fullRun", "addOnlyJson", "reuseGate")
 
 
 def as_batch(config):
@@ -925,11 +927,11 @@ def without_docs(batch, config, changed_by):
 
 
 def quick_lanes(config, code=False):
-    """The lanes a batch runs unadmitted first (Worker.quick): its preflight lanes and the docs check. For a batch that
-    changes code, less the lanes main names as its gate (`queue.lanes`, or gate), which always take admission
-    (vocaro/queuekeeper#169)."""
-    quick = {*preflighted(config), DOCS}
-    return quick - set(config.get("queue", {}).get("lanes") or [budgets.GATE]) if code else quick
+    """The lanes a batch runs unadmitted first (Worker.quick): its preflight lanes, the docs check and the quick checks
+    queue.quick lists (vocaro/queuekeeper#255). For a batch that changes code, less the lanes main names as its gate
+    (`queue.lanes`, or gate), which always take admission (vocaro/queuekeeper#169)."""
+    lanes = {*preflighted(config), DOCS, *quick(config)}
+    return lanes - set(config.get("queue", {}).get("lanes") or [budgets.GATE]) if code else lanes
 
 
 def offerable(config, lanes):
@@ -5209,9 +5211,10 @@ class Worker:
         """The status of lane, one of a batch's quick lanes (quick_lanes), run in this checkout without
         admission, so that seconds of checks never wait behind heavy or whole-host work (vocaro-engineering#394 for a
         docs-only batch, vocaro/queuekeeper#169 for one that changes code): a
-        preflight lane as its command, which must be one command (NOT_PREFLIGHT), or `qk docs check`, the project's own
-        docs lane only when it runs exactly that. None for any other lane, or one that did not end within
-        DOCS_CHECK_LIMIT, which qk run then runs admitted as before. With no lane of that name, the toolkit's check
+        preflight lane as its command, which must be one command (NOT_PREFLIGHT), `qk docs check`, or a quick check
+        (config.quick_check) that queue.quick lists or that is the project's own docs lane (vocaro/queuekeeper#255): a
+        project's docs lane runs so only when it runs exactly `qk docs check` or is such a check. None for any other
+        lane, or one that did not end within DOCS_CHECK_LIMIT, which qk run then runs admitted as before. With no lane of that name, the toolkit's check
         runs as qk run would run it (implicit). A set cancel stops it as it stops any lane (gate): None then too, and
         the admitted run that follows stops at once and says why."""
         command = self.quick_command(lane)
@@ -5242,14 +5245,19 @@ class Worker:
         """The command by which quick runs lane in the checkout as it is, or None when quick does not run it."""
         try: checkout = load(self.checkout)
         except (OSError, ValueError): return None
-        # Main's preflight lanes, as gate's quick says, that the batch's own configuration lists too.
-        if lane != DOCS and lane not in preflighted(checkout): return None
+        # Main's preflight lanes and quick checks, as gate's quick says, that the batch's own configuration lists too.
+        # A quick check is one by the batch's own lane, so that a branch that makes it heavy has it admitted.
+        preflight_, listed = lane in preflighted(checkout), lane in quick(checkout)
+        if lane != DOCS and not preflight_ and not listed: return None
         configured = checkout.get("lanes", {}).get(lane)
         if configured is None:
             if lane != DOCS: return None
             command = self.implicit(lane)
-        elif lane == DOCS and configured.get("command") not in (IMPLICIT_DOCS, ["qk", "docs", "check"]): return None
         elif not isinstance(configured, dict) or any(configured.get(key) for key in (*NOT_PREFLIGHT, *plugins.LANE_KEYS)):
+            return None
+        # A preflight lane other than docs, the toolkit's docs check, or else a quick check by its own lane.
+        elif not (preflight_ and lane != DOCS) and quick_check(configured) is not None \
+                and not (lane == DOCS and configured.get("command") in (IMPLICIT_DOCS, ["qk", "docs", "check"])):
             return None
         else: command = launched(configured.get("command"), self.checkout, self.toolkit_root())
         return command if isinstance(command, list) and command else None

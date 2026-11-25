@@ -505,6 +505,11 @@ PROJECT_CHECKOUT_VARIABLE = "QUEUEKEEPER_PROJECT_CHECKOUT"
 # The lane keys a preflight lane cannot have: it is one command, run before the queue takes an entry, in a scratch
 # worktree on the Mac that ran qk land, with no admission.
 NOT_PREFLIGHT = ("parallel", "foreground", "unlockedScreen", "wholeHost", "model", "compileFirst")
+# The longest timeout, in seconds, of a lane the merge queue's worker may run unadmitted as a quick check
+# (quick_check): the minute a preflight lane or `qk docs check` may run so (merge_queue.DOCS_CHECK_LIMIT). On
+# 2026-11-23 MathMLLayout's docs lane, `python3 scripts/eng docs check` with a 10 s timeout, waited 25m29s for
+# admission behind whole-host work (vocaro/queuekeeper#255).
+QUICK_LIMIT = 60
 
 
 def conventional_doc(path):
@@ -747,6 +752,26 @@ def unrun_carry_checks(config):
     return warnings
 
 
+def quick_check(lane):
+    """Why lane cannot run unadmitted as a quick check, listed in queue.quick or as the project's own docs lane (rule 28
+    of the developer guide's scheduling rules, widened by the owner's decision of 2026-11-24, vocaro/queuekeeper#255),
+    or None when it can: a light lane of one command (NOT_PREFLIGHT) whose timeout is QUICK_LIMIT seconds or less."""
+    if not isinstance(lane, dict) or not isinstance(lane.get("command"), list) or not lane["command"]:
+        return "it is not one command"
+    keys = [key for key in (*NOT_PREFLIGHT, *hooks.LANE_KEYS) if lane.get(key)]
+    if keys: return f"it is not one command: it has {', '.join(keys)}"
+    if lane.get("resource") != "light": return 'it is not "resource": "light"'
+    timeout = lane.get("timeout")
+    if type(timeout) is not int or timeout > QUICK_LIMIT:
+        return f"its timeout is not {QUICK_LIMIT} seconds or less"
+    return None
+
+
+def quick(config):
+    """The lanes queue.quick names, which the merge queue's worker runs unadmitted as quick checks (quick_check)."""
+    return list(config.get("queue", {}).get("quick", []))
+
+
 def preflight(config):
     """The project's preflight lanes, in order: the cheap checks the queue runs on an entry before it queues it, and
     first in every round, ungated landing and docs-only batch. queue.preflight names them; a project that gives none has
@@ -833,9 +858,10 @@ def merge_queue(queue, lanes):
         unread_retired(queue)
         affected_retired(queue)
     if not isinstance(queue, dict) or set(queue) - {"lanes", "carryOverChecks", "hookCoveredBy", "unread",
-                                                    "noVerdictRuns", "followLandings", "preflight", "fullRun", "addOnlyJson", "reuseGate"}:
+                                                    "noVerdictRuns", "followLandings", "preflight", "quick", "fullRun", "addOnlyJson",
+                                                    "reuseGate"}:
         raise ValueError("queue supports only lanes, unread, carryOverChecks, hookCoveredBy, noVerdictRuns, "
-                         "followLandings, preflight, fullRun, addOnlyJson and reuseGate")
+                         "followLandings, preflight, quick, fullRun, addOnlyJson and reuseGate")
     added = queue.get("addOnlyJson", {})
     if not isinstance(added, dict) or any(not isinstance(path, str) or not ADD_ONLY_JSON_PATH.fullmatch(path)
                                          or not isinstance(keys, list) or any(not isinstance(key, str) for key in keys)
@@ -860,6 +886,7 @@ def merge_queue(queue, lanes):
                              "why; lanes, the distinct configured lanes a batch of unread paths runs instead, never "
                              "gate; and defaults, false to drop the Markdown defaults")
     if "preflight" in queue: preflight_lanes(queue, lanes)
+    if "quick" in queue: quick_setting(queue, lanes)
     if "followLandings" in queue and queue["followLandings"] is not True:
         raise ValueError("queue.followLandings can only be true, which has the queue fast-forward the project's main "
                          "checkout after each landing, for a checkout other projects read, such as a plugin's")
@@ -907,6 +934,26 @@ def preflight_lanes(queue, lanes):
             raise ValueError(f"queue.preflight names {name}, which is not one command that qk land can run before it "
                              f"queues an entry, unadmitted, in a scratch worktree: "
                              f"{'it has ' + ', '.join(keys) if keys else 'it is a self lane'}")
+
+
+def quick_setting(queue, lanes):
+    """queue.quick, checked: distinct configured lanes, none of them the gate, provision or one of queue.lanes, each a
+    quick check (quick_check) that the merge queue's worker may run unadmitted (vocaro/queuekeeper#255)."""
+    named = queue["quick"]
+    if not isinstance(named, list) or any(not isinstance(name, str) or not name.strip() for name in named) \
+            or len(set(named)) != len(named):
+        raise ValueError("queue.quick lists distinct lane names, the light checks of one command and a timeout of "
+                         f"{QUICK_LIMIT} seconds or less that the merge queue runs unadmitted; [] for none")
+    for name in named:
+        if name not in lanes: raise ValueError(f"queue.quick names {name}, which is no configured lane")
+        if name in ("gate", PROVISION) or name in (queue.get("lanes") or []):
+            raise ValueError(f"queue.quick names {name}, which is a gate lane or provision, and those always take "
+                             "admission")
+        why = quick_check(lanes[name])
+        if why:
+            raise ValueError(f"queue.quick names {name}, which is not a quick check that the merge queue can run "
+                             f'unadmitted: {why}. A quick check is "resource": "light", one command, with a timeout '
+                             f"of {QUICK_LIMIT} seconds or less")
 
 
 def affected_retired(queue):
