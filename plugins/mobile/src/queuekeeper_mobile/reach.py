@@ -365,6 +365,32 @@ def findings(record):
     return errors, warnings
 
 
+def offline_gates(record, config):
+    """doctor's warnings of each lane a landing runs (config.landing_lanes: the gate, queue.lanes and the lanes run
+    beside them) that needs a device the record at path record declares rightly with absent offline. Whenever no
+    Mac reaches that device the lane gets no verdict, and after three such runs the queue sends the batch back. A
+    device that is undeclared, declared wrongly or declared error gives none (vocaro/queuekeeper#211)."""
+    from queuekeeper.config import landing_lanes
+    from .settings import lane_devices
+    value = declared_value(record)
+    if value is None: return []
+    declarations = value[DECLARATIONS]
+    if not isinstance(declarations, dict): return []
+    lanes = config.get("lanes", {})
+    warnings = []
+    for name, why in landing_lanes(lanes, config.get("queue", {})).items():
+        lane = lanes.get(name)
+        if not isinstance(lane, dict): continue
+        for key in lane_devices(lane):
+            declaration = declarations.get(key)
+            if declaration is None or problems(declaration) or declaration["absent"] != "offline": continue
+            warnings.append(f"{name} needs {key}, declared --absent offline, and {why}: whenever no Mac reaches "
+                            f"{key}, {name} is not run and gives no verdict, and after three such runs the queue "
+                            f"sends the batch back. Move that check to a lane the queue does not gate on, such as "
+                            f"one of release.lanes, or declare {key} --absent error if it should always be there")
+    return warnings
+
+
 def health(record):
     """What the health sign reads of the declared devices in the record at path record: each one's name, state,
     absent and text (absence), or none when the record declares none."""

@@ -523,5 +523,49 @@ class Placement(Recorded):
         self.assertIn("studio by network", warnings[0])
 
 
+class OfflineGates(Recorded):
+    """doctor's warning of a lane a landing runs that needs a device declared absent offline (vocaro/queuekeeper#211)."""
+
+    def config(self, gate_devices, **lanes):
+        return {"lanes": {"gate": {"command": ["make", "check"], "devices": gate_devices}, **lanes}}
+
+    def declare(self, **declarations):
+        self.write(self.entries(), declarations=declarations)
+
+    def test_a_gate_that_needs_an_offline_device_warns_with_the_fix(self):
+        self.declare(iPhone={"reach": ["cable", "network"], "absent": "offline"})
+        warnings = reach.offline_gates(self.path, self.config(["iPhone"]))
+        self.assertEqual(len(warnings), 1)
+        for said in ("gate needs iPhone, declared --absent offline", "the merge queue runs it as the gate",
+                     "no verdict", "sends the batch back", "release.lanes", "declare iPhone --absent error"):
+            self.assertIn(said, warnings[0])
+
+    def test_a_lane_queue_lanes_names_or_a_group_runs_warns_too(self):
+        self.declare(iPhone={"reach": ["cable"], "absent": "offline"})
+        config = {"lanes": {"checks": {"parallel": ["unit", "device"]}, "unit": {"command": ["true"]},
+                            "device": {"command": ["qk", "device-pass", "--device", "iPhone", "--", "true"]}},
+                  "queue": {"lanes": ["checks"]}}
+        warnings = reach.offline_gates(self.path, config)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("device needs iPhone", warnings[0])
+        self.assertIn("the lane group checks", warnings[0])
+
+    def test_a_device_declared_error_gives_none(self):
+        self.declare(iPad={"reach": ["network"], "absent": "error"})
+        self.assertEqual(reach.offline_gates(self.path, self.config(["iPad"])), [])
+
+    def test_a_lane_the_queue_does_not_gate_on_gives_none(self):
+        self.declare(iPhone={"reach": ["cable", "network"], "absent": "offline"})
+        config = self.config([], release={"command": ["true"], "devices": ["iPhone"]})
+        config["release"] = {"lanes": ["release"]}
+        self.assertEqual(reach.offline_gates(self.path, config), [])
+
+    def test_an_undeclared_or_wrongly_declared_device_gives_none(self):
+        self.declare(iPad={"reach": ["network"], "absent": "error"}, spare={"reach": ["pigeon"], "absent": "offline"})
+        self.assertEqual(reach.offline_gates(self.path, self.config(["iPhone", "spare"])), [])
+        self.write(self.entries())
+        self.assertEqual(reach.offline_gates(self.path, self.config(["iPhone"])), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2998,6 +2998,12 @@ A device that is not declared, or declared wrongly, leaves the lane where it was
 doctor` also warns when the cable a declaration expects on a Mac (`--cable-on`) has not answered there
 for 300 seconds while the device is reached another way.
 
+`qk doctor` warns, too, when a lane a landing runs (the gate, `queue.lanes`, a lane run before them or
+for a docs-only batch, or a member of a group among them) needs a device declared `--absent offline`.
+Whenever no Mac reaches that device, such a lane gives no verdict, and after three no-verdict runs the
+queue sends the batch back. Move that check to a lane the queue does not gate on, such as one of
+`release.lanes`, or declare the device `--absent error` if it should always be there.
+
 ### The simulator pool
 
 Scripts that pick a simulator by name, or use `booted`, end up on Xcode's default simulators or on one

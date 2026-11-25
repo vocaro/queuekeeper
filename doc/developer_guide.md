@@ -1858,7 +1858,9 @@ and reports the fallback. Otherwise it names the `qk remote run --device` comman
 was seen and has been missing for less than `SETTLE` makes the run wait, so one drop never causes a
 fallback (`POLL` is 15 s; the wait is at most `SETTLE + POLL`). An unreachable `error` device returns
 `MISCONFIGURED`, which a queue holds for; an `offline` one returns `BUSY`. `reach.cable_findings` gives
-`doctor` its warning for an expected cable missing for `SETTLE`.
+`doctor` its warning for an expected cable missing for `SETTLE`, and `reach.offline_gates` its warning
+for a lane a landing runs (`config.landing_lanes`) that needs a device declared `offline`, through the
+mobile plugin's `doctor.offline_gates` hook.
 
 ### Device pass timing
 

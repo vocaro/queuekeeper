@@ -12,6 +12,13 @@ def declared_devices(root, config):
         return [], [f"the declared devices could not be read: {error}"]
 
 
+def offline_gates(root, config):
+    """A warning for each lane a landing runs that needs a device declared absent offline (reach.offline_gates)."""
+    from queuekeeper import offload_host
+    from . import reach
+    return reach.offline_gates(offload_host.record_path(), config)
+
+
 def overdue_silences(root, config, record=None, *, repair=True):
     """What Queuekeeper put right in the device record by itself just now (upkeep: a run proven gone, the owner's
     notifications past the grace), then a warning for each held physical device past its expected release whose
@@ -29,5 +36,7 @@ def overdue_silences(root, config, record=None, *, repair=True):
 def register():
     if overdue_silences not in plugins.DOCTOR: plugins.DOCTOR.append(overdue_silences)
     plugins.DOCTOR_WITHOUT_REPAIRS[overdue_silences] = lambda root, config: overdue_silences(root, config, repair=False)
+    if offline_gates not in plugins.DOCTOR: plugins.DOCTOR.append(offline_gates)
+    plugins.DOCTOR_WITHOUT_REPAIRS[offline_gates] = offline_gates
     if declared_devices not in plugins.DOCTOR_CHECKS: plugins.DOCTOR_CHECKS.append(declared_devices)
     plugins.DOCTOR_WITHOUT_REPAIRS[declared_devices] = declared_devices
