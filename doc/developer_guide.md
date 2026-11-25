@@ -16,7 +16,8 @@ this guide assumes you know what a lane, a gate, admission and the farm are.
 - [Visibility features](#visibility-features): the event journal, and writing a feature
 - [Checks this repository runs](#checks-this-repository-runs): spelling and the docs check
 - [Maintenance](#maintenance): changing Queuekeeper while work runs, moving a module,
-  checking consumers, renaming a setting, the README's screenshots and the dashboard reel
+  checking consumers, renaming a setting, the README's screenshots, the dashboard reel and
+  [cutting a release](#cutting-a-release)
 
 ## Working on Queuekeeper
 
@@ -2150,6 +2151,9 @@ fault in its gate lane receipt. A missing value leaves the cause unknown.
   [Further reading](user_guide.md#further-reading), or has no box of its README name in
   `assets/overview.svg`. A documentation-only change to one of those files runs it
   through the `plugin-lists` lane.
+- **The version references.** `tests/core/test_release.py` fails when the core's version, a
+  plugin's version or an internal `==` pin disagree, or when a plugin appears that the release
+  script would not bump. See [Cutting a release](#cutting-a-release).
 - **The README's screenshots.** Changes to assets and the screenshot script take the documentation
   route. A change to the script also runs `test_dashboard_screenshots` through the
   `dashboard-screenshots` lane. Retake the screenshots after changing how the dashboard looks. See
@@ -2448,3 +2452,31 @@ timing. For a different total runtime or frame rate, edit
 itself has changed. To try an edit before replacing the checked-in video, pass an output path after
 the script name. Play the result and check that the dots move in the opening close-up and the final
 URL is readable at phone size.
+
+### Cutting a release
+
+A release is a tag on a commit of `main` and a GitHub release whose notes give install steps pinned
+to that tag. Every version reference must agree: the core's `pyproject.toml`, `queuekeeper.__version__`,
+the MCP server's `VERSION`, and each plugin's `version` and exact `queuekeeper*==` pins. One missed
+pin and a plugin refuses to install against the new core. `tests/core/test_release.py` fails when
+they disagree, or when a plugin or a version constant appears that `tools/release.py` would not
+rewrite. `python3 tools/release.py check` lists them all. A release takes three steps, in order:
+
+1. **Bump.** In a linked worktree at current `origin/main`, never the main checkout (the bump
+   switches its checkout to a new branch), run `python3 tools/release.py bump X.Y.Z`. It refuses a dirty tree, a HEAD other than `origin/main`,
+   and a version no greater than the current one. It rewrites every reference, commits on a new
+   branch `release-X.Y.Z` and prints the `qk land` command to run next.
+2. **Land.** Run `python3 scripts/qk land --wait --json` from that branch and follow it to its result,
+   as for any change.
+3. **Publish, at the owner's word.** `python3 tools/release.py publish X.Y.Z` refuses unless every
+   reference at `origin/main` reads X.Y.Z and tag `vX.Y.Z` does not exist. It drafts the notes (the
+   install section of v1.0.0's notes with the new tag, then the commit subjects since the previous
+   tag) and prints the `git tag -a`, `git push origin vX.Y.Z` and `gh release create` commands. It
+   keeps a notes file that is already there, so edit the draft and run the step again with `--yes`
+   to run those commands. Without `--yes` it runs nothing.
+
+**Choosing the number.** Raise the major number (2.0.0) when a project must change to keep working:
+a setting, command, exit code, `--json` field or importable module removed or changed in meaning,
+or a newer Python required. Raise the minor number (1.1.0) for something new that existing projects
+can ignore, such as a command, setting, plugin or lane feature. Raise the patch number (1.0.1) for
+fixes alone. The core and every plugin share one number and release together.
