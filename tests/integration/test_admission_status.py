@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import fcntl
 from io import StringIO
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -400,7 +401,9 @@ class HolderActivityTests(Namespace):
     def setUp(self):
         super().setUp()
         self.work = Path(self.temp.name) / "work"
-        self.admitted = time.time() - 600
+        # A whole second, as a guard entry records its admission: a fraction would leave the entry's time up to a
+        # second before this one, and 10m00s would read 10m01s (gates 20261124-191929-fe02aa05, -193458-48869d11).
+        self.admitted = math.floor(time.time()) - 600
         self.runs, self.lanes = self.work / run_progress.RUNS, self.work / run_progress.LANES
 
     def write(self, path, age):
@@ -410,6 +413,13 @@ class HolderActivityTests(Namespace):
         at = time.time() - age
         os.utime(path, (at, at))
         return path
+
+    def assertQuiet(self, found, seconds):
+        """found's files went seconds unchanged when they were written, give or take the time the test has taken
+        since, which a loaded host stretches."""
+        quiet = found["activity"]["quietSeconds"]
+        self.assertGreaterEqual(quiet, seconds - 1)
+        self.assertLessEqual(quiet, seconds + stretched(5))
 
     def holder(self, **fields):
         admitted = datetime.fromtimestamp(self.admitted, timezone.utc).isoformat(timespec="seconds")
@@ -427,9 +437,10 @@ class HolderActivityTests(Namespace):
         (quiet,) = self.read()["holders"]
         self.assertEqual(tree(self.temp.name), before, "a reading changes no file")
         self.assertIsNone(quiet["activity"]["source"])
-        self.assertAlmostEqual(quiet["activity"]["quietSeconds"], 600, delta=5)
-        self.assertEqual(resources.progress_lines(quiet),
-                         ["      progress: nothing its work writes has changed in the 10m00s since it was admitted"])
+        self.assertQuiet(quiet, 600)
+        (line,) = resources.progress_lines(quiet)
+        self.assertRegex(line, r"^      progress: nothing its work writes has changed in the 1\dm\d\ds since it was "
+                               r"admitted$")
         # Each kind of file, written since admission, moves it; the latest names which.
         for path, age, source in (
                 (self.lanes / "gate" / "run.log", 300, "a lane's log"),
@@ -441,7 +452,7 @@ class HolderActivityTests(Namespace):
                 self.write(path, age)
                 found = self.holder(directory=directory)
                 self.assertEqual(found["activity"]["source"], source)
-                self.assertAlmostEqual(found["activity"]["quietSeconds"], age, delta=5)
+                self.assertQuiet(found, age)
         self.assertRegex(resources.progress_lines(found)[0], r"^      progress: a run's progress folder last changed "
                                                              r"\d+s ago$")
         # A runner admitted for a bare command names its own folder, kept anywhere, which counts as well.
@@ -449,7 +460,7 @@ class HolderActivityTests(Namespace):
         self.write(folder / run_progress.OUTPUT, 5)
         found = self.holder(directory=directory, progressRun=str(folder))
         self.assertEqual(found["activity"]["source"], "its progress folder")
-        self.assertAlmostEqual(found["activity"]["quietSeconds"], 5, delta=5)
+        self.assertQuiet(found, 5)
 
     def test_a_holder_with_no_usable_directory_or_that_does_not_run_reads_nothing(self):
         self.write(self.lanes / "gate" / "run.log", 10)
