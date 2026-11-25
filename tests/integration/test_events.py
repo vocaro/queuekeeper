@@ -174,6 +174,40 @@ class QueueEvents(test_merge_queue.Fixture):
         self.assertEqual((landed["entry"], landed["landedAs"]), (identifier, self.state(identifier)["landedAs"]))
         self.assertEqual(by_kind["batch.pushed"]["head"], landed["landedTip"])
 
+    def test_a_passing_round_records_its_time_workload_and_mac_for_landing_estimates(self):
+        # vocaro/queuekeeper#49: the history a landing estimate compares like with like.
+        self.commit("a.txt", "one")
+        identifier, = self.add("one")
+        with patch.object(mq.Worker, "mac", return_value=" on this Mac (desk)"), patch("builtins.print"):
+            self.assertEqual(self.work(), 0)
+        passed, = self.events(kinds=["batch.passed"])
+        self.assertGreater(passed["roundSeconds"], 0)
+        self.assertEqual(passed["mac"], "this Mac")
+        self.assertEqual(passed["workload"]["lanes"][-1], "gate")
+        expected = mq.landing_estimate.workload(mq.config_at(self.repo, mq.MAIN), passed["workload"]["lanes"])
+        self.assertEqual(passed["workload"], expected)
+
+    def test_queued_entries_are_estimated_from_main_and_the_journal(self):
+        queue = mq.Queue(self.repo)
+        config = mq.config_at(self.repo, mq.MAIN)
+        self.commit("a.txt", "one")
+        self.commit("b.txt", "two")
+        first, second = self.add("one", "two")
+        waiting = queue.waiting()
+        # No comparable round is timed yet, so neither entry is guessed at.
+        found = mq.landing_estimates(queue, self.repo, {"round": None, "gates": {}}, waiting)
+        self.assertIn("fewer than 5 comparable passing rounds", found[first]["unknown"])
+        load = mq.landing_estimate.workload(config, mq.lanes_of(config, ["a.txt", "b.txt"]),
+                                            mq.group_members(config, mq.lanes_of(config, ["a.txt", "b.txt"]),
+                                                             ["a.txt", "b.txt"]))
+        for seconds in (100, 110, 120, 130, 140):
+            queue.emit("batch.passed", entries=["x"], roundSeconds=seconds, workload=load, mac="this Mac")
+        found = mq.landing_estimates(queue, self.repo, {"round": None, "gates": {}}, waiting)
+        # The two go in one batch: one round of the same workload on this Mac.
+        self.assertEqual(found[first], found[second])
+        self.assertEqual((found[first]["low"], found[first]["high"], found[first]["rounds"]), (120, 140, 1))
+        self.assertEqual(mq.landing_estimates(queue, self.repo, None, waiting), {})
+
     def test_an_entry_that_fails_the_gate_is_journaled_with_why_and_its_log(self):
         self.status.write_text("1")
         self.commit("a.txt", "one")

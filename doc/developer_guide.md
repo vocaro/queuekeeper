@@ -1396,6 +1396,20 @@ its latest stale mark, given at least 5. The clock line names it, and `Progress.
 longer wait and sets the direct-status state, but never stops the lane: that policy belongs to
 vocaro/queuekeeper#70.
 
+### Landing estimates
+
+`landing_estimate.py` times the queue's rounds for `qk queue status` (vocaro/queuekeeper#49). As
+`Worker.round` starts an ordinary round, one that is no bisect's half and no split batch, it keeps the
+round's `workload` (`landing_estimate.workload`: the lanes run, the group members chosen and a digest
+of those lanes' definitions) in the round's account and in `round_timing`. `Worker.keep` writes
+`roundSeconds`, `workload` and `mac`, the normalized Mac of the round's last lane, into `batch.passed`,
+unless the round reran failed tests, reused a lane's pass or ran on an unknown Mac. The journal is
+the repository's, so the history is too. `merge_queue.landing_estimates` reads those events, plans the
+rounds ahead on main's configuration with the paths each entry's commits change, through
+`docs_first` and `without_docs` as `Worker.docs_ahead` does, and gives each waiting entry its
+estimate from `landing_estimate.estimates`. A failure there makes every estimate unknown with its
+error and never fails the status.
+
 ### How agents' tools stop commands
 
 Measured with the probes below. The rule that follows for every agent is in the [user
@@ -2105,7 +2119,7 @@ fault in its gate lane receipt. A missing value leaves the cause unknown.
 | `gate.ended` | A lane of a gate ended | `lane`, `round`, `role`, `status` (an exit status, `withdrawn` or `canceled`), `log`, `mac`, `seconds` |
 | `gate.stuck` | A gate's wait for admission is held up by dead entries | `lane`, `role`, `why`, `waitingSince` |
 | `gate.system-crash` | A gate lane failed only because a simulator's system process crashed | `lane`, `commit`, `process`, `simulator`, `report`, `mac`, `entries`, `again` (a second at that commit, which holds) |
-| `batch.passed` | A batch's lanes passed, before its push | `head`, `base`, `entries` |
+| `batch.passed` | A batch's lanes passed, before its push | `head`, `base`, `entries`, and for an ordinary round `roundSeconds`, `workload` and `mac` |
 | `batch.pushed` | A batch was pushed to `main`, or a push without an answer was found there (`reconciled`) | `head`, `base`, `entries`, `ungated`, `reconciled` |
 | `test.flaky` | A failed test passed alone | `test`, `commit`, `issue`, `landed`, `entries` |
 | `round.together` | A search for the entries that fail together ended | `probes`, `atOnce`, `seconds` |

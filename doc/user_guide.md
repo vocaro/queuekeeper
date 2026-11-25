@@ -1615,8 +1615,27 @@ For a single lane running on this Mac, the queue subtracts its elapsed work from
 median and p90 to show a rough range of work left. After the median it shows the time left to
 the p90, and at the p90 the estimate ends. `qk queue status --json` includes the range as
 `remainingWorkSeconds` with `low` and `high` bounds. The range uses recent passing runs and is
-independent of current load. Remaining work for groups and remote lanes, admission wait time and
-time to land are unknown.
+independent of current load. Remaining work for groups and remote lanes is unknown.
+
+**When an entry will land.** While a worker runs, `qk queue status` gives each waiting entry a
+landing range, and `--json` gives it as the entry's `landingEstimate`: `low` and `high` in seconds
+from now, `rounds`, and `basis`, which names each round counted. The range adds the running round's
+time left to the rounds ahead of the entry, its own included, batched as the worker batches them: a
+passed batch is pushed first, a `--front` entry and a `--no-gate` or `--alone` entry each go alone,
+docs-only entries go ahead of code on the docs lanes, and the rest ride one batch. Each round counts
+from the median to the p90 of the last 20 passing rounds of the same workload on the same Mac, given
+at least 5. A workload is the lanes a round runs, the group members its paths select and those
+lanes' definitions in `queuekeeper.json`, so a changed gate command starts its history again, as
+`qk timing stale` does for the lanes it marks. A round not yet on its last lane's Mac takes the
+widest range of the Macs with history. Past waits for admission are in those times; current load
+is not weighed apart. Rounds ahead are assumed to pass. When the history cannot say, the entry's
+estimate is `unknown` with the reason, such as too few comparable rounds, a round past its p90, a
+bisect, a failed gate being weighed, a stacked gate, a hold or no worker:
+
+```text
+queued   20261124-101500-1a2b3c4d  Add the parser
+         lands in roughly 14m10s to 21m05s (about 10:30 to 10:37), after 2 rounds: the running round has run 6m02s, against 12 passing rounds on this Mac; a code round of 1 entry, by whichever Mac takes it: 12 passing rounds on this Mac
+```
 
 The warning goes to the lane's log and to `qk run`'s output, which the queue's gate log keeps.
 `qk queue status` and `qk land --wait` (or `qk queue wait`) show it beside the running gate as

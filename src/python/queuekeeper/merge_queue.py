@@ -57,7 +57,7 @@ import unicodedata
 import urllib.request
 from xml.etree import ElementTree
 
-from . import budgets, disk, plugins, farm, host_health, lane_results, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
+from . import budgets, disk, plugins, farm, host_health, lane_results, landing_estimate, landing_proofs, lane_progress, lane_report, lane_timing, lane_wait, offload_host, parallel, pins, processes, remote, \
     resources
 from . import add_only_json, count_history, events, gate_reuse, git_state, health, landed_cleanup, pre_push, recovery, restartable, \
     worktree_ownership
@@ -3105,10 +3105,61 @@ def reading(root, recent=5):
              "idle": not waiting and (not working or bool((current or {}).get("catchingUp"))),
              # Apart from a hold: a closed queue works on what it has, and is idle once that is done (#32).
              "closed": queue.closed()}
+    if waiting:
+        found = landing_estimates(queue, root, current if working and not why else None, waiting)
+        for entry in waiting: entry["landingEstimate"] = found.get(entry["id"]) or landing_estimate.unknown(
+            "the queue is held" if why else "no worker runs" if not working else "the entry is in no round ahead")
     # The one command the session at root runs next (agent_results.queue_next_action).
     from . import agent_results
     state["nextAction"] = agent_results.queue_next_action(queue, root, state)
     return state, ungated
+
+
+def landing_estimates(queue, root, state, waiting, at=None):
+    """{entry ID: landing estimate} for waiting, by the round's account state (None with no worker or a hold) and the
+    passing rounds the journal times (landing_estimate.estimates). A round ahead is planned on main's configuration,
+    by the paths each entry's own commits change. Nothing here may fail the status that asks: an estimate it cannot
+    make says why."""
+    if state is None: return {}
+    try:
+        found = landing_estimate.samples(events.read(queue.directory, kinds=(landing_estimate.KIND,)))
+        try: config = config_at(queue.main_checkout, MAIN)
+        except Exception: config = None  # noqa: BLE001 - no configuration gives no round ahead a workload
+        paths = {}
+        def paths_of(entry):
+            if entry["id"] not in paths:
+                commits = entry.get("commits") or []
+                paths[entry["id"]] = {path for path in text(queue.main_checkout, "log", "--no-walk", "--format=",
+                                                            "--name-only", "--no-renames", *commits).splitlines()
+                                      if path} if commits else set()
+            return paths[entry["id"]]
+        def changed(batch): return sorted(set().union(*(paths_of(entry) for entry in batch)))
+        def kind_of(batch, alone, left):
+            if config is None: return "code", batch
+            if alone and batch[0].get("noGate"): return "ungated", batch
+            if not alone:
+                docs = docs_first(left, config, paths_of)
+                ids = {entry["id"] for entry in docs}
+                if docs and any(entry["id"] not in ids for entry in batch): return "docs", docs
+                code = without_docs(batch, config, paths_of)
+                if code and len(code) < len(batch): batch = code
+            return ("docs" if docs_lanes(config, changed(batch)) else "code"), batch
+        def workload_of(kind, batch):
+            if config is None: return None
+            if kind == "ungated": return landing_estimate.workload(config, ungated_lanes(config))["id"]
+            if kind == "docs": return landing_estimate.workload(config, docs_lanes(config, changed(batch)))["id"]
+            lanes = lanes_of(config, changed(batch))
+            return landing_estimate.workload(config, lanes, group_members(config, lanes, changed(batch)))["id"]
+        try: marks = lane_timing.stale_marks(cli_project(root, config or {}))
+        except Exception: marks = {}  # noqa: BLE001 - unreadable marks leave every round in
+        return landing_estimate.estimates(state, waiting, found, workload_of, kind_of, at, marks)
+    except Exception as error:  # noqa: BLE001 - an estimate never fails the status that shows it
+        return {entry["id"]: landing_estimate.unknown(f"the estimate could not be made: {error}") for entry in waiting}
+
+
+def cli_project(root, config):
+    from . import cli
+    return cli.project_name(root, config)
 
 
 def status(root, as_json=False, recent=5, idle=False):
@@ -3135,6 +3186,8 @@ def status(root, as_json=False, recent=5, idle=False):
         if entry["state"] == QUEUED and entry.get("front") and entry.get("noGate"):
             line = ahead_of_round(current or {})
             if line: print(f"         {line}")
+        if working and not why and isinstance(entry.get("landingEstimate"), dict):
+            print(f"         {landing_estimate.words(entry['landingEstimate'])}")
     return result
 
 
@@ -4130,6 +4183,8 @@ class Worker:
         self.environment = environment()  # what the lanes, the hook and the carry-over checks run in
         self.pin_names, self.evaluated_pins = {}, {}
         self.measured = None  # the passing gate run of the last round, which its landed entries record
+        # An ordinary round's entries, start and workload, which its pass records for landing estimates (keep).
+        self.round_timing = None
         self.gate_executions = {}  # verified receipts for the whole lanes that passed in that round
         self.alone = False  # whether this round's batch is one entry an option of qk land put on its own (choose)
         self.ungating = False  # whether this round lands that entry without the gate (round, first_ungated)
@@ -6906,7 +6961,13 @@ class Worker:
         # The preflight lanes and the docs check run unadmitted first, whatever the batch changes (#169).
         self.checks = quick_lanes(config, code=not docs)
         if beside: beside.checks = self.checks
-        self.begun(round_name, head, base, applied, beside)
+        # Only an ordinary round is timed for landing estimates: no bisect's half, split batch or rerun (keep).
+        ran = ungated["lanes"] if ungated else docs or lanes
+        load = landing_estimate.workload(config, ran, {} if ungated or docs else chosen) \
+            if not beside and not self.limit and not parallel and ran is not None else None
+        self.round_timing = {"entries": [entry["id"] for entry in applied], "started": time.time(),
+                             "workload": load} if load else None
+        self.begun(round_name, head, base, applied, beside, workload=load)
         # Docs entries can land beside these gates (docs_beside, #394). A bisect can test later entries against
         # main in a separate checkout if the Macs running its checks leave another eligible.
         isolating = False
@@ -7236,7 +7297,7 @@ class Worker:
         files = set().union(*(self.own_paths(entry) for entry in entries))
         return all(carried_over(path, config, files) for path in self.changed(old, new) if path)
 
-    def begun(self, round_name, head, base, applied, beside=None, adopted=False):
+    def begun(self, round_name, head, base, applied, beside=None, adopted=False, workload=None):
         """Start the round's account (ROUND_FILE): its batch, and, while bisecting, how many entries the bisect
         suspects and the size of each half, the newer 0 while it waits for the older. The gates still running, a
         stacked one among them, keep their records."""
@@ -7246,7 +7307,7 @@ class Worker:
         def change(state):
             state.update(round=round_name, started=time.time(), head=head, base=base, pid=os.getpid(),
                          entries=[entry["id"] for entry in applied], bisect=bisect, adopted=adopted, waiting=None,
-                         waitingSince=None)
+                         waitingSince=None, workload=workload)
             state.pop("failure", None)
             state.pop("together", None)
             state.setdefault("gates", {})
@@ -8251,7 +8312,17 @@ class Worker:
         if self.gate_executions and not docs and not ungated: verdict["gateExecution"] = self.gate_executions
         if self.reused_gates: verdict["reusedGates"] = self.reused_gates
         for entry in batch: self.queue.record(entry, state=PASSED, passed=verdict)
-        self.queue.emit("batch.passed", head=head, base=base, entries=verdict["batch"])
+        self.queue.emit("batch.passed", head=head, base=base, entries=verdict["batch"], **self.round_timed(batch, flakes))
+
+    def round_timed(self, batch, flakes):
+        """What batch.passed records of an ordinary round that passed as it was, for landing estimates
+        (landing_estimate): its time from its start, its workload, and the Mac that ran its last lane. A round that
+        reran failed tests or reused a lane's earlier pass, or whose Mac is unknown, is not timed."""
+        timing, self.round_timing = getattr(self, "round_timing", None), None
+        mac = landing_estimate.destination(getattr(self, "ran_where", ""))
+        if not timing or timing["entries"] != [entry["id"] for entry in batch] or flakes or self.reused_gates or not mac:
+            return {}
+        return {"roundSeconds": round(time.time() - timing["started"], 1), "workload": timing["workload"], "mac": mac}
 
     def push_passed(self, passed):
         """Push the batch whose pass keep recorded, when it is still the batch that passed: the same entries, none
