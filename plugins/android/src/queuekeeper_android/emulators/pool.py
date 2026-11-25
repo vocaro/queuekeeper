@@ -31,7 +31,7 @@ import time
 from queuekeeper import offload_host
 from queuekeeper.resources import process_start
 from queuekeeper_mobile import devices as device_record
-from .. import adb, android_platform, sdk  # noqa: F401 -- android_platform switches the Android platform on
+from .. import adb, android_platform, sdk, settings  # noqa: F401 -- android_platform switches the Android platform on
 from . import avd
 
 # How long a take reserves a member for unless the caller says otherwise, and the boot's limit.
@@ -58,14 +58,40 @@ PRUNE_AFTER = timedelta(hours=1)
 REAP_QUERY_SECONDS = 5
 REAP_STOP_SECONDS = 10
 ADB_SERVER_OVERRIDES = ("ADB_SERVER_SOCKET", "ANDROID_ADB_SERVER_ADDRESS", "ANDROID_ADB_SERVER_PORT")
+# The retention policy (owner's decision on vocaro/queuekeeper#245, 2026-11-24): delete a member unused for
+# unusedDays, never the pool's last template, only on a Mac whose inventory reads as verified, recording every
+# deletion. It is off until the project's emulatorRetention.deleteUnused turns it on (settings.py).
+# A member's files may still settle a moment after its recorded release; a later change is a use outside the record.
+SETTLE = timedelta(minutes=5)
+# The deletion record, beside the AVD folder: one JSON line before each deletion and one after it.
+DELETIONS = "queuekeeper-emulator-deletions.jsonl"
+RETENTION_OWNER = "emulator-pool retention"
+
+
+@dataclass(frozen=True)
+class Retention:
+    """Whether the retention policy deletes, and after how many days unused."""
+    delete: bool = False
+    unused_days: int = settings.UNUSED_DAYS
+
+
+def _project(root):
+    try:
+        value = json.loads((Path(root) / "queuekeeper.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def configured(root):
     """The pool a project's queuekeeper.json names, or None."""
-    try:
-        return json.loads((Path(root) / "queuekeeper.json").read_text()).get("emulatorPool")
-    except (OSError, ValueError, AttributeError):
-        return None
+    return _project(root).get("emulatorPool")
+
+
+def configured_retention(root):
+    """The retention policy a project's queuekeeper.json sets: off and 14 days when it sets none."""
+    value = settings.retention(_project(root))
+    return Retention(value["deleteUnused"], value["unusedDays"])
 
 
 def word(text):
@@ -98,12 +124,14 @@ class Lease:
 class Pool:
     """The pool name, whose reservations owner holds in record."""
 
-    def __init__(self, name, owner, *, record=None, folder=None, logs=None, said=None, hold=HOLD):
+    def __init__(self, name, owner, *, record=None, folder=None, logs=None, said=None, hold=HOLD,
+                 retention=Retention(), deletions=None):
         if not name: raise ValueError("name the pool: --pool, or emulatorPool in queuekeeper.json")
-        self.name, self.owner, self.hold = word(name), owner, hold
+        self.name, self.owner, self.hold, self.retention = word(name), owner, hold, retention
         self.record = record or device_record.Record()
         self.folder = Path(folder) if folder else avd.home()
         self.logs = Path(logs) if logs else self.folder.parent / "queuekeeper-emulator-logs"
+        self.deletions = Path(deletions) if deletions else self.folder.parent / DELETIONS
         self.said = said or (lambda text: print(f"emulator-pool: {text}", file=sys.stderr, flush=True))
 
     # Names.
@@ -321,12 +349,14 @@ class Pool:
         return found
 
     def reap(self, *, dry_run=False):
-        """Report stale reservations of this pool. Stop only an emulator proved to be the recorded run."""
+        """Report stale reservations of this pool. Stop only an emulator proved to be the recorded run. Then apply
+        the retention policy when it is on and this is no dry run, or report what it would delete."""
         if any(os.environ.get(key) for key in ADB_SERVER_OVERRIDES):
             raise ValueError("reap needs the default local adb server to identify this Mac's emulators")
         entries = self.record.load()["devices"]
+        inventory = self._reap_inventory(entries)
         results = []
-        for name, avd_entry in self._reap_inventory(entries).items():
+        for name, avd_entry in inventory.items():
             image = avd.image_package(avd_entry["image"])
             profile = avd_entry["device"]
             entry = entries.get(name)
@@ -352,6 +382,9 @@ class Pool:
                 results.append((f"{name}: could not reap: {error}", True))
             else:
                 results.append((f"{name}: {said}", False))
+        if inventory:
+            results.extend(self._retain(inventory, self.record.load()["devices"],
+                                        apply=self.retention.delete and not dry_run))
         return results
 
     def _reap_inventory(self, entries):
@@ -456,11 +489,7 @@ class Pool:
         members = self.members(avd.image_package(item["image"]), item["device"], listed)
         if name not in members.values(): return "kept: not a numbered member of the selected pool"
         if name == members[min(members)]: return "kept: the lowest-numbered member of its kind"
-        path, folder = Path(item["path"]), self.folder.resolve()
-        if (self.folder / f"{name}.ini").is_symlink() or path.is_symlink() or not path.is_dir() or \
-                path.resolve() != folder / f"{name}.avd" or (path / "config.ini").is_symlink() or \
-                item["config"].get("AvdId") != name:
-            return "kept: cannot verify this member's AVD directory and name"
+        if not self._verified_directory(name, item): return "kept: cannot verify this member's AVD directory and name"
         entries = self.record.load()["devices"]
         entry = entries.get(name)
         if not entry or entry.get("device") != f"avd:{name}" or device_record.condition(entry) != "released":
@@ -472,21 +501,190 @@ class Pool:
         released = device_record.moment(entry.get("releasedAt"))
         if released is None or datetime.now(timezone.utc) - released <= PRUNE_AFTER:
             return "kept: its release was within one hour or could not be read"
+        unused = self._unused_now(name, entry)
+        if unused: return f"kept: {unused}"
+        return "passes the read-only check: released more than one hour ago, no emulator or process naming this AVD found"
 
+    def _verified_directory(self, name, item):
+        """Whether the AVD's pointer and folder are its own, inside the AVD folder and naming it."""
+        path, folder = Path(item["path"]), self.folder.resolve()
+        return not ((self.folder / f"{name}.ini").is_symlink() or path.is_symlink() or not path.is_dir() or
+                    path.resolve() != folder / f"{name}.avd" or (path / "config.ini").is_symlink() or
+                    item["config"].get("AvdId") != name)
+
+    def _unused_now(self, name, entry):
+        """None when the released entry's recorded emulator is shown stopped and no process names the AVD; otherwise
+        why it is kept."""
         emulator, port, serial = entry.get("emulatorProcess"), entry.get("port"), entry.get("serial")
         if type(port) is not int or port not in avd.PORTS or serial != f"emulator-{port}" or \
                 not isinstance(emulator, dict) or type(emulator.get("pid")) is not int or emulator["pid"] <= 0 or \
                 offload_host.started(emulator.get("start")) is None:
-            return "kept: its recorded emulator process or port cannot be verified"
+            return "its recorded emulator process or port cannot be verified"
         running, complete = avd.running_inventory()
         if not complete or name in running.values() or self._reap_listed(serial) or not self._reap_stopped(serial, emulator):
-            return "kept: the emulator could not be confirmed stopped"
+            return "the emulator could not be confirmed stopped"
         table = offload_host.process_table(offload_host.listing(offload_host.PS, REAP_QUERY_SECONDS))
         if not table.get(os.getpid(), {}).get("args"):
-            return "kept: the process census could not verify the AVD is unused"
+            return "the process census could not verify the AVD is unused"
         if any(pid != os.getpid() and name in row["args"] for pid, row in table.items()):
-            return "kept: a process still names this AVD"
-        return "passes the read-only check: released more than one hour ago, no emulator or process naming this AVD found"
+            return "a process still names this AVD"
+        return None
+
+    # Retention.
+    def _last_use(self, name, item, entry, now):
+        """(when, evidence) of a released AVD's last recorded use, or (None, why it has no reliable one). The record's
+        release is its last use when nothing in its folder changed after it; a later change is a use outside the
+        record, and a release older than the reservation it ends is not this lease's."""
+        if not entry or entry.get("device") != f"avd:{name}":
+            return None, "no reservation records its last use"
+        released = device_record.moment(entry.get("releasedAt"))
+        reserved = device_record.moment(entry.get("reservedAt")) if "reservedAt" in entry else None
+        if released is None or released > now + SETTLE or ("reservedAt" in entry and (reserved is None or reserved > released)):
+            return None, "its recorded release time cannot be read or comes before its reservation"
+        try:
+            changed = max(os.lstat(path).st_mtime for path in self._files(name, item))
+        except (OSError, ValueError) as error:
+            return None, f"its files' modification times cannot be read: {getattr(error, 'strerror', None) or error}"
+        changed = datetime.fromtimestamp(changed, timezone.utc)
+        if changed > released + SETTLE:
+            return None, f"its files changed at {changed.isoformat(timespec='seconds')}, after its recorded release"
+        return max(released, changed), {"releasedAt": released.isoformat(timespec="seconds"),
+                                        "filesChangedAt": changed.isoformat(timespec="seconds")}
+
+    def _files(self, name, item):
+        """The AVD's pointer, its folder and every file and folder inside it, never following a link."""
+        yield self.folder / f"{name}.ini"
+        top = Path(item["path"])
+        yield top
+
+        def failed(error): raise error
+        for root, folders, files in os.walk(top, onerror=failed):
+            for each in (*folders, *files): yield Path(root) / each
+
+    def _retain(self, inventory, entries, *, apply):
+        """Apply the retention policy to this Mac's verified inventory, or report what it would delete: [(line,
+        whether it failed)]. A member is deleted when its last recorded use is older than the policy's days, its
+        evidence is reliable and its emulator is shown stopped; a template when it qualifies the same way, counting
+        its kind's members' use as its own, and no member of its kind is left. The pool's last template stays."""
+        now = datetime.now(timezone.utc)
+        window = timedelta(days=self.retention.unused_days)
+        rows, due, templates, kinds = [], {}, {}, {}
+        for name, item in sorted(inventory.items()):
+            if not name.startswith(self.name + "_"): continue
+            image, profile = avd.image_package(item["image"]), item["device"]
+            if not image or not profile: continue
+            if name == self.template_name(image, profile):
+                templates[name] = item
+                continue
+            if name not in self.members(image, profile, [name]).values(): continue
+            kinds.setdefault(self.template_name(image, profile), []).append(name)
+            found = self._retention_check(name, item, entries, now, window)
+            if isinstance(found, str): rows.append((f"{name}: retention keeps it: {found}", False))
+            elif found: due[name] = ("member", *found)
+        for name, item in templates.items():
+            found = self._retention_check(name, item, entries, now, window, members=kinds.get(name, ()), due=due)
+            if isinstance(found, str): rows.append((f"{name}: retention keeps it: {found}", False))
+            elif found: due[name] = ("template", *found)
+        doomed = [name for name in templates if name in due]
+        if doomed and len(doomed) == len(templates):
+            last = max(doomed, key=lambda name: (due[name][1], name))
+            del due[last]
+            rows.append((f"{last}: retention keeps it: the pool's last template", False))
+        days = self.retention.unused_days
+        for name, (kind, last, evidence, entry) in sorted(due.items(), key=lambda pair: pair[1][0] == "template"):
+            unused = (now - last).total_seconds() / 86400
+            reason = (f"unused for {unused:.1f} days, more than {days} (released {evidence['releasedAt']}, files last "
+                      f"changed {evidence['filesChangedAt']})")
+            if not apply:
+                off = "" if self.retention.delete else "; emulatorRetention.deleteUnused is off"
+                rows.append((f"{name}: retention would delete this {kind}: {reason}{off}", False))
+                continue
+            # Read again: a member another run made since, or one not deleted, keeps its template.
+            prefix = name.removesuffix("_template")
+            left = [member for member in avd.listed(self.folder)
+                    if kind == "template" and member.startswith(prefix) and NUMBER.fullmatch(member[len(prefix):])]
+            if left:
+                rows.append((f"{name}: retention keeps it: its kind's member {left[0]} was not deleted", False))
+                continue
+            rows.append(self._delete(name, kind, entry, reason, {**evidence, "lastUsedAt": last.isoformat(timespec="seconds"),
+                                                                 "unusedDays": round(unused, 2), "policyDays": days}))
+        return rows
+
+    def _retention_check(self, name, item, entries, now, window, *, members=None, due=None):
+        """(last use, evidence, entry) when the AVD qualifies for deletion, None when it is in use or used within
+        the window, or why its evidence keeps it. A template counts its members' uses, and qualifies only when all
+        of them do."""
+        entry = entries.get(name)
+        if entry and device_record.condition(entry) != "released": return None
+        if entry and any(key != name and other.get("device") == entry.get("device") for key, other in entries.items()):
+            return "another reservation names this AVD"
+        if not self._verified_directory(name, item): return "cannot verify its AVD directory and name"
+        last, evidence = self._last_use(name, item, entry, now)
+        if last is None: return evidence
+        if members is not None:
+            waiting = [member for member in members if member not in due]
+            if waiting: return None
+            last = max([last, *(due[member][1] for member in members)])
+        if now - last <= window: return None
+        unused = self._unused_now(name, entry)
+        if unused: return unused
+        return last, evidence, entry
+
+    def _record_deletion(self, **fields):
+        """Append one line to the deletion record and flush it to the disk before anything is deleted."""
+        self.deletions.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({"at": device_record.now(), "host": os.uname().nodename, "pool": self.name,
+                           "folder": str(self.folder), "by": self.owner or RETENTION_OWNER, **fields})
+        with open(self.deletions, "a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def _delete(self, name, kind, entry, reason, evidence):
+        """Delete one AVD under a reservation of its own, taken at the revision its evidence was read at, after
+        checking again that its emulator is stopped and recording the deletion first. A deletion that cannot be
+        confirmed keeps the reservation for recovery."""
+        owner = self.owner or RETENTION_OWNER
+        try:
+            start = process_start(os.getpid())
+        except OSError:
+            start = None
+        try:
+            held = self.record.reserve(
+                name, owner=owner, revision=entry["revision"], purpose="delete it under the emulator pool's retention policy",
+                device=f"avd:{name}", release_by=self._release_by(timedelta(hours=1)),
+                details={device_record.HOLDER: {"pid": os.getpid(), "start": start}} if start is not None else None)
+        except (device_record.Refused, ValueError) as error:
+            return f"{name}: retention keeps it: its reservation changed: {error}", False
+
+        def release(outcome, restoration):
+            self.record.release(name, owner=owner, revision=held["revision"], outcome=outcome, restoration=restoration)
+
+        unused = self._unused_now(name, entry)
+        if unused:
+            release(f"Kept by the retention policy: {unused}", "Nothing was deleted")
+            return f"{name}: retention keeps it: {unused}", False
+        path = avd.listed(self.folder).get(name, {}).get("path")
+        details = {"avd": name, "kind": kind, "path": path, "reason": reason, "lastUse": evidence}
+        try:
+            self._record_deletion(event="deleting", **details)
+        except OSError as error:
+            release("Kept by the retention policy: its deletion could not be recorded", "Nothing was deleted")
+            return f"{name}: retention could not record the deletion, so kept it: {error}", True
+        try:
+            avd.delete(name, folder=self.folder)
+            if name in avd.listed(self.folder) or (path and Path(path).exists()):
+                raise OSError(f"{path} remains after the deletion")
+        except OSError as error:
+            try: self._record_deletion(event="failed", avd=name, kind=kind, path=path, error=str(error))
+            except OSError: pass
+            return f"{name}: retention could not confirm the deletion; its reservation is kept for recovery: {error}", True
+        try:
+            self._record_deletion(event="deleted", avd=name, kind=kind, path=path)
+            release("Deleted under the retention policy", f"Deleted {path} and its pointer, and confirmed both gone")
+        except (OSError, device_record.Refused) as error:
+            return f"{name}: deleted this {kind} under the retention policy, but could not finish its record: {error}", True
+        return f"{name}: deleted this {kind} under the retention policy: {reason}", False
 
     def status(self):
         """One line per member and template of the pool: its kind, whether its emulator runs, and who holds it."""
@@ -533,8 +731,10 @@ def main(argv, project=None):
     release.add_argument("--outcome", required=True)
     mine = actions.add_parser("release-mine", help="stop and release every member the owner holds")
     mine.add_argument("--outcome", default="Released at the session's end")
-    reap = actions.add_parser("reap", help="stop and release abandoned pool members on this Mac")
-    reap.add_argument("--dry-run", action="store_true", help="report eligible members without stopping or releasing them")
+    reap = actions.add_parser("reap", help="stop and release abandoned pool members on this Mac, and delete unused "
+                              "ones when emulatorRetention.deleteUnused is on")
+    reap.add_argument("--dry-run", action="store_true", help="report eligible members, and what the retention policy "
+                      "would delete, without stopping, releasing or deleting them")
     reap.add_argument("--farm", action="store_true", help="include active farm Macs in a dry run")
     prune = actions.add_parser("prune", help="check one idle pool member without removing it")
     prune.add_argument("--avd", required=True, help="the exact member's AVD name")
@@ -543,7 +743,8 @@ def main(argv, project=None):
     if args.action == "reap" and args.farm and not args.dry_run:
         reap.error("--farm requires --dry-run")
     try:
-        pool = Pool(args.pool, args.owner)
+        root = Path.cwd() if configured(Path.cwd()) else project
+        pool = Pool(args.pool, args.owner, retention=configured_retention(root) if root else Retention())
         if args.action == "list":
             for line in pool.status(): print(line)
         elif args.action == "template":

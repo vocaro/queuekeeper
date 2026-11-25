@@ -7,6 +7,13 @@ directory is the Gradle project's folder in the checkout, the one with gradlew, 
 application module whose app and instrumented tests `qk emulator-tests` builds and runs, by default app; variant is the
 build variant, by default debug; gradleArguments go on every Gradle command. emulatorPool names the project's pool,
 whose members are its emulators named `POOL LABEL N` (emulators/pool.py).
+
+    "emulatorRetention": {"deleteUnused": true, "unusedDays": 14}
+
+emulatorRetention is the pool's retention policy (owner's decision on vocaro/queuekeeper#245, 2026-11-24). With
+deleteUnused true, `qk emulator-pool reap` deletes, on a Mac whose AVD inventory reads as verified, a member whose
+recorded last use is more than unusedDays old, and a template whose kind has no member left, never the pool's last
+template, and records each deletion. deleteUnused is false when left out, and unusedDays 14.
 """
 from pathlib import Path
 import re
@@ -41,6 +48,26 @@ def emulator_pool(value):
         raise ValueError("emulatorPool must be a nonempty name, such as the project's")
 
 
+RETENTION_KEYS = {"deleteUnused", "unusedDays"}
+UNUSED_DAYS = 14
+
+
+def emulator_retention(value):
+    if not isinstance(value, dict) or set(value) - RETENTION_KEYS:
+        raise ValueError(f"emulatorRetention supports only {', '.join(sorted(RETENTION_KEYS))}")
+    if "deleteUnused" in value and type(value["deleteUnused"]) is not bool:
+        raise ValueError("emulatorRetention.deleteUnused is true or false")
+    if "unusedDays" in value and (type(value["unusedDays"]) is not int or value["unusedDays"] < 1):
+        raise ValueError("emulatorRetention.unusedDays is a whole number of days, at least 1")
+
+
+def retention(config):
+    """The project's emulatorRetention, checked, with its defaults filled in: off, and 14 days."""
+    declared = (config or {}).get("emulatorRetention") or {}
+    emulator_retention(declared)
+    return {"deleteUnused": False, "unusedDays": UNUSED_DAYS, **declared}
+
+
 def configured(config):
     """The project's android settings with the defaults filled in."""
     return {**DEFAULTS, **((config or {}).get("android") or {})}
@@ -67,5 +94,5 @@ def sandbox_refusal(lane):
 
 
 def register():
-    plugins.CONFIG_KEYS.update(android=android, emulatorPool=emulator_pool)
+    plugins.CONFIG_KEYS.update(android=android, emulatorPool=emulator_pool, emulatorRetention=emulator_retention)
     if sandbox_refusal not in plugins.SANDBOX_REFUSALS: plugins.SANDBOX_REFUSALS.append(sandbox_refusal)

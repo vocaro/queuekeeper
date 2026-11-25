@@ -49,6 +49,11 @@ class FarmReap(unittest.TestCase):
             self.assertEqual(reap_report.receive("Demo"), {"pool": "Demo", "inventory": "verified", "results": []})
         self.assertEqual(reap.call_args.args[0].name, "Demo")
         self.assertEqual(reap.call_args.kwargs, {"dry_run": True})
+        self.assertEqual(reap.call_args.args[0].retention, emulator_pool.Retention(False, 14))
+        # The policy's days come from the asking Mac, and the receiver never deletes.
+        with patch.object(emulator_pool.Pool, "reap", autospec=True, return_value=[]) as reap:
+            reap_report.receive("Demo", 30)
+        self.assertEqual(reap.call_args.args[0].retention, emulator_pool.Retention(False, 30))
 
     def test_farm_reports_each_mac_and_does_not_confuse_unchecked_with_an_empty_check(self):
         macs = [{"name": "Studio", "ssh": "studio"}, {"name": "Mini", "ssh": "mini"},
@@ -72,7 +77,7 @@ class FarmReap(unittest.TestCase):
               redirect_stdout(StringIO()) as stdout):
             self.assertEqual(emulator_pool.main(["--pool", "Demo", "reap", "--farm", "--dry-run"]), 1)
         local.assert_called_once_with(dry_run=True)
-        request = {"checkout": reap_report.offload_host.TOOLKIT_CHECKOUT, "pool": "Demo"}
+        request = {"checkout": reap_report.offload_host.TOOLKIT_CHECKOUT, "pool": "Demo", "unusedDays": 14}
         self.assertEqual(len(command.call_args_list), 5)
         for call in command.call_args_list:
             self.assertEqual(call.args[0], reap_report.PROBE)
@@ -645,6 +650,213 @@ class Reaping(unittest.TestCase):
             self.assertIn("reservation changed", self.pool.reap()[0][0])
         self.assertEqual(self.killed, [])
         self.assertEqual(self.record.entry(self.KEY), self.entry)
+
+
+class Retention(unittest.TestCase):
+    """The retention policy (#245, owner's decision of 2026-11-24): off unless turned on; on, it deletes only a
+    member with reliable evidence of no use for the policy's days, on a verified inventory, never the pool's last
+    template, and records each deletion."""
+    FIRST, SECOND, TEMPLATE = (f"Demo_Pixel_8_API_36_{suffix}" for suffix in ("1", "2", "template"))
+    TABLET = "Demo_Pixel_Tablet_API_36_template"
+
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.folder = root / "avd"
+        for name in (self.FIRST, self.SECOND, self.TEMPLATE): make_avd(self.folder, name)
+        self.record = devices.Record(root / "record.json")
+        self.deletions = root / "deletions.jsonl"
+        self.enterContext(patch.dict(os.environ, dict.fromkeys(emulator_pool.ADB_SERVER_OVERRIDES, "")))
+        self.start = " ".join(time.ctime(time.time() - 40 * 86400).split())
+        self.inventory = self.enterContext(patch.object(avd, "running_inventory", return_value=({}, True)))
+        self.listing = self.enterContext(patch.object(emulator_pool.offload_host, "listing"))
+        self.listing.return_value = f"{os.getpid()} 1 {os.getuid()} {self.start} python qk emulator-pool reap"
+        self.enterContext(patch.object(emulator_pool.Pool, "_reap_listed", return_value=False))
+        self.enterContext(patch.object(emulator_pool.Pool, "_reap_stopped", return_value=True))
+        for name in (self.FIRST, self.SECOND, self.TEMPLATE): self.age(name, 20)
+
+    def pool(self, delete=True, days=None):
+        policy = emulator_pool.Retention(delete, *([days] if days else []))
+        return emulator_pool.Pool("Demo", None, record=self.record, folder=self.folder, retention=policy,
+                                  deletions=self.deletions)
+
+    def age(self, name, days, *, files=None, port=5554):
+        """Record name released days ago, after a reservation, with its files last changed files days ago."""
+        released = datetime.now(timezone.utc) - timedelta(days=days)
+        with self.record._exclusive():
+            value = self.record.load()
+            value["devices"][name] = {
+                "revision": value["devices"].get(name, {}).get("revision", 0) + 1, "device": f"avd:{name}",
+                "state": "released", "activeRun": False, "reservedAt": (released - timedelta(hours=1)).isoformat(),
+                "releasedAt": released.isoformat(), "port": port, "serial": f"emulator-{port}",
+                "emulatorProcess": {"pid": 403, "start": self.start}}
+            self.record._replace(value)
+        moment = (released - timedelta(minutes=30) if files is None
+                  else datetime.now(timezone.utc) - timedelta(days=files)).timestamp()
+        for path in [self.folder / f"{name}.ini", *(self.folder / f"{name}.avd").rglob("*"), self.folder / f"{name}.avd"]:
+            os.utime(path, (moment, moment))
+
+    def present(self):
+        return sorted(name for name in avd.listed(self.folder))
+
+    def test_off_reports_what_it_would_delete_and_deletes_nothing(self):
+        before = self.record.load()["devices"]
+        rows = self.pool(delete=False).reap()
+        self.assertEqual([line for line, _failed in rows], [
+            f"{self.TEMPLATE}: retention keeps it: the pool's last template",
+            *(f"{name}: retention would delete this member: unused for 20.0 days, more than 14 (released "
+              f"{before[name]['releasedAt'][:19]}+00:00, files last changed "
+              f"{datetime.fromtimestamp((self.folder / f'{name}.ini').stat().st_mtime, timezone.utc).isoformat(timespec='seconds')})"
+              "; emulatorRetention.deleteUnused is off" for name in (self.FIRST, self.SECOND))])
+        self.assertFalse(any(failed for _line, failed in rows))
+        self.assertEqual(self.present(), [self.FIRST, self.SECOND, self.TEMPLATE])
+        self.assertEqual(self.record.load()["devices"], before)
+        self.assertFalse(self.deletions.exists())
+        # On, a dry run reports the same deletions without the note, and still deletes nothing.
+        self.assertIn(f"{self.FIRST}: retention would delete this member: unused for 20.0 days",
+                      self.pool().reap(dry_run=True)[1][0])
+        self.assertEqual(self.present(), [self.FIRST, self.SECOND, self.TEMPLATE])
+
+    def test_the_setting_is_off_and_fourteen_days_unless_the_project_says_otherwise(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.assertEqual(emulator_pool.configured_retention(root), emulator_pool.Retention(False, 14))
+        (root / "queuekeeper.json").write_text(json.dumps({"emulatorPool": "Demo"}))
+        self.assertEqual(emulator_pool.configured_retention(root), emulator_pool.Retention(False, 14))
+        (root / "queuekeeper.json").write_text(json.dumps({"emulatorRetention": {"deleteUnused": True}}))
+        self.assertEqual(emulator_pool.configured_retention(root), emulator_pool.Retention(True, 14))
+        (root / "queuekeeper.json").write_text(json.dumps({"emulatorRetention": {"deleteUnused": True, "unusedDays": 30}}))
+        self.assertEqual(emulator_pool.configured_retention(root), emulator_pool.Retention(True, 30))
+        for wrong in ({"deleteUnused": "yes"}, {"unusedDays": 0}, {"unusedDays": 1.5}, {"enabled": True}, ["on"]):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                emulator_pool.settings.emulator_retention(wrong)
+        schema = json.loads((Path(__file__).resolve().parents[2] / "schemas/queuekeeper.schema.json").read_text())
+        declared = schema["properties"]["emulatorRetention"]
+        self.assertEqual(set(declared["properties"]), emulator_pool.settings.RETENTION_KEYS)
+        self.assertFalse(declared["additionalProperties"])
+
+    def test_on_deletes_members_past_the_window_and_keeps_the_last_template(self):
+        rows = self.pool().reap()
+        self.assertEqual([(line.split(":")[0], line.split(":")[1].strip()) for line, _failed in rows], [
+            (self.TEMPLATE, "retention keeps it"), (self.FIRST, "deleted this member under the retention policy"),
+            (self.SECOND, "deleted this member under the retention policy")])
+        self.assertIn("the pool's last template", rows[0][0])
+        self.assertEqual(self.present(), [self.TEMPLATE])
+        self.assertFalse((self.folder / f"{self.FIRST}.avd").exists())
+        entry = self.record.entry(self.FIRST)
+        self.assertEqual((entry["state"], entry["run"], entry["lastOwnerChatID"]),
+                         ("released", "Deleted under the retention policy", emulator_pool.RETENTION_OWNER))
+
+    def test_a_template_goes_with_its_kind_but_the_pool_keeps_its_most_recently_used_template(self):
+        make_avd(self.folder, self.TABLET, device="pixel_tablet")
+        self.age(self.TABLET, 30, port=5556)
+        rows = dict((line.split(":")[0], line) for line, _failed in self.pool().reap())
+        self.assertIn("deleted this template", rows[self.TABLET])
+        self.assertIn("the pool's last template", rows[self.TEMPLATE])
+        self.assertEqual(self.present(), [self.TEMPLATE])
+
+    def test_a_template_whose_kind_keeps_a_member_is_kept(self):
+        make_avd(self.folder, self.TABLET, device="pixel_tablet")
+        self.age(self.TABLET, 30, port=5556)
+        self.age(self.SECOND, 3)
+        self.pool().reap()
+        self.assertEqual(self.present(), [self.SECOND, self.TEMPLATE])
+
+    def test_each_condition_failing_alone_keeps_the_member(self):
+        def kept(change, says=None):
+            for name in (self.FIRST, self.SECOND, self.TEMPLATE):
+                if not (self.folder / f"{name}.ini").exists(): make_avd(self.folder, name)
+                self.age(name, 20)
+            restore = change()
+            try:
+                rows = [line for line, _failed in self.pool().reap()
+                        if line.startswith(self.SECOND) and "retention" in line]
+            finally:
+                if restore: restore()
+            self.assertIn(self.SECOND, self.present())
+            if says: self.assertTrue(rows and says in rows[0], rows)
+            else: self.assertEqual(rows, [])
+
+        cases = {
+            "used within the window": (lambda: self.age(self.SECOND, 13), None),
+            "used within a longer window": (lambda: setattr(self, "days", 30), None),
+            "held": (lambda: self.reserve_second(), None),
+            "no reservation records its use": (lambda: self.forget(self.SECOND), "no reservation records its last use"),
+            "files changed after its release": (lambda: self.age(self.SECOND, 20, files=2), "after its recorded release"),
+            "an unreadable release": (lambda: self.edit(self.SECOND, releasedAt="not a time"),
+                                      "release time cannot be read"),
+            "a release older than its reservation": (
+                lambda: self.edit(self.SECOND, reservedAt=datetime.now(timezone.utc).isoformat()),
+                "comes before its reservation"),
+            "an emulator not shown stopped": (lambda: self.stop_unknown(), "could not be confirmed stopped"),
+            "a process naming it": (lambda: self.name_in_census(), "a process still names this AVD"),
+        }
+        for case, (change, says) in cases.items():
+            self.days = None
+            with self.subTest(case=case):
+                original = self.pool
+                self.pool = lambda: original(days=self.days)
+                try:
+                    kept(change, says)
+                finally:
+                    self.pool = original
+
+    def reserve_second(self):
+        entry = self.record.entry(self.SECOND)
+        self.record.reserve(self.SECOND, owner="a-session-of-its-own", revision=entry["revision"], purpose="tests",
+                            device=f"avd:{self.SECOND}",
+                            release_by=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+
+    def forget(self, name):
+        with self.record._exclusive():
+            value = self.record.load()
+            del value["devices"][name]
+            self.record._replace(value)
+
+    def edit(self, name, **changes):
+        with self.record._exclusive():
+            value = self.record.load()
+            value["devices"][name].update(changes)
+            self.record._replace(value)
+
+    def stop_unknown(self):
+        self.inventory.return_value = {}, False
+        return lambda: setattr(self.inventory, "return_value", ({}, True))
+
+    def name_in_census(self):
+        self.listing.return_value += f"\n900 1 {os.getuid()} {self.start} emulator -avd {self.SECOND}"
+        original = self.listing.return_value.split("\n")[0]
+        return lambda: setattr(self.listing, "return_value", original)
+
+    def test_an_unverified_inventory_deletes_nothing(self):
+        with patch.object(emulator_pool.os, "scandir", side_effect=PermissionError(13, "Permission denied")):
+            with self.assertRaisesRegex(OSError, "cannot be read"):
+                self.pool().reap()
+        self.assertEqual(self.present(), [self.FIRST, self.SECOND, self.TEMPLATE])
+        self.assertFalse(self.deletions.exists())
+
+    def test_each_deletion_is_recorded_before_and_after_with_its_reason_and_evidence(self):
+        entry = self.record.entry(self.FIRST)
+        self.pool().reap()
+        lines = [json.loads(line) for line in self.deletions.read_text().splitlines()]
+        self.assertEqual([(line["event"], line["avd"]) for line in lines],
+                         [("deleting", self.FIRST), ("deleted", self.FIRST), ("deleting", self.SECOND),
+                          ("deleted", self.SECOND)])
+        first = lines[0]
+        self.assertEqual((first["pool"], first["kind"], first["path"], first["folder"], first["by"]),
+                         ("Demo", "member", str(self.folder / f"{self.FIRST}.avd"), str(self.folder),
+                          emulator_pool.RETENTION_OWNER))
+        self.assertIn("unused for 20.0 days, more than 14", first["reason"])
+        self.assertEqual(first["lastUse"]["releasedAt"], entry["releasedAt"][:19] + "+00:00")
+        self.assertEqual((first["lastUse"]["policyDays"], round(first["lastUse"]["unusedDays"])), (14, 20))
+        self.assertIn("filesChangedAt", first["lastUse"])
+        self.assertIn("lastUsedAt", first["lastUse"])
+
+    def test_a_deletion_that_cannot_be_recorded_does_not_happen(self):
+        self.deletions.mkdir()
+        rows = self.pool().reap()
+        self.assertTrue(all(failed for line, failed in rows if "could not record" in line))
+        self.assertEqual(sum("could not record" in line for line, _failed in rows), 2)
+        self.assertEqual(self.present(), [self.FIRST, self.SECOND, self.TEMPLATE])
+        self.assertEqual(self.record.entry(self.FIRST)["state"], "released")
 
 
 if __name__ == "__main__":

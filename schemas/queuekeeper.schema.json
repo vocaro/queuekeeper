@@ -79,6 +79,15 @@
       "minLength": 1,
       "pattern": "^[^/]+$"
     },
+    "emulatorRetention": {
+      "description": "The Android plugin's key, which a project gets with queuekeeper_android: the emulator pool's retention policy, which qk emulator-pool reap applies on a Mac whose AVD inventory reads as verified. Off when left out",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deleteUnused": {"description": "Delete a pool member whose recorded last use is more than unusedDays old, and a template whose kind has no member left, never the pool's last template, recording each deletion; false when left out", "type": "boolean"},
+        "unusedDays": {"description": "How many days a member stays unused before the policy deletes it; 14 when left out", "type": "integer", "minimum": 1}
+      }
+    },
     "android": {
       "description": "The Android plugin's key, which a project gets with queuekeeper_android: the Gradle build whose app and instrumented tests qk emulator-tests builds and runs",
       "type": "object",

@@ -4,10 +4,11 @@ import json
 import subprocess
 
 from queuekeeper import farm, offload_host, remote
-from .. import sdk
+from .. import sdk, settings
 
 
 PROBE = """
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -23,20 +24,25 @@ workspace.activate(checkout)
 from queuekeeper_android.emulators import reap_report
 if not Path(reap_report.__file__).resolve().is_relative_to(checkout):
     raise SystemExit("the farm's Queuekeeper checkout lacks the Android reap report")
-print(json.dumps(reap_report.receive(request["pool"])))
+# A receiver older than the retention policy takes the pool alone.
+days = {"unused_days": request["unusedDays"]} if "unusedDays" in request and \
+    "unused_days" in inspect.signature(reap_report.receive).parameters else {}
+print(json.dumps(reap_report.receive(request["pool"], **days)))
 """
 
 
-def receive(name):
-    """The farm probe's only entry point. It accepts a pool name and always runs the ownership checks in dry run."""
-    from .pool import Pool
+def receive(name, unused_days=settings.UNUSED_DAYS):
+    """The farm probe's only entry point. It accepts a pool name and the retention policy's days, and always runs
+    the ownership checks and the retention policy in dry run."""
+    from .pool import Pool, Retention
 
-    return {"pool": name, "inventory": "verified", "results": Pool(name, None).reap(dry_run=True)}
+    pool = Pool(name, None, retention=Retention(False, int(unused_days)))
+    return {"pool": name, "inventory": "verified", "results": pool.reap(dry_run=True)}
 
 
-def there(host, name):
+def there(host, name, unused_days=settings.UNUSED_DAYS):
     """Return the other Mac's report, or a reason it could not be checked."""
-    request = json.dumps({"checkout": offload_host.TOOLKIT_CHECKOUT, "pool": name})
+    request = json.dumps({"checkout": offload_host.TOOLKIT_CHECKOUT, "pool": name, "unusedDays": unused_days})
     try:
         done = remote.ssh(host, remote.host_command(PROBE, request), stdin=subprocess.DEVNULL, capture_output=True,
                           text=True, errors="replace", timeout=remote.CENSUS_TIMEOUT)
@@ -65,7 +71,8 @@ def print_farm(pool):
     except (OSError, ValueError, RuntimeError, sdk.Missing) as error:
         here = str(error) or type(error).__name__
     hosts = dict.fromkeys(mac["ssh"] for mac in macs)
-    readings = remote.read_macs(hosts, functools.partial(there, name=pool.name), remote.CENSUS_TIMEOUT, name=str)
+    probe = functools.partial(there, name=pool.name, unused_days=pool.retention.unused_days)
+    readings = remote.read_macs(hosts, probe, remote.CENSUS_TIMEOUT, name=str)
     failed = False
     for name, rows in [("this Mac", here), *((mac["name"], readings[mac["ssh"]]) for mac in macs)]:
         if isinstance(rows, str):

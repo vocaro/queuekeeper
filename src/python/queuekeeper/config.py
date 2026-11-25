@@ -160,7 +160,8 @@ PLUGIN_LANE_KEYS = {"display": "queuekeeper_mac_desktop", "unity": "queuekeeper_
                        "dimensions": "queuekeeper_apple"}
 # The top-level keys a plugin shipped here adds (hooks.CONFIG_KEYS), by its module, refused the same way.
 PLUGIN_CONFIG_KEYS = {"unity": "queuekeeper_unity", "app": "queuekeeper_apple", "simulatorPool": "queuekeeper_apple",
-                         "android": "queuekeeper_android", "emulatorPool": "queuekeeper_android"}
+                         "android": "queuekeeper_android", "emulatorPool": "queuekeeper_android",
+                         "emulatorRetention": "queuekeeper_android"}
 GROUP_KEYS = frozenset({"parallel", "jobs", "resource", "here", "model", "budgetMinutes", "wholeHost", "unlockedScreen",
                         "labels", "failFast", "disk", "inputs"})
 

@@ -57,6 +57,47 @@ From an Android-enabled checkout, `qk disk` measures the host's known pool membe
 logs in the main project checkouts, and Gradle's caches and wrapper distributions. Pool rows show the recorded
 reservation or the time since release when available. These items are kept by `qk disk --delete`.
 
+### Deleting unused members
+
+The pool has a retention policy, which is off by default:
+
+- Delete a pool member that has not been used for 14 days.
+- Never delete the pool's last template.
+- Delete only on a Mac whose AVD inventory reads as verified.
+- Record every deletion.
+
+While the policy is off, `qk emulator-pool reap` and its `--dry-run` work as before. They also list each member
+the policy would delete, with its last-use evidence and the note `emulatorRetention.deleteUnused is off`. A member
+whose last use cannot be shown reliably is listed as kept. The farm dry run, `reap --farm --dry-run`, reports the
+same for every active farm Mac.
+
+Turn it on only after the farm dry run has shown reliable last-use times on every farm Mac
+([#245](https://github.com/vocaro/queuekeeper/issues/245)). To turn the policy on, add this key to the project's
+`queuekeeper.json`:
+
+```json
+"emulatorRetention": {"deleteUnused": true, "unusedDays": 14}
+```
+
+`unusedDays` is 14 if it's left out. Each `qk emulator-pool reap` run without `--dry-run` then applies the policy
+on the Mac it runs on. A member is deleted only if all of these hold:
+
+- Its reservation is released. No other reservation names its AVD, and its AVD folder and pointer are its own.
+- Its last use is more than `unusedDays` ago. Last use is the later of the recorded release and the newest
+  change to its files. If the files changed more than five minutes after the release, the member was used outside
+  the record, so it is kept. A missing or unreadable release time also keeps it, as does a release earlier than
+  its reservation.
+- adb's listing is complete and doesn't show its emulator. Its recorded emulator process and ports are shown
+  stopped, and no process names it.
+
+A template is deleted the same way. Its own use and every member's use count toward its last use, and no member
+of its kind may remain. If every template in the pool would go, the most recently used one is kept. Each
+deletion takes a reservation at the revision its evidence was read at, so a member taken in the meantime is
+kept. It checks the emulator again and appends a `deleting` line to `~/.android/queuekeeper-emulator-deletions.jsonl`
+before removing anything. That line holds the AVD, its path, the reason and its last-use evidence. A `deleted`
+line follows once both the folder and the pointer are confirmed gone. If the line cannot be written, nothing is
+deleted. If a deletion cannot be confirmed, its reservation is kept for recovery and the command exits 1.
+
 `qk emulator-pool prune --avd NAME --dry-run` checks one local member without removing any files. The check keeps
 templates, the lowest-numbered member of a kind, and members whose last reservation kept state or was released
 within an hour. It requires a verifiable AVD directory, reservation, and local liveness readings. Passing the
