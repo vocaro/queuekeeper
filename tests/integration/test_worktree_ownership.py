@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -253,6 +254,73 @@ class MissingFolder(Fixture):
         self.assertEqual(result["outcome"], wo.KEPT)
         self.assertIn("no equal patch", result["why"])
         self.assertEqual(len(self.registered()), 1)
+
+
+class GoneQueueCheckouts(Fixture):
+    """A merge queue's long-lived checkouts whose folder went with a temporary queue folder (#356)."""
+    def gone(self, name, reason=mq.TOOLKIT_REASON, at="HEAD", age=2 * wo.SETTLED):
+        path = self.base / "tmp-queue" / "queuekeeper-workers" / name / "toolkit"
+        git(self.repo, "worktree", "add", "-q", "--detach", "--lock", "--reason", reason, str(path), at)
+        shutil.rmtree(path)
+        then = time.time() - age
+        admin = wo.registration(self.common, path)["admin"]
+        for entry in (admin, *Path(admin).iterdir()): os.utime(entry, (then, then))
+        return path
+
+    def test_a_gone_landed_copy_is_forgotten_and_nothing_else_is(self):
+        copy = self.gone("a")
+        checkout = self.gone("b", mq.CHECKOUT_REASON)
+        other = self.gone("c", "someone else's")
+        live = self.base / "live"
+        git(self.repo, "worktree", "add", "-q", "--detach", "--lock", "--reason", mq.TOOLKIT_REASON, str(live), "HEAD")
+        results = wo.forget_gone(self.repo, mq.QUEUE_REASONS)
+        self.assertEqual(sorted((os.path.realpath(each["path"]), each["outcome"]) for each in results),
+                         sorted([(os.path.realpath(copy), wo.FORGOTTEN), (os.path.realpath(checkout), wo.FORGOTTEN)]))
+        self.assertEqual(sorted(os.path.realpath(each) for each in self.registered()),
+                         sorted([os.path.realpath(other), os.path.realpath(live)]))
+        self.assertTrue(live.is_dir())
+
+    def test_a_dry_run_forgets_nothing(self):
+        copy = self.gone("a")
+        [result] = wo.forget_gone(self.repo, mq.QUEUE_REASONS, dry_run=True)
+        self.assertEqual(result["outcome"], wo.FORGOTTEN)
+        self.assertEqual([os.path.realpath(each) for each in self.registered()], [os.path.realpath(copy)])
+
+    def test_one_gone_lately_waits_unless_it_is_the_callers_own(self):
+        copy = self.gone("a", age=0)
+        self.assertEqual(wo.forget_gone(self.repo, mq.QUEUE_REASONS), [])
+        self.assertEqual(len(self.registered()), 1)
+        [result] = wo.forget_gone(self.repo, mq.QUEUE_REASONS, mine=copy)
+        self.assertEqual(result["outcome"], wo.FORGOTTEN)
+        self.assertEqual(self.registered(), [])
+
+    def test_a_head_main_lacks_is_kept(self):
+        scratch = self.base / "scratch"
+        git(self.repo, "worktree", "add", "-q", "--detach", str(scratch), "HEAD")
+        (scratch / "c").write_text("c\n")
+        git(scratch, "add", "c")
+        git(scratch, "commit", "-qm", "c")
+        unlanded = git(scratch, "rev-parse", "HEAD")
+        git(self.repo, "worktree", "remove", "--force", str(scratch))
+        self.gone("a", at=unlanded)
+        [result] = wo.forget_gone(self.repo, mq.QUEUE_REASONS)
+        self.assertEqual(result["outcome"], wo.KEPT)
+        self.assertIn("no equal patch", result["why"])
+        self.assertEqual(len(self.registered()), 1)
+
+    def test_reclaim_forgets_them_and_reports_them(self):
+        copy = self.gone("a")
+        said = io.StringIO()
+        with patch.object(wo, "Census", lambda real=wo.Census: real(take=nobody)), contextlib.redirect_stdout(said):
+            self.assertEqual(mq.reclaim(self.repo, dry_run=True, as_json=True), 0)
+        [listed] = json.loads(said.getvalue())["gone"]
+        self.assertEqual((os.path.realpath(listed["path"]), listed["outcome"]), (os.path.realpath(copy), wo.FORGOTTEN))
+        self.assertEqual(len(self.registered()), 1)
+        said = io.StringIO()
+        with patch.object(wo, "Census", lambda real=wo.Census: real(take=nobody)), contextlib.redirect_stdout(said):
+            self.assertEqual(mq.reclaim(self.repo), 0)
+        self.assertIn(f"forgotten {listed['path']} ({mq.TOOLKIT_REASON})", said.getvalue())
+        self.assertEqual(self.registered(), [])
 
 
 class Legacy(Fixture):

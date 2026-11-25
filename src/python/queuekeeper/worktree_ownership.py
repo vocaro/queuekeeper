@@ -24,6 +24,10 @@ only when nothing else is left in it: a preflight lane's log there is evidence. 
 gone is forgotten the same way, by removing exactly its own administrative folder, once its HEAD is proven landed.
 A record whose worktree was never added, or was removed, is dropped.
 
+A merge queue's own long-lived checkouts, its checkout of the project and its copy of the toolkit, outlive every
+process that makes them, so no record proves them: `forget_gone` forgets one only once its folder has gone, its HEAD
+is landed and its registration has stood unchanged a while (vocaro/queuekeeper#356).
+
 A worktree locked with the scratch reason but naming no record was made before records were kept: its maker is
 unknown, so `legacy` lists it and nothing removes it. A path prefix or a lock's words alone is never authority to
 delete.
@@ -57,6 +61,9 @@ GIT_TIMEOUT = 600
 IN_PROGRESS = ("CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply")
 
 RECLAIMED, FORGOTTEN, KEPT = "reclaimed", "forgotten", "kept"
+# How long a registration of another's checkout must have stood unchanged before forget_gone takes its gone folder
+# for good: one being moved is gone from its old path only for the moment of the move.
+SETTLED = 3600
 
 
 def run_git(directory, *arguments, check=False, input=None):
@@ -355,7 +362,7 @@ def legacy(root, git=run_git):
             and any(each["reason"].startswith(reason) for reason in LEGACY_REASONS)]
 
 
-def forget_missing(root, path, reasons, git=run_git):
+def forget_missing(root, path, reasons, git=run_git, dry_run=False):
     """Forget the registration of the worktree at path, whose folder has gone, when it is locked with one of reasons
     and its HEAD is proven landed (unlanded): exactly its own administrative folder goes, as `git worktree prune`
     would remove it once unlocked, and no other registration. None when it went, else why it stays."""
@@ -368,8 +375,39 @@ def forget_missing(root, path, reasons, git=run_git):
     if canonical(admin.parent) != canonical(common / "worktrees"): return "its registration is elsewhere"
     why = unlanded(root, found["head"], git)
     if why: return why
+    if dry_run: return None
+    again = registration(common, path)
+    if again is None or Path(again["admin"]) != admin or os.path.lexists(path):
+        return "its registration changed while it was checked"
     shutil.rmtree(admin)
     return None
+
+
+def forget_gone(root, reasons, *, mine=None, settled=SETTLED, dry_run=False, git=run_git):
+    """Forget each registration in root's repository locked with exactly one of reasons whose folder has gone, as
+    forget_missing does, and return what became of each, as dicts with path, outcome (FORGOTTEN or KEPT) and why.
+    These are a merge queue's long-lived checkouts (Worker.place), whose makers outlive no round, so no maker record
+    can prove them; what proves one safe to forget is that nothing of it is left but its administrative folder, and
+    its HEAD is landed. A queue in a temporary folder, a test project's or a rehearsal's, left its copy of the
+    toolkit registered and locked in the shared toolkit checkout once that folder was deleted, which `git worktree
+    prune` keeps for good (vocaro/queuekeeper#356). A registration that changed within settled seconds is left
+    unsaid, since `git worktree move` renames a folder before it rewrites the registration that names it, unless it
+    is mine, the path the caller is about to place itself. With dry_run, nothing changes and each says what would."""
+    reasons = tuple(reasons)
+    common = common_dir(root, git)
+    results = []
+    for each in registrations(common):
+        path = each["path"]
+        if each["reason"] not in reasons or os.path.lexists(path): continue
+        if mine is None or canonical(path) != canonical(mine):
+            admin = Path(each["admin"])
+            try: changed = max(entry.stat().st_mtime for entry in (admin, *admin.iterdir()))
+            except OSError: continue
+            if time.time() - changed < settled: continue
+        why = forget_missing(root, path, reasons, git, dry_run)
+        results.append({"path": path, "reason": each["reason"], "outcome": KEPT if why else FORGOTTEN,
+                        "why": why or "its folder had gone and its HEAD is landed; its registration is forgotten"})
+    return results
 
 
 def words(result):

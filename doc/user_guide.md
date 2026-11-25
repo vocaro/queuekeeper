@@ -4236,6 +4236,16 @@ pruning every worktree:
 4. `git -C REPOSITORY worktree unlock PATH` and `git -C REPOSITORY worktree remove PATH`, without
    `--force`, then remove its empty temporary folder.
 
+**A queue's checkouts whose folder was deleted.** A worker keeps its checkout of the project, and
+a project's worker its copy of Queuekeeper, as locked worktrees, of the project and of the
+Queuekeeper checkout it loaded. A queue in a temporary folder, as a test project's or a
+rehearsal's, left these registered when that folder was deleted, and Git's pruning keeps them. A
+worker forgets each such registration of the repository it places one in, and `reclaim` each of its
+own repository, when the lock reads `the merge queue's checkout` or `the merge queue's copy of the
+toolkit`, the folder has gone, its HEAD is landed and the registration has not changed for an
+hour. It removes exactly that registration's folder under `.git/worktrees`, and `--json` lists
+each under `gone`. One kept, for a HEAD not landed, makes `reclaim` exit 1.
+
 **The old store's app source.** Before Queuekeeper had its own names, `qk app` kept its source
 worktree under `~/Library/Application Support/vocaro-engineering/apps/NAME/source`. A Mac moved
 since lists that registration, locked, with its folder gone. From the project, `qk app status` names

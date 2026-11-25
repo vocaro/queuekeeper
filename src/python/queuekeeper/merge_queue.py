@@ -401,6 +401,10 @@ QUEUES = "queuekeeper-workers"
 # What locks qk land's scratch worktrees while its trial integration (trial) or its replay of a branch's own
 # commits (linear) lasts, so that no sweep takes them.
 TRIAL_REASON = "qk land's trial integration of a new entry, removed when it ends"
+# The locks of a worker's long-lived worktrees (Worker.place), which outlive the queue's folder when that is deleted.
+CHECKOUT_REASON = "the merge queue's checkout"
+TOOLKIT_REASON = "the merge queue's copy of the toolkit"
+QUEUE_REASONS = (CHECKOUT_REASON, TOOLKIT_REASON)
 # The file whose conflicts the queue may settle, by its name in any directory and in any case.
 CHANGELOG = "changelog.md"
 HEADING = re.compile(rb"#{1,6}\s")
@@ -4440,14 +4444,18 @@ class Worker:
     def prepare(self, start=MAIN):
         """The worker's own checkout, made at start when it is new: origin/main, or the tip of the landing that creates
         main (first_landing). Locked, so that no sweep takes it for an abandoned worktree."""
-        self.place(self.queue.main_checkout, self.checkout, self.queue.old_checkout, "the merge queue's checkout", start)
+        self.place(self.queue.main_checkout, self.checkout, self.queue.old_checkout, CHECKOUT_REASON, start)
 
     def place(self, repository, path, old, reason, start=MAIN):
         """A locked worktree of repository at path, made at start, origin/main unless said. One an earlier worker kept
         at old moves there, with the
         ignored inputs its lanes provisioned, when no process uses it: this worker holds the queue, so no gate
         of its own runs there, and a process that does, a lane an earlier worker left running among them, keeps
-        it where it is. Then path is made afresh, and old stays, locked as retired, for `qk disk` to list."""
+        it where it is. Then path is made afresh, and old stays, locked as retired, for `qk disk` to list.
+        First, each registration of repository locked with reason whose folder has gone is forgotten once its HEAD is
+        landed (forget_gone): another queue's, from a temporary folder since deleted, or this one's own, which was
+        listed and so never made again (vocaro/queuekeeper#356)."""
+        self.forget_gone(repository, path, reason)
         listed = text(repository, "worktree", "list", "--porcelain").splitlines()
         if f"worktree {path}" in listed: return
         if path.exists():
@@ -4462,6 +4470,16 @@ class Worker:
             git(repository, "worktree", "lock", "--reason", f"{disk.RETIRED}: replaced by {path}", str(old), hooks=False)
         git(repository, "worktree", "add", "--detach", "--lock", "--reason", reason, str(path), start, hooks=False,
             check=True)
+
+    def forget_gone(self, repository, path, reason):
+        """Forget the registrations of repository locked with reason whose folders have gone (worktree_ownership.
+        forget_gone), saying which. A failure changes nothing and stops nothing."""
+        try: results = worktree_ownership.forget_gone(repository, (reason,), mine=path)
+        except Exception as error:  # noqa: BLE001 -- what only tidies up never stops a round
+            self.say(f"could not look for registrations of {repository} whose folders have gone: {error}")
+            return
+        for result in results:
+            self.say(f"{result['outcome']} the registration of {result['path']} ({reason}): {result['why']}")
 
     def move(self, repository, old, new):
         """Move the worktree at old to new and return None, or say why not, with it left as it was."""
@@ -4523,7 +4541,7 @@ class Worker:
             return
         copy = self.queue.toolkit_copy(common.stdout.strip(), own)
         old = self.queue.old_checkout.with_name(f"{self.queue.old_checkout.name}-toolkit")
-        self.place(TOOLKIT_ROOT, copy, old, "the merge queue's copy of the toolkit")
+        self.place(TOOLKIT_ROOT, copy, old, TOOLKIT_REASON)
         # A stacked gate runs with the copy as it is: it is thrown away before the copy moves (vocaro-engineering#241).
         if self.stacked and text(copy, "rev-parse", "HEAD") != head:
             self.drop_stacked(f"the toolkit copy moves to {head[:12]}")
@@ -9291,13 +9309,22 @@ def reclaim_branches(queue, say):
     return deleted
 
 
+def gone_checkouts(root, dry_run):
+    """The registrations of root's repository that a merge queue's checkout or copy of the toolkit left locked when
+    its folder went (worktree_ownership.forget_gone), forgotten unless dry_run. A queue in a temporary folder left
+    such a copy in the shared toolkit checkout (vocaro/queuekeeper#356)."""
+    return worktree_ownership.forget_gone(root, QUEUE_REASONS, dry_run=dry_run)
+
+
 def reclaim(root, dry_run=False, as_json=False, out=print):
     """`qk queue reclaim`: recover the scratch worktrees whose makers have ended, and list those made before records
-    were kept, which nothing removes; delete each local branch the queue proves landed, and list the linked
+    were kept, which nothing removes; forget the registrations a queue's checkout or copy of the toolkit left when its
+    folder went (gone_checkouts); delete each local branch the queue proves landed, and list the linked
     worktrees that hold only landed work, removing none (landed_cleanup). 0 when no scratch worktree is kept but for
     a maker that still runs, 1 otherwise: a branch or worktree kept is a report, not a failure."""
     results = worktree_ownership.reclaim(root, dry_run=dry_run)
     older = worktree_ownership.legacy(root)
+    gone = gone_checkouts(root, dry_run)
     queue = Queue(root)
     try: fetch_main(root, say=lambda words: print(f"queue: {words}", file=sys.stderr))
     except Exception as error:  # noqa: BLE001 -- a stale origin/main only keeps more
@@ -9307,17 +9334,21 @@ def reclaim(root, dry_run=False, as_json=False, out=print):
     trees = landed_cleanup.worktrees(root, entries)
     if as_json:
         out(json.dumps({"schemaVersion": 1, "dryRun": dry_run, "records": results, "legacy": older,
-                        "branches": branches, "worktrees": trees}, default=str))
+                        "gone": gone, "branches": branches, "worktrees": trees}, default=str))
     else:
         for result in results:
             out(("would be " if dry_run and result["outcome"] != worktree_ownership.KEPT else "")
                 + worktree_ownership.words(result))
         for each in older: out(f"legacy {each['path']}: {each['why']}")
+        for each in gone:
+            out(("would be " if dry_run and each["outcome"] != worktree_ownership.KEPT else "")
+                + f"{each['outcome']} {each['path']} ({each['reason']}): {each['why']}")
         if not results and not older: out("no scratch worktree is left behind")
         for result in branches: out(landed_cleanup.branch_words(result, dry_run))
         for row in trees: out(landed_cleanup.worktree_words(row))
     needs = [result for result in results
              if result["outcome"] == worktree_ownership.KEPT and result.get("maker") != "running"]
+    needs += [each for each in gone if each["outcome"] == worktree_ownership.KEPT]
     return 1 if needs or older else 0
 
 

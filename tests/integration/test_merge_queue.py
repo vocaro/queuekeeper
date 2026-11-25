@@ -8458,6 +8458,29 @@ class ToolkitCopy(Fixture):
         self.assertEqual(self.state(identifier)["state"], "queued")
         self.assertTrue((self.copy / "kept").exists())
 
+    def test_a_deleted_temporary_queues_copy_is_forgotten_by_the_next_round(self):
+        # As rehearsals in /private/tmp left theirs in the shared Queuekeeper checkout (vocaro/queuekeeper#356).
+        gone = self.base / "rehearsal/queuekeeper-workers/project/toolkit"
+        run(self.kit, "git", "worktree", "add", "-q", "--detach", "--lock", "--reason", mq.TOOLKIT_REASON, str(gone),
+            "origin/main")
+        admin = Path(run(gone, "git", "rev-parse", "--path-format=absolute", "--git-dir"))
+        shutil.rmtree(gone.parents[2])
+        then = time.time() - 2 * mq.worktree_ownership.SETTLED
+        for entry in (admin, *admin.iterdir()): os.utime(entry, (then, then))
+        with contextlib.redirect_stdout(io.StringIO()) as said: identifier, status = self.gate_once("a")
+        self.assertEqual(status, 0)
+        self.assertIn(f"forgotten the registration of {gone}", said.getvalue())
+        self.assertEqual(self.locks(self.kit), {str(self.copy): mq.TOOLKIT_REASON})
+
+    def test_its_own_copy_whose_folder_went_is_made_again(self):
+        self.gate_once("a")
+        shutil.rmtree(self.copy)
+        identifier, status = self.gate_once("b")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.state(identifier)["state"], "landed")
+        self.assertEqual(self.seen.read_text().split("\n")[0], str(self.copy))
+        self.assertEqual(self.locks(self.kit), {str(self.copy): mq.TOOLKIT_REASON})
+
     def test_the_checkouts_relative_path_to_the_toolkit_finds_the_queues_copy(self):
         # Pagepour's and studywright's ../vocaro-engineering, here ../toolkit, as a lane reads it.
         config = json.loads((self.repo / "queuekeeper.json").read_text())

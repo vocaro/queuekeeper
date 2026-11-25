@@ -656,6 +656,12 @@ gate's log when the lane ends.
   A maker counts as gone only when its PID is gone or runs another start; one that cannot be read
   counts as running. The record is written before `git worktree add` and removed only once the
   worktree is no longer registered, so a kill at any point leaves a record for anything it left.
+- A worker's own checkout and its copy of the toolkit outlive every process that makes them, so
+  no maker record proves them. Before placing either, `Worker.place` forgets each registration of
+  that repository locked with the same reason whose folder has gone (`worktree_ownership.forget_gone`),
+  once its HEAD is landed and, unless it is the path being placed, its administrative folder has
+  stood unchanged for `SETTLED` seconds: `git worktree move` renames a folder before it rewrites
+  the registration. `qk queue reclaim` runs the same for both reasons in its own repository.
 - `qk land --wait` and `qk queue reclaim` delete a landed entry's local branch only by
   `landed_cleanup`'s rule: the queue's newest entry from it landed and `origin/main` holds that
   landing, its tip is the one queued or every commit of it has an equal patch on `origin/main`,
