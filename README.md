@@ -6,6 +6,10 @@ Queuekeeper is a local merge queue and build coordinator for one developer worki
 agents. Like traditional merge queues, it shortens development time by batching changes and running
 them through the expensive test suites once, pushing to `main` only what passed. Unlike other merge queues, however, it understands how to manage local tools and devices efficiently, making it ideal for mobile app and video game developers.
 
+https://github.com/user-attachments/assets/82de4721-3cc8-42db-9d78-40847ad809f2
+
+<sub>The dashboard in 23 seconds. The video is also in this repository as [assets/queuekeeper-sizzle.mp4](assets/queuekeeper-sizzle.mp4).</sub>
+
 ## Why another merge queue?
 
 When several agents work in parallel, their builds and tests can still compete for the same Mac,

@@ -2470,6 +2470,11 @@ itself has changed. To try an edit before replacing the checked-in video, pass a
 the script name. Play the result and check that the dots move in the opening close-up and the final
 URL is readable at phone size.
 
+GitHub plays a README video inline only when GitHub hosts it, so the README links an uploaded copy
+of the reel rather than the file in `assets/`. After replacing the checked-in video, drag the new
+file into any issue or pull request comment box on GitHub without posting the comment, and replace
+the README's `https://github.com/user-attachments/assets/…` line with the URL that the upload gives.
+
 ### Cutting a release
 
 A release is a tag on a commit of `main` and a GitHub release whose notes give install steps pinned
