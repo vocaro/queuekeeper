@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "queuekeeper-mcp"
 version = "1.1.0"
 requires-python = ">=3.14"
-dependencies = ["queuekeeper==1.1.0"]
+dependencies = ["queuekeeper>=1.1,<2"]
 
 [project.scripts]
 queuekeeper-mcp = "queuekeeper_mcp.server:main"

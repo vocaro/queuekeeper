@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
 """Cut a Queuekeeper release in two steps (vocaro/queuekeeper#348; the developer guide's "Cutting a release").
 
-    python3 tools/release.py check                 list every version reference; exit 1 when any disagree
-    python3 tools/release.py bump X.Y.Z            rewrite every reference to X.Y.Z and commit it on release-X.Y.Z
+    python3 tools/release.py check                 list the 10 version fields; exit 1 on any problem
+    python3 tools/release.py bump X.Y.Z            rewrite each field to X.Y.Z and commit it on release-X.Y.Z
     python3 tools/release.py publish X.Y.Z         draft the notes and print the tag and release commands
     python3 tools/release.py publish X.Y.Z --yes   ... and run them
 
 `bump` refuses a tree with any change or untracked file, a HEAD other than origin/main once origin is fetched, and a
-version no greater than the current one. It commits on a new branch and prints the `qk land` command that lands it;
-it does not land by itself. `publish` runs only after that landing: it refuses unless every reference at origin/main
+version no greater than the current one or one that a range between this repository's packages does not admit.
+It commits on a new branch and prints the `qk land` command that lands it;
+it does not land by itself. `publish` runs only after that landing: it refuses unless every field at origin/main
 reads X.Y.Z and tag vX.Y.Z does not exist. It drafts the release notes, the install section of v1.0.0's notes with
 the new tag and the subjects of the commits since the previous tag, to --notes (by default a file in the temporary
 folder), and keeps a notes file that is already there, so that an edit made after a dry run is what --yes publishes.
 Without --yes it runs nothing and prints the commands it would run.
 
-The references are the core's pyproject.toml `version`, `queuekeeper.__version__`, the MCP server's `VERSION`, and
-each plugins/*/pyproject.toml `version` and exact pin on a queuekeeper package. tests/core/test_release.py fails when
-they disagree, or when a plugin or a version constant appears that this script would not rewrite.
+The references are the `version` fields of the core's pyproject.toml and of each plugins/*/pyproject.toml, which is
+all a release rewrites (vocaro/queuekeeper#350). `queuekeeper.__version__` and the MCP server read the core's field
+rather than storing a copy, and the packages here depend on each other by a compatible range such as
+`queuekeeper>=1.1,<2`, which a release within the major number leaves as it is. tests/core/test_release.py fails when
+the fields disagree, when a plugin appears that this script would not rewrite, when a package here pins another
+exactly or by a range that does not admit the version, or when Python source stores a version constant
+(`__version__ = "..."` or `VERSION = "..."`).
 """
 import argparse
 from pathlib import Path
@@ -29,12 +34,11 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = "pyproject.toml"
-CONSTANTS = {"src/python/queuekeeper/__init__.py": "__version__",
-             "plugins/mcp/src/queuekeeper_mcp/server.py": "VERSION"}
-# Python sources searched for a version constant that CONSTANTS does not name.
+# Python sources searched for a stored version constant, which would be one more reference to rewrite.
 SOURCES = ("src/python", "plugins")
 CONSTANT = re.compile(r"""^(__version__|VERSION)\s*=\s*["']""", re.M)
-PIN = re.compile(r'"(queuekeeper[A-Za-z0-9_.-]*)\s*([=<>!~]=?=?)\s*([^";\s]*)')
+DEPENDENCY = re.compile(r"(queuekeeper[A-Za-z0-9_.-]*)\s*(.*)")
+CLAUSE = re.compile(r"\s*(>=|<=|!=|>|<)\s*(\d+(?:\.\d+)*)\s*")
 VERSION = re.compile(r"\d+\.\d+\.\d+")
 TEMPLATE = "v1.0.0"  # The release whose notes hold the install section every release repeats.
 ISSUE = 348
@@ -52,7 +56,7 @@ class Reference:
         self.path, self.line, self.label, self.value, self.start, self.end = path, line, label, value, start, end
 
     def __repr__(self):
-        return f"{self.path}:{self.line}: {self.label}{'' if self.label.endswith('==') else ' = '}{self.value}"
+        return f"{self.path}:{self.line}: {self.label} = {self.value}"
 
 
 class WorkingTree:
@@ -115,8 +119,23 @@ def at(text, offset):
     return text.count("\n", 0, offset) + 1
 
 
-def pyproject(path, text, problems):
-    """The references in one pyproject.toml, checked against what tomllib reads there."""
+def numbers(version):
+    """A version as a tuple of numbers, padded with zeros to X.Y.Z so that 1.1 and 1.1.0 compare equal."""
+    parts = tuple(int(part) for part in version.split("."))
+    return parts + (0,) * (3 - len(parts))
+
+
+def admits(clauses, version):
+    """Whether every (operator, bound) clause of a range admits version."""
+    wanted = numbers(version)
+    tests = {">=": wanted.__ge__, ">": wanted.__gt__, "<=": wanted.__le__, "<": wanted.__lt__, "!=": wanted.__ne__}
+    return all(tests[operator](numbers(bound)) for operator, bound in clauses)
+
+
+def pyproject(path, text, problems, ranges):
+    """The version reference in one pyproject.toml, checked against what tomllib reads there. Each dependency on a
+    queuekeeper package goes to ranges as (path, line, dependency, name, clauses), or to problems when it is exact or
+    a range this script cannot read."""
     try:
         project = tomllib.loads(text).get("project", {})
     except tomllib.TOMLDecodeError as error:
@@ -130,36 +149,33 @@ def pyproject(path, text, problems):
         problems.append(f"{path}: the version line does not hold the project version {project['version']}")
     else:
         found.append(Reference(path, at(text, version.start(1)), "version", version.group(1), version.start(1), version.end(1)))
-    pins = [dependency for dependency in project.get("dependencies", []) if dependency.startswith("queuekeeper")]
-    located = list(PIN.finditer(text))
-    for dependency in pins:
-        match = next((m for m in located if f"{m.group(1)}{m.group(2)}{m.group(3)}" == dependency.replace(" ", "")), None)
-        if match is None:
-            problems.append(f"{path}: cannot find the dependency {dependency!r} in the text")
-        elif match.group(2) != "==":
-            problems.append(f"{path}: {dependency!r} is not an exact == pin")
+    dependencies = [d for d in project.get("dependencies", []) if DEPENDENCY.fullmatch(d)]
+    for dependency in dependencies:
+        name, spec = DEPENDENCY.fullmatch(dependency).groups()
+        offset = text.find(f'"{dependency}"')
+        line = at(text, offset) if offset >= 0 else "?"
+        clauses = [CLAUSE.fullmatch(part) for part in spec.split(",")] if spec.strip() else []
+        if "==" in spec:
+            problems.append(f"{path}:{line}: {dependency!r} pins {name} exactly; depend on it by a range such as "
+                            f"{name}>=X.Y,<X+1, which a release within the major number leaves as it is")
+        elif not all(clauses):
+            problems.append(f"{path}:{line}: {dependency!r} is not a range of >=, >, <=, < and != on numbered "
+                            "versions, which tools/release.py checks")
         else:
-            found.append(Reference(path, at(text, match.start(3)), f"{match.group(1)}==", match.group(3),
-                                   match.start(3), match.end(3)))
-    if path != CORE and not any(pin.startswith("queuekeeper==") for pin in pins):
-        problems.append(f"{path} does not pin the core (queuekeeper==)")
+            ranges.append((path, line, dependency, name, [clause.groups() for clause in clauses]))
+    if path != CORE and not any(DEPENDENCY.fullmatch(d).group(1) == "queuekeeper" for d in dependencies):
+        problems.append(f"{path} does not depend on the core (queuekeeper)")
     return found
 
 
-def survey(tree):
+def survey(tree, release=None):
     """Every version reference in tree, and each problem that keeps them from being one release: a disagreement, a
-    plugin with no version to rewrite, or a version constant this script does not know."""
-    problems, found = [], []
+    plugin with no version to rewrite, a dependency between the packages here that is exact or does not admit release
+    (by default the core's version), or a stored version constant."""
+    problems, found, ranges = [], [], []
     text = tree.read(CORE)
     if text is None: problems.append(f"{CORE} is missing")
-    else: found += pyproject(CORE, text, problems)
-    for path, name in CONSTANTS.items():
-        text = tree.read(path)
-        match = text and re.search(rf'^{re.escape(name)}\s*=\s*"([^"]*)"', text, re.M)
-        if not match:
-            problems.append(f"{path} has no {name} = \"X.Y.Z\"")
-            continue
-        found.append(Reference(path, at(text, match.start(1)), name, match.group(1), match.start(1), match.end(1)))
+    else: found += pyproject(CORE, text, problems, ranges)
     names = {"queuekeeper"}
     for plugin in tree.plugins():
         path = f"plugins/{plugin}/pyproject.toml"
@@ -167,19 +183,21 @@ def survey(tree):
         if text is None:
             problems.append(f"plugins/{plugin} has no pyproject.toml, so its version is not covered")
             continue
-        found += pyproject(path, text, problems)
+        found += pyproject(path, text, problems, ranges)
         try: names.add(tomllib.loads(text).get("project", {}).get("name", ""))
         except tomllib.TOMLDecodeError: pass
-    for reference in found:
-        if reference.label.endswith("==") and reference.label[:-2] not in names:
-            problems.append(f"{reference.path}:{reference.line}: pins {reference.label[:-2]}, which is no package here")
+    core = next((r.value for r in found if r.path == CORE and r.label == "version"), None)
+    release = release or core
+    for path, line, dependency, name, clauses in ranges:
+        if name not in names:
+            problems.append(f"{path}:{line}: depends on {name}, which is no package here")
+        elif release is not None and VERSION.fullmatch(release) and not admits(clauses, release):
+            problems.append(f"{path}:{line}: {dependency!r} does not admit {release}")
     for path in tree.python():
-        if path in CONSTANTS: continue
         text = tree.read(path) or ""
         for match in CONSTANT.finditer(text):
-            problems.append(f"{path}:{at(text, match.start())}: {match.group(1)} is a version constant tools/release.py "
-                            "does not rewrite; add it to CONSTANTS")
-    core = next((r.value for r in found if r.path == CORE and r.label == "version"), None)
+            problems.append(f"{path}:{at(text, match.start())}: {match.group(1)} stores a version that a release would "
+                            "have to rewrite; read queuekeeper.__version__, which the core's pyproject.toml gives")
     for reference in found:
         if core is not None and reference.value != core:
             problems.append(f"{reference.path}:{reference.line}: {reference.label} reads {reference.value}, not {core}")
@@ -217,6 +235,10 @@ def bump(root, version, out=sys.stdout):
     old, references = current(WorkingTree(root))
     if wanted <= parse(old):
         raise Refused(f"{version} is not greater than the current version {old}")
+    _, narrow = survey(WorkingTree(root), version)
+    if narrow:
+        raise Refused(f"a dependency between the packages here does not admit {version}; widen it first:\n"
+                      + "\n".join(f"  {p}" for p in narrow))
     branch = f"release-{version}"
     if subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/heads/{branch}"], cwd=root,
                       capture_output=True).returncode == 0:
@@ -226,8 +248,7 @@ def bump(root, version, out=sys.stdout):
     now, _ = current(WorkingTree(root))
     assert now == version, now
     git(root, "commit", "-q", "-a", "-m", f"Release Queuekeeper {version}\n\nRefs #{ISSUE}")
-    print(f"Rewrote {len(references)} references in {len({r.path for r in references})} files from {old} to "
-          f"{version} and committed them on {branch}.", file=out)
+    print(f"Rewrote {len(references)} version fields from {old} to {version} and committed them on {branch}.", file=out)
     print(f"Land it through the queue, then run `python3 tools/release.py publish {version}`:\n\n  {LAND}", file=out)
 
 
@@ -300,8 +321,8 @@ def check(root, out=sys.stdout):
 def main(argv=None, root=ROOT, out=sys.stdout):
     parser = argparse.ArgumentParser(prog="tools/release.py", description=__doc__.split("\n\n")[0])
     steps = parser.add_subparsers(dest="step", required=True)
-    steps.add_parser("check", help="list every version reference and whether they agree")
-    step = steps.add_parser("bump", help="rewrite every version reference and commit it on release-X.Y.Z")
+    steps.add_parser("check", help="list every version field and each problem")
+    step = steps.add_parser("bump", help="rewrite every version field and commit it on release-X.Y.Z")
     step.add_argument("version")
     step = steps.add_parser("publish", help="tag the landed bump and create its GitHub release")
     step.add_argument("version")

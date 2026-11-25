@@ -69,6 +69,7 @@ class LauncherPatch(unittest.TestCase):
         toolkit = cli.TOOLKIT_ROOT
         shutil.copytree(toolkit / "src/python", self.source / "src/python",
                         ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copyfile(toolkit / "pyproject.toml", self.source / "pyproject.toml")  # where the core's version is
         command = self.source / "bin/qk"
         command.parent.mkdir()
         shutil.copyfile(toolkit / "bin/qk", command)

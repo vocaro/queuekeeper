@@ -1,5 +1,6 @@
 """The release script (tools/release.py, vocaro/queuekeeper#348): every version reference agrees, and a release is
-bumped and published in two steps that refuse what they should, run against a temporary repository with a stand-in gh."""
+bumped and published in two steps that refuse what they should, run against a temporary repository with a stand-in gh.
+Also the core's one version source, `queuekeeper.__version__` (vocaro/queuekeeper#350)."""
 import contextlib
 import importlib.util
 import io
@@ -10,8 +11,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
@@ -58,15 +61,16 @@ def pyproject(name, version, *pins):
 
 
 def tree(root, version="1.0.0"):
-    """A checkout with each kind of reference the real one has, all reading version."""
+    """A checkout with each kind of reference the real one has, all reading version, and the ranges between its
+    packages, which admit it."""
     write(root, "pyproject.toml", pyproject("queuekeeper", version))
-    write(root, "src/python/queuekeeper/__init__.py", f'"""Queuekeeper."""\n\n__version__ = "{version}"\n')
+    write(root, "src/python/queuekeeper/__init__.py", '"""Queuekeeper."""\n\n__version__ = _version()\n')
     write(root, "plugins/mcp/src/queuekeeper_mcp/server.py",
-          f'NAME = "queuekeeper"\nVERSION = "{version}"\nPROTOCOL_VERSIONS = ("2025-06-18",)\n')
-    write(root, "plugins/mcp/pyproject.toml", pyproject("queuekeeper-mcp", version, f"queuekeeper=={version}"))
-    write(root, "plugins/mobile/pyproject.toml", pyproject("queuekeeper-mobile", version, f"queuekeeper=={version}"))
-    write(root, "plugins/apple/pyproject.toml", pyproject("queuekeeper-apple", version, f"queuekeeper=={version}",
-                                                          f"queuekeeper-mobile=={version}"))
+          'NAME = "queuekeeper"\nVERSION = core_version()\nPROTOCOL_VERSIONS = ("2025-06-18",)\n')
+    write(root, "plugins/mcp/pyproject.toml", pyproject("queuekeeper-mcp", version, "queuekeeper>=1.0,<2"))
+    write(root, "plugins/mobile/pyproject.toml", pyproject("queuekeeper-mobile", version, "queuekeeper >= 1.0, < 2"))
+    write(root, "plugins/apple/pyproject.toml", pyproject("queuekeeper-apple", version, "queuekeeper>=1.0,<2",
+                                                          "queuekeeper-mobile>=1.0,<2"))
     write(root, "plugins/apple/src/queuekeeper_apple/shards.py", 'EVENT_STREAM_VERSION = "0"\n')
 
 
@@ -74,16 +78,16 @@ class VersionsAgree(unittest.TestCase):
     def test_every_version_reference_in_this_checkout_agrees(self):
         found, problems = release.survey(release.WorkingTree(ROOT))
         self.assertEqual(problems, [])
-        files = {reference.path for reference in found}
-        self.assertLessEqual({"pyproject.toml", *release.CONSTANTS}, files)
-        # Every plugin is covered, by its version and its pin on the core.
-        for plugin in (ROOT / "plugins").iterdir():
-            if not plugin.is_dir(): continue
-            with self.subTest(plugin=plugin.name):
-                labels = {r.label for r in found if r.path == f"plugins/{plugin.name}/pyproject.toml"}
-                self.assertLessEqual({"version", "queuekeeper=="}, labels)
+        # The references are the version fields alone: the core's and one for each plugin.
+        plugins = sorted(p.name for p in (ROOT / "plugins").iterdir() if p.is_dir() and not p.name.startswith("."))
+        self.assertEqual([(r.path, r.label) for r in found],
+                         [("pyproject.toml", "version"), *((f"plugins/{p}/pyproject.toml", "version") for p in plugins)])
+        self.assertEqual(len(found), 10)
+        # The core's version is what its pyproject.toml says, read without package metadata.
         import queuekeeper
         self.assertEqual(found[0].value, queuekeeper.__version__)
+        with open(ROOT / "pyproject.toml", "rb") as file:
+            self.assertEqual(tomllib.load(file)["project"]["version"], queuekeeper.__version__)
 
     def test_each_disagreement_and_each_uncovered_plugin_or_constant_is_named(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -91,34 +95,81 @@ class VersionsAgree(unittest.TestCase):
             tree(root)
             self.assertEqual(release.survey(release.WorkingTree(root))[1], [])
             write(root, "plugins/mobile/pyproject.toml",
-                  pyproject("queuekeeper-mobile", "1.0.1", "queuekeeper==1.0.0"))
+                  pyproject("queuekeeper-mobile", "1.0.1", "queuekeeper>=1.0,<2"))
             write(root, "plugins/apple/pyproject.toml",
-                  pyproject("queuekeeper-apple", "1.0.0", "queuekeeper==0.9.0", "queuekeeper-mobile>=1.0.0"))
-            write(root, "plugins/mcp/src/queuekeeper_mcp/server.py", 'VERSION = "1.1.0"\n')
+                  pyproject("queuekeeper-apple", "1.0.0", "queuekeeper==1.0.0", "queuekeeper-mobile>=1.1,<2"))
+            write(root, "plugins/mcp/src/queuekeeper_mcp/server.py", 'VERSION = "1.0.0"\n')
             write(root, "plugins/stray/README.md", "No pyproject.\n")
-            write(root, "plugins/loose/pyproject.toml", pyproject("queuekeeper-loose", "1.0.0", "queuekeeper-gone==1.0.0"))
+            write(root, "plugins/loose/pyproject.toml",
+                  pyproject("queuekeeper-loose", "1.0.0", "queuekeeper-gone>=1.0,<2", "queuekeeper-mobile~=1.0"))
             write(root, "plugins/loose/src/queuekeeper_loose/__init__.py", '__version__ = "1.0.0"\n')
             found, problems = release.survey(release.WorkingTree(root))
             self.assertEqual(problems, [
-                "plugins/apple/pyproject.toml: 'queuekeeper-mobile>=1.0.0' is not an exact == pin",
-                "plugins/loose/pyproject.toml does not pin the core (queuekeeper==)",
+                "plugins/apple/pyproject.toml:9: 'queuekeeper==1.0.0' pins queuekeeper exactly; depend on it by a "
+                "range such as queuekeeper>=X.Y,<X+1, which a release within the major number leaves as it is",
+                "plugins/loose/pyproject.toml:9: 'queuekeeper-mobile~=1.0' is not a range of >=, >, <=, < and != on "
+                "numbered versions, which tools/release.py checks",
+                "plugins/loose/pyproject.toml does not depend on the core (queuekeeper)",
                 "plugins/stray has no pyproject.toml, so its version is not covered",
-                "plugins/loose/pyproject.toml:9: pins queuekeeper-gone, which is no package here",
-                "plugins/loose/src/queuekeeper_loose/__init__.py:1: __version__ is a version constant tools/release.py "
-                "does not rewrite; add it to CONSTANTS",
-                "plugins/mcp/src/queuekeeper_mcp/server.py:1: VERSION reads 1.1.0, not 1.0.0",
-                "plugins/apple/pyproject.toml:9: queuekeeper== reads 0.9.0, not 1.0.0",
+                "plugins/apple/pyproject.toml:9: 'queuekeeper-mobile>=1.1,<2' does not admit 1.0.0",
+                "plugins/loose/pyproject.toml:9: depends on queuekeeper-gone, which is no package here",
+                "plugins/loose/src/queuekeeper_loose/__init__.py:1: __version__ stores a version that a release would "
+                "have to rewrite; read queuekeeper.__version__, which the core's pyproject.toml gives",
+                "plugins/mcp/src/queuekeeper_mcp/server.py:1: VERSION stores a version that a release would have to "
+                "rewrite; read queuekeeper.__version__, which the core's pyproject.toml gives",
                 "plugins/mobile/pyproject.toml:7: version reads 1.0.1, not 1.0.0"])
+            self.assertEqual(len(found), 5)
+
+    def test_the_core_stores_no_version_of_its_own(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree(directory)
+            write(directory, "src/python/queuekeeper/__init__.py", "__version__ = '1.0.0'\n")
+            self.assertEqual(release.survey(release.WorkingTree(Path(directory)))[1], [
+                "src/python/queuekeeper/__init__.py:1: __version__ stores a version that a release would have to "
+                "rewrite; read queuekeeper.__version__, which the core's pyproject.toml gives"])
 
     def test_the_check_step_exits_1_on_a_disagreement(self):
         with tempfile.TemporaryDirectory() as directory:
             tree(directory)
             out = io.StringIO()
             self.assertEqual(release.main(["check"], root=Path(directory), out=out), 0)
-            self.assertIn("plugins/apple/pyproject.toml:9: queuekeeper-mobile==1.0.0", out.getvalue())
+            self.assertIn("plugins/apple/pyproject.toml:7: version = 1.0.0", out.getvalue())
             write(directory, "pyproject.toml", pyproject("queuekeeper", "2.0.0"))
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(release.main(["check"], root=Path(directory), out=io.StringIO()), 1)
+
+
+class CoreVersion(unittest.TestCase):
+    """queuekeeper.__version__, loaded from a copy of the core's __init__.py laid out as each install has it."""
+
+    def version(self, pyproject_text=None, metadata="2.4.6"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            init = root / "src/python/queuekeeper/__init__.py"
+            init.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "src/python/queuekeeper/__init__.py", init)
+            if pyproject_text is not None: (root / "pyproject.toml").write_text(pyproject_text)
+            spec = importlib.util.spec_from_file_location(f"queuekeeper_copy_{uuid.uuid4().hex}", init)
+            module = importlib.util.module_from_spec(spec)
+            from importlib.metadata import PackageNotFoundError
+            found = (dict(return_value=metadata) if metadata else
+                     dict(side_effect=PackageNotFoundError("queuekeeper")))
+            with patch("importlib.metadata.version", **found):
+                spec.loader.exec_module(module)
+            return module.__version__
+
+    def test_a_checkout_reads_its_pyproject_before_any_metadata(self):
+        self.assertEqual(self.version(pyproject("queuekeeper", "9.8.7")), "9.8.7")
+        self.assertEqual(self.version(pyproject("queuekeeper", "9.8.7"), metadata=None), "9.8.7")
+
+    def test_without_the_cores_pyproject_it_is_the_installed_distributions(self):
+        self.assertEqual(self.version(), "2.4.6")
+        self.assertEqual(self.version(pyproject("something-else", "3.0.0")), "2.4.6")
+        self.assertEqual(self.version("not = [toml"), "2.4.6")
+
+    def test_with_neither_it_is_unknown_and_importing_does_not_raise(self):
+        self.assertEqual(self.version(metadata=None), "unknown")
+        self.assertEqual(self.version('[project]\nname = "queuekeeper"\n', metadata=None), "unknown")
 
 
 class Repository(unittest.TestCase):
@@ -181,7 +232,7 @@ if sys.argv[1:3] == ["release", "view"]: print({NOTES!r})
 
 
 class Bump(Repository):
-    def test_it_rewrites_every_reference_and_commits_on_a_release_branch(self):
+    def test_it_rewrites_only_the_version_fields_and_commits_on_a_release_branch(self):
         status, out, err = self.step("bump", "1.1.0")
         self.assertEqual(status, 0, err)
         self.assertEqual(self.git(self.repo, "branch", "--show-current"), "release-1.1.0")
@@ -190,7 +241,11 @@ class Bump(Repository):
         found, problems = release.survey(release.WorkingTree(self.repo))
         self.assertEqual(problems, [])
         self.assertEqual({r.value for r in found}, {"1.1.0"})
-        self.assertEqual(len(found), 10)
+        self.assertEqual(len(found), 4)
+        self.assertEqual(self.git(self.repo, "diff", "--stat", "HEAD~1", "HEAD", "--", "src", "plugins/mcp/src"), "")
+        # The ranges between the packages stay as they were.
+        self.assertIn('"queuekeeper>=1.0,<2", "queuekeeper-mobile>=1.0,<2"',
+                      (self.repo / "plugins/apple/pyproject.toml").read_text())
         self.assertIn('EVENT_STREAM_VERSION = "0"', (self.repo / "plugins/apple/src/queuekeeper_apple/shards.py").read_text())
         self.assertIn("python3 scripts/qk land --wait --json", out)
         # It lands nothing by itself.
@@ -225,11 +280,17 @@ class Bump(Repository):
         self.assertEqual(self.git(self.repo, "branch", "--list", "release-*"), "")
 
     def test_it_refuses_references_that_already_disagree(self):
-        write(self.repo, "plugins/mobile/pyproject.toml", pyproject("queuekeeper-mobile", "1.0.0", "queuekeeper==0.9.0"))
+        write(self.repo, "plugins/mobile/pyproject.toml", pyproject("queuekeeper-mobile", "1.0.0", "queuekeeper==1.0.0"))
         self.git(self.repo, "commit", "-qam", "Stray pin")
         self.git(self.repo, "push", "-q", "origin", "HEAD:main")
         err = self.refused("the version references disagree", "bump", "1.1.0")
-        self.assertIn("plugins/mobile/pyproject.toml:9: queuekeeper== reads 0.9.0, not 1.0.0", err)
+        self.assertIn("plugins/mobile/pyproject.toml:9: 'queuekeeper==1.0.0' pins queuekeeper exactly", err)
+
+    def test_it_refuses_a_version_a_range_between_the_packages_does_not_admit(self):
+        err = self.refused("does not admit 2.0.0; widen it first", "bump", "2.0.0")
+        self.assertIn("plugins/apple/pyproject.toml:9: 'queuekeeper-mobile>=1.0,<2' does not admit 2.0.0", err)
+        self.assertEqual(self.git(self.repo, "branch", "--list", "release-*"), "")
+        self.assertEqual(self.git(self.repo, "status", "--porcelain"), "")
 
     def test_it_refuses_a_release_branch_that_exists(self):
         self.git(self.repo, "branch", "release-1.1.0")

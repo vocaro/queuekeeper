@@ -14,6 +14,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/python"))
 import host_isolation  # noqa: F401 -- first, as every test module
 from host_isolation import stretched
+from unittest.mock import patch
+import queuekeeper
 from queuekeeper import checkout
 from queuekeeper_mcp import server
 from test_support import queue as test_merge_queue
@@ -48,6 +50,39 @@ def structured(case, result):
     """A tool result's JSON, failing with the tool's whole text when it has none, so a failure says why."""
     case.assertIn("structuredContent", result, result["content"][0]["text"])
     return result["structuredContent"]
+
+
+class Version(unittest.TestCase):
+    """The server reports the core's version without importing the core (vocaro/queuekeeper#350)."""
+
+    def test_it_is_the_cores_version_in_this_checkout(self):
+        self.assertEqual(server.VERSION, queuekeeper.__version__)
+        self.assertNotEqual(server.VERSION, "unknown")
+
+    def test_a_bare_server_in_a_checkout_reads_that_checkouts_pyproject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            toolkit = fake_toolkit(Path(directory).resolve() / "toolkit", "")
+            (toolkit / "pyproject.toml").write_text('[project]\nname = "queuekeeper"\nversion = "7.8.9"\n')
+            # -I: no PYTHONPATH and no user site, so neither the core nor an installed copy can be imported.
+            finished = subprocess.run(
+                [sys.executable, "-I", str(toolkit / "plugins/mcp/src/queuekeeper_mcp/server.py"), "--project", directory],
+                input=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n",
+                capture_output=True, text=True, timeout=stretched(60))
+            self.assertEqual(finished.returncode, 0, finished.stderr)
+            self.assertEqual(json.loads(finished.stdout)["result"]["serverInfo"]["version"], "7.8.9")
+
+    def test_without_a_checkout_it_is_the_installed_cores_or_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            other = Path(directory)
+            (other / "pyproject.toml").write_text('[project]\nname = "something-else"\nversion = "3.0.0"\n')
+            with patch("importlib.metadata.version", return_value="2.4.6") as version:
+                self.assertEqual(server.core_version(other), "2.4.6")
+                self.assertEqual(server.core_version(None), "2.4.6")
+            version.assert_called_with("queuekeeper")
+            (other / "pyproject.toml").write_text("not = [toml")
+            from importlib.metadata import PackageNotFoundError
+            with patch("importlib.metadata.version", side_effect=PackageNotFoundError("queuekeeper")):
+                self.assertEqual(server.core_version(other), "unknown")
 
 
 class Commands(unittest.TestCase):
@@ -153,7 +188,7 @@ class Stdio(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 4, "method": "resources/list"})
         by_id = {reply["id"]: reply for reply in replies}
         self.assertEqual(by_id[1]["result"]["protocolVersion"], "2025-03-26")
-        self.assertEqual(by_id[1]["result"]["serverInfo"]["name"], "queuekeeper")
+        self.assertEqual(by_id[1]["result"]["serverInfo"], {"name": "queuekeeper", "version": queuekeeper.__version__})
         self.assertEqual({tool["name"] for tool in by_id[2]["result"]["tools"]},
                          {"land", "queue_wait", "queue_result", "queue_status", "queue_logs"})
         self.assertEqual(by_id[3]["result"], {})

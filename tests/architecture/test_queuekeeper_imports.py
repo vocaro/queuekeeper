@@ -3,6 +3,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -73,7 +74,7 @@ class Packages(unittest.TestCase):
             folder = ROOT / item["source"]
             metadata = tomllib.loads((folder.parent / "pyproject.toml").read_text())
             self.assertEqual(metadata["project"]["name"], item.get("distribution", name.replace("_", "-")))
-            deps = {dep.split("==")[0] for dep in metadata["project"]["dependencies"]}
+            deps = {re.match(r"[A-Za-z0-9_.-]+", dep).group() for dep in metadata["project"]["dependencies"]}
             self.assertEqual(deps, {"queuekeeper", *(dep.replace("_", "-") for dep in item["requires"])})
             packages = {p.name for p in folder.iterdir()
                         if p.is_dir() and p.name != "__pycache__" and not p.name.endswith(".egg-info")}

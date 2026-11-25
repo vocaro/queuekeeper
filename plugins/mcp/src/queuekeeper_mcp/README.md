@@ -32,7 +32,8 @@ else the `qk` installed beside its Python or on the `PATH`. Give `land` the work
 commit, since it lands that worktree's HEAD by default.
 
 The server uses only the standard library and imports nothing from Queuekeeper, so it adds no
-runtime dependency. It speaks JSON-RPC 2.0, one message a line, and accepts protocol versions
+runtime dependency. The version it reports is the core's: the `version` in the `pyproject.toml` of
+the Queuekeeper checkout it runs from, else the installed `queuekeeper` distribution's. It speaks JSON-RPC 2.0, one message a line, and accepts protocol versions
 2024-11-05, 2025-03-26 and 2025-06-18.
 
 ## Register it with Claude Code

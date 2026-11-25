@@ -20,9 +20,9 @@ import signal
 import subprocess
 import sys
 import threading
+import tomllib
 
 NAME = "queuekeeper"
-VERSION = "1.1.0"
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 WAIT_LIMIT = 600
 KEPT_ERROR_LINES = 40
@@ -31,6 +31,27 @@ READER_GRACE = 60
 TOOLKIT = next(iter(Path(__file__).resolve().parents[4:5]), None)
 # What marks a project's root when it holds no launcher of its own (vocaro/queuekeeper#20).
 PROJECT_MARKS = ("queuekeeper.json", ".git")
+
+
+def core_version(toolkit=TOOLKIT):
+    """The version of the Queuekeeper this server belongs to, which is `queuekeeper.__version__` read the same way
+    without importing the core (vocaro/queuekeeper#350): the server runs as a bare script with the standard library
+    alone. It is the `version` of the checkout's queuekeeper pyproject.toml when the server runs from one, else the
+    installed queuekeeper distribution's, else "unknown"."""
+    try:
+        project = tomllib.loads((toolkit / "pyproject.toml").read_text()).get("project") if toolkit else None
+        if isinstance(project, dict) and project.get("name") == "queuekeeper" and isinstance(project.get("version"), str):
+            return project["version"]
+    except (OSError, ValueError):
+        pass
+    try:
+        from importlib import metadata
+        return metadata.version("queuekeeper")
+    except Exception:
+        return "unknown"
+
+
+VERSION = core_version()
 
 DIRECTORY = {"type": "string", "description": "the checkout or worktree to run in: the commit's worktree for `land` "
                                                "(default: the server's project directory)"}
