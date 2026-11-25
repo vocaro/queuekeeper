@@ -22,7 +22,7 @@ import sys
 import threading
 
 NAME = "queuekeeper"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 WAIT_LIMIT = 600
 KEPT_ERROR_LINES = 40

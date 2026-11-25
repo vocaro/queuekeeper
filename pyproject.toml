@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "queuekeeper"
-version = "1.0.0"
+version = "1.1.0"
 description = "A merge queue and build farm for one developer's agents, on that developer's own Macs"
 license = {file = "LICENSE"}
 requires-python = ">=3.14"
