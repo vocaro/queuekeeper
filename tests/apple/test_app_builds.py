@@ -631,6 +631,20 @@ class Queue(Fixture):
         self.assertEqual(process.wait(timeout=host_isolation.stretched(30)), 0)
         self.assertEqual((checkout / "logs/keep.log").read_text(), f"app keep --after-landing --commit {'c' * 40}\n")
 
+    def test_the_spawned_keep_runs_by_the_toolkit_in_a_project_without_a_launcher(self):
+        # vocaro/queuekeeper#349: a project that dropped its scripts/qk (#20) is named to this Queuekeeper's launcher.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        checkout, toolkit = Path(temp.name) / "project", Path(temp.name) / "toolkit"
+        checkout.mkdir()
+        (toolkit / "scripts").mkdir(parents=True)
+        (toolkit / "scripts/qk").write_text("import sys; print(' '.join(sys.argv[1:]))\n")
+        with patch.object(app_builds, "TOOLKIT_ROOT", toolkit):
+            process = app_builds.spawn_keep(checkout, "c" * 40, checkout / "logs/keep.log")
+        self.assertEqual(process.wait(timeout=host_isolation.stretched(30)), 0)
+        self.assertEqual((checkout / "logs/keep.log").read_text(),
+                         f"--project {checkout} app keep --after-landing --commit {'c' * 40}\n")
+
 
 def device_app(path, bundle=BUNDLE, platforms=("iPhoneOS",)):
     """An .app as an iOS build lays it out, its Info.plist at the top, for the platforms it names."""

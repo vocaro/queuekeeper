@@ -23,9 +23,13 @@ long tool calls. Ending a wait, or cancelling the call, withdraws nothing: call 
 keep following the entry.
 
 Every tool takes an optional `directory`, the checkout or worktree to run in. It defaults to the
-server's working directory, or `--project DIR`. The server runs the nearest `scripts/qk` at or above
-that directory, the project's own launcher, or the one `--launcher PATH` names. Give `land` the
-worktree that holds the commit, since it lands that worktree's HEAD by default.
+server's working directory, or `--project DIR`. The server runs the launcher `--launcher PATH`
+names. Without one, it finds the project: the nearest folder at or above that directory that holds
+a `scripts/qk`, a `queuekeeper.json` or a `.git`. It runs the project's own launcher, `scripts/qk`,
+when the project has one. A project without one runs this Queuekeeper's own command with
+`--project` naming it: the checkout's `bin/qk` when the server runs from a Queuekeeper checkout,
+else the `qk` installed beside its Python or on the `PATH`. Give `land` the worktree that holds the
+commit, since it lands that worktree's HEAD by default.
 
 The server uses only the standard library and imports nothing from Queuekeeper, so it adds no
 runtime dependency. It speaks JSON-RPC 2.0, one message a line, and accepts protocol versions

@@ -684,13 +684,15 @@ def describe(store, config, root):
 
 def spawn_keep(checkout, commit, log, env=None):
     """Start `qk app keep --after-landing --commit COMMIT` from checkout in the background, writing to log, for
-    the merge queue after a push; it outlives the worker's round and holds none of its locks."""
+    the merge queue after a push; it outlives the worker's round and holds none of its locks. It runs by launcher,
+    as a build does, so a project that dropped its scripts/qk (vocaro/queuekeeper#20) still keeps its app
+    (vocaro/queuekeeper#349)."""
     log = Path(log)
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a") as handle:
-        return subprocess.Popen([sys.executable, str(Path(checkout) / "scripts/qk"), "app", "keep", "--after-landing",
-                                 "--commit", commit], cwd=checkout, stdin=subprocess.DEVNULL, stdout=handle,
-                                stderr=subprocess.STDOUT, start_new_session=True, env=env)
+        return subprocess.Popen([*launcher(checkout), "app", "keep", "--after-landing", "--commit", commit],
+                                cwd=checkout, stdin=subprocess.DEVNULL, stdout=handle, stderr=subprocess.STDOUT,
+                                start_new_session=True, env=env)
 
 
 def add_arguments(parser):

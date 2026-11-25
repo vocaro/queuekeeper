@@ -32,6 +32,18 @@ FAKE = textwrap.dedent("""\
 """)
 
 
+def fake_toolkit(path, command):
+    """A Queuekeeper checkout at path as the server recognizes one, whose bin/qk is command, with the server in it."""
+    (path / "bin").mkdir(parents=True)
+    (path / "bin/qk").write_text(command)
+    (path / "src/python/queuekeeper").mkdir(parents=True)
+    (path / "src/python/queuekeeper/cli.py").write_text("")
+    copied = path / "plugins/mcp/src/queuekeeper_mcp/server.py"
+    copied.parent.mkdir(parents=True)
+    shutil.copy(SERVER, copied)
+    return path
+
+
 def structured(case, result):
     """A tool result's JSON, failing with the tool's whole text when it has none, so a failure says why."""
     case.assertIn("structuredContent", result, result["content"][0]["text"])
@@ -78,9 +90,31 @@ class Commands(unittest.TestCase):
         (base / "scripts").mkdir()
         (base / "scripts/qk").write_text("")
         (base / "deep/er").mkdir(parents=True)
-        self.assertEqual(server.launcher_for(base / "deep/er"), base / "scripts/qk")
-        self.assertEqual(server.launcher_for(base, "/elsewhere/qk"), Path("/elsewhere/qk"))
+        self.assertEqual(server.launcher_for(base / "deep/er"), [base / "scripts/qk"])
+        self.assertEqual(server.launcher_for(base, "/elsewhere/qk"), [Path("/elsewhere/qk")])
         with self.assertRaises(server.Invalid): server.launcher_for(Path("/"))
+
+    def test_a_project_without_a_launcher_runs_this_queuekeepers_with_the_project_named(self):
+        # vocaro/queuekeeper#349: projects dropped their scripts/qk (#20); the nearest folder that holds a
+        # queuekeeper.json or a .git is the project, unless --launcher names one.
+        base = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        toolkit = fake_toolkit(base / "toolkit", "")
+        for mark in ("queuekeeper.json", ".git"):
+            with self.subTest(mark=mark):
+                project = base / mark.strip(".")
+                (project / "deep").mkdir(parents=True)
+                (project / mark).write_text("{}")
+                self.assertEqual(server.launcher_for(project / "deep", toolkit=toolkit),
+                                 [toolkit / "bin/qk", "--project", str(project)])
+                self.assertEqual(server.launcher_for(project / "deep", "/elsewhere/qk", toolkit=toolkit),
+                                 [Path("/elsewhere/qk")])
+        # A nested checkout without a launcher is its own project, not the one around it that has a launcher.
+        (base / "scripts").mkdir()
+        (base / "scripts/qk").write_text("")
+        self.assertEqual(server.launcher_for(base / "git/deep", toolkit=toolkit),
+                         [toolkit / "bin/qk", "--project", str(base / "git")])
+        self.assertEqual(server.launcher_for(base / "toolkit", toolkit=toolkit), [base / "scripts/qk"])
 
 
 class Stdio(unittest.TestCase):
@@ -94,11 +128,11 @@ class Stdio(unittest.TestCase):
         (self.base / "worktree").mkdir()
         self.record = self.base / "record.json"
 
-    def converse(self, *messages, result=None, status=0, project=None):
+    def converse(self, *messages, result=None, status=0, project=None, server_path=SERVER):
         environment = {**os.environ, "FAKE_RECORD": str(self.record), "FAKE_STATUS": str(status),
                        "PYTHONPATH": os.pathsep.join(map(str, checkout.source_paths()))}
         if result is not None: environment["FAKE_RESULT"] = result
-        finished = subprocess.run([sys.executable, str(SERVER), "--project", str(project or self.base)],
+        finished = subprocess.run([sys.executable, str(server_path), "--project", str(project or self.base)],
                                   input="".join(json.dumps(m) + "\n" for m in messages), capture_output=True,
                                   text=True, env=environment, timeout=stretched(60))
         self.assertEqual(finished.returncode, 0, finished.stderr)
@@ -156,6 +190,19 @@ class Stdio(unittest.TestCase):
         recorded = json.loads(self.record.read_text())
         self.assertEqual(recorded["argv"], ["land", "--json", "--note=n"])
         self.assertEqual(Path(recorded["cwd"]).resolve(), self.base / "worktree")
+
+    def test_a_project_without_a_launcher_runs_the_servers_own_queuekeeper(self):
+        # vocaro/queuekeeper#349: the server, in a Queuekeeper checkout, runs that checkout's bin/qk with --project.
+        toolkit = fake_toolkit(self.base / "toolkit", FAKE)
+        project = self.base / "project"
+        project.mkdir()
+        (project / "queuekeeper.json").write_text("{}")
+        replies = self.converse(self.call(1, "queue_status", {}), project=project,
+                                server_path=toolkit / "plugins/mcp/src/queuekeeper_mcp/server.py")
+        self.assertEqual(structured(self, replies[-1]["result"])["state"], "landed")
+        recorded = json.loads(self.record.read_text())
+        self.assertEqual(recorded["argv"], ["--project", str(project), "queue", "status", "--json"])
+        self.assertEqual(Path(recorded["cwd"]).resolve(), project)
 
     def test_output_that_is_not_json_is_an_error_with_its_standard_error(self):
         result = self.converse(self.call(1, "queue_result", {"id": "e1"}), result="Traceback", status=2)[-1]["result"]

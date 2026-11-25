@@ -1,19 +1,21 @@
 """An MCP server over stdio that lets an agent land and follow work through Queuekeeper's JSON commands.
 
-It speaks JSON-RPC 2.0, one message a line, with the standard library alone. Each tool runs the project's own
-launcher, `scripts/qk`, with `--json`, and returns the one JSON result that command prints on standard output.
+It speaks JSON-RPC 2.0, one message a line, with the standard library alone. Each tool runs `qk` with `--json`:
+the project's own launcher, `scripts/qk`, or in a project without one this Queuekeeper's own command with
+`--project`. It returns the one JSON result that command prints on standard output.
 The commands stay the authority for every action, state and exit status; this server only carries them. Lines a
 command writes to standard error while it runs, such as `queue wait`'s changes of situation and heartbeats, go to
 the client as progress notifications when its request asked for progress.
 
 Run it as `python3 PATH/TO/server.py`, optionally with `--project DIR` (the default directory for tools, which is
-otherwise the server's working directory) and `--launcher PATH` (a `qk` launcher to use instead of the nearest
-`scripts/qk` above the directory a tool runs in).
+otherwise the server's working directory) and `--launcher PATH` (a `qk` launcher to use instead of the one the
+project at or above the directory a tool runs in has, or this Queuekeeper's).
 """
 import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,6 +27,10 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 WAIT_LIMIT = 600
 KEPT_ERROR_LINES = 40
 READER_GRACE = 60
+# The Queuekeeper checkout this server is in, when it runs from one rather than as an installed package.
+TOOLKIT = next(iter(Path(__file__).resolve().parents[4:5]), None)
+# What marks a project's root when it holds no launcher of its own (vocaro/queuekeeper#20).
+PROJECT_MARKS = ("queuekeeper.json", ".git")
 
 DIRECTORY = {"type": "string", "description": "the checkout or worktree to run in: the commit's worktree for `land` "
                                                "(default: the server's project directory)"}
@@ -138,14 +144,35 @@ def ended(status):
     return f"was ended by {name} (exited {status})"
 
 
-def launcher_for(directory, configured=None):
-    """The configured launcher, else the nearest `scripts/qk` at or above directory."""
-    if configured: return Path(configured)
+def own_command(toolkit=None):
+    """This Queuekeeper's own command: the checkout's bin/qk when the server runs from one, else the `qk` installed
+    beside its Python or on the PATH; None when there is neither."""
+    toolkit = toolkit or TOOLKIT
+    if toolkit is not None and (toolkit / "bin/qk").is_file() and (toolkit / "src/python/queuekeeper/cli.py").is_file():
+        return toolkit / "bin/qk"
+    beside = Path(sys.executable).parent / "qk"
+    if beside.is_file(): return beside
+    found = shutil.which("qk")
+    return Path(found) if found else None
+
+
+def launcher_for(directory, configured=None, toolkit=None):
+    """The words that run qk for directory, after the Python that runs them: the configured launcher; else the
+    project's at or above directory, its own `scripts/qk`; else, for a project that holds none, as one need not
+    since vocaro/queuekeeper#20, this Queuekeeper's own command with `--project` naming it (vocaro/queuekeeper#349).
+    The project is the nearest folder that holds a scripts/qk, a queuekeeper.json or a .git."""
+    if configured: return [Path(configured)]
     for folder in [directory, *directory.parents]:
         candidate = folder / "scripts" / "qk"
-        if candidate.is_file(): return candidate
-    raise Invalid(f"no scripts/qk at or above {directory}; pass the server --launcher, or give a directory "
-                  "inside a project that has Queuekeeper's launcher")
+        if candidate.is_file(): return [candidate]
+        if any((folder / mark).exists() for mark in PROJECT_MARKS):
+            own = own_command(toolkit)
+            if own is None:
+                raise Invalid(f"no scripts/qk in {folder} and no Queuekeeper command to run it with; pass the "
+                              "server --launcher")
+            return [own, "--project", str(folder)]
+    raise Invalid(f"no project at or above {directory}; pass the server --launcher, or give a directory "
+                  "inside a project")
 
 
 class Server:
@@ -240,7 +267,7 @@ class Server:
             else:
                 self.reply(identifier, {"content": [{"type": "text", "text": str(error)}], "isError": True})
             return
-        self.reply(identifier, self.run(identifier, [self.python, str(launcher), *argv], directory, token))
+        self.reply(identifier, self.run(identifier, [self.python, *map(str, launcher), *argv], directory, token))
 
     def run(self, identifier, argv, directory, token):
         try:
@@ -301,7 +328,8 @@ class Server:
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="queuekeeper-mcp", description=__doc__.split("\n")[0])
     parser.add_argument("--project", help="the default directory for tools (default: the working directory)")
-    parser.add_argument("--launcher", help="the qk launcher to run (default: the nearest scripts/qk)")
+    parser.add_argument("--launcher", help="the qk launcher to run (default: the project's scripts/qk, else this "
+                        "Queuekeeper's own command with --project)")
     args = parser.parse_args(argv)
     stdin = open(sys.stdin.fileno(), encoding="utf-8", errors="replace", closefd=False)
     stdout = open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False)
