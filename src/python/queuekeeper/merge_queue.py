@@ -74,6 +74,59 @@ LAUNCHER_REQUIREMENT = f'-R=anchor apple generic and identifier "{LAUNCHER_BUNDL
 # The signed launcher's executable at the start of its arguments, and the app that holds it.
 LAUNCHER_ARGUMENTS = re.compile(rf"^(/.+?\.app)/Contents/MacOS/{LAUNCHER_PROGRAM}(?: |$)")
 LAUNCHER_INTERVAL = 120
+# What runs the worker from a toolkit: `qk queue run` for the main checkout, from the toolkit's src/python.
+WORKER_SCRIPT = ("import sys; sys.path.insert(0, sys.argv[1]); from queuekeeper.cli import main; "
+                 "sys.exit(main(['--project', sys.argv[2], 'queue', 'run', *sys.argv[3:]]))")
+# The signed launcher's default command (Queue.launcher_command): it starts the worker from the queue's own copy of
+# the toolkit, and from the shared checkout only while that copy cannot start it, saying why in worker.log when its
+# choice changes. It imports nothing of Queuekeeper's and replaces itself with the worker's own command, so that the
+# worker's arguments name only the toolkit it runs from (vocaro/queuekeeper#179). Given --which last, it prints its
+# choice as JSON instead, for `qk queue launcher-plist` and `qk queue doctor` (Queue.launcher_loads).
+LAUNCHER_FIRST_LINE = "# queuekeeper launcher: the queue's toolkit copy first"
+LAUNCHER_SCRIPT = LAUNCHER_FIRST_LINE + f"\nWORKER = {WORKER_SCRIPT!r}" + """
+import json, os, subprocess, sys
+copy, shared, record, *rest = sys.argv[1:]
+which = rest[-1:] == ["--which"]
+if which: rest = rest[:-1]
+def read(where, *words):
+    done = subprocess.run(["git", "-C", where, *words], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                          timeout=60)
+    return done.stdout.strip() if done.returncode == 0 else None
+def unusable():
+    if not os.path.exists(os.path.join(copy, ".git")): return "the queue has no copy of the toolkit yet"
+    try:
+        mine = read(copy, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        theirs = read(shared, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if not mine or not theirs or os.path.realpath(mine) != os.path.realpath(theirs):
+            return f"its copy at {copy} is no checkout of {shared}'s repository"
+        if read(copy, "--no-optional-locks", "status", "--porcelain", "--untracked-files=normal") != "":
+            return f"its copy at {copy} has uncommitted changes"
+        tried = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
+                                "import queuekeeper.cli, queuekeeper.merge_queue", os.path.join(copy, "src/python")],
+                               cwd=copy, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+    except (OSError, subprocess.SubprocessError) as error: return f"its copy at {copy} could not be checked: {error}"
+    said = [line.strip() for line in tried.stderr.splitlines() if line.strip()]
+    if tried.returncode: return f"its copy at {copy} does not import: {said[-1] if said else 'no output'}"
+    return None
+why = unusable()
+toolkit = shared if why else copy
+if which:
+    print(json.dumps({"toolkit": toolkit, "copy": copy, "shared": shared, "why": why}))
+    sys.exit(0)
+choice = json.dumps([toolkit, why])
+try:
+    with open(record) as kept: known = kept.read()
+except OSError: known = None
+if known != choice:
+    if why: print(f"queue: the signed launcher starts the worker from {shared}, since {why}", file=sys.stderr)
+    else: print(f"queue: the signed launcher starts the worker from the queue's copy of the toolkit at {copy}",
+                file=sys.stderr)
+    sys.stderr.flush()
+    try:
+        with open(record, "w") as kept: kept.write(choice)
+    except OSError: pass
+os.execv(sys.executable, [sys.executable, "-c", WORKER, os.path.join(toolkit, "src/python"), *rest])
+"""
 LAUNCHCTL = "/bin/launchctl"
 QUEUED, TESTING, PASSED, LANDED, FAILED, CONFLICT, REMOVED = \
     "queued", "testing", "passed", "landed", "failed", "conflict", "removed"
@@ -2191,8 +2244,7 @@ class Queue:
         """What runs this repository's worker on the toolkit at toolkit: `qk queue run` for the main checkout, from
         that toolkit's Python, as start starts one and as a worker starts itself again on a newer toolkit
         (Worker.move_to)."""
-        script = ("import sys; sys.path.insert(0, sys.argv[1]); from queuekeeper.cli import main; "
-                  "sys.exit(main(['--project', sys.argv[2], 'queue', 'run', *sys.argv[3:]]))")
+        script = WORKER_SCRIPT
         if pinned:
             # A configured checkout that disappeared must not fall through to another Python installation.
             script = ("import sys\nfrom pathlib import Path\n"
@@ -2208,8 +2260,51 @@ class Queue:
         digest = hashlib.sha256(os.fsencode(self.directory.resolve())).hexdigest()[:24]
         return f"{LAUNCHER_BUNDLE}.{digest}"
 
+    def launcher_command(self):
+        """The signed launcher's default command (LAUNCHER_SCRIPT): the worker from this queue's own copy of the
+        toolkit (toolkit_copy), as a fresh worker a session starts is (fresh_toolkit) and as every worker runs after
+        its first round, and from the shared checkout, the toolkit's main checkout, only while that copy cannot start
+        it. Each start chooses again, so a plist made before the queue's first round moves to the copy once it is
+        there (vocaro/queuekeeper#179)."""
+        common = text(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        own = common == text(self.main_checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        copy, shared = self.toolkit_copy(common, own), Path(common).parent
+        return [sys.executable, "-c", LAUNCHER_SCRIPT, str(copy), str(shared),
+                str(self.directory / "launcher-toolkit"), str(self.main_checkout), "--if-waiting"]
+
+    def launcher_loads(self, agent=None):
+        """What the signed launcher starts the worker from, by its installed plist or the agent given: a dict with
+        toolkit, how ("pinned" by --toolkit-root, "copy" by the default, "shared" by the default falling back or by a
+        plist made before the default, "unknown" by one not read) and why, the reason for "shared" or "unknown"; or
+        None with no plist installed."""
+        if agent is None:
+            try: agent = plistlib.loads(self.launcher_file().read_bytes())
+            except FileNotFoundError: return None
+            except (OSError, ValueError) as error:
+                return {"toolkit": None, "how": "unknown", "why": f"its plist could not be read: {error}"}
+        command = (agent.get("ProgramArguments") or [])[1:]
+        pinned = (agent.get("EnvironmentVariables") or {}).get(TOOLKIT_VARIABLE)
+        if pinned: return {"toolkit": pinned, "how": "pinned", "why": None}
+        if len(command) > 3 and command[1] == "-c" and command[2].startswith(LAUNCHER_FIRST_LINE):
+            try:
+                done = subprocess.run([*command, "--which"], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                      cwd=agent.get("WorkingDirectory") or None, timeout=STARTS_LIMIT)
+                said = [line.strip() for line in done.stderr.splitlines() if line.strip()]
+                if done.returncode:
+                    raise ValueError(f"it exited {done.returncode}: {said[-1] if said else 'no output'}")
+                chosen = json.loads(done.stdout)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                return {"toolkit": None, "how": "unknown", "why": f"its choice could not be read: {error}"}
+            return {"toolkit": chosen["toolkit"], "how": "shared" if chosen["why"] else "copy", "why": chosen["why"]}
+        if len(command) > 3 and command[1] == "-c":
+            return {"toolkit": str(Path(command[3]).parent.parent), "how": "shared",
+                    "why": "its plist predates the default to the queue's copy of the toolkit; make it again with "
+                           "`qk queue launcher-plist` to start from that copy"}
+        return {"toolkit": None, "how": "unknown", "why": "its plist names no worker command Queuekeeper made"}
+
     def launcher_plist(self, app, *, toolkit_root=None):
-        """Describe the signed service for this repository without installing it."""
+        """Describe the signed service for this repository without installing it: by default, one that starts the
+        worker from this queue's copy of the toolkit (launcher_command), or one pinned to toolkit_root."""
         if sys.platform != "darwin": raise ValueError("the signed queue launcher requires macOS")
         app = Path(app).expanduser().resolve()
         executable = app / "Contents" / "MacOS" / LAUNCHER_PROGRAM
@@ -2219,7 +2314,7 @@ class Queue:
         if checked.returncode: raise ValueError(f"the queue launcher needs an Apple signing identity: {checked.stderr.strip()}")
         variables = {key: os.environ[key] for key in ("PATH",) if key in os.environ}
         if toolkit_root is None:
-            toolkit = Path(text(TOOLKIT_ROOT, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+            command = self.launcher_command()
         else:
             toolkit = Path(toolkit_root).expanduser().resolve()
             top = git(toolkit, "rev-parse", "--show-toplevel")
@@ -2231,11 +2326,12 @@ class Queue:
             if why := starts(toolkit, head):
                 raise ValueError(f"the Queuekeeper commit at {toolkit} could not start: {why}")
             variables[TOOLKIT_VARIABLE] = str(toolkit)
+            command = self.command(toolkit, if_waiting=True, pinned=True)
         log = str(self.directory / "worker.log")
         return {
             "Label": self.launcher_label(),
             "AssociatedBundleIdentifiers": [LAUNCHER_BUNDLE],
-            "ProgramArguments": [str(executable), *self.command(toolkit, if_waiting=True, pinned=toolkit_root is not None)],
+            "ProgramArguments": [str(executable), *command],
             "WorkingDirectory": str(self.main_checkout),
             "EnvironmentVariables": variables,
             "RunAtLoad": True,
@@ -3368,10 +3464,30 @@ def gate_logs(queue, lanes, working):
     return found
 
 
+def launcher_words(loads, agent="the signed launcher"):
+    """What Queue.launcher_loads found, said for `qk queue launcher-plist` and `qk queue doctor`."""
+    if loads["how"] == "pinned": return f"{agent} starts the worker from {loads['toolkit']}, pinned by --toolkit-root"
+    if loads["how"] == "copy":
+        return f"{agent} starts the worker from the queue's copy of the toolkit at {loads['toolkit']}"
+    if loads["how"] == "shared": return f"{agent} starts the worker from {loads['toolkit']}, since {loads['why']}"
+    return f"what {agent} starts the worker from is unknown: {loads['why']}"
+
+
+def launcher_hints(root):
+    """A note of the toolkit this repository's installed signed launcher starts the worker from, or none: with no
+    launcher installed, off macOS, or when the queue cannot be read, as a note never fails the doctor."""
+    if sys.platform != "darwin": return []
+    try: loads = Queue(root).launcher_loads()
+    except Exception: return []  # noqa: BLE001 - a note never fails the doctor
+    return [launcher_words(loads)] if loads else []
+
+
 def doctor(root, as_json=False):
-    """`qk queue doctor`: report queue, admission, and host findings. 0 when healthy, 1 when it finds anything."""
+    """`qk queue doctor`: report queue, admission, and host findings. 0 when healthy, 1 when it finds anything. A
+    repository with a signed launcher installed gets a note of the toolkit it starts the worker from."""
     findings, waiting, working = diagnose(root)
     hints = admission_hints(root) + checkout_hints(root) if working else []
+    hints += launcher_hints(root)
     held_back, wait_notes = idle_waits(root) if working else ([], [])
     quiet, quiet_notes = quiet_findings({lane_wait.host_of(finding["mac"]) for finding in held_back})
     short, memory_notes = memory_findings()
@@ -4665,11 +4781,13 @@ class Worker:
     @staticmethod
     def launchers(users):
         """The PIDs of the signed queue launchers among users. The LaunchAgent runs the launcher with a worker's
-        command as its arguments, which name the shared checkout's src/python, and the launcher, a native program
+        command as its arguments, which name the shared checkout (its src/python in a plist pinned or made before
+        LAUNCHER_SCRIPT, its root as the fallback in one made since), and the launcher, a native program
         (src/python/queuekeeper/_native/queue-launcher), only spawns that command once and waits on it: by its arguments alone it would hold
         back the checkout, its own worker's included, as it did on 2026-11-10 and 2026-11-11 (vocaro-engineering#374,
         #384). The worker it started counts by its own arguments while it runs from the checkout, until move_to
-        replaces it with a command from a toolkit copy. Only the launcher's executable in an app that verifies as
+        replaces it with a command from a toolkit copy; LAUNCHER_SCRIPT replaces itself with a worker that names only
+        the toolkit it chose. Only the launcher's executable in an app that verifies as
         signed is passed over; any other process with such arguments still counts."""
         found = {}
         for process, _, _ in users:
@@ -9648,6 +9766,9 @@ def main(root, args):
     if args.operation == "reopen": return reopen(root)
     if args.operation == "reclaim": return reclaim(root, args.dry_run, args.json)
     if args.operation == "launcher-plist":
-        sys.stdout.write(plistlib.dumps(Queue(root).launcher_plist(args.app, toolkit_root=args.toolkit_root)).decode())
+        queue = Queue(root)
+        agent = queue.launcher_plist(args.app, toolkit_root=args.toolkit_root)
+        sys.stdout.write(plistlib.dumps(agent).decode())
+        print(launcher_words(queue.launcher_loads(agent), "this LaunchAgent"), file=sys.stderr)
         return 0
     return run(root, if_waiting=args.if_waiting)

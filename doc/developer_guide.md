@@ -321,7 +321,20 @@ inputs a provisioning lane made. Older `../NAME-queue` checkouts move here by th
   copy, when that copy is clean and its commit imports the worker, and `worker.log` says
   `starting the worker from its copy of the toolkit`. With no usable copy, as before a queue's
   first round, the log says why and the loaded Queuekeeper is used. A `QUEUEKEEPER_ROOT` set where
-  the session runs stands. The signed launcher keeps the toolkit its plist names.
+  the session runs stands.
+- **The signed launcher starts from the copy by default.** The LaunchAgent that
+  `qk queue launcher-plist` makes without `--toolkit-root` runs `LAUNCHER_SCRIPT`
+  (`Queue.launcher_command`), which imports nothing of Queuekeeper's. At each start it uses the
+  `TOOLKIT` copy when the copy is a clean checkout of the shared checkout's repository and imports
+  the worker, and otherwise the shared checkout, as before a queue's first round. It writes the
+  choice to `launcher-toolkit` in the queue's folder and says it in `worker.log` only when it
+  changes, since the agent runs every two minutes. It then replaces itself with the worker's own
+  command, so the worker's arguments name only the toolkit it runs from and a worker on the copy
+  never holds back the shared checkout. Given `--which` last, the script prints its choice as JSON
+  instead: `Queue.launcher_loads` asks the installed plist's own command so, and
+  `qk queue launcher-plist` and `qk queue doctor` say what it found. A plist pinned by
+  `--toolkit-root` keeps its path, and one made before this default keeps naming the shared
+  checkout until it is made again (vocaro/queuekeeper#179). A hand-run `scripts/qk` is unchanged.
 - **The worker follows its copy.** A worker whose code came from another commit restarts from the
   copy, with the same arguments and bisect, before touching any entry, so an old worker never
   refuses a setting the new code accepts. Queuekeeper's own worker puts the move off for one round

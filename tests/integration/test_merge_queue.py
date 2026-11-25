@@ -1690,6 +1690,9 @@ class Doctor(UnittestGate):
             status_, said, found = self.doctor(working=False)
             self.assertEqual(status_, 1, said)
             self.assertEqual(found["findings"][0]["remedy"], "`qk queue resume` starts one")
+            # With a plist installed, doctor says what it starts the worker from: here one it cannot read.
+            self.assertIn("note: what the signed launcher starts the worker from is unknown: its plist could not be "
+                          "read", said)
 
     def test_an_entry_queued_again_unchanged_came_back_and_a_changed_one_did_not(self):
         self.commit("c", "c")
@@ -8316,6 +8319,20 @@ class ToolkitCopy(Fixture):
         self.assertIn(f"since this queue has a copy at {self.copy} whose commit {broken[:12]} does not start: "
                       "importing it exited 1", said)
 
+    def test_the_signed_launcher_defaults_to_the_queues_copy_once_there(self):
+        """vocaro/queuekeeper#179: the default LaunchAgent starts its worker from the copy fresh_toolkit and each round
+        use, whatever the shared checkout holds, and from the shared checkout only before the queue's first round."""
+        queue = mq.Queue(self.repo)
+        command = queue.launcher_command()
+        self.assertEqual(command[3:], [str(self.copy), str(self.kit.resolve()), str(queue.directory / "launcher-toolkit"),
+                                       str(queue.main_checkout), "--if-waiting"])
+        agent = {"ProgramArguments": ["QueueLauncher", *command], "EnvironmentVariables": {}}
+        self.assertEqual(queue.launcher_loads(agent), {"toolkit": str(self.kit.resolve()), "how": "shared",
+                                                       "why": "the queue has no copy of the toolkit yet"})
+        with contextlib.redirect_stdout(io.StringIO()): self.gate_once("a")
+        (self.kit / "src/python/queuekeeper/cli.py").write_text("raise ImportError('an edit in progress')\n")
+        self.assertEqual(queue.launcher_loads(agent), {"toolkit": str(self.copy), "how": "copy", "why": None})
+
     def test_an_explicit_toolkit_root_starts_the_fresh_worker_from_the_loaded_toolkit(self):
         with contextlib.redirect_stdout(io.StringIO()): self.gate_once("a")
         (self.kit / "edit").write_text("x")
@@ -9486,19 +9503,37 @@ class SignedLauncher(Fixture):
         executable.touch()
         args = self.arguments("launcher-plist", str(app))
         stable = self.base / "stable-toolkit"
-        output = io.StringIO()
+        output, told, verified, asked = io.StringIO(), io.StringIO(), [], []
+        chosen = {"toolkit": str(stable), "copy": "copy", "shared": str(stable), "why": "the queue has no copy of the "
+                  "toolkit yet"}
+
+        def run_process(command, **options):
+            if command[0] == "/usr/bin/codesign":
+                verified.append((command, options))
+                return SimpleNamespace(returncode=0)
+            asked.append(command)
+            return SimpleNamespace(returncode=0, stdout=json.dumps(chosen), stderr="")
+
         with patch.object(mq.sys, "platform", "darwin"), patch.object(mq, "Queue", return_value=queue), \
                 patch.object(mq, "text", return_value=str(stable / ".git")), \
-                patch.object(mq.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as verify, \
-                contextlib.redirect_stdout(output):
+                patch.object(mq.subprocess, "run", side_effect=run_process), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(told):
             self.assertEqual(mq.main(self.repo, args), 0)
-        verify.assert_called_once_with(["/usr/bin/codesign", "--verify", "--strict",
-                                        f'-R=anchor apple generic and identifier "{mq.LAUNCHER_BUNDLE}"', str(app)],
-                                       capture_output=True, text=True, timeout=10)
+        self.assertEqual(verified, [(["/usr/bin/codesign", "--verify", "--strict",
+                                      f'-R=anchor apple generic and identifier "{mq.LAUNCHER_BUNDLE}"', str(app)],
+                                     {"capture_output": True, "text": True, "timeout": 10})])
         agent = plistlib.loads(output.getvalue().encode())
         self.assertEqual(agent["Label"], queue.launcher_label())
         self.assertEqual(agent["AssociatedBundleIdentifiers"], [mq.LAUNCHER_BUNDLE])
-        self.assertEqual(agent["ProgramArguments"], [str(executable), *queue.command(stable, if_waiting=True)])
+        # By default it starts the worker from the queue's copy of the toolkit, the shared checkout its fallback.
+        self.assertEqual(agent["ProgramArguments"], [
+            str(executable), sys.executable, "-c", mq.LAUNCHER_SCRIPT,
+            str(queue.home / f"{queue.main_checkout.name}-toolkit"),
+            str(stable), str(queue.directory / "launcher-toolkit"), str(queue.main_checkout), "--if-waiting"])
+        # And the command says what it would start from now, by asking the agent's own command.
+        self.assertEqual(asked, [[*agent["ProgramArguments"][1:], "--which"]])
+        self.assertEqual(told.getvalue(), f"this LaunchAgent starts the worker from {stable}, since the queue has no "
+                                          "copy of the toolkit yet\n")
         self.assertTrue(agent["RunAtLoad"])
         self.assertEqual(agent["StartInterval"], mq.LAUNCHER_INTERVAL)
         self.assertNotIn("QUEUEKEEPER_ROOT", agent["EnvironmentVariables"])
@@ -9532,9 +9567,12 @@ class SignedLauncher(Fixture):
             if command[0] == "/usr/bin/codesign": return SimpleNamespace(returncode=0)
             return run_process(command, **options)
 
-        with patch.object(mq.subprocess, "run", side_effect=verify_app), contextlib.redirect_stdout(output):
+        with patch.object(mq.subprocess, "run", side_effect=verify_app), contextlib.redirect_stdout(output), \
+                contextlib.redirect_stderr(io.StringIO()) as told:
             args = self.arguments("launcher-plist", str(app), "--toolkit-root", str(pinned))
             self.assertEqual(mq.main(self.repo, args), 0)
+            self.assertEqual(told.getvalue(), f"this LaunchAgent starts the worker from {pinned.resolve()}, pinned by "
+                                              "--toolkit-root\n")
             queue = mq.Queue(self.repo)
             with self.assertRaisesRegex(ValueError, "uncommitted changes"):
                 queue.launcher_plist(app, toolkit_root=shared)
@@ -9555,6 +9593,89 @@ class SignedLauncher(Fixture):
         result = subprocess.run(command, **options)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(result.stderr.strip(), f"queuekeeper: pinned toolkit is missing at {pinned.resolve()}")
+
+    def test_the_default_launcher_starts_the_worker_from_the_copy_and_falls_back_to_the_shared_checkout(self):
+        """vocaro/queuekeeper#179: the default LaunchAgent's command chooses at each start, replacing itself with a
+        worker whose arguments name only the toolkit it chose, and says in worker.log why when the choice changes."""
+        shared = (self.base / "shared-toolkit").resolve()
+        copy = self.base.resolve() / "queuekeeper-workers/project/shared-toolkit"
+        package = shared / "src/python/queuekeeper"
+        package.mkdir(parents=True)
+        (package / "__init__.py").touch()
+        (package / "merge_queue.py").touch()
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "def main(args): print(json.dumps([__file__, sys.argv[1:], args]))\n")
+        (shared / ".gitignore").write_text("__pycache__/\n")
+        run(shared, "git", "init", "-q")
+        run(shared, "git", "add", ".")
+        run(shared, "git", "commit", "-qm", "Toolkit")
+        record = self.base / "launcher-toolkit"
+        command = [sys.executable, "-c", mq.LAUNCHER_SCRIPT, str(copy), str(shared), str(record), str(self.repo),
+                   "--if-waiting"]
+        options = {"env": host_isolation.reduced(PATH=os.environ["PATH"]), "capture_output": True, "text": True,
+                   "timeout": stretched(60)}
+
+        def started():
+            result = subprocess.run(command, **options)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            source, words, args = json.loads(result.stdout)
+            self.assertEqual(args, ["--project", str(self.repo), "queue", "run", "--if-waiting"])
+            return Path(source).parents[3], words, result.stderr
+
+        # Before the queue's first round there is no copy: the shared checkout, and the log says why, once.
+        toolkit, words, said = started()
+        self.assertEqual(toolkit, shared)
+        self.assertEqual(said, f"queue: the signed launcher starts the worker from {shared}, since the queue has no "
+                               "copy of the toolkit yet\n")
+        self.assertEqual(started()[2], "")
+        # Once there, the copy, whose worker names it alone, so that it never holds back the shared checkout.
+        run(shared, "git", "worktree", "add", "-q", "--detach", str(copy))
+        toolkit, words, said = started()
+        self.assertEqual((toolkit, words), (copy, [str(copy / "src/python"), str(self.repo), "--if-waiting"]))
+        self.assertEqual(said, f"queue: the signed launcher starts the worker from the queue's copy of the toolkit "
+                               f"at {copy}\n")
+        self.assertEqual(started()[2], "")
+        # A shared checkout with an edit in progress does not matter, as nothing imports it.
+        (package / "cli.py").write_text("raise ImportError('an edit in progress')\n")
+        self.assertEqual(started()[:2], (copy, words))
+        # A copy that does not import, or has changes, is not used, and the log says why.
+        copied = copy / "src/python/queuekeeper/cli.py"
+        kept = copied.read_text()
+        (package / "cli.py").write_text(kept)
+        copied.write_text("raise ImportError('broken copy')\n")
+        toolkit, _, said = started()
+        self.assertEqual(toolkit, shared)
+        self.assertEqual(said, f"queue: the signed launcher starts the worker from {shared}, since its copy at {copy} "
+                               "has uncommitted changes\n")
+        run(copy, "git", "commit", "-qam", "Break the copy")
+        toolkit, _, said = started()
+        self.assertEqual(toolkit, shared)
+        self.assertEqual(said, f"queue: the signed launcher starts the worker from {shared}, since its copy at {copy} "
+                               "does not import: ImportError: broken copy\n")
+        # What doctor and launcher-plist read: the same command's own choice, from the agent.
+        agent = {"ProgramArguments": ["QueueLauncher", *command], "EnvironmentVariables": {}}
+        self.assertEqual(mq.Queue(self.repo).launcher_loads(agent), {
+            "toolkit": str(shared), "how": "shared", "why": f"its copy at {copy} does not import: ImportError: broken copy"})
+        copied.write_text(kept)
+        run(copy, "git", "commit", "-qam", "Mend the copy")
+        self.assertEqual(mq.Queue(self.repo).launcher_loads(agent), {"toolkit": str(copy), "how": "copy", "why": None})
+        self.assertEqual(mq.launcher_words(mq.Queue(self.repo).launcher_loads(agent)),
+                         f"the signed launcher starts the worker from the queue's copy of the toolkit at {copy}")
+
+    def test_a_plist_made_before_the_default_keeps_the_shared_checkout_and_says_so(self):
+        """An installed LaunchAgent made before vocaro/queuekeeper#179 runs as it did, and doctor says it names the
+        shared checkout, and how to move it to the copy."""
+        shared = self.base / "shared-toolkit"
+        queue = mq.Queue(self.repo)
+        older = {"ProgramArguments": ["QueueLauncher", *queue.command(shared, if_waiting=True)],
+                 "EnvironmentVariables": {"PATH": "/usr/bin"}}
+        loads = queue.launcher_loads(older)
+        self.assertEqual((loads["toolkit"], loads["how"]), (str(shared), "shared"))
+        self.assertIn("make it again with `qk queue launcher-plist`", mq.launcher_words(loads))
+        pinned = {**older, "EnvironmentVariables": {"QUEUEKEEPER_ROOT": str(shared)}}
+        self.assertEqual(queue.launcher_loads(pinned), {"toolkit": str(shared), "how": "pinned", "why": None})
+        with patch.object(mq.Path, "home", return_value=self.base): self.assertIsNone(queue.launcher_loads())
 
     def test_agent_entry_does_nothing_for_an_empty_held_or_running_queue(self):
         queue = mq.Queue(self.repo)

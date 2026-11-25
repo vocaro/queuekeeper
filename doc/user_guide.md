@@ -231,6 +231,20 @@ same worker at login and on its interval. An empty or held queue returns at once
 lock keeps out a second worker. If launchd refuses a start, `worker.log` records why and the
 session starts the worker itself.
 
+The agent starts the worker from the queue's own copy of Queuekeeper, which each round moves to
+Queuekeeper's landed `main`
+([the Queuekeeper a worker runs](developer_guide.md#the-queuekeeper-a-worker-runs)), so an edit
+in progress in the shared checkout never reaches it. It chooses at each start. Until the copy
+exists, as before a queue's first round, or while the copy has changes or does not import, the
+agent starts from the shared checkout instead, and `worker.log` says why whenever that choice
+changes. `qk queue launcher-plist` prints on standard error what the agent would start from now,
+and `qk queue doctor` adds a note saying the same for the installed agent.
+
+An agent installed before this default keeps starting from the shared checkout, and doctor says
+so. To move it to the copy, boot it out and remove its plist as
+[Removing the launcher](#removing-the-launcher) shows, then install it again with the commands
+above. A `scripts/qk` you run yourself still loads the checkout it is in.
+
 To give the signed agent its own stable Queuekeeper worktree, pass `--toolkit-root PATH` to
 `qk queue launcher-plist`. The command checks that the checkout is clean and its commit can import
 the worker. The generated agent starts from that path and sets `QUEUEKEEPER_ROOT` so the worker and
