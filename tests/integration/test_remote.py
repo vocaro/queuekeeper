@@ -116,6 +116,19 @@ FAKE_SHELL = """#!/bin/sh
 [ "$1" = -l ] && shift
 exec /bin/sh "$@"
 """
+# How long an --if-free admission waits in the toolkit RemoteTests sends, before load stretches it (free_wait).
+FARM_FREE_WAIT = 1
+
+
+def free_wait(toolkit, seconds, now=remote.FREE_WAIT):
+    """Give a toolkit copy's resources an --if-free wait (FREE_WAIT) of seconds in place of now, as the Macs that run
+    it read it: they get its text, so nothing patched in this process reaches them. A limit no longer found fails the
+    test here, rather than leaving the wait unchanged unnoticed. Returns seconds."""
+    path = Path(toolkit) / "src/python/queuekeeper/resources.py"
+    source, fixed = path.read_text(), f"FREE_WAIT, BUSY = {now}, {remote.BUSY}"
+    if fixed not in source: raise AssertionError(f"{path} no longer says {fixed!r}")
+    path.write_text(source.replace(fixed, f"FREE_WAIT, BUSY = {seconds}, {remote.BUSY}"))
+    return seconds
 # Recorded `ioreg -n Root -d1 -a` of each Mac's unlocked screens (tests/test_screen.py).
 SCREENS = Path(__file__).resolve().parents[1] / "mac_desktop/fixtures/ScreenState"
 # Well-formed, invented identifiers: a hardware UDID, an adb serial and a simulator UUID.
@@ -1060,6 +1073,18 @@ class RemoteTests(unittest.TestCase):
             offload_host.SCREEN_RECORDING: str(SCREENS / "this-mac-unlocked.plist"),
             "FAKE_SCREEN_IOREG": str(SCREENS / "second-mac-unlocked.plist")})
         (base / "second-mac-tmp").mkdir()
+        # Each Mac's heavy-work queue keeps a CPU sample old enough to read against, as a Mac in use does, so that its
+        # first reading does not sample the CPU for BUSY_QUICK seconds of its own (vocaro/queuekeeper#257). The
+        # readings still come from the real CPU, between this sample and each reading. The kernel moves its tick counts
+        # only every so often, and a reading against counts that have not moved yet is unread, which would put the Mac
+        # behind those read (remote.most_headroom), so the sample waits until they have.
+        ticks = offload_host.cpu_ticks()
+        if ticks is not None:
+            for slots in (base / "slots", base / "second-mac-slots"):
+                slots.mkdir()
+                (slots / resources.CPU_SAMPLES).write_text(
+                    json.dumps([[round(time.time() - resources.BUSY_WINDOW, 3), *ticks]]))
+            self.assertTrue(waiting.wait_until(lambda: offload_host.cpu_ticks() != ticks, stall=5, interval=0.02))
         self.environment.start()
         # The farm of this test's namespace has one Mac, the fake one.
         farm_fixture.write("fake")
@@ -1089,6 +1114,9 @@ class RemoteTests(unittest.TestCase):
         for part in ["bin", "scripts", "src/python", "plugins"]:
             shutil.copytree(config.TOOLKIT_ROOT / part, root / part, ignore=shutil.ignore_patterns("__pycache__", "build", "*.egg-info"))
         shutil.copyfile(config.TOOLKIT_ROOT / "queuekeeper-workspace.json", root / "queuekeeper-workspace.json")
+        # Each offer to a Mac a test holds busy waited out the real 5 s FREE_WAIT before that Mac declined it, several
+        # times in a test (vocaro/queuekeeper#257). A Mac with room admits at once, so a shorter wait changes no choice.
+        self.free_wait = free_wait(root, round(stretched(FARM_FREE_WAIT), 1))
         # Its .gitignore keeps out the bytecode that running it writes beside its source.
         shutil.copyfile(config.TOOLKIT_ROOT / ".gitignore", root / ".gitignore")
         (root / "queuekeeper.json").write_text(json.dumps({"schemaVersion": 1, "name": "vocaro-engineering", "plugins": ["queuekeeper_apple"]}))
@@ -2528,9 +2556,10 @@ class RemoteTests(unittest.TestCase):
         for slot in range(remote.CHECKOUTS):
             self.assertFalse(self.checkout(slot).exists(), slot)
         # Waiting holds no heavy-work slot of another Mac's. A process listing that a loaded Mac makes slow is logged
-        # in the same folder (offload_host.log_slow_listing), which is a record, not a slot (vocaro/queuekeeper#303).
+        # in the same folder (offload_host.log_slow_listing), which is a record, not a slot (vocaro/queuekeeper#303), and
+        # so are the CPU samples that its readings keep there (offload_host.cpu_busy).
         slots = Path(os.environ["FAKE_SLOTS"])
-        logs = {offload_host.SLOW_LISTING_LOG, offload_host.PREVIOUS_SLOW_LISTING_LOG}
+        logs = {offload_host.SLOW_LISTING_LOG, offload_host.PREVIOUS_SLOW_LISTING_LOG, offload_host.CPU_SAMPLES}
         self.assertEqual(sorted(path.name for path in slots.glob("*") if path.name not in logs)
                          if slots.exists() else [], [])
         release()
@@ -4357,10 +4386,7 @@ class RemoteTests(unittest.TestCase):
         """Give the toolkit the fake second Mac receives an --if-free wait no test outlasts, so that the wait ends when
         the test ends what holds that Mac, not at FREE_WAIT (#335). The fake gets the text, so nothing patched in this
         process reaches it. A limit no longer found fails the test here, rather than leaving it fixed unnoticed."""
-        path = self.toolkit / "src/python/queuekeeper/resources.py"
-        source, fixed = path.read_text(), f"FREE_WAIT, BUSY = {remote.FREE_WAIT}, {remote.BUSY}"
-        self.assertIn(fixed, source)
-        path.write_text(source.replace(fixed, f"FREE_WAIT, BUSY = 3600, {remote.BUSY}"))
+        free_wait(self.toolkit, 3600, self.free_wait)
         commit_all(self.toolkit)
 
     def busy_farm_mac(self):
