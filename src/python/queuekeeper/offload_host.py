@@ -4272,9 +4272,18 @@ def pinned_checkout(clone, name, commit, home=None, fetch=True, environment=None
 def stale_pins(home=None, days=PIN_DAYS, now=None):
     """The pinned checkouts no run has used for days, as (checkout, its ready file, this Mac's checkout it is a
     worktree of, or None when its ready file does not say): what `qk disk` lists and remove_pin reclaims. One with no ready
-    file, left half-made, counts from its own time."""
+    file, left half-made, counts from its own time. A ready file with no commit's folder beside it, which a folder
+    removed by hand or by another tool leaves (vocaro/queuekeeper#360), is listed too, however recent: pinned_checkout
+    writes one only last, under the folder's lock, beside a whole checkout, so no run can be making it."""
     now, found = time.time() if now is None else now, []
     for held in sorted(pins_root(home).glob("*/*")):
+        if held.name.endswith(PIN_READY) and not held.is_symlink() and held.is_file():
+            commit = held.parent / held.name[:-len(PIN_READY)]
+            if not commit.exists() and not commit.is_symlink():
+                try: clone = Path(held.read_text().strip())
+                except OSError: clone = None
+                found.append((commit / held.parent.name, held, clone))
+            continue
         if not held.is_dir() or held.is_symlink(): continue
         checkout, ready = held / held.parent.name, held.with_name(f"{held.name}{PIN_READY}")
         try: used = (ready if ready.is_file() else held).stat().st_mtime
@@ -4286,10 +4295,21 @@ def stale_pins(home=None, days=PIN_DAYS, now=None):
     return found
 
 
-def remove_pin(checkout, ready, clone):
-    """Remove one pinned checkout stale_pins found, under its folder's lock, unless a run has used it since."""
+def remove_pin(checkout, ready, clone, days=PIN_DAYS, now=None):
+    """Remove one pinned checkout stale_pins found, under its folder's lock, unless a run has used it since: its ready
+    file, or its folder when it has none, is newer than days. A ready file with no commit's folder beside it is
+    deleted alone; and when a run made that commit's checkout after stale_pins looked, it is in use and stays.
+    Returns whether it removed anything."""
     with (checkout.parent.parent / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        held = checkout.parent
+        if not held.exists() and not held.is_symlink():
+            with contextlib.suppress(OSError): ready.unlink()
+            return True
+        now = time.time() if now is None else now
+        try: used = (ready if ready.is_file() else held).stat().st_mtime
+        except OSError: used = None
+        if used is not None and now - used < days * 24 * 60 * 60: return False
         with contextlib.suppress(OSError): ready.unlink()
         if clone is not None and clone.is_dir():
             subprocess.run(["git", "-C", str(clone), "worktree", "remove", "--force", "--force", str(checkout)],
@@ -4297,6 +4317,7 @@ def remove_pin(checkout, ready, clone):
         shutil.rmtree(checkout.parent, ignore_errors=True)
         if clone is not None and clone.is_dir():
             subprocess.run(["git", "-C", str(clone), "worktree", "prune"], stdin=subprocess.DEVNULL, capture_output=True)
+    return True
 
 
 def place_siblings(slot, siblings, environment=None, home=None):

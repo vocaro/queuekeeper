@@ -480,33 +480,54 @@ def kept_results(host, usage, sizes):
 def pinned_checkouts(host, usage, sizes):
     """This Mac's checkouts of the folders projects' plugins load from, one for each commit a run pinned
     (offload_host.pinned_checkout), counted, with those no run has used for offload_host.PIN_DAYS days and no process
-    uses as one candidate, which `qk disk --prune-pins` removes."""
+    uses as one candidate, which `qk disk --prune-pins` removes. A commit's ready file left with no checkout beside
+    it, once the checkout was removed some other way, is counted and offered too (vocaro/queuekeeper#360)."""
     from . import offload_host  # which imports nothing of the toolkit
     root = offload_host.pins_root()
-    found = [path for path in sorted(root.glob("*/*")) if path.is_dir() and not path.is_symlink()] if root.is_dir() else []
-    if not found: return []
-    stale = [checkout for checkout, _, _ in offload_host.stale_pins(now=host.now) if not usage.of(checkout)]
+    if not root.is_dir(): return []
+    found = [path for path in sorted(root.glob("*/*")) if path.is_dir() and not path.is_symlink()]
+    listed = offload_host.stale_pins(now=host.now)
+    markers = [ready for checkout, ready, _ in listed if orphaned_pin(checkout)]
+    if not found and not markers: return []
+    stale = [checkout for checkout, _, _ in listed if not orphaned_pin(checkout) and not usage.of(checkout)]
     counted = f"{len(found)} checkout{'s' if len(found) != 1 else ''} of {len({path.parent for path in found})} folder(s)"
+    if markers:
+        counted += f", and {len(markers)} ready file{'s' if len(markers) != 1 else ''} with no checkout left"
     rule = f"one stays until no run has used it for {offload_host.PIN_DAYS} days"
-    idle = host.now - max(path.stat().st_mtime for path in found)
-    if stale:
-        return [Item("pinned-checkouts", str(root), CANDIDATE, f"{counted}; {len(stale)} past the rule: {rule}",
-                     sum(sizes.of(path) for path in stale),
+    idle = host.now - max(path.stat().st_mtime for path in found + markers)
+    if stale or markers:
+        past = f"{len(stale) or 'none'} past the rule: {rule}"
+        return [Item("pinned-checkouts", str(root), CANDIDATE, f"{counted}; {past}",
+                     sum(sizes.of(path) for path in stale + markers),
                      ["python3", str(TOOLKIT_ROOT / "bin/qk"), "disk", "--prune-pins"], idle)]
     return [Item("pinned-checkouts", str(root), KEPT, f"{counted}; none past the rule: {rule}",
                  sum(sizes.of(path) for path in found), None, idle)]
 
 
+def orphaned_pin(checkout):
+    """Whether offload_host.stale_pins listed checkout only for its ready file, its commit's folder being gone."""
+    return not checkout.parent.exists() and not checkout.parent.is_symlink()
+
+
 def prune_pins(out=print):
-    """qk disk --prune-pins: remove the pinned checkouts past their rule that no process uses."""
+    """qk disk --prune-pins: remove the pinned checkouts past their rule that no process uses, and the ready files
+    left with no checkout beside them."""
     from . import offload_host
     usage = Usage(host_class().current(0).processes)
-    gone = [found for found in offload_host.stale_pins() if not usage.of(found[0])]
-    for found in gone:
-        offload_host.remove_pin(*found)
-        out(f"pruned {found[0]}")
-    out(f"{len(gone)} pinned checkout{'s' if len(gone) != 1 else ''} pruned, unused for {offload_host.PIN_DAYS} days, "
+    pruned = markers = 0
+    for found in offload_host.stale_pins():
+        orphan = orphaned_pin(found[0])
+        if not orphan and usage.of(found[0]): continue
+        if not offload_host.remove_pin(*found): continue
+        if orphan:
+            markers += 1
+            out(f"pruned {found[1]}, which had no checkout beside it")
+        else:
+            pruned += 1
+            out(f"pruned {found[0]}")
+    out(f"{pruned} pinned checkout{'s' if pruned != 1 else ''} pruned, unused for {offload_host.PIN_DAYS} days, "
         f"in {offload_host.pins_root()}")
+    if markers: out(f"{markers} ready file{'s' if markers != 1 else ''} with no checkout left pruned")
     return 0
 
 

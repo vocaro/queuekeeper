@@ -2682,8 +2682,9 @@ checkout. `qk run` names the commit as it starts and the receipt records its com
   last working floating revisions.
 
 Pinned checkouts live in `~/Development/queuekeeper-pins/` on each Mac; `qk disk` lists them and
-`qk disk --prune-pins` removes those unused for a week. A folder without an exact pin can load as
-an ordinary directory.
+`qk disk --prune-pins` removes those unused for a week. It also removes a commit's `COMMIT.ready`
+file left with no checkout beside it, as removing a pinned checkout by hand leaves one. A folder
+without an exact pin can load as an ordinary directory.
 
 ### Running a Queuekeeper module in a child process
 
@@ -4016,7 +4017,7 @@ open file or an argument inside it. The rules for each category:
 | Caches of macOS tools (`~/Library/Caches`) | Idle and unused: `com.apple.python` (the system Python's bytecode) and `com.microsoft.VSCode.ShipIt` (VS Code's past update downloads). `Homebrew` (current downloads `brew cleanup` keeps) is an owner item. No other cache there is listed |
 | Unity projects' `Library`, `Temp` and `Logs` | Idle, no editor has the project open, and Git ignores the folder and tracks nothing in it. Otherwise kept |
 | Kept lane results | Beyond each lane's newest 10 commits and older than 14 days; removed, with that commit's earlier attempts, by `qk remote prune-results CHECKOUT`. Receipts are never removed |
-| Pinned checkouts | Unused by any run for a week and by any process; removed by `qk disk --prune-pins` |
+| Pinned checkouts | Unused by any run for a week and by any process, or a `COMMIT.ready` file with no checkout left beside it; removed by `qk disk --prune-pins` |
 
 **No runtime is removed while any simulator on this Mac runs or is reserved**, on any runtime: they
 share one launch host, and deleting a runtime can crash it. An unreadable device record keeps every

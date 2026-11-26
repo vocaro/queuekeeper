@@ -173,6 +173,48 @@ class PinnedCheckoutTests(Fixture):
         self.assertFalse(old.exists())
         self.assertTrue(new.is_dir())
 
+    def orphan(self):
+        """A pin whose commit's folder was removed some other way, leaving its ready file (vocaro/queuekeeper#360)."""
+        made = offload_host.pinned_checkout(self.kit, "kit", self.one)
+        git(self.kit, "worktree", "remove", "--force", "--force", str(made))
+        made.parent.rmdir()
+        return made, self.store / "kit" / f"{self.one}.ready"
+
+    def test_a_ready_file_left_with_no_checkout_is_listed_however_recent_and_removed_alone(self):
+        made, ready = self.orphan()
+        kept = offload_host.pinned_checkout(self.kit, "kit", self.publish("two"))
+        self.assertEqual(offload_host.stale_pins(), [(made, ready, self.kit)])
+        self.assertTrue(offload_host.remove_pin(*offload_host.stale_pins()[0]))
+        self.assertFalse(ready.exists())
+        self.assertEqual(offload_host.stale_pins(), [])
+        self.assertTrue(kept.is_dir())
+        self.assertTrue((self.store / "kit" / f"{git(self.kit, 'rev-parse', 'HEAD')}.ready").is_file())
+
+    def test_a_ready_file_whose_checkout_a_run_made_after_it_was_listed_stays(self):
+        made, ready = self.orphan()
+        found, = offload_host.stale_pins()
+        # A run pins the commit again between the listing and the removal, as one racing the prune does.
+        self.assertEqual(offload_host.pinned_checkout(self.kit, "kit", self.one), made)
+        self.assertFalse(offload_host.remove_pin(*found))
+        self.assertTrue(ready.is_file())
+        self.assertEqual(offload_host.pin_head(made), self.one)
+
+    def test_qk_disk_counts_ready_files_with_no_checkout_and_prunes_them(self):
+        made, ready = self.orphan()
+        host, sizes = SimpleNamespace(now=time.time()), SimpleNamespace(of=lambda path: 5)
+        idle = SimpleNamespace(of=lambda path: None)
+        offered, = disk.pinned_checkouts(host, idle, sizes)
+        self.assertEqual((offered.status, offered.size, offered.command[-2:]), (disk.CANDIDATE, 5, ["disk", "--prune-pins"]))
+        self.assertIn("0 checkouts of 0 folder(s), and 1 ready file with no checkout left; none past the rule",
+                      offered.reason)
+        said = []
+        self.assertEqual(disk.prune_pins(said.append), 0)
+        self.assertEqual(said, [f"pruned {ready}, which had no checkout beside it",
+                                f"0 pinned checkouts pruned, unused for 7 days, in {self.store}",
+                                "1 ready file with no checkout left pruned"])
+        self.assertFalse(ready.exists())
+        self.assertEqual(disk.pinned_checkouts(host, idle, sizes), [])
+
 
 class PlaceSiblingsTests(Fixture):
     def test_the_farm_mac_links_each_folder_at_the_commit_sent_in_place_of_its_live_checkout(self):
