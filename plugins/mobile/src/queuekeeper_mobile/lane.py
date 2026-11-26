@@ -4,16 +4,10 @@ every platform switched on (platforms.py). A slot has one provider, so this plug
 Android plugins each register a platform with it instead."""
 import json
 import os
-import sys
 
 from queuekeeper import plugins, resources
-from queuekeeper.resources import BUSY
+from queuekeeper_mac_desktop import reservations
 from . import device_pass, devices, leases
-
-
-def this_mac():
-    from queuekeeper import cli  # cli loads the plugin
-    return cli.this_mac()
 
 
 class Devices(leases.Devices):
@@ -51,23 +45,8 @@ class Devices(leases.Devices):
         lane timeout when it has neither. An ad hoc command keeps its label-based estimate."""
         if window is None: return None
         measured = resources.measured_seconds(label, devices=keys) if label is not None else None
-        waiting = devices.WindowWait(window, measured, budget=fallback if measured is None and budget is None else budget)
-        if waiting.left() > 0: print(f"queuekeeper: {name} waits for admission at most until {waiting.latest.isoformat()}: {waiting}",
-                                     file=sys.stderr, flush=True)
-        return waiting
-
-    def window_closed(self, name, waiting):
-        """Refuse an estimated run that can no longer fit. An unestimated diagnostic can try an immediate
-        admission and then meets the device runner's own bound."""
-        if waiting is None or waiting.estimate is None or waiting.left() > 0: return None
-        print(f"queuekeeper: {name} not run on {this_mac()}: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
-        return BUSY
-
-    def not_admitted(self, name, waiting, status):
-        """status, the end of a wait for admission, after saying that the device window is what cut it short."""
-        if waiting is not None and waiting.limited and status == BUSY:
-            print(f"queuekeeper: {name} stopped waiting: {waiting}. No device result was recorded", file=sys.stderr, flush=True)
-        return status
+        return reservations.window_wait(name, window, measured,
+                                        budget=fallback if measured is None and budget is None else budget)
 
     def device_lane_passed(self, results, keys):
         return device_pass.passed(results, keys)

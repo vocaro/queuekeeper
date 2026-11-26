@@ -2987,7 +2987,8 @@ the command once on each device named, in turn:
   the latest start that leaves room for its run and the reservation's cleanup; past it, it returns busy.
   Set `deviceRunMinutes` to the lane's whole time (build, every device, cleanup). Queuekeeper uses the
   larger of that and the median of its last five passing runs. A lane whose script calls
-  `device_pass.run` names its devices in `"devices": ["iPhone"]`.
+  `device_pass.run` names its devices in `"devices": ["iPhone"]`. A foreground lane under your
+  `mac-foreground` reservation waits the same way ([attended sessions](#attended-sessions-on-this-mac)).
 - **Verdict.** The pass exits 0 only when every device passed. A failure on any device fails it; a
   device not run, a run its bound stopped or one a banner reached twice leaves it unmeasured. Each
   device's outcome is in the lane's `device-pass.json`. A device it took and could not release stays
@@ -3397,6 +3398,12 @@ qk devices release mac-foreground --owner SESSION --revision N \
   uncertain, and its release time has not passed. A driver calls it, or `devices.require_foreground`,
   before each key, activation or focus change. `qk run --here` and `qk admit --foreground` check the same
   way.
+- **Admission waits only as long as the window allows.** A foreground lane run with `qk run --here`,
+  or a command with `qk admit --foreground`, waits for admission until the latest start that leaves
+  room, before `--release-by`, for its run and the 165 seconds a run keeps for its end and
+  restoration. Its run is the median of its last five admissions here, or before it has any the
+  `timeout` its lane sets; a run with arguments, or with neither, counts as 30 seconds. Past that
+  start it exits busy (75), saying when the window ends, and nothing runs, even on a free Mac.
 - **A passed release time releases nothing.** The check refuses further work, and the session stops,
   restores and releases.
 - **A new window is a new reservation.** Never extend one yourself.

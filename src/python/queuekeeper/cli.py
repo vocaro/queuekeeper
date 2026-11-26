@@ -1031,6 +1031,14 @@ def patch_environment(values):
             else: os.environ[key] = value
 
 
+def screen_window_wait(name, label, waiting, *, fallback=None):
+    """waiting, or the wait the window the session holds this Mac's foreground for bounds when its last start is
+    earlier: foreground work here waits for admission only until the last start that can finish before that
+    reservation's expected release, as work on a held device does (vocaro/queuekeeper#362)."""
+    screen = plugins.FOREGROUND.window_wait(name, label, fallback=fallback)
+    return screen if screen is not None and (waiting is None or screen.latest < waiting.latest) else waiting
+
+
 def admit(root, args, config=None, *, device_window=None):
     # A command goes to the Mac with spare capacity for it and the most headroom, as a lane does, and runs there
     # in the checkout's directory that matches the current one; what it changed in the checkout's files that Git does
@@ -1106,6 +1114,7 @@ def admit(root, args, config=None, *, device_window=None):
     with processes.forwarding_signals(), contextlib.ExitStack() as stack:
         asked = time.monotonic()
         waiting = plugins.DEVICES.window_wait("the command", device_window, " ".join(command))
+        if args.foreground and not second: waiting = screen_window_wait("the command", " ".join(command), waiting)
         allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
         closed = plugins.DEVICES.window_closed("the command", waiting)
         if closed is not None: return closed
@@ -2311,6 +2320,12 @@ def perform(argv, report):
                                                   keys=keys or None,
                                                   budget=(lane.get("deviceRunMinutes", 0) * 60 or None) if whole else None,
                                                   fallback=limit if whole and keys else None)
+                            # Without a measured run, a timeout the lane sets is its estimate, and the default one is
+                            # none: a whole run of a lane that sets none is unestimated until it is measured here.
+                            if lane.get("foreground") and not second:
+                                waiting = screen_window_wait(args.lane, lane_label(root, config, args.lane) if whole
+                                                             else None, waiting,
+                                                             fallback=limit if whole and "timeout" in lane else None)
                             allowed = waiting.seconds if waiting is not None else lambda seconds: seconds
                             closed = plugins.DEVICES.window_closed(args.lane, waiting)
                             if closed is not None: return closed

@@ -92,6 +92,13 @@ class Foreground:
     def require_foreground(self):
         """Refuse foreground work on this Mac unless the session holds its foreground."""
 
+    def window_wait(self, name, label, *, fallback=None):
+        """The wait for admission that the window the session holds this Mac's foreground for bounds, as
+        Devices.window_wait's, after saying its last safe start; or None without such a window. label names the
+        admissions that measure the run, or is None for a run none measures; fallback is the run's estimate
+        without a measurement (vocaro/queuekeeper#362)."""
+        return None
+
     def foreground_held(self, stack, name, label, timeout, expected=None, again=None):
         """None once another Mac's foreground is held for the work, entered in stack, or BUSY after saying so.
         again is the command that runs the work again, which a wait that gives up names."""
@@ -166,11 +173,22 @@ class Devices:
         return None
 
     def window_closed(self, name, waiting):
-        """BUSY, after saying so, when the run can no longer fit in its device window; otherwise None."""
-        return None
+        """BUSY, after saying so, when an estimated run can no longer fit in the window waiting is bounded by, from
+        this slot's window_wait or the foreground's; otherwise None. An unestimated diagnostic can try an immediate
+        admission and then meets the device runner's own bound, but a window no bounded run enforces, as this
+        Mac's foreground's is, refuses it too (vocaro/queuekeeper#362)."""
+        if waiting is None or waiting.left() > 0: return None
+        if waiting.estimate is None and waiting.window.get("bounded", True): return None
+        from queuekeeper import cli, resources  # cli loads the plugins
+        print(f"queuekeeper: {name} not run on {cli.this_mac()}: {waiting}. {waiting.unrecorded}", file=sys.stderr,
+              flush=True)
+        return resources.BUSY
 
     def not_admitted(self, name, waiting, status):
-        """status, the end of a wait for admission, after saying so when the device window cut it short."""
+        """status, the end of a wait for admission, after saying that the window is what cut it short."""
+        from queuekeeper import resources
+        if waiting is not None and waiting.limited and status == resources.BUSY:
+            print(f"queuekeeper: {name} stopped waiting: {waiting}. {waiting.unrecorded}", file=sys.stderr, flush=True)
         return status
 
     def device_lane_passed(self, results, keys):

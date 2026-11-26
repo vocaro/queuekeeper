@@ -6271,6 +6271,140 @@ sys.exit(int(os.environ.get("EXIT", "0")))
             config.parse(json.dumps(source))
 
 
+class ForegroundWindowWaitTests(unittest.TestCase):
+    """A foreground lane run here under the session's mac-foreground reservation waits for admission only until the
+    last start that can finish before the reservation's expected release, as a device lane does in its device's
+    window (vocaro/queuekeeper#362). No screen is taken: what a run past admission would clear is stubbed to end it
+    there with ADMITTED."""
+    setUp, tearDown = ResourceTests.setUp, ResourceTests.tearDown
+    hold = ResourceTests.hold
+    project, marker, run_lane = LaneLabelTests.project, LaneLabelTests.marker, LaneLabelTests.run_lane
+    measure = DeviceWindowWaitTests.measure
+    ADMITTED = 77
+
+    def lane(self):
+        """Beta with a foreground lane, screen, on this Mac, a workstation, in a device record of this test's, the
+        session being session-a."""
+        from queuekeeper import plugins
+        environment = patch.dict(os.environ, {devices.OVERRIDE: str(Path(self.temp.name) / "device-handoff.json"),
+                                              devices.OWNER: "session-a"})
+        environment.start()
+        self.addCleanup(environment.stop)
+        for patcher in (patch.object(reservations, "takes_foreground", return_value=False),
+                        patch.object(plugins.FOREGROUND, "guarded_alerts", return_value=self.ADMITTED)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        ran = self.marker(Path("Beta"), "screen", "ran")
+        return self.project("Beta", screen={"command": [sys.executable, "-c", f"open({str(ran)!r}, 'w')"],
+                                            "resource": "heavy", "foreground": True, "timeout": 120}), ran
+
+    def reserve(self, seconds, owner="session-a"):
+        until = (datetime.now().astimezone() + timedelta(seconds=seconds)).isoformat()
+        devices.Record().reserve(devices.FOREGROUND, owner=owner, revision=0, purpose="the owner's window",
+                                 release_by=until)
+
+    def test_a_window_that_runs_out_during_the_wait_ends_it_busy_with_nothing_run(self):
+        root, ran = self.lane()
+        self.reserve(3600)
+        self.hold(0, 1, 2)
+        with patch.object(reservations.WindowWait, "left", return_value=0.05):
+            status, error = self.run_lane(root, "--here", "screen")
+        self.assertEqual(status, resources.BUSY, error)
+        self.assertIn("queuekeeper: screen not run on this Mac", error)
+        self.assertIn("queuekeeper: screen stopped waiting: the window on mac-foreground ends ", error)
+        self.assertIn("Nothing ran", error)
+        self.assertNotIn("device result", error)
+        self.assertFalse(ran.exists())
+
+    def test_a_measured_run_that_fits_is_admitted_after_saying_its_last_start(self):
+        root, ran = self.lane()
+        self.reserve(3600)
+        self.measure("Beta screen", 600)
+        status, error = self.run_lane(root, "--here", "screen")
+        self.assertEqual(status, self.ADMITTED, error)
+        self.assertIn("queuekeeper: screen waits for admission at most until ", error)
+        self.assertIn("the window on mac-foreground ends ", error)
+        self.assertIn("its measured 600s", error)
+
+    def test_a_whole_run_with_no_measurement_needs_the_timeout_its_lane_sets_to_fit(self):
+        """A lane that sets none is unestimated, and fits a 30-minute window, as tests/apple/test_devices.py's
+        foreground lane does."""
+        root, ran = self.lane()
+        self.reserve(3600)
+        status, error = self.run_lane(root, "--here", "screen")
+        self.assertEqual(status, self.ADMITTED, error)
+        self.assertIn("its full-pass budget of 120s", error)
+
+    def test_a_start_that_cannot_finish_is_not_made_even_on_a_free_host(self):
+        root, ran = self.lane()
+        self.reserve(3600)
+        self.measure("Beta screen", 7000, 7200, 6800)
+        status, error = self.run_lane(root, "--here", "screen")
+        self.assertEqual(status, resources.BUSY, error)
+        self.assertRegex(error, r"queuekeeper: screen not run on this Mac.*: the window on mac-foreground ends ")
+        self.assertIn("its measured 7000s", error)
+        self.assertIn("Nothing ran", error)
+        self.assertNotIn("stopped waiting", error)
+        self.assertFalse(ran.exists())
+        # A run with arguments is not the run those measured, and fits.
+        status, error = self.run_lane(root, "--here", "screen", "--", "one test")
+        self.assertEqual(status, self.ADMITTED, error)
+        self.assertIn("no measured run of it, so the shortest bounded run", error)
+
+    def test_an_unmeasured_run_past_the_last_start_is_refused_too(self):
+        """No bounded run enforces the foreground's window, as the device runner does a device's, so a run with
+        arguments is refused once even the shortest run and its cleanup no longer fit."""
+        root, ran = self.lane()
+        self.reserve(reservations.TERMINATION + reservations.RESTORATION + reservations.MINIMUM - 5)
+        status, error = self.run_lane(root, "--here", "screen", "--", "one test")
+        self.assertEqual(status, resources.BUSY, error)
+        self.assertRegex(error, r"queuekeeper: screen not run on this Mac.*: the window on mac-foreground ends ")
+        self.assertFalse(ran.exists())
+
+    def test_foreground_work_admitted_here_is_bound_the_same_way(self):
+        root, ran = self.lane()
+        self.reserve(reservations.TERMINATION + reservations.RESTORATION + reservations.MINIMUM - 5)
+        command = [sys.executable, "-c", f"open({str(ran)!r}, 'w')"]
+        with patch.object(cli, "refresh_policy", return_value="policy"), \
+                patch.object(cli, "source_identity", return_value={}), \
+                contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()) as said:
+            status = cli.main(["--project", str(root), "admit", "--foreground", "--here", "--", *command])
+        self.assertEqual(status, resources.BUSY, said.getvalue())
+        self.assertRegex(said.getvalue(), r"queuekeeper: the command not run on this Mac.*: the window on mac-foreground "
+                                          r"ends .*\. Nothing ran")
+        self.assertFalse(ran.exists())
+
+    def test_a_lane_that_takes_no_foreground_is_not_bound_by_the_foreground_window(self):
+        """Negative control: a measured time that would refuse the foreground lane, on a lane that takes no screen."""
+        root, ran = self.lane()
+        gate = self.project("Gamma", gate={"command": [sys.executable, "-c", "pass"], "resource": "heavy",
+                                           "timeout": 120})
+        self.reserve(3600)
+        self.measure("Gamma gate", 7000)
+        status, error = self.run_lane(gate, "--here", "gate")
+        self.assertEqual(status, 0, error)
+        self.assertNotIn("window", error)
+        self.assertNotIn("waits for admission", error)
+
+    def test_the_window_is_the_sessions_reservation_with_an_expected_release_on_a_workstation(self):
+        self.lane()
+        self.reserve(1800)
+        window = reservations.foreground_window("session-a")
+        self.assertEqual(window["devices"], [reservations.FOREGROUND])
+        self.assertEqual(window["cleanupSeconds"], reservations.TERMINATION + reservations.RESTORATION)
+        self.assertGreater(reservations.moment(window["until"]), datetime.now().astimezone() + timedelta(seconds=1000))
+        self.assertIsNone(reservations.foreground_window("session-b"))
+        self.assertIsNone(reservations.foreground_window(None))
+        # A Mac that takes foreground work by itself holds the entry for each run, which may outlast its release.
+        with patch.object(reservations, "takes_foreground", return_value=True):
+            self.assertIsNone(reservations.foreground_window("session-a"))
+        # An entry without an expected release bounds nothing.
+        value = devices.Record().load()
+        value["devices"][reservations.FOREGROUND].pop("expectedReleaseBy")
+        record = type("Record", (), {"load": lambda self: value})()
+        self.assertIsNone(reservations.foreground_window("session-a", record))
+
+
 class EntryPointTests(unittest.TestCase):
     def test_every_committed_script_with_a_shebang_is_executable(self):
         # A checkout on another Mac takes its modes from the index, not this working tree.

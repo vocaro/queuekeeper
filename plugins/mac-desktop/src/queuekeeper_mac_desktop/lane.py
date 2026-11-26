@@ -4,7 +4,7 @@ queuekeeper.plugins.FOREGROUND."""
 import os
 import sys
 
-from queuekeeper import plugins, lane_results
+from queuekeeper import plugins, lane_results, resources
 from queuekeeper.resources import BUSY
 from . import capture_approvals, crash_alerts, foreground, keychain, notification_center, reservations
 
@@ -20,6 +20,14 @@ class Foreground(plugins.Foreground):
 
     def require_foreground(self):
         reservations.require_foreground(os.environ.get(reservations.OWNER))
+
+    def window_wait(self, name, label, *, fallback=None):
+        """The wait the session's mac-foreground window bounds, as a device lane's is (vocaro/queuekeeper#362): its
+        measured time, else fallback, and the cleanup a run keeps must fit before the reservation's expected release."""
+        window = reservations.foreground_window(os.environ.get(reservations.OWNER))
+        if window is None: return None
+        measured = resources.measured_seconds(label) if label is not None else None
+        return reservations.window_wait(name, window, measured, budget=fallback if measured is None else None)
 
     def foreground_held(self, stack, name, label, timeout, expected=None, again=None):
         """None once another Mac's foreground is held for the work label names, entered in stack; or BUSY, after

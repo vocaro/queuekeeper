@@ -32,7 +32,7 @@ of the Mac's foreground: whether queuekeeper takes that for a run is the Mac's o
 """
 import argparse
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import json
 import os
@@ -43,7 +43,7 @@ import sys
 import tempfile
 import time
 
-from queuekeeper import offload_host
+from queuekeeper import offload_host, processes
 from queuekeeper.config import TOOLKIT_ROOT
 from queuekeeper.resources import process_start
 
@@ -68,6 +68,14 @@ FOREGROUND = "mac-foreground"
 OWNER = "QUEUEKEEPER_DEVICE_OWNER"
 # How a foreground release left the frontmost app: restored, or no longer the session's to restore.
 FRONTMOST = ("restored", "not-ours")
+# Seconds a bounded run keeps before its reservation ends for its own end once its bound expires:
+# supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
+# SIGKILL waits (processes.py).
+TERMINATION = processes.LINGER + processes.KILL_AFTER + processes.SETTLE_WAIT + processes.KILL_WAIT
+# Seconds it keeps after that, unless the caller names its own, for the session's restoration queries.
+RESTORATION = 60
+# Seconds below which a bounded run is refused as too short to start.
+MINIMUM = 30
 
 
 class Refused(RuntimeError):
@@ -164,6 +172,70 @@ def require_window(key, entry):
         raise Refused(f"the owner's approval of {key} ended at {until}; stop, restore the owner's settings and "
                       "release")
     return entry
+
+
+def foreground_window(owner, record=None):
+    """The window owner holds this Mac's foreground for, as WindowWait reads one, or None: the expected release of
+    the mac-foreground entry owner holds, which is the end of the window agreed with the owner, and what a run keeps
+    before it for its own end and the restoration after it. None on a Mac that takes foreground work by itself,
+    where queuekeeper holds the entry for each run and the run may outlast its expected release (takes_foreground),
+    and for an entry without an expected release (vocaro/queuekeeper#362)."""
+    if not owner or takes_foreground(): return None
+    entry = (record or Record()).load()["devices"].get(FOREGROUND)
+    if entry is None or condition(entry) not in ("held", "active") or entry.get("ownerChatID") != owner: return None
+    deadline = moment(entry.get("expectedReleaseBy"))
+    if deadline is None: return None
+    return {"devices": [FOREGROUND], "until": deadline.isoformat(), "cleanupSeconds": TERMINATION + RESTORATION,
+            "budgetSeconds": None, "unrecorded": "Nothing ran",
+            # No bounded run enforces it, so a run without an estimate does not start after the last start either.
+            "bounded": False}
+
+
+class WindowWait:
+    """How long work in a window the session holds, on devices or this Mac's foreground, may wait for admission
+    (vocaro-engineering#292, vocaro/queuekeeper#362): until the last start that leaves room for cleanup and the
+    larger of the measured time and budget. A diagnostic without an estimate leaves room for the shortest bounded
+    run. unrecorded says what a run that never started left unrecorded, as its window says."""
+
+    def __init__(self, window, measured=None, *, budget=None):
+        self.window, self.measured, self.limited = window, measured, False
+        self.budget = budget
+        self.estimate = max(measured or 0, budget or 0) if measured is not None or budget is not None else None
+        needs = max(MINIMUM, self.estimate or 0) + window["cleanupSeconds"]
+        self.latest = moment(window["until"]) - timedelta(seconds=needs)
+        self.unrecorded = window.get("unrecorded", "No device result was recorded")
+
+    def left(self):
+        """Seconds until the last start, below zero once it has passed."""
+        return (self.latest - datetime.now(timezone.utc)).total_seconds()
+
+    def seconds(self, timeout):
+        """timeout, or the shorter time left to wait."""
+        left = max(self.left(), 0)
+        if left < timeout: self.limited = True
+        return min(timeout, left)
+
+    def __str__(self):
+        if self.budget is not None and self.estimate == self.budget:
+            run = f"its full-pass budget of {self.budget:.0f}s"
+        elif self.measured is not None:
+            run = f"its measured {self.measured:.0f}s"
+        else:
+            run = f"no measured run of it, so the shortest bounded run, {MINIMUM}s"
+        return (f"the window on {' and '.join(self.window['devices'])} ends {self.window['until']}, and the last start "
+                f"that can finish within it is {self.latest.isoformat()}: {run}, and "
+                f"{self.window['cleanupSeconds']:g}s kept for cleanup")
+
+
+def window_wait(name, window, measured=None, *, budget=None):
+    """name's WindowWait in window, after saying its last safe start while there is time before it, or None
+    without a window."""
+    if window is None: return None
+    waiting = WindowWait(window, measured, budget=budget)
+    if waiting.left() > 0:
+        print(f"queuekeeper: {name} waits for admission at most until {waiting.latest.isoformat()}: {waiting}",
+              file=sys.stderr, flush=True)
+    return waiting
 
 
 def running(entry):

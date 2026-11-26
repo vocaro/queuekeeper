@@ -91,6 +91,10 @@ from queuekeeper_mac_desktop.reservations import (
     FOREGROUND,
     FRONTMOST,
     MANAGED,
+    # What a bounded run keeps for its end and the restoration after it, and its shortest run.
+    MINIMUM,
+    RESTORATION,
+    TERMINATION,
     OVERRIDE,
     OWNER,
     POLL,
@@ -98,6 +102,7 @@ from queuekeeper_mac_desktop.reservations import (
     SCHEMA,
     Refused,
     Stale,
+    WindowWait,
     _owned,
     approval_ended,
     approval_refusal,
@@ -126,14 +131,6 @@ OBJECT_TIMEOUT = 10
 LEASE = "QUEUEKEEPER_DEVICE_LEASE"
 # A lease's timing report, passed only to the top-level work on another Mac.
 WINDOW = "QUEUEKEEPER_DEVICE_WINDOW"
-# Seconds a bounded run keeps before its reservation ends for its own end once its bound expires:
-# supervision's wait for descendants that outlive the command, then its SIGTERM, settling and
-# SIGKILL waits (processes.py).
-TERMINATION = processes.LINGER + processes.KILL_AFTER + processes.SETTLE_WAIT + processes.KILL_WAIT
-# Seconds it keeps after that, unless the caller names its own, for the session's restoration queries.
-RESTORATION = 60
-# Seconds below which a bounded run is refused as too short to start.
-MINIMUM = 30
 # A bounded run's exit status when its bound expired and the command then ended, as timeout(1)'s.
 TIMED_OUT = 124
 # The owner's word that he made the notification setup a platform needs on a paired device, by its entry's key, kept
@@ -204,40 +201,6 @@ def held_window(keys, owner, record=None):
     if not ends: return None
     return {"devices": list(ends), "until": min(ends.values()).isoformat(),
             "cleanupSeconds": TERMINATION + RESTORATION, "budgetSeconds": None}
-
-
-class WindowWait:
-    """How long work on the devices of window may wait for admission (vocaro-engineering#292): until the last start
-    that leaves room for cleanup and the larger of the measured time and budget.
-    A diagnostic without an estimate leaves room for the shortest bounded run."""
-
-    def __init__(self, window, measured=None, *, budget=None):
-        self.window, self.measured, self.limited = window, measured, False
-        self.budget = budget
-        self.estimate = max(measured or 0, budget or 0) if measured is not None or budget is not None else None
-        needs = max(MINIMUM, self.estimate or 0) + window["cleanupSeconds"]
-        self.latest = moment(window["until"]) - timedelta(seconds=needs)
-
-    def left(self):
-        """Seconds until the last start, below zero once it has passed."""
-        return (self.latest - datetime.now(timezone.utc)).total_seconds()
-
-    def seconds(self, timeout):
-        """timeout, or the shorter time left to wait."""
-        left = max(self.left(), 0)
-        if left < timeout: self.limited = True
-        return min(timeout, left)
-
-    def __str__(self):
-        if self.budget is not None and self.estimate == self.budget:
-            run = f"its full-pass budget of {self.budget:.0f}s"
-        elif self.measured is not None:
-            run = f"its measured {self.measured:.0f}s"
-        else:
-            run = f"no measured run of it, so the shortest bounded run, {MINIMUM}s"
-        return (f"the window on {' and '.join(self.window['devices'])} ends {self.window['until']}, and the last start "
-                f"that can finish within it is {self.latest.isoformat()}: {run}, and "
-                f"{self.window['cleanupSeconds']:g}s kept for cleanup")
 
 
 def _latest(entry):
