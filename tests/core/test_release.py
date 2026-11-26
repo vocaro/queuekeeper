@@ -312,7 +312,7 @@ class Publish(Repository):
         self.assertFalse(self.notes.exists())
         self.assertEqual(self.gh(), [])
 
-    def test_a_dry_run_drafts_the_notes_and_prints_the_commands_without_running_them(self):
+    def test_a_dry_run_drafts_a_summary_to_write_and_the_changes_but_not_the_bump(self):
         self.land()
         main = self.git(self.repo, "rev-parse", "origin/main")
         status, out, err = self.step("publish", "1.1.0", "--notes", str(self.notes))
@@ -321,7 +321,12 @@ class Publish(Repository):
         self.assertIn("  git push origin v1.1.0\n", out)
         self.assertIn(f"  gh release create v1.1.0 --verify-tag --title 'Queuekeeper 1.1.0' --notes-file {self.notes}\n",
                       out)
-        self.assertEqual(self.notes.read_text(), """### Install
+        self.assertIn(f"Before --yes, replace the placeholder summary at the top of {self.notes}.", out)
+        self.assertEqual(self.notes.read_text(), f"""### Summary
+
+{release.SUMMARY}
+
+### Install
 
 ```sh
 git clone --branch v1.1.0 https://github.com/vocaro/queuekeeper.git
@@ -331,7 +336,6 @@ Follow the [guide](https://github.com/vocaro/queuekeeper/blob/v1.1.0/README.md#g
 
 ### Changes since v1.0.0
 
-- Release Queuekeeper 1.1.0
 - Fix a wait
 - Add a lane
 """)
@@ -356,6 +360,21 @@ Follow the [guide](https://github.com/vocaro/queuekeeper/blob/v1.1.0/README.md#g
         # Once tagged, it refuses the same release again.
         self.refused("tag v1.1.0 already exists", "publish", "1.1.0", "--notes", str(self.notes), "--yes")
         self.assertEqual(len(self.gh()), 1)
+
+    def test_with_yes_it_refuses_notes_that_still_hold_the_placeholder_summary(self):
+        self.land()
+        # Drafted by the --yes run itself, or by a dry run and left as it was.
+        self.refused("still hold the placeholder summary", "publish", "1.1.0", "--notes", str(self.notes), "--yes")
+        self.assertIn(release.PLACEHOLDER, self.notes.read_text())
+        self.refused("still hold the placeholder summary", "publish", "1.1.0", "--notes", str(self.notes), "--yes")
+        self.assertEqual(self.git(self.repo, "tag", "--list", "v1.1.0"), "")
+        self.assertEqual(self.git(self.repo, "ls-remote", "--tags", "origin", "v1.1.0"), "")
+        self.assertEqual([call for call in self.gh() if call[:2] == ["release", "create"]], [])
+        # Once the summary is written, the same notes publish.
+        self.notes.write_text(self.notes.read_text().replace(release.SUMMARY, "The queue lands faster."))
+        status, _, err = self.step("publish", "1.1.0", "--notes", str(self.notes), "--yes")
+        self.assertEqual(status, 0, err)
+        self.assertEqual(self.gh()[-1][:2], ["release", "create"])
 
     def test_it_refuses_a_tag_that_exists_on_origin_only(self):
         self.land()

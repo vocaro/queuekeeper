@@ -10,10 +10,11 @@
 version no greater than the current one or one that a range between this repository's packages does not admit.
 It commits on a new branch and prints the `qk land` command that lands it;
 it does not land by itself. `publish` runs only after that landing: it refuses unless every field at origin/main
-reads X.Y.Z and tag vX.Y.Z does not exist. It drafts the release notes, the install section of v1.0.0's notes with
-the new tag and the subjects of the commits since the previous tag, to --notes (by default a file in the temporary
-folder), and keeps a notes file that is already there, so that an edit made after a dry run is what --yes publishes.
-Without --yes it runs nothing and prints the commands it would run.
+reads X.Y.Z and tag vX.Y.Z does not exist. It drafts the release notes, a placeholder summary, the install section of
+v1.0.0's notes with the new tag and the subjects of the commits since the previous tag other than the release's own bump
+commit, to --notes (by default a file in the temporary folder), and keeps a notes file that is already there, so that an
+edit made after a dry run is what --yes publishes. Without --yes it runs nothing and prints the commands it would run;
+with --yes it refuses notes that still hold the placeholder summary (vocaro/queuekeeper#354).
 
 The references are the `version` fields of the core's pyproject.toml and of each plugins/*/pyproject.toml, which is
 all a release rewrites (vocaro/queuekeeper#350). `queuekeeper.__version__` and the MCP server read the core's field
@@ -43,6 +44,12 @@ VERSION = re.compile(r"\d+\.\d+\.\d+")
 TEMPLATE = "v1.0.0"  # The release whose notes hold the install section every release repeats.
 ISSUE = 348
 LAND = "python3 scripts/qk land --wait --json"
+BUMP = "Release Queuekeeper {version}"  # The subject of the commit bump makes, which the drafted notes leave out.
+# The drafted notes' summary, which publish --yes refuses until it is replaced (vocaro/queuekeeper#354).
+PLACEHOLDER = "(Summary to write before `publish --yes`"
+SUMMARY = (f"{PLACEHOLDER}: replace this paragraph with a few sentences on what changed for people who use "
+           "Queuekeeper, such as a setting that changed or a step an installed Mac needs, like v1.1.0's remade "
+           "LaunchAgent.)")
 
 
 class Refused(Exception):
@@ -247,7 +254,7 @@ def bump(root, version, out=sys.stdout):
     rewrite(root, references, version)
     now, _ = current(WorkingTree(root))
     assert now == version, now
-    git(root, "commit", "-q", "-a", "-m", f"Release Queuekeeper {version}\n\nRefs #{ISSUE}")
+    git(root, "commit", "-q", "-a", "-m", f"{BUMP.format(version=version)}\n\nRefs #{ISSUE}")
     print(f"Rewrote {len(references)} version fields from {old} to {version} and committed them on {branch}.", file=out)
     print(f"Land it through the queue, then run `python3 tools/release.py publish {version}`:\n\n  {LAND}", file=out)
 
@@ -262,16 +269,20 @@ def install_section(body, tag):
     return body[match.start():end.start() if end else len(body)].strip().replace(TEMPLATE, tag)
 
 
-def notes(root, tag, previous, main):
+def notes(root, version, previous, main):
+    """The drafted notes: a placeholder summary, the install section, and the subject of each commit since previous
+    other than the release's own bump."""
+    tag = f"v{version}"
     done = subprocess.run(["gh", "release", "view", TEMPLATE, "--json", "body", "--jq", ".body"], cwd=root,
                           capture_output=True, text=True)
     if done.returncode:
         raise Refused(f"gh release view {TEMPLATE} failed: {done.stderr.strip()}")
     span = f"{previous}..{main}" if previous else main
-    subjects = git(root, "log", "--no-merges", "--format=%s", span).splitlines()
+    bump = BUMP.format(version=version)
+    subjects = [s for s in git(root, "log", "--no-merges", "--format=%s", span).splitlines() if s != bump]
     since = f"since {previous}" if previous else "in this release"
     changes = "\n".join(f"- {subject}" for subject in subjects) or "- (none)"
-    return f"{install_section(done.stdout, tag)}\n\n### Changes {since}\n\n{changes}\n"
+    return f"### Summary\n\n{SUMMARY}\n\n{install_section(done.stdout, tag)}\n\n### Changes {since}\n\n{changes}\n"
 
 
 def publish(root, version, yes=False, notes_path=None, out=sys.stdout):
@@ -294,8 +305,12 @@ def publish(root, version, yes=False, notes_path=None, out=sys.stdout):
     if path.exists():
         print(f"Keeping the release notes already at {path}; delete it to draft them again.", file=out)
     else:
-        path.write_text(notes(root, tag, previous, main))
+        path.write_text(notes(root, version, previous, main))
         print(f"Drafted the release notes at {path}.", file=out)
+    unwritten = PLACEHOLDER in path.read_text()
+    if unwritten and yes:
+        raise Refused(f"the release notes at {path} still hold the placeholder summary; replace it with a summary "
+                      "of what changed, then run this step again with --yes")
     commands = [["git", "tag", "-a", tag, "-m", f"Queuekeeper {version}", main],
                 ["git", "push", "origin", tag],
                 ["gh", "release", "create", tag, "--verify-tag", "--title", f"Queuekeeper {version}",
@@ -303,7 +318,10 @@ def publish(root, version, yes=False, notes_path=None, out=sys.stdout):
     print(("Running:" if yes else "Dry run; with --yes these run:"), file=out)
     for command in commands:
         print(f"  {shlex.join(command)}", file=out)
-    if not yes: return
+    if not yes:
+        if unwritten:
+            print(f"Before --yes, replace the placeholder summary at the top of {path}.", file=out)
+        return
     for command in commands:
         out.flush()
         if subprocess.run(command, cwd=root).returncode:

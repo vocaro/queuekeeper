@@ -2505,11 +2505,20 @@ and any problem. A release takes three steps, in order:
 2. **Land.** Run `python3 scripts/qk land --wait --json` from that branch and follow it to its result,
    as for any change.
 3. **Publish, at the owner's word.** `python3 tools/release.py publish X.Y.Z` refuses unless every
-   reference at `origin/main` reads X.Y.Z and tag `vX.Y.Z` does not exist. It drafts the notes (the
-   install section of v1.0.0's notes with the new tag, then the commit subjects since the previous
-   tag) and prints the `git tag -a`, `git push origin vX.Y.Z` and `gh release create` commands. It
-   keeps a notes file that is already there, so edit the draft and run the step again with `--yes`
-   to run those commands. Without `--yes` it runs nothing.
+   reference at `origin/main` reads X.Y.Z and tag `vX.Y.Z` does not exist. It drafts the notes (a
+   placeholder summary, the install section of v1.0.0's notes with the new tag, then the commit
+   subjects since the previous tag, leaving out the release's own bump commit) and prints the
+   `git tag -a`, `git push origin vX.Y.Z` and `gh release create` commands. Without `--yes` it runs
+   nothing. It keeps a notes file that is already there, so write the summary in the draft, edit the
+   rest as needed, and run the step again with `--yes` to run those commands. With `--yes` it refuses
+   notes that still hold the placeholder
+   ([#354](https://github.com/vocaro/queuekeeper/issues/354)).
+
+**Writing the summary.** Replace the placeholder with a few sentences on what changed for people who
+use Queuekeeper, before running `publish --yes`. Name what a reader must act on first: a setting
+added, removed or changed in meaning, a command or exit code that behaves differently, a newer Python
+required, or a step an installed Mac needs, such as v1.1.0's remade LaunchAgent. Then name the main
+new features and fixes. The commit list below it gives the detail, so the summary need not repeat it.
 
 **Choosing the number.** Raise the major number (2.0.0) when a project must change to keep working:
 a setting, command, exit code, `--json` field or importable module removed or changed in meaning,
