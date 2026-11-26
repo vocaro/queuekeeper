@@ -47,6 +47,10 @@ UNBUILT = frozenset({"Logs", "SourcePackages", "TestResults"})
 # A Build folder that holds nothing but ProfileData holds a test run's coverage data, not build products:
 # xcodebuild test-without-building without -derivedDataPath leaves one per run (vocaro-engineering#158).
 COVERAGE_ONLY = frozenset({"ProfileData"})
+# Nor does one that holds, besides coverage data, only Intermediates.noindex: the build system's planning cache
+# (XCBuildData) and compiler output, which the next build writes again, with no Products to run. Xcode leaves
+# one when a build of a workspace it records no info.plist for stops before its products (owner, 2026-11-26).
+NO_PRODUCTS = frozenset({"ProfileData", "Intermediates.noindex"})
 # qk app's store of kept builds under the account's home (app_builds.store_root).
 APP_STORE = "Library/Application Support/queuekeeper/apps"
 # Where Xcode copies a connected device's symbols, one folder for each OS build: "iOS DeviceSupport", and the same
@@ -447,10 +451,12 @@ def derived_data(host, usage, sizes):
             held = ", ".join(names[:5]) or "nothing"
             built = sorted(entry.name for entry in (child / "Build").iterdir()) if "Build" in names \
                 and (child / "Build").is_dir() and not (child / "Build").is_symlink() else None
-            if set(names) - {"Build"} <= UNBUILT and ("Build" not in names or built == sorted(COVERAGE_ONLY)):
+            if set(names) - {"Build"} <= UNBUILT and ("Build" not in names or (built and set(built) <= NO_PRODUCTS)):
                 # No project to trace it to, but nothing in it a build could need again: a candidate once
                 # idle and unused, as a folder whose workspace is gone.
-                what = "no build products" if "Build" not in names else "Build holding only coverage data"
+                what = "no build products" if "Build" not in names else \
+                    "Build holding only coverage data" if built == sorted(COVERAGE_ONLY) else \
+                    "Build holding only " + " and ".join(built) + ", no products"
                 items.append(cache_item(host, usage, sizes, "derived-data", child,
                                         f"records no workspace; holds only {held}, {what}"))
                 continue

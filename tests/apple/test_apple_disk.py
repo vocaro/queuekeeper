@@ -443,13 +443,17 @@ class CacheTests(Fixture):
         coverage = tree("Coverage", "Logs", "TestResults", "Build/ProfileData/F49BFB5B")
         (coverage / "Build/ProfileData/F49BFB5B/Coverage.profdata").write_bytes(b"profile")
         products = tree("Products", "Logs", "TestResults", "Build/ProfileData", "Build/Products")
+        # What a build that stopped before its products leaves: the build system's planning cache, nothing to run.
+        planned = tree("Planned", "Logs", "SourcePackages", "Build/Intermediates.noindex/XCBuildData/PIFCache")
+        stopped = tree("Stopped", "Logs", "Build/Intermediates.noindex", "Build/ProfileData")
+        unknown = tree("Unknown", "Logs", "Build/Intermediates.noindex", "Build/Other")
         indexed = tree("Indexed", "Logs", "Index.noindex")
         used = tree("Used", "Logs", "SourcePackages")
         recent = tree("Recent", "Logs", "SourcePackages")
         os.utime(recent / "Logs", (LATER - 3600, LATER - 3600))
         process = disk.Process(6, "xcodebuild", cwd=str(used / "SourcePackages/checkouts/Package"))
         items = self.items(self.host([process]), ["derived-data"])
-        for candidate in (resolved, logs, coverage):
+        for candidate in (resolved, logs, coverage, planned, stopped):
             self.assertEqual(items[str(candidate)].status, disk.CANDIDATE, items[str(candidate)].reason)
             self.assertEqual(items[str(candidate)].command, ["rm", "-rf", "--", str(candidate)])
         self.assertIn("records no workspace; holds only Logs, SourcePackages, TestResults, no build products",
@@ -457,7 +461,10 @@ class CacheTests(Fixture):
         # A folder with build products, or anything else this rule does not know, stays the owner's decision.
         self.assertIn("records no workspace; holds only Build, Logs, TestResults, Build holding only coverage data",
                       items[str(coverage)].reason)
-        for owner in (built, indexed, products):
+        self.assertIn("records no workspace; holds only Build, Logs, SourcePackages, Build holding only "
+                      "Intermediates.noindex, no products", items[str(planned)].reason)
+        self.assertIn("Build holding only Intermediates.noindex and ProfileData, no products", items[str(stopped)].reason)
+        for owner in (built, indexed, products, unknown):
             self.assertEqual(items[str(owner)].status, disk.OWNER, items[str(owner)].reason)
             self.assertIn("records no workspace; holds", items[str(owner)].reason)
         self.assertEqual(items[str(used)].status, disk.KEPT)
