@@ -776,14 +776,14 @@ class Run:
             self.finish(kind, 1, f"VoiceOver's sound cues could not be switched off ({why}), so no test ran", log)
             return False
         try:
-            seconds, unmuted = speech.hold_mute(device.udid)
+            seconds, unmuted, published = speech.hold_mute(device.udid)
         except (RuntimeError, OSError, subprocess.SubprocessError, ValueError, KeyError) as error:
             self.finish(kind, 1, f"it could not be muted ({error}), so no test ran", log)
             return False
         held_at = speech.now()
         again = f", muted again after reading {', '.join(map(str, unmuted))}" if unmuted else ""
-        self.say(f"MUTED {kind}: VoiceOver's sound cues off; the volume read 0 {speech.MUTE_HELD} times in a row "
-                 f"in {round(seconds)}s{again}; hold ended at {held_at}")
+        self.say(f"MUTED {kind}: VoiceOver's sound cues off; SpringBoard published the volume after {round(published)}s; "
+                 f"the volume read 0 {speech.MUTE_HELD} times in a row in {round(seconds)}s{again}; hold ended at {held_at}")
         return True
 
     @contextlib.contextmanager

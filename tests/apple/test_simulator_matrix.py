@@ -138,6 +138,9 @@ XCRUN = textwrap.dedent("""\
         sys.stdout.flush()
         while os.getppid() != 1: time.sleep(0.05)
         sys.exit("the stream was left behind by its run")
+    elif action == "spawn" and rest[1] == "notifyutil":
+        # SpringBoard's published state: its ringer on, as a member's is.
+        print(f"{rest[3]} 1")
     elif action == "spawn" and rest[1] == "defaults":
         # A setting in the simulator's preferences, which an erase clears; a kind in FAKE_DEFAULTS_IGNORED
         # takes the write and still reads unset.
@@ -1040,7 +1043,8 @@ class SimulatorMatrixTests(unittest.TestCase):
             calls = self.devicectl(udid)
             self.assertEqual(calls[0], f"settings audio --device {udid} --volume 0")
             self.assertGreaterEqual(len([call for call in calls if call.startswith("info audio")]), 20)
-            self.assertRegex(output, rf"MUTED {kind}: VoiceOver's sound cues off; the volume read 0 20 times in a row "
+            self.assertRegex(output, rf"MUTED {kind}: VoiceOver's sound cues off; SpringBoard published the volume "
+                             r"after \d+s; the volume read 0 20 times in a row "
                              r"in \d+s; hold ended at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z")
             self.assertLess(output.index(f"MUTED {kind}"), output.index(f"TEST {kind}"))
             # The probe's phrases reach the run's own output.
@@ -1067,7 +1071,7 @@ class SimulatorMatrixTests(unittest.TestCase):
         watch = SimpleNamespace(Event=lambda: event, Thread=thread)
         with mock.patch.object(matrix, "threading", watch), \
              mock.patch.object(matrix.speech, "silence_cues", return_value=True), \
-             mock.patch.object(matrix.speech, "hold_mute", return_value=(20, [])), \
+             mock.patch.object(matrix.speech, "hold_mute", return_value=(20, [], 0)), \
              mock.patch.object(matrix.speech, "state", side_effect=[RuntimeError("no volume reading"),
                               {"volume": 0}, {"enabled": False}, {"volume": 0}]), \
              mock.patch.object(matrix.speech, "now", side_effect=[held, first, unread]) as clock, \

@@ -3150,6 +3150,8 @@ device if it does not read back. It does nothing for a hostless test bundle.
 `qk simulator-tests`. Each member's VoiceOver sound cues are switched off and its volume held at 0
 before its tests, its volume is watched while they run, a VoiceOver they left on is switched off, and
 their `VOICEOVER_` lines are printed. A member that could not be silenced, or was heard, fails.
+The hold counts readings of 0 only once the member's SpringBoard has published its volume, which
+each SpringBoard does at 60 when it starts, sometimes well after the boot has finished.
 `--voiceover` runs one test process on each member, so it does not combine with `--workers`, `--shards`
 or `--build-only`.
 

@@ -108,37 +108,79 @@ class SimulatorViewTests(unittest.TestCase):
 class HoldMuteTests(unittest.TestCase):
     UDID = "2BBC94CE-0D99-4A08-9763-269B5711AC97"
 
-    def hold(self, volumes, readings=3, limit=90):
-        """hold_mute against readings that give `volumes` in turn, then 0; each sleep is a second."""
-        calls, now, given = [], [0.0], list(volumes)
+    def hold(self, volumes, readings=3, limit=90, publishes=(True,), publish_limit=300):
+        """hold_mute against readings that give `volumes` in turn, then 0, and SpringBoard's publication checks that
+        give `publishes` in turn, then the last of them; each sleep is a second."""
+        calls, now, given, checks = [], [0.0], list(volumes), list(publishes)
         def state(udid, kind, *change, timeout=20):
             calls.append((udid, kind, *change))
             if change: return {"volume": 0}
             value = given.pop(0) if given else 0
             if isinstance(value, Exception): raise value
             return {"volume": value}
+        def publisher(udid):
+            calls.append((udid, "published"))
+            return checks.pop(0) if len(checks) > 1 else checks[0]
         def sleep(seconds): now[0] += seconds
-        result = speech.hold_mute(self.UDID, state_reader=state, readings=readings, limit=limit, sleep=sleep,
-                                  clock=lambda: now[0])
+        result = speech.hold_mute(self.UDID, state_reader=state, publisher=publisher, readings=readings, limit=limit,
+                                  publish_limit=publish_limit, sleep=sleep, clock=lambda: now[0])
         return result, calls
 
     def test_the_volume_is_muted_then_read_until_it_holds_at_zero(self):
-        (seconds, unmuted), calls = self.hold([])
+        (seconds, unmuted, published), calls = self.hold([])
         self.assertEqual(calls[0], (self.UDID, "audio", "--volume", "0"))
-        self.assertEqual(calls[1:], [(self.UDID, "audio")] * 3)
-        self.assertEqual((seconds, unmuted), (2, []))
+        self.assertEqual(calls[1:], [(self.UDID, "published")] + [(self.UDID, "audio")] * 3)
+        self.assertEqual((seconds, unmuted, published), (2, [], 0))
 
     def test_a_volume_that_comes_back_is_muted_again_and_the_count_starts_over(self):
-        (_, unmuted), calls = self.hold([0, 60, 0])
+        (_, unmuted, _), calls = self.hold([0, 60, 0])
         self.assertEqual(unmuted, [60])
         self.assertEqual(calls.count((self.UDID, "audio", "--volume", "0")), 2)
         self.assertEqual(len([call for call in calls if call == (self.UDID, "audio")]), 5)
 
     def test_a_reading_with_no_answer_neither_counts_nor_breaks_the_run(self):
-        (_, unmuted), calls = self.hold([RuntimeError("no answer"), 0, 0, 0])
+        (_, unmuted, _), calls = self.hold([RuntimeError("no answer"), 0, 0, 0])
         self.assertEqual(unmuted, [])
         self.assertEqual(len([call for call in calls if call == (self.UDID, "audio")]), 4)
 
     def test_a_mute_that_never_holds_raises(self):
         with self.assertRaisesRegex(RuntimeError, "did not hold at 0 for 3 readings in 5 s"):
             self.hold([60] * 100, limit=5)
+
+    def test_readings_of_zero_before_springboard_publishes_do_not_count(self):
+        # #54: a reset member read 0 for 20 to 31 s until its SpringBoard started and put the volume at 60, after a
+        # hold that counted those readings had ended.
+        (seconds, unmuted, published), calls = self.hold([0] * 25 + [60], publishes=[False] * 25 + [True])
+        self.assertEqual(unmuted, [60])
+        self.assertEqual(published, 25)
+        # Three readings of 0 after the 60 was muted again, none of the 25 before it.
+        self.assertEqual(seconds, 28)
+        self.assertEqual(calls.count((self.UDID, "published")), 26)
+
+    def test_a_reading_other_than_zero_is_springboards_own_publication(self):
+        # A ringer that is off, or a check with no answer, still leaves the volume SpringBoard put.
+        (seconds, unmuted, published), _ = self.hold([0, 0, 60], publishes=[None])
+        self.assertEqual((unmuted, published, seconds), ([60], 2, 5))
+
+    def test_a_springboard_that_never_publishes_raises(self):
+        with self.assertRaisesRegex(RuntimeError, "SpringBoard did not publish the volume in 10 s"):
+            self.hold([], publishes=[False], publish_limit=10)
+
+    def test_the_hold_limit_runs_from_springboards_publication(self):
+        (seconds, _, published), _ = self.hold([], limit=5, publishes=[False] * 50 + [True])
+        self.assertEqual((published, seconds), (50, 52))
+
+    def test_publication_is_read_from_springboards_ringer_state(self):
+        commands = []
+        def answer(text):
+            def run(*command, timeout):
+                commands.append((command, timeout))
+                if isinstance(text, Exception): raise text
+                return text
+            return run
+        self.assertTrue(speech.published(self.UDID, run_command=answer("com.apple.springboard.ringerstate 1\n")))
+        self.assertFalse(speech.published(self.UDID, run_command=answer("com.apple.springboard.ringerstate 0\n")))
+        self.assertIsNone(speech.published(self.UDID, run_command=answer(speech.NoAnswer("no answer in 5 s"))))
+        self.assertIsNone(speech.published(self.UDID, run_command=answer("")))
+        self.assertEqual(commands[0], (("xcrun", "simctl", "spawn", self.UDID, "notifyutil", "-g",
+                                        "com.apple.springboard.ringerstate"), 5))

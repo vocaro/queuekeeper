@@ -103,32 +103,61 @@ def silence_cues_at_rest(data):
 # mute is held as the pool's template warm-up holds it (template.MUTE_HELD and MUTE_LIMIT).
 MUTE_HELD = 20
 MUTE_LIMIT = 90
+# The volume devicectl reads and sets is the state SpringBoard publishes, as com.apple.springboard.volumestate.
+# Each SpringBoard publishes its own volume when it starts, 60 on a member reset from its template: after a boot,
+# when it may start well after `bootstatus -b`, and again after it restarts. Until then the state reads 0 and a
+# mute changes nothing that lasts. A reset iPhone 17 Pro on iOS 27.0 (24A434), bootstatus done, read 0 for 20 to
+# 31 s before SpringBoard put 60, and its SpringBoard crashed at startup in one of three runs and put 60 again 6 s
+# later (vocaro/queuekeeper#54). So the readings of 0 count only once SpringBoard has published: its ringer state,
+# 0 before then, reads 1 for a ringer that is on, as a member's is, and a reading other than 0 is SpringBoard's own.
+RINGER_STATE = "com.apple.springboard.ringerstate"
+# Seconds to wait for SpringBoard to publish, from the first mute; MUTE_LIMIT then runs from when it has.
+PUBLISH_LIMIT = 300
 
 
-def hold_mute(udid, *, state_reader=None, readings=MUTE_HELD, limit=MUTE_LIMIT, sleep=time.sleep, clock=time.monotonic):
+def published(udid, run_command=None):
+    """Whether SpringBoard has published its audio state on the booted simulator udid, by its ringer state: True
+    once it reads other than 0, False while it reads 0, None with no answer in 5 s."""
+    run = run_command or globals()["run"]
+    try:
+        answer = run("xcrun", "simctl", "spawn", udid, "notifyutil", "-g", RINGER_STATE, timeout=5)
+        return int(answer.split()[-1]) != 0
+    except (RuntimeError, IndexError, ValueError):
+        return None
+
+
+def hold_mute(udid, *, state_reader=None, publisher=None, readings=MUTE_HELD, limit=MUTE_LIMIT,
+              publish_limit=PUBLISH_LIMIT, sleep=time.sleep, clock=time.monotonic):
     """Mute the booted simulator udid and read its volume each second until it has read 0 `readings` times
-    in a row, muting it again on any other reading; a reading with no answer neither counts nor breaks the
-    run. Returns (seconds it took, the other volumes read); RuntimeError when it did not hold within limit
-    seconds, or the first mute failed."""
+    in a row after SpringBoard published its audio state (publisher, by default published), muting it again on
+    any other reading; a reading with no answer neither counts nor breaks the run. Returns (seconds it took, the
+    other volumes read, seconds until SpringBoard was seen to have published); RuntimeError when SpringBoard did
+    not publish within publish_limit seconds, the volume did not hold within limit seconds of that, or the first
+    mute failed."""
     state = state_reader or globals()["state"]
-    unmuted, held, began = [], 0, clock()
+    publisher = publisher or published
+    unmuted, held, began, ready = [], 0, clock(), None
     state(udid, "audio", "--volume", "0")
     while held < readings:
-        if clock() - began > limit:
+        if ready is None and clock() - began > publish_limit:
+            raise RuntimeError(f"SpringBoard did not publish the volume in {publish_limit:g} s, so a mute would not last")
+        if ready is not None and clock() - ready > limit:
             raise RuntimeError(f"the volume did not hold at 0 for {readings} readings in {limit:g} s"
                                + (f" (it read {', '.join(map(str, unmuted))})" if unmuted else ""))
+        if ready is None and publisher(udid): ready = clock()
         try:
             volume = state(udid, "audio", timeout=5)["volume"]
         except (RuntimeError, ValueError, KeyError):
             volume = None
         if volume == 0:
-            held += 1
+            if ready is not None: held += 1
         elif volume is not None:
+            if ready is None: ready = clock()
             held = 0
             unmuted.append(volume)
             state(udid, "audio", "--volume", "0")
         if held < readings: sleep(1)
-    return clock() - began, unmuted
+    return clock() - began, unmuted, ready - began
 
 
 def keep_muted(session, state_reader=None):
