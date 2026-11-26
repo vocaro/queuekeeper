@@ -3252,10 +3252,21 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse(guard.exists(), "the run left its admission entry")
 
     def read_pid(self, marker, dispatcher):
-        deadline = time.monotonic() + stretched(60)
-        while not (marker.exists() and marker.read_text()) and time.monotonic() < deadline and dispatcher.poll() is None:
-            time.sleep(0.05)
-        self.assertTrue(marker.exists(), dispatcher.stdout.read().decode() if dispatcher.poll() is not None else "no lane")
+        """The PID the lane writes to marker, once it has, or a failure once its dispatcher exits or stops moving.
+
+        The send, checkout and provisioning can all be working long before the lane has a PID. A 60 s deadline
+        stretched once, as the wait began, kept the factor of a moment before the load rose and ran out at a load
+        of 862 with the dispatcher still working (vocaro/queuekeeper#370), so the wait bounds a stall instead,
+        watching the sends, the checkout and the lane's results, with a stretch read again at each look."""
+        def ready():
+            return marker.exists() and marker.read_text().strip().isdigit()
+
+        progress = waiting.files(self.home / remote.ROOT / "repositories", self.checkout(0),
+                                 self.project / ".build/queuekeeper/remote")
+        waiting.wait_until(lambda: ready() or dispatcher.poll() is not None, progress, stall=60, interval=0.05)
+        if not ready():
+            self.fail("the resident lane did not start: " + (dispatcher.stdout.read().decode()
+                                                             if dispatcher.poll() is not None else "no lane"))
         return int(marker.read_text())
 
     def records(self):
