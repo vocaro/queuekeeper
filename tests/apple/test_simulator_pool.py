@@ -1027,13 +1027,21 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(len(said), 1, lines)
         return said[0]
 
+    def boot_failure_parts(self, line):
+        """A BOOT FAILED line's own words up to its seconds, its seconds, and the rest from its limit on."""
+        found = re.fullmatch(r"(.*) after (\d+\.\d) s (of its .*)", line)
+        self.assertIsNotNone(found, line)
+        return found[1], float(found[2]), found[3]
+
     def test_a_failed_simctl_boot_is_named_with_its_error_text_and_keeps_its_status(self):
         text = "An error was encountered (domain=NSPOSIXErrorDomain, code=60):\nlaunchd failed to respond.\n"
         code, lines = self.failed_take("boot", 60, text)
         self.assertEqual(code, 60)
-        self.assertEqual(self.boot_failure_line(lines),
-                         "Project Duo 1: BOOT FAILED: `simctl boot` exited 60: An error was encountered "
-                         "(domain=NSPOSIXErrorDomain, code=60): launchd failed to respond.")
+        said, seconds, rest = self.boot_failure_parts(self.boot_failure_line(lines))
+        self.assertEqual(said, "Project Duo 1: BOOT FAILED: `simctl boot` exited 60")
+        self.assertGreaterEqual(seconds, 0)
+        self.assertEqual(rest, "of its 120 s limit, leaving the member Shutdown: An error was encountered "
+                               "(domain=NSPOSIXErrorDomain, code=60): launchd failed to respond.")
         self.assertIn("queuekeeper simulator-pool: Project Duo 1 did not finish booting (status 60)", lines)
         self.assertFalse([call for call in self.simctl.calls if call[0] == "bootstatus"])
         self.assertEqual(devices.Record(self.path).entry("Project Duo 1")["run"],
@@ -1042,16 +1050,74 @@ class PoolTests(unittest.TestCase):
     def test_a_failed_bootstatus_is_named_with_its_error_text_and_keeps_its_status(self):
         code, lines = self.failed_take("bootstatus", 60, "Unable to boot (domain=com.apple.SimError, code=60)")
         self.assertEqual(code, 60)
-        self.assertEqual(self.boot_failure_line(lines),
-                         "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 60: "
-                         "Unable to boot (domain=com.apple.SimError, code=60)")
+        said, _, rest = self.boot_failure_parts(self.boot_failure_line(lines))
+        self.assertEqual(said, "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 60")
+        self.assertEqual(rest, "of its 600 s limit, leaving the member Booted: "
+                               "Unable to boot (domain=com.apple.SimError, code=60)")
         self.assertIn("queuekeeper simulator-pool: Project Duo 1 did not finish booting (status 60)", lines)
 
     def test_a_bootstatus_past_its_limit_is_named_and_stays_unmeasured(self):
         code, lines = self.failed_take("bootstatus", 124, "timed out after 600 s")
         self.assertEqual(code, lane_results.UNMEASURED)
-        self.assertEqual(self.boot_failure_line(lines),
-                         "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 124: timed out after 600 s")
+        said, _, rest = self.boot_failure_parts(self.boot_failure_line(lines))
+        self.assertEqual(said, "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 124")
+        self.assertEqual(rest, "of its 600 s limit, leaving the member Booted: timed out after 600 s")
+
+    def test_the_wrappers_deadline_is_told_apart_from_a_native_exit_with_the_same_status(self):
+        """A boot that reaches the wrapper's own deadline says so; the status it returns is the same either way."""
+        for action, command, limit, state in (("boot", "simctl boot", 120, "Shutdown"),
+                                              ("bootstatus", "simctl bootstatus -b", 600, "Booted")):
+            with self.subTest(action=action):
+                self.simctl, self.log = Simctl(), []
+                self.pool = self.make("me")
+                self.simctl.add("Project Duo 1")
+                lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+                limits = []
+                def run(*arguments, timeout=600, real=self.simctl):
+                    if arguments[0] != action:
+                        return real(*arguments, timeout=timeout)
+                    real.calls.append(arguments)
+                    limits.append(timeout)
+                    return simulator_pool.lifecycle.SimctlTimeout(arguments, timeout)
+                self.pool.run = run
+                status = simulator_pool.boot(self.pool, lease, 600)
+                self.assertEqual(status, 124 if action == "boot" else lane_results.UNMEASURED)
+                self.assertEqual(limits, [limit])
+                said, _, rest = self.boot_failure_parts(self.boot_failure_line(self.log))
+                self.assertEqual(said, f"Project Duo 1: BOOT FAILED: `{command}` reached its limit (status 124)")
+                self.assertEqual(rest, f"of its {limit} s limit, leaving the member "
+                                       f"{state}: timed out after {limit} s")
+                self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_a_member_whose_state_cannot_be_read_after_a_failed_boot_says_so_and_is_still_released(self):
+        self.simctl.add("Project Duo 1")
+        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+        def failed(rest):
+            # Only the listing after the failed boot fails.
+            self.simctl.fail["list"] = lambda rest: (1, "", "CoreSimulatorService connection interrupted")
+            return 60, "", "Unable to boot"
+        self.simctl.fail["boot"] = failed
+        try:
+            self.assertEqual(simulator_pool.boot(self.pool, lease, 600), 60)
+        finally:
+            self.simctl.fail.pop("list", None)
+        _, _, rest = self.boot_failure_parts(self.boot_failure_line(self.log))
+        self.assertEqual(rest, "of its 120 s limit, leaving the member unread (simctl list exited 1: "
+                               "CoreSimulatorService connection interrupted): Unable to boot")
+        self.assertTrue(self.pool.release(lease, outcome="done"))
+
+    def test_a_member_simctl_no_longer_lists_after_a_failed_boot_is_said_unlisted(self):
+        udid = self.simctl.add("Project Duo 1")
+        lease = self.pool.take(DUO, RUNTIME, purpose="VoiceOver")
+        def gone(rest):
+            device = self.simctl.devices.pop(udid)
+            self.simctl.devices["kept"] = device
+            return 60, "", "Unable to boot"
+        self.simctl.fail["boot"] = gone
+        self.assertEqual(simulator_pool.boot(self.pool, lease, 600), 60)
+        _, _, rest = self.boot_failure_parts(self.boot_failure_line(self.log))
+        self.assertEqual(rest, "of its 120 s limit, leaving the member unlisted: Unable to boot")
+        self.simctl.devices[udid] = self.simctl.devices.pop("kept")
 
     def test_a_long_boot_error_is_bounded_and_keeps_its_start_and_end(self):
         for action, command in (("boot", "simctl boot"), ("bootstatus", "simctl bootstatus -b")):
@@ -1066,7 +1132,7 @@ class PoolTests(unittest.TestCase):
                 self.assertTrue(line.endswith("UNDERLYING-LAST"), line[-40:])
                 cut = len(text) - simulator_pool.BOOT_ERROR_SHOWN
                 self.assertIn(f"[cut: {cut} characters]", line)
-                self.assertLess(len(line), simulator_pool.BOOT_ERROR_SHOWN + 100)
+                self.assertLess(len(line), simulator_pool.BOOT_ERROR_SHOWN + 160)
 
     def test_a_boot_error_at_the_limit_is_not_cut(self):
         text = "x" * simulator_pool.BOOT_ERROR_SHOWN
@@ -1080,8 +1146,9 @@ class PoolTests(unittest.TestCase):
                 self.simctl, self.log = Simctl(), []
                 code, lines = self.failed_take("bootstatus", 60, stderr)
                 self.assertEqual(code, 60)
-                self.assertEqual(self.boot_failure_line(lines),
-                                 "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 60: no error text")
+                said, _, rest = self.boot_failure_parts(self.boot_failure_line(lines))
+                self.assertEqual(said, "Project Duo 1: BOOT FAILED: `simctl bootstatus -b` exited 60")
+                self.assertTrue(rest.endswith(": no error text"), rest)
 
     def test_a_boot_that_succeeds_logs_nothing(self):
         self.simctl.add("Project Duo 1")

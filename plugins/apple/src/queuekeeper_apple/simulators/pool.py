@@ -100,6 +100,8 @@ ERASE_ASKED = "asked for with --erase"
 # saw one fresh member's boot fail under load while its sibling booted). The failed member is passed over only
 # by that take; a later take may choose it again.
 BOOT_ATTEMPTS = 2
+# The limit of a member's `simctl boot`; its `bootstatus -b` then waits up to the boot's own limit.
+BOOT_COMMAND = 120
 # How much of simctl's error text a failed boot logs: more than the few lines an error of its takes.
 BOOT_ERROR_SHOWN = 2000
 # The simulator's setting that has the system load UIKit's and SwiftUI's own accessibility into every app
@@ -1280,20 +1282,41 @@ def set_app_accessibility(run, udid, enabled, *, kept):
     return f"{domain} {key} reads {value!r} after it was " + ("written true" if enabled else "deleted")
 
 
-def boot_failure(command, result):
-    """Which simctl command ended a boot, its status and its error text, on one line. Of a text over
-    BOOT_ERROR_SHOWN characters the start and the end are kept, as simctl states the error first and any
+def boot_failure(command, result, *, seconds, limit, state):
+    """Which simctl command ended a boot and how, its seconds against its limit, the member's state just after
+    it, and its error text, on one line. A result made by the wrapper's own deadline (lifecycle.SimctlTimeout)
+    is said to have reached its limit, apart from a command that itself exited with the same status. Of a text
+    over BOOT_ERROR_SHOWN characters the start and the end are kept, as simctl states the error first and any
     underlying error last."""
     text = " ".join((result.stderr or "").split())
     if len(text) > BOOT_ERROR_SHOWN:
         half = BOOT_ERROR_SHOWN // 2
         text = f"{text[:half]} [cut: {len(text) - 2 * half} characters] {text[-half:]}"
-    return f"BOOT FAILED: `simctl {command}` exited {result.returncode}: {text or 'no error text'}"
+    ended = f"reached its limit (status {result.returncode})" if isinstance(result, lifecycle.SimctlTimeout) \
+        else f"exited {result.returncode}"
+    return (f"BOOT FAILED: `simctl {command}` {ended} after {seconds:.1f} s of its {limit} s limit, "
+            f"leaving the member {state}: {text or 'no error text'}")
+
+
+def observed_state(run, udid):
+    """A device's state as `simctl list devices` gives it now, run being simctl's stand-in (as Pool.run), for a
+    failed boot's report, which must never stop the device's release: `unlisted` when simctl lists no such
+    device, `unread (why)` when the listing fails."""
+    try:
+        listed = run("list", "devices", "-j", timeout=120)
+        if listed.returncode != 0:
+            return f"unread (simctl list exited {listed.returncode}: {' '.join((listed.stderr or '').split())})"
+        state = next((entry.get("state") for entries in json.loads(listed.stdout).get("devices", {}).values()
+                      for entry in entries if str(entry.get("udid", "")).upper() == udid.upper()), None)
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError) as error:
+        return f"unread ({str(error).strip() or type(error).__name__})"
+    return "unlisted" if state is None else state
 
 
 def boot(pool, lease, timeout, *, app_accessibility=False):
     """Boot a member to bootstatus -b; None when it booted, else a status (UNMEASURED for a timeout). A
-    command that fails is logged with its error text (boot_failure).
+    command that fails is logged with its error text, its seconds against its limit and the member's state
+    just after it, before the caller releases the member (boot_failure).
 
     The member boots with VoiceOver's sound cues already off, written into its data while it is shut
     down: an erase clears the setting, the mute leaves the cues audible through the Mac, and a spawned
@@ -1306,13 +1329,17 @@ def boot(pool, lease, timeout, *, app_accessibility=False):
     except (OSError, ValueError) as error:
         pool.log(f"CUES {lease.key}: VoiceOver's sound cues could not be switched off, so VoiceOver would play "
                  f"them through the Mac: {error}")
-    started = pool.run("boot", lease.udid, timeout=120)
+    began = time.monotonic()
+    started = pool.run("boot", lease.udid, timeout=BOOT_COMMAND)
     if started.returncode != 0:
-        pool.log(f"{lease.key}: {boot_failure('boot', started)}")
+        pool.log(f"{lease.key}: " + boot_failure("boot", started, seconds=time.monotonic() - began,
+                                                 limit=BOOT_COMMAND, state=observed_state(pool.run, lease.udid)))
         return started.returncode
+    began = time.monotonic()
     finished = pool.run("bootstatus", lease.udid, "-b", timeout=timeout)
     if finished.returncode != 0:
-        pool.log(f"{lease.key}: {boot_failure('bootstatus -b', finished)}")
+        pool.log(f"{lease.key}: " + boot_failure("bootstatus -b", finished, seconds=time.monotonic() - began,
+                                                 limit=timeout, state=observed_state(pool.run, lease.udid)))
         return lane_results.UNMEASURED if finished.returncode == 124 else finished.returncode
     why = set_app_accessibility(pool.run, lease.udid, app_accessibility, kept=lease.kept)
     if why is not None:
