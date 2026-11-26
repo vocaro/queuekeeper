@@ -388,16 +388,17 @@ class SimulatorTests(Fixture):
 
     def test_the_farm_macs_runtimes_are_read_as_eng_remote_reads_them(self):
         from queuekeeper import remote
+        from queuekeeper_apple.simulators import runtimes as simulator_runtimes
         self.assertIsNone(apple_disk.runtimes_there(None))
         with patch.object(remote, "developer_directory", return_value="/X.app"), \
-                patch.object(remote, "runtime_images", return_value={"images": [{"build": "B", "users": []}]}) as read:
+                patch.object(simulator_runtimes, "runtime_images", return_value={"images": [{"build": "B", "users": []}]}) as read:
             self.assertEqual(apple_disk.runtimes_there("build-host"), {"images": [{"build": "B", "users": []}]})
         read.assert_called_once_with("build-host", "build-host", "/X.app")
         with patch.object(remote, "developer_directory", return_value="/X.app"), \
-                patch.object(remote, "runtime_images", side_effect=remote.Misconfigured("unreachable", "fix")):
+                patch.object(simulator_runtimes, "runtime_images", side_effect=remote.Misconfigured("unreachable", "fix")):
             self.assertIn("error", apple_disk.runtimes_there("build-host"))
         with patch.object(remote, "developer_directory", return_value="/X.app"), \
-                patch.object(remote, "runtime_images", return_value={"images": None}):
+                patch.object(simulator_runtimes, "runtime_images", return_value={"images": None}):
             self.assertEqual(apple_disk.runtimes_there("build-host"), {"error": "simctl did not list its runtime images"})
 
 

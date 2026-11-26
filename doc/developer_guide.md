@@ -996,10 +996,32 @@ command here.
 plugin registers its plan and its order there (`queuekeeper_apple/simulators/runtimes.py`): which
 runtime each Mac lacks, and whether it is deleted, copied as its disk image or downloaded by its
 build. `qk doctor` runs the same plan when the runtimes differ. Core `remote.py` keeps the
-transport: what each Mac lists, `runtime_lock`, and the copy and download over SSH. Without the
-plugin, the core refuses `--runtimes`. A core with the hook needs a matching Apple plugin, since an
-older plugin's doctor calls `remote.match_runtimes`, which the core no longer has. The plugin works
-with an older core, which keeps its own plan for `--runtimes`.
+transport: `runtime_lock`, the download, and the sending of a plugin's host program and a file
+over SSH. Without the plugin, the core refuses `--runtimes`.
+
+The runtime images' own reads and changes are the plugin's too, on either Mac:
+`queuekeeper_apple/simulators/runtime_host.py` lists the images and what an earlier copy left
+staged, deletes one that nothing uses, and adds one read from standard input. Like
+`offload_host.py`, it imports only the standard library and runs on Python 3.9. This Mac imports
+it. For another Mac, `remote.ask` with `program` sends it whole with the request,
+`remote.send_file` streams an image to it there, and `remote.fetch_file` reads another Mac's
+image with `cat` for it here. `offload_host.py` no longer answers `images`, `deleteRuntime` or
+`receive`. The architecture check holds it to no `simctl runtime` command.
+
+**Mixed versions.** The sending Mac sends each host program with every request, so another Mac's
+own toolkit and plugin revisions never decide what runs there. What matters is that the core and
+the Apple plugin on the sending Mac come from the same revision:
+
+- An older plugin with a newer core is refused by name. Reading `remote.runtime_images`,
+  `send_runtime` or `fetch_runtime` raises an `AttributeError` that says where it went (the
+  core's `remote.__getattr__`). `offload_host.py` answers a moved request with a refusal in the
+  words the older caller reads, and does not run it as a plan (`offload_host.MOVED_REQUESTS`).
+  An older plugin's doctor also calls `remote.match_runtimes`, which the core no longer has.
+- A newer plugin with an older core works. The plugin uses the older core's own image functions
+  when the core has no `remote.send_file` (`simulators.runtimes.older_core`). A core with no
+  `REMOTE_SETUP_RUNTIMES` keeps its own plan for `--runtimes`.
+
+`tests/apple/test_simulator_runtimes.py`'s `MixedVersionTests` cover both directions.
 
 ### What comes back
 

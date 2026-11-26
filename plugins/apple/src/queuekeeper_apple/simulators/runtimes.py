@@ -5,13 +5,20 @@ directory, for `qk remote setup --runtimes` (queuekeeper.plugins.REMOTE_SETUP_RU
 The plan and its order are the Apple platform's: which runtime each Mac lacks, whether it is deleted where nothing
 uses it, copied as its disk image, or downloaded by its build, and how much free space each must leave. Core
 queuekeeper.remote keeps the transport: what each Mac lists (toolchains, runtime_images), the lock that keeps a
-second change from starting (runtime_lock), and the copy and download over SSH (send_runtime, fetch_runtime,
-download_runtime)."""
+second change from starting (runtime_lock), the transport that sends and fetches a file over SSH (ask, send_file,
+fetch_file) and the download (download_runtime). The runtime images' own reads and changes, on either Mac, are this
+plugin's: runtime_host.py, a standalone host program that core remote.ask sends whole to another Mac and that this
+Mac imports (runtime_images, delete_runtime, send_runtime, fetch_runtime).
+
+An older core, from before that transport (older_core), lists, deletes and copies the images itself, and this module
+then asks it to."""
 import os
+from pathlib import Path
 import re
 import shlex
 
 from queuekeeper import offload_host, processes, remote
+from . import runtime_host
 
 # How messages name this Mac beside another Mac.
 HERE = remote.HERE
@@ -26,6 +33,57 @@ RUNTIME_ESTIMATE = 10 << 30
 DOWNLOADABLE = {"iOS", "watchOS", "tvOS", "visionOS"}
 # A runtime as offload_host.toolchain names it: NAME (BUILD).
 RUNTIME = re.compile(r"^(.*) \(([^()]+)\)$")
+
+
+# The host program another Mac runs for runtime_images, delete_runtime and send_runtime.
+PROGRAM = Path(runtime_host.__file__)
+
+
+def older_core():
+    """Whether the core predates send_file and the rest of the transport this module's images use, and answers for
+    the images itself (remote.runtime_images and the rest; offload_host.delete_runtime)."""
+    return not hasattr(remote, "send_file")
+
+
+def runtime_images(host, side, developer, clear=False):
+    """A Mac's runtime images, the free space where a copy to it is staged, and what an earlier copy
+    left staged there, which clear removes: runtime_host.images and runtime_host.stage on side. Each side
+    is given the builds the toolkit pins (remote.runtime_pins), which keep their users there though superseded."""
+    if older_core(): return remote.runtime_images(host, side, developer, clear)
+    if side == HERE:
+        return {"images": runtime_host.images(developer, remote.runtime_pins()),
+                **runtime_host.stage(Path.home() / remote.LOCAL_RUNTIME_STAGING, clear)}
+    return remote.ask(host, {"images": developer, "staging": remote.RUNTIME_STAGING, "clear": clear,
+                             "pinned": remote.runtime_pins()}, program=PROGRAM)
+
+
+def delete_runtime(host, side, developer, build):
+    """Delete build's runtime image on side as runtime_host.delete_runtime does, given the builds the toolkit pins.
+    Return None once it is deleted, else why not."""
+    pins = remote.runtime_pins()
+    if side == HERE:
+        return (offload_host if older_core() else runtime_host).delete_runtime(developer, build, pins)
+    return remote.ask(host, {"deleteRuntime": {"developer": developer, "build": build, "pinned": pins}},
+                      **({} if older_core() else {"program": PROGRAM})).get("problem")
+
+
+def send_runtime(host, image, developer, report):
+    """Send this Mac's image of a runtime to host, where runtime_host.receive stages it and simctl adds
+    it. Return None once it is added there, else why not."""
+    if older_core(): return remote.send_runtime(host, image, developer, report)
+    request = {"receive": {"staging": remote.RUNTIME_STAGING, "build": image["build"], "size": image["sizeBytes"],
+                           "developerDir": developer}}
+    answer, failure = remote.send_file(host, PROGRAM, request, image["file"], report)
+    return failure or answer.get("failed")
+
+
+def fetch_runtime(host, image, developer, report):
+    """Fetch host's image of a runtime over SSH, then stage and add it here as runtime_host.receive does
+    there. Return None once it is added here, else why not."""
+    if older_core(): return remote.fetch_runtime(host, image, developer, report)
+    staging = Path.home() / remote.LOCAL_RUNTIME_STAGING
+    return remote.fetch_file(host, image["file"], lambda stream: runtime_host.receive(
+        stream, staging, image["build"], image["sizeBytes"], developer, report))
 
 
 def gib(size):
@@ -43,7 +101,7 @@ def runtime_plan(found, stores, host):
     """A step for each runtime that only one Mac lists: the runtime, its build, the Mac that has it
     (source), the one that lacks it (target), and how the two come to match: a delete from the source
     when no simulator but Xcode's defaults uses it there, so a runtime nobody uses costs no Mac
-    its space (none uses a build its identifier no longer resolves to, offload_host.images), else a
+    its space (none uses a build its identifier no longer resolves to, runtime_host.images), else a
     copy of the source's image to the target when that can be read, else a download there by its
     build, else None, with why."""
     plan = []
@@ -144,7 +202,7 @@ def bring_runtimes(host, developer, check):
               f"{host}; install this Mac's Xcode at that path there first", flush=True)
         return 1
     xcode = f"{version(found[HERE]['xcode'])} at {developer}"
-    stores = {side: remote.runtime_images(host, side, developer, clear=not check) for side in (HERE, host)}
+    stores = {side: runtime_images(host, side, developer, clear=not check) for side in (HERE, host)}
     for side in (HERE, host):
         if found[side].get("runtimes") is None or stores[side]["images"] is None:
             print(f"runtimes: simctl did not list the runtimes on {side}", flush=True)
@@ -174,10 +232,7 @@ def bring_runtimes(host, developer, check):
                 print(f"{heading} would be deleted from {source}, where {unused}", flush=True)
                 continue
             print(f"{heading} deleting from {source}, where {unused}", flush=True)
-            pins = remote.runtime_pins()
-            failure = offload_host.delete_runtime(developer, step["build"], pins) if source == HERE else \
-                remote.ask(host, {"deleteRuntime": {"developer": developer, "build": step["build"],
-                                                    "pinned": pins}}).get("problem")
+            failure = delete_runtime(host, source, developer, step["build"])
             print(f"runtimes: {runtime}: deleted from {source}" if failure is None else
                   f"runtimes: {runtime}: not deleted from {source}: {failure}", flush=True)
             continue
@@ -187,7 +242,7 @@ def bring_runtimes(host, developer, check):
             planned[target] += size
         else:
             # Measured again before each copy, which those before it have used space for.
-            fresh = remote.runtime_images(host, target, developer)
+            fresh = runtime_images(host, target, developer)
             if any(image["build"] == step["build"] for image in fresh["images"] or []):
                 print(f"runtimes: {runtime}: {target} holds it now", flush=True)
                 continue
@@ -206,7 +261,7 @@ def bring_runtimes(host, developer, check):
             print(f"{heading} would be downloaded on {target}, which has {gib(free)} free, {download}", flush=True)
         elif download is None:
             print(f"{heading} copying from {source} to {target}", flush=True)
-            copy = remote.send_runtime if target == host else remote.fetch_runtime
+            copy = send_runtime if target == host else fetch_runtime
             failure = copy(host, step["image"], developer, reporter(runtime, size))
             print(f"runtimes: {runtime}: added on {target}" if failure is None else
                   f"runtimes: {runtime}: not added on {target}: {failure}; nothing of it stays staged there", flush=True)
