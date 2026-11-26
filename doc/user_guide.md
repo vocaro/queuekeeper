@@ -1502,7 +1502,8 @@ qk simulator-tests --scheme SCHEME --runtime iOS-27-0 \
   splits each device's tests across N pool members, packed by the last run's times.
 - `simctl boot` has a 120 s limit. `--boot-timeout` sets the separate limit for `simctl bootstatus -b`
   (600 s by default). A device that reaches either limit is unmeasured. A nonzero exit from simctl
-  fails that device. The result names the command and points to its boot log.
+  fails that device. The result names the command, its seconds and the device's state just after it,
+  and points to its boot log, which keeps simctl's error text.
 - `--test-timeout` (2 h) and `--test-allowance` bound the run and each test
   ([Time limits](#time-limits-and-the-gates-budget)).
 - Two simulators at once can hold memory pressure at warning for the whole run, which stops
@@ -3110,6 +3111,9 @@ qk simulator-pool list
   prints its UDID. It exits 3 when the boot reaches its limit, and the run is unmeasured, not failed. A
   member that fails to boot is passed over for another, twice by default (`--boot-attempts N`). Booting
   is heavy work, so outside an admitted lane take a member under `qk admit --here`, as above.
+- **A failed boot is logged** on one `BOOT FAILED` line: the simctl command, its exit status or that
+  it reached its limit, its seconds against that limit, the member's state just after it, and
+  simctl's error text, which names the error's domain and any underlying error.
 - **A member is held for an hour** (`--hold MINUTES`). Extend it if you need longer; once its time has
   passed and its session has gone, it may be reaped. Session closeout runs `release --mine`.
 - **`check UDID`** exits 1 for anything but a pool member, so a script that takes a UDID from its caller

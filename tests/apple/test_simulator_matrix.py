@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 import signal
 from pathlib import Path
 from types import SimpleNamespace
@@ -1229,13 +1230,32 @@ class SimulatorMatrixTests(unittest.TestCase):
                     print(error, file=stdout)
                     return 60
 
+                listing = json.dumps({"devices": {RUNTIME: [{"udid": "SIMULATOR", "state": "Shutdown"}]}})
+                listed = subprocess.CompletedProcess(("list",), 0, listing, "")
                 with mock.patch.object(matrix.processes, "supervise", side_effect=boot), \
+                     mock.patch.object(matrix.simulator_pool, "simctl", return_value=listed) as simctl, \
                      mock.patch.object(run, "say") as say:
                     self.assertFalse(run.boot("phone", SimpleNamespace(udid="simulator")))
                 self.assertEqual(run.results["phone"], 1)
                 self.assertEqual((self.root / "phone-boot.log").read_text(), error + "\n")
-                say.assert_any_call(f"FAIL phone: the boot failed with status 60 in `{command}`; "
-                                    f"log: {self.root / 'phone-boot.log'}", f"    {error}")
+                simctl.assert_called_once_with("list", "devices", "-j", timeout=120)
+                limit = 120 if step == "boot" else 180
+                [reported] = [call.args for call in say.call_args_list if call.args[0].startswith("FAIL phone")]
+                self.assertRegex(reported[0], rf"^FAIL phone: the boot failed with status 60 in `{command}` "
+                                              rf"after \d+\.\ds, leaving the device Shutdown \(its limit {limit}s\); "
+                                              rf"log: {re.escape(str(self.root / 'phone-boot.log'))}$")
+                self.assertEqual(reported[1:], (f"    {error}",))
+
+    def test_a_boot_whose_device_state_cannot_be_read_still_reports_its_failure(self):
+        run = matrix.Run(SimpleNamespace(logs=self.root, boot_timeout=180))
+        unread = subprocess.CompletedProcess(("list",), 1, "", "CoreSimulatorService\nconnection interrupted")
+        with mock.patch.object(matrix.processes, "supervise", return_value=60), \
+             mock.patch.object(matrix.simulator_pool, "simctl", return_value=unread), \
+             mock.patch.object(run, "say"):
+            self.assertFalse(run.boot("phone", SimpleNamespace(udid="simulator")))
+        self.assertEqual(run.results["phone"], 1)
+        self.assertRegex(run.details["phone"], r"leaving the device unread \(simctl list exited 1: "
+                                               r"CoreSimulatorService connection interrupted\) \(its limit 120s\)$")
 
     def test_a_boot_past_its_limit_leaves_only_that_device_unmeasured(self):
         iphone = self.add("Project iPhone 17 Pro 1")
@@ -1243,8 +1263,8 @@ class SimulatorMatrixTests(unittest.TestCase):
         status, output = self.run_matrix("--boot-timeout", "180", timed_out_boot=ipad)
         self.assertEqual(status, lane_results.UNMEASURED, output)
         self.assertIn("boot limit 120s, bootstatus limit 180s", output)
-        self.assertIn("UNMEASURED iPad-Air-13-inch-M4: the boot exceeded its limit of 180s in "
-                      "`simctl bootstatus -b`, so no test ran", output)
+        self.assertRegex(output, r"UNMEASURED iPad-Air-13-inch-M4: the boot exceeded its limit of 180s in "
+                                 r"`simctl bootstatus -b` after \d+\.\ds, leaving the device \w+, so no test ran")
         self.assertIn("PASS iPhone-17-Pro: Executed 3 tests", output)
         [call] = self.ran_tests()
         self.assertEqual(call[call.index("-destination") + 1], f"platform=iOS Simulator,id={iphone}")

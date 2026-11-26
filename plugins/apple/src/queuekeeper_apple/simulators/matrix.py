@@ -724,24 +724,29 @@ class Run:
         log = self.logs / f"{kind}-boot.log"
         self.say(f"BOOT {kind} ({device.udid}), boot limit {BOOT_COMMAND}s, "
                  f"bootstatus limit {self.args.boot_timeout}s; log: {log}")
-        started = time.monotonic()
+        started = step = time.monotonic()
         command, limit = "simctl boot", BOOT_COMMAND
+        # What a failed boot's report says after its command: its seconds and the device's state just after it.
+        def after():
+            return (f"after {time.monotonic() - step:.1f}s, leaving the device "
+                    f"{simulator_pool.observed_state(simulator_pool.simctl, device.udid)}")
         try:
             with log.open("w") as stream:
                 status = processes.supervise(["xcrun", "simctl", "boot", device.udid], cwd=Path.cwd(),
                                              stdout=stream, timeout=limit)
                 if status == 0:
-                    command, limit = "simctl bootstatus -b", self.args.boot_timeout
+                    command, limit, step = "simctl bootstatus -b", self.args.boot_timeout, time.monotonic()
                     status = processes.supervise(["xcrun", "simctl", "bootstatus", device.udid, "-b"], cwd=Path.cwd(),
                                                  stdout=stream, timeout=limit)
         except processes.TimedOut:
             # A boot still going at its limit says nothing about the tests. A first boot can stall
             # in data migration while other simulators boot.
             self.finish(kind, lane_results.UNMEASURED,
-                        f"the boot exceeded its limit of {limit}s in `{command}`, so no test ran", log)
+                        f"the boot exceeded its limit of {limit}s in `{command}` {after()}, so no test ran", log)
             return False
         if status != 0:
-            self.finish(kind, 1, f"the boot failed with status {status} in `{command}`", log)
+            self.finish(kind, 1, f"the boot failed with status {status} in `{command}` {after()} "
+                                 f"(its limit {limit}s)", log)
             return False
         self.say(f"BOOTED {kind} ({device.udid}) in {round(time.monotonic() - started)}s")
         if vot is not None:
