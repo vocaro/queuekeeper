@@ -35,6 +35,7 @@ from queuekeeper.checkout import source_paths
 from queuekeeper import budgets, cli, config, farm, lane_report, lane_results, lane_timing, merge_queue, offload_host, processes, remote, resources
 from queuekeeper_apple import device_notifications, disk as apple_disk, doctor as apple_doctor
 from queuekeeper_apple.simulators import runtimes as simulator_runtimes
+from queuekeeper_apple.simulators import runtime_host
 from queuekeeper_mobile import devices, leases
 from queuekeeper import disk as disk_module, plugins
 from queuekeeper import waiting
@@ -9698,11 +9699,11 @@ class RemoteRuntimeTests(unittest.TestCase):
         # A pool member made on the runtime after the plan keeps it: delete_runtime reads its users again.
         self.give("here", [("iOS 26.5", "23F73")])
         self.devices("here", {"iOS 26.5": ["Example iPhone 1"]})
-        self.assertEqual(offload_host.delete_runtime(str(self.developer), "23F73"), "Example iPhone 1 uses it")
+        self.assertEqual(runtime_host.delete_runtime(str(self.developer), "23F73"), "Example iPhone 1 uses it")
         self.devices("here", {"iOS 26.5": ["iPhone 17"]}, defaults={"iPhone 17"})
-        self.assertIsNone(offload_host.delete_runtime(str(self.developer), "23F73"))
+        self.assertIsNone(runtime_host.delete_runtime(str(self.developer), "23F73"))
         self.assertEqual(self.held("here"), [])
-        self.assertEqual(offload_host.delete_runtime(str(self.developer), "23F73"), "simctl lists 0 images of 23F73")
+        self.assertEqual(runtime_host.delete_runtime(str(self.developer), "23F73"), "simctl lists 0 images of 23F73")
 
     def test_no_runtime_is_deleted_while_a_simulator_runs(self):
         # vocaro/queuekeeper#154: deleting two unused runtimes crashed the launch host under a gate's simulators
@@ -9711,7 +9712,7 @@ class RemoteRuntimeTests(unittest.TestCase):
                    "host every simulator shares; run it again once none is running")
         self.give("here", [("iOS 26.5", "23F73"), ("iOS 27.0", "24A434")])
         self.devices("here", {"iOS 27.0": ["Example iPhone 1", "Example iPhone 2"]}, booted={"Example iPhone 2"})
-        self.assertEqual(offload_host.delete_runtime(str(self.developer), "23F73"), refusal)
+        self.assertEqual(runtime_host.delete_runtime(str(self.developer), "23F73"), refusal)
         self.assertEqual(self.logged("here", "deletes.log"), [])
         # Another Mac refuses the same way, and the run says so and reports the difference left.
         shutil.rmtree(self.runtimes / "here")
@@ -9737,9 +9738,9 @@ class RemoteRuntimeTests(unittest.TestCase):
 
     def users(self, pinned=(), recorded=frozenset()):
         """Each of this Mac's images' build: (users, supersededBy), with the device records naming recorded."""
-        with patch.object(offload_host, "recorded_builds", return_value=recorded):
+        with patch.object(runtime_host, "recorded_builds", return_value=recorded):
             return {image["build"]: (image["users"], image["supersededBy"])
-                    for image in offload_host.images(str(self.developer), pinned)}
+                    for image in runtime_host.images(str(self.developer), pinned)}
 
     def choose(self, mac, *builds):
         """simctl's match list on a Mac: an SDK choosing each of builds."""
@@ -9788,8 +9789,8 @@ class RemoteRuntimeTests(unittest.TestCase):
         expected = datetime(2026, 11, 4, 10, 0, 0, 123456, tzinfo=timezone.utc).timestamp()
         for stamp in ("2026-11-04T10:00:00.1234567Z", "2026-11-04T10:00:00.123456+00:00",
                       "2026-11-04T02:00:00.123456-0800"):
-            self.assertAlmostEqual(offload_host.used_at(stamp), expected, places=5, msg=stamp)
-        for stamp in (None, "", "yesterday", "2026-13-04T10:00:00Z"): self.assertIsNone(offload_host.used_at(stamp))
+            self.assertAlmostEqual(runtime_host.used_at(stamp), expected, places=5, msg=stamp)
+        for stamp in (None, "", "yesterday", "2026-13-04T10:00:00Z"): self.assertIsNone(runtime_host.used_at(stamp))
 
     def test_a_pinned_superseded_build_keeps_its_users(self):
         self.give("here", [self.CHOSEN, self.OLD])
@@ -9803,34 +9804,34 @@ class RemoteRuntimeTests(unittest.TestCase):
         # Negative control: a pin or record naming another build leaves the superseded build unused.
         self.assertEqual(self.users(pinned=("24Z434",), recorded={"24B8117"})["24Z5423a"], ([], "24Z434"))
         # delete_runtime reads the same users again, so a pin keeps it there too.
-        with patch.object(offload_host, "recorded_builds", return_value=set()):
-            self.assertEqual(offload_host.delete_runtime(str(self.developer), "24Z5423a", ("24Z5423a",)),
+        with patch.object(runtime_host, "recorded_builds", return_value=set()):
+            self.assertEqual(runtime_host.delete_runtime(str(self.developer), "24Z5423a", ("24Z5423a",)),
                              "Example iPhone 1 uses it")
             self.assertEqual(self.held("here"), ["iOS 27.0 (24Z434)", "iOS 27.0 (24Z5423a)"])
-            self.assertEqual(offload_host.delete_runtime(str(self.developer), "24Z434"), "Example iPhone 1 uses it")
-            self.assertIsNone(offload_host.delete_runtime(str(self.developer), "24Z5423a"))
+            self.assertEqual(runtime_host.delete_runtime(str(self.developer), "24Z434"), "Example iPhone 1 uses it")
+            self.assertIsNone(runtime_host.delete_runtime(str(self.developer), "24Z5423a"))
         self.assertEqual(self.held("here"), ["iOS 27.0 (24Z434)"])
         self.assertEqual(self.logged("here", "deletes.log"), ["simctl runtime delete 24Z5423a"])
 
     def test_device_records_name_builds_as_disk_reads_them(self):
-        self.assertEqual(offload_host.LEGACY_RECORDS, devices.LEGACY)
+        self.assertEqual(runtime_host.LEGACY_RECORDS, devices.LEGACY)
         record = self.local / "record.json"
         record.write_text(json.dumps({"devices": {"x": {"runtimeBuild": "24Z5423a"},
                                                   "y": {"template": {"installedBuilds": ["24Z9999"]}}}}))
         account = type("Account", (), {"pw_dir": str(self.local / "account")})
         with patch.dict(os.environ, {"QUEUEKEEPER_DEVICE_RECORD": str(record)}), \
-                patch.object(offload_host, "LEGACY_RECORDS", str(self.local / "none-*.json")), \
-                patch.object(offload_host.pwd, "getpwuid", return_value=account):
-            found = offload_host.recorded_builds()
+                patch.object(runtime_host, "LEGACY_RECORDS", str(self.local / "none-*.json")), \
+                patch.object(runtime_host.pwd, "getpwuid", return_value=account):
+            found = runtime_host.recorded_builds()
             self.assertIn("24Z5423a", found)
             # The census of a warmed template's installed builds pins nothing (disk.recorded_builds).
             self.assertNotIn("24Z9999", found)
             record.write_text("not json 24Z7777")
-            self.assertIn("24Z7777", offload_host.recorded_builds())
+            self.assertIn("24Z7777", runtime_host.recorded_builds())
             record.unlink()
-            self.assertEqual(offload_host.recorded_builds(), set())
+            self.assertEqual(runtime_host.recorded_builds(), set())
             record.mkdir()
-            self.assertIsNone(offload_host.recorded_builds())
+            self.assertIsNone(runtime_host.recorded_builds())
 
     def test_a_superseded_build_only_one_mac_lists_is_deleted_there_unless_the_toolkit_pins_it(self):
         # vocaro-engineering#190: another Mac's copy of a superseded build goes, as qk disk's does here, and
@@ -9910,7 +9911,8 @@ class RemoteRuntimeTests(unittest.TestCase):
                 if done >= size // 2: raise processes.Interrupted(signal.SIGTERM, f"while copying {runtime}")
             return report
         # Small reads, so the stop comes halfway through the image.
-        with patch.object(offload_host, "CHUNK", 1 << 16), patch.object(simulator_runtimes, "reporter", stopping):
+        with patch.object(remote, "SEND_CHUNK", 1 << 16), patch.object(runtime_host, "CHUNK", 1 << 16), \
+                patch.object(simulator_runtimes, "reporter", stopping):
             for direction, here, there in [("to another Mac", [("iOS 27.1", "24A94401")], []),
                                            ("from another Mac", [], [("iOS 27.0", "24A5423a")])]:
                 with self.subTest(direction):
@@ -9998,11 +10000,11 @@ class RemoteRuntimeTests(unittest.TestCase):
         image = self.image("here", "iOS 26.5", "23F73")
         size = image.stat().st_size
         # A disk image simctl names by its own path, as iOS 26.5's, and a cryptex by its AssetData folder.
-        self.assertEqual(offload_host.image_file({"path": str(image), "sizeBytes": size}), (str(image), None))
-        self.assertEqual(offload_host.image_file({"path": str(image.parents[1]), "sizeBytes": size}), (str(image), None))
+        self.assertEqual(runtime_host.image_file({"path": str(image), "sizeBytes": size}), (str(image), None))
+        self.assertEqual(runtime_host.image_file({"path": str(image.parents[1]), "sizeBytes": size}), (str(image), None))
         for record in [{"path": str(image.parents[1]), "sizeBytes": size + 1}, {"path": str(image), "sizeBytes": 1},
                        {"path": str(image.parent / "missing.dmg"), "sizeBytes": size}, {"sizeBytes": size}]:
-            file, why = offload_host.image_file(record)
+            file, why = runtime_host.image_file(record)
             self.assertIsNone(file, record)
             self.assertTrue(why, record)
 

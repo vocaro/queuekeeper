@@ -96,6 +96,12 @@ assert plugins.kept_here(["xcrun", "simctl", "boot", "5B0E6C51-2D3A-4F7B-9C1E-0A
 # Without the Apple plugin, `qk remote setup --runtimes` is refused before it reaches another Mac.
 assert plugins.REMOTE_SETUP_RUNTIMES == []
 assert not any(hasattr(remote, name) for name in ("match_runtimes", "runtime_plan", "download_command"))
+# The runtime images' reads and changes are the Apple plugin's (queuekeeper_apple/simulators/runtime_host.py); the core
+# keeps only the transport that sends a plugin's host program and a file (ask, send_file, fetch_file).
+from queuekeeper import offload_host
+assert not any(hasattr(remote, name) for name in ("runtime_images", "send_runtime", "fetch_runtime"))
+assert not any(hasattr(offload_host, name) for name in ("images", "delete_runtime", "receive", "stage", "image_file"))
+assert all(callable(getattr(remote, name)) for name in ("send_file", "fetch_file"))
 try:
     remote.setup("fixture", [], [], True, runtimes=True)
 except ValueError as refusal:
@@ -132,6 +138,18 @@ assert cli.main(["--version"]) == 0
         source = (PACKAGES["queuekeeper"] / "queuekeeper/offload_host.py").read_text()
         found = [(line, name) for line, name in imports(source, "queuekeeper.offload_host")
                  if name.split(".", 1)[0] not in sys.stdlib_module_names]
+        self.assertEqual(found, [])
+
+    def test_remote_host_bootstrap_changes_no_simulator_runtime(self):
+        # `simctl runtime` lists, adds and deletes runtime images, which the Apple plugin's own host program does
+        # (queuekeeper_apple/simulators/runtime_host.py); the core's receiver runs none of it.
+        tree = ast.parse((PACKAGES["queuekeeper"] / "queuekeeper/offload_host.py").read_text())
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.List, ast.Tuple)):
+                words = [part.value for part in node.elts if isinstance(part, ast.Constant)]
+                if any(word == "simctl" and following == "runtime" for word, following in zip(words, words[1:])):
+                    found.append(node.lineno)
         self.assertEqual(found, [])
 
     def test_each_plugin_loads_with_only_its_declared_dependencies(self):

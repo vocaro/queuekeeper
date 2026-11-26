@@ -3193,14 +3193,18 @@ def toolchains(host, developer):
     return {HERE: offload_host.toolchain(developer), host: survey(host, developer)}
 
 
-def runtime_images(host, side, developer, clear=False):
-    """A Mac's runtime images, the free space where a copy to it is staged, and what an earlier copy
-    left staged there, which clear removes: offload_host.images and offload_host.stage on side. Each side
-    is given the builds the toolkit pins (runtime_pins), which keep their users there though superseded."""
-    if side == HERE:
-        return {"images": offload_host.images(developer, runtime_pins()),
-                **offload_host.stage(Path.home() / LOCAL_RUNTIME_STAGING, clear)}
-    return ask(host, {"images": developer, "staging": RUNTIME_STAGING, "clear": clear, "pinned": runtime_pins()})
+# What an Apple plugin from before its runtime images moved into it reads of this module, which that plugin now holds
+# (queuekeeper_apple/simulators/runtimes.py and runtime_host.py): a read of one is refused by name (__getattr__).
+MOVED_TO_PLUGINS = {name: "the Apple plugin's simulators.runtimes" for name in
+                    ("runtime_images", "send_runtime", "fetch_runtime")}
+
+
+def __getattr__(name):
+    """Refuse a name in MOVED_TO_PLUGINS by saying where it went, as an older plugin's caller reads it."""
+    if name in MOVED_TO_PLUGINS:
+        raise AttributeError(f"queuekeeper.remote.{name} moved to {MOVED_TO_PLUGINS[name]}; use the core and its "
+                             "plugins from the same Queuekeeper revision")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # What names runtime builds to keep: each returns {build: where}. The Apple plugin adds its disk items' pins.
@@ -3210,7 +3214,7 @@ OBJECT_TIMEOUT = 10
 
 
 def runtime_pins():
-    """The runtime builds something pins (PINNED_BUILDS), which offload_host cannot read on another
+    """The runtime builds something pins (PINNED_BUILDS), which a host program cannot read on another
     Mac, since it imports nothing but itself there: a superseded one keeps its users."""
     return sorted({build for pinned in PINNED_BUILDS for build in pinned()})
 
@@ -3228,53 +3232,56 @@ def runtime_lock():
     return descriptor
 
 
-def send_runtime(host, image, developer, report):
-    """Send this Mac's image of a runtime to host, where offload_host.receive stages it and simctl adds
-    it. Return None once it is added there, else why not."""
-    request = {"receive": {"staging": RUNTIME_STAGING, "build": image["build"], "size": image["sizeBytes"],
-                           "developerDir": developer}}
-    command = [*SSH, *moved(host), host, login(host_command(Path(offload_host.__file__).read_text(),
-                                             json.dumps(request)))]
+# Bytes of a file send_file reads and sends at once.
+SEND_CHUNK = 8 << 20
+
+
+def send_file(host, program, request, path, report):
+    """Send the file at path to host as the standard input of program, a standalone host program such as a plugin's
+    (ask), run there with request; report is given the bytes sent so far, and may raise to stop. Return its answer,
+    a dict, or None, and why the send failed, or None. A plugin's host program says what it made of the bytes, such
+    as the Apple plugin's runtime image added (queuekeeper_apple/simulators/runtimes.send_runtime)."""
+    command = [*SSH, *moved(host), host, login(host_command(Path(program).read_text(), json.dumps(request)))]
     failure = None
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           env=environment()) as channel:
         try:
-            with open(image["file"], "rb") as source:
+            with open(path, "rb") as source:
                 sent = 0
-                for chunk in iter(lambda: source.read(offload_host.CHUNK), b""):
+                for chunk in iter(lambda: source.read(SEND_CHUNK), b""):
                     channel.stdin.write(chunk)
                     sent += len(chunk)
                     report(sent)
         except BrokenPipeError:
             pass  # Another Mac stopped reading, and its answer says why.
         except OSError as error:
-            failure = f"reading {image['file']} failed: {error}"
+            failure = f"reading {path} failed: {error}"
         finally:
-            # The end of its standard input ends the image there, and a short image is never added.
+            # The end of its standard input ends the file there, and the program there sees it short.
             with contextlib.suppress(OSError): channel.stdin.close()
         reply = channel.stdout.read().decode(errors="replace")
-    if channel.returncode == 255: return f"{host} cannot be reached: {last_line(reply) or 'ssh exited 255'}"
+    if channel.returncode == 255: return None, f"{host} cannot be reached: {last_line(reply) or 'ssh exited 255'}"
     try:
         result = json.loads(last_line(reply))
     except (TypeError, ValueError):
         result = None
     if not isinstance(result, dict):
-        return failure or f"{host} gave no answer (exit {channel.returncode}): {last_line(reply) or 'no output'}"
-    return failure or result.get("failed")
+        return None, failure or f"{host} gave no answer (exit {channel.returncode}): {last_line(reply) or 'no output'}"
+    return result, failure
 
 
-def fetch_runtime(host, image, developer, report):
-    """Fetch host's image of a runtime over SSH, then stage and add it here as offload_host.receive does
-    there. Return None once it is added here, else why not."""
-    # cat needs no login shell, whose profile could write into the image.
-    command = [*SSH, *moved(host), host, shlex.join(["cat", image["file"]])]
+def fetch_file(host, path, read):
+    """Read the file at path on host over SSH: read is given the stream of its bytes and returns None once it has
+    what it needs, else why not. Return what read returned, and to a failure, how ssh or cat ended when either
+    failed. A stop that ends read ends cat too."""
+    # cat needs no login shell, whose profile could write into the file's bytes.
+    command = [*SSH, *moved(host), host, shlex.join(["cat", path])]
     with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           env=environment()) as channel:
         try:
-            failure = offload_host.receive(channel.stdout, Path.home() / LOCAL_RUNTIME_STAGING, image["build"],
-                                         image["sizeBytes"], developer, report)
+            failure = read(channel.stdout)
         finally:
-            channel.stdout.close()  # A stop ends cat too.
+            channel.stdout.close()
         error = channel.stderr.read().decode(errors="replace")
     if failure and channel.returncode:
         failure += (f"; {'ssh' if channel.returncode == 255 else 'cat'} exited {channel.returncode}: "
@@ -4199,12 +4206,18 @@ def overflow(offered, admit, timeout=OVERFLOW_TIMEOUT, once=False, refused=()):
         if places is not None: places.leave()
 
 
-def ask(host, request, timeout=SURVEY_TIMEOUT, unsent=False):
+def ask(host, request, timeout=SURVEY_TIMEOUT, unsent=False, program=None):
     """offload_host.py's answer to request on another Mac, run by its login shell as a run there is. A second
     Mac ssh cannot reach raises Misconfigured, which qk doctor and the merge queue's wait report; with unsent,
     for a question asked before work is sent (capacity_there), it raises as execute's preparing connection does
-    (ssh_failure): Unreachable, so that the work runs on this Mac, unless another Mac refused the login."""
-    request = host_command(Path(offload_host.__file__).read_text(), json.dumps(request))
+    (ssh_failure): Unreachable, so that the work runs on this Mac, unless another Mac refused the login.
+
+    With program, the path of a plugin's own host program, that program answers instead: one file that, like
+    offload_host.py, imports only the standard library, runs on Python 3.9, takes the request as its one argument
+    and prints its answer as a last line of JSON, such as the Apple plugin's runtime images
+    (queuekeeper_apple/simulators/runtime_host.py). It is sent whole with each request, so another Mac's own
+    toolkit and plugins need not match."""
+    request = host_command(Path(program or offload_host.__file__).read_text(), json.dumps(request))
     attempt = asleep()
     failed = lambda said, *context: ssh_failure(host, said, *context) if unsent else unreachable(host, said, *context)
     try:

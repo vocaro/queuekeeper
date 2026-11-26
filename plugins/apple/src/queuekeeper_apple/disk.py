@@ -245,10 +245,11 @@ def runtimes_there(second):
     without another Mac."""
     if not second: return None
     from queuekeeper import remote  # remote imports this module
+    from .simulators import runtimes as simulator_runtimes  # which imports remote
     try:
         developer = remote.developer_directory()
         if developer is None: return {"error": "this Mac has no Xcode selected"}
-        found = remote.runtime_images(second, second, developer)
+        found = simulator_runtimes.runtime_images(second, second, developer)
     except Exception as error:  # an unreachable or misconfigured Mac, whatever it raises
         return {"error": str(error).splitlines()[0][:200] if str(error) else type(error).__name__}
     if not isinstance(found, dict) or not isinstance(found.get("images"), list):
@@ -596,7 +597,7 @@ class Host(disk.Host):
     pools: frozenset = frozenset()
     matches: dict = None  # `simctl runtime match list -j`: the runtime build chosen for each SDK
     pinned: dict = field(default_factory=dict)  # runtime builds something else names, each with where
-    # Another Mac's runtime images as `qk remote setup --runtimes` reads them (remote.runtime_images), or
+    # Another Mac's runtime images as `qk remote setup --runtimes` reads them (simulators.runtimes), or
     # {"error": why} when they cannot be read; None without another Mac.
     remote_runtimes: dict = None
     # The same for each of the farm's Macs that take work now, by its SSH destination.
