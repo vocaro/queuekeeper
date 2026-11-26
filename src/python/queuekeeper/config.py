@@ -60,6 +60,24 @@ def plugins_of(root, base=None):
             if isinstance(entry, dict) else (entry, None) for entry in declared]
 
 
+# The key's name before #48. A project that still lists its plugins under it loads none of them.
+EXTENSIONS_RENAMED = ("extensions is now plugins (vocaro/queuekeeper#48): rename the key in queuekeeper.json, which "
+                      "lists the same modules")
+
+
+def renamed_plugins_key(root):
+    """What to say when the project at root still lists its plugins under "extensions", or None: plugins_of loads
+    none of them, so a command one adds is missing, and argparse says only that no such command exists (#371)."""
+    try: value = json.loads((Path(root) / FILE).read_text())
+    except (OSError, ValueError): return None
+    if not isinstance(value, dict) or "extensions" not in value: return None
+    listed = value["extensions"] if isinstance(value["extensions"], list) else []
+    names = [entry.get("module") if isinstance(entry, dict) else entry for entry in listed]
+    names = ", ".join(name for name in names if isinstance(name, str)) or "none"
+    return (f"{EXTENSIONS_RENAMED}. Until then no plugin it names is loaded ({names}), so the commands they add "
+            f"are missing")
+
+
 def sibling_folders(root):
     """The folders beside the project at root that a run of it loads from, by name (sibling_variables)."""
     return list(sibling_variables(root))
@@ -211,8 +229,7 @@ def parse(source):
     allowed = {"schemaVersion", "name", "plugins", "lanes", "integration", "repository",
                "queue", "release", "testLanes", "gitHooks", "docs", "siblings", "disk"}
     if "spelling" in value: raise ValueError(f"spelling {SPELLING_GONE}")
-    if "extensions" in value: raise ValueError("extensions is now plugins (vocaro/queuekeeper#48): rename the "
-                                             "key in queuekeeper.json, which lists the same modules")
+    if "extensions" in value: raise ValueError(EXTENSIONS_RENAMED)
     if set(value) - allowed - set(PLUGIN_CONFIG_KEYS):
         raise ValueError(f"Unknown configuration keys: {sorted(set(value) - allowed - set(PLUGIN_CONFIG_KEYS))}")
     if not isinstance(value.get("name"), str) or not value["name"]:

@@ -262,6 +262,43 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class RenamedKeyCommandTests(unittest.TestCase):
+    """A command a plugin adds, asked for in a project whose queuekeeper.json still lists its plugins under
+    "extensions", which loads none of them (#371)."""
+
+    def perform(self, configuration, *words):
+        """(its exit code, what it said of errors)."""
+        import io
+        import json
+        from queuekeeper import cli
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (folder / "queuekeeper.json").write_text(json.dumps(configuration))
+        errors = io.StringIO()
+        # The suite loads the Apple plugin; this project's command finds it not loaded.
+        with patch.object(plugins, "COMMANDS", {}), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as stopped:
+            cli.perform(["--project", str(folder), *words], None)
+        return stopped.exception.code, errors.getvalue()
+
+    def release(self, key):
+        code, said = self.perform({"schemaVersion": 1, "name": "Project", key: ["queuekeeper_apple"], "lanes": {}},
+                                  "simulator-pool", "release", "--mine")
+        self.assertEqual(code, 2)
+        self.assertIn("invalid choice: 'simulator-pool'", said)
+        return said
+
+    def test_the_old_key_says_why_the_command_is_missing(self):
+        self.assertIn("queuekeeper: extensions is now plugins (vocaro/queuekeeper#48): rename the key in "
+                      "queuekeeper.json, which lists the same modules. Until then no plugin it names is loaded "
+                      "(queuekeeper_apple), so the commands they add are missing\n", self.release("extensions"))
+
+    def test_the_new_key_gives_argparse_s_refusal_alone(self):
+        self.assertNotIn("extensions", self.release("plugins"))
+
+    def test_help_says_nothing_of_the_old_key(self):
+        self.assertEqual(self.perform({"schemaVersion": 1, "name": "P", "extensions": []}, "--help"), (0, ""))
+
+
 class OldPluginNameTests(unittest.TestCase):
     """The plugins' names before they left the core, such as queuekeeper.apple, are no plugins (#187)."""
     def test_each_old_name_is_refused_naming_its_package(self):

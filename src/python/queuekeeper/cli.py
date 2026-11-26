@@ -20,7 +20,7 @@ from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, co
     direct_status, launcher_patch, parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, launched, plugins_of, lane_to_run, load, parse as parse_configuration, qk_said, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
-    project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_links, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
+    project_siblings, renamed_plugins_key, self_lane_warnings, sibling_declarations, sibling_folders, sibling_links, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -1490,10 +1490,16 @@ def every_feature_command():
 def load_plugins(argv):
     """Load the plugins of the project argv names: its folder is --project's when that comes first, as a launcher
     gives it, else the current one, and a linked worktree's plugins are found from its main checkout."""
-    given = sys.argv[1:] if argv is None else list(argv)
-    folder = Path(given[1] if given[:1] == ["--project"] and len(given) > 1 else
-                  given[0].split("=", 1)[1] if given[:1] and given[0].startswith("--project=") else ".")
+    folder = project_folder(argv)
     plugins.load(plugins_of(folder, git_state.main_checkout(folder)))
+
+
+def project_folder(argv):
+    """The folder of the project argv names: --project's when that comes first, as a launcher gives it, else the
+    current one."""
+    given = sys.argv[1:] if argv is None else list(argv)
+    return Path(given[1] if given[:1] == ["--project"] and len(given) > 1 else
+                given[0].split("=", 1)[1] if given[:1] and given[0].startswith("--project=") else ".")
 
 
 def perform(argv, report):
@@ -1803,7 +1809,12 @@ def perform(argv, report):
     if argv[first:first + 2] == ["admissions", "waits"]: return wait_history.main(argv[first + 2:])
     if argv[first:first + 2] == ["admissions", "now"]: return resources.now_main(argv[first + 2:])
     split = argv.index("--") if "--" in argv else len(argv)
-    args = parser.parse_args(argv[:split])
+    try: args = parser.parse_args(argv[:split])
+    except SystemExit as stopped:
+        # A command a plugin adds is "invalid" when queuekeeper.json still lists the plugin under its old key (#371).
+        renamed = stopped.code and renamed_plugins_key(project_folder(argv))
+        if renamed: print(f"queuekeeper: {renamed}", file=sys.stderr)
+        raise
     if args.action == "run" and args.status: parser.error("spell --status in full")
     if args.action == "run" and args.run_id is not None: parser.error("--run-id requires --status")
     # Only the remote work itself reports its admission. Provisioning and nested commands do not.

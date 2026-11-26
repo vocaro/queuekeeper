@@ -77,7 +77,7 @@ configuration names one lane, `gate`, the command every change must pass:
 |---|---|
 | `schemaVersion` | Always `1` |
 | `name` | The project's name |
-| `plugins` | The [plugins](../README.md#plugins) to load. `[]`, or leaving it out, loads the core alone |
+| `plugins` | The [plugins](../README.md#plugins) to load. `[]`, or leaving it out, loads the core alone. Its name was `extensions` until vocaro/queuekeeper#48: a file that still says `extensions` loads no plugin, so a plugin's command, such as `qk simulator-pool`, is an invalid choice, and qk says to rename the key |
 | `disk` | `{"startFreeGB": N}`, the free space a lane that fills the disk waits for ([Free disk space](#free-disk-space)) |
 | `command` | An argument list, not a shell string |
 | `timeout` | Seconds. A lane that reaches it ends as *unmeasured*, not failed |
