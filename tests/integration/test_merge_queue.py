@@ -67,6 +67,14 @@ class EntryIdentifiers(Fixture):
         identifier, = self.add(branch)
         self.assertRegex(identifier, r"^qk\d{4}-issue-1083-layout-91$")
 
+    def test_queue_entry_prefers_an_issue_its_trailer_names_over_one_its_body_mentions(self):
+        run(self.repo, "git", "remote", "set-url", "--push", "origin", "git@github.com:vocaro/FlexolioLib.git")
+        self.commit("a.txt", "codex/layout")
+        run(self.repo, "git", "commit", "--amend", "-qm", "Adjust layout",
+            "-m", "Later work waits in vocaro/FlexolioLib#18.\n\nRefs #17\nCo-Authored-By: A <a@example.com>")
+        identifier, = self.add("codex/layout")
+        self.assertRegex(identifier, r"^qk\d{4}-issue-17-layout$")
+
     def test_queue_entry_only_takes_qualified_references_to_its_origin_repository(self):
         run(self.repo, "git", "remote", "set-url", "--push", "origin", "git@github.com:vocaro/EPUBLib.git")
         self.commit("a.txt", "codex/layout")

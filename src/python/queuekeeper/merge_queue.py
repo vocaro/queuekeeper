@@ -2618,9 +2618,21 @@ def warn(root):
         print(f"warning: {warning}", flush=True)
 
 
+# A trailer line naming an issue, such as "Refs #17" or "Part of: owner/name#17".
+TRAILER_REFERENCE = re.compile(r"^[A-Za-z][\w-]*(?: [A-Za-z][\w-]*)?:?[ \t]+" + landing_proofs.ISSUE_REFERENCE.pattern,
+                               re.I | re.M)
+
+
+def message_trailers(message):
+    """The final paragraph of each NUL-separated commit message that has a body, where trailers live."""
+    paragraphs = (re.split(r"\n[ \t]*\n", each.strip()) for each in message.split("\0"))
+    return "\0".join(each[-1] for each in paragraphs if len(each) > 1)
+
+
 def entry_issue(branch, subject, message, repository):
-    """Name a local issue a commit closes first, falling back to any local mention."""
+    """Name a local issue a commit closes first, then one its trailers name, falling back to any local mention."""
     for pattern, sources in ((landing_proofs.CLAIM, (subject, message)),
+                             (TRAILER_REFERENCE, (message_trailers(message),)),
                              (landing_proofs.ISSUE_REFERENCE, (branch, subject, message))):
         for url_repo, named_repo, number in pattern.findall("\0".join(sources)):
             qualified = url_repo or named_repo

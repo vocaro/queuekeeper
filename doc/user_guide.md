@@ -1045,7 +1045,8 @@ qk queue close --why "moving the queue's state" --for 2h && {  # refuse new entr
 Entry IDs look like `qk7318-issue-123-fix-share-sheet`: `qk`, a random four-digit number, an
 `issue-N-` prefix when the branch or commits reference an issue in this repository, and a slug of
 the branch name (without an `agent/` or `codex/` prefix) or of the commit subject. A commit's closing
-keyword, such as `Closes #123`, takes priority over other mentions.
+keyword, such as `Closes #123`, takes priority over other mentions, and then an issue named in a
+trailer at the end of a commit message, such as `Refs #123`, takes priority over one mentioned in its body.
 
 ### A project's first landing
 
