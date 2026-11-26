@@ -22,8 +22,14 @@
     "dashboard-screenshots": {
       "command": ["python3", "scripts/qk", "unittest", "-s", "tests", "visibility.test_dashboard_screenshots"],
       "timeout": 300
+    },
+    "sim-key-smoke": {
+      "command": ["python3", "scripts/sim-key-smoke"],
+      "resource": "heavy",
+      "timeout": 1800
     }
   },
+  "testLanes": {"selects": {"sim-key-smoke": []}},
   "queue": {
     "preflight": [],
     "unread": {"paths": {

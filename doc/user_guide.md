@@ -3253,6 +3253,38 @@ A KEY is one of these names, or a keyboard usage from `0x01` to `0xff` in hexade
 | 3 | The simulator's HID service cannot be reached: a framework, class or symbol is missing, the HID session did not open, or a send failed. Report the measurement as unmeasured, not failed. |
 | 64 | An argument it does not take. Nothing was sent. |
 
+**Checking `sim-key` on a new Xcode.** `scripts/sim-key-smoke` checks that its keys reach an app. Run it
+on each new Xcode or simulator runtime, through admission, since either can break the private API:
+
+```sh
+qk admit --here -- scripts/sim-key-smoke                         # the newest iOS runtime, on iPhone-17-Pro
+qk admit --here -- scripts/sim-key-smoke --device iPad-Air-13-inch-M4 --runtime iOS-27-2
+qk run sim-key-smoke                                             # Queuekeeper's own lane, never in its gate
+```
+
+Its default runtime is the newest iOS runtime installed. A take of a kind the pool has no member of
+creates one and warms its template, so name `--runtime` to reuse a member `qk simulator-pool list` shows.
+It takes one pool member with `qk simulator-pool take` and serves a page with an autofocused text field
+from 127.0.0.1 on a free port. It opens the page in the member's Safari with `simctl openurl`, then sends
+`q k pageup pagedown home end right left up down 0x4b shift+right` with `sim-key`, one key at a time. The
+page reports each `keydown` and `keyup` back to the server. Each key must arrive, down and up, within
+`--deadline` seconds (15 by default). `openurl` often exits with a timeout (NSPOSIXErrorDomain 60) while
+Safari loads the page anyway, so the check waits for the page to report rather than trusting that status.
+It opens the page a second time before giving up. No Simulator window opens.
+
+It prints `PASS KEY` or `MISS KEY: why` for each key and a verdict line. It releases the member however
+it ends, after Ctrl-C or SIGTERM too, and prints whether it did. With `--results DIR`, by default the
+lane's `QUEUEKEEPER_RESULTS_DIR`, it writes `sim-key-smoke.json` there, with the member, the runtime, the
+Xcode version and every event the page reported.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every key arrived. |
+| 1 | A key was sent and did not arrive, `sim-key` failed, or the member could not be released. |
+| 3 | Unmeasured: no member could be taken, the page never reported back, or `sim-key` exited 3. Not a failure. |
+| 64 | An argument it does not take. Nothing was taken. |
+| 128+N | Stopped by signal N, once the member was released. |
+
 ### Foreground runs
 
 A lane that needs a Mac's screen, keyboard, pointer, focus or speech, such as Mac VoiceOver or Mac

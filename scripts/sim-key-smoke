@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Check that scripts/sim-key's keys reach Safari on a pool simulator it takes and releases: sim-key-smoke.
+
+Run it under admission on each new Xcode or runtime. queuekeeper_apple.simulators.sim_key_smoke says
+what it does and what its exit codes mean.
+"""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/python"))
+from queuekeeper.checkout import activate
+activate(Path(__file__).resolve().parents[1])
+from queuekeeper_apple.simulators.sim_key_smoke import main
+
+raise SystemExit(main())
