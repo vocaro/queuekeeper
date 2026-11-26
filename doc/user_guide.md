@@ -2679,6 +2679,33 @@ checkout. `qk run` names the commit as it starts and the receipt records its com
   `"siblings": {"apple-engineering": "APPLE_ENGINEERING_ROOT"}`. Siblings can also declare
   folders they load from. Commands outside a run, such as `qk doctor`, can still load from the
   shared checkout.
+- **Reading a sibling by a relative path.** A build that names the sibling by a fixed relative
+  path cannot read a variable: a SwiftPM `.package(path: "../mpm")`, an npm `file:../mpm` or a
+  Unity manifest's `file:` path. On your Mac the clone sits beside the main checkout, but the
+  merge queue's checkout is `~/Development/queuekeeper-workers/PROJECT/PROJECT`, a session's
+  worktree sits elsewhere, and neither has the sibling beside it. Add `"link"`, one folder beside
+  the lane's checkout, to the sibling's object, with or without `"revision"`:
+
+  ```json
+  {
+    "siblings": {
+      "mpm": {"variable": "MPM_ROOT", "link": "../mpm"}
+    }
+  }
+  ```
+
+  Before each lane, on whichever Mac runs it, Queuekeeper makes `../mpm` a link to the run's
+  checkout of the sibling, the one `MPM_ROOT` names. It replaces only a missing path, a link
+  whose target is gone, such as one to a checkout `qk disk --prune-pins` removed, or a link into
+  `queuekeeper-pins/` an earlier run made. It leaves a folder, a file or a link you made as it
+  is and says so; your main checkout's `../mpm` is the clone itself and stays quiet. `link` takes
+  only `../FOLDER`, never an absolute path or one further out. Checkouts in one folder share the
+  link: the queue's checkout and the one beside it for a bisect's newer half, or your worktrees
+  side by side, where a run at another commit of the sibling points the link there. Each
+  project's queue has its own folder, and another Mac's dispatch slot has its own. `qk disk` and
+  removing a worker's folder do not follow the link, so they never measure or delete the pinned
+  checkout through it. Only the project's own `siblings` make links; a sibling's own declarations
+  make none.
 - **Trying a different revision locally.** `qk run --sibling FOLDER=WHERE LANE` takes precedence
   when starting a developer run. WHERE is a commit or a checkout's path. A hand-picked commit no
   branch of the origin holds runs on this Mac only. A nested command keeps its enclosing run's

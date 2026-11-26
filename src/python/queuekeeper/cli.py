@@ -20,7 +20,7 @@ from . import pins, __version__, agent_hooks, agent_setup, budgets, checkout, co
     direct_status, launcher_patch, parallel, pre_push, preflight, processes, remote, resources, run_progress, sandbox, shims, trial, wait_history
 from .config import FILE as CONFIG_FILE, PROJECT_CHECKOUT_VARIABLE, PROVISION, TOOLKIT_ROOT, admission as admission_of, exclusive_refusal, launched, plugins_of, lane_to_run, load, parse as parse_configuration, qk_said, \
     source_identity, lane_devices, unrun_carry_checks, project_checkout, \
-    project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
+    project_siblings, self_lane_warnings, sibling_declarations, sibling_folders, sibling_links, sibling_revisions, start_free, stays, unadmitted, unlocked_screen
 from .resources import BUSY, FREE_WAIT
 from . import visibility
 
@@ -2159,6 +2159,10 @@ def perform(argv, report):
                 # The lane finds the directory in QUEUEKEEPER_RESULTS_DIR, and a group's lanes each find one of their own in it.
                 shutil.rmtree(directory / "results", ignore_errors=True)
                 report.ran_here(directory)
+                # A sibling a build reads by a relative path, linked beside the tree to the run's pinned checkout of
+                # it, here as on any Mac that runs the lane (pins.place_links, vocaro/queuekeeper#355).
+                pins.place_links(tree, sibling_links(config), pins.held(), root,
+                                 lambda text: print(f"queuekeeper: {text}", file=sys.stderr, flush=True))
                 if resource != "self":
                     for prepare in plugins.PREPARE_LANE: prepare(tree, config)
                 commands = [config["lanes"][name]["command"] for name in group] if group is not None else \

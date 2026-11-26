@@ -20,6 +20,7 @@ Nothing is sent to another Mac but the commits: it takes each from its own check
 (offload_host.place_siblings). A commit its origin lacks, one chosen with --sibling that is not pushed, therefore
 runs on this Mac only.
 """
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -200,6 +201,57 @@ def exported(pins):
     loads apple-engineering and AXVerify from theirs, and so does every eng command of the lane."""
     return {pin["variable"]: pin["root"] for pin in (pins or {}).values()
             if isinstance(pin.get("variable"), str) and not pin.get("error")}
+
+
+def place_links(checkout, links, pins, root=None, say=None):
+    """Before a lane, make each folder of links, {NAME: FOLDER} (config.sibling_links), beside checkout a link to
+    the run's pinned checkout of NAME, for a build that reads the sibling by a relative path such as "../NAME"
+    rather than by its variable (vocaro/queuekeeper#355). Queuekeeper replaces only what is its own to replace:
+    nothing there, a link whose target is gone, as one to a pinned checkout `qk disk --prune-pins` removed, or a link
+    into this Mac's pinned checkouts (offload_host.pins_root), as an earlier run made, which may name another commit.
+    A folder, a file or a link a person made stays as it is, said, except this Mac's own checkout of NAME beside the
+    project (clone), which is where a main checkout finds its siblings anyway.
+
+    A link is swapped in whole (os.replace), so that a lane reading it never finds it missing. Every checkout in
+    the same folder shares it: the merge queue's worker and the checkout beside it for a bisect's newer half
+    (queuekeeper-workers/NAME/), or a session's worktrees side by side, where a run at another commit of NAME
+    points it at that commit. Returns {FOLDER: what it links to} for those it made."""
+    checkout, made = Path(checkout), {}
+    store = offload_host.pins_root()
+    owned = [store, store.resolve()] if store.exists() else [store]
+    for name, folder in (links or {}).items():
+        path = checkout.parent / folder
+        pin = (pins or {}).get(name)
+        if not pin or pin.get("error") or not Path(pin["root"]).is_dir():
+            if say: say(f"{path} not linked: this run has no pinned checkout of {name} to link it to")
+            continue
+        target = Path(pin["root"])
+        if path.is_symlink():
+            current = Path(os.readlink(path))
+            current = current if current.is_absolute() else path.parent / current
+            if path.exists() and path.resolve() == target.resolve(): continue
+            ours = any(Path(os.path.normpath(current)).is_relative_to(base) for base in owned)
+            if path.exists() and not ours:
+                if say: say(f"{path} left as it is: a link to {current} that Queuekeeper did not make, not to {name} "
+                            f"at {pin['commit'][:12]}; remove it for Queuekeeper to link {name} there")
+                continue
+        elif path.exists():
+            if root is None or path.resolve() != clone(root, name).resolve():
+                if say: say(f"{path} left as it is: it is no link, so it is not {name} at {pin['commit'][:12]}; "
+                            f"move it away for Queuekeeper to link {name} there")
+            continue
+        swap = path.with_name(f".{folder}.queuekeeper-{os.getpid()}")
+        try:
+            if swap.is_symlink(): swap.unlink()
+            swap.symlink_to(target, target_is_directory=True)
+            os.replace(swap, path)
+        except OSError as error:
+            if say: say(f"{path} not linked to {target}: {error}")
+            with contextlib.suppress(OSError): swap.unlink()
+            continue
+        made[folder] = str(target)
+        if say: say(f"{path} links {name} at {pin['commit'][:12]}, {target}")
+    return made
 
 
 def encoded(pins):

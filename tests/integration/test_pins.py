@@ -550,5 +550,137 @@ print(loaded)
         self.assertIn("nested not run: --offload-only never runs it here, and kit is pinned", ran.stderr)
 
 
+class LinkTests(Fixture):
+    """A sibling a build reads by a relative path, "../FOLDER", linked beside the lane's checkout to the run's pinned
+    checkout of it (pins.place_links, vocaro/queuekeeper#355)."""
+
+    def declare(self, entry):
+        path = self.project / "queuekeeper.json"
+        settings = json.loads(path.read_text())
+        settings["siblings"] = {"kit": entry}
+        settings["lanes"]["relative"] = {"command": [sys.executable, "-c", (
+            "from pathlib import Path\n"
+            "kit = Path('../kit-link/src/python/fixture_kit.py')\n"
+            "print('relative', kit.read_text().splitlines()[2], 'from', kit.resolve())\n")]}
+        path.write_text(json.dumps(settings))
+
+    def ran(self):
+        ran = self.qk("run", "--here", "relative")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        log = (self.project / ".build/queuekeeper/relative/run.log").read_text()
+        return ran.stderr, [line for line in log.splitlines() if line.startswith("relative")]
+
+    def read_from(self, value, commit):
+        return [f"relative VALUE = {value!r} from {self.pinned('kit', commit).resolve()}/src/python/fixture_kit.py"]
+
+    def test_a_lane_finds_its_sibling_by_a_relative_path_at_the_pinned_commit_and_a_pruned_pin_is_linked_again(self):
+        self.declare({"variable": "KIT_ROOT", "link": "../kit-link"})
+        link = self.home / "Development/kit-link"
+        said, read = self.ran()
+        self.assertIn(f"queuekeeper: {link} links kit at {self.one[:12]}, {self.pinned('kit', self.one)}\n", said)
+        self.assertEqual(read, self.read_from("one", self.one))
+        self.assertEqual(Path(os.readlink(link)), self.pinned("kit", self.one))
+        # Nothing to do while it already links the run's commit.
+        said, _ = self.ran()
+        self.assertNotIn(str(link), said)
+        # A new origin/main: the link Queuekeeper made points to the new pin.
+        two = self.publish("two")
+        said, read = self.ran()
+        self.assertIn(f"{link} links kit at {two[:12]}", said)
+        self.assertEqual(read, self.read_from("two", two))
+        # A pin `qk disk --prune-pins` removed leaves the link dangling. The next lane pins the commit again at the
+        # same path, which the link names, so it reads again; one left at another commit is linked anew below.
+        later = time.time() + 30 * 24 * 60 * 60
+        for checkout, ready, clone in offload_host.stale_pins(now=later):
+            offload_host.remove_pin(checkout, ready, clone, now=later)
+        self.assertTrue(link.is_symlink() and not link.exists())
+        self.assertTrue(self.kit.is_dir())
+        _, read = self.ran()
+        self.assertEqual(read, self.read_from("two", two))
+        for checkout, ready, clone in offload_host.stale_pins(now=later):
+            offload_host.remove_pin(checkout, ready, clone, now=later)
+        link.unlink()
+        link.symlink_to(self.pinned("kit", self.one), target_is_directory=True)
+        self.assertFalse(link.exists())
+        said, read = self.ran()
+        self.assertIn(f"{link} links kit at {two[:12]}", said)
+        self.assertEqual(read, self.read_from("two", two))
+
+    def place(self, made, folder):
+        said = []
+        return pins.place_links(self.project, {"kit": folder}, made, self.project, said.append), said
+
+    def test_a_folder_a_persons_link_and_the_macs_own_checkout_stay_as_they_are(self):
+        made = pins.make(self.project, {"kit": "KIT_ROOT"})
+        folder = self.home / "Development/kit-folder"
+        (folder / "inside").mkdir(parents=True)
+        placed, said = self.place(made, "kit-folder")
+        self.assertEqual(placed, {})
+        self.assertTrue(folder.is_dir() and not folder.is_symlink() and (folder / "inside").is_dir())
+        self.assertIn(f"{folder} left as it is: it is no link", said[0])
+        elsewhere = self.home / "elsewhere"
+        elsewhere.mkdir()
+        person = self.home / "Development/kit-person"
+        person.symlink_to(elsewhere, target_is_directory=True)
+        placed, said = self.place(made, "kit-person")
+        self.assertEqual((placed, Path(os.readlink(person))), ({}, elsewhere))
+        self.assertIn(f"{person} left as it is: a link to {elsewhere} that Queuekeeper did not make", said[0])
+        # The main checkout's sibling is the Mac's own checkout of it, which is what that checkout always read.
+        self.assertEqual(self.place(made, "kit"), ({}, []))
+        self.assertFalse(self.kit.is_symlink())
+        # A link whose target is gone is replaced, as nothing could read it.
+        dangling = self.home / "Development/kit-dangling"
+        dangling.symlink_to(self.home / "gone", target_is_directory=True)
+        self.place(made, "kit-dangling")
+        self.assertEqual(dangling.resolve(), self.pinned("kit", self.one).resolve())
+        # With no pinned checkout of the sibling there is nothing to link.
+        placed, said = self.place({}, "kit-none")
+        self.assertEqual(placed, {})
+        self.assertFalse((self.home / "Development/kit-none").exists())
+        self.assertIn("this run has no pinned checkout of kit", said[0])
+
+    def test_qk_disk_and_removing_the_folder_neither_follow_nor_delete_through_the_link(self):
+        made = pins.make(self.project, {"kit": "KIT_ROOT"})
+        pinned = self.pinned("kit", self.one)
+        (pinned / "large").write_bytes(b"x" * (4 * 1024 * 1024))
+        workers = self.home / "queuekeeper-workers/project"
+        checkout = workers / "project"
+        checkout.mkdir(parents=True)
+        pins.place_links(checkout, {"kit": "kit"}, made, self.project)
+        self.assertEqual((workers / "kit").resolve(), pinned.resolve())
+        sizes = disk.Sizes()
+        self.assertLess(sizes.of(workers), 1024 * 1024)
+        sizes.prime(workers.parent, 2)
+        self.assertLess(sizes.of(workers), 1024 * 1024)
+        disk.last_activity(workers)
+        shutil.rmtree(workers.parent)
+        self.assertTrue((pinned / "large").is_file())
+        self.assertEqual(git(pinned, "rev-parse", "HEAD"), self.one)
+
+    def test_link_takes_one_folder_beside_the_checkout_as_the_schema_does(self):
+        base = {"schemaVersion": 1, "name": "fixture"}
+        settings = {"kit": {"variable": "KIT_ROOT", "link": "../kit"},
+                    "both": {"variable": "BOTH_ROOT", "revision": self.one.upper(), "link": "../both/"},
+                    "plain": "PLAIN_ROOT"}
+        config.parse(json.dumps({**base, "siblings": settings}))
+        self.assertEqual(config.siblings(settings), {"kit": "KIT_ROOT", "plain": "PLAIN_ROOT",
+                                                     "both": {"variable": "BOTH_ROOT", "revision": self.one}})
+        self.assertEqual(config.sibling_links({"siblings": settings}), {"kit": "kit", "both": "both"})
+        schema = json.loads((ROOT / "schemas/queuekeeper.schema.json").read_text())
+        entry = schema["properties"]["siblings"]["additionalProperties"]["oneOf"][1]
+        pattern = entry["properties"]["link"]["pattern"]
+        self.assertEqual(set(entry["properties"]), {"variable", "revision", "link"})
+        for link in ("../kit", "../kit/", "../kit.d", "../_x"):
+            self.assertRegex(link, pattern)
+            config.parse(json.dumps({**base, "siblings": {"kit": {"variable": "KIT_ROOT", "link": link}}}))
+        for link in ("/tmp/kit", "kit", "../../kit", "../kit/more", "..", "../", "../..", "../.", "./kit", 3, ""):
+            with self.subTest(link=link):
+                if isinstance(link, str): self.assertNotRegex(link, pattern)
+                with self.assertRaisesRegex(ValueError, "siblings.kit.link"):
+                    config.parse(json.dumps({**base, "siblings": {"kit": {"variable": "KIT_ROOT", "link": link}}}))
+        with self.assertRaisesRegex(ValueError, "siblings.kit"):
+            config.parse(json.dumps({**base, "siblings": {"kit": {"variable": "KIT_ROOT"}}}))
+
+
 if __name__ == "__main__":
     unittest.main()

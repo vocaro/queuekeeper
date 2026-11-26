@@ -118,21 +118,52 @@ def siblings_in(configuration):
 
 
 def siblings(declared):
-    """Check sibling names, environment variables, and full commit IDs."""
+    """Check sibling names, environment variables, full commit IDs and links. An object's "link" is left out of
+    what this returns, so that an object with no "revision" is its variable alone, a sibling that follows its
+    origin/main, as everything that selects commits reads it; sibling_links reads the links."""
     if not isinstance(declared, dict):
         raise ValueError("siblings must be an object")
     checked = {}
     for name, entry in declared.items():
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
             raise ValueError(f"siblings names {name!r}, which is not a folder name")
-        if isinstance(entry, dict) and (entry.keys() != {"variable", "revision"}
-                or not isinstance(entry["revision"], str) or not re.fullmatch(r"[0-9a-fA-F]{40}", entry["revision"])):
-            raise ValueError(f'siblings.{name} needs "variable" and "revision", a full 40-digit Git commit ID')
+        if isinstance(entry, dict):
+            if not entry.keys() & {"revision", "link"} or entry.keys() - {"variable", "revision", "link"} \
+                    or "variable" not in entry:
+                raise ValueError(f'siblings.{name} needs "variable" and "revision", a full 40-digit Git commit ID, '
+                                 f'or "link", a folder beside the checkout such as "../{name}"')
+            if "revision" in entry and (not isinstance(entry["revision"], str)
+                                        or not re.fullmatch(r"[0-9a-fA-F]{40}", entry["revision"])):
+                raise ValueError(f'siblings.{name} needs "variable" and "revision", a full 40-digit Git commit ID')
+            if "link" in entry: sibling_link(name, entry["link"])
         variable = sibling_variable(entry)
         if not isinstance(variable, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", variable):
             raise ValueError(f"siblings.{name} needs an uppercase environment variable name")
-        checked[name] = {**entry, "revision": entry["revision"].lower()} if isinstance(entry, dict) else entry
+        if not isinstance(entry, dict): checked[name] = entry
+        elif "revision" in entry: checked[name] = {"variable": variable, "revision": entry["revision"].lower()}
+        else: checked[name] = variable
     return checked
+
+
+def sibling_link(name, link):
+    """The folder a sibling's "link" names beside the checkout, "../FOLDER", checked: the one place a lane's checkout
+    finds the sibling by a relative path, which Queuekeeper makes a link to the run's pinned checkout of it
+    (pins.place_links). Nothing further out: the folder that holds a checkout holds only its own neighbours, such as
+    the merge queue worker's queuekeeper-workers/NAME/, and not those of another project's."""
+    found = re.fullmatch(r"\.\./([A-Za-z0-9_][A-Za-z0-9_.-]*)/?", link) if isinstance(link, str) else None
+    if found is None:
+        raise ValueError(f'siblings.{name}.link is {link!r}: name one folder beside the checkout, as "../{name}", '
+                         "not an absolute path or one further out")
+    return found[1]
+
+
+def sibling_links(configuration):
+    """The project's own siblings that name a "link", {NAME: FOLDER}, FOLDER beside its checkout. A sibling's own
+    queuekeeper.json links nothing: a link is the project's, beside the checkout its lanes run in."""
+    declared = configuration.get("siblings", {}) if isinstance(configuration, dict) else {}
+    siblings(declared)
+    return {name: sibling_link(name, entry["link"]) for name, entry in declared.items()
+            if isinstance(entry, dict) and "link" in entry}
 
 
 def further_siblings(folder):
