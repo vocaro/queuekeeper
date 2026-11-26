@@ -51,7 +51,7 @@ The script:
   that it is the Mac you work at. Macs you add later keep the default of 90%, so they take more
   of the load. A limits file that already sets `busyLimit` is left alone.
 
-Keep the checkout: `qk` runs it. To update, run `git pull` in it.
+Keep the checkout: `qk` runs it. To update, run `git pull --ff-only` in it.
 `python3 tools/install-checkout.py --check` says whether everything is in place, and `--remove`
 takes it out again.
 
@@ -3599,7 +3599,12 @@ by hand and points the agent to `qk land --wait`:
 
 - `git push` to `main`: a refspec whose destination is `main`, `--all` or `--mirror`, or a bare
   push from `main` or from a branch whose push destination is `main`;
-- `git merge` on `main`, except `--abort`, `--continue` and `--quit`;
+- `git merge` or `git pull` on `main`, except a fast-forward to the remote's `main`:
+  `git merge --ff-only` to a commit that the remote-tracking `main` (its upstream, or else
+  `origin/main`) already holds, such as `git merge --ff-only origin/main`, or `git pull --ff-only`
+  from that remote's `main` (`--ff-only` may come from `pull.ff=only` instead). Options that change
+  only what is printed or fetched may join them; `git merge --abort`, `--continue` and `--quit` also
+  pass;
 - moving `main` with `git update-ref` or `git branch -f`;
 - `gh pr merge`.
 

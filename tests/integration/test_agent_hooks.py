@@ -173,6 +173,49 @@ class Guard(Repository):
         self.git(self.linked, "config", "push.default", "upstream")
         self.assertIsNotNone(self.decision("git push"))
 
+    def remote_ahead(self):
+        """Give main an origin it tracks whose main is one commit ahead, fetched but not merged, and give work a
+        commit the origin lacks."""
+        origin = self.root / "origin.git"
+        self.git(self.root, "init", "-q", "--bare", str(origin))
+        self.git(self.main, "remote", "add", "origin", str(origin))
+        self.git(self.main, "push", "-q", "-u", "origin", "main")
+        other = self.root / "other"
+        self.git(self.root, "clone", "-q", "-b", "main", str(origin), str(other))
+        (other / "file").write_text("two\n")
+        self.git(other, "commit", "-q", "-am", "Second")
+        self.git(other, "push", "-q", "origin", "main")
+        self.git(self.main, "fetch", "-q", "origin")
+        (self.linked / "file").write_text("local\n")
+        self.git(self.linked, "commit", "-q", "-am", "Local")
+
+    def test_main_may_fast_forward_to_the_remotes_main(self):
+        self.remote_ahead()
+        for command in ("git merge --ff-only origin/main", "git merge --ff-only refs/remotes/origin/main",
+                        "git merge -q --ff-only origin/main~1", "git merge --ff-only", "git pull --ff-only",
+                        "git pull --ff-only origin", "git pull --ff-only -q origin main",
+                        f"git -C {self.main} merge --ff-only origin/main"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decision(command, self.main))
+        self.git(self.main, "config", "pull.ff", "only")
+        self.assertIsNone(self.decision("git pull", self.main))
+
+    def test_main_may_not_merge_or_pull_anything_else(self):
+        self.remote_ahead()
+        for command in ("git merge origin/main", "git merge --ff-only work", "git merge --ff-only origin/main work",
+                        "git merge --ff-only --squash origin/main", "git merge --ff-only -m x origin/main",
+                        "git merge --ff-only nowhere", "git pull", "git pull origin main", "git pull --rebase",
+                        "git pull --ff-only --rebase", "git pull --ff-only origin work",
+                        "git pull --ff-only origin work:main", "git pull --ff-only elsewhere main",
+                        "git pull --ff-only --ff"):
+            with self.subTest(command=command):
+                self.assertIn("fast-forwarding", self.decision(command, self.main))
+        self.assertIsNone(self.decision("git pull origin main"))
+
+    def test_without_a_remote_main_no_merge_into_main_passes(self):
+        self.assertIsNotNone(self.decision("git merge --ff-only work", self.main))
+        self.assertIsNotNone(self.decision("git pull --ff-only", self.main))
+
     def test_other_tools_and_the_owners_switch_pass(self):
         found = self.hook("pre-tool-use", {"tool_name": "Write", "tool_input": {"command": "git push origin main"}})
         self.assertIsNone(found)

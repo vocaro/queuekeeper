@@ -7,10 +7,10 @@ nothing and exits 0.
 - session-start tells a starting or resumed session what became of this worktree's and branch's entries since an
   earlier session queued them: sent back, still waiting, or waiting behind a held queue, each with its recovery's
   suggested commands. An agent otherwise learns of a send-back only while it follows `qk land --wait`.
-- pre-tool-use refuses a Bash command that would land on main by hand, `git push` to main, `git merge` on main,
-  moving main with `git update-ref` or `git branch -f`, and `gh pr merge`, and points the agent to `qk land`. It
-  is a guard rail against a mistake, not a security boundary: it reads the command's words, follows `cd`, `git -C`
-  and `sh -c`, and lets through anything it cannot parse."""
+- pre-tool-use refuses a Bash command that would land on main by hand, `git push` to main, `git merge` or `git pull`
+  on main other than a fast-forward to the remote's main, moving main with `git update-ref` or `git branch -f`, and
+  `gh pr merge`, and points the agent to `qk land`. It is a guard rail against a mistake, not a security boundary:
+  it reads the command's words, follows `cd`, `git -C` and `sh -c`, and lets through anything it cannot parse."""
 import json
 import os
 import re
@@ -242,6 +242,53 @@ def push_targets_main(arguments, directory, branch):
     return False
 
 
+# Options of git merge and git pull that change only what they print or fetch, never what main becomes.
+QUIET_OPTIONS = {"-q", "--quiet", "-v", "--verbose", "--stat", "-n", "--no-stat", "--progress", "--no-progress",
+                 "--summary", "--no-summary", "--log", "--no-log"}
+PULL_OPTIONS = QUIET_OPTIONS | {"--ff-only", "--no-rebase", "-p", "--prune", "--no-prune", "-t", "--tags",
+                                "--no-tags", "--autostash", "--no-autostash"}
+
+
+def main_remote(directory):
+    """The remote main follows, from its upstream configuration or else origin."""
+    return git(directory, "config", "--get", f"branch.{MAIN}.remote") or "origin"
+
+
+def remote_main(directory):
+    """The remote-tracking ref of the remote's main, which only the merge queue moves, or None."""
+    upstream = git(directory, "rev-parse", "--symbolic-full-name", f"{MAIN}@{{upstream}}") or ""
+    if upstream.startswith("refs/remotes/") and upstream.endswith(f"/{MAIN}"): return upstream
+    tracking = f"refs/remotes/{main_remote(directory)}/{MAIN}"
+    return tracking if git(directory, "rev-parse", "--verify", "-q", tracking) is not None else None
+
+
+def fast_forwards_to_remote_main(arguments, directory):
+    """Whether `git merge ARGUMENTS` on main only fast-forwards it to a commit the remote's main already holds."""
+    if "--ff-only" not in arguments: return False
+    if any(word.startswith("-") and word not in QUIET_OPTIONS | {"--ff-only"} for word in arguments): return False
+    tracking = remote_main(directory)
+    if not tracking: return False
+    targets = [word for word in arguments if not word.startswith("-")] or [f"{MAIN}@{{upstream}}"]
+    if len(targets) > 1: return False
+    commit = git(directory, "rev-parse", "--verify", "-q", f"{targets[0]}^{{commit}}")
+    return bool(commit) and git(directory, "merge-base", "--is-ancestor", commit, tracking) is not None
+
+
+def pull_fast_forwards_to_remote_main(arguments, directory):
+    """Whether `git pull ARGUMENTS` on main only fast-forwards it to the remote's main."""
+    if any(word.startswith("-") and word not in PULL_OPTIONS for word in arguments): return False
+    if "--ff-only" not in arguments and git(directory, "config", "--get", "pull.ff") != "only": return False
+    if not remote_main(directory): return False
+    positional = [word for word in arguments if not word.startswith("-")]
+    remote = main_remote(directory)
+    if positional and positional[0] != remote: return False
+    refspecs = positional[1:]
+    if not refspecs:
+        merged = git(directory, "config", "--get", f"branch.{MAIN}.merge")
+        return merged in (None, f"refs/heads/{MAIN}")
+    return all(is_main(spec.split(":", 1)[0]) and ":" not in spec for spec in refspecs)
+
+
 def git_refusal(words, directory):
     """Why the git command words, run in directory, lands on main by hand, or None."""
     index = 1
@@ -256,12 +303,15 @@ def git_refusal(words, directory):
     if index >= len(words): return None
     action, arguments = words[index], words[index + 1:]
     branch = None
-    if action in ("push", "merge"):
+    if action in ("push", "merge", "pull"):
         branch = git(directory, "symbolic-ref", "--short", "-q", "HEAD")
     if action == "push" and push_targets_main(arguments, directory, branch):
         return "git push would update main"
-    if action == "merge" and branch == MAIN and not {"--abort", "--continue", "--quit"} & set(arguments):
-        return "git merge would change main"
+    if action == "merge" and branch == MAIN and not {"--abort", "--continue", "--quit"} & set(arguments) \
+            and not fast_forwards_to_remote_main(arguments, directory):
+        return "git merge would change main other than by fast-forwarding it to the remote's main"
+    if action == "pull" and branch == MAIN and not pull_fast_forwards_to_remote_main(arguments, directory):
+        return "git pull would change main other than by fast-forwarding it to the remote's main"
     if action == "update-ref" and any(is_main(word) for word in arguments if not word.startswith("-")):
         return "git update-ref would move main"
     if action == "branch" and any(word in ("-f", "--force", "-D", "-M", "-C") or word.startswith("--force")
